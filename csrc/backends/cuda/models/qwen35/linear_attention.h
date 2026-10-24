@@ -2,10 +2,10 @@
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "models/common/transformer_layer.h"
-#include "core/recurrent_mixer_state.h"
+#include "storage/state/recurrent_mixer_state.h"
 
-#include "core/block.h"
-#include "core/ffn.h"
+#include "models/common/block.h"
+#include "models/common/ffn.h"
 #include "models/qwen35/config.h"
 #include "models/qwen35/causal_lm.h"
 

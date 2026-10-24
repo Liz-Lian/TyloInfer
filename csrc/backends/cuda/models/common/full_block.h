@@ -1,8 +1,8 @@
 #pragma once
 
-#include "block.h"
-#include "ffn.h"
-#include "kv_cache.h"
+#include "models/common/block.h"
+#include "models/common/ffn.h"
+#include "storage/state/kv_cache.h"
 
 #include <cstdint>
 

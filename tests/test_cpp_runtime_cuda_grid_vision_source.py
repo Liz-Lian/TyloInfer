@@ -10,8 +10,10 @@ COMMON_CONFIG = (
     ROOT / "csrc/models/common/model_config.cpp"
 ).read_text()
 CUDA_ROOT = ROOT / "csrc/backends/cuda"
-CUDA = (CUDA_ROOT / "core/grid_vision_component.h").read_text()
-VISION_OPS = (CUDA_ROOT / "core/vision_ops.h").read_text()
+CUDA = (CUDA_ROOT / "storage/model_loader.h").read_text().split(
+    "namespace mfq::cuda::grid_vision_runtime {", 1
+)[1].split("} // namespace mfq::cuda::grid_vision_runtime", 1)[0]
+VISION_OPS = (CUDA_ROOT / "models/common/vision_ops.h").read_text()
 CUDA_APP = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted(CUDA_ROOT.rglob("*"))

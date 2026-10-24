@@ -3,7 +3,7 @@
 #include "storage/session_state.h"
 #include "mtp_policy.h"
 #include "backend.h"
-#include "core/causal_model.h"
+#include "models/common/causal_model_ops.h"
 
 #include <cstdint>
 #include <variant>

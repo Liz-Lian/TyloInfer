@@ -424,7 +424,10 @@ function(mfq_configure_cuda_runtime_target target)
 endfunction()
 
 set(TYLOINFER_CUDA_MODEL_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/core/axial_patch_vision.cpp
+    ${TYLOINFER_CUDA_ROOT}/models/common/causal_model_ops.cpp
+    ${TYLOINFER_CUDA_ROOT}/models/common/ffn.cpp
+    ${TYLOINFER_CUDA_ROOT}/models/common/full_block.cpp
+    ${TYLOINFER_CUDA_ROOT}/models/common/axial_patch_vision_ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v4/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/session.cpp
@@ -445,16 +448,9 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/qwen35/batch_state.cpp
 )
 
-set(TYLOINFER_CUDA_TRANSFORMER_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/core/causal_model.cpp
-    ${TYLOINFER_CUDA_ROOT}/core/decode_graph.cpp
-    ${TYLOINFER_CUDA_ROOT}/core/ffn.cpp
-    ${TYLOINFER_CUDA_ROOT}/core/full_block.cpp
-    ${TYLOINFER_CUDA_ROOT}/core/kv_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/core/rope.cpp
-)
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/ops/common/rope.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/cuda_execution.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/format.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/moe_routes.cpp
@@ -481,6 +477,7 @@ target_compile_definitions(mfq-cuda-ops PRIVATE
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_LOADING_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/load_options.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/model_loader.cpp
     ${TYLOINFER_CUDA_ROOT}/runtime/graph_registry.cpp
@@ -508,6 +505,7 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Concrete Engine/model bindings stay in this source group for both native and
 # optional Torch builds. Extra targets do not reduce their header dependencies.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/engine/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/generation.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/text_session_cache.cpp
@@ -519,7 +517,6 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/minicpmo45.cpp
     ${TYLOINFER_CUDA_MODEL_SOURCES}
-    ${TYLOINFER_CUDA_TRANSFORMER_SOURCES}
 )
 add_library(mfq-cuda-runtime STATIC
     $<TARGET_OBJECTS:mfq-cuda-ops>

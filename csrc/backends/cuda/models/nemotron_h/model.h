@@ -1,10 +1,10 @@
 #pragma once
 
-#include "core/block.h"
-#include "core/ffn.h"
-#include "core/full_block.h"
+#include "models/common/block.h"
+#include "models/common/ffn.h"
+#include "models/common/full_block.h"
 #include "quant_linear.h"
-#include "core/recurrent_mixer_state.h"
+#include "storage/state/recurrent_mixer_state.h"
 
 #include <array>
 #include <cstdint>

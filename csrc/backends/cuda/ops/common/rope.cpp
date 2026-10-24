@@ -1,5 +1,5 @@
-#include "../runtime/execution_options.h"
-#include "rope.h"
+#include "../../runtime/execution_options.h"
+#include "ops/common/include/rope.h"
 
 #include "cuda_execution.h"
 #include "mfq_cuda_attention_ops.h"

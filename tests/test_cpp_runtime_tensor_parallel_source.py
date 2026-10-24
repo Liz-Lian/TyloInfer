@@ -133,7 +133,7 @@ def test_tq_expert_partitions_keep_global_routes_and_zero_unowned_outputs():
     assert "auto pairs=partitioned?tb::zeros(" in tq
     assert "if(unique.empty())return tb::zeros(" in tq
     assert "return reduce_model_parallel_outputs(execution,std::move(partials))" in tq
-    ffn = (CUDA_ROOT / "core" / "ffn.cpp").read_text(encoding="utf-8")
+    ffn = (CUDA_ROOT / "models" / "common" / "ffn.cpp").read_text(encoding="utf-8")
     qwen = (CUDA_ROOT / "models" / "qwen4_exp" / "ops.cpp").read_text(encoding="utf-8")
     assert "moe_tq->forward_parallel(execution," in ffn
     assert "tq->forward_parallel(execution," in qwen
@@ -232,10 +232,14 @@ def test_tensor_parallel_peer_first_launch_preserves_rank_indexing():
 
 
 def test_qwen35_mtp_accepts_dense_tensor_parallel_placement():
-    assert "const bool supported_placement" in COMPONENTS
-    assert "!model_execution.layer_placement.enabled()" in COMPONENTS
-    assert "!execution.tensor_parallel.enabled()" not in COMPONENTS
-    assert "dense GPU-resident Qwen blocks" in COMPONENTS
+    source = (CUDA_ROOT / "storage/model_loader.cpp").read_text()
+    qwen35 = source.split(
+        "RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(", 1
+    )[1].split("RuntimeComponents<mfq::cuda::Qwen4CausalLm>", 1)[0]
+    assert "const bool supported_placement" in qwen35
+    assert "!model_execution.layer_placement.enabled()" in qwen35
+    assert "!execution.tensor_parallel.enabled()" not in qwen35
+    assert "dense GPU-resident Qwen blocks" in qwen35
 
 
 def test_quantized_tp_weights_and_workspaces_follow_the_shard_device():

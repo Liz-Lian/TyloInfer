@@ -1,5 +1,5 @@
 #include "vision.h"
-#include "core/axial_patch_vision.h"
+#include "models/common/axial_patch_vision_ops.h"
 #include "mfq_paged_prefix_cache.h"
 
 namespace mfq::cuda::deepseek_v41_runtime {

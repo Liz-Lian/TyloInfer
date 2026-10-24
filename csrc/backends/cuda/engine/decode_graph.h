@@ -3,7 +3,7 @@
 #include "backend.h"
 #include "cuda_model_plan.h"
 #include "tyloinfer/runtime.h"
-#include "block.h"
+#include "models/common/block.h"
 #include "cuda_execution.h"
 
 #include <cstdint>

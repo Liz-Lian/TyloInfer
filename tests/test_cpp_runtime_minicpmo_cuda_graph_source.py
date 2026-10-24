@@ -23,22 +23,22 @@ MODEL_METADATA_SOURCE = "\n".join(
 SOURCE = "\n".join(
     path.read_text(encoding="utf-8")
     for path in (
-        CUDA_ROOT / "core" / "causal_model.h",
-        CUDA_ROOT / "core" / "causal_model.cpp",
+        CUDA_ROOT / "models" / "common" / "causal_model_ops.h",
+        CUDA_ROOT / "models" / "common" / "causal_model_ops.cpp",
         CUDA_ROOT / "storage" / "session_codec.h",
         CUDA_ROOT / "storage" / "transformer_loader.h",
         CUDA_ROOT / "storage" / "transformer_loader.cpp",
-        CUDA_ROOT / "core" / "full_block.h",
-        CUDA_ROOT / "core" / "full_block.cpp",
-        CUDA_ROOT / "core" / "kv_cache.h",
-        CUDA_ROOT / "core" / "kv_cache.cpp",
+        CUDA_ROOT / "models" / "common" / "full_block.h",
+        CUDA_ROOT / "models" / "common" / "full_block.cpp",
+        CUDA_ROOT / "storage" / "state" / "kv_cache.h",
+        CUDA_ROOT / "storage" / "state" / "kv_cache.cpp",
         CUDA_ROOT / "include" / "mfq_cuda_attention_ops.h",
         CUDA_ROOT / "include" / "mfq_cuda_cache_ops.h",
         CUDA_ROOT / "include" / "mfq_cuda_norm_ops.h",
         CUDA_ROOT / "include" / "mfq_cuda_sampling_ops.h",
         CUDA_ROOT / "ops" / "common" / "include" / "cuda_execution.h",
         CUDA_ROOT / "ops" / "common" / "cuda_execution.cpp",
-        CUDA_ROOT / "core" / "decode_graph.h",
+        CUDA_ROOT / "engine" / "decode_graph.h",
     )
 ) + "\n" + BACKEND_CHECKS + "\n" + CUDA_RUNTIME + "\n" + (
     CUDA_ROOT / "commands" / "diagnostics.cpp"

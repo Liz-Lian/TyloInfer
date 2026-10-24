@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/vision_ops.h"
+#include "models/common/vision_ops.h"
 #include "models/common/axial_patch_vision.h"
 #include "step_sequence.h"
 

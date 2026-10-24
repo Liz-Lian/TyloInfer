@@ -12,7 +12,7 @@
 #include "storage/moe_expert_cache_internal.h"
 #include "storage/weight_loader.h"
 #include "moe.h"
-#include "core/rope.h"
+#include "ops/common/include/rope.h"
 #include "tyloinfer/moe_dispatch_plan.h"
 #include "tyloinfer/runtime.h"
 #include <filesystem>

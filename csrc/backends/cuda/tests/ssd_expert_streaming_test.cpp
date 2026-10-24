@@ -10,7 +10,7 @@
 #include "tyloinfer/runtime.h"
 #include "nint_prefill_cache.h"
 #include "mfe_ffn_runtime.h"
-#include "core/ffn.h"
+#include "models/common/ffn.h"
 #include "mfq_cuda_activation_ops.h"
 #include "format.h"
 #include <array>

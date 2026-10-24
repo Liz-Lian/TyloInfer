@@ -1,4 +1,4 @@
-#include "core/axial_patch_vision.h"
+#include "models/common/axial_patch_vision_ops.h"
 
 #include "tyloinfer/model_source.h"
 

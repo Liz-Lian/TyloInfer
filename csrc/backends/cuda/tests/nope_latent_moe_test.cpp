@@ -3,8 +3,8 @@
 // experts. All references are double-precision CPU implementations.
 
 #include "cuda_execution.h"
-#include "core/ffn.h"
-#include "core/full_block.h"
+#include "models/common/ffn.h"
+#include "models/common/full_block.h"
 #include "mfq_cuda_moe_ops.h"
 #include "backend.h"
 

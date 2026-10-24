@@ -11,7 +11,7 @@
 #include "models/qwen35/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
-#include "core/full_block.h"
+#include "models/common/full_block.h"
 #include "cuda_sampling.h"
 #include "storage/text_session_cache.h"
 #include "mfq_cuda_sampling_ops.h"

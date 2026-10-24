@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/block.h"
-#include "core/vision_block.h"
+#include "models/common/block.h"
+#include "models/common/vision_block_ops.h"
 #include "models/nemotron_h/vision.h"
 #include "storage/weight_loader.h"
 
