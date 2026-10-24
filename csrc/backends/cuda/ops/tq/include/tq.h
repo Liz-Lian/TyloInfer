@@ -1,13 +1,11 @@
 #pragma once
 #include "execution/execution.h"
-#include "formats/tq_rows.h"
+#include "formats/tq_table.h"
 #include "tyloinfer/kernels/cuda/tq_ops.h"
-#include "execution/layer_inputs.h"
 #include <array>
 
-namespace mfq { class ModelSource; }
-
 class TqGemmResources;
+std::shared_ptr<TqGemmResources> tq_gemm_resources(int device);
 struct TqWeight {
     // Keep execution streams alive until image storage has fenced its users.
     std::shared_ptr<TqGemmResources> gemm;
@@ -18,11 +16,6 @@ struct TqWeight {
     mfq_tensor_backend::Tensor forward_groupwise(mfq_tensor_backend::Tensor,std::int64_t groups)const;
     mfq_tensor_backend::Tensor embedding(mfq_tensor_backend::Tensor)const;
 };
-TqWeight to_device_tq(const std::vector<std::uint8_t>&,std::int64_t input_columns,int device,bool cuda=true);
-std::array<std::int64_t,2> tq_projection_shape(const mfq::ModelSource&,const std::string&);
-TqWeight load_tq_weight(const mfq::ModelSource&,const std::string&,int device,bool cuda=true);
-bool is_tq_row_table(const mfq::ModelSource&,const std::string&);
-
 // Device row plan only; compressed weights retain their original storage.
 class TqProjectionGroup {
     std::vector<TqWeight> weights_;
@@ -41,40 +34,16 @@ public:
     mfq_tensor_backend::Tensor swiglu(mfq_tensor_backend::Tensor)const;
 };
 
-// Table rows remain in their source. Only requested rows enter device memory.
-class TqRowTable {
-    std::vector<std::shared_ptr<mfq::TqRows>> segments_;
-    std::vector<std::uint64_t> ends_;
-    std::int64_t columns_=0;
-    std::uint64_t storage_bytes_=0;
-public:
-    TqRowTable(const mfq::ModelSource&,const std::string&);
-    std::uint64_t rows()const noexcept{return ends_.back();}
-    std::int64_t width()const noexcept{return columns_;}
-    std::uint64_t storage_bytes()const noexcept{return storage_bytes_;}
-    std::size_t row_image_bytes_bound()const;
-    std::vector<std::uint8_t> slice_rows(std::uint64_t begin,std::uint64_t end)const;
-    mfq_tensor_backend::Tensor lookup(const std::int64_t*,std::size_t,const mfq_tensor_backend::Device&)const;
-    mfq_tensor_backend::Tensor lookup(mfq_tensor_backend::Tensor)const;
-};
-mfq_tensor_backend::Tensor lookup_tq_shards(const std::vector<std::shared_ptr<TqRowTable>>&,
-    std::int64_t rows_per_shard,const std::vector<std::int64_t>& ids,
-    const mfq_tensor_backend::Device&);
-std::shared_ptr<RowStage> make_tq_row_stage(const std::vector<std::shared_ptr<TqRowTable>>&,
-    std::int64_t rows_per_shard,const std::vector<std::int64_t>& shape,
-    const mfq_tensor_backend::Device&);
-
 struct TqRoutedWeight {
-    std::shared_ptr<TqRowTable> table;
+    std::shared_ptr<mfq::TqTable> table;
     std::shared_ptr<TqExpertCache> cache;
     std::uint64_t source_id=0;
     std::int64_t experts=0,out=0,input=0;
-    TqRoutedWeight(CudaExecutionContext&,const mfq::ModelSource&,const std::string&,
+    TqRoutedWeight(std::shared_ptr<mfq::TqTable>,
+                   std::shared_ptr<TqExpertCache>,std::uint64_t source_id,
                    std::int64_t experts,std::int64_t out,std::int64_t input);
     mfq_tensor_backend::Tensor forward(mfq_tensor_backend::Tensor,mfq_tensor_backend::Tensor)const;
 };
-std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(CudaExecutionContext&,
-    const mfq::ModelSource&,const std::string&);
 bool prepare_tq_graph_pool(const std::shared_ptr<TqExpertCache>&);
 bool tq_graph_supports_tokens(std::int64_t tokens)noexcept;
 std::size_t tq_expert_cache_budget_bytes(const std::shared_ptr<TqExpertCache>&);

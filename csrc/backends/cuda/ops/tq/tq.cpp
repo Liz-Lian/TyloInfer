@@ -1,8 +1,7 @@
 #include "env.h"
 #include "tq.h"
-#include "model_source/model_source.h"
+#include "storage/weights/tq/load.h"
 #include "weight_memory.h"
-#include "nlohmann/json.hpp"
 #include "storage/weights/moe/expert_cache.h"
 #include "quant_linear.h"
 #include "moe.h"
@@ -112,7 +111,6 @@ public:
     }
 };
 
-namespace {
 std::shared_ptr<TqGemmResources> tq_gemm_resources(int device) {
     static std::mutex mutex;
     static std::unordered_map<int,std::weak_ptr<TqGemmResources>> pools;
@@ -121,6 +119,8 @@ std::shared_ptr<TqGemmResources> tq_gemm_resources(int device) {
     auto result=std::make_shared<TqGemmResources>(device);pools[device]=result;
     return result;
 }
+
+namespace {
 int dtype(tb::ScalarType type) {
     if(type==tb::kFloat16)return 0;
     if(type==tb::kBFloat16)return 1;
@@ -192,145 +192,6 @@ tb::Tensor projection_workspace(const TqWeight& weight,int tokens,tb::ScalarType
             static_cast<unsigned long long>(bytes));
     return tb::empty({static_cast<std::int64_t>(bytes)},weight.image.options().dtype(tb::kUInt8));
 }
-std::vector<std::int64_t> logical_shape(const mfq::ModelSource& source,const std::string& name) {
-    const auto* record=source.find_tensor(name);
-    if(record && record->dtype!="TQ")throw std::invalid_argument("expected TQ tensor: "+name);
-    std::vector<std::int64_t> shape;
-    bool found=false;
-    for(const auto* key:{"tq_shapes","tensor_shapes"}) {
-        const auto metadata=source.metadata().find(key);
-        if(metadata==source.metadata().end())continue;
-        const auto shapes=nlohmann::json::parse(metadata->second);
-        if(!shapes.is_object())throw std::invalid_argument("invalid TQ shape metadata");
-        if(shapes.contains(name)) {
-            shape=shapes.at(name).get<std::vector<std::int64_t>>();found=true;break;
-        }
-    }
-    if(!found && record && record->shape)shape=*record->shape;
-    if(shape.empty() && record)
-        return mfq::tq_tensor_shape(record->nbytes,source.tensor_reader(name));
-    if(shape.size()!=2 && shape.size()!=3)
-        throw std::invalid_argument("TQ logical tensor shape must have rank 2 or 3: "+name);
-    std::uint64_t count=1;
-    for(const auto dimension:shape) {
-        if(dimension<1 || count>UINT64_MAX/std::uint64_t(dimension))
-            throw std::invalid_argument("invalid TQ logical tensor shape: "+name);
-        count*=dimension;
-    }
-    return shape;
-}
-std::vector<std::string> row_parts(const mfq::ModelSource& source,const std::string& name) {
-    for(const auto* key:{"tq_row_shards","tq.segments"}) {
-        const auto entry=source.metadata().find(key);
-        if(entry==source.metadata().end())continue;
-        const auto tables=nlohmann::json::parse(entry->second);
-        if(!tables.is_object())throw std::invalid_argument("invalid TQ row-shard manifest");
-        if(!tables.contains(name))continue;
-        if(std::string_view(key)=="tq_row_shards" && source.find_tensor(name))
-            throw std::invalid_argument("ambiguous TQ row table: "+name);
-        const auto names=tables.at(name).get<std::vector<std::string>>();
-        if(names.empty())throw std::invalid_argument("empty TQ row table: "+name);
-        return names;
-    }
-    return {name};
-}
-std::vector<std::uint8_t> join_rows(const std::vector<std::vector<std::uint8_t>>& blobs) {
-    if(blobs.empty())throw std::invalid_argument("empty TQ row selection");
-    const mfq::TqLayout first(blobs[0].data(),blobs[0].size());
-    std::uint64_t rows=0,packed_bytes=0;
-    for(const auto& blob:blobs) {
-        const mfq::TqLayout layout(blob.data(),blob.size());
-        if(layout.width!=first.width || layout.columns!=first.columns || layout.gs!=first.gs)
-            throw std::invalid_argument("incompatible TQ row segments");
-        if(first.columns && std::memcmp(blobs[0].data()+first.scales,blob.data()+layout.scales,first.scale_bytes))
-            throw std::invalid_argument("TQ row segments have different column scales");
-        rows+=layout.rows;packed_bytes+=layout.packed_bytes;
-    }
-    if(rows>UINT32_MAX || packed_bytes>UINT32_MAX)throw std::overflow_error("selected TQ rows exceed RTRELL05 limits");
-    const auto scale_bytes=first.columns?first.scale_bytes:(rows*first.groups+1)/2;
-    const auto scale_offset=64+rows*8,packed_offset=scale_offset+scale_bytes;
-    std::vector<std::uint8_t> result(packed_offset+packed_bytes);
-    std::memcpy(result.data(),blobs[0].data(),64);
-    mfq::TqLayout::integer(result.data()+12,rows,4);
-    mfq::TqLayout::integer(result.data()+28,packed_bytes,4);
-    std::uint64_t row_offset=0,byte_offset=0;
-    if(first.columns)std::memcpy(result.data()+scale_offset,blobs[0].data()+first.scales,scale_bytes);
-    for(const auto& blob:blobs) {
-        const mfq::TqLayout m(blob.data(),blob.size());
-        for(std::size_t row=0;row<m.rows;++row) {
-            auto descriptor=mfq::TqLayout::integer(blob.data()+64+row*8,8);
-            descriptor+=byte_offset/4;
-            mfq::TqLayout::integer(result.data()+64+(row_offset+row)*8,descriptor,8);
-        }
-        if(!m.columns)for(std::size_t i=0;i<std::size_t(m.rows)*m.groups;++i) {
-            const auto selector=(blob[m.scales+i/2]>>((i&1)*4))&15;
-            const auto index=row_offset*m.groups+i;
-            result[scale_offset+index/2]|=selector<<((index&1)*4);
-        }
-        std::memcpy(result.data()+packed_offset+byte_offset,blob.data()+m.packed,m.packed_bytes);
-        row_offset+=m.rows;byte_offset+=m.packed_bytes;
-    }
-    return result;
-}
-}
-
-namespace {
-std::vector<std::uint8_t> tq_image(const std::vector<std::uint8_t>& blob,const mfq::TqLayout& m) {
-    // The serialized scale stream can end at an odd byte. Align the packed
-    // word stream in one compressed image instead of uploading fields apart.
-    const auto words_offset=(m.packed+3)&~std::size_t(3);
-    const auto relative_offset=words_offset+m.packed_bytes;
-    std::vector<std::uint8_t> image(relative_offset+32);
-    std::memcpy(image.data(),blob.data(),m.packed);
-    std::memcpy(image.data()+words_offset,blob.data()+m.packed,m.packed_bytes);
-    // Exact FP16 RELATIVE table from the TQ format, independent of device.
-    constexpr std::uint16_t relative[]{0x3400,0x34d0,0x35ca,0x36f7,0x3830,0x390a,0x3a10,0x3b4b,
-        0x3c63,0x3d47,0x3e59,0x3fa4,0x4098,0x4187,0x42a6,0x4400};
-    std::memcpy(image.data()+relative_offset,relative,sizeof(relative));
-    return image;
-}
-TqWeight tq_view(tb::Tensor image,const mfq::TqLayout& m,std::int64_t columns) {
-    if(columns<1 || columns>m.width || m.rows>INT_MAX || m.width>INT_MAX)
-        throw std::invalid_argument("invalid TQ CUDA logical shape");
-    const auto words_offset=(m.packed+3)&~std::size_t(3),relative_offset=words_offset+m.packed_bytes;
-    TqWeight result;result.image=std::move(image);
-    if(result.image.is_cuda())result.gemm=tq_gemm_resources(result.image.get_device());
-    auto* data=result.image.data_ptr<std::uint8_t>();
-    int gslog=0;for(auto gs=m.gs;gs>1;gs>>=1)++gslog;
-    result.view={reinterpret_cast<const std::uint32_t*>(data+words_offset),
-        reinterpret_cast<const std::uint64_t*>(data+64),data+m.scales,data+relative_offset,nullptr,
-        static_cast<int>(m.rows),static_cast<int>(m.width),static_cast<int>(columns),gslog,int(m.columns)};
-    result.out=m.rows;result.neuron_len=columns;
-    return result;
-}
-}
-TqWeight to_device_tq(const std::vector<std::uint8_t>& blob,std::int64_t columns,int device,bool cuda) {
-    const mfq::TqLayout m(blob.data(),blob.size());
-    const auto image=tq_image(blob,m);
-    const MfqCudaGuard guard(device);
-    auto storage=tb::from_blob(const_cast<std::uint8_t*>(image.data()),{static_cast<std::int64_t>(image.size())},
-        tb::TensorOptions().dtype(tb::kUInt8)).clone();
-    if(cuda)storage=storage.to(tb::Device(tb::kCUDA,device),false,false).contiguous();
-    return tq_view(std::move(storage),m,columns);
-}
-
-std::array<std::int64_t,2> tq_projection_shape(const mfq::ModelSource& source,const std::string& name) {
-    const auto shape=logical_shape(source,name);
-    if(shape.size()!=2)throw std::invalid_argument("ordinary TQ projection must be a matrix: "+name);
-    const auto* record=source.find_tensor(name);
-    if(!record)throw std::invalid_argument("missing TQ projection: "+name);
-    (void)mfq::tq_tensor_shape(record->nbytes,source.tensor_reader(name),shape);
-    return {shape[0],shape[1]};
-}
-
-TqWeight load_tq_weight(const mfq::ModelSource& source,const std::string& name,int device,bool cuda) {
-    const auto shape=tq_projection_shape(source,name);
-    auto bytes=source.read(name);
-    std::vector<std::uint8_t> blob(bytes.size());
-    std::memcpy(blob.data(),bytes.data(),bytes.size());
-    auto result=to_device_tq(blob,shape[1],device,cuda);
-    if(result.out!=shape[0])throw std::invalid_argument("TQ projection output shape differs: "+name);
-    return result;
 }
 
 namespace {
@@ -537,315 +398,6 @@ tb::Tensor TqProjectionGroup::swiglu(tb::Tensor input)const {
             count,dtype(input.scalar_type()),mfq_current_cuda_stream()));
     }
     return output;
-}
-
-bool is_tq_row_table(const mfq::ModelSource& source,const std::string& name) {
-    const auto* record=source.find_tensor(name);
-    for(const auto* key:{"tq_row_shards","tq.segments"}) {
-        const auto entry=source.metadata().find(key);
-        if(entry!=source.metadata().end()) {
-            const auto tables=nlohmann::json::parse(entry->second);
-            if(!tables.is_object())throw std::invalid_argument("invalid TQ row-shard manifest");
-            if(tables.contains(name)) {
-                if(std::string_view(key)=="tq_row_shards" && record)
-                    throw std::invalid_argument("ambiguous TQ row table: "+name);
-                return true;
-            }
-        }
-    }
-    return record && record->dtype=="TQ";
-}
-TqRowTable::TqRowTable(const mfq::ModelSource& source,const std::string& name) {
-    const auto shape=logical_shape(source,name);
-    columns_=shape.back();
-    const auto names=row_parts(source,name);
-    std::unordered_set<std::string> unique;
-    std::uint64_t end=0;
-    for(const auto& part:names) {
-        const auto* record=source.find_tensor(part);
-        if(!unique.insert(part).second || !record || record->dtype!="TQ")
-            throw std::invalid_argument("invalid TQ row segment: "+part);
-        auto segments=mfq::tq_row_segments(record->nbytes,source.tensor_reader(part),columns_);
-        if(storage_bytes_>UINT64_MAX-record->nbytes)throw std::overflow_error("TQ row table size exceeds bounds");
-        storage_bytes_+=record->nbytes;
-        for(auto& rows:segments) {
-            if(end>UINT64_MAX-rows->layout().rows)throw std::overflow_error("TQ row count exceeds bounds");
-            end+=rows->layout().rows;ends_.push_back(end);segments_.push_back(std::move(rows));
-        }
-    }
-    std::uint64_t expected=1;
-    for(std::size_t i=0;i+1<shape.size();++i)expected*=shape[i];
-    if(end!=expected)throw std::invalid_argument("TQ table row count differs");
-}
-std::vector<std::uint8_t> TqRowTable::slice_rows(std::uint64_t begin,std::uint64_t end)const {
-    if(begin>=end || end>rows())throw std::out_of_range("invalid TQ table row range");
-    std::uint64_t start=0;
-    std::vector<std::vector<std::uint8_t>> pieces;
-    for(std::size_t i=0;i<segments_.size();++i) {
-        const auto a=std::max(begin,start),b=std::min(end,ends_[i]);
-        if(a<b)pieces.push_back(segments_[i]->slice_rows(a-start,b-start));
-        start=ends_[i];if(start>=end)break;
-    }
-    if(pieces.size()==1)return std::move(pieces[0]);
-    return join_rows(pieces);
-}
-
-std::size_t TqRowTable::row_image_bytes_bound()const {
-    std::size_t bytes=0;
-    for(const auto& segment:segments_) {
-        const auto& m=segment->layout();
-        if(m.width>INT_MAX)throw std::overflow_error("TQ row stage width exceeds CUDA limits");
-        const auto scales=m.columns?m.scale_bytes:(m.groups+1)/2;
-        // One descriptor, aligned packed words, up to8 bits/weight, relative table.
-        bytes=std::max(bytes,((64+8+scales+3)&~std::size_t(3))+m.width+32);
-    }
-    return (bytes+7)&~std::size_t(7);
-}
-tb::Tensor TqRowTable::lookup(const std::int64_t* ids,std::size_t count,const tb::Device& device)const {
-    if(!device.is_cuda() || !count || !ids)throw std::invalid_argument("TQ table lookup requires CUDA and row IDs");
-    std::vector<std::int64_t> selected(ids,ids+count);
-    std::sort(selected.begin(),selected.end());selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
-    if(selected.front()<0 || std::uint64_t(selected.back())>=rows())throw std::out_of_range("TQ table lookup row is out of bounds");
-    // Shared table IDs occur across tokens and heads. Read each compressed
-    // row once, coalesce adjacent rows, then restore the caller's order on GPU.
-    // Sorting also groups metadata reads without fetching intervening weights.
-    const MfqCudaGuard guard(device);
-    const auto gather=[&](std::size_t segment,std::size_t begin,std::size_t end) {
-        const auto start=segment?ends_[segment-1]:0;
-        std::vector<std::vector<std::uint8_t>> pieces;
-        for(auto run=begin;run<end;) {
-            auto next=run+1;
-            while(next<end && selected[next]==selected[next-1]+1)++next;
-            pieces.push_back(segments_[segment]->slice_rows(selected[run]-start,selected[next-1]+1-start));
-            run=next;
-        }
-        return to_device_tq(join_rows(pieces),columns_,device.index);
-    };
-    const auto first=std::upper_bound(ends_.begin(),ends_.end(),selected.front())-ends_.begin();
-    const auto last=std::upper_bound(ends_.begin(),ends_.end(),selected.back())-ends_.begin();
-    if(first==last) {
-        // Preserve the single-segment path: decode duplicates directly in
-        // caller order, without an intermediate table or gather kernel.
-        const auto weight=gather(first,0,selected.size());
-        if(selected.size()!=count || !std::equal(selected.begin(),selected.end(),ids)) {
-            std::vector<std::int64_t> inverse;inverse.reserve(count);
-            for(std::size_t i=0;i<count;++i)
-                inverse.push_back(std::lower_bound(selected.begin(),selected.end(),ids[i])-selected.begin());
-            const auto index=tb::from_blob(inverse.data(),{static_cast<std::int64_t>(count)},tb::TensorOptions().dtype(tb::kInt64))
-                .clone().to(device,false,false);
-            return weight.embedding(index);
-        }
-        if(count>65535)return weight.embedding(tb::arange(count,weight.image.options().dtype(tb::kInt64)));
-        auto result=tb::empty({static_cast<std::int64_t>(count),columns_},weight.image.options().dtype(tb::kFloat16));
-        status(mfq_tq_embedding(weight.view,nullptr,static_cast<int>(count),result.data_ptr(),0,mfq_current_cuda_stream()));
-        return result;
-    }
-    auto result=tb::empty({static_cast<std::int64_t>(selected.size()),columns_},
-        tb::TensorOptions().device(device).dtype(tb::kFloat16));
-    std::size_t begin=0;
-    // Decode each physical segment separately: its padding, group size and
-    // column scales need not match the other segments of this logical table.
-    for(std::size_t segment=0;segment<segments_.size() && begin<selected.size();++segment) {
-        const auto end=std::lower_bound(selected.begin()+begin,selected.end(),ends_[segment])-selected.begin();
-        if(std::size_t(end)>begin) {
-            const auto weight=gather(segment,begin,end);
-            const auto count=end-begin;
-            if(count>65535) {
-                const auto index=tb::arange(count,weight.image.options().dtype(tb::kInt64));
-                result.slice(0,begin,end).copy_(weight.embedding(index));
-            } else status(mfq_tq_embedding(weight.view,nullptr,static_cast<int>(count),
-                static_cast<std::uint8_t*>(result.data_ptr())+begin*columns_*sizeof(std::uint16_t),
-                0,mfq_current_cuda_stream()));
-        }
-        begin=end;
-    }
-    if(selected.size()!=count || !std::equal(selected.begin(),selected.end(),ids)) {
-        std::vector<std::int64_t> inverse;inverse.reserve(count);
-        for(std::size_t i=0;i<count;++i)inverse.push_back(std::lower_bound(selected.begin(),selected.end(),ids[i])-selected.begin());
-        const auto index=tb::from_blob(inverse.data(),{static_cast<std::int64_t>(count)},tb::TensorOptions().dtype(tb::kInt64))
-            .clone().to(device,false,false);
-        return result.index_select(0,index);
-    }
-    return result;
-}
-tb::Tensor TqRowTable::lookup(tb::Tensor ids)const {
-    auto host=ids.contiguous().cpu().to(tb::kInt64);
-    auto shape=ids.sizes().vec();shape.push_back(columns_);
-    if(!ids.numel())return tb::empty(shape,ids.options().dtype(tb::kFloat16));
-    return lookup(host.data_ptr<std::int64_t>(),host.numel(),ids.device()).reshape(shape);
-}
-
-tb::Tensor lookup_tq_shards(const std::vector<std::shared_ptr<TqRowTable>>& shards,
-        std::int64_t rows_per_shard,const std::vector<std::int64_t>& ids,const tb::Device& device) {
-    if(shards.empty() || !shards.front() || rows_per_shard<1 || !device.is_cuda())
-        throw std::invalid_argument("invalid TQ table shard geometry");
-    const auto columns=shards.front()->width();
-    for(const auto& table:shards)if(!table || table->width()!=columns)
-        throw std::invalid_argument("TQ table shard widths differ");
-    static std::atomic<bool> reported{false};
-    if(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE") && !reported.exchange(true))
-        std::fprintf(stderr,"tq_table_shards_dispatch enabled=1 shards=%zu lookups=%zu width=%lld CPU_ids=1\n",
-            shards.size(),ids.size(),static_cast<long long>(columns));
-    const MfqCudaGuard guard(device);
-    auto result=tb::empty({static_cast<std::int64_t>(ids.size()),columns},
-        tb::TensorOptions().device(device).dtype(tb::kFloat16));
-    std::vector<std::vector<std::int64_t>> local(shards.size()),positions(shards.size());
-    for(std::size_t i=0;i<ids.size();++i) {
-        if(ids[i]<0 || std::uint64_t(ids[i]/rows_per_shard)>=shards.size())
-            throw std::out_of_range("TQ embedding shard ID is out of bounds");
-        const auto shard=ids[i]/rows_per_shard;
-        local[shard].push_back(ids[i]%rows_per_shard);positions[shard].push_back(static_cast<std::int64_t>(i));
-    }
-    // Hashing already produced CPU IDs. Keep shard selection on CPU, read
-    // only that shard's requested rows, then scatter once on GPU. There is no
-    // masked whole-batch lookup or GPU->CPU round trip for each shard.
-    for(std::size_t shard=0;shard<shards.size();++shard)if(!local[shard].empty()) {
-        const auto values=shards[shard]->lookup(local[shard].data(),local[shard].size(),device);
-        const auto index=tb::from_blob(positions[shard].data(),{static_cast<std::int64_t>(positions[shard].size())},
-            tb::TensorOptions().dtype(tb::kInt64)).clone().to(device,false,false);
-        result.index_copy_(0,index,values);
-    }
-    return result;
-}
-
-namespace {
-class TqRowStage final:public RowStage {
-    std::vector<std::shared_ptr<TqRowTable>> tables_;
-    std::vector<std::int64_t> shape_;
-    std::int64_t rows_per_shard_,count_=1,columns_=0;
-    std::size_t image_stride_=0,images_offset_=0,bytes_=0;
-    tb::Device device_;
-    std::unique_ptr<mfq::cuda::HostBuffer> host_;
-    tb::Tensor packet_,output_;
-    std::uint8_t* packet_address_=nullptr;
-    bool mapped_=false,charged_=false;
-    std::vector<MfqCudaStream> streams_;
-    void retain_stream() {
-        const auto stream=mfq_get_current_cuda_stream(device_.index);
-        if(std::none_of(streams_.begin(),streams_.end(),[&](const auto& s){return s.stream()==stream.stream();}))
-            streams_.push_back(stream);
-    }
-    TrellisProjectionView pack_row(const std::vector<std::uint8_t>& wire,std::size_t slot) {
-        const mfq::TqLayout layout(wire.data(),wire.size());
-        const auto image=tq_image(wire,layout);
-        if(layout.rows!=1 || columns_>layout.width || image.size()>image_stride_)
-            throw std::invalid_argument("TQ stage row exceeds its prepared layout");
-        const auto offset=images_offset_+slot*image_stride_;
-        std::memcpy(static_cast<std::uint8_t*>(host_->data())+offset,image.data(),image.size());
-        auto* address=packet_address_+offset;
-        const auto words=(layout.packed+3)&~std::size_t(3);
-        int gslog=0;for(auto gs=layout.gs;gs>1;gs>>=1)++gslog;
-        return {reinterpret_cast<const std::uint32_t*>(address+words),
-            reinterpret_cast<const std::uint64_t*>(address+64),address+layout.scales,
-            address+words+layout.packed_bytes,nullptr,1,int(layout.width),int(columns_),gslog,int(layout.columns)};
-    }
-public:
-    TqRowStage(std::vector<std::shared_ptr<TqRowTable>> tables,std::int64_t rows_per_shard,
-            std::vector<std::int64_t> shape,const tb::Device& device)
-        :tables_(std::move(tables)),shape_(std::move(shape)),rows_per_shard_(rows_per_shard),device_(device) {
-        if(tables_.empty() || !tables_[0] || rows_per_shard_<1 || !device.is_cuda())
-            throw std::invalid_argument("invalid TQ row stage geometry");
-        for(const auto size:shape_) {
-            if(size<1 || count_>INT_MAX/size)throw std::overflow_error("TQ row stage shape exceeds bounds");
-            count_*=size;
-        }
-        columns_=tables_[0]->width();
-        for(const auto& table:tables_) {
-            if(!table || table->width()!=columns_)throw std::invalid_argument("TQ row stage table widths differ");
-            image_stride_=std::max(image_stride_,table->row_image_bytes_bound());
-        }
-        if(columns_>INT_MAX || std::uint64_t(count_)>(SIZE_MAX-7)/sizeof(TrellisProjectionView))
-            throw std::overflow_error("TQ row stage metadata exceeds bounds");
-        images_offset_=(std::size_t(count_)*sizeof(TrellisProjectionView)+7)&~std::size_t(7);
-        if(std::uint64_t(count_)>(SIZE_MAX-images_offset_)/image_stride_)
-            throw std::overflow_error("TQ row stage packet exceeds bounds");
-        bytes_=images_offset_+std::size_t(count_)*image_stride_;
-        if(bytes_>INT64_MAX)throw std::overflow_error("TQ row stage packet exceeds tensor limits");
-        const MfqCudaGuard guard(device);
-        retain_stream();
-        int can_map=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&can_map,cudaDevAttrCanMapHostMemory,device.index));
-        const auto* setting=mfq::cuda::env_lookup("TYLOINFER_PLE_MAPPED_ROWS");
-        mapped_=can_map && (setting?setting[0]=='1':bytes_<=16u*1024);
-        host_=std::make_unique<mfq::cuda::HostBuffer>(bytes_,mapped_);
-        if(mapped_) {
-            void* address=nullptr;
-            const auto error=cudaHostGetDevicePointer(&address,host_->data(),0);
-            if(error==cudaErrorNotSupported || error==cudaErrorInvalidValue) {
-                (void)cudaGetLastError();mapped_=false;
-            }else {TYLOINFER_CUDA_CHECK(error);packet_address_=static_cast<std::uint8_t*>(address);}
-        }
-        const auto options=tb::TensorOptions().device(device).dtype(tb::kFloat16);
-        if(!mapped_) {
-            packet_=tb::empty({static_cast<std::int64_t>(bytes_)},options.dtype(tb::kUInt8));
-            packet_address_=packet_.data_ptr<std::uint8_t>();
-        }
-        auto output_shape=shape_;output_shape.push_back(columns_);
-        output_=tb::zeros(output_shape,options);
-        std::memset(host_->data(),0,bytes_);
-        // Valid zero-anchor rows allow graph preparation without source reads
-        // or model-state changes. Actual upload publishes the requested rows.
-        const auto zero_width=(std::uint64_t(columns_)+255)&~std::uint64_t(255);
-        if(zero_width>INT_MAX)throw std::overflow_error("TQ row stage padding exceeds CUDA limits");
-        std::vector<std::uint8_t> zero(72+zero_width/32+zero_width/8);
-        std::memcpy(zero.data(),"RTRELL05",8);
-        mfq::TqLayout::integer(zero.data()+8,5,4);
-        mfq::TqLayout::integer(zero.data()+12,1,4);
-        mfq::TqLayout::integer(zero.data()+16,zero_width,4);
-        mfq::TqLayout::integer(zero.data()+24,16,4);
-        mfq::TqLayout::integer(zero.data()+28,zero_width/8,4);
-        const auto view=pack_row(zero,0);
-        auto* views=static_cast<TrellisProjectionView*>(host_->data());
-        std::fill_n(views,count_,view);
-        if(!mapped_)TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(packet_address_,host_->data(),bytes_,cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
-        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
-        mfq::cuda::charge_tensor_host_bytes(bytes_);charged_=true;
-    }
-    ~TqRowStage()override {
-        // The pinned packet is not tensor storage. Fence its I/O and target
-        // consumers explicitly before freeing mapped memory or DMA sources.
-        int previous=0;const bool restore=cudaGetDevice(&previous)==cudaSuccess;
-        (void)cudaSetDevice(device_.index);
-        for(const auto& stream:streams_)(void)cudaStreamSynchronize(stream.stream());
-        output_={};packet_={};
-        if(charged_)mfq::cuda::tensor_host_bytes.fetch_sub(bytes_);
-        if(restore)(void)cudaSetDevice(previous);
-    }
-    tb::Tensor output()const override{return output_;}
-    bool mapped_rows()const override{return mapped_;}
-    void upload(const std::vector<std::int64_t>& ids,const std::vector<std::int64_t>& shape)override {
-        if(shape!=shape_ || ids.size()!=std::size_t(count_))throw std::invalid_argument("TQ stage upload shape changed");
-        const MfqCudaGuard guard(device_);
-        retain_stream();
-        std::unordered_map<std::int64_t,TrellisProjectionView> unique;
-        std::vector<TrellisProjectionView> views;views.reserve(ids.size());
-        for(const auto id:ids) {
-            if(id<0 || std::uint64_t(id/rows_per_shard_)>=tables_.size())
-                throw std::out_of_range("TQ stage shard ID is out of bounds");
-            const auto [position,inserted]=unique.try_emplace(id);
-            if(inserted) {
-                const auto shard=id/rows_per_shard_,row=id%rows_per_shard_;
-                position->second=pack_row(tables_[shard]->slice_rows(row,row+1),unique.size()-1);
-            }
-            views.push_back(position->second);
-        }
-        std::memcpy(host_->data(),views.data(),views.size()*sizeof(views[0]));
-        if(!mapped_) {
-            mfq_cuda_record_stream(packet_,mfq_get_current_cuda_stream(device_.index));
-            TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(packet_address_,host_->data(),bytes_,cudaMemcpyHostToDevice,mfq_current_cuda_stream()));
-        }
-    }
-    void decode()override {
-        const MfqCudaGuard guard(device_);retain_stream();
-        mfq_cuda_record_stream(output_,mfq_get_current_cuda_stream(device_.index));
-        if(packet_.defined())mfq_cuda_record_stream(packet_,mfq_get_current_cuda_stream(device_.index));
-        status(mfq_tq_embedding_rows(reinterpret_cast<const TrellisProjectionView*>(packet_address_),
-            int(count_),int(columns_),output_.data_ptr(),0,mfq_current_cuda_stream()));
-    }
-};
-}
-std::shared_ptr<RowStage> make_tq_row_stage(const std::vector<std::shared_ptr<TqRowTable>>& tables,
-        std::int64_t rows_per_shard,const std::vector<std::int64_t>& shape,const tb::Device& device) {
-    return std::make_shared<TqRowStage>(tables,rows_per_shard,shape,device);
 }
 
 namespace {
@@ -1209,7 +761,7 @@ public:
         return found->views;
     }
     std::vector<TqWeight> get_rows(std::uint64_t source,const std::int64_t* ids,std::size_t count,
-            const TqRowTable& table,std::int64_t out,int device) {
+            const mfq::TqTable& table,std::int64_t out,int device) {
         const MfqCudaGuard device_guard(device);
         std::lock_guard<std::mutex> guard(mutex_);
         const auto resources=tq_gemm_resources(device);
@@ -1326,12 +878,7 @@ std::vector<std::pair<std::string,double>> tq_expert_memory_metrics(const std::s
     return cache?cache->memory_metrics():std::vector<std::pair<std::string,double>>{};
 }
 
-TqRoutedWeight::TqRoutedWeight(CudaExecutionContext& execution,const mfq::ModelSource& source,
-        const std::string& name,std::int64_t count,std::int64_t outputs,std::int64_t columns)
-    :table(std::make_shared<TqRowTable>(source,name)),experts(count),out(outputs),input(columns) {
-    if(experts<1 || experts>UINT32_MAX || out<1 || input<1 ||
-       table->rows()!=std::uint64_t(experts)*out || table->width()!=input)
-        throw std::invalid_argument("TQ routed projection shape differs: "+name);
+std::shared_ptr<TqExpertCache> ensure_tq_expert_cache(CudaExecutionContext& execution) {
     if(!execution.stores.tq_expert_cache) {
         const auto budget = execution.config.moe_device_cache_bytes.value_or(
             moe_expert_cache_budget_bytes(execution.stores.moe_expert_cache));
@@ -1341,13 +888,23 @@ TqRoutedWeight::TqRoutedWeight(CudaExecutionContext& execution,const mfq::ModelS
             budget,execution.config.moe_host_cache_bytes,
             execution.config.moe_host_physical_bytes,!explicit_budget);
     }
-    cache=execution.stores.tq_expert_cache;source_id=cache->register_source(table->storage_bytes());
+    return execution.stores.tq_expert_cache;
 }
-std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(CudaExecutionContext& execution,
-        const mfq::ModelSource& source,const std::string& name) {
-    const auto shape=logical_shape(source,name);
-    if(shape.size()!=3)throw std::invalid_argument("TQ expert bank must be [experts,out,in]: "+name);
-    return std::make_shared<TqRoutedWeight>(execution,source,name,shape[0],shape[1],shape[2]);
+
+std::uint64_t register_tq_expert_source(
+        const std::shared_ptr<TqExpertCache>& cache,std::size_t storage_bytes) {
+    if(!cache)throw std::invalid_argument("TQ expert cache is missing");
+    return cache->register_source(storage_bytes);
+}
+
+TqRoutedWeight::TqRoutedWeight(std::shared_ptr<mfq::TqTable> rows,
+        std::shared_ptr<TqExpertCache> expert_cache,std::uint64_t id,
+        std::int64_t count,std::int64_t outputs,std::int64_t columns)
+    :table(std::move(rows)),cache(std::move(expert_cache)),source_id(id),
+      experts(count),out(outputs),input(columns) {
+    if(experts<1 || experts>UINT32_MAX || out<1 || input<1 ||
+       !table || !cache || table->rows()!=std::uint64_t(experts)*out || table->width()!=input)
+        throw std::invalid_argument("TQ routed projection shape differs");
 }
 tb::Tensor TqRoutedWeight::forward(tb::Tensor input_value,tb::Tensor ids)const {
     if(ids.dim()!=2 || ids.size(1)<1 || ids.size(1)>65535 || input_value.size(-1)!=input ||

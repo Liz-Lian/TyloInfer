@@ -8,6 +8,8 @@
 #include "model.h"
 #include "mtp.h"
 #include "storage/weights/loaders/weight.h"
+#include "model_source/tq_source.h"
+#include "storage/weights/tq/rows.h"
 #include "execution/moe_ffn_pipeline.h"
 #include "storage/weights/moe/expert_cache.h"
 #include "engine/batch/prefill_budget.h"
@@ -461,7 +463,7 @@ struct BlockLoader : weight_loader::Loader {
     struct Embedding {
         attention_ops::Embedding function;
         std::shared_ptr<mfq::NintRows> range;
-        std::shared_ptr<TqRowTable> tq;
+        std::shared_ptr<mfq::TqTable> tq;
         Tensor operator()(const Tensor& ids) const { return function(ids); }
     };
 
@@ -566,9 +568,9 @@ struct BlockLoader : weight_loader::Loader {
                         std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
     }
     auto embedding(const std::string &name) const {
-        if(is_tq_row_table(source,name)) {
-            auto table=std::make_shared<TqRowTable>(source,name);
-            Embedding lookup{[table](const Tensor& ids){return table->lookup(ids);},{},table};
+        if(mfq::is_tq_table(source,name)) {
+            auto table=mfq::tq_table(source,name);
+            Embedding lookup{[table](const Tensor& ids){return lookup_tq_table(*table,ids);},{},table};
             return std::pair{std::move(lookup),std::array<int64_t,2>{static_cast<int64_t>(table->rows()),table->width()}};
         }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -597,7 +599,7 @@ struct BlockLoader : weight_loader::Loader {
                     std::vector<int64_t> multipliers, std::vector<int64_t> offsets,
                     std::vector<int64_t> sizes, PleWeights weights) {
         std::vector<attention_ops::Embedding> functions;std::vector<std::shared_ptr<mfq::NintRows>> ranges;
-        std::vector<std::shared_ptr<TqRowTable>> tq;
+        std::vector<std::shared_ptr<mfq::TqTable>> tq;
         for(auto& shard:shards){functions.push_back(std::move(shard.function));ranges.push_back(std::move(shard.range));tq.push_back(std::move(shard.tq));}
         std::shared_ptr<NintRowPipeline> pipeline;
 #if TYLOINFER_ENABLE_MFQ_COMPAT

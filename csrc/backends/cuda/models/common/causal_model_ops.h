@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+namespace mfq { class ModelSource; }
+
 enum class TextSessionStateKind : int;
 struct TextSessionState;
 

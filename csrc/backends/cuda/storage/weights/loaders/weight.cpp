@@ -17,6 +17,8 @@
 #include "storage/weights/moe/expert_cache.h"
 #include "storage/weights/moe/expert_store.h"
 #include "storage/weights/moe/quant_range_source.h"
+#include "storage/weights/tq/load.h"
+#include "model_source/tq_source.h"
 #include "formats/quant/packed_nint_expert_store.h"
 #include <cstdlib>
 #include <cstdio>
@@ -276,7 +278,7 @@ QuantLinear load_quant_linear(
     result.tensor_parallel_axis = axis;
     if(dtype=="TQ") {
         result.kind=QuantLinearKind::Tq;
-        const auto shape=tq_projection_shape(mfq,name);
+        const auto shape=mfq::tq_projection_shape(mfq,name);
         result.logical_out=shape[0];result.logical_neuron_len=shape[1];
         if(execution.tensor_parallel.enabled() && axis!=TensorParallelAxis::Mirrored) {
             const auto blob=read_tensor(execution.drop_file_cache,mfq,name);
@@ -1183,7 +1185,9 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
     int64_t experts, int64_t output, int64_t input, const std::string& role) {
     const auto& dtype=require_tensor(file, name).dtype;
     if(dtype=="TQ") {
-        auto weight=std::make_shared<TqRoutedWeight>(execution,file,name,experts,output,input);
+        auto weight=load_tq_routed_weight(execution,file,name);
+        TYLOINFER_RUNTIME_CHECK(weight->experts==experts && weight->out==output &&
+            weight->input==input,"TQ routed projection shape differs: ",name);
         Routed result=[weight](CudaExecutionContext&,const Tensor& source,const Tensor& ids) {
             return weight->forward(source,ids);
         };
