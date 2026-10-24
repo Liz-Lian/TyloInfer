@@ -1,6 +1,9 @@
 #pragma once
+#include "causal_metadata.h"
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace mfq::models {
@@ -76,10 +79,56 @@ void finish_speculative(Model &model, bool commit, int64_t accepted, Guard guard
     model.speculative_confirmed = 0;
 }
 
+template <class Tensor> struct CausalGeometry {
+    Tensor cache_positions, positions, full_positions;
+    std::optional<Tensor> effective_attention_mask;
+};
+
+// Position and mask math is shared; policy supplies the family's typed geometry hooks.
+template <class Policy, class Ops>
+auto prepare_causal_geometry(Policy &policy, const CausalState &state, Ops &ops, int64_t batch,
+                             int64_t tokens)
+    -> CausalGeometry<std::decay_t<decltype(ops.ids)>> {
+    using Tensor = std::decay_t<decltype(ops.ids)>;
+    CausalGeometry<Tensor> geometry{
+        ops.cache_positions_override
+            ? ops.device_ids(*ops.cache_positions_override)
+            : ops.position_range(state.cache_pos, tokens),
+        {},
+        {},
+        {}};
+    auto current = ops.pos_override
+                       ? ops.device_ids(*ops.pos_override)
+                       : (state.decode_position_delta == 0
+                              ? geometry.cache_positions
+                              : ops.offset_positions(geometry.cache_positions,
+                                                      state.decode_position_delta));
+    auto prepared = policy.adapter_prepare_positions(std::move(current), batch, tokens);
+    geometry.positions = std::move(prepared.positions);
+    geometry.full_positions = std::move(prepared.full_positions);
+    require_model((ops.rank(geometry.cache_positions) == 1 &&
+                   ops.elements(geometry.cache_positions) == tokens) ||
+                      (ops.rank(geometry.cache_positions) == 2 &&
+                       ops.size(geometry.cache_positions, 0) == batch &&
+                       ops.size(geometry.cache_positions, 1) == tokens),
+                  "cache_positions must have shape [tokens] or [batch,tokens]");
+    policy.adapter_validate_positions(geometry.positions, batch, tokens, ops.has_mrope());
+    if (ops.attention_mask.has_value()) {
+        const auto &mask = *ops.attention_mask;
+        require_model(ops.rank(mask) == 2 && ops.size(mask, 0) == batch &&
+                          ops.size(mask, 1) >= state.cache_pos + tokens,
+                      "attention_mask must cover [batch,cached_plus_current_tokens]");
+    }
+    geometry.effective_attention_mask =
+        policy.adapter_attention_mask(ops.attention_mask, tokens, state.cache_pos);
+    return geometry;
+}
+
 // The model's logical cache and layer traversal are independent of storage.
 // Ops places tensors on devices and supplies each family's native operators.
 template <class Ops> auto causal_forward(Ops &ops) {
     auto &model = ops.model;
+    const auto &state = static_cast<const CausalState &>(model);
     ops.prepare_inputs();
     const auto B = ops.size(ops.ids, 0), T = ops.size(ops.ids, 1);
     const auto &embeddings = ops.input_embeddings;
@@ -111,31 +160,11 @@ template <class Ops> auto causal_forward(Ops &ops) {
     }
     if (model.cache_pos == 0)
         model.reset(B);
-    ops.cache_positions = ops.cache_positions_override
-                              ? ops.device_ids(*ops.cache_positions_override)
-                              : ops.position_range(model.cache_pos, T);
-    ops.pos = ops.pos_override
-                  ? ops.device_ids(*ops.pos_override)
-                  : (model.decode_position_delta == 0
-                         ? ops.cache_positions
-                         : ops.offset_positions(ops.cache_positions, model.decode_position_delta));
-    auto prepared = model.adapter_prepare_positions(std::move(ops.pos), B, T);
-    ops.pos = std::move(prepared.positions);
-    ops.full_positions = std::move(prepared.full_positions);
-    const auto &positions = ops.cache_positions;
-    require_model((ops.rank(positions) == 1 && ops.elements(positions) == T) ||
-                      (ops.rank(positions) == 2 && ops.size(positions, 0) == B &&
-                       ops.size(positions, 1) == T),
-                  "cache_positions must have shape [tokens] or [batch,tokens]");
-    model.adapter_validate_positions(ops.pos, B, T, ops.has_mrope());
-    if (ops.attention_mask.has_value()) {
-        const auto &mask = *ops.attention_mask;
-        require_model(ops.rank(mask) == 2 && ops.size(mask, 0) == B &&
-                          ops.size(mask, 1) >= model.cache_pos + T,
-                      "attention_mask must cover [batch,cached_plus_current_tokens]");
-    }
-    ops.effective_attention_mask =
-        model.adapter_attention_mask(ops.attention_mask, T, model.cache_pos);
+    auto geometry = prepare_causal_geometry(model, state, ops, B, T);
+    ops.cache_positions = std::move(geometry.cache_positions);
+    ops.pos = std::move(geometry.positions);
+    ops.full_positions = std::move(geometry.full_positions);
+    ops.effective_attention_mask = std::move(geometry.effective_attention_mask);
     auto hidden = ops.prepare_hidden(B, T);
     model.adapter_begin_forward(ops.raw_hidden != nullptr);
     ops.trace(hidden);

@@ -151,6 +151,26 @@ auto mtp_predictor(Ops &ops, typename Ops::Tensor hidden, typename Ops::Tensor i
     return output;
 }
 
+inline models::CausalLmMetadata metadata_from_config(const Config &config) {
+    models::CausalLmMetadata metadata;
+    metadata.vocab_size = config.vocab_size;
+    metadata.hidden_size = config.hidden_size;
+    metadata.num_hidden_layers = config.num_hidden_layers;
+    metadata.num_attention_heads = config.num_attention_heads;
+    metadata.num_key_value_heads = config.num_key_value_heads;
+    metadata.head_dim = config.head_dim;
+    metadata.max_position_embeddings = config.max_position_embeddings;
+    metadata.rotary_dim = config.rotary_dim;
+    metadata.num_experts = config.num_experts;
+    metadata.rope_base = config.rope_base;
+    metadata.rms_norm_eps = config.rms_norm_eps;
+    metadata.norm_weight_offset = config.legacy_tensor_layout.norm_weight_offset;
+    metadata.tie_word_embeddings = config.tie_word_embeddings;
+    metadata.model_type = config.model_type;
+    metadata.layer_types = config.layer_types;
+    return metadata;
+}
+
 template <class Backend> struct CausalLm : models::CausalModelBase<Backend, CausalLm<Backend>> {
     using Tensor = typename Backend::Tensor;
     static bool accepts_backbone(std::string_view backbone) {
@@ -159,25 +179,10 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
     template <class Graph, class Source>
     void adapter_load_config(std::string_view payload, const Graph &graph, const Source &source) {
         auto &config = this->config;
-        auto &metadata = this->metadata;
 
         config = Config::from_json(payload, graph);
         config.legacy_tensor_layout = source.tensor_layout();
-        metadata.vocab_size = config.vocab_size;
-        metadata.hidden_size = config.hidden_size;
-        metadata.num_hidden_layers = config.num_hidden_layers;
-        metadata.num_attention_heads = config.num_attention_heads;
-        metadata.num_key_value_heads = config.num_key_value_heads;
-        metadata.head_dim = config.head_dim;
-        metadata.max_position_embeddings = config.max_position_embeddings;
-        metadata.rotary_dim = config.rotary_dim;
-        metadata.num_experts = config.num_experts;
-        metadata.rope_base = config.rope_base;
-        metadata.rms_norm_eps = config.rms_norm_eps;
-        metadata.norm_weight_offset = config.legacy_tensor_layout.norm_weight_offset;
-        metadata.tie_word_embeddings = config.tie_word_embeddings;
-        metadata.model_type = config.model_type;
-        metadata.layer_types = config.layer_types;
+        this->metadata = metadata_from_config(config);
         this->adapter_validate_components(graph);
     }
     void adapter_validate_positions(const Tensor &positions, int64_t batch, int64_t tokens,
