@@ -1,5 +1,6 @@
 #include "execution/options.h"
 #include "mfq_cuda_activation_ops.h"
+#include "mfq_cuda_embedding_ops.h"
 #include "mfq_cuda_quant_ops.h"
 #include "mfq_cuda_nint_route_hint.h"
 #include "quant_linear.h"
