@@ -8,6 +8,7 @@
 #include "storage/weights/moe/expert_cache.h"
 #include "execution/options.h"
 #include "engine/batch/prefill_budget.h"
+#include "engine/executor/error.h"
 
 #include <algorithm>
 #include <exception>

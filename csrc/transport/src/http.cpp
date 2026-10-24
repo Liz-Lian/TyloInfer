@@ -1,4 +1,5 @@
 #include "common.h"
+#include "engine/executor/error.h"
 
 #include "httplib.h"
 

@@ -12,6 +12,7 @@
 #include "execution/options.h"
 #include "cuda_batching.h"
 #include "storage/session/text_cache.h"
+#include "engine/executor/instance.h"
 #include "engine/executor/mtp_metrics.h"
 #include "engine/requests/table.h"
 #include "engine/executor/flow.h"
