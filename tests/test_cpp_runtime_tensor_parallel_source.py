@@ -16,8 +16,8 @@ CMAKE = (ROOT / "csrc" / "tests" / "CMakeLists.txt").read_text(
 COMPONENTS = "\n".join(
     path.read_text(encoding="utf-8")
     for path in (
-        CUDA_ROOT / "storage" / "model_loader.h",
-        CUDA_ROOT / "storage" / "model_loader.cpp",
+        CUDA_ROOT / "engine" / "model_components.h",
+        CUDA_ROOT / "engine" / "model_components.cpp",
         CUDA_ROOT / "models" / "qwen35" / "ops.cpp",
     )
 )
@@ -64,7 +64,7 @@ def test_tensor_parallel_has_a_native_partition_test_target():
 
 def test_tq_parallel_preserves_compressed_rows_and_input_rings():
     linear = (CUDA_ROOT / "ops" / "common" / "quant_linear.cpp").read_text(encoding="utf-8")
-    loader = (CUDA_ROOT / "storage" / "weight_loader.cpp").read_text(encoding="utf-8")
+    loader = (CUDA_ROOT / "storage" / "weights" / "loaders" / "weight.cpp").read_text(encoding="utf-8")
     header = (CUDA_ROOT / "ops" / "common" / "include" / "quant_linear.h").read_text(encoding="utf-8")
     shard = header.split("struct QuantLinearShard {", 1)[1].split("};", 1)[0]
     assert "TqWeight tq;" in shard
@@ -91,7 +91,7 @@ def test_tq_self_describing_headers_supply_missing_shape_metadata():
 
 
 def test_tq_residual_projection_uses_the_parallel_aware_linear_entry():
-    loader = (CUDA_ROOT / "storage" / "weight_loader.cpp").read_text(encoding="utf-8")
+    loader = (CUDA_ROOT / "storage" / "weights" / "loaders" / "weight.cpp").read_text(encoding="utf-8")
     residual = loader.split("ResidualLinear residual_linear(", 1)[1]
     tq = residual.split("if(weight->is_tq()) {", 1)[1].split("if(weight->is_dense())", 1)[0]
     assert "weight->forward(context," in tq
@@ -232,7 +232,7 @@ def test_tensor_parallel_peer_first_launch_preserves_rank_indexing():
 
 
 def test_qwen35_mtp_accepts_dense_tensor_parallel_placement():
-    source = (CUDA_ROOT / "storage/model_loader.cpp").read_text()
+    source = (CUDA_ROOT / "engine/model_components.cpp").read_text()
     qwen35 = source.split(
         "RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(", 1
     )[1].split("RuntimeComponents<mfq::cuda::Qwen4CausalLm>", 1)[0]

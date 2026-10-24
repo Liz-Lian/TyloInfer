@@ -1,5 +1,5 @@
 #include "ops.h"
-#include "storage/session_state.h"
+#include "storage/session/state.h"
 
 namespace mfq::cuda {
 namespace {

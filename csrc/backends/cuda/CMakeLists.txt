@@ -37,11 +37,13 @@ find_package(Threads REQUIRED)
 
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
 add_library(mfq-cuda-storage STATIC
-    ${TYLOINFER_CUDA_ROOT}/storage/mfe_expert_store.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/expert_store.cpp
 )
 add_library(mfq::cuda-storage ALIAS mfq-cuda-storage)
 target_include_directories(mfq-cuda-storage PUBLIC
-    ${TYLOINFER_CUDA_ROOT}/storage
+    ${TYLOINFER_CUDA_ROOT}/execution
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe
 )
 target_link_libraries(mfq-cuda-storage PUBLIC Threads::Threads)
 target_compile_features(mfq-cuda-storage PUBLIC cxx_std_20)
@@ -151,7 +153,7 @@ add_library(mfq-cuda-native-kernels STATIC
     ${TYLOINFER_CUDA_ROOT}/kernels/kv_quantization.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/kv_hot_cache.cu
     ${TYLOINFER_CUDA_ROOT}/kernels/shared_gate_fused.cu
-    ${TYLOINFER_CUDA_ROOT}/runtime/moe_pipeline.cu
+    ${TYLOINFER_CUDA_ROOT}/kernels/moe/pipeline.cu
     ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu
 )
 add_library(mfq::cuda-native-kernels ALIAS mfq-cuda-native-kernels)
@@ -182,7 +184,7 @@ set_property(SOURCE
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mfe_ffn_parity_read.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mfe_ffn_shared.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mfe_ffn_token_groups.cu
-    ${TYLOINFER_CUDA_ROOT}/runtime/moe_pipeline.cu
+    ${TYLOINFER_CUDA_ROOT}/kernels/moe/pipeline.cu
     APPEND PROPERTY OBJECT_DEPENDS "${TYLOINFER_CUDA_KERNEL_ROOT}/shared_storage.cuh")
 set_source_files_properties(${TYLOINFER_CUDA_ROOT}/kernels/gated_residual_fused.cu PROPERTIES
     COMPILE_OPTIONS "--maxrregcount=80")
@@ -194,6 +196,7 @@ target_compile_definitions(mfq-cuda-native-kernels PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1
 )
 target_include_directories(mfq-cuda-native-kernels PRIVATE
+    ${TYLOINFER_CUDA_ROOT}
     ${TYLOINFER_REPOSITORY_ROOT}
     ${TYLOINFER_CUDA_ROOT}/include
     ${TYLOINFER_CUDA_ROOT}/native
@@ -396,7 +399,9 @@ function(mfq_configure_cuda_backend_target target)
         ${TYLOINFER_CUDA_ROOT}/ops/common/include
         ${TYLOINFER_CUDA_ROOT}/ops/tq/include
         ${TYLOINFER_CUDA_ROOT}/ops/mfq/include
-        ${TYLOINFER_CUDA_ROOT}/storage
+        ${TYLOINFER_CUDA_ROOT}/execution
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe
         ${TYLOINFER_CUDA_KERNEL_ROOT}
         ${CUDAToolkit_INCLUDE_DIRS}
     )
@@ -442,9 +447,9 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/dspark.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/vision.cpp
     ${TYLOINFER_CUDA_ROOT}/models/qwen4_exp/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/kv_offload.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/kv_memory.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/kv_vmm.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_offload.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_memory.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_vmm.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm5_next/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/gemma4/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm_dsa/ops.cpp
@@ -457,7 +462,6 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/ops/common/rope.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/cuda_execution.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/format.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/moe_routes.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/gated_residual.cpp
@@ -482,24 +486,34 @@ target_compile_definitions(mfq-cuda-ops PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+set(TYLOINFER_CUDA_EXECUTION_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/execution/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/execution/decode_window.cpp
+    ${TYLOINFER_CUDA_ROOT}/execution/graph_registry.cpp
+)
+if(TYLOINFER_ENABLE_MFQ_COMPAT)
+    list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
+        ${TYLOINFER_CUDA_ROOT}/execution/moe_ffn_pipeline.cpp)
+endif()
+add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
+mfq_configure_cuda_backend_target(mfq-cuda-execution)
+target_compile_definitions(mfq-cuda-execution PRIVATE
+    TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/storage/state/kv_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/load_options.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/model_loader.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/graph_registry.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/mfq_cache_api.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/decode_window.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weight_loader.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/transformer_loader.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/cache_api.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders/weight.cpp
+    ${TYLOINFER_CUDA_ROOT}/models/common/transformer_loader.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/storage/moe_expert_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/moe_ffn_pipeline.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/moe_quant_range_source.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/moe_host_expert_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/moe_residency.cpp
-    ${TYLOINFER_CUDA_ROOT}/runtime/nint_row_pipeline.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/expert_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/quant_range_source.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/host_expert_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/residency.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/nint_row_pipeline.cpp
     )
 endif()
 add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES})
@@ -511,11 +525,13 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Concrete Engine/model bindings stay in this source group for both native and
 # optional Torch builds. Extra targets do not reduce their header dependencies.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/engine/load_options.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/model_components.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/generation.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/text_session_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/deepseek_v41_paged_session.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/session/text_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_batching.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
@@ -526,6 +542,7 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
 )
 add_library(mfq-cuda-runtime STATIC
     $<TARGET_OBJECTS:mfq-cuda-ops>
+    $<TARGET_OBJECTS:mfq-cuda-execution>
     $<TARGET_OBJECTS:mfq-cuda-loading>
     ${TYLOINFER_CUDA_INSTANTIATION_SOURCES}
 )
@@ -868,7 +885,7 @@ target_compile_definitions(mfq-cuda-runtime PRIVATE
     NOMINMAX
 )
 if(MSVC)
-    foreach(target mfq-cuda-ops mfq-cuda-loading mfq-cuda-runtime)
+    foreach(target mfq-cuda-ops mfq-cuda-execution mfq-cuda-loading mfq-cuda-runtime)
         target_compile_options(${target} PRIVATE
             "$<$<COMPILE_LANGUAGE:CXX>:/utf-8>"
             "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
@@ -1068,6 +1085,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
         ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
         ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
         ${TYLOINFER_CUDA_RUNTIME_OP_SOURCES}
+        ${TYLOINFER_CUDA_EXECUTION_SOURCES}
         ${TYLOINFER_CUDA_LOADING_SOURCES}
         ${TYLOINFER_CUDA_INSTANTIATION_SOURCES}
         ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu

@@ -1,8 +1,8 @@
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "ops.h"
-#include "storage/session_codec.h"
+#include "models/common/session_codec.h"
 #include "models/common/transformer_layer.h"
 #include "models/gemma4/causal_lm.h"
 

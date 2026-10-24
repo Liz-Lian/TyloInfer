@@ -3,7 +3,7 @@
 #include "paged_kv_allocator.h"
 #include "batch_state.h"
 #include "models/common/full_block.h"
-#include "runtime/execution_options.h"
+#include "execution/options.h"
 
 #include <cuda_runtime_api.h>
 

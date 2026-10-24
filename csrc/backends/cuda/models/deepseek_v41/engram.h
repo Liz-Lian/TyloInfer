@@ -1,8 +1,8 @@
 #pragma once
 
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 
-#include "mfe_expert_store.h"
+#include "storage/weights/moe/expert_store.h"
 #include "models/deepseek_v41/config.h"
 #include "csrc/models/deepseek_v41/engram.h"
 #include "models/deepseek_v41/causal_lm.h"

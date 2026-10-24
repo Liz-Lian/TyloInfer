@@ -1,5 +1,5 @@
 #include "mfq_cuda_sampling_ops.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "models/common/causal_model_ops.h"
 #include "models/common/full_block.h"
 

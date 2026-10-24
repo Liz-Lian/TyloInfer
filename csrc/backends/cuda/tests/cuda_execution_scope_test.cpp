@@ -1,6 +1,6 @@
 #include "env.h"
-#include "cuda_execution.h"
-#include "../runtime/execution_options.h"
+#include "execution/execution.h"
+#include "execution/options.h"
 
 #include <atomic>
 #include <cstdlib>

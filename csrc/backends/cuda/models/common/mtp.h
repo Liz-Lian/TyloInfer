@@ -1,6 +1,6 @@
 #pragma once
 
-#include "storage/session_state.h"
+#include "storage/session/state.h"
 #include "mtp_policy.h"
 #include "backend.h"
 #include "models/common/causal_model_ops.h"

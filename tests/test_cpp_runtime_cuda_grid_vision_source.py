@@ -10,7 +10,7 @@ COMMON_CONFIG = (
     ROOT / "csrc/models/common/model_config.cpp"
 ).read_text()
 CUDA_ROOT = ROOT / "csrc/backends/cuda"
-CUDA = (CUDA_ROOT / "storage/model_loader.h").read_text().split(
+CUDA = (CUDA_ROOT / "engine/model_components.h").read_text().split(
     "namespace mfq::cuda::grid_vision_runtime {", 1
 )[1].split("} // namespace mfq::cuda::grid_vision_runtime", 1)[0]
 VISION_OPS = (CUDA_ROOT / "models/common/vision_ops.h").read_text()
@@ -23,12 +23,12 @@ CUDA_PLAN_TEST = (ROOT / "csrc/backends/cuda/tests/cuda_model_plan_test.cpp").re
 METAL = (ROOT / "csrc/backends/metal/runtime/mlx_grid_vision.cpp").read_text()
 METAL_MM = (ROOT / "csrc/backends/metal/runtime/mlx_multimodal.cpp").read_text()
 PLAN = (ROOT / "csrc/backends/cuda/include/cuda_model_plan.h").read_text()
-PREPARED = (ROOT / "csrc/backends/cuda/ops/common/include/cuda_execution.h").read_text()
+PREPARED = (ROOT / "csrc/backends/cuda/execution/execution.h").read_text()
 CUDA_COMPONENTS = "\n".join(
     path.read_text()
     for path in (
-        CUDA_ROOT / "storage" / "model_loader.h",
-        CUDA_ROOT / "storage" / "model_loader.cpp",
+        CUDA_ROOT / "engine" / "model_components.h",
+        CUDA_ROOT / "engine" / "model_components.cpp",
     )
 )
 

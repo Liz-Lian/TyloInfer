@@ -1,5 +1,5 @@
 #include "env.h"
-#include "runtime/moe_host_expert_cache.h"
+#include "storage/weights/moe/host_expert_cache.h"
 
 #include <chrono>
 #include <array>

@@ -1,6 +1,6 @@
 #include "cli.h"
-#include "storage/model_loader.h"
-#include "cuda_execution.h"
+#include "engine/model_components.h"
+#include "execution/execution.h"
 
 #include <algorithm>
 #include <cstring>

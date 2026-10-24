@@ -192,7 +192,7 @@ def test_minicpmo45_preserves_qkv_projection_boundaries():
     assert "bool preserve_projection_boundaries = false" in DECODE
     assert "std::move(layers), preserve_projection_boundaries" in DECODE
     assert "loader.preserve_projection_boundaries = block->official_bf16" in DECODE
-    loader = (CUDA_ROOT / "storage/transformer_loader.cpp").read_text()
+    loader = (CUDA_ROOT / "models/common/transformer_loader.cpp").read_text()
     assert "names, 2, nullptr," in loader
     assert "down, shared_gate_up_compatible_prefix," in loader
     assert loader.count("preserve_projection_boundaries);") == 2

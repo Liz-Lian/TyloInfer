@@ -2,7 +2,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CUDA_ROOT = ROOT / "csrc" / "backends" / "cuda"
-CUDA_SESSION_CACHE = (CUDA_ROOT / "storage" / "text_session_cache.cpp").read_text(
+CUDA_SESSION_CACHE = (CUDA_ROOT / "storage" / "session" / "text_cache.cpp").read_text(
     encoding="utf-8"
 )
 CUDA_CAUSAL_LM_HEADER = (CUDA_ROOT / "models" / "common" / "causal_model_ops.h").read_text(
@@ -12,7 +12,7 @@ CUDA_CAUSAL_LM_SOURCE = (CUDA_ROOT / "models" / "common" / "causal_model_ops.cpp
     encoding="utf-8"
 )
 CUDA_SESSION_STATE_HEADER = (
-    CUDA_ROOT / "storage" / "session_state.h"
+    CUDA_ROOT / "storage" / "session" / "state.h"
 ).read_text(encoding="utf-8")
 DECODE = "\n".join(
     path.read_text(encoding="utf-8")

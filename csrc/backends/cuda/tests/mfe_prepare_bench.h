@@ -1,6 +1,6 @@
 #pragma once
 #include "mfe_ffn_prepare.h"
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 
 static void benchmark_mfe_prepare(bool timings=true) {
     namespace tb=mfq_tensor_backend;

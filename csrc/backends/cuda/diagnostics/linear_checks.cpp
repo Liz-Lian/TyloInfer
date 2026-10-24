@@ -1,9 +1,9 @@
 #include "env.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "model_checks.h"
 
 #include "quant_linear.h"
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_quant_ops.h"

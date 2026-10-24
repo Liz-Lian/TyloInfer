@@ -1,6 +1,6 @@
 #include "cli.h"
 
-#include "cuda_execution.h"
+#include "execution/execution.h"
 
 #include <algorithm>
 #include <charconv>

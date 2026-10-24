@@ -1,4 +1,4 @@
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "memory_tensor_source.h"
 
 #include <iostream>

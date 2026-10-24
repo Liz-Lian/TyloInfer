@@ -1,6 +1,6 @@
 #pragma once
 #include "env.h"
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 
 static void benchmark_decode_kv_cache() {
     namespace tb=mfq_tensor_backend;

@@ -2,12 +2,12 @@
 #include "float_projection.h"
 #include "gated_residual.h"
 #include "gated_residual_fused.h"
-#include "cuda_execution.h"
-#include "storage/weight_loader.h"
-#include "storage/mapped_embedding.h"
+#include "execution/execution.h"
+#include "storage/weights/loaders/weight.h"
+#include "storage/weights/mapped_embedding.h"
 #include "selected_attention.h"
 #include "qwen4_exp.h"
-#include "runtime/decode_window.h"
+#include "execution/decode_window.h"
 
 #include <cmath>
 #include <cstring>

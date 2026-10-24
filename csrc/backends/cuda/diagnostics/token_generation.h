@@ -4,10 +4,10 @@
 #include "inference.h"
 
 #include "mfq_cuda_sampling_ops.h"
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "engine/decode_graph.h"
 #include "models/common/full_block.h"
-#include "storage/moe_expert_cache.h"
+#include "storage/weights/moe/expert_cache.h"
 #include "models/qwen4_exp/ops.h"
 #include "backend.h"
 #include "tyloinfer/model_source.h"

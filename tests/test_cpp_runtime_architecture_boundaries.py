@@ -77,8 +77,8 @@ CUDA_RUNTIME_SOURCE = "\n".join(
     for name in (
         "engine/cuda_engine.cpp",
         "engine/generation.cpp",
-        "storage/text_session_cache.cpp",
-        "storage/load_options.cpp",
+        "storage/session/text_cache.cpp",
+        "engine/load_options.cpp",
     )
 )
 CUDA_MTP_SOURCE = (CUDA_RUNTIME / "mtp.cpp").read_text(encoding="utf-8")
@@ -88,12 +88,12 @@ CUDA_BACKEND_SOURCE = "\n".join(
     for path in (ROOT / "csrc" / "backends" / "cuda").rglob("*")
     if path.suffix in {".h", ".cpp"}
 )
-CUDA_REGISTRY = (CUDA_MODELS.parent / "storage/weight_loader.cpp").read_text(encoding="utf-8")
+CUDA_REGISTRY = (CUDA_MODELS.parent / "storage/weights/loaders/weight.cpp").read_text(encoding="utf-8")
 CUDA_TRANSFORMER_LOADER = (
-    CUDA_OPS.parent / "storage/transformer_loader.cpp"
+    CUDA_OPS.parent / "models/common/transformer_loader.cpp"
 ).read_text(encoding="utf-8")
 CUDA_TRANSFORMER_HEADER = (
-    CUDA_OPS.parent / "storage/transformer_loader.h"
+    CUDA_OPS.parent / "models/common/transformer_loader.h"
 ).read_text(encoding="utf-8")
 CUDA_TRANSFORMER_PATHS = {
     "rope": ("ops/common/include/rope.h", "ops/common/rope.cpp"),
@@ -116,7 +116,7 @@ CUDA_CAUSAL_LM = (CUDA_MODELS.parent / "models/common/causal_model_ops.h").read_
 CUDA_CAUSAL_LM_SOURCE = (CUDA_MODELS.parent / "models/common/causal_model_ops.cpp").read_text(
     encoding="utf-8"
 )
-CUDA_CAUSAL_LM_IMPL = (CUDA_MODELS.parent / "storage/session_codec.h").read_text(
+CUDA_CAUSAL_LM_IMPL = (CUDA_MODELS.parent / "models/common/session_codec.h").read_text(
     encoding="utf-8"
 )
 SHARED_CAUSAL_LM = (ROOT / "csrc/models/common/causal_model.h").read_text(encoding="utf-8")
@@ -138,7 +138,7 @@ CUDA_QWEN_BATCH_STATE = "\n".join(
     (CUDA_MODELS / "qwen35" / name).read_text(encoding="utf-8")
     for name in ("batch_state.h", "batch_state.cpp")
 )
-CUDA_CAUSAL_LM_LOADER = (CUDA_MODELS.parent / "storage/model_loader.cpp").read_text(
+CUDA_CAUSAL_LM_LOADER = (CUDA_MODELS.parent / "engine/model_components.cpp").read_text(
     encoding="utf-8"
 )
 SPARSE_OPERATOR = (METAL / "ops" / "common" / "mlx_sparse_attention.cpp").read_text(
@@ -168,7 +168,7 @@ METAL_CONTAINER = (
     METAL / "storage" / "mfq_container.cpp"
 ).read_text(encoding="utf-8")
 CUDA_MFE_STORE = (
-    ROOT / "csrc" / "backends" / "cuda" / "storage" / "mfe_expert_store.cpp"
+    ROOT / "csrc" / "backends" / "cuda" / "storage" / "weights" / "moe" / "expert_store.cpp"
 ).read_text(encoding="utf-8")
 
 
@@ -260,8 +260,8 @@ def test_cuda_quant_runtime_implementations_stay_out_of_headers() -> None:
     assert "NintLinearGroup::forward(" in (CUDA_OPS / "mfq/linear_groups.inc").read_text()
     assert '#include "../mfq/linear_groups.inc"' in quant
     header = (CUDA_OPS / "common/include/quant_linear.h").read_text()
-    loader = (CUDA_OPS.parent / "storage/weight_loader.h").read_text()
-    cache = (CUDA_OPS.parent / "storage/moe_expert_cache.cpp").read_text()
+    loader = (CUDA_OPS.parent / "storage/weights/loaders/weight.h").read_text()
+    cache = (CUDA_OPS.parent / "storage/weights/moe/expert_cache.cpp").read_text()
     for function in ("load_quant_linear(", "load_mfe_gpu(", "load_quant_group("):
         assert function in loader
         assert function not in header
@@ -286,7 +286,7 @@ def test_cuda_linear_execution_consumes_loaded_weights() -> None:
 
 
 def test_moe_cache_api_receives_resources_without_execution_context() -> None:
-    api = (CUDA_OPS.parent / "storage/moe_expert_cache.h").read_text()
+    api = (CUDA_OPS.parent / "storage/weights/moe/expert_cache.h").read_text()
     assert "CudaExecutionContext" not in api
     assert "const std::shared_ptr<MoeExpertCache>& cache" in api
 
@@ -470,7 +470,7 @@ def test_cuda_cli_is_a_thin_client_of_the_runtime_library() -> None:
     assert "engine/cuda_runtime.cpp" not in cmake
     assert "engine/cuda_engine.cpp" in cmake
     assert "engine/generation.cpp" in cmake
-    assert "storage/text_session_cache.cpp" in cmake
+    assert "storage/session/text_cache.cpp" in cmake
     assert "add_executable(mfq-runtime\n" in cmake
     torch_sources = cmake.split("add_executable(mfq-runtime-torch", 1)[1].split(")", 1)[0]
     assert "${TYLOINFER_CUDA_INSTANTIATION_SOURCES}" in torch_sources
@@ -547,8 +547,8 @@ def test_cuda_runtime_has_one_shared_generation_path() -> None:
 
 
 def test_cuda_runtime_hides_model_session_and_batch_implementation() -> None:
-    execution = (CUDA_OPS / "common" / "include" / "cuda_execution.h").read_text(encoding="utf-8")
-    options = (CUDA_RUNTIME.parent / "storage/load_options.cpp").read_text(encoding="utf-8")
+    execution = (CUDA_OPS.parent / "execution/execution.h").read_text(encoding="utf-8")
+    options = (CUDA_RUNTIME.parent / "engine/load_options.cpp").read_text(encoding="utf-8")
 
     assert "struct CudaExecutionContext" in execution
     assert "class CudaProfilerAccess" not in execution
@@ -556,7 +556,7 @@ def test_cuda_runtime_hides_model_session_and_batch_implementation() -> None:
     assert "extern CudaProfiler&" not in execution
     assert "std::shared_ptr<CudaExecutionContext> execution;" in CUDA_ENGINE_SOURCE
     assert "std::make_shared<CudaExecutionContext>()" in CUDA_ENGINE_SOURCE
-    execution_source = (CUDA_OPS / "common/cuda_execution.cpp").read_text(
+    execution_source = (CUDA_OPS.parent / "execution/execution.cpp").read_text(
         encoding="utf-8"
     )
     assert "static CudaExecutionContext context" not in execution_source
@@ -596,11 +596,11 @@ def test_cuda_runtime_hides_model_session_and_batch_implementation() -> None:
     assert "class GrammarConstraint" in constraint
     assert "class MfqGrammarConstraint" not in transport
     assert "execution.reset();" in options
-    loader_api = (CUDA_RUNTIME.parent / "storage/weight_loader.h").read_text()
+    loader_api = (CUDA_RUNTIME.parent / "storage/weights/loaders/weight.h").read_text()
     assert "CudaExecutionContext&execution" in "".join(loader_api.split())
     assert "load_causal_lm(" not in CUDA_CAUSAL_LM
     assert "model.execution = &execution;" in (
-        CUDA_MODELS.parent / "storage/model_loader.cpp"
+        CUDA_MODELS.parent / "engine/model_components.cpp"
     ).read_text(encoding="utf-8")
     assert "struct CudaSessionCodec" in CUDA_CAUSAL_LM
     assert "CudaSessionCodec<Model>::capture" in CUDA_CAUSAL_LM_IMPL
@@ -1307,7 +1307,7 @@ def test_cuda_model_runtime_uses_compiled_operator_bindings() -> None:
     ):
         assert concrete_definition not in CUDA_RUNTIME_SOURCE
     causal_lm = (CUDA_MODELS.parent / "models/common/causal_model_ops.h").read_text(encoding="utf-8")
-    causal_lm_loader = (CUDA_MODELS.parent / "storage/model_loader.cpp").read_text(
+    causal_lm_loader = (CUDA_MODELS.parent / "engine/model_components.cpp").read_text(
         encoding="utf-8"
     )
     assert re.search(r"\bCudaModel\b", CUDA_BACKEND_SOURCE) is None
@@ -1344,20 +1344,20 @@ def test_cuda_ops_and_execution_are_real_compilation_units() -> None:
         "ops/mfq/nint.cpp",
         "ops/common/quant_linear.cpp",
         "ops/mfq/vq.cpp",
-        "ops/common/cuda_execution.cpp",
+        "execution/execution.cpp",
         "engine/decode_graph.cpp",
-        "storage/load_options.cpp",
+        "engine/load_options.cpp",
         "commands/cli.cpp",
         "models/common/causal_model_ops.cpp",
-        "storage/model_loader.cpp",
-        "storage/transformer_loader.cpp",
+        "engine/model_components.cpp",
+        "models/common/transformer_loader.cpp",
         "ops/common/rope.cpp",
         "models/common/ffn.cpp",
         "storage/state/kv_cache.cpp",
         "models/common/full_block.cpp",
         "engine/mtp.cpp",
-        "storage/moe_expert_cache.cpp",
-        "storage/model_loader.cpp",
+        "storage/weights/moe/expert_cache.cpp",
+        "engine/model_components.cpp",
         "engine/cuda_batching.cpp",
         "models/qwen35/batch_state.cpp",
         "diagnostics/attention_checks.cpp",
@@ -1514,7 +1514,7 @@ def test_cuda_family_layers_and_offline_generation_use_shared_flows() -> None:
 def test_shared_models_own_composition_loading_and_input_rules() -> None:
     shared = ROOT / "csrc/models"
     causal = (shared / "common/causal_model.h").read_text()
-    loader = (CUDA_MODELS.parent / "storage/model_loader.cpp").read_text()
+    loader = (CUDA_MODELS.parent / "engine/model_components.cpp").read_text()
     assert "void load_definition(" in causal and "void load_weights(" in causal
     assert "tie_word_embeddings() || !loader.has_weight(output)" in causal
     assert "model.load_definition(" in loader and "model.load_weights(weights, load_blocks)" in loader
@@ -1539,7 +1539,7 @@ def test_shared_models_own_composition_loading_and_input_rules() -> None:
     assert "mfq::models::minicpmo45::encode(ops, input)" in mini
     assert "mfq::models::minicpmo45::multimodal_forward(" in mini
     assert "for (const auto & bound : images)" not in mini
-    grid = (CUDA_MODELS.parent / "storage/model_loader.h").read_text()
+    grid = (CUDA_MODELS.parent / "engine/model_components.h").read_text()
     vision_ops = (CUDA_MODELS.parent / "models/common/vision_ops.h").read_text()
     assert "mfq::models::grid_vision::attention(" in vision_ops
     for stage in ("encode", "merge", "prepare"):
@@ -1564,5 +1564,5 @@ def test_cuda_model_headers_keep_family_implementation_private() -> None:
     mini = "\n".join(p.read_text() for p in (CUDA_MODELS / "minicpmo45").glob("*.[ch]*"))
     for io in ("std::ifstream", "std::ofstream", "pickle_load(", "pickle_save(", "read_tensor("):
         assert io not in mini
-    loader = (CUDA_MODELS.parent / "storage/weight_loader.cpp").read_text()
+    loader = (CUDA_MODELS.parent / "storage/weights/loaders/weight.cpp").read_text()
     assert "load_dense_native_gpu(" in loader and "load_dense_cpu(" in loader

@@ -1,7 +1,7 @@
 #pragma once
 #include "timing.h"
 #include "mfq_cuda_quant_ops.h"
-#include "storage/moe_quant_range_source.h"
+#include "storage/weights/moe/quant_range_source.h"
 #include "tyloinfer/model_source.h"
 #include <cstring>
 #include <filesystem>

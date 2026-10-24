@@ -1,7 +1,7 @@
-#include "storage/transformer_loader.h"
-#include "storage/weight_loader.h"
+#include "models/common/transformer_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "ops.h"
-#include "storage/session_codec.h"
+#include "models/common/session_codec.h"
 
 namespace mfq::cuda::deepseek_v41_runtime {
 

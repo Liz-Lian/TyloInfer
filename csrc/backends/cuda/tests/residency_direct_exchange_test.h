@@ -1,7 +1,7 @@
 #pragma once
 #include "env.h"
 
-#include "storage/moe_cached_source_internal.h"
+#include "storage/weights/moe/cached_source_internal.h"
 #include <limits>
 
 // Seed real compressed transfer-cache fields without launching the unrelated

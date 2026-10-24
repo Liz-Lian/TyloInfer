@@ -1,6 +1,6 @@
 #include "models/deepseek_v41/ops.h"
-#include "storage/session_state.h"
-#include "storage/text_session_cache.h"
+#include "storage/session/state.h"
+#include "storage/session/text_cache.h"
 #include "runtime_config.h"
 #include "mfq_paged_prefix_cache.h"
 #include "mfq_cuda_moe_ops.h"

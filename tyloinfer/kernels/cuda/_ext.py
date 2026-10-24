@@ -119,6 +119,7 @@ def ext():
             sources=_SOURCES,
             extra_include_paths=[
                 _REPOSITORY_ROOT,
+                str(_CUDA_BACKEND),
                 _KERNEL_DIR,
                 _CUDA_RUNTIME_INCLUDE,
                 _CUDA_NATIVE_INCLUDE,

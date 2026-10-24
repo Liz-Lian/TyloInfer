@@ -1,7 +1,7 @@
 #pragma once
 
 #include "quant_linear.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 
 #include "models/common/vision_block.h"
 

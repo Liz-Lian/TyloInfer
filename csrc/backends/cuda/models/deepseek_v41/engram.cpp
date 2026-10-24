@@ -3,7 +3,7 @@
 #include "tyloinfer/host_parallel.h"
 #include "tyloinfer/mapped_prefetch_scope.h"
 #include "tyloinfer/nint_row_cache.h"
-#include "runtime/nint_row_pipeline.h"
+#include "storage/weights/nint_row_pipeline.h"
 
 #include <condition_variable>
 #include <future>

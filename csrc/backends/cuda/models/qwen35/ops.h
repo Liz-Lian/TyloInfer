@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/causal_model_ops.h"
-#include "storage/session_state.h"
+#include "storage/session/state.h"
 #include "models/qwen35/causal_lm.h"
 #include "models/qwen35/config.h"
 

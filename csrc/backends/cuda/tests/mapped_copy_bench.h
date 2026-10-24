@@ -1,6 +1,6 @@
 #pragma once
 #include "env.h"
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 
 static void benchmark_mapped_copy(bool timings=true,bool pinned_source=false) {
     namespace tb=mfq_tensor_backend;

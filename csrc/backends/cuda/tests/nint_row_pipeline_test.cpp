@@ -1,8 +1,8 @@
 #include "env.h"
-#include "runtime/nint_row_pipeline.h"
-#include "runtime/decode_window.h"
+#include "storage/weights/nint_row_pipeline.h"
+#include "execution/decode_window.h"
 #include "nint.h"
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 #include "tyloinfer/nint_row_cache.h"
 #include "../../../tests/nint_row_fixture.h"
 #include <atomic>

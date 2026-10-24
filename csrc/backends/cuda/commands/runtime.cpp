@@ -2,7 +2,7 @@
 #include "cli.h"
 #include "cuda_runtime_config.h"
 #include "minicpmo45.h"
-#include "storage/model_source.h"
+#include "models/common/model_source.h"
 #include "tyloinfer/model_source.h"
 #include "transport.h"
 

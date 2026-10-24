@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/vision_block_ops.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "models/common/transformer_layer.h"
 #include "models/minicpmo45/causal_lm.h"
 

@@ -2,7 +2,7 @@
 // NoPE GQA through FullBlock and a latent MoE with non-gated relu-squared
 // experts. All references are double-precision CPU implementations.
 
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "models/common/ffn.h"
 #include "models/common/full_block.h"
 #include "mfq_cuda_moe_ops.h"

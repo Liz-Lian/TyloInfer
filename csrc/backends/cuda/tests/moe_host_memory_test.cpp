@@ -1,5 +1,5 @@
-#include "runtime/moe_residency.h"
-#include "storage/moe_host_cache_policy.h"
+#include "storage/weights/moe/residency.h"
+#include "storage/weights/moe/host_cache_policy.h"
 
 #include <iostream>
 #include <stdexcept>

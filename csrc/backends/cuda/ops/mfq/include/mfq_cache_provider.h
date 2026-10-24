@@ -1,5 +1,5 @@
 #pragma once
-#include "moe_expert_cache.h"
+#include "storage/weights/moe/expert_cache.h"
 
 MoePrefillWorkspaceBudget mfq_legacy_moe_prefill_workspace_budget(
     const std::shared_ptr<MoeExpertCache>& cache, bool allow_borrow);

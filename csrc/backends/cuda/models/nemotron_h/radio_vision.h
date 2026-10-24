@@ -3,9 +3,9 @@
 #include "models/common/block.h"
 #include "models/common/vision_block_ops.h"
 #include "models/nemotron_h/vision.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "tyloinfer/runtime.h"
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_model_graph.h"

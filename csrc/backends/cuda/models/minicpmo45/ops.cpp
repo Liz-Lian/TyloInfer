@@ -1,6 +1,6 @@
 #include "ops.h"
-#include "storage/transformer_loader.h"
-#include "storage/session_codec.h"
+#include "models/common/transformer_loader.h"
+#include "models/common/session_codec.h"
 #include "models/common/full_block.h"
 
 namespace mfq::cuda {

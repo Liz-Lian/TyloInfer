@@ -1,8 +1,8 @@
 #pragma once
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "tyloinfer/tq_rows.h"
 #include "tyloinfer/kernels/cuda/tq_ops.h"
-#include "runtime/row_stage.h"
+#include "execution/layer_inputs.h"
 #include <array>
 
 namespace mfq { class ModelSource; }

@@ -5,8 +5,8 @@
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
-#include "storage/moe_expert_cache.h"
-#include "storage/moe_ffn_pipeline.h"
+#include "storage/weights/moe/expert_cache.h"
+#include "execution/moe_ffn_pipeline.h"
 
 #include <algorithm>
 #include <array>

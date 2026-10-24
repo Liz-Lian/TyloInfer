@@ -1,6 +1,6 @@
 #include "context.h"
 #include "csrc/backends/cuda/kernels/mfe_ffn.h"
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 
 #include <array>
 #include <iostream>

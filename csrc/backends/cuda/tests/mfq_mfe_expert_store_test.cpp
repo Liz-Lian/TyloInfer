@@ -1,4 +1,4 @@
-#include "mfe_expert_store.h"
+#include "storage/weights/moe/expert_store.h"
 
 #include <algorithm>
 #include <array>

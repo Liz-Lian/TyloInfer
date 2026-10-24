@@ -1,6 +1,6 @@
-#include "runtime/dma_copy_batch.h"
-#include "runtime/native_dma_batch.h"
-#include "runtime/moe_pipeline.h"
+#include "storage/weights/moe/dma_copy_batch.h"
+#include "storage/weights/moe/native_dma_batch.h"
+#include "kernels/moe/pipeline.h"
 #include <atomic>
 #include <chrono>
 #include <cstring>

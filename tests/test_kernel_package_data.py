@@ -40,6 +40,7 @@ def test_cuda_jit_sources_and_shared_header_includes_resolve():
     assert Path(_ext._KERNEL_DIR) == repository / "csrc/backends/cuda/kernels"
     roots = [
         Path(_ext._REPOSITORY_ROOT),
+        Path(_ext._CUDA_BACKEND),
         Path(_ext._KERNEL_DIR),
         Path(_ext._CUDA_RUNTIME_INCLUDE),
         Path(_ext._CUDA_NATIVE_INCLUDE),

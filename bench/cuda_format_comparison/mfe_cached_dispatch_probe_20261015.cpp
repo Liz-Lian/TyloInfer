@@ -1,7 +1,7 @@
 #define main mfq_original_mfe_bench_main
 #include "mfq_mfe_bench.cpp"
 #undef main
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 #include "mfe_ffn_compact.h"
 #include "mfq_cuda_shared_gate.h"
 #include <iostream>

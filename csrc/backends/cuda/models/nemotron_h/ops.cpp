@@ -1,8 +1,8 @@
-#include "storage/transformer_loader.h"
-#include "storage/weight_loader.h"
+#include "models/common/transformer_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "ops.h"
 #include "model.h"
-#include "storage/session_codec.h"
+#include "models/common/session_codec.h"
 
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"

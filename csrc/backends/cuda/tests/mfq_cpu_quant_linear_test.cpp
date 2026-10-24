@@ -1,6 +1,6 @@
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "quant_linear.h"
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "tyloinfer/nint_rows.h"
 #include "tyloinfer/nvq_rows.h"
 

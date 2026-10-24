@@ -1,6 +1,6 @@
 #pragma once
 
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 
 #include "audio.h"
 #include <random>

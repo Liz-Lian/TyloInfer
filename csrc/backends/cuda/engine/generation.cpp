@@ -1,5 +1,5 @@
 #include "env.h"
-#include "runtime/routed_cache_resources.h"
+#include "storage/weights/routed_cache.h"
 #include "generation.h"
 #include "generation_flow.h"
 #include "token_row_prefetch.h"
@@ -14,10 +14,10 @@
 #include "models/qwen4_exp/ops.h"
 #include "models/common/full_block.h"
 #include "cuda_sampling.h"
-#include "storage/text_session_cache.h"
+#include "storage/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
-#include "storage/moe_expert_cache.h"
-#include "runtime/execution_options.h"
+#include "storage/weights/moe/expert_cache.h"
+#include "execution/options.h"
 #include "prefill_budget.h"
 
 #include <algorithm>

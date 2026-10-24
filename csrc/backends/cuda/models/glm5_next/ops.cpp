@@ -2,11 +2,11 @@
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "models/common/gated_mlp.h"
 #include "models/common/moe.h"
 #include "models/common/transformer_layer.h"
-#include "storage/session_codec.h"
+#include "models/common/session_codec.h"
 
 namespace mfq::cuda::glm5_next {
 using Config = mfq::models::glm5_next::Config;

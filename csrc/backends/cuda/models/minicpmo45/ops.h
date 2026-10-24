@@ -2,7 +2,7 @@
 #include "step_sequence.h"
 
 #include "models/common/causal_model_ops.h"
-#include "storage/session_state.h"
+#include "storage/session/state.h"
 #include "inference.h"
 #include "models/common/block.h"
 #include "models/minicpmo45/causal_lm.h"

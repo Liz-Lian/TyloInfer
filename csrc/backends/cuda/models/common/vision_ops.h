@@ -1,12 +1,12 @@
 #pragma once
 
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "models/common/grid_vision_model.h"
-#include "runtime/execution_options.h"
-#include "storage/moe_expert_cache.h"
-#include "storage/weight_loader.h"
+#include "execution/options.h"
+#include "storage/weights/moe/expert_cache.h"
+#include "storage/weights/loaders/weight.h"
 
 #include <algorithm>
 #include <array>

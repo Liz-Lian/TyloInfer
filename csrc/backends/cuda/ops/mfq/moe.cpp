@@ -1,16 +1,16 @@
-#include "../../runtime/execution_options.h"
+#include "execution/options.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_quant_ops.h"
 #include "mfq_cuda_nint_route_hint.h"
 #include "mfq_cuda_nvq1_decode.h"
-#include "storage/weight_loader.h"
+#include "storage/weights/loaders/weight.h"
 #include "moe.h"
 
 #include "quant_linear.h"
 #include "format.h"
 #include "mfq_format_compat.h"
-#include "mfe_expert_store.h"
-#include "runtime/moe_pipeline.h"
+#include "storage/weights/moe/expert_store.h"
+#include "kernels/moe/pipeline.h"
 
 #include <algorithm>
 #include <cstdlib>

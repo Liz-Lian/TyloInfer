@@ -1,12 +1,12 @@
 #include "mfq_cuda_sampling_ops.h"
 #include "cuda_batching.h"
 
-#include "cuda_execution.h"
+#include "execution/execution.h"
 #include "engine/decode_graph.h"
 #include "models/common/full_block.h"
 #include "models/qwen35/ops.h"
-#include "storage/moe_expert_cache.h"
-#include "runtime/execution_options.h"
+#include "storage/weights/moe/expert_cache.h"
+#include "execution/options.h"
 #include "prefill_budget.h"
 
 #include <algorithm>

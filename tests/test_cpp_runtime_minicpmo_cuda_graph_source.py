@@ -25,9 +25,9 @@ SOURCE = "\n".join(
     for path in (
         CUDA_ROOT / "models" / "common" / "causal_model_ops.h",
         CUDA_ROOT / "models" / "common" / "causal_model_ops.cpp",
-        CUDA_ROOT / "storage" / "session_codec.h",
-        CUDA_ROOT / "storage" / "transformer_loader.h",
-        CUDA_ROOT / "storage" / "transformer_loader.cpp",
+        CUDA_ROOT / "models" / "common" / "session_codec.h",
+        CUDA_ROOT / "models" / "common" / "transformer_loader.h",
+        CUDA_ROOT / "models" / "common" / "transformer_loader.cpp",
         CUDA_ROOT / "models" / "common" / "full_block.h",
         CUDA_ROOT / "models" / "common" / "full_block.cpp",
         CUDA_ROOT / "storage" / "state" / "kv_cache.h",
@@ -36,8 +36,8 @@ SOURCE = "\n".join(
         CUDA_ROOT / "include" / "mfq_cuda_cache_ops.h",
         CUDA_ROOT / "include" / "mfq_cuda_norm_ops.h",
         CUDA_ROOT / "include" / "mfq_cuda_sampling_ops.h",
-        CUDA_ROOT / "ops" / "common" / "include" / "cuda_execution.h",
-        CUDA_ROOT / "ops" / "common" / "cuda_execution.cpp",
+        CUDA_ROOT / "execution" / "execution.h",
+        CUDA_ROOT / "execution" / "execution.cpp",
         CUDA_ROOT / "engine" / "decode_graph.h",
     )
 ) + "\n" + BACKEND_CHECKS + "\n" + CUDA_RUNTIME + "\n" + (

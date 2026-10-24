@@ -1,8 +1,8 @@
 #include "env.h"
-#include "storage/weight_loader.h"
-#include "storage/moe_expert_cache.h"
-#include "storage/moe_quant_range_source.h"
-#include "cuda_execution.h"
+#include "storage/weights/loaders/weight.h"
+#include "storage/weights/moe/expert_cache.h"
+#include "storage/weights/moe/quant_range_source.h"
+#include "execution/execution.h"
 
 #include <algorithm>
 #include <chrono>

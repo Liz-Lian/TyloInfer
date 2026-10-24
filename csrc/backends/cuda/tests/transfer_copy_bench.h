@@ -1,5 +1,5 @@
 #pragma once
-#include "runtime/moe_pipeline.h"
+#include "kernels/moe/pipeline.h"
 
 static void benchmark_transfer_copy(bool timings=true) {
     namespace tb=mfq_tensor_backend;
