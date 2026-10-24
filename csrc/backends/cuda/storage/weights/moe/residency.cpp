@@ -6,6 +6,7 @@
 #include "storage/weights/moe/cached_source_internal.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "engine/executor/error.h"
+#include "engine/weights/routes.h"
 #include "host_memory_copy.h"
 #include "resident_allocations.h"
 #include "engine/weights/ranker.h"
@@ -90,7 +91,7 @@ struct MoeResidencyManager::Impl {
     int first=0,last=0;
     int64_t rounds=0;
     int pending_tokens=0;
-    std::vector<std::vector<float>> heat;
+    std::unique_ptr<mfq::engine::RouteHistory> route_history;
     std::vector<std::vector<uint8_t>> projection_marks;
     const float heat_retention=mfq::cuda::runtime_options::residency_heat_retention();
     const int interval=mfq::cuda::runtime_options::residency_interval();
@@ -120,26 +121,14 @@ struct MoeResidencyManager::Impl {
         const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return flag?flag[0]=='2':exchange_defaults;
     }();
-    std::vector<std::vector<float>> observations;
-    struct SpeculativeRoutes {
-        std::vector<int32_t> ids;
-        std::vector<uint64_t> heat_seen;
-        int rows=0;
-    };
-    std::vector<SpeculativeRoutes> speculative_routes;
     std::vector<mfq::MoeCacheKey> speculative_host_keys;
-    int speculative_rows=0;
     // One streamed expert serves every matching row of a verification window.
     // Rank its avoided transfer once, rather than counting each routed token.
     const int speculative_heat_mode=[] {
         const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_WINDOW_HEAT");
         return option?std::clamp(std::atoi(option),0,2):2;
     }();
-    const bool speculative_window_heat=speculative_heat_mode!=0;
     bool traced_speculative_heat=false;
-    std::atomic<std::uint64_t> speculative_route_windows{0},speculative_routes_committed{0};
-    std::atomic<std::uint64_t> speculative_routes_discarded{0},speculative_route_cancels{0};
-    std::atomic<std::uint64_t> speculative_heat_routes{0};
     std::unique_ptr<mfq::MoeResidencyRanker> ranking;
     struct TransferStage {std::string key;MoeGpuArena* arena=nullptr;int projection=0;};
     std::vector<std::vector<TransferStage>> transfer_stages;
@@ -234,7 +223,7 @@ struct MoeResidencyManager::Impl {
             ++shadow_index_matches;return row;
         }catch(const std::bad_alloc&) {return -1;}
     }
-    std::atomic<std::uint64_t> observed_routes{0},scheduled_rounds{0},candidate_bundles{0};
+    std::atomic<std::uint64_t> scheduled_rounds{0},candidate_bundles{0};
     std::atomic<std::uint64_t> planned_bundles{0},committed_bundles{0},memory_rejections{0};
     std::atomic<std::uint64_t> host_pack_bytes{0},direct_upload_bytes{0},backup_peak_bytes{0},shared_backup_bytes{0};
     std::atomic<std::uint64_t> candidate_projections{0},planned_projections{0},committed_projections{0},projection_memory_rejections{0};
@@ -427,13 +416,12 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
     std::cerr<<"moe_residency_policy retention="<<s.heat_retention<<" interval="<<s.interval
         <<" projection_heat="<<(cache->config_.moe_residency_warm && cache->config_.moe_residency_projection_heat)<<'\n';
     s.transfer_stages.resize(cache->sources_.size());
+    std::vector<mfq::engine::RouteHistory::Bundle> route_layout;
+    route_layout.reserve(cache->pipeline_bundles_.size());
     for(const auto& bundle:cache->pipeline_bundles_) {
-        const auto& source=cache->sources_.at(bundle[0]);s.heat.emplace_back(std::size_t(source->n_experts()),0.0f);
+        const auto& source=cache->sources_.at(bundle[0]);
+        route_layout.push_back({source->n_experts(),source->layer_id_>=0});
         s.projection_marks.emplace_back(std::size_t(source->n_experts()),uint8_t(0));
-        s.observations.emplace_back(std::size_t(source->n_experts()),0.0f);
-        s.speculative_routes.emplace_back();
-        s.speculative_routes.back().heat_seen.resize(
-            (std::size_t(source->n_experts())+63)/64);
         for(int id:bundle)if(cache->sources_.at(id)->layer_id_!=source->layer_id_ ||
                 cache->sources_.at(id)->n_experts()!=source->n_experts())
             throw std::invalid_argument("adaptive expert bundle geometry differs");
@@ -448,6 +436,12 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
                 stages.push_back({std::to_string(p)+":"+cohort.arena->signature,nullptr,p});
         }
     }
+    const auto heat_mode=s.speculative_heat_mode==0
+        ?mfq::engine::RouteHistory::HeatMode::count
+        :s.speculative_heat_mode==1
+            ?mfq::engine::RouteHistory::HeatMode::unique
+            :mfq::engine::RouteHistory::HeatMode::normalized;
+    s.route_history=std::make_unique<mfq::engine::RouteHistory>(route_layout,heat_mode,s.heat_retention);
     if(s.first==std::numeric_limits<int>::max())for(const auto& bundle:cache->pipeline_bundles_) {
         const auto layer=cache->sources_[bundle[0]]->layer_id_;
         s.first=std::min(s.first,layer);s.last=std::max(s.last,layer);
@@ -606,15 +600,9 @@ void MoeResidencyManager::prepare_decode() {
     const auto started=std::chrono::steady_clock::now();
     for(std::size_t b=0;b<s.prefill_routes.size();++b) {
         auto& sample=s.prefill_routes[b];if(!sample.tokens)continue;
-        std::fill(s.heat[b].begin(),s.heat[b].end(),0.0f);
-        std::fill(s.observations[b].begin(),s.observations[b].end(),0.0f);
         const auto* ids=static_cast<const int32_t*>(s.prefill_route_host->data())+b*32*s.prefill_route_stride;
-        for(int t=0;t<sample.tokens;++t) {
-            // About six recent token-equivalents: inform the first decode
-            // without letting a long prompt dominate later routing changes.
-            const float weight=std::exp2(-float(sample.tokens-1-t)/4.0f);
-            for(int r=0;r<sample.routes;++r)s.heat[b].at(ids[t*sample.routes+r])+=weight;
-        }
+        s.route_history->prefill(b,std::span<const int32_t>(ids,std::size_t(sample.tokens)*sample.routes),
+            sample.tokens,sample.routes);
         sample.tokens=0;
     }
     s.prefill_pending=false;
@@ -691,100 +679,52 @@ void MoeResidencyManager::finish_window(int layer) {
 void MoeResidencyManager::begin_speculative_routes(int rows) {
     auto& s=*impl_;
     if(rows<1 || rows>32)throw std::invalid_argument("speculative route row count is out of range");
-    if(s.speculative_rows)throw std::logic_error("speculative routes already pending");
-    for(auto& row:s.speculative_routes){row.ids.clear();row.rows=0;}
+    if(s.route_history->pending())throw std::logic_error("speculative routes already pending");
+    // Keep host learning's begin boundary ahead of policy state, as before.
     if(s.cache->ssd_experts())s.cache->host_experts_->begin_speculative_learning();
-    s.speculative_rows=rows;
+    s.route_history->begin(rows);
 }
 void MoeResidencyManager::commit_speculative_routes(int rows) {
-    auto& s=*impl_;if(!s.speculative_rows)return;
-    if(rows<0 || rows>s.speculative_rows)throw std::invalid_argument("committed route prefix is out of range");
+    auto& s=*impl_;if(!s.route_history->pending())return;
     // Validate the entire prefix before changing observations. Graph setup may
     // replay a layer more than once; only its latest route publication counts.
-    for(const auto& record:s.speculative_routes)
-        if(record.rows && (record.rows<rows || record.ids.size()%record.rows))
-            throw std::logic_error("speculative route publication lost row alignment");
+    const auto accepted=s.route_history->prefix(rows);
     if(s.cache->ssd_experts()) {
         s.speculative_host_keys.clear();
         // Commit in ordinary decode order: each accepted token visits all
         // layers. Frequency and recency must not depend on verify batch size.
-        for(int row=0;row<rows;++row)for(std::size_t b=0;b<s.speculative_routes.size();++b) {
-            auto& record=s.speculative_routes[b];if(!record.rows)continue;
-            const auto routes=record.ids.size()/record.rows;
-            const auto& bundle=s.cache->pipeline_bundles_[b];
-            for(std::size_t i=0;i<routes;++i) {
-                const auto expert=record.ids[std::size_t(row)*routes+i];
-                for(int p=0;p<3;++p) {
-                    if(p && bundle[p]==bundle[p-1])continue;
-                    const auto& source=*s.cache->sources_[bundle[p]];
-                    if(source.quant_source_->gpu_resident(expert))continue;
-                    s.speculative_host_keys.push_back({source.id_,source.expert_to_cohort_[expert],expert});
-                }
+        for(const auto& route:accepted) {
+            const auto& bundle=s.cache->pipeline_bundles_[route.bundle];
+            for(int p=0;p<3;++p) {
+                if(p && bundle[p]==bundle[p-1])continue;
+                const auto& source=*s.cache->sources_[bundle[p]];
+                if(source.quant_source_->gpu_resident(route.expert))continue;
+                s.speculative_host_keys.push_back({source.id_,source.expert_to_cohort_[route.expert],route.expert});
             }
         }
         s.cache->host_experts_->commit_speculative_learning(s.speculative_host_keys);
     }
-    uint64_t committed=0,heat_routes=0;
-    for(std::size_t b=0;b<s.speculative_routes.size();++b) {
-        auto& record=s.speculative_routes[b];if(!record.rows)continue;
-        const auto count=std::size_t(rows)*(record.ids.size()/record.rows);
-        if(s.speculative_window_heat)std::fill(record.heat_seen.begin(),record.heat_seen.end(),uint64_t(0));
-        std::size_t distinct=0;
-        for(std::size_t i=0;i<count;++i) {
-            const auto expert=unsigned(record.ids[i]);
-            if(s.speculative_window_heat) {
-                auto& word=record.heat_seen[expert/64];const auto bit=uint64_t(1)<<(expert%64);
-                if(word&bit)continue;
-                word|=bit;
-            }
-            ++distinct;
-        }
-        // Keep the old total heat (and its hysteresis scale) while removing
-        // within-window multiplicity from individual expert priorities.
-        // An all-repeated route set is unchanged; mixed route sets give every
-        // unique expert the same avoided-transfer value in this window.
-        const float weight=s.speculative_heat_mode==2 && distinct?float(count)/float(distinct):1.0f;
-        for(std::size_t i=0;i<count;++i) {
-            const auto expert=unsigned(record.ids[i]);
-            if(s.speculative_window_heat) {
-                auto& word=record.heat_seen[expert/64];const auto bit=uint64_t(1)<<(expert%64);
-                if(!(word&bit))continue;
-                word&=~bit;
-            }
-            s.observations[b][expert]+=weight;
-        }
-        heat_routes+=distinct;
-        committed+=count;
-        s.observed_routes+=count;s.speculative_routes_committed+=count;
-        s.speculative_routes_discarded+=record.ids.size()-count;
-    }
-    s.speculative_heat_routes+=heat_routes;
-    if(!s.traced_speculative_heat && committed) {
+    // Publish heat only after host learning has committed successfully.
+    const auto result=s.route_history->commit(rows);
+    if(!s.traced_speculative_heat && result.routes) {
         std::fprintf(stderr,"moe_mtp_heat_policy scope=first_committed_window window_union=%d normalized=%d rows=%d routes=%llu heat_routes=%llu\n",
-            int(s.speculative_window_heat),int(s.speculative_heat_mode==2),rows,static_cast<unsigned long long>(committed),
-            static_cast<unsigned long long>(heat_routes));
+            int(s.speculative_heat_mode!=0),int(s.speculative_heat_mode==2),rows,
+            static_cast<unsigned long long>(result.routes),
+            static_cast<unsigned long long>(result.heat_routes));
         s.traced_speculative_heat=true;
     }
-    ++s.speculative_route_windows;s.speculative_rows=0;
 }
 void MoeResidencyManager::discard_speculative_routes() noexcept {
-    auto& s=*impl_;if(!s.speculative_rows)return;
+    auto& s=*impl_;if(!s.route_history->pending())return;
     if(s.cache->ssd_experts())s.cache->host_experts_->discard_speculative_learning();
-    for(auto& record:s.speculative_routes){s.speculative_routes_discarded+=record.ids.size();record.ids.clear();record.rows=0;}
-    ++s.speculative_route_cancels;s.speculative_rows=0;
+    s.route_history->discard();
 }
 void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,int tokens,bool window_inflight,bool independent_sequences) {
     auto& s=*impl_;
     if(s.cache->pipeline_residency_suspended_)return;
     for(std::size_t b=0;b<s.cache->pipeline_bundles_.size();++b)
         if(s.cache->sources_[s.cache->pipeline_bundles_[b][0]]->layer_id_==layer) {
-            if(s.speculative_rows && layer>=0) {
-                if(independent_sequences || tokens<1 || tokens>s.speculative_rows || ids.size()%tokens)
-                    throw std::logic_error("speculative routes do not describe one aligned sequence");
-                for(const auto expert:ids)if(unsigned(expert)>=s.observations[b].size())
-                    throw std::out_of_range("speculative expert route is out of range");
-                auto& record=s.speculative_routes[b];record.ids=ids;record.rows=tokens;
-            }else for(int expert:ids){s.observations[b].at(expert)+=1.0f;++s.observed_routes;}
+            s.route_history->observe(b,ids,tokens,independent_sequences);
         }
     if(!s.cache->config_.moe_residency_adapt)return;
     if(layer!=s.last || s.work_pending.load(std::memory_order_acquire))return;
@@ -802,9 +742,7 @@ void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,
         (!independent_sequences || !short_interval || short_interval[0]!='0'));
     if(s.cache->config_.moe_residency_warm && interval_decode && (++s.rounds%s.interval)!=0)return;
     if(!s.pending.empty())throw std::logic_error("adaptive tier has an unpublished transaction");
-    for(std::size_t b=0;b<s.heat.size();++b)for(std::size_t e=0;e<s.heat[b].size();++e) {
-        s.heat[b][e]+=s.observations[b][e];s.observations[b][e]=0;
-    }
+    s.route_history->flush();
     ++s.scheduled_rounds;
     s.pending_tokens=tokens;
     s.error=nullptr;
@@ -888,7 +826,7 @@ void MoeResidencyManager::prepare() {
                     (!stage.arena || item.second->slots<stage.arena->slots))
                     stage.arena=item.second.get();
         }
-    auto& pairs=s.ranking->rank([&](const Expert& e){return s.heat[e.bundle][e.expert];},
+    auto& pairs=s.ranking->rank([&](const Expert& e){return s.route_history->heat(e.bundle,e.expert);},
         [&](const Expert& e) {
             const auto& bundle=cache.pipeline_bundles_[e.bundle];
             if(e.projection>=0) {
@@ -1187,7 +1125,7 @@ void MoeResidencyManager::prepare() {
         bytes=next_bytes;for(int i=0;i<count;++i)s.pending.push_back(std::move(bundle[i]));
     }
     s.memory_rejections+=memory_rejections;
-    for(auto& heat:s.heat)for(float& value:heat)value*=s.heat_retention;
+    s.route_history->decay();
     if(s.pending.empty()){finish_plan();return;}
     const auto options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true);
     if(cache.config_.moe_residency_warm &&
@@ -2010,7 +1948,7 @@ void MoeResidencyManager::publish_pending() {
     } catch(...) {const auto failure=std::current_exception();rollback();std::rethrow_exception(failure);}
 }
 MoeResidencyManager::Stats MoeResidencyManager::stats() const noexcept {
-    const auto& s=*impl_;return {s.observed_routes.load(),s.scheduled_rounds.load(),s.candidate_bundles.load(),
+    const auto& s=*impl_;const auto route_stats=s.route_history->stats();return {route_stats.observed,s.scheduled_rounds.load(),s.candidate_bundles.load(),
         s.planned_bundles.load(),s.committed_bundles.load(),s.memory_rejections.load(),
         s.host_pack_bytes.load(),s.direct_upload_bytes.load(),s.backup_peak_bytes.load(),s.shared_backup_bytes.load(),
         s.candidate_projections.load(),s.planned_projections.load(),s.committed_projections.load(),s.projection_memory_rejections.load(),
@@ -2024,9 +1962,9 @@ MoeResidencyManager::Stats MoeResidencyManager::stats() const noexcept {
         s.cached_copy_dma_bytes.load(),s.cached_copy_dma_fields.load(),
         s.direct_exchange_rounds.load(),s.direct_exchange_bytes.load(),s.direct_exchange_ns.load(),
         s.cached_copy_descriptors.load(),s.cached_copy_blocks.load(),s.exchange_defaults,s.kv_refill_bytes.load(),s.native_dma_batches.load(),s.native_dma_copies.load(),s.native_dma_fallbacks.load(),s.staging_budget_skips.load(),s.plan_ns.load(),s.decode_plan_ns.load(),
-        s.speculative_route_windows.load(),s.speculative_routes_committed.load(),s.speculative_routes_discarded.load(),s.speculative_route_cancels.load(),
+        route_stats.windows,route_stats.committed,route_stats.discarded,route_stats.cancels,
         s.shadow_backup_bytes.load(),s.shadow_backup_fields.load(),s.shadow_index_rebuilds.load(),
-        s.shadow_index_matches.load(),s.shadow_index_backup_bytes.load(),s.speculative_heat_routes.load(),
+        s.shadow_index_matches.load(),s.shadow_index_backup_bytes.load(),route_stats.heat_routes,
         s.predictor_overlap_rounds.load(),s.predictor_overlap_serves.load(),
         s.ssd_load_requests.load(),s.ssd_load_bytes.load(),s.ssd_gpu_image_bytes.load(),s.ssd_gpu_images.load(),s.ssd_gpu_image_ns.load(),s.ssd_gpu_image_copies.load()};
 }
@@ -2048,7 +1986,7 @@ void MoeResidencyManager::trace_rank_summary(std::ostream& out) const {
             const auto& source=*s.cache->sources_[bundle[p]];
             for(int e=0;e<source.n_experts();++e) {
                 auto* arena=source.cohorts_[source.expert_to_cohort_[e]].arena;
-                const double heat=s.heat[b][e]+s.observations[b][e];
+                const double heat=s.route_history->total_heat(b,e);
                 const bool hot=source.quant_source_->gpu_resident(e);
                 const auto bytes=double(source.bytes_for_expert(e));
                 total+=heat;total_bytes+=heat*bytes;
