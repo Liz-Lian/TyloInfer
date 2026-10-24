@@ -10,7 +10,9 @@
 #include <limits>
 #include <type_traits>
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "packed_backward.cuh"
+#endif
 #include "mx_float_decode.cuh"
 #include "mxfp8_grouped_gemm.h"
 
@@ -1233,6 +1235,7 @@ mfq_tensor_backend::Tensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
     return output;
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace {
 
 template <int Rows, int Columns>
@@ -1709,7 +1712,9 @@ void launch_mxfp8_backward_vec4_small_m(
 }
 
 }  // namespace
+#endif
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq_tensor_backend::Tensor mx_backward_input_cuda(
         mfq_tensor_backend::Tensor values,
         mfq_tensor_backend::Tensor scales,
@@ -1814,3 +1819,4 @@ mfq_tensor_backend::Tensor mx_backward_input_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return result;
 }
+#endif

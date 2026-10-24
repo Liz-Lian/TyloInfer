@@ -21,7 +21,9 @@
 #include <map>
 #include <type_traits>
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "packed_backward.cuh"
+#endif
 #include "packed_nvq.cuh"
 #include "nvq_dense_group.cuh"
 #include "nvq_routed_reuse.cuh"
@@ -6952,6 +6954,7 @@ mfq_tensor_backend::Tensor nvq_dequant_cuda(
     return output;
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace {
 
 template <int FORMAT, int Rows>
@@ -7915,6 +7918,7 @@ mfq_tensor_backend::Tensor nepq_backward_input_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return result;
 }
+#endif
 
 mfq_tensor_backend::Tensor nvq_gemm_f16_cuda(
     mfq_tensor_backend::Tensor indices,

@@ -5,7 +5,9 @@
 #include <limits>
 #include <cstdlib>
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "packed_backward.cuh"
+#endif
 #include <mma.h>
 
 namespace {
@@ -318,6 +320,7 @@ __global__ void sq_mmq(
     }
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 template<int Rows>
 __global__ void __launch_bounds__(128) sq_backward_matrix(
         const std::uint8_t* blob,
@@ -388,6 +391,8 @@ __global__ void __launch_bounds__(128) sq_backward_matrix(
         }
     }
 }
+
+#endif
 
 mfq::sq::Layout validate(
         const mfq_tensor_backend::Tensor& blob,
@@ -497,6 +502,7 @@ void dispatch_mmq(
 #undef TYLOINFER_SQ_M_CASE
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 template<int Rows>
 void launch_backward_matrix(
         const std::uint8_t* blob,
@@ -547,6 +553,8 @@ void dispatch_backward_matrix(
             output_gradient, partials, q, rows, output_tile, stream);
     }
 }
+
+#endif
 
 } // namespace
 
@@ -704,6 +712,7 @@ void mxfp4_sq_moe_matmul_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq_tensor_backend::Tensor mxfp4_sq_backward_input_cuda(
         mfq_tensor_backend::Tensor blob,
         mfq_tensor_backend::Tensor row_q,
@@ -771,3 +780,4 @@ mfq_tensor_backend::Tensor mxfp4_sq_backward_input_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return result;
 }
+#endif

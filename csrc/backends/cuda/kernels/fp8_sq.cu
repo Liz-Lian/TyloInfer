@@ -10,7 +10,9 @@
 #include <type_traits>
 #include <utility>
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "packed_backward.cuh"
+#endif
 
 namespace {
 
@@ -715,6 +717,7 @@ void routed_matmul(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 template <bool MXFP8>
 mfq_tensor_backend::Tensor backward_input(
         mfq_tensor_backend::Tensor blob,
@@ -746,6 +749,8 @@ mfq_tensor_backend::Tensor backward_input(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return result;
 }
+
+#endif
 
 } // namespace
 
@@ -819,6 +824,7 @@ mfq_tensor_backend::Tensor fp8_128_sq_matmul_cuda(
                     scale_kind, palettes_offset, symbols_offset, scales_offset));
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq_tensor_backend::Tensor mxfp8_sq_backward_input_cuda(
         mfq_tensor_backend::Tensor blob,
         mfq_tensor_backend::Tensor row_q,
@@ -853,6 +859,7 @@ mfq_tensor_backend::Tensor fp8_128_sq_backward_input_cuda(
                     (outputs + 127) / 128, (width + 127) / 128,
                     scale_kind, palettes_offset, symbols_offset, scales_offset));
 }
+#endif
 
 void mxfp8_sq_moe_matmul_cuda(
         mfq_tensor_backend::Tensor blob,

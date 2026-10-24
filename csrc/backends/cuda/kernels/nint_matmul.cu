@@ -29,7 +29,9 @@
 #include "glu.cuh"
 #include "backend.h"
 #include "mfq_cuda_nint_route_hint.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "packed_backward.cuh"
+#endif
 #include "packed_nint.cuh"
 #include "nint_route_group.cuh"
 #include "nint_short_decode.h"
@@ -1684,6 +1686,7 @@ __global__ void __launch_bounds__(128) nint_matmul_aligned_q8_kernel(
 }
 
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 // One metadata-driven packed input-gradient kernel covers every NINT q/k
 // allocation.  Each warp owns four adjacent input columns and reduces over
 // output neurons; q is read from row metadata and k is already represented by
@@ -1801,6 +1804,8 @@ __global__ void __launch_bounds__(128) nint_backward_input_kernel(
         }
     }
 }
+
+#endif
 
 
 template <typename Output>
@@ -3216,6 +3221,7 @@ mfq_tensor_backend::Tensor nint_matmul_input_mul_q8_ws_cuda(
 }
 
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq_tensor_backend::Tensor nint_backward_input_cuda(
         mfq_tensor_backend::Tensor bitstream,
         mfq_tensor_backend::Tensor row_q_bits,
@@ -3313,6 +3319,8 @@ mfq_tensor_backend::Tensor nint_backward_input_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return result;
 }
+
+#endif
 
 
 template <typename Output>
@@ -3482,6 +3490,7 @@ mfq_tensor_backend::Tensor nint8_zero_mmq_f32_packed_cuda(
 }
 
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq_tensor_backend::Tensor nint8_zero_backward_input_cuda(
         mfq_tensor_backend::Tensor quantized,
         mfq_tensor_backend::Tensor scale,
@@ -3518,3 +3527,4 @@ mfq_tensor_backend::Tensor nint8_zero_backward_input_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return result;
 }
+#endif

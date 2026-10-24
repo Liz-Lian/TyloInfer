@@ -202,6 +202,7 @@ __global__ void nepq_sparse_residual_grouped_kernel(
     }
 }
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 __global__ void nepq_sparse_residual_backward_input_kernel(
     const __half * dictionary,
     const int16_t * first,
@@ -367,6 +368,7 @@ __global__ void nepq_sparse_residual_backward_transpose_kernel(
     }
     input_gradient[logical] = __float2half(value);
 }
+#endif
 
 void validate_residual(
     const mfq_tensor_backend::Tensor & dictionary,
@@ -568,6 +570,7 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_grouped_cuda(
 }
 
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq_tensor_backend::Tensor nepq_sparse_residual_backward_input_cuda(
     mfq_tensor_backend::Tensor dictionary,
     mfq_tensor_backend::Tensor first,
@@ -709,3 +712,4 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_backward_transpose_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return input_gradient;
 }
+#endif
