@@ -1,7 +1,7 @@
 #include "packed_bench_utils.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfe_ffn_runtime.h"
-#include "tyloinfer/model_source.h"
+#include "model_source/model_source.h"
 #include <array>
 #include <atomic>
 #include <cstring>

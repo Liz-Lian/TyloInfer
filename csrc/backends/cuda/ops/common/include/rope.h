@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "tyloinfer/yarn.h"
+#include "engine/models/common/yarn.h"
 
 #include <cstdint>
 #include <mutex>

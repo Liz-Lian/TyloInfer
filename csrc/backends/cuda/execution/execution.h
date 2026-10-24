@@ -1,10 +1,10 @@
 #pragma once
-#include "tyloinfer/format_features.h"
+#include "formats/format_features.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
-#include "tensor_parallel.h"
-#include "tyloinfer/yarn.h"
+#include "engine/weights/tensor_parallel.h"
+#include "engine/models/common/yarn.h"
 
 #include <cuda_runtime_api.h>
 #ifdef TYLOINFER_HAVE_NCCL

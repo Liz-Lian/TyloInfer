@@ -1,7 +1,7 @@
 #include "env.h"
 #include "storage/weights/routed_cache.h"
 #include "generation.h"
-#include "generation_flow.h"
+#include "engine/executor/flow.h"
 #include "token_row_prefetch.h"
 #include "models/deepseek_v4/ops.h"
 #include "models/deepseek_v41/ops.h"
@@ -18,7 +18,7 @@
 #include "mfq_cuda_sampling_ops.h"
 #include "storage/weights/moe/expert_cache.h"
 #include "execution/options.h"
-#include "prefill_budget.h"
+#include "engine/batch/prefill_budget.h"
 
 #include <algorithm>
 #include <cstdlib>

@@ -1,5 +1,5 @@
 #include "models/common/axial_patch_vision_ops.h"
-#include "step_sequence.h"
+#include "engine/executor/sequence.h"
 
 #include <limits>
 #include <stdexcept>

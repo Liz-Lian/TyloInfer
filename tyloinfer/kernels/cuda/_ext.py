@@ -25,7 +25,7 @@ _KERNEL_DIR = str(_CUDA_BACKEND / "kernels")
 _CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")
 _CUDA_NATIVE_INCLUDE = str(_CUDA_BACKEND / "native")
 _CUDA_NATIVE_TENSOR_INCLUDE = str(_CUDA_BACKEND / "native" / "tensor")
-_CORE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "csrc" / "core" / "include")
+_CSRC_ROOT = str(Path(_REPOSITORY_ROOT) / "csrc")
 _GGML_ROOT = Path(_REPOSITORY_ROOT) / "csrc" / "components" / "ggml"
 _GGML_INCLUDE = str(_GGML_ROOT / "include")
 _GGML_SOURCE_INCLUDE = str(_GGML_ROOT / "src")
@@ -124,7 +124,7 @@ def ext():
                 _CUDA_RUNTIME_INCLUDE,
                 _CUDA_NATIVE_INCLUDE,
                 _CUDA_NATIVE_TENSOR_INCLUDE,
-                _CORE_INCLUDE,
+                _CSRC_ROOT,
                 _GGML_INCLUDE,
                 _GGML_SOURCE_INCLUDE,
                 _GGML_CUDA_INCLUDE,

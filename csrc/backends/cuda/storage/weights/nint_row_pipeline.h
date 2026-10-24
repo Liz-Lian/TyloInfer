@@ -1,6 +1,6 @@
 #pragma once
 #include "backend.h"
-#include "tyloinfer/nint_rows.h"
+#include "formats/quant/nint_rows.h"
 #include <memory>
 namespace mfq {class NintRowCache;}
 class NintRowStage {

@@ -2,7 +2,7 @@
 #include "timing.h"
 #include "mfq_cuda_quant_ops.h"
 #include "storage/weights/moe/quant_range_source.h"
-#include "tyloinfer/model_source.h"
+#include "model_source/model_source.h"
 #include <cstring>
 #include <filesystem>
 #include <map>

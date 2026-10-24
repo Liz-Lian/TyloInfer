@@ -2,8 +2,8 @@
 
 #include "models/common/causal_model_ops.h"
 #include "storage/session/state.h"
-#include "models/nemotron_h/causal_lm.h"
-#include "models/nemotron_h/config.h"
+#include "engine/models/nemotron_h/causal_lm.h"
+#include "engine/models/nemotron_h/config.h"
 
 #include <cstdint>
 #include <memory>

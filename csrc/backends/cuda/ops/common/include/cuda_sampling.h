@@ -1,7 +1,7 @@
 #pragma once
 
-#include "sampling.h"
-#include "tyloinfer/runtime.h"
+#include "engine/executor/sampling.h"
+#include "engine/requests/sampling.h"
 #include "mfq_cuda_sampling_ops.h"
 
 #include <cstddef>

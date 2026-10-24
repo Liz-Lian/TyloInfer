@@ -1,7 +1,7 @@
 #pragma once
 #include "ops.h"
-#include "tyloinfer/runtime.h"
-#include "step_sequence.h"
+#include "engine/requests/media.h"
+#include "engine/executor/sequence.h"
 
 namespace mfq::cuda::deepseek_v41_runtime {
 

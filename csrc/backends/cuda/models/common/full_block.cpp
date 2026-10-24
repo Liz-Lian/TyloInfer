@@ -1,8 +1,8 @@
 #include "models/common/full_block.h"
 #include "execution/options.h"
-#include "models/common/attention.h"
-#include "models/common/gated_mlp.h"
-#include "models/common/transformer_layer.h"
+#include "engine/models/common/attention.h"
+#include "engine/models/common/gated_mlp.h"
+#include "engine/models/common/transformer_layer.h"
 #include <array>
 
 #include "mfq_cuda_activation_ops.h"

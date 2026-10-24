@@ -7,8 +7,8 @@
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "mfq_cuda_selective_state_scan_ops.h"
-#include "models/common/recurrent_attention.h"
-#include "models/common/transformer_layer.h"
+#include "engine/models/common/recurrent_attention.h"
+#include "engine/models/common/transformer_layer.h"
 
 #include <array>
 #include <stdexcept>

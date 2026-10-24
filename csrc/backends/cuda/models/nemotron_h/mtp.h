@@ -4,7 +4,7 @@
 
 #include "models/common/mtp.h"
 #include "models/common/full_block.h"
-#include "models/nemotron_h/causal_lm.h"
+#include "engine/models/nemotron_h/causal_lm.h"
 #include "ops.h"
 
 #include <algorithm>

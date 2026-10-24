@@ -1,6 +1,6 @@
 #include "models/common/ffn.h"
-#include "models/common/gated_mlp.h"
-#include "models/common/moe.h"
+#include "engine/models/common/gated_mlp.h"
+#include "engine/models/common/moe.h"
 
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_moe_ops.h"

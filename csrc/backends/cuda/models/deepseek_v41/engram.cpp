@@ -1,8 +1,8 @@
 #include "engram.h"
 #include "context.h"
-#include "tyloinfer/host_parallel.h"
-#include "tyloinfer/mapped_prefetch_scope.h"
-#include "tyloinfer/nint_row_cache.h"
+#include "backends/cpu/native/host_parallel.h"
+#include "model_source/mapped_prefetch_scope.h"
+#include "backends/cpu/storage/nint_row_cache.h"
 #include "storage/weights/nint_row_pipeline.h"
 
 #include <condition_variable>

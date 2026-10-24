@@ -1,5 +1,5 @@
 #pragma once
-#include "tyloinfer/moe_residency_ranker.h"
+#include "engine/weights/ranker.h"
 #include <map>
 
 namespace mfq::bench {

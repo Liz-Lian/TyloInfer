@@ -3,8 +3,8 @@
 #include "storage/weights/moe/quant_range_source.h"
 #include "storage/weights/moe/pinned_expert_arena.h"
 #include "cpu_projection_rows.h"
-#include "tyloinfer/cpu_expert_pool.h"
-#include "tyloinfer/host_copy.h"
+#include "backends/cpu/execution/cpu_expert_pool.h"
+#include "backends/cpu/native/host_copy.h"
 #include "quant_linear.h"
 #include "format.h"
 

@@ -5,11 +5,11 @@
 #include "storage/weights/moe/host_cache_policy.h"
 #include "storage/weights/moe/pinned_expert_arena.h"
 #include "resident_allocations.h"
-#include "tyloinfer/host_parallel.h"
-#include "tyloinfer/runtime.h"
-#include "tyloinfer/mapped_read_profile.h"
-#include "tyloinfer/mapped_prefetch_scope.h"
-#include "tyloinfer/mapped_tensor_pages.h"
+#include "backends/cpu/native/host_parallel.h"
+#include "engine/executor/error.h"
+#include "model_source/mapped_read_profile.h"
+#include "model_source/mapped_prefetch_scope.h"
+#include "model_source/mapped_tensor_pages.h"
 #include <thread>
 #include <map>
 #include <condition_variable>
@@ -2862,7 +2862,8 @@ void mfq_legacy_prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExper
 }
 void mfq_legacy_prepare_moe_cpu_calibration_comparison(const std::shared_ptr<MoeExpertCache>& cache,bool replay) {
     mfq_legacy_prepare_moe_cpu_budget_comparison(cache,replay,true);
-    cache->pipeline_cpu_calibration_.reset(cache->pipeline_cpu_cost_);
+    mfq::reset_moe_cpu_calibration(
+        cache->pipeline_cpu_calibration_, cache->pipeline_cpu_cost_);
     cache->pipeline_cpu_cost_={};
 }
 std::size_t mfq_legacy_finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>& cache) {

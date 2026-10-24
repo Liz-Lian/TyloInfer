@@ -1,7 +1,7 @@
 #pragma once
 
 #include "storage/session/state.h"
-#include "mtp_policy.h"
+#include "engine/executor/mtp_policy.h"
 #include "backend.h"
 #include "models/common/causal_model_ops.h"
 

@@ -7,7 +7,7 @@
 #include "moe.h"
 #include "storage/weights/moe/expert_store.h"
 #include "storage/weights/moe/quant_range_source.h"
-#include "moe_cache_policy.h"
+#include "engine/weights/cache_policy.h"
 #include "moe_cache_transfer.h"
 
 #include <algorithm>

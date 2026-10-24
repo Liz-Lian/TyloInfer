@@ -1,5 +1,5 @@
 #include "storage/weights/moe/expert_cache.h"
-#include "tyloinfer/format_features.h"
+#include "formats/format_features.h"
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "mfq_cache_provider.h"
 #endif

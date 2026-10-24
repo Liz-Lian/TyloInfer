@@ -4,8 +4,8 @@
 
 #include "audio.h"
 #include <random>
-#include "generation_policy.h"
-#include "sampling.h"
+#include "engine/requests/policy.h"
+#include "engine/executor/sampling.h"
 #include "models/common/full_block.h"
 #include "ops.h"
 

@@ -1,7 +1,7 @@
 #pragma once
 #include "env.h"
 
-#include "moe_cache_profile.h"
+#include "engine/weights/profile.h"
 
 #include <cstdint>
 #include <cstddef>

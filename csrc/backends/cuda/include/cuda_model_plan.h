@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tyloinfer/model_graph.h"
+#include "formats/model_graph.h"
 
 #include <string>
 #include <string_view>
@@ -103,8 +103,8 @@ inline CudaModelPlan cuda_model_plan(
     if ((graph.backbone == "qwen3_5" || graph.backbone == "qwen4_exp") && vision != nullptr &&
         vision->tensor_root == "vision" &&
         vision->implementation == "grid_vit" &&
-        vision->input_contract == kMfqGridVisionInputContract &&
-        vision->position_policy == kMfqGridMropePositionPolicy) {
+        vision->input_contract == kGridVisionInputContract &&
+        vision->position_policy == kGridMropePositionPolicy) {
         result.vision = CudaVisionAdapter::grid_vit;
     }
     const auto* audio = graph.component("audio_input");
@@ -128,7 +128,7 @@ inline CudaModelPlan cuda_model_plan(
     // contract, and RADIO's graph carries no multimodal position policy.
     if (vision != nullptr && vision->tensor_root == "vision" &&
         vision->implementation == "radio" &&
-        vision->input_contract == kMfqRadioCpeInputContract &&
+        vision->input_contract == kRadioCpeInputContract &&
         vision->position_policy.empty()) {
         result.vision = CudaVisionAdapter::radio;
     }

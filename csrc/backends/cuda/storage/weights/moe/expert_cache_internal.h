@@ -7,9 +7,9 @@
 #include "storage/weights/moe/residency.h"
 #include "storage/weights/moe/dma_copy_batch.h"
 #include "storage/weights/moe/kv_expert_loan.h"
-#include "tyloinfer/host_parallel.h"
-#include "tyloinfer/moe_cpu_cost_model.h"
-#include "tyloinfer/moe_cpu_calibration.h"
+#include "backends/cpu/native/host_parallel.h"
+#include "engine/weights/cpu_cost_model.h"
+#include "engine/executor/cpu_calibration.h"
 #include <array>
 #include <cstring>
 #include <fstream>
@@ -1345,7 +1345,7 @@ private:
     std::uint64_t pipeline_cpu_policy_changed_routes_=0;
     bool pipeline_shared_cpu_cost_=false;
     mfq::MoeCpuCostModel pipeline_cpu_cost_;
-    mfq::MoeCpuCalibration pipeline_cpu_calibration_;
+    mfq::MoeCpuCalibrationState pipeline_cpu_calibration_;
     bool measuring_preload_h2d_=false;
     std::vector<std::unique_ptr<MoePreloadH2DTiming>> preload_h2d_timings_;
     friend class MoeCachedSource;

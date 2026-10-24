@@ -1,5 +1,5 @@
 #pragma once
-#include "tyloinfer/host_memory.h"
+#include "backends/cpu/native/host_memory.h"
 #include <cstdint>
 #include <memory>
 #include <optional>

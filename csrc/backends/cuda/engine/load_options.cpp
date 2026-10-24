@@ -2,11 +2,11 @@
 #include "cuda_runtime_config.h"
 #include "execution/execution.h"
 #include "storage/weights/moe/expert_cache.h"
-#include "moe_cache_profile.h"
-#include "moe_cache_profile_path.h"
+#include "engine/weights/profile.h"
+#include "engine/weights/profile_path.h"
 #include "backend.h"
 #include "quant_linear.h"
-#include "tensor_parallel.h"
+#include "engine/weights/tensor_parallel.h"
 
 #include <cuda_runtime_api.h>
 #include <algorithm>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tyloinfer/model_source.h"
+#include "model_source/model_source.h"
 
 #include <string>
 

@@ -1,6 +1,6 @@
 #include "env.h"
 #include "tq.h"
-#include "tyloinfer/model_source.h"
+#include "model_source/model_source.h"
 #include "weight_memory.h"
 #include "nlohmann/json.hpp"
 #include "storage/weights/moe/expert_cache.h"
@@ -11,7 +11,7 @@
 #include "kernels/moe/pipeline.h"
 #include "execution/decode_window.h"
 #include "execution/options.h"
-#include "tyloinfer/host_memory.h"
+#include "backends/cpu/native/host_memory.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>

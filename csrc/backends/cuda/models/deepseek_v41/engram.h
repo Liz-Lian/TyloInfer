@@ -3,9 +3,9 @@
 #include "storage/weights/loaders/weight.h"
 
 #include "storage/weights/moe/expert_store.h"
-#include "models/deepseek_v41/config.h"
-#include "csrc/models/deepseek_v41/engram.h"
-#include "models/deepseek_v41/causal_lm.h"
+#include "engine/models/deepseek_v41/config.h"
+#include "engine/models/deepseek_v41/engram.h"
+#include "engine/models/deepseek_v41/causal_lm.h"
 #include "quant_linear.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 

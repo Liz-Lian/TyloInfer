@@ -1,7 +1,7 @@
 #pragma once
 #include "env.h"
 #include "cuda_activity_trace.h"
-#include "inference.h"
+#include "engine/requests/inference.h"
 
 #include "mfq_cuda_sampling_ops.h"
 #include "execution/execution.h"
@@ -10,7 +10,7 @@
 #include "storage/weights/moe/expert_cache.h"
 #include "models/qwen4_exp/ops.h"
 #include "backend.h"
-#include "tyloinfer/model_source.h"
+#include "model_source/model_source.h"
 
 #include <cuda_profiler_api.h>
 #include <cuda_runtime_api.h>

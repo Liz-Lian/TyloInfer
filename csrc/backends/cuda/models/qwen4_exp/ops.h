@@ -2,8 +2,8 @@
 
 #include "models/common/causal_model_ops.h"
 #include "models/common/block.h"
-#include "models/qwen4_exp/causal_lm.h"
-#include "models/qwen4_exp/config.h"
+#include "engine/models/qwen4_exp/causal_lm.h"
+#include "engine/models/qwen4_exp/config.h"
 #include "quant_linear.h"
 
 #include <memory>

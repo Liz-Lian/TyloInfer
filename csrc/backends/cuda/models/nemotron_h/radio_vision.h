@@ -2,14 +2,14 @@
 
 #include "models/common/block.h"
 #include "models/common/vision_block_ops.h"
-#include "models/nemotron_h/vision.h"
+#include "engine/models/nemotron_h/vision.h"
 #include "storage/weights/loaders/weight.h"
 
 #include "execution/execution.h"
-#include "tyloinfer/runtime.h"
+#include "engine/requests/media.h"
 #include "mfq_cuda_activation_ops.h"
-#include "mfq_model_graph.h"
-#include "mfq_paged_prefix_cache.h"
+#include "formats/model_graph.h"
+#include "engine/state/prefix_cache.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -316,7 +316,7 @@ class CudaRadioPromptComponent {
                                          const RadioVisionConfig &config,
                                          std::string input_contract,
                                          std::string position_policy) {
-        if (input_contract != mfq::kMfqRadioCpeInputContract) {
+        if (input_contract != mfq::kRadioCpeInputContract) {
             throw std::invalid_argument("unsupported RADIO vision input contract: " +
                                         input_contract);
         }

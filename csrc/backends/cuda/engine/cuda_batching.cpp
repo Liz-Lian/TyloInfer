@@ -7,7 +7,7 @@
 #include "models/qwen35/ops.h"
 #include "storage/weights/moe/expert_cache.h"
 #include "execution/options.h"
-#include "prefill_budget.h"
+#include "engine/batch/prefill_budget.h"
 
 #include <algorithm>
 #include <exception>

@@ -2,8 +2,8 @@
 
 #include "transport.h"
 
-#include "inference.h"
-#include "text_processor.h"
+#include "engine/requests/inference.h"
+#include "engine/requests/processor.h"
 #include "chat.h"
 #include "nlohmann/json.hpp"
 

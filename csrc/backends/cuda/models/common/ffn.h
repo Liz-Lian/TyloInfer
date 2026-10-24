@@ -2,7 +2,7 @@
 
 #include "quant_linear.h"
 #include "mfe_weight.h"
-#include "models/common/gated_mlp.h"
+#include "engine/models/common/gated_mlp.h"
 
 #include <cstddef>
 #include <cstdint>

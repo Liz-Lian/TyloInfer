@@ -1,6 +1,6 @@
 #pragma once
 #include "execution/execution.h"
-#include "tyloinfer/tq_rows.h"
+#include "formats/tq_rows.h"
 #include "tyloinfer/kernels/cuda/tq_ops.h"
 #include "execution/layer_inputs.h"
 #include <array>

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "models/common/vision_ops.h"
-#include "models/common/axial_patch_vision.h"
-#include "step_sequence.h"
+#include "engine/models/common/axial_patch_vision.h"
+#include "engine/executor/sequence.h"
 
 #include <cstdint>
 #include <memory>

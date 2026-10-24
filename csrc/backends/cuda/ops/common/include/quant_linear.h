@@ -7,7 +7,7 @@
 #include "nint.h"
 #include "vq.h"
 #include "tq.h"
-#include "tyloinfer/format_features.h"
+#include "formats/format_features.h"
 
 #include "execution/execution.h"
 #include "backend.h"

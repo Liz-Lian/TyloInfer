@@ -3,7 +3,7 @@
 #include "quant_linear.h"
 #include "storage/weights/loaders/weight.h"
 
-#include "models/common/vision_block.h"
+#include "engine/models/common/vision_block.h"
 
 #include "backend.h"
 

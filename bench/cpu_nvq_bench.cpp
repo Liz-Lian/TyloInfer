@@ -1,7 +1,7 @@
 #include "packed_bench_utils.h"
 #include "nvq_group.h"
 #include "packed_nint.h"
-#include "tyloinfer/cpu_expert_pool.h"
+#include "backends/cpu/execution/cpu_expert_pool.h"
 
 #include <array>
 #include <chrono>

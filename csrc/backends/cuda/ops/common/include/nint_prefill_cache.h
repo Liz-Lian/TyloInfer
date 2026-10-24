@@ -1,6 +1,6 @@
 #pragma once
 #include <memory>
-#include "tyloinfer/format_features.h"
+#include "formats/format_features.h"
 
 struct NintPrefillDecodeCacheState;
 // Reuse the existing temporary dense projection within one prefill layer.

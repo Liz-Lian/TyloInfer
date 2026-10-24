@@ -1,6 +1,6 @@
 #pragma once
 
-#include "continuous_batch.h"
+#include "engine/batch/batch.h"
 #include "execution/execution.h"
 #include "cuda_runtime_config.h"
 #include "cuda_sampling.h"

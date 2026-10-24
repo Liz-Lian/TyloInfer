@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "tyloinfer/qsa_kv_store.h"
+#include "backends/cpu/storage/qsa_blocks.h"
 #include <memory>
 #include <string>
 #include <vector>

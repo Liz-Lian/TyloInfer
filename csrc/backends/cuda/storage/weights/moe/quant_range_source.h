@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tyloinfer/mfe_quant_expert_store.h"
+#include "formats/quant/mfe_quant_expert_store.h"
 #include "moe.h"
 #include "storage/weights/moe/host_expert_cache.h"
 #include <atomic>

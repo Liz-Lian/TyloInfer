@@ -2,7 +2,7 @@
 
 #include "mfq_cuda_moe_ops.h"
 #include "storage/weights/moe/expert_cache_internal.h"
-#include "tyloinfer/moe_dispatch_plan.h"
+#include "engine/weights/dispatch_plan.h"
 
 struct MoeCachedCohort {
     int index = -1;

@@ -1,5 +1,5 @@
 #include "storage/session/state.h"
-#include "csrc/models/deepseek_v41/engram.h"
+#include "engine/models/deepseek_v41/engram.h"
 
 #include <algorithm>
 #include <array>

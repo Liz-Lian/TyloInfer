@@ -28,14 +28,14 @@
 #include "execution/options.h"
 #include "storage/weights/moe/expert_cache.h"
 #include "models/common/vision_ops.h"
-#include "models/common/grid_vision_model.h"
+#include "engine/models/common/grid_vision_model.h"
 #include <array>
 
 #include "models/common/causal_model_ops.h"
-#include "grid_vision.h"
-#include "tyloinfer/runtime.h"
+#include "engine/models/common/vision/grid_vision.h"
+#include "engine/requests/media.h"
 #include "mfq_cuda_attention_ops.h"
-#include "mfq_paged_prefix_cache.h"
+#include "engine/state/prefix_cache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -287,11 +287,11 @@ class CudaGridVisionPromptComponent {
     load(CudaExecutionContext &execution, const mfq::ModelSource &model,
          const GridVisionConfig &vision, int64_t image_token_id, int64_t video_token_id,
          std::string input_contract, std::string position_policy) {
-        if (input_contract != kMfqGridVisionInputContract) {
+        if (input_contract != kGridVisionInputContract) {
             throw std::invalid_argument("unsupported grid-Vision input contract: " +
                                         input_contract);
         }
-        if (position_policy != kMfqGridMropePositionPolicy) {
+        if (position_policy != kGridMropePositionPolicy) {
             throw std::invalid_argument("unsupported grid-Vision position policy: " +
                                         position_policy);
         }

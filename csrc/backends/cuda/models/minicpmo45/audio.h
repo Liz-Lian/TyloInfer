@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/minicpmo45/causal_lm.h"
+#include "engine/models/minicpmo45/causal_lm.h"
 #include "vision.h"
 
 struct MiniCPMO45WhisperAttention {

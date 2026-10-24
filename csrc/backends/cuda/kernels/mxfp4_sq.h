@@ -1,6 +1,6 @@
 #pragma once
 #include "backend.h"
-#include "csrc/core/include/tyloinfer/mxfp4_sq_blob.h"
+#include "formats/mxfp4_sq_blob.h"
 
 // Parse the self-describing blob on CPU before upload.  These capture-safe
 // entry points consume loader-expanded row metadata without GPU-to-CPU reads.

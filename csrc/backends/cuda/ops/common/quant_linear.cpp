@@ -3,7 +3,7 @@
 #include "mfq_cuda_quant_ops.h"
 #include "mfq_cuda_nint_route_hint.h"
 #include "quant_linear.h"
-#include "tyloinfer/format_features.h"
+#include "formats/format_features.h"
 #include "weight_memory.h"
 
 #include "format.h"
@@ -13,8 +13,8 @@
 #include "mxfp4_sq.h"
 #include "nint.h"
 #include "vq.h"
-#include "nvq_codebooks.generated.h"
-#include "tyloinfer/mxfp4_sq_decode.h"
+#include "formats/generated/nvq_codebooks.generated.h"
+#include "formats/mxfp4_sq_decode.h"
 
 #include <algorithm>
 #include <array>

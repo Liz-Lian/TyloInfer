@@ -2,8 +2,8 @@
 #include "execution/decode_window.h"
 #include "execution/options.h"
 #include "context.h"
-#include "tyloinfer/runtime.h"
-#include "tyloinfer/cpu_expert_pool.h"
+#include "engine/executor/error.h"
+#include "backends/cpu/execution/cpu_expert_pool.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "paged_kv_allocator.h"
+#include "engine/state/pages.h"
 #include "batch_state.h"
 #include "models/common/full_block.h"
 #include "execution/options.h"

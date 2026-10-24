@@ -8,7 +8,6 @@
 
 #include "quant_linear.h"
 #include "format.h"
-#include "mfq_format_compat.h"
 #include "storage/weights/moe/expert_store.h"
 #include "kernels/moe/pipeline.h"
 
@@ -97,8 +96,6 @@ static MfeCpu unpack_mfe_impl(
             if (dtype_nbytes == 0) throw std::runtime_error("empty MFE pool dtype");
             pool.dtype.assign(
                 reinterpret_cast<const char *>(blob.data() + off), dtype_nbytes);
-            pool.dtype = std::string(
-                mfq::canonical_format_dtype(pool.dtype));
             off += dtype_nbytes;
             pool.runtime_payload.assign(
                 blob.begin() + (ptrdiff_t)off,

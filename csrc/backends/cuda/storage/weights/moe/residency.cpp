@@ -4,11 +4,11 @@
 #include "kernels/moe/pipeline.h"
 #include "storage/weights/moe/native_dma_batch.h"
 #include "storage/weights/moe/cached_source_internal.h"
-#include "tyloinfer/cpu_expert_pool.h"
-#include "tyloinfer/runtime.h"
+#include "backends/cpu/execution/cpu_expert_pool.h"
+#include "engine/executor/error.h"
 #include "host_memory_copy.h"
 #include "resident_allocations.h"
-#include "tyloinfer/moe_residency_ranker.h"
+#include "engine/weights/ranker.h"
 #include <algorithm>
 #include <array>
 #include <exception>

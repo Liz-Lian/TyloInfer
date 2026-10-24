@@ -4,7 +4,7 @@
 #include "execution/execution.h"
 #include "cuda_sampling.h"
 #include "backend.h"
-#include "tensor_parallel.h"
+#include "engine/weights/tensor_parallel.h"
 
 #include <algorithm>
 #include <chrono>

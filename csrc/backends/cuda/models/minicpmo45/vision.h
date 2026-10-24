@@ -2,8 +2,8 @@
 
 #include "models/common/vision_block_ops.h"
 #include "storage/weights/loaders/weight.h"
-#include "models/common/transformer_layer.h"
-#include "models/minicpmo45/causal_lm.h"
+#include "engine/models/common/transformer_layer.h"
+#include "engine/models/minicpmo45/causal_lm.h"
 
 #include "ops.h"
 #include "backend.h"

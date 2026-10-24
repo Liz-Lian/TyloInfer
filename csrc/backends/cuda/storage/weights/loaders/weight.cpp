@@ -3,7 +3,6 @@
 #include "storage/weights/loaders/weight.h"
 #include "weight_memory.h"
 #include "mfq_cuda_quant_ops.h"
-#include "mfq_format_compat.h"
 #include "float_projection.h"
 #include "gated_residual_fused.h"
 #include "selected_attention.h"
@@ -18,7 +17,7 @@
 #include "storage/weights/moe/expert_cache.h"
 #include "storage/weights/moe/expert_store.h"
 #include "storage/weights/moe/quant_range_source.h"
-#include "tyloinfer/packed_nint_expert_store.h"
+#include "formats/quant/packed_nint_expert_store.h"
 #include <cstdlib>
 #include <cstdio>
 #include <atomic>
