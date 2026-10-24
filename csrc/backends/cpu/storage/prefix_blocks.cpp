@@ -1,5 +1,5 @@
-#include "mfq_paged_prefix_cache.h"
-#include "include/tyloinfer/disk_budget.h"
+#include "prefix_blocks.h"
+#include "disk_budget.h"
 
 #include <algorithm>
 #include <atomic>
@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -309,7 +310,31 @@ std::string block_hash_hex(const BlockHash& hash) {
     return stream.str();
 }
 
-class PagedPrefixCache::Implementation {
+BlockHash prefix_block_hash(
+    const BlockHash& compatibility_hash,
+    std::size_t block_size_tokens,
+    const BlockHash& parent,
+    const std::int64_t* token_ids,
+    std::size_t token_count,
+    std::string_view extra_key) {
+    if (token_ids == nullptr || token_count == 0 ||
+        token_count > block_size_tokens) {
+        throw std::invalid_argument("invalid paged prefix token block");
+    }
+    Sha256State state;
+    state.update(kHashDomain.data(), kHashDomain.size());
+    state.update(compatibility_hash.data(), compatibility_hash.size());
+    state.update(parent.data(), parent.size());
+    hash_little_endian<std::uint64_t>(state, extra_key.size());
+    state.update(extra_key.data(), extra_key.size());
+    hash_little_endian<std::uint64_t>(state, token_count);
+    for (std::size_t index = 0; index < token_count; ++index) {
+        hash_little_endian<std::int64_t>(state, token_ids[index]);
+    }
+    return state.finish();
+}
+
+class PrefixBlockStore::Implementation {
 private:
     struct DiskEntry {
         std::filesystem::path path;
@@ -360,7 +385,7 @@ private:
     };
 
 public:
-    explicit Implementation(PagedPrefixCacheConfig config)
+    explicit Implementation(PrefixBlockStoreConfig config)
         : config_(std::move(config)),
           compatibility_hash_(sha256(config_.compatibility_key)) {
         if (config_.cache_dir.empty()) {
@@ -418,112 +443,37 @@ public:
         return compatibility_hash_;
     }
 
-    BlockHash block_hash(
+    bool contains(
+        const BlockHash& hash,
         const BlockHash& parent,
-        const std::int64_t* token_ids,
-        std::size_t token_count,
-        std::string_view extra_key) const {
-        if (token_ids == nullptr || token_count == 0 ||
-            token_count > config_.block_size_tokens) {
-            throw std::invalid_argument("invalid paged prefix token block");
+        std::size_t token_count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto disk = disk_.find(hash);
+        if (disk != disk_.end() &&
+            (disk->second.parent != parent ||
+             disk->second.token_count != token_count)) {
+            erase_corrupt_locked(hash);
         }
-        Sha256State state;
-        state.update(kHashDomain.data(), kHashDomain.size());
-        state.update(compatibility_hash_.data(), compatibility_hash_.size());
-        state.update(parent.data(), parent.size());
-        hash_little_endian<std::uint64_t>(state, extra_key.size());
-        state.update(extra_key.data(), extra_key.size());
-        hash_little_endian<std::uint64_t>(state, token_count);
-        for (std::size_t index = 0; index < token_count; ++index) {
-            hash_little_endian<std::int64_t>(state, token_ids[index]);
-        }
-        return state.finish();
+        return disk_.count(hash) != 0 || pending_.count(hash) != 0 ||
+            hot_.count(hash) != 0;
     }
 
-    PrefixMatch match(
-        const std::vector<std::int64_t>& token_ids,
-        std::string_view extra_key,
-        bool record_query) {
-        PrefixMatch result;
-        BlockHash parent{};
-        const auto full_blocks = token_ids.size() / config_.block_size_tokens;
-        // Hashing a long prompt is pure CPU work. Keep it outside the cache
-        // mutex so SSD writers, hot-cache hits, and unrelated requests are
-        // not serialized behind the full token walk. Check after each block
-        // so a cold miss still stops hashing immediately.
-        if (record_query) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            ++metrics_.queries;
-        }
-        for (std::size_t index = 0; index < full_blocks; ++index) {
-            const auto offset = index * config_.block_size_tokens;
-            const auto expected_parent = parent;
-            const auto hash = block_hash(
-                parent,
-                token_ids.data() + offset,
-                config_.block_size_tokens,
-                extra_key);
-            bool available = false;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                auto disk = disk_.find(hash);
-                bool disk_available = disk != disk_.end();
-                if (disk != disk_.end() &&
-                    (disk->second.parent != expected_parent ||
-                     disk->second.token_count != config_.block_size_tokens)) {
-                    erase_corrupt_locked(hash);
-                    disk_available = false;
-                }
-                available = disk_available ||
-                    pending_.count(hash) != 0 || hot_.count(hash) != 0;
+    std::vector<std::size_t> tail_lengths(
+        const BlockHash& parent, std::size_t maximum) const {
+        std::vector<std::size_t> result;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = tail_lengths_.find(parent);
+        if (found != tail_lengths_.end()) {
+            for (auto it = found->second.rbegin();
+                 it != found->second.rend(); ++it) {
+                if (it->first <= maximum) result.push_back(it->first);
             }
-            if (!available) break;
-            parent = hash;
-            result.blocks.push_back(hash);
-            result.matched_tokens += config_.block_size_tokens;
-        }
-        std::vector<std::size_t> tail_lengths;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto found = tail_lengths_.find(parent);
-            if (found != tail_lengths_.end()) {
-                const auto remaining = token_ids.size() - result.matched_tokens;
-                for (auto it = found->second.rbegin(); it != found->second.rend(); ++it) {
-                    if (it->first <= remaining) tail_lengths.push_back(it->first);
-                }
-            }
-        }
-        for (const auto count : tail_lengths) {
-            const auto hash = block_hash(parent,
-                token_ids.data() + result.matched_tokens, count, extra_key);
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto disk = disk_.find(hash);
-            if (disk != disk_.end() && (disk->second.parent != parent || disk->second.token_count != count))
-                erase_corrupt_locked(hash);
-            if (disk_.count(hash) == 0 && pending_.count(hash) == 0 && hot_.count(hash) == 0)
-                continue;
-            result.blocks.push_back(hash);
-            result.matched_tokens += count;
-            break;
-        }
-        if (record_query && result.matched_tokens > 0) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            ++metrics_.hits;
-            metrics_.hit_tokens += result.matched_tokens;
         }
         return result;
     }
 
-    void record_match(std::size_t matched_tokens) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ++metrics_.queries;
-        if (matched_tokens > 0) {
-            ++metrics_.hits;
-            metrics_.hit_tokens += matched_tokens;
-        }
-    }
-
     BlockHash store(
+        const BlockHash& hash,
         const BlockHash& parent,
         const std::int64_t* token_ids,
         std::size_t token_count,
@@ -533,8 +483,10 @@ public:
         if (!payload) {
             throw std::invalid_argument("paged prefix payload is null");
         }
-        const auto hash = block_hash(
-            parent, token_ids, token_count, extra_key);
+        if (!token_ids || !token_count ||
+            token_count > config_.block_size_tokens) {
+            throw std::invalid_argument("invalid paged prefix token block");
+        }
         bool write_inline = false;
         std::uint64_t write_epoch = 0;
         const auto payload_bytes = static_cast<std::uint64_t>(
@@ -963,7 +915,7 @@ public:
         return removed;
     }
 
-    PagedPrefixCacheMetrics metrics() const {
+    PrefixBlockStoreMetrics metrics() const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto result = metrics_;
         result.disk_blocks = disk_.size();
@@ -1586,7 +1538,9 @@ private:
         auto& victims = tail_cleanup_[hash];
         for (auto length = tails->second.rbegin(); length != tails->second.rend(); ++length) {
             if (length->first >= count) continue;
-            const auto previous = block_hash(parent, tokens, length->first, extra_key);
+            const auto previous = prefix_block_hash(
+                compatibility_hash_, config_.block_size_tokens, parent,
+                tokens, length->first, extra_key);
             if (tail_metadata_.count(previous) == 0) continue;
             if (retained++ >= config_.retain_tail_versions) victims.push_back(previous);
         }
@@ -1663,7 +1617,7 @@ private:
         metrics_.pending_max_bytes = config_.max_pending_bytes;
     }
 
-    PagedPrefixCacheConfig config_;
+    PrefixBlockStoreConfig config_;
     BlockHash compatibility_hash_{};
     std::filesystem::path namespace_dir_;
     mutable std::mutex mutex_;
@@ -1692,125 +1646,100 @@ private:
     bool disk_budget_pending_ = false;
     bool disk_identity_pending_ = false;
     bool clearing_ = false;
-    PagedPrefixCacheMetrics metrics_;
+    PrefixBlockStoreMetrics metrics_;
     std::atomic<std::uint64_t> temp_counter_{0};
 };
 
-PagedPrefixCache::PagedPrefixCache(PagedPrefixCacheConfig config)
+PrefixBlockStore::PrefixBlockStore(PrefixBlockStoreConfig config)
     : implementation_(
           std::make_unique<Implementation>(std::move(config))) {}
 
-PagedPrefixCache::~PagedPrefixCache() = default;
+PrefixBlockStore::~PrefixBlockStore() = default;
 
-std::size_t PagedPrefixCache::block_size_tokens() const noexcept {
+std::size_t PrefixBlockStore::block_size_tokens() const noexcept {
     return implementation_->block_size_tokens();
 }
 
-const BlockHash& PagedPrefixCache::compatibility_hash() const noexcept {
+const BlockHash& PrefixBlockStore::compatibility_hash() const noexcept {
     return implementation_->compatibility_hash();
 }
 
-BlockHash PagedPrefixCache::block_hash(
+BlockHash PrefixBlockStore::store(
+    const BlockHash& hash,
     const BlockHash& parent,
     const std::int64_t* token_ids,
     std::size_t token_count,
-    std::string_view extra_key) const {
-    return implementation_->block_hash(
-        parent, token_ids, token_count, extra_key);
-}
-
-PrefixMatch PagedPrefixCache::match(
-    const std::vector<std::int64_t>& token_ids,
+    PagedPrefixPayload payload,
     std::string_view extra_key,
-    bool record_query) {
-    return implementation_->match(token_ids, extra_key, record_query);
-}
-
-void PagedPrefixCache::record_match(std::size_t matched_tokens) {
-    implementation_->record_match(matched_tokens);
-}
-
-BlockHash PagedPrefixCache::store(
-    const BlockHash& parent,
-    const std::int64_t* token_ids,
-    std::size_t token_count,
-    std::shared_ptr<const std::vector<std::uint8_t>> payload,
-    std::string_view extra_key) {
+    bool replace_existing) {
     return implementation_->store(
-        parent,
-        token_ids,
-        token_count,
-        std::move(payload),
-        extra_key,
-        false);
+        hash, parent, token_ids, token_count, std::move(payload),
+        extra_key, replace_existing);
 }
 
-BlockHash PagedPrefixCache::replace(
+bool PrefixBlockStore::contains(
+    const BlockHash& hash,
     const BlockHash& parent,
-    const std::int64_t* token_ids,
-    std::size_t token_count,
-    std::shared_ptr<const std::vector<std::uint8_t>> payload,
-    std::string_view extra_key) {
-    return implementation_->store(
-        parent,
-        token_ids,
-        token_count,
-        std::move(payload),
-        extra_key,
-        true);
+    std::size_t token_count) {
+    return implementation_->contains(hash, parent, token_count);
 }
 
-std::optional<std::vector<std::uint8_t>> PagedPrefixCache::load(
+std::vector<std::size_t> PrefixBlockStore::tail_lengths(
+    const BlockHash& parent, std::size_t maximum) const {
+    return implementation_->tail_lengths(parent, maximum);
+}
+
+std::optional<std::vector<std::uint8_t>> PrefixBlockStore::load(
     const BlockHash& hash) {
     return implementation_->load(hash);
 }
 
-std::vector<PagedPrefixPayload> PagedPrefixCache::load_prefix(
+std::vector<PagedPrefixPayload> PrefixBlockStore::load_prefix(
     const std::vector<BlockHash>& blocks) {
     return implementation_->load_prefix(blocks);
 }
 
-bool PagedPrefixCache::invalidate(const BlockHash& block) {
+bool PrefixBlockStore::invalidate(const BlockHash& block) {
     return implementation_->invalidate(block);
 }
 
-void PagedPrefixCache::pin(const std::vector<BlockHash>& blocks) {
+void PrefixBlockStore::pin(const std::vector<BlockHash>& blocks) {
     implementation_->pin(blocks);
 }
 
-void PagedPrefixCache::unpin(const std::vector<BlockHash>& blocks) {
+void PrefixBlockStore::unpin(const std::vector<BlockHash>& blocks) {
     implementation_->unpin(blocks);
 }
 
-std::uint64_t PagedPrefixCache::set_hot_limit(std::uint64_t max_bytes) {
+std::uint64_t PrefixBlockStore::set_hot_limit(std::uint64_t max_bytes) {
     return implementation_->set_hot_limit(max_bytes);
 }
 
-std::uint64_t PagedPrefixCache::set_disk_limit(std::uint64_t max_bytes) {
+std::uint64_t PrefixBlockStore::set_disk_limit(std::uint64_t max_bytes) {
     return implementation_->set_disk_limit(max_bytes);
 }
 
-std::size_t PagedPrefixCache::refresh_disk_index() {
+std::size_t PrefixBlockStore::refresh_disk_index() {
     return implementation_->refresh_disk_index();
 }
 
-std::uint64_t PagedPrefixCache::trim_hot(std::uint64_t target_bytes) {
+std::uint64_t PrefixBlockStore::trim_hot(std::uint64_t target_bytes) {
     return implementation_->trim_hot(target_bytes);
 }
 
-std::uint64_t PagedPrefixCache::reserve_ram(std::uint64_t allocation_bytes) {
+std::uint64_t PrefixBlockStore::reserve_ram(std::uint64_t allocation_bytes) {
     return implementation_->reserve_ram(allocation_bytes);
 }
 
-void PagedPrefixCache::flush() {
+void PrefixBlockStore::flush() {
     implementation_->flush();
 }
 
-std::size_t PagedPrefixCache::clear() {
+std::size_t PrefixBlockStore::clear() {
     return implementation_->clear();
 }
 
-PagedPrefixCacheMetrics PagedPrefixCache::metrics() const {
+PrefixBlockStoreMetrics PrefixBlockStore::metrics() const {
     return implementation_->metrics();
 }
 
