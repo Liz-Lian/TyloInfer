@@ -190,18 +190,18 @@ mfq_tensor_backend::Tensor run_nint_linear(
         const NintWeight& w,
         mfq_tensor_backend::Tensor x,
         MfqOptional<mfq_tensor_backend::Tensor> gate,
-        int mode) {
+        InputGateMode mode) {
     if (!x.is_cuda() || !w.q8_zero || kl_mmq.mode == KlMmqMode::Default) {
         return gate.has_value()
-            ? nint_matmul_input_mul(profiler, w, x, gate.value(), mode)
+            ? nint_matmul_input_mul(profiler, w, x, gate.value(), static_cast<int>(mode))
             : nint_matmul(profiler, w, x);
     }
     x = x.contiguous().to(mfq_tensor_backend::kFloat16);
     if (gate.has_value()) {
-        TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NINT input gate mode must be sigmoid or SiLU");
+        TYLOINFER_RUNTIME_CHECK(mode == InputGateMode::Sigmoid || mode == InputGateMode::Silu, "NINT input gate mode must be sigmoid or SiLU");
         auto g = gate.value().contiguous().to(mfq_tensor_backend::kFloat16);
         TYLOINFER_RUNTIME_CHECK(x.sizes() == g.sizes(), "NINT x and gate shapes must match");
-        x = mode == 1 ? x * mfq_tensor_backend::sigmoid(g) : x * mfq_tensor_backend::silu(g);
+        x = mode == InputGateMode::Sigmoid ? x * mfq_tensor_backend::sigmoid(g) : x * mfq_tensor_backend::silu(g);
     }
     x = pad_last(x, w.neuron_len);
     const int64_t rows = x.size(0);
@@ -225,18 +225,18 @@ mfq_tensor_backend::Tensor run_nvq_linear(
         const NvqWeight& w,
         mfq_tensor_backend::Tensor x,
         MfqOptional<mfq_tensor_backend::Tensor> gate,
-        int mode) {
+        InputGateMode mode) {
     if (!x.is_cuda() || kl_mmq.mode == KlMmqMode::Default) {
         return gate.has_value()
-            ? nvq_matmul_input_mul(profiler, w, x, gate.value(), mode)
+            ? nvq_matmul_input_mul(profiler, w, x, gate.value(), static_cast<int>(mode))
             : nvq_matmul(profiler, w, x);
     }
     x = x.contiguous().to(mfq_tensor_backend::kFloat16);
     if (gate.has_value()) {
-        TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ input gate mode must be sigmoid or SiLU");
+        TYLOINFER_RUNTIME_CHECK(mode == InputGateMode::Sigmoid || mode == InputGateMode::Silu, "NVQ input gate mode must be sigmoid or SiLU");
         auto g = gate.value().contiguous().to(mfq_tensor_backend::kFloat16);
         TYLOINFER_RUNTIME_CHECK(x.sizes() == g.sizes(), "NVQ x and gate shapes must match");
-        x = mode == 1 ? x * mfq_tensor_backend::sigmoid(g) : x * mfq_tensor_backend::silu(g);
+        x = mode == InputGateMode::Sigmoid ? x * mfq_tensor_backend::sigmoid(g) : x * mfq_tensor_backend::silu(g);
     }
     x = pad_last(x, w.neuron_len);
     TYLOINFER_RUNTIME_CHECK(x.size(0) >= 16, "KLD common NVQ MMQ requires at least 16 activation rows");

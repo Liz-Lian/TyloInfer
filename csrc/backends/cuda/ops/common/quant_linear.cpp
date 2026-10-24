@@ -70,14 +70,14 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
         const QuantLinearShard & shard,
         mfq_tensor_backend::Tensor x,
         MfqOptional<mfq_tensor_backend::Tensor> gate,
-        int gate_mode) {
+        InputGateMode gate_mode) {
     MfqCudaGuard guard(shard.device);
     if (shard.kind == QuantLinearKind::Tq) {
         if (gate.has_value()) {
-            TYLOINFER_RUNTIME_CHECK(gate_mode == 1 || gate_mode == 2,
+            TYLOINFER_RUNTIME_CHECK(gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu,
                 "TQ input gate mode must be sigmoid or SiLU");
             auto local_gate = gate.value().to(x.scalar_type());
-            x = x * (gate_mode == 1
+            x = x * (gate_mode == InputGateMode::Sigmoid
                 ? mfq_tensor_backend::sigmoid(local_gate)
                 : mfq_tensor_backend::silu(local_gate));
         }
@@ -87,9 +87,9 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
             (mfq::mfq_compat_enabled && shard.kind == QuantLinearKind::Fp8Sq)) {
         if (gate.has_value()) {
             TYLOINFER_RUNTIME_CHECK(
-                gate_mode == 1 || gate_mode == 2,
+                gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu,
                 "SQ input gate mode must be sigmoid or SiLU");
-            x = x * (gate_mode == 1
+            x = x * (gate_mode == InputGateMode::Sigmoid
                 ? mfq_tensor_backend::sigmoid(gate.value())
                 : mfq_tensor_backend::silu(gate.value()));
         }
@@ -113,10 +113,10 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
         auto local = x.to(shard.dense.scalar_type());
         if (gate.has_value()) {
             TYLOINFER_RUNTIME_CHECK(
-                gate_mode == 1 || gate_mode == 2,
+                gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu,
                 "dense input gate mode must be sigmoid or SiLU");
             auto local_gate = gate.value().to(local.scalar_type());
-            local = gate_mode == 1
+            local = gate_mode == InputGateMode::Sigmoid
                 ? local * mfq_tensor_backend::sigmoid(local_gate)
                 : local * mfq_tensor_backend::silu(local_gate);
         }
@@ -894,7 +894,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_tensor_parallel_flat(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x,
         MfqOptional<mfq_tensor_backend::Tensor> gate,
-        int gate_mode) const {
+        InputGateMode gate_mode) const {
     TYLOINFER_RUNTIME_CHECK(
         tensor_parallel(),
         "tensor-parallel linear has no shards");
@@ -1009,13 +1009,13 @@ mfq_tensor_backend::Tensor QuantLinear::forward(
         auto flat = x.reshape({-1, x.size(-1)});
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         auto y = tensor_parallel()
-            ? forward_tensor_parallel_flat(execution, flat, mfq_nullopt, 0)
+            ? forward_tensor_parallel_flat(execution, flat, mfq_nullopt, InputGateMode::None)
             : (mfq::mfq_compat_enabled && is_nint()) ? run_nint_linear(
                   execution.profiler, execution.kl_mmq, nint, flat)
                         : run_nvq_linear(
                   execution.profiler, execution.kl_mmq, nvq, flat);
 #else
-        auto y = forward_tensor_parallel_flat(execution, flat, mfq_nullopt, 0);
+        auto y = forward_tensor_parallel_flat(execution, flat, mfq_nullopt, InputGateMode::None);
 #endif
         shape.back() = y.size(-1);
         return y.reshape(shape);
@@ -1072,7 +1072,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor gate,
-        int mode) const {
+        InputGateMode mode) const {
     if (tensor_parallel() || (mfq::mfq_compat_enabled && is_nint()) || (mfq::mfq_compat_enabled && is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -1093,20 +1093,20 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul(
         return y.reshape(shape);
     }
     if (is_dense()) {
-        TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2,
+        TYLOINFER_RUNTIME_CHECK(mode == InputGateMode::Sigmoid || mode == InputGateMode::Silu,
             "dense input gate mode must be sigmoid or SiLU");
         // Match the existing dense shard path, including dtype rounding.
         auto local = x.to(dense.scalar_type());
         auto local_gate = gate.to(dense.scalar_type());
-        auto gated = mode == 1
+        auto gated = mode == InputGateMode::Sigmoid
             ? local * mfq_tensor_backend::sigmoid(local_gate)
             : local * mfq_tensor_backend::silu(local_gate);
         return forward_dense(gated);
     }
-    TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2,
+    TYLOINFER_RUNTIME_CHECK(mode == InputGateMode::Sigmoid || mode == InputGateMode::Silu,
         "input gate mode must be sigmoid or SiLU");
     auto local_gate = gate.to(x.scalar_type());
-    auto gated = mode == 1
+    auto gated = mode == InputGateMode::Sigmoid
         ? x * mfq_tensor_backend::sigmoid(local_gate)
         : x * mfq_tensor_backend::silu(local_gate);
     return forward(execution, gated);
@@ -1116,7 +1116,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul_f32_kld(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor gate,
-        int mode) const {
+        InputGateMode mode) const {
     TYLOINFER_RUNTIME_CHECK(
         !tensor_parallel() && (mfq::mfq_compat_enabled && is_nint()),
         "FP32-output KLD down projection requires a local NINT tensor");
@@ -1126,7 +1126,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul_f32_kld(
     auto shape = x.sizes().vec();
     auto y = nint_matmul_input_mul_f32(
         execution.profiler, nint, x.reshape({-1, x.size(-1)}),
-        gate.reshape({-1, gate.size(-1)}), mode);
+        gate.reshape({-1, gate.size(-1)}), static_cast<int>(mode));
     if (nint.q8_zero) ++execution.kl_mmq.dense_calls;
     shape.back() = y.size(-1);
     return y.reshape(shape);

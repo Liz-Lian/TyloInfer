@@ -409,9 +409,9 @@ static void check_tq_parallel() {
                 const auto promoted=dtype==tb::kFloat16?input:input.to(tb::kFloat32);
                 check((residual(execution,input)-parallel.forward(execution,promoted)).abs().max().item<float>()==0,
                     "TQ residual projection bypassed tensor-parallel shards or dtype promotion");
-                for(int mode:{0,1,2}) {
-                    const auto expected=mode?local.forward_input_mul(execution,input,input,mode):local.forward(execution,input);
-                    const auto actual=mode?parallel.forward_input_mul(execution,input,input,mode):parallel.forward(execution,input);
+                for(auto mode:{InputGateMode::None,InputGateMode::Sigmoid,InputGateMode::Silu}) {
+                    const auto expected=mode!=InputGateMode::None?local.forward_input_mul(execution,input,input,mode):local.forward(execution,input);
+                    const auto actual=mode!=InputGateMode::None?parallel.forward_input_mul(execution,input,input,mode):parallel.forward(execution,input);
                     const auto error=actual.to(tb::kFloat32)-expected.to(tb::kFloat32);
                     const float scale=(expected.to(tb::kFloat32)*expected.to(tb::kFloat32)).sum().item<float>();
                     const float squared=(error*error).sum().item<float>();
@@ -602,7 +602,7 @@ static void check_linear_execution() {
             };
             verify([&](auto x) { return linear->forward(owner, x); });
             verify([&](auto x) { return linear->forward_bf16_output(owner, x); });
-            for (int gate_mode : {1, 2}) {
+            for (auto gate_mode : {InputGateMode::Sigmoid, InputGateMode::Silu}) {
                 verify([&](auto x) { return linear->forward_input_mul(owner, x, x, gate_mode); });
                 if (linear->is_nint() && mode == KlMmqMode::Fp16) {
                     verify([&](auto x) {

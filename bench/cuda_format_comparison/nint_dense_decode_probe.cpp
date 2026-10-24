@@ -501,7 +501,7 @@ static int gs_projection(CudaExecutionContext& execution,const mfq::ModelSource&
             auto x=tb::tensor(fb::input(rows,width)).reshape({1,rows,width}).to(tb::kCUDA,input_dtype);
             auto gate=tb::tensor(fb::input(rows,width)).reshape(x.sizes()).to(tb::kCUDA,input_dtype);
             const auto compute=[&] {
-                return fused?weight->forward_input_mul(execution,x,gate,width==640?2:1):projection(execution,x);
+                return fused?weight->forward_input_mul(execution,x,gate,width==640?InputGateMode::Silu:InputGateMode::Sigmoid):projection(execution,x);
             };
             std::array<tb::Tensor,2> outputs;
             std::array<MfqCudaGraph,2> graphs;
