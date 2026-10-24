@@ -47,7 +47,5 @@ target_link_libraries(mfq-engine PUBLIC
 )
 set_target_properties(mfq-engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-if(TARGET mfq-tokenizer)
-    target_link_libraries(mfq-engine PUBLIC mfq-tokenizer)
-    target_compile_definitions(mfq-engine PUBLIC TYLOINFER_ENGINE_TEXT=1)
-endif()
+target_link_libraries(mfq-engine PUBLIC mfq-tokenizer)
+target_compile_definitions(mfq-engine PUBLIC TYLOINFER_ENGINE_TEXT=1)

@@ -6,6 +6,8 @@ add_library(mfq-quant-readers STATIC
     quant/nint_rows.cpp
     quant/nvq_rows.cpp
     quant/mfe_quant_expert_store.cpp
+    tq_table.cpp
+    tq_table.h
 )
 target_include_directories(mfq-quant-readers PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..)

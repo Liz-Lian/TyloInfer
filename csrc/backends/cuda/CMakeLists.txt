@@ -1,9 +1,5 @@
-# Native CUDA backend.
-
-if(NOT TARGET mfq-runtime-communication)
-    message(FATAL_ERROR
-        "The CUDA runtime requires TYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON")
-endif()
+# Native CUDA backend. Compute, execution and loading targets do not require
+# the optional service transport; only the runtime service below does.
 
 set(TYLOINFER_CUDA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # Single source of the shared CUDA kernels; the Python extension builds the same files.
@@ -452,6 +448,7 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/common/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/full_block.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/axial_patch_vision_ops.cpp
+    ${TYLOINFER_CUDA_ROOT}/models/common/grid_vision.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v4/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/session.cpp
@@ -519,6 +516,8 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/storage/state/kv_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/load.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/rows.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/cache_api.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders/weight.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/transformer_loader.cpp
@@ -993,22 +992,24 @@ if(MSVC)
     endforeach()
 endif()
 
-add_executable(mfq-runtime
-    ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
-)
-target_link_libraries(mfq-runtime PRIVATE
-    mfq-cuda-runtime mfq-runtime-communication)
-target_include_directories(mfq-runtime PRIVATE
-    ${PROJECT_SOURCE_DIR}
-    ${TYLOINFER_CUDA_ROOT}
-    ${TYLOINFER_CUDA_ROOT}/include
-    ${TYLOINFER_CUDA_ROOT}/engine
-)
-target_compile_features(mfq-runtime PRIVATE cxx_std_20)
-set_target_properties(mfq-runtime PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-)
+if(TARGET mfq-runtime-communication)
+    add_executable(mfq-runtime
+        ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
+        ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
+    )
+    target_link_libraries(mfq-runtime PRIVATE
+        mfq-cuda-runtime mfq-runtime-communication)
+    target_include_directories(mfq-runtime PRIVATE
+        ${PROJECT_SOURCE_DIR}
+        ${TYLOINFER_CUDA_ROOT}
+        ${TYLOINFER_CUDA_ROOT}/include
+        ${TYLOINFER_CUDA_ROOT}/engine
+    )
+    target_compile_features(mfq-runtime PRIVATE cxx_std_20)
+    set_target_properties(mfq-runtime PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
+    )
+endif()
 
 add_executable(mfq-diagnostics
     ${TYLOINFER_CUDA_ROOT}/apps/diagnostics_main.cpp
@@ -1086,6 +1087,10 @@ option(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME
     "Build the optional LibTorch CUDA runtime used only for A/B validation"
     OFF)
 if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
+    if(NOT TARGET mfq-runtime-communication)
+        message(FATAL_ERROR
+            "TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME requires TYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON")
+    endif()
     find_package(Python REQUIRED COMPONENTS Interpreter Development)
     if(NOT TARGET CUDA::nvToolsExt)
         find_library(NVTOOLSEXT_LIBRARY
@@ -1135,7 +1140,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
     )
 endif()
 
-if(NOT WIN32)
+if(NOT WIN32 AND TARGET mfq-runtime)
     set(TYLOINFER_SYSTEM_RUNTIME_DIR
         "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}" CACHE PATH
         "directory containing the host libstdc++ runtime")

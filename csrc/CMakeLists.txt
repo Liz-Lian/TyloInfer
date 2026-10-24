@@ -76,11 +76,11 @@ add_subdirectory(formats)
 add_subdirectory(backends/cpu)
 add_subdirectory(components/io)
 add_subdirectory(model_source)
-
-if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION OR TYLOINFER_BUILD_METAL_RUNTIME)
-    add_subdirectory(components/ggml)
-    add_subdirectory(components/tokenizer)
-endif()
+# Engine request/text headers include the tokenizer chat API even for
+# communication-free CUDA/CPU consumers. Keep that real dependency available
+# independently of the transport modules.
+add_subdirectory(components/ggml)
+add_subdirectory(components/tokenizer)
 
 if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
     add_subdirectory(components/http)
