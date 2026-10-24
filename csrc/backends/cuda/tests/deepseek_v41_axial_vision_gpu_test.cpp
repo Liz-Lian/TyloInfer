@@ -142,7 +142,8 @@ int main(int argc, char** argv) try {
     }
     const auto arguments = parse(argc, argv);
     auto source = mfq::open_model_source(arguments.model);
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     mfq::cuda::axial_patch_vision::Config config{
         arguments.hidden,
         arguments.layers,

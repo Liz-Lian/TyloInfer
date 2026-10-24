@@ -222,7 +222,8 @@ std::unique_ptr<AttentionFixture> make_attention_fixture(const AttentionGeometry
 }
 
 void check_attention_case(bool no_rope, tb::ScalarType dtype, float tolerance) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const AttentionGeometry g;
     auto fixture = make_attention_fixture(g, no_rope, dtype);
     const int tokens = 5;
@@ -444,7 +445,8 @@ double max_difference(const std::vector<float>& actual, const std::vector<float>
 }
 
 void check_latent_removal_detected() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     // A square latent keeps both variants runnable with the same expert bank.
     MoeGeometry g;
     g.latent = g.hidden;
@@ -473,7 +475,8 @@ void check_latent_removal_detected() {
 }
 
 void check_latent_moe(tb::ScalarType dtype, float tolerance) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const MoeGeometry g;
     const int tokens = 4;
     MoeWeights weights;
@@ -563,7 +566,8 @@ std::vector<int64_t> reference_topk(const std::vector<float>& logits, const std:
 }
 
 void check_topk_512() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     constexpr int top_k = 22;
     for (const int experts : {512, 1024}) {
         std::vector<float> logits(static_cast<std::size_t>(experts));

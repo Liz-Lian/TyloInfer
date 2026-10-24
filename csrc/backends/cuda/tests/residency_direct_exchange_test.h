@@ -238,7 +238,8 @@ void verify_predictor_exchange_overlap(const std::filesystem::path& root) {
     for(const std::string failure:{"none","direct_refill","publish"})for(bool pressure:{false,true}) {
         if((shared_arena || !full_cache) && failure!="none")continue;
         if(pressure && (shared_arena || !full_cache || failure!="none"))continue;
-        CudaExecutionContext execution;auto& cfg=execution.config;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);auto& cfg=execution.config;
         cfg.moe_pipeline=true;cfg.moe_preload_all=true;cfg.moe_assert_resident=true;
         cfg.moe_hybrid_cpu=false;cfg.moe_direct_ram=true;cfg.moe_ram_pcie=true;cfg.moe_ram_pcie_fraction=1.;
         cfg.moe_residency_adapt=true;cfg.moe_residency_warm=true;cfg.moe_residency_projection_heat=true;
@@ -334,7 +335,8 @@ void verify_direct_exchange(const std::filesystem::path& root) {
         if(phase=="direct_refill_batch" && (!batching || (!cached_projections && !gpu_wire)))continue;
         const auto* small_backup=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
         if(phase=="direct_backup_batch" && small_backup && std::atoll(small_backup)<=0)continue;
-        CudaExecutionContext execution;execution.config.moe_residency_warm=true;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=true;execution.config.moe_ram_pcie_fraction=1.0;
         execution.config.moe_direct_ram=true;execution.config.moe_two_stage_ffn=true;
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> sources;
@@ -464,7 +466,8 @@ void verify_indexed_shadow_exchange(const std::filesystem::path& root) {
     for(int cached_projections:{0,1,3})for(bool gpu_wire:{false,true})
     for(const std::string image:{"permuted","stale","reclaimed"})
     for(const std::string phase:{"none","direct_backup","direct_refill","upload","map","host","publish"}) {
-        CudaExecutionContext execution;execution.config.moe_residency_warm=true;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=true;execution.config.moe_ram_pcie_fraction=1.0;
         execution.config.moe_direct_ram=true;execution.config.moe_two_stage_ffn=true;
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> sources;
@@ -549,7 +552,8 @@ void verify_prefill_cpu_prefetch(const std::filesystem::path& root) {
         }
         ~Setting(){set(previous.c_str());}
     } setting;
-    CudaExecutionContext execution;auto& cfg=execution.config;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);auto& cfg=execution.config;
     cfg.moe_pipeline=true;cfg.moe_preload_all=true;cfg.moe_assert_resident=true;
     cfg.moe_hybrid_cpu=false;cfg.moe_direct_ram=true;cfg.moe_ram_pcie=true;cfg.moe_ram_pcie_fraction=1.;
     const std::array<std::array<std::string,3>,3> formats={

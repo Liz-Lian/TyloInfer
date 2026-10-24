@@ -372,6 +372,7 @@ void setup_cuda_load(
         const mfq::cuda::CudaLoadOptions& options,
         CudaExecutionContext& execution) {
     execution.reset();
+    execution.stores.reset();
     if (options.n_gpu_layers_set) execution.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");
@@ -445,11 +446,11 @@ void setup_cuda_load(
                 "--moe-gpu-cache-gb is outside the supported range");
         }
         execution.config.moe_device_cache_bytes = static_cast<std::size_t>(bytes);
-        execution.moe_expert_cache =
+        execution.stores.moe_expert_cache =
             make_moe_expert_cache(
                 static_cast<int64_t>(bytes), execution.config);
-        if (!profile_path.empty() && execution.moe_expert_cache) {
-            set_moe_expert_cache_profile(*execution.moe_expert_cache,mfq::load_moe_cache_profile(profile_path));
+        if (!profile_path.empty() && execution.stores.moe_expert_cache) {
+            set_moe_expert_cache_profile(*execution.stores.moe_expert_cache,mfq::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }
@@ -460,7 +461,8 @@ void setup_cuda_load(
 int with_cuda_load(
         const CudaLoadOptions& options,
         const std::function<int(CudaExecutionContext&)>& run) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     CudaScope scope(execution);
     setup_cuda_load(options, execution);
     return run(execution);

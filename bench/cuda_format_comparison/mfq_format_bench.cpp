@@ -98,7 +98,8 @@ int main(int argc,char** argv)try {
     const fs::path output=argv[2];fs::create_directories(output);
     auto context=mfq::cuda::default_context(0);
     auto stream=mfq_get_stream_from_pool(false);MfqCudaStreamGuard stream_guard(stream);
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     cudaDeviceProp properties{};fb::check(cudaGetDeviceProperties(&properties,0));
     std::map<std::string,std::shared_ptr<const mfq::ModelSource>> models;
     for(const auto& c:fb::read_cases(argv[1])) {

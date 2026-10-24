@@ -136,7 +136,8 @@ void check_positions(const DeepseekV41CausalLm& model,int64_t expected) {
 }
 
 void check_session_snapshots() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     int cases=0;
     for(int ratio:{1,2,16})for(int length:{3,257}) {
         auto model=make_model(execution,ratio);
@@ -183,7 +184,8 @@ void check_session_snapshots() {
 }
 void check_paged_sessions() {
     using mfq::cuda::internal::TextSessionCache;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto directory=std::filesystem::temp_directory_path()/
         ("mfq-v41-prefix-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     int cases=0;
@@ -265,7 +267,8 @@ void check_paged_sessions() {
 }
 void check_prefix_tail_retention() {
     using mfq::cuda::internal::TextSessionCache;
-    CudaExecutionContext execution;auto model=make_model(execution);
+    CudaStores stores;
+    CudaExecutionContext execution(stores);auto model=make_model(execution);
     std::vector<int64_t> tokens(62);for(int i=0;i<62;++i)tokens[i]=i%8;
     deepseek_v41_prefill_hidden(model,ids(62),64);
     mfq::cache::PagedPrefixCacheConfig config;
@@ -295,7 +298,8 @@ void check_prefix_tail_retention() {
     std::cout<<"prefix_tail_retention RAM/SSD/short-checkpoint/full-block/retry PASS\n";
 }
 void check_exact_short() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto model=make_model(execution);
     auto input=ids(17);
     auto expected=model.hidden_forward(input);
@@ -309,7 +313,8 @@ void check_exact_short() {
     model.hidden_forward(ids(1));check_positions(model,18);
 }
 void check_short_prefill_tiles(int tile_tokens=8) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     int cases=0;
     for(int ratio:{2,16})for(int context:{127,128,129})for(int tokens:{9,15,32,128}) {
         auto reference=make_model(execution,ratio),candidate=make_model(execution,ratio);
@@ -341,7 +346,8 @@ void check_short_prefill_tiles(int tile_tokens=8) {
         <<" ring/compressor/Engram/DSpark/decode PASS\n";
 }
 void check_long_and_cancel() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto model=make_model(execution);
     tb::Tensor raw;
     auto result=deepseek_v41_prefill_hidden(model,ids(257),64,{},&raw);
@@ -357,7 +363,8 @@ void check_long_and_cancel() {
     check_positions(model,0);
 }
 void check_retained_prefix() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     int cases=0;
     const auto same=[](const tb::Tensor& a,const tb::Tensor& b,const char* message) {
         const auto error=(a.to(tb::kFloat32)-b.to(tb::kFloat32)).abs().max().item<double>();

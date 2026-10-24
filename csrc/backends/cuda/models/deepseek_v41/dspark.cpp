@@ -486,7 +486,9 @@ std::unique_ptr<::MtpModule> load_dspark_if_present(CudaExecutionContext &execut
 void run_dspark_self_check() {
     // Seeding only the final window must address the same absolute RoPE and
     // ring slots as a complete target history.
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
+    CudaScope scope(execution);
     DeepseekV41Dspark predictor;
     predictor.execution = &execution;
     predictor.config.hidden = 32;

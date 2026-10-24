@@ -54,7 +54,8 @@ void compare(Check& check,const tb::Tensor& actual,const tb::Tensor& expected) {
 int main(int argc,char** argv) try {
     if(argc!=2)throw std::runtime_error("usage: mfq-cuda-bf16-mmvf-bench MODEL.mfq");
     const auto model=mfq::open_model_source(argv[1]);
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto weight=load_quant_linear(execution,*model,"model.output.weight");
     if(!weight.is_dense() || weight.dense.scalar_type()!=tb::kBFloat16 ||
         weight.dense.dim()!=2 || weight.dense.size(1)%2)

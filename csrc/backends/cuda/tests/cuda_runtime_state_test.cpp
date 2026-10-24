@@ -189,14 +189,15 @@ static void check_cached_moe_binding() {
                   "expert range is out of bounds");
             std::copy_n(blob.data() + offset, output.size(), output.data());
         }});
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto resident = to_gpu_mixed_moe(cpu, execution.config);
     auto options = TensorOptions().device(kCUDA);
     auto input = (arange(32, options.dtype(kFloat32)) * 0.01 - 0.1)
                      .to(kFloat16).reshape({1, 32});
     for (bool ranges : {false, true}) {
-        execution.moe_expert_cache = make_moe_expert_cache(1 << 20, execution.config);
-        auto& cache = execution.moe_expert_cache;
+        execution.stores.moe_expert_cache = make_moe_expert_cache(1 << 20, execution.config);
+        auto& cache = execution.stores.moe_expert_cache;
         std::weak_ptr<MoeExpertCache> lifetime = cache;
         auto runtime = ranges ? make_mxfp4_range_runtime(*store)
                               : make_mixed_moe_runtime(cpu, false);
@@ -204,11 +205,14 @@ static void check_cached_moe_binding() {
                                        ranges ? store : nullptr);
         check(moe_expert_cache_has_sources(cache), "MoE source was not registered");
         finalize_moe_expert_cache(cache);
-        CudaExecutionContext other;
-        other.moe_expert_cache = make_moe_expert_cache(1 << 20, other.config);
+        CudaStores other_stores;
+        CudaExecutionContext other(other_stores);
+        other.stores.moe_expert_cache = make_moe_expert_cache(1 << 20, other.config);
         execution.reset();
-        check(!lifetime.expired(), "execution reset destroyed a live model cache");
-        check(!moe_expert_cache_has_sources(other.moe_expert_cache),
+        check(cache == lifetime.lock(), "execution reset retired borrowed storage");
+        execution.stores.reset();
+        check(!lifetime.expired(), "store retirement destroyed a live weight lease");
+        check(!moe_expert_cache_has_sources(other.stores.moe_expert_cache),
               "Engine instances share registered MoE sources");
         for (int32_t expert : {0, 1, 0}) {
             auto ids = tensor(std::vector<int32_t>{expert}, options.dtype(kInt32)).reshape({1, 1});
@@ -229,7 +233,7 @@ static void check_cached_moe_binding() {
               "retained projection cannot use its cache");
         retained_forward = {};
         check(lifetime.expired(), "registered sources form a cache ownership cycle");
-        check(bool(other.moe_expert_cache), "releasing one cache changed another Engine");
+        check(bool(other.stores.moe_expert_cache), "releasing one cache changed another Engine");
     }
 }
 
@@ -329,7 +333,8 @@ static void check_tq_expert_parallel() {
         source.records.clear();
         for(const auto* name:{"gate","up","down"})source.records.push_back({name,"TQ","TQ",
             std::vector<std::int64_t>{experts,width,width},source.bytes.size()});
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         execution.expert_parallel.devices={0,devices>=2?1:0};
         execution.expert_parallel.split={1,2};
         execution.expert_parallel.allow_duplicate_devices=devices<2;
@@ -362,7 +367,8 @@ static void check_tq_expert_parallel() {
 static void check_tq_parallel() {
     namespace tb=mfq_tensor_backend;
     constexpr int outputs=17,width=768;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     int devices=0;
     TYLOINFER_CUDA_CHECK(cudaGetDeviceCount(&devices));
     const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
@@ -423,7 +429,8 @@ static void check_tq_parallel() {
             MemoryTensorSource source;
             source.bytes=blob;source.records[0].dtype="TQ";source.records[0].stored_dtype="TQ";
             source.records[0].nbytes=blob.size();
-            CudaExecutionContext resident;
+            CudaStores resident_stores;
+            CudaExecutionContext resident(resident_stores);
             TqRoutedWeight weight(resident,source,"weight",1,outputs,width);
             const auto input=tb::ones({1,width},options.dtype(tb::kFloat16));
             const auto ids=tb::zeros({1,1},options.dtype(tb::kInt64));
@@ -435,23 +442,24 @@ static void check_tq_parallel() {
                 check(std::sqrt((error*error).sum().item<float>()/std::max(scale,1e-20f))<.0015f,
                     "TQ default residency changed expert projection values");
             }
-            const auto metrics=tq_expert_memory_metrics(resident.tq_expert_cache);
+            const auto metrics=tq_expert_memory_metrics(resident.stores.tq_expert_cache);
             const auto hits=std::find_if(metrics.begin(),metrics.end(),[](const auto& item) {
                 return item.first=="expert_cache_hits";
             });
             check(hits!=metrics.end() && hits->second==1,"TQ default loading disabled GPU expert residency");
-            resize_tq_expert_cache(resident.tq_expert_cache,0);
-            check(tq_expert_cache_budget_bytes(resident.tq_expert_cache)==0,
+            resize_tq_expert_cache(resident.stores.tq_expert_cache,0);
+            check(tq_expert_cache_budget_bytes(resident.stores.tq_expert_cache)==0,
                 "TQ explicit zero budget did not disable expert residency");
         }
         if(devices>=2) {
             MemoryTensorSource source;
             source.bytes=blob;source.records[0].dtype="TQ";source.records[0].stored_dtype="TQ";
             source.records[0].nbytes=blob.size();
-            CudaExecutionContext streamed;
+            CudaStores streamed_stores;
+            CudaExecutionContext streamed(streamed_stores);
             streamed.config.moe_host_cache_bytes=1;
             TqRoutedWeight weight(streamed,source,"weight",1,outputs,width);
-            resize_tq_expert_cache(streamed.tq_expert_cache,std::size_t{1}<<20);
+            resize_tq_expert_cache(streamed.stores.tq_expert_cache,std::size_t{1}<<20);
             auto input=((tb::arange(width,tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32)).remainder(31)-15)*.01)
                 .to(tb::kFloat16).reshape({1,width});
             const auto expected=local.forward(execution,input.to(tb::Device(tb::kCUDA,0))).to(tb::kCPU,tb::kFloat32);
@@ -466,7 +474,7 @@ static void check_tq_parallel() {
                 check(std::sqrt((error*error).sum().item<float>()/std::max(scale,1e-20f))<.0015f,
                     "TQ device-local expert cache changed projection values");
             }
-            const auto metrics=tq_expert_memory_metrics(streamed.tq_expert_cache);
+            const auto metrics=tq_expert_memory_metrics(streamed.stores.tq_expert_cache);
             const auto hits=std::find_if(metrics.begin(),metrics.end(),[](const auto& item) {
                 return item.first=="expert_cache_hits";
             });
@@ -496,7 +504,8 @@ static void check_ffn_branches() {
         return result;
     };
     auto input = ((arange(24, options).reshape({3, 8}) - 12) * 0.05).to(kFloat16);
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto low = dense_ffn(0.01F);
     auto high = std::make_unique<FFN>(dense_ffn(0.015F));
     execution.config.decode_branch_parallel = true;
@@ -570,7 +579,10 @@ static void check_linear_execution() {
     nvq.kind = QuantLinearKind::Nvq;
     nvq.nvq = to_gpu_nvq(nvq_cpu);
 
-    CudaExecutionContext owner, other;
+    CudaStores owner_stores;
+    CudaExecutionContext owner(owner_stores);
+    CudaStores other_stores;
+    CudaExecutionContext other(other_stores);
     for (const auto* linear : {&nint, &nvq}) {
         const auto input = (mfq_tensor_backend::arange(
             16 * linear->neuron_len(),
@@ -1583,7 +1595,8 @@ int main(int argc, char** argv) try {
     check_tq_parallel();
     check_mfe_cached_dispatch_geometry();
     {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         check_snapshots(execution, false);
         check_snapshots(execution, true);
     }

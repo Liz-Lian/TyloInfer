@@ -10,7 +10,9 @@ static void check(bool ok, const char* message) {
 static void check_dense_loading() {
     using namespace mfq_tensor_backend;
     MemoryTensorSource source;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
+    CudaScope scope(execution);
     const uint32_t rank = 2;
     const int64_t shape[] = {2, 2};
     const size_t header = sizeof(rank) + sizeof(shape);

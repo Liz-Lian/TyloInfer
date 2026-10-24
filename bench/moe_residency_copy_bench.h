@@ -44,7 +44,8 @@ inline void residency_copy_benchmark(const std::filesystem::path& root) {
     std::size_t projection_bytes=0;
     for(int mode=0;mode<2;++mode) {
         Environment::set(mode?"1":"0");auto& c=cases[mode];
-        CudaExecutionContext execution;execution.config.moe_residency_warm=true;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=true;
         execution.config.moe_direct_ram=true;
         execution.config.moe_host_physical_bytes=32ull<<30;

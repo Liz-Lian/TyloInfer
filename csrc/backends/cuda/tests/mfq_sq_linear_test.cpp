@@ -90,7 +90,8 @@ int main(int argc, char** argv) try {
     for (int m=0;m<3;++m) for (int n=0;n<7;++n) for (int k=0;k<96;++k)
         expected[m*7+n]+=values[m*96+k]*dense[n*96+k];
     auto x=tensor(values).reshape({3,96});
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     Mxfp4SqLinear cpu{weight(bytes,false)};
     close(cpu.forward(x),expected,1e-5f);
     QuantLinear cpu_layer; cpu_layer.kind=QuantLinearKind::Mxfp4Sq; cpu_layer.mxfp4_sq=cpu;

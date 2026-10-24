@@ -664,7 +664,8 @@ int main(int argc,char** argv)try {
     if(argc<2 || argc>3)throw std::runtime_error("usage: nint-dense-decode-probe model [--verify-only]");
     const bool verify_only=argc==3 && std::strcmp(argv[2],"--verify-only")==0;
     auto context=mfq::cuda::default_context(0);auto stream=mfq_get_stream_from_pool(false);MfqCudaStreamGuard guard(stream);
-    CudaExecutionContext execution;execution.decode_graph_serial_branches=true;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);execution.decode_graph_serial_branches=true;
     auto model=mfq::open_model_source(argv[1]);
     if(argc==3 && std::strcmp(argv[2],"--final-bf16-gr")==0)return final_bf16_gr(execution,*model);
     if(argc==3 && std::strcmp(argv[2],"--gs-projections")==0)return gs_projection(execution,*model);

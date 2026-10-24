@@ -143,7 +143,8 @@ int main(int argc,char** argv)try {
     }
     auto context=mfq::cuda::default_context(0);
     auto stream=mfq_get_stream_from_pool(false);MfqCudaStreamGuard guard(stream);
-    auto model=mfq::open_model_source(argv[1]);CudaExecutionContext execution;
+    auto model=mfq::open_model_source(argv[1]);CudaStores stores;
+CudaExecutionContext execution(stores);
     std::vector<std::unique_ptr<BatchGr>> banks;
     const auto* selected_role=std::getenv("TYLOINFER_GR_PROBE_ROLE");
     for(int layer:{0,8,16,24,32,40})for(const char* role:{"attention","mlp"})

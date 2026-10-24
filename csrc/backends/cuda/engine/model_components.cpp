@@ -236,11 +236,11 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
 
     execution.loading_cpu_layer = false;
     execution.layer_placement.load_device = execution.layer_placement.primary_device();
-    if (moe_expert_cache_has_sources(execution.moe_expert_cache) &&
-        !moe_expert_cache_finalized(execution.moe_expert_cache) && !defer_moe_cache_finalize) {
+    if (moe_expert_cache_has_sources(execution.stores.moe_expert_cache) &&
+        !moe_expert_cache_finalized(execution.stores.moe_expert_cache) && !defer_moe_cache_finalize) {
         if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
             mfq::cuda::internal::prepare_sampling_runtime(model.vocab_size());
-        finalize_moe_expert_cache(execution.moe_expert_cache);
+        finalize_moe_expert_cache(execution.stores.moe_expert_cache);
     }
     return model;
 }
@@ -309,7 +309,7 @@ RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
             !model_execution.layer_placement.enabled() &&
             model_execution.dense_cpu_layer_count == 0 &&
             model_execution.dsv4_cpu_offload_layers.empty() &&
-            !model_execution.moe_expert_cache;
+            !model_execution.stores.moe_expert_cache;
         if (supported_placement && model.num_experts() == 0 &&
                 model.supports_speculation()) {
             auto predictor = Qwen35Mtp::load_if_present(

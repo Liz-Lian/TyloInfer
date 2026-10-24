@@ -3,7 +3,8 @@
 
 void verify_d4_analytic_scales(const std::filesystem::path& root,bool benchmark=true) {
     MfeWideOption capacity("TYLOINFER_MFE_TOKEN_GROUP_CAPACITY","2");
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();int checks=0;

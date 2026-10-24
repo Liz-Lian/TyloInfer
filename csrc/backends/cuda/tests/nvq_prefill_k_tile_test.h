@@ -12,7 +12,8 @@ void verify_nvq_prefill_k_tiles(const std::filesystem::path& root,bool cohorts=f
         }
         ~Environment(){set(present?previous.c_str():"");}
     } environment(cohorts?"TYLOINFER_NVQ_PREFILL_COHORTS":"TYLOINFER_NVQ_PREFILL_NARROW_G2");
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     constexpr int experts=512,routes=10;
     int cases=0;
     const auto formats=cohorts?std::vector<std::string>{"mixed"}:

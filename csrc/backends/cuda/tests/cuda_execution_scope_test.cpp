@@ -1,12 +1,15 @@
 #include "env.h"
 #include "execution/execution.h"
 #include "execution/options.h"
+#include "engine/load_options.h"
+#include "storage/state/kv_memory.h"
 
 #include <atomic>
 #include <barrier>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -16,10 +19,54 @@ void set_option(const char* name, const char* value) {
 }
 }
 
+static void check_stores() {
+    static_assert(!std::is_default_constructible_v<CudaExecutionContext>);
+    static_assert(!std::is_copy_constructible_v<CudaExecutionContext>);
+    static_assert(!std::is_copy_constructible_v<CudaStores>);
+    CudaStores stores, peer;
+    stores.kv_memory = std::make_shared<mfq::cuda::KvMemoryManager>(mfq::cuda::KvMemoryOptions{});
+    peer.kv_memory = std::make_shared<mfq::cuda::KvMemoryManager>(mfq::cuda::KvMemoryOptions{});
+    std::weak_ptr<mfq::cuda::KvMemoryManager> lifetime = stores.kv_memory;
+    {
+        CudaExecutionContext execution(stores);
+        if (&execution.stores != &stores) throw std::runtime_error("execution copied its stores");
+        execution.reset();
+        if (stores.kv_memory != lifetime.lock())
+            throw std::runtime_error("execution reset retired borrowed storage");
+        auto lease = stores.kv_memory;
+        mfq::cuda::CudaLoadOptions invalid;
+        invalid.cpu_threads_set = true;
+        invalid.cpu_threads = 0;
+        bool rejected = false;
+        try { mfq::cuda::internal::setup_cuda_load(invalid, execution); }
+        catch (const std::runtime_error&) { rejected = true; }
+        if (!rejected || stores.kv_memory || lifetime.expired() || !peer.kv_memory)
+            throw std::runtime_error("failed load violated store/lease isolation");
+    }
+    if (!lifetime.expired() || !peer.kv_memory)
+        throw std::runtime_error("retired load retained storage or changed its peer");
+}
+
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+static void check_drain() {
+    using namespace mfq::cuda;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
+    CudaScope scope(execution);
+    auto auxiliary = stream_from_pool(false, 0);
+    Event finished;
+    TYLOINFER_CUDA_CHECK(cudaLaunchHostFunc(auxiliary.stream(), [](void*) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }, nullptr));
+    finished.record(auxiliary.stream());
+    execution.reset();
+    if (!finished.ready()) throw std::runtime_error("reset missed an auxiliary consumer");
+}
+
 static void check_contexts() {
     using namespace mfq::cuda;
-    CudaExecutionContext engines[2];
+    CudaStores stores[2];
+    CudaExecutionContext engines[2]{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
     std::shared_ptr<Context> contexts[2];
     std::barrier ready(2);
     std::exception_ptr errors[2];
@@ -89,6 +136,7 @@ static void check_contexts() {
 #endif
 
 int main() try {
+    check_stores();
     using namespace mfq::cuda::runtime_options;
     // Presence, first-character and exact-value controls have distinct meanings.
     set_option("TYLOINFER_NINT_ROUTE_ROW_WORKSPACE", nullptr);
@@ -136,8 +184,10 @@ int main() try {
     const auto enabled_config = load_cuda_execution_config();
     if (disabled_config.nvq_fusion || !enabled_config.nvq_fusion) return 1;
 
-    CudaExecutionContext first;
-    CudaExecutionContext second;
+    CudaStores first_stores;
+    CudaExecutionContext first(first_stores);
+    CudaStores second_stores;
+    CudaExecutionContext second(second_stores);
     first.tensor_parallel.devices = {0, 1};
     second.expert_parallel.devices = {2, 3};
     first.drop_file_cache = true;
@@ -181,7 +231,10 @@ int main() try {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     int devices = 0;
-    if (cudaGetDeviceCount(&devices) == cudaSuccess && devices) check_contexts();
+    if (cudaGetDeviceCount(&devices) == cudaSuccess && devices) {
+        check_contexts();
+        check_drain();
+    }
 #endif
     return isolated.load(std::memory_order_relaxed) &&
             first.drop_file_cache && !second.drop_file_cache &&

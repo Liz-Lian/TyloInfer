@@ -1,6 +1,8 @@
 #include "env.h"
 #include "execution/options.h"
 #include "execution/execution.h"
+#include "storage/weights/moe/expert_cache.h"
+#include "storage/state/kv_offload.h"
 
 #include "mfq_cuda_quant_ops.h"
 #include "mfe_ffn_token_groups.h"
@@ -10,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <cstdio>
 #include <sstream>
 #include <filesystem>
@@ -856,15 +859,51 @@ KlKvCacheCapacityScope::~KlKvCacheCapacityScope() {
     state.kv_cache_capacity = previous_capacity;
 }
 
-CudaExecutionContext::CudaExecutionContext()
-    : config(load_cuda_execution_config()) {
+CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
+    : config(load_cuda_execution_config()), stores(borrowed) {
     profiler.filter = config.profile_filter;
 }
 
-void CudaExecutionContext::reset() noexcept {
+CudaExecutionContext::~CudaExecutionContext() {
+    try { drain(); }
+    catch (const std::exception& error) {
+        std::cerr << "runtime_execution_cleanup error=" << error.what() << '\n';
+    }
+}
+
+void CudaExecutionContext::drain() {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if (native_contexts.empty() && !stores.moe_expert_cache &&
+        !stores.tq_expert_cache && !stores.qsa_kv_store) return;
+#endif
+    CudaScope scope(*this);
+    std::exception_ptr failure;
+    const auto finish = [&](auto&& work) {
+        try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    };
+    finish([&] { finish_moe_expert_exchanges(stores.moe_expert_cache); });
+    if (stores.qsa_kv_store) finish([&] { stores.qsa_kv_store->flush(); });
+    // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    for (const auto& [device, context] : native_contexts) finish([&] {
+        MfqCudaGuard guard(device);
+        TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
+    });
+#else
+    std::unordered_set<int> devices{layer_placement.primary_device()};
+    for (const auto* group : {&tensor_parallel.devices, &expert_parallel.devices, &layer_placement.devices})
+        devices.insert(group->begin(), group->end());
+    for (int device : devices) finish([&] {
+        MfqCudaGuard guard(device);
+        TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
+    });
+#endif
+    if (failure) std::rethrow_exception(failure);
+}
+
+void CudaExecutionContext::reset() {
+    drain();
     profiler.reset();
-    moe_expert_cache.reset();
-    tq_expert_cache.reset();
     model_parallel_collectives.reset();
     tensor_parallel = {};
     expert_parallel = {};
@@ -922,7 +961,7 @@ int model_parallel_primary_device(const CudaExecutionContext& execution) {
 
 bool model_parallel_cuda_graph_enabled(
         const CudaExecutionContext& execution) {
-    if(execution.tq_expert_cache && moe_parallel_config(execution).enabled())return false;
+    if(execution.stores.tq_expert_cache && moe_parallel_config(execution).enabled())return false;
     if (!execution.tensor_parallel.enabled() &&
             !execution.expert_parallel.enabled()) {
         return true;

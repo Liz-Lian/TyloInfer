@@ -1332,16 +1332,16 @@ TqRoutedWeight::TqRoutedWeight(CudaExecutionContext& execution,const mfq::ModelS
     if(experts<1 || experts>UINT32_MAX || out<1 || input<1 ||
        table->rows()!=std::uint64_t(experts)*out || table->width()!=input)
         throw std::invalid_argument("TQ routed projection shape differs: "+name);
-    if(!execution.tq_expert_cache) {
+    if(!execution.stores.tq_expert_cache) {
         const auto budget = execution.config.moe_device_cache_bytes.value_or(
-            moe_expert_cache_budget_bytes(execution.moe_expert_cache));
+            moe_expert_cache_budget_bytes(execution.stores.moe_expert_cache));
         const bool explicit_budget = execution.config.moe_device_cache_bytes.has_value() ||
-            bool(execution.moe_expert_cache);
-        execution.tq_expert_cache=std::make_shared<TqExpertCache>(
+            bool(execution.stores.moe_expert_cache);
+        execution.stores.tq_expert_cache=std::make_shared<TqExpertCache>(
             budget,execution.config.moe_host_cache_bytes,
             execution.config.moe_host_physical_bytes,!explicit_budget);
     }
-    cache=execution.tq_expert_cache;source_id=cache->register_source(table->storage_bytes());
+    cache=execution.stores.tq_expert_cache;source_id=cache->register_source(table->storage_bytes());
 }
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(CudaExecutionContext& execution,
         const mfq::ModelSource& source,const std::string& name) {

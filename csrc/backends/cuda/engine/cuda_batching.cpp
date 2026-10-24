@@ -29,7 +29,7 @@ template<class Model>
 static mfq::engine::PrefillChunk budget_batch_prefill(Model& model,
         CudaExecutionContext& execution,mfq::engine::PrefillChunk chunk,std::size_t growth=0) {
     const auto context=default_context(execution.layer_placement.primary_device());
-    const auto transfer=moe_prefill_workspace_budget(execution.moe_expert_cache,false).transfer_bytes;
+    const auto transfer=moe_prefill_workspace_budget(execution.stores.moe_expert_cache,false).transfer_bytes;
     const auto fixed=mfq::engine::prefill_budget_add((std::size_t(1)<<30)+growth,transfer);
     const auto available=context->available_memory()+context->workspace_available();
     const auto row_bytes=std::size_t(model.hidden_size())*model.hc_mult()*sizeof(float)*8;
@@ -536,7 +536,7 @@ void FlashNextBatchOperations::initialize_prefill(
             // unused while independent batch rows own their own context.
             qwen4_release_decode_graphs(model_,nullptr);
             model_.reset(1);
-            release_moe_decode_buffers(execution_.moe_expert_cache);
+            release_moe_decode_buffers(execution_.stores.moe_expert_cache);
             default_context(execution_.layer_placement.primary_device())->reclaim_idle_memory();
         }
         requests_.push_back(request);
@@ -589,7 +589,7 @@ FlashNextBatchOperations::prefill_batch(
     CudaScope guard(execution_);
     qwen4_release_decode_graphs(model_,nullptr);
     model_.adapter_begin_forward(false);
-    release_moe_decode_buffers(execution_.moe_expert_cache);
+    release_moe_decode_buffers(execution_.stores.moe_expert_cache);
     std::vector<mfq::engine::PrefillBatchResult<Sample>> result(items.size());
     std::vector<std::size_t> ready;
     for (std::size_t row=0;row<items.size();++row) {
@@ -664,7 +664,7 @@ void FlashNextBatchOperations::activate(const std::shared_ptr<Request>& request,
 }
 void FlashNextBatchOperations::discard_prefill(const std::shared_ptr<Request>& request) {
     if (graph_) graph_->clear();
-    finish_moe_expert_exchanges(execution_.moe_expert_cache);
+    finish_moe_expert_exchanges(execution_.stores.moe_expert_cache);
     request->cache.reset(); request->prefill_ids = {}; request->prefill_timers.clear(); request->packed_prefill_ms=0;
 }
 void FlashNextBatchOperations::retire(const std::vector<std::shared_ptr<Request>>& retired,int64_t) {
@@ -676,7 +676,7 @@ void FlashNextBatchOperations::retire(const std::vector<std::shared_ptr<Request>
     if (!active && !model_.graph_registry) {
         // Batch widths have distinct transfer arenas and graph scratch. Return
         // them at idle while preserving resident experts and adaptation heat.
-        release_moe_decode_buffers(execution_.moe_expert_cache);
+        release_moe_decode_buffers(execution_.stores.moe_expert_cache);
         default_context(execution_.layer_placement.primary_device())->reclaim_idle_memory();
     }
 }

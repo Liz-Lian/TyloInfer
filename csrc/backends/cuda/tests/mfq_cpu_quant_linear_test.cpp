@@ -76,7 +76,8 @@ int main(int argc, char** argv) try {
     const std::filesystem::path root(argv[1]);
     std::ifstream manifest(root/"cases.txt");
     if (!manifest) throw std::runtime_error("missing CPU quant fixtures");
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     execution.loading_cpu_layer=true;
     std::string name;
     int outputs,width,batch,cases=0;

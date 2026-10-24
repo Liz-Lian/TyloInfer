@@ -90,7 +90,7 @@ Tensor vision_workspace(
     CudaExecutionContext& execution,
     std::size_t bytes,
     Forward forward) {
-    MoePrefillWorkspaceLoan loan(execution.moe_expert_cache);
+    MoePrefillWorkspaceLoan loan(execution.stores.moe_expert_cache);
     const bool borrowed = loan.begin(bytes) != 0;
     auto result = forward();
     if (borrowed) {

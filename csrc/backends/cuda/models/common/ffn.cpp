@@ -120,7 +120,7 @@ void FFN::prepare_moe_pipeline(CudaExecutionContext& execution) const {
 void FFN::prefetch_moe(CudaExecutionContext& execution,const mfq_tensor_backend::Tensor& x,
         MfqOptional<mfq_tensor_backend::Tensor> input_ids) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(!moe_pipeline_prefetch || !moe_expert_cache_ssd_router_prefetch(execution.moe_expert_cache) ||
+    if(!moe_pipeline_prefetch || !moe_expert_cache_ssd_router_prefetch(execution.stores.moe_expert_cache) ||
             x.dim()<2 || x.numel()/x.size(-1)>32)return;
     namespace tb=mfq_tensor_backend;
     tb::Tensor ids;

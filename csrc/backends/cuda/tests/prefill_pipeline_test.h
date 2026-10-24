@@ -27,7 +27,8 @@ void verify_prefill_graph_execution(const std::filesystem::path& root,bool group
         std::array<std::shared_ptr<const mfq::ModelSource>,3> canonical;
         if(oracle)for(int p=0;p<3;++p)
             canonical[p]=mfq::open_model_source((root/(names[p]+(p==2?"-2560-640.mfq":"-640-2560.mfq"))).string());
-        std::array<CudaExecutionContext,2> execution;
+        std::array<CudaStores,2> stores;
+        std::array<CudaExecutionContext,2> execution{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
         std::array<std::shared_ptr<MoeExpertCache>,2> caches;
         std::array<std::array<MoeFfnForward,2>,2> forward;
         const std::array<MfqCudaStream,2> streams={mfq_get_stream_from_pool(),mfq_get_current_cuda_stream()};

@@ -152,7 +152,8 @@ void profile_stages(cudaGraph_t captured,cudaStream_t stream,std::size_t calls,
 int main(int argc,char** argv) try {
     if(argc!=2)throw std::runtime_error("usage: mfq-cuda-real-gr-bench MODEL.mfq");
     const auto model=mfq::open_model_source(argv[1]);
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     std::vector<std::unique_ptr<Bank>> banks;
     std::size_t bytes=0;
     std::array<std::size_t,3> stage_bytes{};

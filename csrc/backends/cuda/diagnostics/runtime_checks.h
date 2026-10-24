@@ -280,9 +280,9 @@ static int run_prefill_sweep(
                         TYLOINFER_RUNTIME_CHECK(model.cache_pos==m,"layer-major logical cache did not advance");
                     }
                 }
-                if(phase_sweep && (repeat&1) && execution.moe_expert_cache) {
+                if(phase_sweep && (repeat&1) && execution.stores.moe_expert_cache) {
                     std::ostringstream stats;
-                    print_moe_expert_cache_stats(execution.moe_expert_cache,stats);
+                    print_moe_expert_cache_stats(execution.stores.moe_expert_cache,stats);
                     const auto data=stats.str();
                     const std::string key="pipeline_phased_transfer_serves=";
                     const auto begin=data.find(key);

@@ -44,7 +44,8 @@ static void verify_bench_nvq_records(const NvqWeight& canonical,const NvqWeight&
     if(expected_weight.sizes()!=actual_weight.sizes() ||
         std::memcmp(expected_weight.data_ptr(),actual_weight.data_ptr(),actual_weight.numel()*actual_weight.element_size()))
         throw std::runtime_error("extended execution records changed dequantized weight bits");
-    CudaExecutionContext execution;double worst=0;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);double worst=0;
     for(int batch:{1,3,8,16,64}) {
         auto x=tb::tensor(fb::input(batch,int(raw.neuron_len))).reshape({batch,raw.neuron_len}).to(tb::kCUDA,tb::kFloat16);
         auto a=nvq_matmul(execution.profiler,raw,x).to(tb::kCPU,tb::kFloat32);

@@ -45,6 +45,25 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 class MoeExpertCache;
 class TqExpertCache;
 
+// One load owner outlives its execution context and every model borrowing it.
+struct CudaStores {
+    CudaStores() = default;
+    CudaStores(const CudaStores&) = delete;
+    CudaStores& operator=(const CudaStores&) = delete;
+    std::shared_ptr<mfq::cuda::KvMemoryManager> kv_memory;
+    std::shared_ptr<MoeExpertCache> moe_expert_cache;
+    std::shared_ptr<TqExpertCache> tq_expert_cache;
+    std::shared_ptr<mfq::cuda::KvOffloadStore> qsa_kv_store;
+
+    // Drain execution before retiring backing; leases may retain individual handles.
+    void reset() noexcept {
+        qsa_kv_store.reset();
+        kv_memory.reset();
+        moe_expert_cache.reset();
+        tq_expert_cache.reset();
+    }
+};
+
 namespace mfq::cuda::internal {
 
 class PrefillCudaTimer {
@@ -341,7 +360,10 @@ struct MoeRouteLayerStats {
 };
 
 struct CudaExecutionContext {
-    CudaExecutionContext();
+    explicit CudaExecutionContext(CudaStores& stores);
+    ~CudaExecutionContext();
+    CudaExecutionContext(const CudaExecutionContext&) = delete;
+    CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mfq::cuda::ContextSet native_contexts;
 #endif
@@ -374,14 +396,11 @@ struct CudaExecutionContext {
     ParallelConfig expert_parallel;
     ModelParallelCollectiveRuntime model_parallel_collectives;
     LayerPlacementConfig layer_placement;
-    // Engine-owned load resource; cached model/MTP weights share its lifetime.
-    std::shared_ptr<MoeExpertCache> moe_expert_cache;
-    std::shared_ptr<TqExpertCache> tq_expert_cache;
-    std::shared_ptr<mfq::cuda::KvOffloadStore> qsa_kv_store;
-    std::shared_ptr<mfq::cuda::KvMemoryManager> kv_memory;
+    CudaStores& stores;
     std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
 
-    void reset() noexcept;
+    void drain();
+    void reset();
 };
 
 void mfq_release_host_allocator_cache() noexcept;

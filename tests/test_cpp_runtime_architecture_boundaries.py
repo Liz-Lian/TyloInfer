@@ -554,8 +554,9 @@ def test_cuda_runtime_hides_model_session_and_batch_implementation() -> None:
     assert "class CudaProfilerAccess" not in execution
     assert "inline const CudaProfilerAccess g_profiler" not in execution
     assert "extern CudaProfiler&" not in execution
-    assert "std::shared_ptr<CudaExecutionContext> execution;" in CUDA_ENGINE_SOURCE
-    assert "std::make_shared<CudaExecutionContext>()" in CUDA_ENGINE_SOURCE
+    assert "CudaStores stores;" in CUDA_ENGINE_SOURCE
+    assert "std::unique_ptr<CudaExecutionContext> execution;" in CUDA_ENGINE_SOURCE
+    assert "std::make_unique<CudaExecutionContext>(stores)" in CUDA_ENGINE_SOURCE
     execution_source = (CUDA_OPS.parent / "execution/execution.cpp").read_text(
         encoding="utf-8"
     )

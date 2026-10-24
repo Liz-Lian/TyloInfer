@@ -108,7 +108,8 @@ struct Layer {
         return converted;
     }
     Layer(const mfq::ModelSource& model,int layer):index(layer) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         for(int route=0;route<routes;++route)selected.push_back((route*53+layer*17)%experts);
         const auto prefix="model.block."+std::to_string(layer)+".mlp.";
         for(int p=0;p<3;++p) {
@@ -164,7 +165,8 @@ struct Layer {
 struct Call {
     Layer& layer;
     int tokens;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     tb::Tensor x,xd,ids,weights,table,shared_gate;
     MoeRoutePlan route;
     std::unique_ptr<MfeFfnRuntime> fused;

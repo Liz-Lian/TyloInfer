@@ -156,7 +156,8 @@ Tensor input(const Json& j) {
 }
 
 std::vector<Tensor> run(const std::string& op, const std::vector<Tensor>& a, const Json& p) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto optional = [&](size_t i) -> std::optional<Tensor> {
         return a.at(i).defined() ? std::optional<Tensor>(a.at(i)) : std::nullopt;
     };

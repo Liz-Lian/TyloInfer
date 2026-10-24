@@ -108,7 +108,8 @@ void verify_nvq_dense_default(const std::filesystem::path& root) {
 }
 
 int verify_shared_input(const std::filesystem::path& root) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto load=[&](const std::array<std::string,4>& formats) {
         MixedMoeRuntime result;result.n_experts=12;result.out_per_expert=640;result.neuron_len=2560;
         result.partial_experts=true;
@@ -197,7 +198,8 @@ int verify_shared_input(const std::filesystem::path& root) {
 }
 
 int verify_nint_dispatch(const std::filesystem::path& root) {
-    CudaExecutionContext execution;int cases=0;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);int cases=0;
     auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();
     context->begin_graph_pool(stream);
@@ -478,7 +480,8 @@ void verify_mapped_refill_descriptors() {
     std::cout<<"mapped_refill_descriptor_cases="<<cases<<" changing pointers/counts/unaligned tails/guards exact PASS\n";
 }
 void verify_speculative_route_prefix(const std::filesystem::path& root) {
-    CudaExecutionContext execution;auto& config=execution.config;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);auto& config=execution.config;
     config.moe_residency_warm=true;config.moe_residency_adapt=true;
     config.moe_pipeline=true;config.moe_ram_pcie=true;
     config.moe_preload_all=true;config.moe_assert_resident=true;config.moe_residency_projection_heat=false;
@@ -590,7 +593,8 @@ void verify_short_decode_residency_interval(const std::filesystem::path& root) {
     } interval;
     int checks=0;
     for(bool independent:{false,true})for(int tokens:{1,2,3,4,5,6,8,31}) {
-        CudaExecutionContext execution;auto& config=execution.config;config.moe_residency_warm=true;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);auto& config=execution.config;config.moe_residency_warm=true;
         config.moe_pipeline=true;config.moe_ram_pcie=true;
         config.moe_preload_all=true;config.moe_assert_resident=true;config.moe_residency_projection_heat=false;
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> sources={source(root/"nint5-640-2560.mfq"),
@@ -681,7 +685,8 @@ int verify_warm_residency(const std::filesystem::path& root, bool shared_cases=t
         }
     };
     for(const std::string format:{"nint5","nvq3j-512"})for(int mode:{0,1,2}) {
-        CudaExecutionContext execution;execution.config.moe_residency_warm=true;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
         const bool limited=mode==1,shared=mode==2;
         if(shared && !shared_cases)continue;
         if(mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_TRACE"))
@@ -888,7 +893,8 @@ int verify_projection_heat(const std::filesystem::path& root,bool transfer_cache
         std::array<std::string,3>{"nint5","nvq3j-512","nint5"},
         std::array<std::string,3>{"nint5","nint6","nvq3j-512"}};
     for(const std::string phase:{"disabled","none","upload","map","host","publish","late-reader"}) {
-        CudaExecutionContext execution;execution.config.moe_residency_warm=true;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=phase!="disabled";
         execution.config.moe_ram_pcie_fraction=1.0;
         if(transfer_cached) {
@@ -1051,7 +1057,8 @@ int verify_rounded_swiglu() {
     return cases;
 }
 int verify_resident_classification() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     constexpr int experts=512;
     const std::array<int,3> counts={3,2,4};
     const int maps=counts[0]+counts[1]+counts[2];
@@ -1117,7 +1124,8 @@ int verify_resident_classification() {
     return cases;
 }
 int verify_active_nvq(const std::filesystem::path& root) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto same=[](const tb::Tensor& a,const tb::Tensor& b) {
         auto x=a.to(tb::kCPU).contiguous(),y=b.to(tb::kCPU).contiguous();
         if(x.sizes()!=y.sizes() || x.scalar_type()!=y.scalar_type() ||
@@ -1261,7 +1269,8 @@ int verify_two_stage_shared(const std::filesystem::path& root,bool transfer_cach
     for(bool graph:{false,true})for(auto gate_type:{tb::kFloat16,tb::kBFloat16,tb::kFloat32})
     for(int tokens:compare_shared_short?std::vector<int>{2,3,4,5,6,8}:(compare_group_quant || compare_cached_reduce || compare_shared_early)?std::vector<int>{1}:compare_token_groups?std::vector<int>{2,3,4,5,6,8,16,32}:
         compare_shared_stream?std::vector<int>{1,2,3,4,5,6,8}:std::vector<int>{1,3,6})for(int routes:{3,10}) {
-        std::array<CudaExecutionContext,2> executions;
+        std::array<CudaStores,2> stores;
+        std::array<CudaExecutionContext,2> executions{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
         std::array<std::shared_ptr<MoeExpertCache>,2> caches;
         std::array<std::array<std::shared_ptr<MoeQuantRangeSource>,3>,2> sources;
         std::array<MoeFfnForward,2> forwards;
@@ -1507,7 +1516,8 @@ int verify_transfer_hit_reservation(const std::filesystem::path& root) {
     for(const std::string format:{"nint5","nvq3j-512"}) {
         std::array<std::shared_ptr<MoeExpertCache>,2> caches;
         std::array<std::array<MoeFfnForward,2>,2> forwards;
-        std::array<CudaExecutionContext,2> executions;
+        std::array<CudaStores,2> stores;
+        std::array<CudaExecutionContext,2> executions{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
         for(int mode=0;mode<2;++mode) {
             MfqCudaStreamGuard guard(streams[mode]);
             Environment::set(mode?"1":"0");auto& execution=executions[mode];
@@ -1603,7 +1613,8 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
     int cases=0,cpu_groups=0,gpu_only=0,cancelled=0;
     const std::array<MfqCudaStream,2> streams={mfq_get_stream_from_pool(),mfq_get_current_cuda_stream()};
     for(const std::string format:{"nint5","nvq3j-512"}) {
-        std::array<CudaExecutionContext,2> executions;
+        std::array<CudaStores,2> stores;
+        std::array<CudaExecutionContext,2> executions{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
         std::array<std::shared_ptr<MoeExpertCache>,2> caches;
         std::array<std::shared_ptr<mfq::cuda::KvExpertLoan>,2> loans;
         std::array<std::size_t,2> loan_bytes{};
@@ -1966,7 +1977,8 @@ void verify_router_prefetch(const std::filesystem::path& root) {
         std::array<std::string,3>{"nint5","nint5","nint5"},
         {"nvq3j-512","nvq3j-512","nvq3j-512"},
         {"nint5","nvq3j-l","nvq2j-xl"}}) {
-        std::array<CudaExecutionContext,2> executions;
+        std::array<CudaStores,2> stores;
+        std::array<CudaExecutionContext,2> executions{CudaExecutionContext(stores[0]), CudaExecutionContext(stores[1])};
         std::array<std::shared_ptr<MoeExpertCache>,2> caches;
         std::array<std::array<MoeFfnForward,2>,2> forward;
         std::array<std::array<std::array<std::shared_ptr<MoeQuantRangeSource>,3>,2>,2> sources;
@@ -2122,7 +2134,8 @@ void verify_predictor_residency(const std::filesystem::path& root,bool prefer_re
         ~Preference(){set(previous.c_str());}
     } preference;
     Preference::set(prefer_resident?"1":"0");
-    CudaExecutionContext execution;auto& config=execution.config;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);auto& config=execution.config;
     config.moe_pipeline=true;config.moe_preload_all=true;config.moe_assert_resident=true;
     config.moe_residency_warm=true;config.moe_residency_projection_heat=true;
     config.moe_ram_pcie=true;config.moe_ram_pcie_fraction=1;config.moe_direct_ram=true;
@@ -2208,7 +2221,8 @@ void verify_yarn() {
 
 void verify_online_expert_budget(const std::filesystem::path& root) {
     for(const std::string format:{"nint5","nvq3j-512"}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         execution.config.moe_pipeline=true;execution.config.moe_preload_all=true;
         execution.config.moe_ram_pcie=true;execution.config.moe_ram_pcie_fraction=1;
         execution.config.moe_residency_adapt=false;execution.config.moe_assert_resident=true;
@@ -2283,7 +2297,8 @@ void verify_prefill_quota_recovery(const std::filesystem::path& root) {
     } setting;
     for(const std::string format:{"nint5","nvq3j-512"})
     for(const std::string failure:{"CUDA VRAM limit exceeded:","CUDA pinned allocation failed:"}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         execution.config.moe_pipeline=true;execution.config.moe_preload_all=true;
         execution.config.moe_ram_pcie=true;execution.config.moe_ram_pcie_fraction=1;
         execution.config.moe_direct_ram=true;execution.config.moe_residency_adapt=false;
@@ -2340,7 +2355,8 @@ void verify_memory_phase_reuse(const std::filesystem::path& root) {
     auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     int cases=0;
     for(const std::string format:{"nint5","nvq3j-512"}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         execution.config.moe_pipeline=true;execution.config.moe_preload_all=true;
         execution.config.moe_ram_pcie=true;execution.config.moe_ram_pcie_fraction=1;
         execution.config.moe_residency_adapt=false;
@@ -2698,7 +2714,8 @@ int main(int argc,char** argv)try {
     int shared_cost_cases=0,shared_cost_warm_cases=0,two_stage_format_cases=0;std::int64_t shared_cost_ready_queries=0;
     const int wire_checks=verify_wire_bytes();
     for(const auto& format:formats) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> cold={source(root/(format+"-640-2560.mfq")),
             source(root/(format+"-640-2560.mfq")),source(root/(format+"-2560-640.mfq"))};
         std::array<std::shared_ptr<MoeQuantRangeSource>,3> oracle={source(root/(format+"-640-2560.mfq")),
@@ -2764,7 +2781,8 @@ int main(int argc,char** argv)try {
             verify_original();reader.reset();++transactions;
         }
         {
-            CudaExecutionContext cross;cross.config.moe_host_cache_bytes=6*gpu_bytes;
+            CudaStores cross_stores;
+            CudaExecutionContext cross(cross_stores);cross.config.moe_host_cache_bytes=6*gpu_bytes;
             auto tier=make_moe_expert_cache(2*gpu_bytes,cross.config);
             std::array<std::array<std::shared_ptr<MoeQuantRangeSource>,3>,2> layers;
             std::array<MoeFfnForward,2> forwards;
@@ -2813,7 +2831,8 @@ int main(int argc,char** argv)try {
             ++transactions;
         }
         {
-            CudaExecutionContext partial;partial.config.moe_host_cache_bytes=3*gpu_bytes;
+            CudaStores partial_stores;
+            CudaExecutionContext partial(partial_stores);partial.config.moe_host_cache_bytes=3*gpu_bytes;
             auto tier=make_moe_expert_cache(gpu_bytes+bytes(oracle[0]->metadata()->pools[0]),partial.config);
             std::array<std::shared_ptr<MoeQuantRangeSource>,3> parts;
             std::vector<std::shared_ptr<MfeWeight>> gates,downs;
@@ -2896,7 +2915,8 @@ int main(int argc,char** argv)try {
         }
         {
             auto adaptive_stream=mfq_get_stream_from_pool();MfqCudaStreamGuard adaptive_guard(adaptive_stream);
-            CudaExecutionContext adaptive;adaptive.config.moe_ram_pcie_fraction.reset();
+            CudaStores adaptive_stores;
+            CudaExecutionContext adaptive(adaptive_stores);adaptive.config.moe_ram_pcie_fraction.reset();
             const auto* shared_cost=mfq::cuda::env_lookup("TYLOINFER_MOE_SHARED_CPU_COST");
             const bool shared_cost_enabled=shared_cost && std::strcmp(shared_cost,"1")==0;
             // Keep whole RAM experts eligible while obtaining repeated cost

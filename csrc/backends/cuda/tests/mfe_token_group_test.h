@@ -14,7 +14,8 @@ void verify_mfe_token_groups(const std::filesystem::path& root) {
             if(previous.empty())mfq::cuda::env_clear("TYLOINFER_MFE_TOKEN_GROUPS");else mfq::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",previous.c_str());
         }
     } environment;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);

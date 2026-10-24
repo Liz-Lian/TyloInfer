@@ -107,8 +107,8 @@ template <class Model> struct CudaMtpOps {
     if(target_route_cache)discard_moe_speculative_routes(target_route_cache);
   }
   void begin_target_routes(int rows) {
-    begin_moe_speculative_routes(model.execution->moe_expert_cache,rows);
-    target_route_cache=model.execution->moe_expert_cache;
+    begin_moe_speculative_routes(model.execution->stores.moe_expert_cache,rows);
+    target_route_cache=model.execution->stores.moe_expert_cache;
   }
   void resolve_target_routes(int rows,bool cancelled) {
     if(!target_route_cache)return;
@@ -117,7 +117,7 @@ template <class Model> struct CudaMtpOps {
     target_route_cache.reset();
   }
   bool take_target_maintenance() {
-    const auto captures=moe_expert_graph_captures(model.execution->moe_expert_cache);
+    const auto captures=moe_expert_graph_captures(model.execution->stores.moe_expert_cache);
     const bool initialized=captures!=target_graph_captures;
     target_graph_captures=captures;
     return std::exchange(target_maintenance,false) || initialized;
@@ -241,7 +241,7 @@ template <class Model> struct CudaMtpOps {
                               prepared->positions.size(0) == 3
                           ? 3
                           : 1), prefill_compute_chunk(compute_chunk), output(output) {
-    target_graph_captures=moe_expert_graph_captures(model.execution->moe_expert_cache);
+    target_graph_captures=moe_expert_graph_captures(model.execution->stores.moe_expert_cache);
   }
   void initialize(const std::vector<int64_t> &prompt,
                   const MfqSamplingParams &sampling) {
@@ -294,7 +294,7 @@ template <class Model> struct CudaMtpOps {
     projected_target_compact={};
     projected_target_greedy.clear();
     target_transfer_bytes = 0;
-    const auto transfer_before=moe_expert_streamed_bytes(model.execution->moe_expert_cache);
+    const auto transfer_before=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     const auto finish_profile=[&] {
       if(!profile_target())return;
@@ -309,7 +309,7 @@ template <class Model> struct CudaMtpOps {
             ? known_ids_host : Tensor{};
         Tensor logits;
         if(auto hidden=mfq::cuda::qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&projected_target_greedy,captured_compact_requested())) {
-          target_transfer_bytes=moe_expert_streamed_bytes(model.execution->moe_expert_cache)-transfer_before;
+          target_transfer_bytes=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache)-transfer_before;
           target_maintenance=target_maintenance || initialized;
           projected_target_hidden = *hidden; projected_target_logits = std::move(logits);
           projected_target_compact=mfq::cuda::qwen4_decode_graph_compact_topk(model);
@@ -320,7 +320,7 @@ template <class Model> struct CudaMtpOps {
     }
     auto hidden=model.hidden_forward(ids, mfq_nullopt, mfq_nullopt, nullptr,
                                      mfq_nullopt, raw, confirmed);
-    target_transfer_bytes=moe_expert_streamed_bytes(model.execution->moe_expert_cache)-transfer_before;
+    target_transfer_bytes=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache)-transfer_before;
     finish_profile();
     return hidden;
   }
@@ -328,10 +328,10 @@ template <class Model> struct CudaMtpOps {
     projected_target_hidden = {}; projected_target_logits = {};
     projected_target_compact={};
     projected_target_greedy.clear();
-    const auto transfer_before=moe_expert_streamed_bytes(model.execution->moe_expert_cache);
+    const auto transfer_before=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
-    target_transfer_bytes+=moe_expert_streamed_bytes(model.execution->moe_expert_cache)-transfer_before;
+    target_transfer_bytes+=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache)-transfer_before;
     if(profile_target()) {
       const auto costs_after=target_costs();
       for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];
@@ -405,7 +405,7 @@ template <class Model> struct CudaMtpOps {
         return {std::move(hidden),std::move(raw),timer.elapsed_ms()};
       }
     }
-    MoePrefillWorkspaceLoan workspace(model.execution->moe_expert_cache);
+    MoePrefillWorkspaceLoan workspace(model.execution->stores.moe_expert_cache);
     const bool host_history=host_prompt_history(chunk.count);
     bool borrowed=false;
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
@@ -584,11 +584,11 @@ template <class Model> struct CudaMtpOps {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(cache_only_prompt_history())return 0;
       if(pairs<=128 || !model.reuse_decode_graphs || !model.graph_registry)return 0;
-      prepare_moe_decode_residency(model.execution->moe_expert_cache);
+      prepare_moe_decode_residency(model.execution->stores.moe_expert_cache);
       const auto rows=std::min<int64_t>(1024,pairs);
       const auto bytes=(std::size_t(1)<<30)+std::size_t(rows)*model.config.hidden*
-          model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(model.execution->moe_expert_cache,true);
-      auto loan=std::make_unique<MoePrefillWorkspaceLoan>(model.execution->moe_expert_cache);
+          model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(model.execution->stores.moe_expert_cache,true);
+      auto loan=std::make_unique<MoePrefillWorkspaceLoan>(model.execution->stores.moe_expert_cache);
       if(loan->begin(bytes))predictor_loan=std::move(loan);
     }
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
@@ -612,7 +612,7 @@ template <class Model> struct CudaMtpOps {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(cache_only_prompt_history()) {
         auto& predictor=static_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp&>(mtp);
-        MoePrefillWorkspaceLoan workspace(model.execution->moe_expert_cache);
+        MoePrefillWorkspaceLoan workspace(model.execution->stores.moe_expert_cache);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
         {

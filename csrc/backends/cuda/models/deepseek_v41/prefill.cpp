@@ -59,7 +59,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     TYLOINFER_RUNTIME_CHECK(split > 0 && split < model.num_hidden_layers(), "invalid CED encoder boundary");
     compute_chunk = std::min<int64_t>(compute_chunk, 8192);
     std::optional<MoePrefillLayerPriority> priority;
-    if(tokens > config.sliding_window)priority.emplace(model.execution->moe_expert_cache,0,static_cast<int>(split));
+    if(tokens > config.sliding_window)priority.emplace(model.execution->stores.moe_expert_cache,0,static_cast<int>(split));
     Tensor tail_hidden, tail_pre, tail_ids;
     HashBatch tail_hashes;
     const auto cancelled = [&] {

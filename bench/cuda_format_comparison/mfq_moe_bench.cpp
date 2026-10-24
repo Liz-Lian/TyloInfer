@@ -91,7 +91,8 @@ static std::vector<MixedMoePool> coalesce(std::vector<MixedMoePool>& leaves,int 
 struct Bank {
     MixedMoeRuntime runtime;
     Bank(const std::vector<MixedMoePool>& cpu,const fb::Case& c,std::vector<tb::Tensor>& books) {
-        CudaExecutionContext execution;runtime.n_experts=routes;runtime.out_per_expert=c.n;runtime.neuron_len=c.k;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);runtime.n_experts=routes;runtime.out_per_expert=c.n;runtime.neuron_len=c.k;
         for(size_t i=0;i<cpu.size();++i) {
             auto pool=upload(cpu[i],books[i],false);pool.expert_local=cpu[i].expert_local.to(tb::kCUDA);
             const char* metadata=std::getenv("TYLOINFER_BENCH_PREPARE_NINT_METADATA");
@@ -154,7 +155,8 @@ static void verify_routes(const fb::Case& c,std::vector<MixedMoePool>& leaves,bo
         std::vector<tb::Tensor> books(cpu.size());Bank bank(cpu,c,books);
         bank.runtime.partial_experts=true;
         for(int tokens:{1,3,8})for(bool routed:{false,true})for(int dispatch=0;dispatch<3;++dispatch) {
-            CudaExecutionContext execution;
+            CudaStores stores;
+            CudaExecutionContext execution(stores);
             execution.config.moe_nvq_active_decode=dispatch==2;
             auto x=tb::zeros(routed?std::vector<int64_t>{tokens,routes,c.k}:std::vector<int64_t>{tokens,c.k},
                 tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
@@ -238,7 +240,8 @@ int main(int argc,char** argv)try {
         throw std::runtime_error("Packed cursor prototype was rejected; archived under runs/windows-ram-20261009");
     const fs::path output=argv[2];fs::create_directories(output);
     auto context=mfq::cuda::default_context(0);auto stream=mfq_get_stream_from_pool(false);MfqCudaStreamGuard guard(stream);
-    CudaExecutionContext execution;cudaDeviceProp prop{};fb::check(cudaGetDeviceProperties(&prop,0));
+    CudaStores stores;
+    CudaExecutionContext execution(stores);cudaDeviceProp prop{};fb::check(cudaGetDeviceProperties(&prop,0));
     const auto cases=fb::read_cases(argv[1]);std::vector<std::string> paths;
     for(const auto& c:cases)if(std::find(paths.begin(),paths.end(),c.model)==paths.end())paths.push_back(c.model);
     for(const auto& c:cases) {

@@ -13,7 +13,8 @@ void verify_d4_bank_map(const std::filesystem::path& root,int benchmark=1) {
         }
         ~Option(){set(present?old.c_str():"");}
     } option;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();int checks=0;

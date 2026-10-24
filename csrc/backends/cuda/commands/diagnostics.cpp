@@ -242,7 +242,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 static_cast<const mfq::cuda::CudaLoadOptions&>(*this);
             return run_cuda_engine_isolation_check(std::move(options));
         }
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
+        CudaScope scope(execution);
         // Operator-only checks do not require loading a model.
         if (check_backend_bf16_add) return run_backend_bf16_add_check(4096, 10000);
         if (check_backend_argmax) return run_backend_argmax_check(248320, 2000);
@@ -275,7 +277,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         setup_cuda_load(*this, execution);
         if(runtime_comparison_modes()) {
             std::cout<<runtime_comparison_name()<<"_setup\n";
-            print_moe_expert_cache_stats(execution.moe_expert_cache,std::cout);
+            print_moe_expert_cache_stats(execution.stores.moe_expert_cache,std::cout);
         }
         if (!check_linear_cpu.empty()) {
             if (model_path.empty()) {
@@ -455,7 +457,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 parse_kl_mmq_mode(kl_mmq_arg), execution.kl_mmq);
             const auto tensor_names =
                 parse_tensor_names(check_mfe_tensor);
-            if (execution.moe_expert_cache &&
+            if (execution.stores.moe_expert_cache &&
                     tensor_names.size() != 1) {
                 throw std::runtime_error(
                     "cached --check-mfe-tensor accepts one tensor "
@@ -695,9 +697,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             execution.profiler.enabled=profile;
             const int status = run_prefill_sweep(
                 model, prefill_sweep_sizes, prefill_sweep_reps,execution);
-            if (execution.moe_expert_cache) {
+            if (execution.stores.moe_expert_cache) {
                 print_moe_expert_cache_stats(
-                    execution.moe_expert_cache, std::cout);
+                    execution.stores.moe_expert_cache, std::cout);
             }
             return status;
         }
@@ -865,10 +867,10 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     }
                 }
                 if(compare_cpu_background_calibration)
-                    prepare_moe_cpu_calibration_comparison(execution.moe_expert_cache,pass>0);
+                    prepare_moe_cpu_calibration_comparison(execution.stores.moe_expert_cache,pass>0);
                 else if(compare_cpu_transfer_budget)
-                    prepare_moe_cpu_budget_comparison(execution.moe_expert_cache,pass>0,phased);
-                else prepare_moe_pipeline_comparison(execution.moe_expert_cache,pass>0);
+                    prepare_moe_cpu_budget_comparison(execution.stores.moe_expert_cache,pass>0,phased);
+                else prepare_moe_pipeline_comparison(execution.stores.moe_expert_cache,pass>0);
                 std::cout<<comparison_name<<"_pass="<<pass<<" phase="<<phased<<" begin=1";
                 if(comparison_phase_timings)std::cout<<" mfe_phase_timings="<<phase_timings;
                 std::cout<<'\n';
@@ -885,9 +887,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 const int status=generate_diagnostic_tokens(execution,model,ids,gen,false,
                     pass_start,pass_start,decode_inputs);
                 if(status)return status;
-                const auto records=finish_moe_pipeline_comparison(execution.moe_expert_cache);
+                const auto records=finish_moe_pipeline_comparison(execution.stores.moe_expert_cache);
                 if(compare_moe_plan_reuse || compare_mfe_e8_narrow || compare_mfe_default_math || compare_cpu_transfer_budget || compare_cpu_background_calibration || compare_mfe_shared_first || compare_mhc_dense_fusion || compare_mhc_packed_groups || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_gdn_fixed_geometry || compare_gdn_inplace_state || compare_qsa_fusion || compare_mfe_early_gu)
-                    print_moe_expert_cache_stats(execution.moe_expert_cache,std::cout);
+                    print_moe_expert_cache_stats(execution.stores.moe_expert_cache,std::cout);
                 std::cout<<comparison_name<<"_pass="<<pass<<" phase="<<phased
                     <<" end=1 dispatch_records="<<records<<"\n";
             }

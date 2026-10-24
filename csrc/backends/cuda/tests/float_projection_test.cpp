@@ -648,7 +648,8 @@ std::vector<float> read(const std::filesystem::path& path,size_t count) {
     return values;
 }
 void canonical(const std::filesystem::path& root) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     std::ifstream manifest(root/"cases.txt");
     int out,width,batch,cases=0,activation_cases=0,dense_cases=0,compact_cases=0;
     std::string name;
@@ -761,7 +762,8 @@ void residual() {
     auto projection=[](const Fixture& f)->GatedResidualProjection {
         return [w=f.weight](CudaExecutionContext&,const tb::Tensor& x) { return nint_float_projection_cuda(w,x); };
     };
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto actual=gated_residual_pre_projected(execution,x,n,projection(down),projection(up),
         projection(inject),hidden,streams,1e-6);
     const auto expected=mfq_qwen4_exp::gated_residual_pre(x,n,dense(down),dense(up),dense(inject),hidden,streams,1e-6);
@@ -832,7 +834,8 @@ void residual_model() {
     for(size_t i=0;i<values.size();++i)values[i]=std::sin(float(i)*.031f)*.4f;
     for(size_t i=0;i<norm.size();++i)norm[i]=1.0f+std::sin(float(i)*.017f)*.13f;
     auto input=upload(values,tb::kFloat32,{1,3,width}),n=upload(norm,tb::kFloat32,{width});
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto forward=[&](const tb::Tensor& x) {
         return gated_residual_pre_projected(execution,x,n,projection(down),projection(up),
             projection(inject),hidden,streams,1e-6,mixed,{},activated(down),activated(inject));
@@ -960,7 +963,8 @@ void complete_two_stage_residual() {
         for(int j=0;j<hidden;++j)branch_data[j]=std::sin(j*.017f)*.21f;
         for(int j=0;j<streams;++j)gate[j]=.13f+j*.19f;
         auto norm=upload(gamma,tb::kFloat32,{width});
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         const auto projection=[](const NintWeight& w)->GatedResidualProjection {
             return [&w](CudaExecutionContext&,const tb::Tensor& x) {
                 auto y=nint_float_projection_cuda(w,x);

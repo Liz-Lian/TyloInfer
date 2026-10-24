@@ -5,7 +5,8 @@
 void qsa_scalar_history_chain_case() {
     int cases=0,scalar_replays=0,chain_replays=0;
     for(int mode:{0,1,2})for(int width:{32,256}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         constexpr int hidden=32,heads=4,kv=2,iw=8,ih=2,pool=4,maximum=128,budget=16;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
         auto norm=data({width},1,0),inorm=data({iw},1,0);
@@ -83,7 +84,8 @@ void qsa_scalar_history_chain_case() {
 void qsa_history_prime_case() {
     int cases=0;
     for(int mode:{0,1,2}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         constexpr int hidden=32,heads=4,kv=2,width=32,iw=8,ih=2,pool=4,maximum=512,budget=64;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
         auto norm=data({width},1,0),inorm=data({iw},1,0);
@@ -154,7 +156,8 @@ void qsa_prefill_fusion_case() {
     } setting;
     int cases=0,grouped_calls=0;
     for(int width:{8,256})for(bool grouped:{false,true}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         constexpr int hidden=32,kv=2,iw=8,ih=2,pool=4,maximum=2048,budget=512;
         const int heads=width==256?24:4;
         auto rotary=std::make_shared<RotaryEmbedding>(std::min(width,8),maximum,10000.);

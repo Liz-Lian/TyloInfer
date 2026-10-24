@@ -108,7 +108,7 @@ int generate_diagnostic_tokens(
             mfq_cuda_graph_capture_supported() &&
             execution.dsv4_cpu_offload_layers.empty() &&
             execution.dense_cpu_layer_count == 0 &&
-            !execution.moe_expert_cache &&
+            !execution.stores.moe_expert_cache &&
             model_parallel_cuda_graph_enabled(execution) &&
             (!profile || profile_cuda_graph) && gen > 1;
         const char * cuda_profiler_env = mfq::cuda::env_lookup("TYLOINFER_CUDA_PROFILER_RANGE");
@@ -284,9 +284,9 @@ int generate_diagnostic_tokens(
         }
         std::cout << "\n";
         report_source_file_io(model.source.get(), "decode");
-        if (execution.moe_expert_cache) {
+        if (execution.stores.moe_expert_cache) {
             print_moe_expert_cache_stats(
-                execution.moe_expert_cache, std::cout);
+                execution.stores.moe_expert_cache, std::cout);
         }
         finish_cuda_activity_trace();
         return 0;

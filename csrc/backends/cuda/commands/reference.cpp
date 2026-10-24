@@ -170,7 +170,9 @@ int run_reference(int argc, char** argv) {
             usage_error("native reference requires --model, --ctx-size, --reference-input and --reference-output");
         if (!std::filesystem::is_directory(options.model_path))
             usage_error("native reference requires an original HF model directory");
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
+        CudaScope scope(execution);
         internal::setup_cuda_load(options, execution);
         tb::NoGradGuard guard;
         auto source = mfq::open_model_source(options.model_path);

@@ -72,7 +72,8 @@ CudaPreparedPrompt run(Vision& vision,DeepseekV41CausalLm& language,
 }
 
 void test() {
-    CudaExecutionContext execution;DeepseekV41CausalLm language;language.execution=&execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);DeepseekV41CausalLm language;language.execution=&execution;
     auto& config=language.config;config.hidden=16;config.vocab=8;config.image_token_id=7;
     config.vision={1,8,1,12,2,3,64,12,10000.};
     language.embed.kind=QuantLinearKind::Dense;

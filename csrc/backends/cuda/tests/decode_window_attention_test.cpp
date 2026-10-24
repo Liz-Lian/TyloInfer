@@ -196,7 +196,8 @@ void segmented_sort_graph_case() {
         <<" stable values/indices exact; ties, multiple rows, one-column final offset PASS\n";
 }
 void qsa_case(int width,int heads,int maximum,int budget=8) {
-    CudaExecutionContext execution;constexpr int hidden=32,kv=2,iw=8,ih=2,pool=4;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);constexpr int hidden=32,kv=2,iw=8,ih=2,pool=4;
     auto rotary=std::make_shared<RotaryEmbedding>(std::min(width,8),maximum,10000.);
     auto norm=data({width},1,0),inorm=data({iw},1,0);
     QsaWeights weights{linear(hidden,heads*2*width,1),linear(hidden,kv*width,2),linear(hidden,kv*width,3),
@@ -395,7 +396,8 @@ void gdn_output_case() {
     std::cout<<"GDN fused output composed exact cases="<<cases<<" PASS\n";
 }
 void gdn_case(bool model_shape = false) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const int hidden=model_shape?2560:32,d=model_shape?128:32,nk=model_shape?16:1,nv=model_shape?48:2;
     const int channels=(2*nk+nv)*d;
     auto gpu=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
@@ -435,7 +437,8 @@ void gdn_case(bool model_shape = false) {
 }
 
 void gdn_prefix_checkpoint_case() {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto bits=[](const Tensor& a,const Tensor& b,const char* label) {
         auto x=a.cpu().contiguous(),y=b.cpu().contiguous();
         if(x.sizes()!=y.sizes() || x.scalar_type()!=y.scalar_type() ||
@@ -631,7 +634,8 @@ void gdn_prefill_case() {
             data({channels,4},336).to(tb::kFloat32),tb::zeros({nv},gpu),tb::zeros({nv},gpu),tb::ones({width},gpu)};
         Gdn actual(weights,nk,nv,width,4,1e-6,true,true,true,true,false,true),
             oracle(weights,nk,nv,width,4,1e-6,true,false,false,false,false,false);
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         for(int tokens:{31,256,1024,1,257}) {
             auto input=data({1,tokens,hidden},337+tokens,.13f);
             auto expected=oracle.forward_chunk(execution,input,true);

@@ -102,7 +102,8 @@ struct Bank {
 };
 struct Call {
     Bank& bank;int tokens,output_width,ffn_width;bool with_shared,cpu;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     tb::Tensor input,ids,weights,shared_gate,kinds,cpu_pairs,cpu_mask,quant_descriptors,oracle_hidden,oracle_output;
     int quant_groups=0;
     std::unique_ptr<MfeFfnRuntime> fused;

@@ -3,7 +3,8 @@
 
 void qsa_streamed_graph_case() {
     for(int width:{32,256}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         constexpr int hidden=32,heads=4,kv=2,iw=8,ih=2,pool=4,maximum=128,budget=16;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);
         auto norm=data({width},1,0),inorm=data({iw},1,0);
@@ -89,7 +90,8 @@ void qsa_kv_offload_case() {
     equal(direct.range(0,64),source.narrow(0,0,64),"KV direct SSD restore",0,0);
 
     for (int width : {8,256}) {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
         constexpr int hidden=32,kv=2,iw=8,ih=2,pool=4,maximum=384,budget=64;
         const int heads=4;
         auto rotary=std::make_shared<RotaryEmbedding>(8,maximum,10000.);

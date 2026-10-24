@@ -115,7 +115,8 @@ struct Bank {
     std::vector<int> selected;
     std::array<std::size_t,3> read_calls{},read_bytes{};
     Bank(const char* filename,int layer) {
-        model=mfq::open_model_source(filename);CudaExecutionContext execution;
+        model=mfq::open_model_source(filename);CudaStores stores;
+CudaExecutionContext execution(stores);
         const auto prefix="model.block."+std::to_string(layer)+".mlp.";
         std::set<int> ids;
         for(int p=0;p<3;++p) {
@@ -160,7 +161,8 @@ struct Bank {
 };
 struct Call {
     Bank& bank;int tokens;bool with_shared;
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     tb::Tensor input,ids,weights,shared_gate,table;
     tb::Tensor expected_hidden,expected_shared_hidden,expected_output;
     std::unique_ptr<MfeFfnRuntime> fused;

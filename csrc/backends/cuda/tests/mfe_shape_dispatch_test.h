@@ -5,7 +5,8 @@
 void verify_mfe_shape_dispatch(const std::filesystem::path& root) {
     MfeWideOption grouped("TYLOINFER_MFE_TOKEN_GROUPS","0");
     MfeWideOption compact("TYLOINFER_MFE_NVQ_COMPACT","0"),narrow("TYLOINFER_MFE_E8_NARROW","0");
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     const auto stream=mfq_current_cuda_stream();
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     context->begin_graph_pool(stream);

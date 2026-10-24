@@ -22,7 +22,8 @@ static void put(std::vector<uint8_t>& data,int64_t bit,int width,uint32_t value)
     for(int i=0;i<width;++i)if((value>>i)&1u)data[(bit+i)/8]|=uint8_t(1u<<((bit+i)&7));
 }
 static std::vector<tb::Tensor> projection_outputs(NvqWeight& w) {
-    CudaExecutionContext execution;std::vector<tb::Tensor> outputs;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);std::vector<tb::Tensor> outputs;
     const auto input=[&](int batch) {
         return tb::tensor(format_bench::input(batch,int(w.neuron_len)))
             .reshape({batch,w.neuron_len}).to(tb::kCUDA,tb::kFloat16);
@@ -46,7 +47,8 @@ static tb::Tensor cpu_projection(NvqWeight w) {
     for(auto* field:{&w.indices_packed,&w.aux_packed,&w.sub_scale_packed,&w.neuron_scale,&w.codebook})
         *field=field->to(tb::kCPU).contiguous();
     w.workspaces.clear();
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     auto x=tb::tensor(format_bench::input(3,int(w.neuron_len))).reshape({3,w.neuron_len});
     return nvq_matmul(execution.profiler,w,x).to(tb::kFloat32);
 }

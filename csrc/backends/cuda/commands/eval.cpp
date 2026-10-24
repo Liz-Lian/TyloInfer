@@ -43,7 +43,9 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
     explicit EvalCommand(mfq::cuda::EvalCommandOptions options)
         : mfq::cuda::EvalCommandOptions(std::move(options)) {}
     int run() { return with_command_errors([&]() -> int {
-        CudaExecutionContext execution;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);
+        CudaScope scope(execution);
         setup_cuda_load(*this, execution);
         if (model_path.empty()) {
             std::cerr << "missing model or execution mode (see --help)\n";
@@ -168,7 +170,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 throw std::runtime_error(
                     "--kl-chunks-sequence is unavailable for streamed KL");
             }
-            if (execution.moe_expert_cache) {
+            if (execution.stores.moe_expert_cache) {
                 throw std::runtime_error(
                     "--moe-gpu-cache-gb is unavailable for streamed KL");
             }
@@ -214,8 +216,8 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                     kl_evaluator,
                     kl_n_batch, kl_score_count,
                     kl_reference_contract);
-                if (execution.moe_expert_cache) {
-                    print_moe_expert_cache_stats(execution.moe_expert_cache, std::cout);
+                if (execution.stores.moe_expert_cache) {
+                    print_moe_expert_cache_stats(execution.stores.moe_expert_cache, std::cout);
                 }
                 return status;
             }
@@ -233,8 +235,8 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 std::cout << "cpp_kl_sequence_end index=" << index
                           << " chunks=" << chunks << "\n";
             }
-            if (execution.moe_expert_cache) {
-                print_moe_expert_cache_stats(execution.moe_expert_cache, std::cout);
+            if (execution.stores.moe_expert_cache) {
+                print_moe_expert_cache_stats(execution.stores.moe_expert_cache, std::cout);
             }
             return 0;
         }

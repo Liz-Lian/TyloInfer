@@ -796,7 +796,7 @@ MfeWeight load_mfe_gpu(
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     const mfq::cuda::WeightAllocationScope weight_memory;
-    auto& cache = execution.moe_expert_cache;
+    auto& cache = execution.stores.moe_expert_cache;
     if (cache && cacheable &&
             !moe_parallel_config(execution).enabled() &&
             execution.config.moe_ssd_ranges) {

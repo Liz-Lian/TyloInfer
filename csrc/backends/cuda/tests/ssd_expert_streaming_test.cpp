@@ -503,7 +503,8 @@ std::shared_ptr<MoeQuantRangeSource> source(const std::filesystem::path& path,co
     return std::make_shared<MoeQuantRangeSource>(std::move(store));
 }
 struct Run {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     std::shared_ptr<MoeExpertCache> cache;
     std::vector<std::shared_ptr<MoeQuantRangeSource>> sources;
     MoeFfnForward forward;
@@ -731,7 +732,8 @@ void check_cached_gate_up_overlap(const std::filesystem::path& root) {
     std::cout<<"cached_gu_cold_down rows=1,2,4 compute_overlap=1 exact_output=1 PASS\n";
 }
 void check_token_reuse(const std::filesystem::path& root,const std::string& format) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     std::array<std::shared_ptr<MixedMoeRuntime>,3> projections;
     for(int p=0;p<3;++p) {
         auto model=mfq::open_model_source((root/(format+"-"+std::to_string(p)+".mfq")).string());
@@ -812,7 +814,8 @@ void check_clipped_pipeline(const std::filesystem::path& root) {
         if(!std::filesystem::exists(root/(std::string(format)+"-0.mfq")))continue;
         std::map<std::tuple<double,int,int>,tb::Tensor> references;
         for(bool ssd:{false,true})for(double limit:{.01,10.}) {
-            CudaExecutionContext execution;auto& config=execution.config;
+            CudaStores stores;
+            CudaExecutionContext execution(stores);auto& config=execution.config;
             config.moe_pipeline=true;config.moe_two_stage_ffn=true;
             config.moe_ram_pcie=true;config.moe_direct_ram=true;config.moe_ram_pcie_fraction=1.;
             config.moe_preload_all=!ssd;config.moe_assert_resident=!ssd;
@@ -995,7 +998,8 @@ void check_ssd_predictor_overlap(const std::filesystem::path& root) {
     for(int variant:{0,1,2,3}) {
         const bool shared_arena=variant!=0,wide=variant>=2,fail_image=variant==3;
         const int width=wide?384:96;
-        CudaExecutionContext execution;auto& config=execution.config;
+        CudaStores stores;
+        CudaExecutionContext execution(stores);auto& config=execution.config;
         config.moe_pipeline=true;config.moe_two_stage_ffn=true;config.moe_direct_ram=true;
         config.moe_ram_pcie=true;config.moe_ram_pcie_fraction=1.;
         config.moe_preload_all=false;config.moe_assert_resident=false;

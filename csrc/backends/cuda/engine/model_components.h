@@ -572,13 +572,13 @@ auto with_loaded_cuda_model(
             load_runtime_components(model, load_optional_components);
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             prepare_sampling_runtime(model.vocab_size());
-        if(execution.kv_memory) {
-            execution.kv_memory->finalize(moe_expert_cache_minimum_bytes(execution.moe_expert_cache));
-            set_moe_kv_expert_loan(execution.moe_expert_cache,execution.kv_memory->expert_loan());
-            if(auto offload=execution.kv_memory->offload())execution.qsa_kv_store=std::move(offload);
+        if(execution.stores.kv_memory) {
+            execution.stores.kv_memory->finalize(moe_expert_cache_minimum_bytes(execution.stores.moe_expert_cache));
+            set_moe_kv_expert_loan(execution.stores.moe_expert_cache,execution.stores.kv_memory->expert_loan());
+            if(auto offload=execution.stores.kv_memory->offload())execution.stores.qsa_kv_store=std::move(offload);
         }
-        if (moe_expert_cache_has_sources(execution.moe_expert_cache) &&
-                !moe_expert_cache_finalized(execution.moe_expert_cache)) {
+        if (moe_expert_cache_has_sources(execution.stores.moe_expert_cache) &&
+                !moe_expert_cache_finalized(execution.stores.moe_expert_cache)) {
             std::size_t graph_reserve=0;
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
                 graph_reserve=qwen4_mtp_graph_reserve(model,runtime_components.mtp.get());
@@ -586,9 +586,9 @@ auto with_loaded_cuda_model(
                     <<runtime_components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve
                     <<" initial_depth=3 lend_unused_to_experts=1\n";
             }
-            finalize_moe_expert_cache(execution.moe_expert_cache,
-                (execution.kv_memory?execution.kv_memory->growth_reserve():0)+graph_reserve,
-                execution.kv_memory?execution.kv_memory->expert_budget_charge():0);
+            finalize_moe_expert_cache(execution.stores.moe_expert_cache,
+                (execution.stores.kv_memory?execution.stores.kv_memory->growth_reserve():0)+graph_reserve,
+                execution.stores.kv_memory?execution.stores.kv_memory->expert_budget_charge():0);
         }
         mfq_cuda_synchronize();
         auto loaded = std::chrono::steady_clock::now();

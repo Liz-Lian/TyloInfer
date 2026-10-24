@@ -112,7 +112,7 @@ template <typename Model> struct CudaGenerationOps {
             // TQ groups all prompt rows by expert without expanding an entire
             // layer. Splitting these batches into verification windows would
             // repeatedly transfer the same expert when it is not resident.
-            const bool verification_windows=!model.execution->tq_expert_cache || chunk.count<=8;
+            const bool verification_windows=!model.execution->stores.tq_expert_cache || chunk.count<=8;
             if(verification_windows && (!prepared || !prepared->transformed()) && model.reuse_decode_graphs &&
                     model.graph_registry && chunk.count<=128) {
                 // The same bounded prompt windows as MTP avoid materializing
@@ -150,7 +150,7 @@ template <typename Model> struct CudaGenerationOps {
         if (hidden.defined()) {
             // The layer-major path has already advanced every physical cache.
         } else if (prepared && prepared->transformed()) {
-            MoePrefillWorkspaceLoan workspace(model.execution->moe_expert_cache);
+            MoePrefillWorkspaceLoan workspace(model.execution->stores.moe_expert_cache);
             bool borrowed=false;
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
                 borrowed=workspace.begin((std::size_t(4)<<30)+
@@ -208,7 +208,7 @@ template <typename Model> struct CudaGenerationOps {
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
                !model.metadata.flash_next && mfq_cuda_graph_capture_supported() &&
                execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
-               !execution.moe_expert_cache && model_parallel_cuda_graph_enabled(execution) &&
+               !execution.stores.moe_expert_cache && model_parallel_cuda_graph_enabled(execution) &&
                generation_limit >= graph_config.minimum_generation_tokens &&
                generation_limit <= graph.generated_capacity;
     }
@@ -389,7 +389,7 @@ template <class Model> struct CudaGenerationContext {
         }();
         if (!enabled || batching || std::uncaught_exceptions()) return;
         std::cerr << "moe_request_cache_stats boundary=" << boundary << '\n';
-        if(drain)print_moe_expert_cache_stats(model.execution->moe_expert_cache,std::cerr);
+        if(drain)print_moe_expert_cache_stats(model.execution->stores.moe_expert_cache,std::cerr);
         // The first-token snapshot must not wait for exchanges or introduce
         // CUDA synchronization. Subtract it from the end snapshot to isolate
         // steady decode I/O from the much larger prefill scan.
@@ -416,10 +416,10 @@ template <class Model> struct CudaGenerationContext {
             model.decode_reserve_until=std::min<int64_t>(model.max_position_embeddings(),
                 int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
             if(!batching && input.prompt.size()>1024) {
-                finish_moe_expert_exchanges(model.execution->moe_expert_cache);
+                finish_moe_expert_exchanges(model.execution->stores.moe_expert_cache);
                 if(model.cache_pos==0 && !model.graph_registry)
-                    release_moe_decode_buffers(model.execution->moe_expert_cache);
-                else release_moe_prefill_buffers(model.execution->moe_expert_cache);
+                    release_moe_decode_buffers(model.execution->stores.moe_expert_cache);
+                else release_moe_prefill_buffers(model.execution->stores.moe_expert_cache);
                 mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
             }
         }
@@ -428,7 +428,7 @@ template <class Model> struct CudaGenerationContext {
     void reserve_workspace(std::size_t bytes) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         {
-            reserve_moe_workspace(model.execution->moe_expert_cache,bytes);
+            reserve_moe_workspace(model.execution->stores.moe_expert_cache,bytes);
             auto context=mfq::cuda::default_context(mfq_current_cuda_device());
             auto available=context->available_memory();
             if(available>=bytes)return;
@@ -448,7 +448,7 @@ template <class Model> struct CudaGenerationContext {
         // A short continuation can reuse the bounded MFE path without
         // returning its expert images and captured graphs for a large PP arena.
         return model.cache_pos>0 && tokens<=128 &&
-            moe_expert_cache_ssd_experts(model.execution->moe_expert_cache);
+            moe_expert_cache_ssd_experts(model.execution->stores.moe_expert_cache);
     }
     int64_t prefill_chunk(std::size_t tokens) {
         // Reuse ordinary/MTP widths before allocating wider temporary graphs
@@ -461,7 +461,7 @@ template <class Model> struct CudaGenerationContext {
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             allow_borrow=qwen4_layer_major_prefill_eligible(model,std::min<std::size_t>(tokens,8192)) &&
                 (!prepared || !prepared->transformed());
-        auto budget=moe_prefill_workspace_budget(model.execution->moe_expert_cache,allow_borrow);
+        auto budget=moe_prefill_workspace_budget(model.execution->stores.moe_expert_cache,allow_borrow);
         const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
         auto available=mfq::engine::prefill_budget_add(
             mfq::engine::prefill_budget_add(context->available_memory(),context->workspace_available()),
@@ -469,7 +469,7 @@ template <class Model> struct CudaGenerationContext {
         const auto row_bytes=std::size_t(model.hidden_size())*model.hc_mult()*sizeof(float)*8;
         const auto sequence_bytes=allow_borrow
             ? std::size_t(tokens<=16384?tokens:std::min<std::size_t>(tokens,limit))*row_bytes*3/8 : 0;
-        const auto reserve=moe_expert_cache_ssd_experts(model.execution->moe_expert_cache)
+        const auto reserve=moe_expert_cache_ssd_experts(model.execution->stores.moe_expert_cache)
             ? std::max(std::size_t(1)<<30,mfq::cuda::runtime_options::workspace_reserve_bytes())
             : std::size_t(1)<<30;
         const auto fixed=mfq::engine::prefill_budget_add(reserve+sequence_bytes,budget.transfer_bytes);
@@ -479,7 +479,7 @@ template <class Model> struct CudaGenerationContext {
             // Expert overflow in the unused KV budget is revocable too. Ask
             // its existing owner to return pages before reducing the tile.
             reserve_workspace(required>budget.lendable_bytes?required-budget.lendable_bytes:0);
-            budget=moe_prefill_workspace_budget(model.execution->moe_expert_cache,allow_borrow);
+            budget=moe_prefill_workspace_budget(model.execution->stores.moe_expert_cache,allow_borrow);
             available=mfq::engine::prefill_budget_add(
                 context->available_memory()+context->workspace_available(),budget.lendable_bytes);
         }
@@ -503,22 +503,22 @@ template <class Model> struct CudaGenerationContext {
             return;
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(model.execution->moe_expert_cache);
+        const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(model.execution->stores.moe_expert_cache);
         if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
             if(streamed)graph.invalidate();
-        const bool retained=streamed && lend_moe_decode_cache_for_prefill(model.execution->moe_expert_cache,
+        const bool retained=streamed && lend_moe_decode_cache_for_prefill(model.execution->stores.moe_expert_cache,
             mfq::cuda::runtime_options::workspace_reserve_bytes());
         if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>) {
             if(streamed && !retained) {
                 // Private FFN graphs retain their transfer arenas after a
                 // request. Retire consumers before a new grouped prefill;
                 // otherwise these arenas can reduce its ring to one expert.
-                release_moe_decode_buffers(model.execution->moe_expert_cache);
+                release_moe_decode_buffers(model.execution->stores.moe_expert_cache);
                 mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
             }
         }
 #endif
-        if(tokens>1024 || moe_expert_cache_ssd_experts(model.execution->moe_expert_cache))
+        if(tokens>1024 || moe_expert_cache_ssd_experts(model.execution->stores.moe_expert_cache))
             reserve_workspace(mfq::cuda::runtime_options::workspace_reserve_bytes());
     }
     bool prepare_snapshot() {
@@ -526,7 +526,7 @@ template <class Model> struct CudaGenerationContext {
         if constexpr(std::is_same_v<Model,Qwen4CausalLm> || std::is_same_v<Model,DeepseekV41CausalLm>) {
             // Retire prefill buffers before copying KV/recurrent state. Evict
             // old hot entries before allocating the incoming checkpoint.
-            release_moe_prefill_buffers(model.execution->moe_expert_cache);
+            release_moe_prefill_buffers(model.execution->stores.moe_expert_cache);
             // A prefix stores occupied rows, not the full preallocated context
             // or graph-owned speculative checkpoints.
             std::size_t incoming=0;

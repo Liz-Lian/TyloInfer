@@ -22,7 +22,8 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
     MfeWideOption alignment("TYLOINFER_MFE_TOKEN_ALIGNED_GU","");
     MfeWideOption split_shared("TYLOINFER_MFE_SPLIT_SHARED_GROUPS","0");
     MfeWideOption aligned_warps("TYLOINFER_MFE_ALIGNED_GU_WARPS","16");
-    CudaExecutionContext execution;const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    CudaStores stores;
+    CudaExecutionContext execution(stores);const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();int checks=0,wide_buckets=0;
     int case_index=0;const auto* start_option=mfq::cuda::env_lookup("TYLOINFER_MFE_WIDE_START_CASE");

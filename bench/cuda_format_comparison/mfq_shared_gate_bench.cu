@@ -43,7 +43,8 @@ std::size_t differences(const tb::Tensor& actual,const tb::Tensor& expected) {
 int main(int argc,char** argv) try {
     if(argc!=2)throw std::runtime_error("usage: mfq-cuda-shared-gate-bench MODEL.mfq");
     const auto model=mfq::open_model_source(argv[1]);
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     std::vector<QuantLinear> weights;
     for(int layer:{0,8,16,24,32,40}) {
         auto w=load_quant_linear(execution,*model,"model.block."+std::to_string(layer)+".mlp.shared_expert.router.weight");

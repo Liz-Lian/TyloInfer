@@ -1,7 +1,8 @@
 #pragma once
 
 void verify_compact_prefill_mma(const std::filesystem::path& root) {
-    CudaExecutionContext execution;
+    CudaStores stores;
+    CudaExecutionContext execution(stores);
     int cases=0;float maximum_relative=0;
     for(const auto* name:{"nvq2j","nvq2j-l","nvq2j-xl","nvq3j","nvq3j-512","nvq3j-l"})
         for(bool down:{false,true}) {
