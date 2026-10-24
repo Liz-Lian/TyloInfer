@@ -7,8 +7,8 @@
 #include "models/deepseek_v4/causal_lm.h"
 
 #include "core/causal_model.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_attention.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_hc.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "core/block.h"
 #include "models/deepseek_v4/config.h"
 #include "core/ffn.h"

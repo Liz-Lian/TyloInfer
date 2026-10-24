@@ -1,8 +1,10 @@
 """Hardware-backend kernels.
 
-Mirrors the ggml convention of one file per op. Native CUDA implementations all live in
-:mod:`tyloinfer.kernels.cuda`, compiled into a single extension ``mfq_cuda`` (the llama.cpp analog
-of one libggml-cuda):
+Mirrors the ggml convention of one file per op. The CUDA kernel sources have one
+home, ``cpp_runtime/backends/cuda/kernels``, compiled into a single extension
+``mfq_cuda`` (the llama.cpp analog of one libggml-cuda); this package keeps the
+thin Python wrappers and the installed TQ kernel resources. Paths below are
+relative to that kernel directory:
 
 - ``cuda/norm.cu``            - rms_norm / l2_norm
 - ``cuda/rope.cu``            - RoPE
@@ -17,7 +19,7 @@ of one libggml-cuda):
 This level keeps pure Python/numpy reference implementations for correctness checks and for
 testing without CUDA:
 
-- ``gated_delta_net`` - GDN recurrence reference (vs ``cuda/gated_delta_net.cu``)
+- ``gated_delta_net`` - GDN recurrence reference (vs ``gated_delta_net.cu``)
 - ``torch_backend``   - NINT dequant + decomposed matmul (materialize path, vs fused kernel)
 
 The Apple-silicon backend in ``metal/`` provides MLX custom Metal kernels for

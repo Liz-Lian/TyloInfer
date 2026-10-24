@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "cuda_model_plan.h"
 #include "tyloinfer/runtime.h"
 #include "block.h"

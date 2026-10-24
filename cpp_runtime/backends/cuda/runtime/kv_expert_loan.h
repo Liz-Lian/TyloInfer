@@ -1,6 +1,6 @@
 #pragma once
-#include "mfq_tensor_backend.h"
-#include "mfq_cuda_context.h"
+#include "backend.h"
+#include "context.h"
 #include "dma_copy_batch.h"
 #include <array>
 #include <list>

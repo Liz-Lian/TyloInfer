@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "tyloinfer/qsa_kv_store.h"
 #include <memory>
 #include <string>

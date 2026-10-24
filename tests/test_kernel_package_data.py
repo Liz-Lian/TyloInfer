@@ -33,6 +33,46 @@ def test_cuda_tq_local_include_dependencies_are_installed():
     assert "tq_prefill_gemm.cuh" in seen
 
 
+def test_cuda_jit_sources_and_shared_header_includes_resolve():
+    from tyloinfer.kernels.cuda import _ext
+
+    repository = Path(__file__).resolve().parents[1]
+    assert Path(_ext._KERNEL_DIR) == repository / "cpp_runtime/backends/cuda/kernels"
+    roots = [
+        Path(_ext._REPOSITORY_ROOT),
+        Path(_ext._KERNEL_DIR),
+        Path(_ext._CUDA_RUNTIME_INCLUDE),
+        Path(_ext._CUDA_NATIVE_INCLUDE),
+        Path(_ext._CUDA_NATIVE_TENSOR_INCLUDE),
+        Path(_ext._CORE_INCLUDE),
+        Path(_ext._GGML_INCLUDE),
+        Path(_ext._GGML_SOURCE_INCLUDE),
+        Path(_ext._GGML_CUDA_INCLUDE),
+    ]
+    pending, seen = list(_ext._SOURCES), set()
+    while pending:
+        path = Path(pending.pop())
+        if path in seen:
+            continue
+        seen.add(path)
+        assert path.is_file(), path
+        for target in re.findall(r'^\s*#\s*include\s*"([^"]+)"',
+            path.read_text(encoding="utf-8"), re.MULTILINE):
+            resolved = next((base / target for base in [path.parent, *roots]
+                if (base / target).is_file()), None)
+            assert resolved is not None, f"{path}: {target}"
+            pending.append(resolved)
+    assert any(path.name == "mfq_cuda.cpp" for path in seen)
+
+
+def test_cuda_package_keeps_only_tq_kernel_resources():
+    root = files("tyloinfer").joinpath("kernels/cuda")
+    sources = [path.name for path in root.iterdir()
+        if path.suffix in {".cu", ".cuh", ".h", ".cpp"}]
+    assert sources
+    assert all(name == "mfq_cuda.cpp" or name.startswith("tq_") for name in sources), sources
+
+
 def test_wheel_declares_metal_kernel_resources():
     tomllib = pytest.importorskip("tomllib")
     project = Path(__file__).resolve().parents[1] / "pyproject.toml"

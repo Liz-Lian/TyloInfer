@@ -13,10 +13,10 @@
 #include "quant_linear.h"
 #include "hip_execution.h"
 #include "storage/moe_expert_cache.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_attention.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_hc.h"
-#include "tyloinfer/kernels/cuda/deepseek_v41.h"
-#include "mfq_tensor_backend.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v41.h"
+#include "backend.h"
 
 #include <hip/hip_runtime_api.h>
 

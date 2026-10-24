@@ -26,7 +26,7 @@
 #include "float_projection.h"
 #include "nint_prefill_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "mfq_native_matmul_rows.h"
+#include "matmul_rows.h"
 #endif
 #include <cstdlib>
 #include <cstdio>

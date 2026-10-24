@@ -6,12 +6,12 @@ from pathlib import Path
 from mfe_probe_source import read_device_body
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / 'tyloinfer/kernels/cuda/mfe_ffn.cu'
+SOURCE = ROOT / 'cpp_runtime/backends/cuda/kernels/mfe_ffn.cu'
 parser=argparse.ArgumentParser()
 parser.add_argument('--compact',action='store_true')
 args=parser.parse_args()
 OUTPUT = Path(__file__).with_name('mfe_gu_'+('compact' if args.compact else 'register')+'_probe_body.inc')
-raw = SOURCE.read_bytes() + (ROOT / 'tyloinfer/kernels/cuda/mfe_ffn_device.cuh').read_bytes()
+raw = SOURCE.read_bytes() + (ROOT / 'cpp_runtime/backends/cuda/kernels/mfe_ffn_device.cuh').read_bytes()
 body = read_device_body(ROOT)
 old = '''template<int MinimumBlocks,bool Grouped,uint32_t Formats=0x3fffeu,bool DefaultMath=false,bool E8Narrow=false>
 __global__ void __launch_bounds__(512,MinimumBlocks) mfe_ffn_parallel_gate_up_kernel'''

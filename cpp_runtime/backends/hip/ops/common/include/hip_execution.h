@@ -2,7 +2,7 @@
 #pragma once
 #include "tyloinfer/format_features.h"
 
-#include "../../../include/mfq_tensor_backend.h"
+#include "../../../include/backend.h"
 #include "tensor_parallel.h"
 
 #include <hip/hip_runtime_api.h>

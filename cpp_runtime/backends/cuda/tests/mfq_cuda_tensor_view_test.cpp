@@ -1,4 +1,4 @@
-#include "mfq_cuda_tensor_view.h"
+#include "view.h"
 
 #include <array>
 #include <cassert>

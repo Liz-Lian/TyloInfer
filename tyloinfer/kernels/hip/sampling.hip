@@ -6,7 +6,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hipcub/block/block_radix_sort.hpp>
 #include <float.h>
 #include <climits>

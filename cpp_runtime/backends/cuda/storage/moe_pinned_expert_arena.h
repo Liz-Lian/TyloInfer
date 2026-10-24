@@ -1,7 +1,7 @@
 #pragma once
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "mfq_cuda_context.h"
-#include "mfq_native_tensor.h"
+#include "context.h"
+#include "tensor.h"
 #include <map>
 #include <memory>
 #include <mutex>

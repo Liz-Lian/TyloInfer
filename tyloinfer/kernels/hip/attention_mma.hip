@@ -1,6 +1,6 @@
 #include "hip/hip_runtime.h"
 #include <hip/hip_fp16.h>
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include <hip/hip_runtime.h>
 #include <algorithm>
 #include <climits>

@@ -1,5 +1,5 @@
-#include "mfq_cuda_context.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "context.h"
+#include "resident_allocations.h"
 #include "tyloinfer/runtime.h"
 
 #include <cuda_runtime_api.h>

@@ -2,7 +2,7 @@
 #include "backend_checks.h"
 
 #include "mfq_hip_activation_ops.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <hip/hip_runtime_api.h>
 

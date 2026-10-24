@@ -2,9 +2,9 @@
 #include "model_checks.h"
 
 #include "models/deepseek_v4/ops.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_attention.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_hc.h"
-#include "tyloinfer/kernels/cuda/deepseek_v41.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v41.h"
 #include "mfq_hip_attention_ops.h"
 #include "mfq_hip_moe_ops.h"
 #include "mfq_hip_norm_ops.h"

@@ -3,8 +3,8 @@
 #include "kv_budget.h"
 #include "kv_expert_loan.h"
 #include "execution_options.h"
-#include "mfq_cuda_context.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "context.h"
+#include "resident_allocations.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>

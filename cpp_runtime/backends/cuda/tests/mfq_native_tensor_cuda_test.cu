@@ -1,7 +1,7 @@
-#include "mfq_cuda_context.h"
-#include "mfq_native_tensor.h"
-#include "mfq_native_matmul_rows.h"
-#include "mfq_weight_memory.h"
+#include "context.h"
+#include "tensor.h"
+#include "matmul_rows.h"
+#include "weight_memory.h"
 #include <cstring>
 
 #include <cuda_runtime_api.h>

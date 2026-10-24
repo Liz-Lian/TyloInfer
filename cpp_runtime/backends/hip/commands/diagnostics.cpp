@@ -12,7 +12,7 @@
 #include "minicpmo45.h"
 #include "hip_execution.h"
 #include "storage/moe_expert_cache.h"
-#include "tyloinfer/kernels/cuda/deepseek_v41.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>
 #include <chrono>

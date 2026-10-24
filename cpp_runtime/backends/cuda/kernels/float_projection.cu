@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <array>
 #include <cstdio>
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "gr_prefill_tf32.cuh"
 #include "gr_prefill_half2.cuh"
 #include "gr_prefill_decode.cuh"
@@ -17,6 +18,7 @@
 #include "gr_prefill_blas.h"
 #include "gr_prefill_matmul.cuh"
 #include "gr_prefill_mix.cuh"
+#endif
 #include "kernel_dispatch_trace.h"
 
 namespace {

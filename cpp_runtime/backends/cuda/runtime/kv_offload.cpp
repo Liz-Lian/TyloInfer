@@ -12,8 +12,8 @@
 #include <unordered_map>
 #include <limits>
 #include <tuple>
-#include "mfq_cuda_context.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "context.h"
+#include "resident_allocations.h"
 
 namespace mfq::cuda {
 namespace tb = mfq_tensor_backend;

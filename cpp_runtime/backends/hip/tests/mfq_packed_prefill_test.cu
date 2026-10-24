@@ -1,4 +1,4 @@
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include <cuda_runtime.h>
 #include "tyloinfer/kernels/hip/fp8_sq.h"
 #include "tyloinfer/kernels/hip/mxfp4_sq.h"

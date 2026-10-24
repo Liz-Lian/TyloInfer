@@ -3,7 +3,7 @@
 #include "hip_execution.h"
 #include "storage/moe_expert_cache.h"
 #include "moe_cache_profile.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "quant_linear.h"
 #include "tensor_parallel.h"
 

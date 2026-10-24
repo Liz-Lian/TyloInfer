@@ -17,9 +17,14 @@ from pathlib import Path
 
 _DIR = os.path.dirname(__file__)
 _REPOSITORY_ROOT = str(Path(_DIR).resolve().parents[2])
-_CUDA_RUNTIME_INCLUDE = str(
-    Path(_REPOSITORY_ROOT) / "cpp_runtime" / "backends" / "cuda" / "include"
-)
+# The shared CUDA kernels have one source tree, consumed by the native CMake
+# targets and by this extension.  TQ kernels stay here as installed wheel
+# resources and are built separately by tq.py.
+_CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "cpp_runtime" / "backends" / "cuda"
+_KERNEL_DIR = str(_CUDA_BACKEND / "kernels")
+_CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")
+_CUDA_NATIVE_INCLUDE = str(_CUDA_BACKEND / "native")
+_CUDA_NATIVE_TENSOR_INCLUDE = str(_CUDA_BACKEND / "native" / "tensor")
 _CORE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "cpp_runtime" / "core" / "include")
 _GGML_ROOT = Path(_REPOSITORY_ROOT) / "cpp_runtime" / "components" / "ggml"
 _GGML_INCLUDE = str(_GGML_ROOT / "include")
@@ -31,32 +36,34 @@ _GGML_CUDA_INCLUDE = str(_GGML_ROOT / "src" / "ggml-cuda")
 # and gdn_decode_window.cu is a native-runtime-only decode path.  In contrast,
 # nvq_matmul.cu calls the provider in nvq_routed_reuse.cu, so both belong here.
 _SOURCES = [
-    os.path.join(_DIR, "norm.cu"),
-    os.path.join(_DIR, "acc.cu"),
-    os.path.join(_DIR, "rope.cu"),
-    os.path.join(_DIR, "attention.cu"),
-    os.path.join(_DIR, "gated_delta_net.cu"),
-    os.path.join(_DIR, "kv_cache.cu"),
-    os.path.join(_DIR, "activation.cu"),
-    os.path.join(_DIR, "embedding.cu"),
-    os.path.join(_DIR, "selected_attention.cu"),
-    os.path.join(_DIR, "qwen4_exp.cu"),
-    os.path.join(_DIR, "glm5_next.cu"),
-    os.path.join(_DIR, "sampling.cu"),
-    os.path.join(_DIR, "ssm_conv.cu"),
-    os.path.join(_DIR, "moe.cu"),
-    os.path.join(_DIR, "mx_matmul.cu"),
-    os.path.join(_DIR, "fp8_sq.cu"),
-    os.path.join(_DIR, "mxfp4_sq.cu"),
-    os.path.join(_DIR, "nint_matmul.cu"),
-    os.path.join(_DIR, "nint_short_decode.cu"),
-    os.path.join(_DIR, "nint_q8_decode.cu"),
-    os.path.join(_DIR, "nvq_matmul.cu"),
-    os.path.join(_DIR, "nvq_routed_reuse.cu"),
-    os.path.join(_DIR, "nepq.cu"),
-    os.path.join(_DIR, "nepq_residual.cu"),
-    os.path.join(_DIR, "mfq_cuda.cpp"),
-]
+    os.path.join(_KERNEL_DIR, name)
+    for name in (
+        "norm.cu",
+        "acc.cu",
+        "rope.cu",
+        "attention.cu",
+        "gated_delta_net.cu",
+        "kv_cache.cu",
+        "activation.cu",
+        "embedding.cu",
+        "selected_attention.cu",
+        "qwen4_exp.cu",
+        "glm5_next.cu",
+        "sampling.cu",
+        "ssm_conv.cu",
+        "moe.cu",
+        "mx_matmul.cu",
+        "fp8_sq.cu",
+        "mxfp4_sq.cu",
+        "nint_matmul.cu",
+        "nint_short_decode.cu",
+        "nint_q8_decode.cu",
+        "nvq_matmul.cu",
+        "nvq_routed_reuse.cu",
+        "nepq.cu",
+        "nepq_residual.cu",
+    )
+] + [os.path.join(_DIR, "mfq_cuda.cpp")]
 _module = None
 
 
@@ -112,16 +119,25 @@ def ext():
             sources=_SOURCES,
             extra_include_paths=[
                 _REPOSITORY_ROOT,
+                _KERNEL_DIR,
                 _CUDA_RUNTIME_INCLUDE,
+                _CUDA_NATIVE_INCLUDE,
+                _CUDA_NATIVE_TENSOR_INCLUDE,
                 _CORE_INCLUDE,
                 _GGML_INCLUDE,
                 _GGML_SOURCE_INCLUDE,
                 _GGML_CUDA_INCLUDE,
             ],
             # CUDA 13 CCCL headers reject MSVC's traditional preprocessor.
-            extra_cflags=["/std:c++20", "/Zc:preprocessor"] if os.name == "nt" else ["-std=c++20"],
+            extra_cflags=(
+                ["/std:c++20", "/Zc:preprocessor", "/DTYLOINFER_ENABLE_MFQ_COMPAT=1"]
+                if os.name == "nt"
+                else ["-std=c++20", "-DTYLOINFER_ENABLE_MFQ_COMPAT=1"]
+            ),
             extra_cuda_cflags=[
                 *(["-Xcompiler=/Zc:preprocessor"] if os.name == "nt" else []),
+                # The Torch bindings export legacy MFQ ops as well as shared ops.
+                "-DTYLOINFER_ENABLE_MFQ_COMPAT=1",
                 "-O3",
                 "--use_fast_math",
                 "--extended-lambda",

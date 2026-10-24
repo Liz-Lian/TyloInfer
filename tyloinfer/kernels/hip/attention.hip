@@ -10,7 +10,7 @@
 // q/k/v may be fp16 or fp32; dot/softmax accumulation stays fp32.
 
 #include <hip/hip_runtime.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_fp16.h>
 #include <cfloat>
 #include <climits>

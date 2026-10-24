@@ -3,7 +3,7 @@
 // conv_input [B, K - 1 + T, C], weight [C,1,K], [C,K], or [K,C], output [B,T,C].
 
 #include <hip/hip_runtime.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_fp16.h>
 #include <vector>
 

@@ -2,7 +2,7 @@
 #include "moe.h"
 #include "mfe_ffn.h"
 #include "mfe_ffn_prepare.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include <array>
 #include <map>
 

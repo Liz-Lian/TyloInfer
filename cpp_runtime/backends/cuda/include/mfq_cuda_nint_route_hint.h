@@ -1,5 +1,5 @@
 #pragma once
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include <vector>
 
 // A serial group of projections can quantize its common input for all GS

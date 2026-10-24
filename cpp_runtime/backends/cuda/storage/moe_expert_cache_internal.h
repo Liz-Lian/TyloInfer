@@ -3,7 +3,7 @@
 #include "mfq_cache_provider.h"
 
 #include "moe_cache_types_internal.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include "runtime/moe_residency.h"
 #include "runtime/dma_copy_batch.h"
 #include "runtime/kv_expert_loan.h"

@@ -6,7 +6,7 @@ CUDA_ROOT = ROOT / "cpp_runtime" / "backends" / "cuda"
 SOURCE = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted(CUDA_ROOT.rglob("*"))
-    if path.suffix in {".h", ".cpp"}
+    if path.suffix in {".h", ".cpp", ".inc"}
 )
 
 

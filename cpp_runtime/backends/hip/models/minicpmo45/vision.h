@@ -6,7 +6,7 @@
 #include "models/minicpmo45/causal_lm.h"
 
 #include "../../../hip/models/minicpmo45/ops.h"
-#include "../../include/mfq_tensor_backend.h"
+#include "../../include/backend.h"
 
 #include <algorithm>
 #include <array>

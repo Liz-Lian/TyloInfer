@@ -1,6 +1,6 @@
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "mfq_cuda_linear_attention_ops.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include <vector>
 #include <cmath>
 #include <cstring>

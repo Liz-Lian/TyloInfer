@@ -60,6 +60,27 @@ packaging accepts the same `TYLOINFER_ENABLE_MFQ_COMPAT=ON` environment setting.
 ROCm's existing model/format coverage is unchanged; this switch does not add a
 TQ HIP implementation.
 
+## CUDA backend layout
+
+`cpp_runtime/backends/cuda` keeps one interface per layer: `native/` is the
+context and tensor implementation behind the `backend.h` seam, `kernels/` the
+device sources, `ops/` the operator adapters, and `engine/`, `models/`,
+`storage/` the runtime above them.
+
+`cpp_runtime/backends/cuda/kernels/` is the only source of the shared CUDA
+kernels. The native CMake targets (`TYLOINFER_CUDA_KERNEL_ROOT`) and the Python
+JIT extension (`tyloinfer.kernels.cuda._ext`) compile the same files; the Python
+package keeps no copy.
+
+TQ is the packaging exception: `tq_ops.cu`, `tq_ops.h` and `tq_*.cuh` stay in
+`tyloinfer/kernels/cuda` because they are installed wheel resources loaded by
+`tyloinfer/kernels/cuda/tq.py`.
+
+`backend.h` is included by name rather than by path, so each backend supplies
+its own adapter at that seam (`cpp_runtime/backends/hip/include/backend.h`);
+the shared kernel declaration headers compile against either adapter, while HIP
+keeps its own `.hip` device sources.
+
 ## Output and build manifest
 
 The default CMake build directory is `<repo>/build/cpp_runtime`. Executable

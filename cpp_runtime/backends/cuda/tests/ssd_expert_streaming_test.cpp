@@ -6,7 +6,7 @@
 #include "storage/weight_loader.h"
 #include "runtime/decode_window.h"
 #include "runtime/native_dma_batch.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include "tyloinfer/runtime.h"
 #include "nint_prefill_cache.h"
 #include "mfe_ffn_runtime.h"

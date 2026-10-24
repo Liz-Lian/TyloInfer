@@ -7,10 +7,10 @@
 // dt clamp is caught numerically rather than by inspection.
 
 #include "mfq_cuda_activation_ops.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include "mfq_cuda_norm_ops.h"
 #include "mfq_cuda_selective_state_scan_ops.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <algorithm>
 #include <cmath>

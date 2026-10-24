@@ -1,8 +1,8 @@
-#include "tyloinfer/kernels/cuda/deepseek_v4_hc.h"
-#include "tyloinfer/kernels/cuda/deepseek_v4_attention.h"
-#include "tyloinfer/kernels/cuda/deepseek_v41.h"
-#include "mfq_cuda_context.h"
-#include "mfq_native_tensor.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v41.h"
+#include "context.h"
+#include "tensor.h"
 
 #include <cuda_fp16.h>
 

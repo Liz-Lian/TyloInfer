@@ -1,5 +1,5 @@
-#include "tyloinfer/kernels/cuda/mfe_e8_narrow_bounds.h"
-#include "tyloinfer/kernels/cuda/mfe_nvq_dense_bounds.h"
+#include "cpp_runtime/backends/cuda/kernels/mfe_e8_narrow_bounds.h"
+#include "cpp_runtime/backends/cuda/kernels/mfe_nvq_dense_bounds.h"
 #include <iostream>
 #include <stdexcept>
 #include <string>

@@ -1,5 +1,5 @@
 #pragma once
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "tyloinfer/nint_rows.h"
 #include <memory>
 namespace mfq {class NintRowCache;}

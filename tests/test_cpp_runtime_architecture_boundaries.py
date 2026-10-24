@@ -361,7 +361,7 @@ def test_recurrent_mixers_share_one_state_container_and_graph() -> None:
 
 def test_cuda_native_tensor_ops_stay_split_by_domain() -> None:
     sources = {
-        name: (CUDA_RUNTIME.parent / "src" / f"mfq_native_tensor_{name}.cu")
+        name: (CUDA_RUNTIME.parent / "native" / "tensor" / f"{name}.cu")
         for name in (
             "ops", "blas", "creation", "indexing", "reduction", "signal", "sort"
         )

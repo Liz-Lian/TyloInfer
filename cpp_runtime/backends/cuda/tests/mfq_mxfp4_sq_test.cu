@@ -1,4 +1,4 @@
-#include "tyloinfer/kernels/cuda/mxfp4_sq.h"
+#include "cpp_runtime/backends/cuda/kernels/mxfp4_sq.h"
 #include "tyloinfer/mxfp4_sq_decode.h"
 
 #include <cmath>

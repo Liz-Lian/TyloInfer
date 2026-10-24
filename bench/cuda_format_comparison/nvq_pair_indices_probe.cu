@@ -1,5 +1,5 @@
 #include "timing.h"
-#include "tyloinfer/kernels/cuda/packed_nvq_pair_indices.cuh"
+#include "cpp_runtime/backends/cuda/kernels/packed_nvq_pair_indices.cuh"
 #include <array>
 #include <random>
 

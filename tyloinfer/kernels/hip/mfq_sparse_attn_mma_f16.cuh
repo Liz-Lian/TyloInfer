@@ -12,7 +12,7 @@
 #undef TYLOINFER_FATTN_KERNEL_ONLY
 #endif
 
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include "../hip/selected_attention.h"
 
 #include <algorithm>

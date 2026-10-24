@@ -2,7 +2,7 @@
 
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_sampling_ops.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <cuda_runtime_api.h>
 

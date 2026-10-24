@@ -943,6 +943,17 @@ size_t model_parallel_launch_index(
         : launch_position;
 }
 
+bool decode_branch_parallel_enabled(
+        const CudaExecutionConfig& config,
+        bool serial_branches,
+        int64_t rows) {
+    // Branch output storage belongs to its allocating stream. Keep graph
+    // warmup/capture on the graph pool's stream until cross-stream allocation
+    // lifetime tracking supports a fully rejoined capture. Eager is unchanged.
+    return rows == 1 &&
+        !serial_branches && config.decode_branch_parallel;
+}
+
 
 
 int active_weight_load_device(const CudaExecutionContext& execution) {

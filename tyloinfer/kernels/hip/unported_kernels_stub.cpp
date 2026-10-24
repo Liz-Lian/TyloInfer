@@ -3,7 +3,7 @@
 // model graph selects the corresponding path; they exist so the runtime
 // links while those kernels gain MFMA or direct implementations.
 #include "hip/hip_runtime.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <stdexcept>
 // The kernel entry points are declared at global scope in their headers.

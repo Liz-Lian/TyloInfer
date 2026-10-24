@@ -1,5 +1,5 @@
 #pragma once
-#include "tyloinfer/kernels/cuda/nvq_e8_dense_group.cuh"
+#include "cpp_runtime/backends/cuda/kernels/nvq_e8_dense_group.cuh"
 
 namespace e8_cache_policy {
 namespace pn=mfq::cuda::packed_nvq;

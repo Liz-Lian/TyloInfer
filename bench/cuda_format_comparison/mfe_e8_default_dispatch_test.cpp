@@ -1,5 +1,5 @@
-#include "tyloinfer/kernels/cuda/mfe_ffn.h"
-#include "tyloinfer/kernels/cuda/mfe_ffn_launch.h"
+#include "cpp_runtime/backends/cuda/kernels/mfe_ffn.h"
+#include "cpp_runtime/backends/cuda/kernels/mfe_ffn_launch.h"
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>

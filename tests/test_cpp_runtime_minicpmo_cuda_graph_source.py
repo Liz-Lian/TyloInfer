@@ -44,34 +44,30 @@ SOURCE = "\n".join(
     CUDA_ROOT / "commands" / "diagnostics.cpp"
 ).read_text(encoding="utf-8")
 ATTENTION_SOURCE = (
-    Path(__file__).parents[1] / "tyloinfer" / "kernels" / "cuda" / "attention.cu"
+    CUDA_ROOT / "kernels" / "attention.cu"
 ).read_text(encoding="utf-8")
 ATTENTION_MMA_SOURCE = (
-    Path(__file__).parents[1]
-    / "tyloinfer"
-    / "kernels"
-    / "cuda"
-    / "attention_mma.cu"
+    CUDA_ROOT / "kernels" / "attention_mma.cu"
 ).read_text(encoding="utf-8")
 BACKEND_SOURCE = (
-    Path(__file__).parents[1] / "cpp_runtime" / "backends" / "cuda" / "include" / "mfq_tensor_backend.h"
+    CUDA_ROOT / "native" / "tensor" / "backend.h"
 ).read_text(encoding="utf-8")
 CONTEXT_SOURCE = (
-    Path(__file__).parents[1] / "cpp_runtime" / "backends" / "cuda" / "src" / "mfq_cuda_context.cu"
+    CUDA_ROOT / "native" / "context.cu"
 ).read_text(encoding="utf-8")
 NATIVE_OPS_SOURCE = "\n".join(
     path.read_text(encoding="utf-8")
-    for path in sorted((CUDA_ROOT / "src").glob("mfq_native_tensor*"))
+    for path in sorted((CUDA_ROOT / "native" / "tensor").glob("*"))
     if path.suffix in {".cpp", ".cu", ".cuh"}
 )
 NATIVE_TENSOR_SOURCE = (
-    Path(__file__).parents[1] / "cpp_runtime" / "backends" / "cuda" / "src" / "mfq_native_tensor.cu"
+    CUDA_ROOT / "native" / "tensor" / "tensor.cu"
 ).read_text(encoding="utf-8")
 KV_CACHE_SOURCE = (
-    Path(__file__).parents[1] / "tyloinfer" / "kernels" / "cuda" / "kv_cache.cu"
+    CUDA_ROOT / "kernels" / "kv_cache.cu"
 ).read_text(encoding="utf-8")
 ACC_SOURCE = (
-    Path(__file__).parents[1] / "tyloinfer" / "kernels" / "cuda" / "acc.cu"
+    CUDA_ROOT / "kernels" / "acc.cu"
 ).read_text(encoding="utf-8")
 
 
@@ -151,7 +147,8 @@ def test_graph_profile_covers_model_and_commit_boundaries() -> None:
 def test_torch_reference_graph_can_emit_a_debug_dump() -> None:
     assert 'std::getenv("TYLOINFER_TORCH_CUDA_GRAPH_DUMP")' in BACKEND_SOURCE
     assert "graph.enable_debug_mode();" in BACKEND_SOURCE
-    assert "graph.debug_dump(debug_path);" in BACKEND_SOURCE
+    assert "cudaGraphDebugDotPrint(" in BACKEND_SOURCE
+    assert "graph.raw_cuda_graph()" in BACKEND_SOURCE
     assert "mfq_debug_dump_cuda_graph(graph);" in SOURCE
 
 

@@ -8,7 +8,7 @@
 #include "core/decode_graph.h"
 #include "core/full_block.h"
 #include "storage/moe_expert_cache.h"
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include "tyloinfer/model_source.h"
 
 #include <hip/hip_runtime_api.h>

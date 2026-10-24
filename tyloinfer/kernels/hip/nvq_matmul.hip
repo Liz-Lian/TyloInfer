@@ -11,7 +11,7 @@
 // path expands only one 64x96 fp16 weight tile at a time for Tensor Core GEMM.
 
 #include <hip/hip_runtime.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_fp16.h>
 #include <algorithm>
 #include <cstdlib>

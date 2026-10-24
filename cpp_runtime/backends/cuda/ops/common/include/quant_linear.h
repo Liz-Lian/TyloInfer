@@ -10,7 +10,7 @@
 #include "tyloinfer/format_features.h"
 
 #include "cuda_execution.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <cuda_runtime_api.h>
 

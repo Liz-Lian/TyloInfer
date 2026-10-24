@@ -13,7 +13,7 @@
 // nint_matmul.cu; q/k metadata does not create an MFE-specific compute kernel.
 
 #include <hip/hip_fp16.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_runtime.h>
 
 #include <algorithm>

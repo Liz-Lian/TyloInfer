@@ -21,13 +21,13 @@ CUDA_OPTIONS = (CUDA_ROOT / "include" / "cuda_runtime_config.h").read_text(
 MINICPM_ENGINE = (
     CUDA_ROOT / "models" / "minicpmo45" / "components.cpp"
 ).read_text(encoding="utf-8")
-ROPE = (ROOT / "tyloinfer" / "kernels" / "cuda" / "rope.cu").read_text(
+ROPE = (CUDA_ROOT / "kernels" / "rope.cu").read_text(
     encoding="utf-8"
 )
-ATTENTION = (ROOT / "tyloinfer" / "kernels" / "cuda" / "attention.cu").read_text(
+ATTENTION = (CUDA_ROOT / "kernels" / "attention.cu").read_text(
     encoding="utf-8"
 )
-NORM = (ROOT / "tyloinfer" / "kernels" / "cuda" / "norm.cu").read_text(
+NORM = (CUDA_ROOT / "kernels" / "norm.cu").read_text(
     encoding="utf-8"
 )
 GRAPH = "\n".join(
@@ -130,7 +130,7 @@ def test_minicpmo45_resampler_requires_exact_numpy_position_asset():
 def test_minicpmo45_supports_native_tensor_files_and_bfloat16_tts():
     assert "mfq_tensor_backend::pickle_load(bytes)" in COMMAND
     assert "mfq_tensor_backend::pickle_save(" in COMMAND
-    assert "MFQTNSR1" in (ROOT / "cpp_runtime" / "backends" / "cuda" / "src" / "mfq_native_tensor.cpp").read_text(
+    assert "MFQTNSR1" in (CUDA_ROOT / "native" / "tensor" / "tensor.cpp").read_text(
         encoding="utf-8"
     )
     assert "rr.scalar_type() == mfq_tensor_backend::kBFloat16" in DECODE
@@ -148,7 +148,7 @@ def test_minicpmo45_qwen_runtime_follows_official_bfloat16_boundaries():
     assert "qwen_rms_norm_bf16_kernel" in NORM
     assert "qwen_rms_norm_pair_bf16_finalize_kernel" in NORM
     assert "TYLOINFER_DISABLE_NATIVE_PARALLEL_F32_MEAN" in (
-        ROOT / "cpp_runtime" / "backends" / "cuda" / "src" / "mfq_native_tensor_reduction.cu"
+        CUDA_ROOT / "native" / "tensor" / "reduction.cu"
     ).read_text(encoding="utf-8")
     assert 'rec.dtype != "NINT"' in DECODE
     assert "dequant_nint_dense_f32(to_gpu_nint(unpack_nint(blob)))" in DECODE

@@ -1,5 +1,5 @@
 #pragma once
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 struct NintWeight;
 int nint_float_projection_resident_blocks(int device);

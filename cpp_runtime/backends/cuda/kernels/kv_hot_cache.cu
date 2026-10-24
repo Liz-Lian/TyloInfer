@@ -1,5 +1,5 @@
 #include "mfq_cuda_kv_hot_cache.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "resident_allocations.h"
 #include <algorithm>
 #include <limits>
 #include <cassert>

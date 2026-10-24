@@ -25,7 +25,7 @@
 
 #include "../hip/async_copy.cuh"
 #include "../hip/glu.cuh"
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include "../hip/packed_backward.cuh"
 #include "../hip/packed_nint.cuh"
 #include "mfq_hip_compat.h"

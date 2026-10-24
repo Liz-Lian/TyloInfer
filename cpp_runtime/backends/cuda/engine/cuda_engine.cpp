@@ -7,14 +7,14 @@
 #include "storage/moe_expert_cache.h"
 #include "runtime/kv_offload.h"
 #include "runtime/kv_expert_loan.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "resident_allocations.h"
 #include "runtime/execution_options.h"
 #include "cuda_batching.h"
 #include "storage/text_session_cache.h"
 #include "mtp_metrics.h"
 #include "request_executor.h"
 #include "generation_flow.h"
-#include "mfq_weight_memory.h"
+#include "weight_memory.h"
 
 #include <cuda_runtime_api.h>
 #include "mfq_cuda_kv_quantization.h"

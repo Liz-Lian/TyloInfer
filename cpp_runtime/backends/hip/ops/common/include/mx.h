@@ -2,7 +2,7 @@
 #pragma once
 
 #include "hip_execution.h"
-#include "../../../include/mfq_tensor_backend.h"
+#include "../../../include/backend.h"
 
 #include <cstdint>
 #include <vector>

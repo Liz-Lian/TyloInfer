@@ -6,7 +6,7 @@
 #include "core/ffn.h"
 #include "core/full_block.h"
 #include "mfq_cuda_moe_ops.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <algorithm>
 #include <cmath>

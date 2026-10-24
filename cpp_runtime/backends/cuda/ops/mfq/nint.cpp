@@ -1,7 +1,7 @@
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_quant_ops.h"
 #include "mfq_cuda_nint_route_hint.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "resident_allocations.h"
 #include "nint.h"
 #include "nint_prefill_cache.h"
 #include "cuda_execution.h"
@@ -704,16 +704,6 @@ mfq_tensor_backend::Tensor nint_matmul_geglu(
     return gelu_mul_cuda(parts[0].contiguous(), parts[1].contiguous());
 }
 
-bool decode_branch_parallel_enabled(
-        const CudaExecutionConfig& config,
-        bool serial_branches,
-        int64_t rows) {
-    // Branch output storage belongs to its allocating stream. Keep graph
-    // warmup/capture on the graph pool's stream until cross-stream allocation
-    // lifetime tracking supports a fully rejoined capture. Eager is unchanged.
-    return rows == 1 &&
-        !serial_branches && config.decode_branch_parallel;
-}
 static void refresh_nint_descriptor(NintCpu & t) {
     if (t.out <= 0 || t.neuron_len <= 0 || t.ng <= 0 || t.gs <= 0 ||
             t.row_q_bits.size() != static_cast<size_t>(t.out) ||

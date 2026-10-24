@@ -160,6 +160,9 @@ def test_staging_is_content_addressed_and_excludes_cuda(tmp_path):
     cuda = root / "tyloinfer/kernels/cuda"
     cuda.mkdir()
     (cuda / "fixed.cuh").write_text("#pragma once\n#define WIDTH 32\n")
+    native_cuda = root / "cpp_runtime/backends/cuda/kernels"
+    native_cuda.mkdir(parents=True)
+    (native_cuda / "fixed.cuh").write_text("#pragma once\n#define WIDTH 64\n")
     original = hashes(root)
     cache = tmp_path / "cache"
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -167,6 +170,7 @@ def test_staging_is_content_addressed_and_excludes_cuda(tmp_path):
     assert len(set(stages)) == 1
     stage = stages[0]
     assert not (stage / "tyloinfer/kernels/cuda").exists()
+    assert not (stage / "cpp_runtime/backends/cuda/kernels").exists()
     target = stage / "tyloinfer/kernels/hip/fixed.cuh"
     stamp = target.stat().st_mtime_ns
     assert stage_sources(root, cache) == stage

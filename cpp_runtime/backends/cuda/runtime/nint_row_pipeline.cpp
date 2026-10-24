@@ -3,7 +3,7 @@
 #include "tyloinfer/mapped_prefetch_scope.h"
 #include "mfq_cuda_quant_ops.h"
 #include "tyloinfer/host_parallel.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include <atomic>
 #include <future>
 #include <map>

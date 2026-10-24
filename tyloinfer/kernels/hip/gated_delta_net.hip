@@ -11,7 +11,7 @@
 #include <hip/hip_fp16.h>
 #include <cmath>
 #include <limits>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <vector>
 #include <cstdlib>
 

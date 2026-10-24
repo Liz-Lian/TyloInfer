@@ -6,7 +6,7 @@
 #include "tyloinfer/cpu_expert_pool.h"
 #include "tyloinfer/runtime.h"
 #include "host_memory_copy.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "resident_allocations.h"
 #include "tyloinfer/moe_residency_ranker.h"
 #include <algorithm>
 #include <array>

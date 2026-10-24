@@ -10,7 +10,7 @@
 #include "../../mfq/include/vq.h"
 
 #include "hip_execution.h"
-#include "../../../include/mfq_tensor_backend.h"
+#include "../../../include/backend.h"
 
 #include <hip/hip_runtime_api.h>
 

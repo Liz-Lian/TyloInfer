@@ -3,7 +3,7 @@
 // Layout: k/v input [B, H, T, D], cache [B, H, max_seq, D].
 
 #include <hip/hip_runtime.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <algorithm>
 #include <cstdint>
 #include <vector>

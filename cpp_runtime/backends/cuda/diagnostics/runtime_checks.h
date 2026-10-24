@@ -14,7 +14,7 @@
 #include "storage/text_session_cache.h"
 #include "cuda_execution.h"
 #include "qwen35/linear_attention.h"
-#include "tyloinfer/kernels/cuda/deepseek_v41.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v41.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>

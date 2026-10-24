@@ -1,5 +1,5 @@
 #include "graph_registry.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include <chrono>
 #include <thread>
 #include <unordered_map>

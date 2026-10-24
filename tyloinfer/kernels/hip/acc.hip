@@ -3,7 +3,7 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_bf16.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <type_traits>
 #include <vector>
 

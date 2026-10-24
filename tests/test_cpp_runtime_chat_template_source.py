@@ -81,6 +81,7 @@ def test_cpp_runtime_dependencies_are_integrated() -> None:
     active_roots = [
         ROOT / "cpp_runtime" / "components" / "tokenizer",
         ROOT / "tyloinfer" / "kernels" / "cuda",
+        ROOT / "cpp_runtime" / "backends" / "cuda" / "kernels",
     ]
     assert not [
         path

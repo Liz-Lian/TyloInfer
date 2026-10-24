@@ -2,7 +2,7 @@
 // GLU activation helpers used by materialized prefill paths.
 
 #include <hip/hip_fp16.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
 #include <algorithm>

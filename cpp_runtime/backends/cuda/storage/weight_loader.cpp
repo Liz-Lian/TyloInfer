@@ -1,6 +1,6 @@
 #include "../runtime/execution_options.h"
 #include "weight_loader.h"
-#include "mfq_weight_memory.h"
+#include "weight_memory.h"
 #include "float_projection.h"
 #include "gated_residual_fused.h"
 #include "selected_attention.h"

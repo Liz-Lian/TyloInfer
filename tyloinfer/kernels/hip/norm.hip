@@ -3,7 +3,7 @@
 // One block normalizes one row (last dim D). fp32. x viewed as [N, D] (caller flattens).
 
 #include <hip/hip_runtime.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_bf16.h>
 #include <algorithm>
 #include <cstdint>

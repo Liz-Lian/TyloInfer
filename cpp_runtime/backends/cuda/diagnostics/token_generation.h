@@ -8,7 +8,7 @@
 #include "core/full_block.h"
 #include "storage/moe_expert_cache.h"
 #include "models/qwen4_exp/ops.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "tyloinfer/model_source.h"
 
 #include <cuda_profiler_api.h>

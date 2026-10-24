@@ -3,7 +3,7 @@
 #include "moe_cached_source_internal.h"
 #include "moe_host_cache_policy.h"
 #include "moe_pinned_expert_arena.h"
-#include "mfq_cuda_resident_allocations.h"
+#include "resident_allocations.h"
 #include "tyloinfer/host_parallel.h"
 #include "tyloinfer/runtime.h"
 #include "tyloinfer/mapped_read_profile.h"

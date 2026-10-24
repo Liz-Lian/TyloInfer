@@ -7,7 +7,7 @@
 //   out[t,j+half] = x1*cos + x0*sin
 
 #include <hip/hip_runtime.h>
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include <hip/hip_bf16.h>
 #include <cmath>
 #include <algorithm>

@@ -3,7 +3,7 @@
 
 #include "storage/session_state.h"
 #include "mtp_policy.h"
-#include "../../hip/include/mfq_tensor_backend.h"
+#include "../../hip/include/backend.h"
 #include "core/causal_model.h"
 
 #include <cstdint>

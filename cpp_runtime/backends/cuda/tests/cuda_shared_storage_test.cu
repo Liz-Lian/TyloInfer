@@ -1,5 +1,5 @@
-#include "mfq_cuda_context.h"
-#include "tyloinfer/kernels/cuda/mfe_ffn.h"
+#include "context.h"
+#include "cpp_runtime/backends/cuda/kernels/mfe_ffn.h"
 #include "runtime/moe_pipeline.h"
 
 #include <array>

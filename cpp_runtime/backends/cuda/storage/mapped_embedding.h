@@ -2,7 +2,7 @@
 #include <atomic>
 #include "quant_linear.h"
 #include "cuda_execution.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include <cstring>
 #include <memory>
 

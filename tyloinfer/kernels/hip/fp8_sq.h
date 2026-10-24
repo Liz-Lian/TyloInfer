@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include "cpp_runtime/backends/hip/include/mfq_tensor_backend.h"
+#include "cpp_runtime/backends/hip/include/backend.h"
 #include "tyloinfer/fp8_sq_blob.h"
 #include "mfq_hip_compat.h"
 

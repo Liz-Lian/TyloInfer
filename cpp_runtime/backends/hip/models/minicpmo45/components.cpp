@@ -4,7 +4,7 @@
 
 #include "hip_execution.h"
 #include "hip_sampling.h"
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "tensor_parallel.h"
 
 #include <algorithm>

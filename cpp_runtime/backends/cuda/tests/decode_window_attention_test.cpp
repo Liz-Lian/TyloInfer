@@ -1,6 +1,6 @@
 #include "models/qwen4_exp/model.h"
 #include "runtime/decode_window.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include "tyloinfer/runtime.h"
 #include "cuda_execution.h"
 #include "../../../tests/nint_row_fixture.h"

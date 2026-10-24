@@ -5,7 +5,7 @@
 
 #include "models/common/vision_block.h"
 
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 
 #include <array>
 #include <cmath>

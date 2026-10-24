@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "mfq_cuda_kv_hot_cache.h"
 #include <cmath>
 #include <string>

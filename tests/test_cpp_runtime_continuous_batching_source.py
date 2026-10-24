@@ -20,18 +20,12 @@ BATCHING_CHECK = (
     CUDA_ROOT / "diagnostics" / "runtime_checks.cpp"
 ).read_text(encoding="utf-8")
 SCHEDULER = (ROOT / "cpp_runtime" / "scheduler" / "src" / "scheduler.cpp").read_text(encoding="utf-8")
-ROPE = (ROOT / "tyloinfer" / "kernels" / "cuda" / "rope.cu").read_text(
-    encoding="utf-8"
-)
-ATTENTION = (ROOT / "tyloinfer" / "kernels" / "cuda" / "attention.cu").read_text(
-    encoding="utf-8"
-)
+ROPE = (CUDA_ROOT / "kernels" / "rope.cu").read_text(encoding="utf-8")
+ATTENTION = (CUDA_ROOT / "kernels" / "attention.cu").read_text(encoding="utf-8")
 ATTENTION_MMA = (
-    ROOT / "tyloinfer" / "kernels" / "cuda" / "attention_mma.cu"
+    CUDA_ROOT / "kernels" / "attention_mma.cu"
 ).read_text(encoding="utf-8")
-KV_CACHE = (ROOT / "tyloinfer" / "kernels" / "cuda" / "kv_cache.cu").read_text(
-    encoding="utf-8"
-)
+KV_CACHE = (CUDA_ROOT / "kernels" / "kv_cache.cu").read_text(encoding="utf-8")
 QWEN_LOADER = (
     ROOT / "cpp_runtime" / "models" / "qwen35" / "causal_lm.h"
 ).read_text(encoding="utf-8")

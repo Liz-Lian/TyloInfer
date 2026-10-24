@@ -1,5 +1,5 @@
 #include "mfq_cuda_shared_gate.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include "shared_gate_fused.cuh"
 #include "../ops/mfq/include/nint.h"
 #include <cstdlib>

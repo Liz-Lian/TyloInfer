@@ -5,7 +5,7 @@
 #include "storage/weight_loader.h"
 #include "quant_linear.h"
 #include "tyloinfer/format_features.h"
-#include "mfq_weight_memory.h"
+#include "weight_memory.h"
 
 #include "format.h"
 #include "fp8_sq.h"

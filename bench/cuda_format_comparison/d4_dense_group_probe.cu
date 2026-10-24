@@ -1,6 +1,6 @@
 #include "e8_dense_group_probe.h"
-#include "tyloinfer/kernels/cuda/nvq_d4_dense_group.cuh"
-#include "tyloinfer/kernels/cuda/nvq_dense_window32.cuh"
+#include "cpp_runtime/backends/cuda/kernels/nvq_d4_dense_group.cuh"
+#include "cpp_runtime/backends/cuda/kernels/nvq_dense_window32.cuh"
 #include <stdexcept>
 
 namespace pn=mfq::cuda::packed_nvq;

@@ -180,16 +180,16 @@ def test_native_cuda_runtime_compilation_units_do_not_include_torch() -> None:
     cmake = (ROOT / "cpp_runtime" / "backends" / "cuda" / "CMakeLists.txt").read_text(
         encoding="utf-8"
     )
-    source_block = cmake.split("set(TYLOINFER_CUDA_KERNEL_SOURCES", 1)[1].split(")", 1)[0]
+    source_block = cmake.split("set(TYLOINFER_CUDA_KERNEL_SOURCES", 1)[1].split("\n)", 1)[0]
+    cuda_kernels = ROOT / "cpp_runtime" / "backends" / "cuda" / "kernels"
+    tq_kernels = ROOT / "tyloinfer" / "kernels" / "cuda"
     sources = [
         ROOT / "cpp_runtime" / "backends" / "cuda" / "apps" / "runtime_main.cpp",
         ROOT / "cpp_runtime" / "backends" / "cuda" / "commands" / "runtime.cpp",
         ROOT / "cpp_runtime" / "backends" / "cuda" / "models" / "minicpmo45" / "ops.h",
         ROOT / "cpp_runtime" / "backends" / "cuda" / "models" / "minicpmo45" / "ops.cpp",
-        *(
-            ROOT / "tyloinfer" / "kernels" / "cuda" / name
-            for name in re.findall(r"TYLOINFER_CUDA_KERNEL_ROOT}/([^\s]+\.cu)", source_block)
-        ),
+        *(cuda_kernels / name for name in re.findall(r"TYLOINFER_CUDA_KERNEL_ROOT}/([^\s]+\.cu)", source_block)),
+        *(tq_kernels / name for name in re.findall(r"TYLOINFER_CUDA_TQ_ROOT}/([^\s]+\.cu)", source_block)),
     ]
     forbidden = ("<torch", "<ATen", "<c10", "torch::", "at::", "c10::")
 
@@ -222,10 +222,10 @@ def test_native_cuda_cmake_uses_consistent_windows_cuda_settings() -> None:
 
 
 def test_native_cuda_buffer_retains_its_selected_stream() -> None:
-    header = (ROOT / "cpp_runtime" / "backends" / "cuda" / "include" / "mfq_cuda_context.h").read_text(
+    header = (ROOT / "cpp_runtime" / "backends" / "cuda" / "native" / "context.h").read_text(
         encoding="utf-8"
     )
-    source = (ROOT / "cpp_runtime" / "backends" / "cuda" / "src" / "mfq_cuda_context.cu").read_text(
+    source = (ROOT / "cpp_runtime" / "backends" / "cuda" / "native" / "context.cu").read_text(
         encoding="utf-8"
     )
 

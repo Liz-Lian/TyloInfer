@@ -1,7 +1,7 @@
 #include "hip/hip_runtime.h"
 #include <hip/hip_runtime.h>
-#include "tyloinfer/kernels/cuda/deepseek_v4_attention.h"
-#include "mfq_tensor_backend.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "backend.h"
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
 #if CUDART_VERSION >= 12080

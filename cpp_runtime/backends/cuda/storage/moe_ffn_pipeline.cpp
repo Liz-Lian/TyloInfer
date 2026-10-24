@@ -12,7 +12,7 @@
 #include "runtime/decode_window.h"
 #include "runtime/dma_copy_batch.h"
 #include "runtime/native_dma_batch.h"
-#include "mfq_cuda_context.h"
+#include "context.h"
 #include "tyloinfer/runtime.h"
 #include "mfe_ffn_runtime.h"
 #include "quant_linear.h"

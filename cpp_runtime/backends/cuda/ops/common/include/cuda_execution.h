@@ -2,7 +2,7 @@
 #include "tyloinfer/format_features.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
-#include "mfq_tensor_backend.h"
+#include "backend.h"
 #include "tensor_parallel.h"
 #include "tyloinfer/yarn.h"
 

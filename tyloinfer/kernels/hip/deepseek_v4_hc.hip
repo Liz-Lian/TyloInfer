@@ -1,7 +1,7 @@
 #include "hip/hip_runtime.h"
 #include <hip/hip_fp16.h>
-#include "tyloinfer/kernels/cuda/deepseek_v4_hc.h"
-#include "mfq_tensor_backend.h"
+#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "backend.h"
 #include <hip/hip_runtime.h>
 
 #include <cmath>
