@@ -1,0 +1,301 @@
+
+import type { SamplingParams } from './sessions';
+import type { ApiErrorBody } from './protocol';
+
+export interface ModelFeatureSet {
+  text: boolean;
+  image_input: boolean;
+  video_input: boolean;
+  audio_input: boolean;
+  audio_output: boolean;
+  full_duplex: boolean;
+  mtp: boolean;
+}
+
+export interface ModelCapabilities {
+  architecture_family: string;
+  source: string;
+  features: ModelFeatureSet;
+}
+
+export interface RuntimeCapabilities {
+  model: string;
+  model_type: string;
+  model_capabilities: ModelCapabilities;
+  vision_available: boolean;
+  mtp_available: boolean;
+  duplex_available: boolean;
+}
+
+export interface RuntimeRequestMetrics {
+  id?: string;
+  endpoint?: string;
+  stream?: boolean;
+  prompt_tokens?: number;
+  prefill_tokens?: number;
+  completion_tokens?: number;
+  prefill_tps?: number;
+  prefill_ms?: number;
+  multimodal_ms?: number;
+  model_prefill_ms?: number;
+  processor_ms?: number;
+  complete_prefill_ms?: number;
+  complete_prefill_tps?: number;
+  decode_tps?: number;
+  decode_ms?: number;
+  ttft_ms?: number;
+  generation_ms?: number;
+  complete_generation_ms?: number;
+  generation_tps?: number;
+  finish_reason?: string;
+  client_connected?: boolean;
+  completed_at?: number;
+}
+
+export interface RuntimeStatus {
+  gpu_devices?: { id: string; name: string; memory_total_bytes?: number | null;
+    memory_available_bytes?: number | null; unified_memory?: boolean }[];
+  memory_architecture?: 'unified' | 'discrete' | 'unknown';
+  unified_memory?: boolean | null;
+  host_memory_total_bytes?: number | null;
+  host_memory_available_bytes?: number | null;
+  device_memory_total_bytes?: number | null;
+  prefix_cache_hot_tier?: 'vram' | 'ram' | null;
+  instance_id?: string;
+  runtime_state?: string;
+  model?: string;
+  model_type?: string;
+  model_capabilities?: ModelCapabilities;
+  duplex_available?: boolean;
+  active_requests?: number;
+  total_requests?: number;
+  failed_requests?: number;
+  total_prompt_tokens?: number;
+  total_completion_tokens?: number;
+  uptime_seconds?: number;
+  max_context?: number;
+  context_capacity?: number;
+  reloading?: boolean;
+  process_resident_bytes?: number | null;
+  runtime_memory_budget_bytes?: number | null;
+  runtime_memory_effective_budget_bytes?: number | null;
+  runtime_memory_budget_mode?: 'automatic' | 'explicit' | 'disabled';
+  runtime_memory_committed_bytes?: number;
+  runtime_memory_headroom_bytes?: number | null;
+  runtime_memory_pressure_level?: 'disabled' | 'normal' | 'soft' | 'hard';
+  runtime_memory_pressure_ratio?: number | null;
+  runtime_memory_shared_cache_reclaims?: number;
+  runtime_memory_shared_cache_released_bytes?: number;
+  runtime_memory_shared_cache_reclaim_failures?: number;
+  mlx_active_bytes?: number;
+  mlx_cache_bytes?: number;
+  mlx_peak_bytes?: number;
+  cuda_allocated_bytes?: number;
+  cuda_reserved_bytes?: number;
+  device_free_bytes?: number;
+  device_total_bytes?: number;
+  prefix_cache_supported?: number;
+  prefix_cache_disabled_reason?: number;
+  prefix_cache_queries?: number;
+  prefix_cache_hits?: number;
+  prefix_cache_hit_tokens?: number;
+  prefix_cache_sessions?: number;
+  prefix_cache_snapshots?: number;
+  prefix_cache_tokens?: number;
+  prefix_cache_bytes?: number;
+  prefix_cache_max_sessions?: number;
+  prefix_cache_max_snapshots_per_session?: number;
+  prefix_cache_max_bytes?: number;
+  prefix_cache_disk_blocks?: number;
+  prefix_cache_disk_bytes?: number;
+  prefix_cache_disk_max_bytes?: number;
+  prefix_cache_hot_blocks?: number;
+  prefix_cache_hot_bytes?: number;
+  prefix_cache_pending_writes?: number;
+  prefix_cache_pending_bytes?: number;
+  prefix_cache_pending_max_bytes?: number;
+  prefix_cache_writes?: number;
+  prefix_cache_deduplicated_writes?: number;
+  prefix_cache_disk_hits?: number;
+  prefix_cache_hot_hits?: number;
+  prefix_cache_evictions?: number;
+  prefix_cache_corrupt_blocks?: number;
+  prefix_cache_mode?: string;
+  prefix_cache_total_hot_bytes?: number;
+  prefix_cache_total_hot_max_bytes?: number;
+  prefix_cache_ram_bytes?: number;
+  prefix_cache_ram_max_bytes?: number;
+  prefix_cache_ram_blocks?: number;
+  prefix_cache_ram_hits?: number;
+  prefix_cache_total_ram_bytes?: number;
+  prefix_cache_total_ram_max_bytes?: number;
+  prefix_cache_total_disk_bytes?: number;
+  prefix_cache_total_disk_blocks?: number;
+  prefix_cache_total_disk_max_bytes?: number;
+  prefix_cache_budget_failures?: number;
+  sampling_defaults?: Partial<SamplingParams>;
+  mtp_service_enabled?: boolean;
+  duplex_sampling_defaults?: {
+    system_prompt?: string;
+    temperature?: number;
+    top_k?: number;
+    top_p?: number;
+    text_repetition_penalty?: number;
+    [key: string]: unknown;
+  };
+  tts_sampling_defaults?: {
+    temperature?: number;
+    repetition_penalty?: number;
+    [key: string]: unknown;
+  };
+  chat_template_capabilities?: {
+    thinking?: { supported?: boolean };
+    reasoning_effort?: { supported?: boolean; values?: string[] };
+  };
+  last_request?: RuntimeRequestMetrics | null;
+  [key: string]: unknown;
+}
+
+export interface RuntimeListener {
+  host: string;
+  port: number;
+  configurable: boolean;
+  anthropic_port?: number | null;
+}
+
+export interface ServingStatistics {
+  scope: 'session' | 'alltime';
+  started_at: number;
+  totals: {
+    completed_requests: number; prompt_tokens: number; prefill_tokens: number;
+    completion_tokens: number; cached_tokens: number;
+    prefill_tps: number | null; decode_tps: number | null;
+    ttft_ms: number | null; cache_hit_rate: number | null;
+  };
+  activity: {
+    instance_id: string; model: string; state: string; active_requests: number;
+    queued_requests: number; sample_age_seconds: number | null;
+    requests: { id: string; phase: string; processed_tokens: number;
+      generated_tokens: number; prefill_tps: number; decode_tps: number;
+      elapsed_seconds: number; updated_at: number }[];
+  }[];
+}
+
+export interface RuntimeResources {
+  sampled_at: number;
+  interval_seconds: number | null;
+  cpu_name?: string | null;
+  cpu_cores?: number | null;
+  cpu_utilization_percent: number | null;
+  gpus: { id?: string | null; name: string; core_count?: number | null; utilization_percent: number | null;
+    memory_total_bytes?: number | null; memory_used_bytes?: number | null; memory_available_bytes?: number | null }[];
+  memory_total_bytes?: number | null;
+  memory_used_bytes?: number | null;
+  memory_available_bytes?: number | null;
+  memory_bandwidth_bytes_per_second: number | null;
+  memory_bandwidth_limit_bytes_per_second: number | null;
+  memory_bandwidth_utilization_percent: number | null;
+  disks: { name: string; read_bytes_per_second: number | null;
+    write_bytes_per_second: number | null; busy_percent: number | null;
+    bandwidth_utilization_percent: number | null }[];
+  weights: { instance_id: string; model: string; expert_read_bytes_per_second: number | null;
+    ple_read_bytes_per_second: number | null; engram_read_bytes_per_second: number | null;
+    kv_read_bytes_per_second?: number | null; kv_write_bytes_per_second?: number | null }[];
+}
+
+export interface RuntimeModel {
+  id: string;
+  object?: string;
+  owned_by?: string;
+}
+
+export interface RuntimeMemoryResources {
+  devices?: RuntimeDeviceMemory[];
+  ram_experts?: boolean | null;
+  ram_expert_bytes?: number | null;
+  ram_kv?: boolean | null;
+  ram_kv_bytes?: number | null;
+  ram_kv_limit_bytes?: number | null;
+  resident_weight_bytes: number | null;
+  resident_buffer_bytes?: number | null;
+  wired_bytes?: number | null;
+  wired_limit_bytes?: number | null;
+  wired_available?: boolean | null;
+  kv_bytes: number | null;
+  context_count: number | null;
+  prefix_cache_blocks: number | null;
+  prefix_cache_bytes?: number | null;
+  prefix_cache_limit_bytes?: number | null;
+  prefix_cache_ram_bytes?: number | null;
+  prefix_cache_ram_limit_bytes?: number | null;
+  prefix_cache_ram_blocks?: number | null;
+  ssd_experts: boolean | null;
+  ssd_expert_bytes: number | null;
+  ssd_ple: boolean | null;
+  ssd_ple_bytes: number | null;
+  ssd_kv?: boolean | null;
+  ssd_kv_bytes?: number | null;
+  streaming_kv_resident_bytes?: number | null;
+  streaming_kv_budget_bytes?: number | null;
+  streaming_kv_pending_bytes?: number | null;
+  ssd_kv_read_bytes?: number | null;
+  ssd_kv_written_bytes?: number | null;
+  ssd_kv_reads?: number | null;
+  ssd_kv_hits?: number | null;
+}
+
+export interface RuntimeDeviceMemory {
+  device_id: string;
+  resident_bytes?: number | null;
+  resident_weight_bytes?: number | null;
+  resident_buffer_bytes?: number | null;
+  kv_bytes?: number | null;
+  prefix_cache_bytes?: number | null;
+  memory_total_bytes?: number | null;
+  memory_available_bytes?: number | null;
+}
+
+export interface RuntimeInstance {
+  id: string;
+  model: string;
+  state: 'loading' | 'ready' | 'busy' | 'unloading' | 'failed';
+  devices: string[];
+  active_sessions: number;
+  queued_requests: number;
+  resident_bytes?: number | null;
+  kv_bytes?: number | null;
+  memory?: RuntimeMemoryResources | null;
+  context_size?: number | null;
+  context_capacity?: number | null;
+  started_at?: string | null;
+  last_used_at?: string | null;
+  idle_ttl_seconds?: number | null;
+  pinned?: boolean;
+  mtp_supported?: boolean;
+  mtp_available?: boolean;
+  qsa_kv_offload_supported?: boolean;
+  kv_quantization_supported?: boolean;
+  kv_memory_supported?: boolean;
+  kv_memory?: { placement: 'auto' | 'auto_ssd' | 'vram' | 'ram'; allocation: 'preallocated' | 'dynamic' };
+  kv_quantization?: { enabled: boolean; bits: 2 | 2.5 | 3 | 3.5 | 4 | 6 | 8; algorithm: 'turboquant' };
+  qsa_kv_offload?: { enabled: boolean; budget_bytes: number; ram_budget_bytes?: number | null; target_context: number };
+  error?: ApiErrorBody['error'] | null;
+}
+
+
+export interface RuntimeMetricSnapshot {
+  sequence: number;
+  instance_id?: string | null;
+  model?: string | null;
+  values: RuntimeStatus;
+  captured_at: string;
+}
+
+export interface RuntimeLogEntry {
+  sequence: number;
+  instance_id?: string | null;
+  level: 'debug' | 'info' | 'warning' | 'error';
+  message: string;
+  fields: Record<string, unknown>;
+  created_at: string;
+}

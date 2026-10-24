@@ -1,0 +1,712 @@
+"""MFQ shard naming, planning, and streaming writers."""
+
+from __future__ import annotations
+
+import errno
+import io
+import json
+import os
+import re
+import struct
+from collections.abc import Callable, Sequence
+from contextlib import suppress
+from pathlib import Path
+from typing import Protocol
+
+from tyloinfer.formats.assets import is_asset_record
+from tyloinfer.formats.compat import canonical_dtype
+from tyloinfer.formats.companions import with_engram_shards
+from tyloinfer.formats.header import TYLOINFER_MAGIC, TYLOINFER_SUFFIXES, TENSOR_DTYPES, FileHeader
+
+SPLIT_NO_KEY = "split.no"
+SPLIT_COUNT_KEY = "split.count"
+SPLIT_TENSORS_COUNT_KEY = "split.tensors.count"
+SPLIT_RECORDS_COUNT_KEY = "split.records.count"
+SPLIT_KEYS = frozenset(
+    {
+        SPLIT_NO_KEY,
+        SPLIT_COUNT_KEY,
+        SPLIT_TENSORS_COUNT_KEY,
+        SPLIT_RECORDS_COUNT_KEY,
+    }
+)
+
+_SHARD_RE = re.compile(
+    r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<count>[0-9]{5})(?P<suffix>\.tq)$",
+    re.IGNORECASE,
+)
+
+
+class BlobRecordLike(Protocol):
+    name: str
+    dtype: str
+    nbytes: int
+    path: Path
+
+
+def _u32(value: int) -> bytes:
+    return struct.pack("<I", int(value))
+
+
+def format_shard_path(path: str | Path, index: int, count: int) -> Path:
+    """Return the 1-based ``xxxxx-00001-of-00004.mfq`` shard path."""
+
+    source = Path(path)
+    if not 1 <= index <= count <= 99999:
+        raise ValueError(f"invalid MFQ shard index/count: {index}/{count}")
+    suffix = source.suffix.lower() if source.suffix.lower() in TYLOINFER_SUFFIXES else ".tq"
+    stem = source.stem if source.suffix.lower() in TYLOINFER_SUFFIXES else source.name
+    return source.with_name(f"{stem}-{index:05d}-of-{count:05d}{suffix}")
+
+
+def parse_shard_path(path: str | Path) -> tuple[Path, int, int] | None:
+    """Parse a shard name into ``(base_path, 1-based index, count)``."""
+
+    source = Path(path)
+    match = _SHARD_RE.fullmatch(source.name)
+    if match is None:
+        return None
+    count = int(match.group("count"))
+    index = int(match.group("index"))
+    if count < 1 or index < 1 or index > count:
+        raise ValueError(f"invalid MFQ shard file name: {source}")
+    base = source.with_name(f"{match.group('stem')}{match.group('suffix').lower()}")
+    return base, index, count
+
+
+def shard_paths_from_any(path: str | Path, count: int) -> list[Path]:
+    """Resolve every shard path when ``path`` names any shard in the set."""
+
+    parsed = parse_shard_path(path)
+    if parsed is None:
+        raise ValueError(f"sharded MFQ path lacks -00001-of-00000 suffix: {path}")
+    base, _, filename_count = parsed
+    if filename_count != count:
+        raise ValueError(
+            f"MFQ shard count mismatch in filename/metadata: {filename_count} != {count}: {path}"
+        )
+    expected = [format_shard_path(base, index, count) for index in range(1, count + 1)]
+    if Path(path).suffix in TYLOINFER_SUFFIXES and all(candidate.is_file() for candidate in expected):
+        return expected
+    available: dict[int, Path] = {}
+    for candidate in matching_shard_paths(base):
+        _, index, candidate_count = parse_shard_path(candidate)
+        if candidate_count != count:
+            continue
+        if index in available:
+            raise ValueError(f"duplicate MFQ shard index {index}: {base}")
+        available[index] = candidate
+    # Shared tables retain their original split indices in a sibling Engram/.
+    directories = {base.parent, base.parent / 'Engram', base.parent.parent / 'Engram'}
+    candidates = [candidate for directory in directories if directory.is_dir()
+                  for candidate in directory.iterdir() if candidate.is_file()]
+    names = [candidate.as_posix() for candidate in candidates]
+    for name in with_engram_shards([Path(path).as_posix()], names):
+        candidate = Path(name)
+        entry = parse_shard_path(candidate)
+        if entry is not None and entry[1] not in available:
+            available[entry[1]] = candidate
+    return [available.get(index, candidate) for index, candidate in enumerate(expected, 1)]
+
+
+def matching_shard_paths(path: str | Path) -> list[Path]:
+    """List shard files whose decoded base path equals ``path``."""
+
+    base = Path(path)
+    result: list[Path] = []
+    if not base.parent.is_dir():
+        return result
+    for candidate in base.parent.iterdir():
+        if not candidate.is_file():
+            continue
+        try:
+            parsed = parse_shard_path(candidate)
+        except ValueError:
+            continue
+        if parsed is not None and parsed[0].name == base.name:
+            result.append(candidate)
+    return sorted(result)
+
+
+def split_values(extra: dict[str, object]) -> tuple[int, int, int | None, int | None]:
+    """Read and validate the split metadata from a decoded MFQ header."""
+
+    split_no = int(extra.get(SPLIT_NO_KEY, 0))
+    split_count = int(extra.get(SPLIT_COUNT_KEY, 1))
+    tensor_count = extra.get(SPLIT_TENSORS_COUNT_KEY)
+    record_count = extra.get(SPLIT_RECORDS_COUNT_KEY)
+    if split_count < 1 or split_count > 99999:
+        raise ValueError(f"invalid {SPLIT_COUNT_KEY}: {split_count}")
+    if split_no < 0 or split_no >= split_count:
+        raise ValueError(f"invalid {SPLIT_NO_KEY}: {split_no}")
+    return (
+        split_no,
+        split_count,
+        None if tensor_count is None else int(tensor_count),
+        None if record_count is None else int(record_count),
+    )
+
+
+def validate_split_limits(
+    split_max_size: int,
+    split_max_tensors: int,
+    *,
+    required: bool = False,
+) -> None:
+    if split_max_size < 0 or split_max_tensors < 0:
+        raise ValueError("MFQ shard limits must be non-negative")
+    if split_max_size and split_max_tensors:
+        raise ValueError("--split-max-size and --split-max-tensors are mutually exclusive")
+    if required and not (split_max_size or split_max_tensors):
+        raise ValueError("one positive MFQ shard limit is required")
+
+
+def plan_record_shards(
+    records: Sequence[BlobRecordLike],
+    *,
+    split_max_size: int = 0,
+    split_max_tensors: int = 0,
+) -> list[list[BlobRecordLike]]:
+    """Assign records to shards using llama.cpp's pre-add boundary rule."""
+
+    validate_split_limits(split_max_size, split_max_tensors)
+    if not split_max_size and not split_max_tensors:
+        return [list(records)]
+
+    assets = [record for record in records if is_asset_record(record.name)]
+    tensors = [record for record in records if not is_asset_record(record.name)]
+    shards: list[list[BlobRecordLike]] = [[]]
+    payload_sizes = [0]
+    tensor_counts = [0]
+
+    for record in tensors:
+        current = len(shards) - 1
+        exceeds_size = bool(
+            split_max_size
+            and tensor_counts[current] > 0
+            and payload_sizes[current] + int(record.nbytes) > split_max_size
+        )
+        exceeds_count = bool(split_max_tensors and tensor_counts[current] >= split_max_tensors)
+        if exceeds_size or exceeds_count:
+            shards.append([])
+            payload_sizes.append(0)
+            tensor_counts.append(0)
+            current += 1
+        shards[current].append(record)
+        payload_sizes[current] += int(record.nbytes)
+        tensor_counts[current] += 1
+
+    # Runtime assets are container metadata and live only in the first shard.
+    shards[0][0:0] = assets
+    return shards
+
+
+def shard_header(
+    header: FileHeader,
+    *,
+    split_no: int,
+    split_count: int,
+    tensor_count: int,
+    record_count: int,
+) -> FileHeader:
+    """Build one shard header; model metadata is retained only in shard zero."""
+
+    if split_no == 0:
+        extra = {key: value for key, value in header.extra.items() if key not in SPLIT_KEYS}
+    else:
+        extra = {}
+    extra.update(
+        {
+            SPLIT_NO_KEY: split_no,
+            SPLIT_COUNT_KEY: split_count,
+            SPLIT_TENSORS_COUNT_KEY: tensor_count,
+            SPLIT_RECORDS_COUNT_KEY: record_count,
+        }
+    )
+    return FileHeader(
+        version=max(2, int(header.version)),
+        model_arch=header.model_arch,
+        num_tensors=0,
+        extra=extra,
+    )
+
+
+def _write_header_and_table(
+    output,
+    header: FileHeader,
+    records: Sequence[BlobRecordLike],
+) -> None:
+    version = int(header.version)
+    extra = dict(header.extra)
+    if extra and version < 2:
+        version = 2
+    output.write(TYLOINFER_MAGIC)
+    output.write(_u32(version))
+    arch = header.model_arch.encode("utf-8")
+    output.write(_u32(len(arch)))
+    output.write(arch)
+    if version >= 2:
+        output.write(_u32(len(extra)))
+        for key, value in extra.items():
+            key_bytes = str(key).encode("utf-8")
+            value_bytes = json.dumps(value).encode("utf-8")
+            output.write(_u32(len(key_bytes)))
+            output.write(key_bytes)
+            output.write(_u32(len(value_bytes)))
+            output.write(value_bytes)
+    output.write(_u32(len(records)))
+    for record in records:
+        name = record.name.encode("utf-8")
+        dtype = canonical_dtype(record.dtype).encode("utf-8")
+        output.write(_u32(len(name)))
+        output.write(name)
+        output.write(_u32(len(dtype)))
+        output.write(dtype)
+        output.write(struct.pack("<Q", int(record.nbytes)))
+
+
+def copy_sparse_range(source, target, nbytes: int, *, offset: int = 0) -> None:
+    """Copy an exact file range while retaining source holes when supported."""
+
+    size = int(nbytes)
+    start = int(offset)
+    if size < 0 or start < 0:
+        raise ValueError("sparse copy range must be non-negative")
+    end = start + size
+    destination_start = target.tell()
+    if size == 0:
+        return
+    source_size = os.fstat(source.fileno()).st_size
+    if source_size < end:
+        raise EOFError(f"truncated blob source: {end - source_size} bytes missing")
+
+    def copy_bytes(begin: int, stop: int) -> None:
+        source.seek(begin)
+        remaining = stop - begin
+        while remaining:
+            chunk = source.read(min(32 * 1024 * 1024, remaining))
+            if not chunk:
+                raise EOFError(f"truncated blob source: {remaining} bytes missing")
+            target.write(chunk)
+            remaining -= len(chunk)
+
+    seek_data = getattr(os, "SEEK_DATA", None)
+    seek_hole = getattr(os, "SEEK_HOLE", None)
+    if seek_data is None or seek_hole is None:
+        target.seek(destination_start)
+        copy_bytes(start, end)
+        target.seek(destination_start + size)
+        return
+
+    try:
+        data = os.lseek(source.fileno(), start, seek_data)
+    except OSError as exc:
+        if exc.errno == errno.ENXIO:
+            target.truncate(destination_start + size)
+            target.seek(destination_start + size)
+            return
+        if exc.errno not in {errno.EINVAL, errno.ENOTSUP}:
+            raise
+        target.seek(destination_start)
+        copy_bytes(start, end)
+        return
+
+    cursor = start
+    while data < end:
+        try:
+            hole = os.lseek(source.fileno(), data, seek_hole)
+        except OSError as exc:  # pragma: no cover - paired seek support is expected
+            if exc.errno not in {errno.EINVAL, errno.ENOTSUP, errno.ENXIO}:
+                raise
+            hole = end
+        copy_end = min(hole, end)
+        target.seek(destination_start + data - start)
+        copy_bytes(data, copy_end)
+        cursor = copy_end
+        if cursor >= end:
+            break
+        try:
+            data = os.lseek(source.fileno(), cursor, seek_data)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                break
+            raise
+    target.truncate(
+        max(
+            os.fstat(target.fileno()).st_size,
+            target.tell(),
+            destination_start + size,
+        )
+    )
+    target.seek(destination_start + size)
+
+
+def _copy_record(record: BlobRecordLike, target) -> None:
+    # Encoded candidate records stream existing fields directly into the same
+    # container writer, without decoding or a second whole-model staging copy.
+    writer = getattr(record, 'write_to', None)
+    if writer is not None:
+        start = target.tell()
+        writer(target)
+        if target.tell() - start != int(record.nbytes):
+            raise ValueError(f'generated MFQ blob size mismatch for {record.name}')
+        return
+    try:
+        with Path(record.path).open("rb") as source:
+            copy_sparse_range(
+                source,
+                target,
+                int(record.nbytes),
+                offset=int(getattr(record, "offset", 0)),
+            )
+    except EOFError as exc:
+        raise EOFError(
+            f"truncated MFQ blob source for {record.name}: {record.nbytes} bytes expected"
+        ) from exc
+
+
+class StreamingBlobShardWriter:
+    """Build MFQ shards without retaining a second full set of tensor blobs.
+
+    Tensor codecs may still need one seekable per-tensor blob while they
+    backpatch their own headers.  ``append`` copies that completed blob into
+    an output-side payload file and can immediately consume it.  Once the
+    model header and runtime assets are known, ``finalize`` moves each payload
+    backwards in the same file and fills the resulting prefix with the MFQ
+    header, record table, and first-shard assets.
+
+    The output files remain private until every shard has been finalized.
+    Unlike :func:`write_blob_record_shards`, this writer is intentionally not
+    resumable; callers that need reusable tensor blobs should use the staged
+    writer instead.
+    """
+
+    _COPY_CHUNK = 32 * 1024 * 1024
+
+    def __init__(
+        self,
+        output: str | Path,
+        *,
+        split_max_size: int = 0,
+        split_max_tensors: int = 0,
+        overwrite: bool = False,
+    ) -> None:
+        validate_split_limits(split_max_size, split_max_tensors)
+        self.output = Path(output)
+        self.split_max_size = int(split_max_size)
+        self.split_max_tensors = int(split_max_tensors)
+        self.overwrite = bool(overwrite)
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = set(matching_shard_paths(self.output))
+        if self.output.exists():
+            existing.add(self.output)
+        if existing and not self.overwrite:
+            raise FileExistsError(f"MFQ output exists: {sorted(existing)[0]}")
+
+        self._work_dir = self.output.parent / f".{self.output.name}.streaming"
+        if self._work_dir.exists():
+            raise FileExistsError(f"streaming MFQ workspace exists: {self._work_dir}")
+        self._work_dir.mkdir()
+        self._record_shards: list[list[BlobRecordLike]] = []
+        self._payload_paths: list[Path] = []
+        self._payload_sizes: list[int] = []
+        self._temporary_paths: list[Path] = []
+        self._finished = False
+
+    def _new_payload(self) -> None:
+        index = len(self._payload_paths) + 1
+        if index > 99999:
+            raise ValueError("MFQ shard count exceeds 99999")
+        path = self._work_dir / f"payload-{index:05d}.bin"
+        with path.open("xb"):
+            pass
+        self._record_shards.append([])
+        self._payload_paths.append(path)
+        self._payload_sizes.append(0)
+
+    def append(self, record: BlobRecordLike, *, consume: bool = False) -> None:
+        """Append one tensor record and optionally delete its source blob."""
+
+        if self._finished:
+            raise RuntimeError("streaming MFQ writer is already finalized")
+        if is_asset_record(record.name):
+            raise ValueError("runtime assets must be passed to finalize()")
+        if record.dtype not in TENSOR_DTYPES:
+            raise ValueError(f"TyloInfer does not support tensor format {record.dtype!r}: {record.name}")
+        nbytes = int(record.nbytes)
+        if nbytes < 0:
+            raise ValueError(f"negative MFQ blob size for {record.name}: {nbytes}")
+        if not self._payload_paths:
+            self._new_payload()
+
+        current = len(self._payload_paths) - 1
+        exceeds_size = bool(
+            self.split_max_size
+            and self._record_shards[current]
+            and self._payload_sizes[current] + nbytes > self.split_max_size
+        )
+        exceeds_count = bool(
+            self.split_max_tensors and len(self._record_shards[current]) >= self.split_max_tensors
+        )
+        if exceeds_size or exceeds_count:
+            self._new_payload()
+            current += 1
+
+        payload = self._payload_paths[current]
+        start = self._payload_sizes[current]
+        try:
+            with payload.open("r+b") as target:
+                target.seek(0, os.SEEK_END)
+                _copy_record(record, target)
+        except Exception:
+            with payload.open("r+b") as target:
+                target.truncate(start)
+            raise
+        if payload.stat().st_size != start + nbytes:
+            raise RuntimeError(f"streamed MFQ blob size mismatch for {record.name}")
+        self._record_shards[current].append(record)
+        self._payload_sizes[current] += nbytes
+        if consume:
+            Path(record.path).unlink()
+
+    @classmethod
+    def _prepend(
+        cls,
+        path: Path,
+        table: bytes,
+        assets: Sequence[BlobRecordLike],
+        expected_payload_size: int,
+    ) -> None:
+        actual_payload_size = path.stat().st_size
+        if actual_payload_size != expected_payload_size:
+            raise RuntimeError(
+                f"streaming MFQ payload size mismatch: "
+                f"{actual_payload_size} != {expected_payload_size}: {path}"
+            )
+        prefix_size = len(table) + sum(int(record.nbytes) for record in assets)
+        with path.open("r+b") as target:
+            target.truncate(actual_payload_size + prefix_size)
+            remaining = actual_payload_size
+            while remaining:
+                chunk_size = min(cls._COPY_CHUNK, remaining)
+                source_offset = remaining - chunk_size
+                target.seek(source_offset)
+                chunk = target.read(chunk_size)
+                if len(chunk) != chunk_size:
+                    raise EOFError(f"truncated streaming MFQ payload: {path}")
+                target.seek(source_offset + prefix_size)
+                target.write(chunk)
+                remaining = source_offset
+
+            target.seek(0)
+            target.write(table)
+            for record in assets:
+                _copy_record(record, target)
+            if target.tell() != prefix_size:
+                raise RuntimeError(f"streaming MFQ prefix size mismatch: {path}")
+
+    def finalize(
+        self,
+        header: FileHeader,
+        assets: Sequence[BlobRecordLike] = (),
+        *,
+        consume_assets: bool = False,
+    ) -> list[Path]:
+        """Finish every shard and atomically publish the completed set."""
+
+        if self._finished:
+            raise RuntimeError("streaming MFQ writer is already finalized")
+        if any(not is_asset_record(record.name) for record in assets):
+            raise ValueError("finalize() assets must use the reserved asset namespace")
+        if not self._payload_paths:
+            self._new_payload()
+
+        sharded_output = bool(self.split_max_size or self.split_max_tensors)
+        shard_count = len(self._payload_paths)
+        destinations = (
+            [self.output]
+            if shard_count == 1 and not sharded_output
+            else [
+                format_shard_path(self.output, index, shard_count)
+                for index in range(1, shard_count + 1)
+            ]
+        )
+        stale_outputs = set(matching_shard_paths(self.output))
+        if self.output.exists():
+            stale_outputs.add(self.output)
+        existing = sorted(stale_outputs)
+        if existing and not self.overwrite:
+            raise FileExistsError(f"MFQ output exists: {existing[0]}")
+
+        temporary = [path.with_suffix(path.suffix + ".tmp") for path in destinations]
+        stale_tmp = [path for path in temporary if path.exists()]
+        if stale_tmp:
+            raise FileExistsError(f"temporary MFQ output exists: {stale_tmp[0]}")
+        self._temporary_paths = temporary
+
+        tensor_count = sum(len(records) for records in self._record_shards)
+        record_count = tensor_count + len(assets)
+        try:
+            for split_no, (payload, tensor_records, payload_size) in enumerate(
+                zip(
+                    self._payload_paths,
+                    self._record_shards,
+                    self._payload_sizes,
+                    strict=True,
+                )
+            ):
+                shard_assets = list(assets) if split_no == 0 else []
+                if shard_assets and not sharded_output:
+                    with payload.open("ab") as target:
+                        for record in shard_assets:
+                            _copy_record(record, target)
+                    payload_size += sum(int(record.nbytes) for record in shard_assets)
+                    prefix_assets: list[BlobRecordLike] = []
+                    shard_records = tensor_records + shard_assets
+                else:
+                    prefix_assets = shard_assets
+                    shard_records = shard_assets + tensor_records
+                part_header = (
+                    shard_header(
+                        header,
+                        split_no=split_no,
+                        split_count=shard_count,
+                        tensor_count=tensor_count,
+                        record_count=record_count,
+                    )
+                    if sharded_output
+                    else header
+                )
+                table_buffer = io.BytesIO()
+                _write_header_and_table(table_buffer, part_header, shard_records)
+                self._prepend(
+                    payload,
+                    table_buffer.getvalue(),
+                    prefix_assets,
+                    payload_size,
+                )
+                if payload.stat().st_size <= 0:
+                    raise RuntimeError(f"empty MFQ shard output: {payload}")
+
+            for payload, tmp in zip(self._payload_paths, temporary, strict=True):
+                os.replace(payload, tmp)
+            for tmp, destination in zip(temporary, destinations, strict=True):
+                os.replace(tmp, destination)
+            for stale in stale_outputs.difference(destinations):
+                stale.unlink()
+            if consume_assets:
+                for record in assets:
+                    Path(record.path).unlink(missing_ok=True)
+            self._work_dir.rmdir()
+            self._finished = True
+            return destinations
+        except Exception:
+            self.abort()
+            raise
+
+    def abort(self) -> None:
+        """Remove private payloads and unpublished shard temporaries."""
+
+        if self._finished:
+            return
+        for path in self._payload_paths:
+            path.unlink(missing_ok=True)
+        for path in self._temporary_paths:
+            path.unlink(missing_ok=True)
+        with suppress(OSError):
+            self._work_dir.rmdir()
+        self._finished = True
+
+
+def write_blob_record_shards(
+    output: str | Path,
+    header: FileHeader,
+    records: Sequence[BlobRecordLike],
+    *,
+    split_max_size: int = 0,
+    split_max_tensors: int = 0,
+    overwrite: bool = False,
+    consume_blobs: bool = False,
+    before_publish: Callable[[Sequence[Path]], None] | None = None,
+) -> list[Path]:
+    """Stage all output files, then publish an MFQ file or shard set."""
+
+    for record in records:
+        if record.dtype not in TENSOR_DTYPES:
+            raise ValueError(f"TyloInfer does not support tensor format {record.dtype!r}: {record.name}")
+    planned = plan_record_shards(
+        records,
+        split_max_size=split_max_size,
+        split_max_tensors=split_max_tensors,
+    )
+    sharded_output = bool(split_max_size or split_max_tensors)
+    if len(planned) == 1 and not sharded_output:
+        destinations = [Path(output)]
+    else:
+        destinations = [
+            format_shard_path(output, index, len(planned)) for index in range(1, len(planned) + 1)
+        ]
+    stale_outputs = set(matching_shard_paths(output))
+    if not sharded_output and Path(output).exists():
+        stale_outputs.add(Path(output))
+    existing = sorted(stale_outputs)
+    if existing and not overwrite:
+        raise FileExistsError(f"MFQ output exists: {existing[0]}")
+    temporary = [path.with_suffix(path.suffix + ".tmp") for path in destinations]
+    stale_tmp = [path for path in temporary if path.exists()]
+    if stale_tmp:
+        raise FileExistsError(f"temporary MFQ output exists: {stale_tmp[0]}")
+
+    tensor_count = sum(not is_asset_record(record.name) for record in records)
+    record_count = len(records)
+    try:
+        for split_no, (destination, tmp, shard_records) in enumerate(
+            zip(destinations, temporary, planned, strict=True)
+        ):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            part_header = (
+                shard_header(
+                    header,
+                    split_no=split_no,
+                    split_count=len(destinations),
+                    tensor_count=tensor_count,
+                    record_count=record_count,
+                )
+                if sharded_output
+                else header
+            )
+            with tmp.open("xb") as target:
+                _write_header_and_table(target, part_header, shard_records)
+                for record in shard_records:
+                    _copy_record(record, target)
+            if tmp.stat().st_size <= 0:
+                raise RuntimeError(f"empty MFQ shard output: {tmp}")
+
+        if before_publish is not None:
+            before_publish(temporary)
+        for tmp, destination in zip(temporary, destinations, strict=True):
+            os.replace(tmp, destination)
+        for stale in stale_outputs.difference(destinations):
+            stale.unlink()
+        if consume_blobs:
+            for record in records:
+                Path(record.path).unlink(missing_ok=True)
+    except Exception:
+        for tmp in temporary:
+            tmp.unlink(missing_ok=True)
+        raise
+    return destinations
+
+
+def parse_size(value: str) -> int:
+    """Parse an integer byte count or llama.cpp-style decimal K/M/G suffix."""
+
+    match = re.fullmatch(r"\s*([0-9]+)\s*([KMGkmg]?)\s*", value)
+    if match is None:
+        raise ValueError(f"invalid split size: {value!r}")
+    scale = {"": 1, "k": 1000, "m": 1000**2, "g": 1000**3}
+    result = int(match.group(1)) * scale[match.group(2).lower()]
+    if result <= 0:
+        raise ValueError("split size must be positive")
+    return result

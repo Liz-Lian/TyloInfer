@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from tyloinfer.formats.assets import MODEL_CONFIG_ASSET
+from tyloinfer.formats.header import FileHeader
+from tyloinfer.formats.io import load, open_mmap, save
+from tyloinfer.formats.shards import (
+    SPLIT_COUNT_KEY,
+    SPLIT_NO_KEY,
+    SPLIT_RECORDS_COUNT_KEY,
+    SPLIT_TENSORS_COUNT_KEY,
+    StreamingBlobShardWriter,
+    copy_sparse_range,
+    format_shard_path,
+    parse_shard_path,
+    parse_size,
+    write_blob_record_shards,
+)
+from tyloinfer.tools.split_mfq import split_mfq
+
+
+def _source_model(path: Path) -> None:
+    save(
+        path,
+        FileHeader(
+            version=2,
+            model_arch="test-shards",
+            extra={"model": "fixture", "nested": {"value": 3}},
+        ),
+        {
+            "weight.0": np.arange(12, dtype=np.float16).reshape(3, 4),
+            "weight.1": np.arange(20, dtype=np.float32).reshape(4, 5),
+            "weight.2": np.arange(6, dtype=np.int32).reshape(2, 3),
+            MODEL_CONFIG_ASSET: b'{"model_type":"fixture"}',
+        },
+    )
+
+
+@dataclass(frozen=True)
+class _BlobRecord:
+    name: str
+    dtype: str
+    nbytes: int
+    path: Path
+    offset: int = 0
+
+
+def _blob_record(root: Path, name: str, dtype: str, data: bytes) -> _BlobRecord:
+    path = root / f"{len(list(root.iterdir())):02d}.blob"
+    path.write_bytes(data)
+    return _BlobRecord(name, dtype, len(data), path)
+
+
+def test_sparse_copy_falls_back_when_extent_seek_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "source.bin"
+    target_path = tmp_path / "target.bin"
+    source_path.write_bytes(b"prefix-payload-suffix")
+    monkeypatch.delattr(os, "SEEK_DATA", raising=False)
+    monkeypatch.delattr(os, "SEEK_HOLE", raising=False)
+
+    with source_path.open("rb") as source, target_path.open("w+b") as target:
+        target.write(b"head-")
+        copy_sparse_range(source, target, len(b"payload"), offset=len(b"prefix-"))
+
+    assert target_path.read_bytes() == b"head-payload"
+
+
+@pytest.mark.parametrize("suffix", [".tq", ".TQ"])
+def test_shard_name_round_trip(tmp_path: Path, suffix: str) -> None:
+    base = tmp_path / f"model.v1{suffix}"
+    shard = format_shard_path(base, 2, 17)
+    assert shard.name == f"model.v1-00002-of-00017{suffix.lower()}"
+    assert parse_shard_path(shard) == (base.with_suffix(suffix.lower()), 2, 17)
+    assert parse_size("4G") == 4_000_000_000
+    assert parse_size("512m") == 512_000_000
+
+
+@pytest.mark.parametrize("suffix", [".tq", ".TQ"])
+def test_offline_split_loads_from_any_shard_without_changing_records(
+    tmp_path: Path, suffix: str,
+) -> None:
+    source = tmp_path / f"model{suffix}"
+    _source_model(source)
+    with open_mmap(source) as original:
+        raw = {
+            name: bytes(original.blob_view(record))
+            for name, record in original.records.items()
+        }
+
+    shards = split_mfq(
+        source,
+        tmp_path / f"split{suffix}",
+        split_max_tensors=1,
+    )
+    assert [path.name for path in shards] == [
+        f"split-00001-of-00003{suffix.lower()}",
+        f"split-00002-of-00003{suffix.lower()}",
+        f"split-00003-of-00003{suffix.lower()}",
+    ]
+
+    for entry in (shards[0], shards[1], shards[-1]):
+        with open_mmap(entry) as store:
+            assert store.path == shards[0]
+            assert store.paths == shards
+            assert store.header.model_arch == "test-shards"
+            assert store.header.extra["model"] == "fixture"
+            assert store.header.extra[SPLIT_NO_KEY] == 0
+            assert store.header.extra[SPLIT_COUNT_KEY] == 3
+            assert store.header.extra[SPLIT_TENSORS_COUNT_KEY] == 3
+            assert store.header.extra[SPLIT_RECORDS_COUNT_KEY] == 4
+            assert set(store) == set(raw)
+            for name, record in store.records.items():
+                assert bytes(store.blob_view(record)) == raw[name]
+
+    header, tensors = load(shards[-1])
+    assert header.num_tensors == 4
+    np.testing.assert_array_equal(
+        tensors["weight.1"], np.arange(20, dtype=np.float32).reshape(4, 5)
+    )
+    assert tensors[MODEL_CONFIG_ASSET] == b'{"model_type":"fixture"}'
+
+
+def test_missing_shard_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "model.tq"
+    _source_model(source)
+    shards = split_mfq(
+        source,
+        tmp_path / "split.tq",
+        split_max_tensors=1,
+    )
+    shards[1].unlink()
+    with pytest.raises(FileNotFoundError, match="missing MFQ shard"):
+        open_mmap(shards[0])
+
+
+@pytest.mark.parametrize("extension", ["tq", "TQ"])
+def test_unrelated_invalid_shard_names_do_not_prevent_loading_a_complete_model(tmp_path: Path, extension: str) -> None:
+    source = tmp_path / "model.tq"
+    _source_model(source)
+    shards = split_mfq(source, tmp_path / "split.tq", split_max_tensors=1)
+    shards = [shard.rename(shard.with_suffix(f".{extension}")) for shard in shards]
+    (tmp_path / "unrelated-00000-of-00002.tq").write_bytes(b"not a model")
+    (tmp_path / "other-00001-of-00003.tq").mkdir()
+    with open_mmap(shards[-1]) as store:
+        assert store.paths == shards
+
+
+def test_split_size_keeps_an_oversize_tensor_whole(tmp_path: Path) -> None:
+    source = tmp_path / "model.tq"
+    _source_model(source)
+    shards = split_mfq(
+        source,
+        tmp_path / "size.tq",
+        split_max_size=30,
+    )
+    with open_mmap(shards[-1]) as store:
+        assert len(store) == 4
+        assert len(shards) == 3
+
+
+def test_split_can_use_the_source_base_name_and_keeps_the_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "model.tq"
+    _source_model(source)
+    shards = split_mfq(source, source, split_max_tensors=99)
+    assert source.is_file()
+    assert [path.name for path in shards] == ["model-00001-of-00001.tq"]
+    with open_mmap(shards[0]) as store:
+        assert store.header.extra[SPLIT_NO_KEY] == 0
+        assert store.header.extra[SPLIT_COUNT_KEY] == 1
+        assert len(store) == 4
+
+
+@pytest.mark.parametrize("split_max_tensors", [0, 2])
+def test_streaming_blob_writer_matches_staged_bytes_and_consumes_inputs(
+    tmp_path: Path,
+    split_max_tensors: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StreamingBlobShardWriter, "_COPY_CHUNK", 31)
+    header = FileHeader(
+        version=2,
+        model_arch="writer-equivalence",
+        extra={"model": "fixture", "nested": {"value": 7}},
+    )
+    tensor_data = (
+        ("weight.0", "F16", b"first-tensor"),
+        ("weight.1", "TQ", bytes(range(37))),
+        ("weight.2", "F32", bytes(range(256)) * 4),
+    )
+    asset_data = b'{"model_type":"writer-equivalence"}'
+
+    staged_root = tmp_path / "staged-blobs"
+    staged_root.mkdir()
+    staged_records = [
+        _blob_record(staged_root, name, dtype, data)
+        for name, dtype, data in tensor_data
+    ]
+    staged_asset = _blob_record(
+        staged_root,
+        MODEL_CONFIG_ASSET,
+        "BLOB",
+        asset_data,
+    )
+    staged_paths = write_blob_record_shards(
+        tmp_path / "staged.tq",
+        header,
+        [*staged_records, staged_asset],
+        split_max_tensors=split_max_tensors,
+    )
+
+    streaming_root = tmp_path / "streaming-blobs"
+    streaming_root.mkdir()
+    streaming_records = [
+        _blob_record(streaming_root, name, dtype, data)
+        for name, dtype, data in tensor_data
+    ]
+    streaming_asset = _blob_record(
+        streaming_root,
+        MODEL_CONFIG_ASSET,
+        "BLOB",
+        asset_data,
+    )
+    writer = StreamingBlobShardWriter(
+        tmp_path / "streaming.tq",
+        split_max_tensors=split_max_tensors,
+    )
+    for record in streaming_records:
+        writer.append(record, consume=True)
+        assert not record.path.exists()
+    streaming_paths = writer.finalize(
+        header,
+        [streaming_asset],
+        consume_assets=True,
+    )
+
+    assert not streaming_asset.path.exists()
+    assert len(streaming_paths) == len(staged_paths)
+    assert [path.read_bytes() for path in streaming_paths] == [
+        path.read_bytes() for path in staged_paths
+    ]
+    with open_mmap(streaming_paths[-1]) as store:
+        expected_records = ["weight.0", "weight.1", "weight.2"]
+        if split_max_tensors:
+            expected_records.insert(0, MODEL_CONFIG_ASSET)
+        else:
+            expected_records.append(MODEL_CONFIG_ASSET)
+        assert list(store.records) == expected_records
+        assert store.read_blob(MODEL_CONFIG_ASSET) == asset_data
+        assert store.records["weight.1"].stored_dtype == "TQ"
+
+
+def test_blob_writers_reject_legacy_format_names_before_consuming(tmp_path: Path) -> None:
+    aliases = {
+        "NINT4": "NINT",
+        "NINTM": "MFE",
+        "NINTMD": "MFED",
+        "NVQ2J-XL": "NVQ",
+        "NPQ0-S": "NPQ",
+        "NEPQ1-A": "NEPQ",
+        "MXFP4-SQ2": "MXFP4-SQ",
+    }
+    root = tmp_path / "blobs"
+    root.mkdir()
+    for index, dtype in enumerate(aliases):
+        record = _blob_record(root, f"weight.{index}", dtype, bytes([index]))
+        output = tmp_path / f"unsupported-{index}.tq"
+        with pytest.raises(ValueError, match='does not support tensor format'):
+            write_blob_record_shards(output, FileHeader(version=2), [record], consume_blobs=True)
+        writer = StreamingBlobShardWriter(output)
+        try:
+            with pytest.raises(ValueError, match='does not support tensor format'):
+                writer.append(record, consume=True)
+        finally:
+            writer.abort()
+        assert record.path.exists() and not output.exists()
+
+
+def test_streaming_blob_writer_preserves_source_and_cleans_up_after_copy_failure(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "truncated.blob"
+    source.write_bytes(b"short")
+    record = _BlobRecord("weight", "F16", 10, source)
+    output = tmp_path / "failed.tq"
+    writer = StreamingBlobShardWriter(output)
+
+    with pytest.raises(EOFError, match="truncated MFQ blob source"):
+        writer.append(record, consume=True)
+    writer.abort()
+
+    assert source.read_bytes() == b"short"
+    assert not output.exists()
+    assert not (tmp_path / ".failed.tq.streaming").exists()

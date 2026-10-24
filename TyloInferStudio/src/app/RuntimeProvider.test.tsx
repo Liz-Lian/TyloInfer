@@ -1,0 +1,306 @@
+
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeApi } from '../shared/api/resources/runtime';
+import { jobsApi } from '../shared/api/resources/jobs';
+import { ApiError } from '../shared/api/client';
+import type { JobEventResource, JobResource, RuntimeStatus, RuntimeInstance } from '../shared/api/types';
+import { connectExistingStudio, startLocalStudio, studioCredential, studioStatus } from '../studio';
+import { useJobStore } from '../stores/jobStore';
+import { RuntimeProvider, useRuntime } from './RuntimeProvider';
+
+let capturedRuntime: ReturnType<typeof useRuntime>;
+
+vi.mock('../studio', () => ({
+  studioStatus: vi.fn(),
+  studioCredential: vi.fn(),
+  startLocalStudio: vi.fn(),
+  connectExistingStudio: vi.fn(),
+}));
+vi.mock('../features/settings/SettingsProvider', () => ({
+  useSettings: () => ({ setContextSize: vi.fn() }),
+}));
+
+
+function RuntimeFixture() {
+  const runtime = useRuntime();
+  capturedRuntime = runtime;
+  return (
+    <>
+      <span data-testid="ready">{String(runtime.ready)}</span>
+      <span data-testid="connection-error">{runtime.connectionError}</span>
+      <span data-testid="refresh-error">{runtime.refreshError}</span>
+      <span data-testid="stream-error">{Object.values(runtime.jobStreamErrors).join('; ')}</span>
+      <button onClick={() => void runtime.reloadService()} type="button">Reconnect</button>
+      <button onClick={() => void runtime.connectExistingServer()} type="button">Connect existing</button>
+      <button onClick={() => void runtime.refreshRuntime()} type="button">Refresh</button>
+      <button onClick={runtime.retryJobStreams} type="button">Retry stream</button>
+      <span data-testid="reloading">{JSON.stringify(runtime.reloadingInstances)}</span>
+      <button onClick={() => void runtime.reloadModelContext('instance-a', 8192)} type="button">Reload model</button>
+    </>
+  );
+}
+
+const activeJob = {
+  id: 'job-1',
+  status: 'running',
+  kind: 'model.load',
+  payload: {},
+} as JobResource;
+
+describe('RuntimeProvider 故障状态', () => {
+  beforeEach(() => {
+    useJobStore.getState().clearJobStreams();
+    useJobStore.getState().setJobs([]);
+    vi.restoreAllMocks();
+    vi.mocked(studioStatus).mockResolvedValue(null);
+    vi.mocked(studioCredential).mockResolvedValue('');
+    vi.spyOn(runtimeApi, 'runtimeInstances').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'jobs').mockResolvedValue([]);
+    vi.spyOn(runtimeApi, 'runtimeStatus').mockResolvedValue({ runtime_state: 'idle' } as RuntimeStatus);
+    vi.spyOn(runtimeApi, 'voiceOutputComponent').mockResolvedValue({} as Awaited<ReturnType<typeof runtimeApi.voiceOutputComponent>>);
+  });
+
+  it('首次刷新失败保持未就绪，重连成功后清除错误', async () => {
+    vi.mocked(runtimeApi.runtimeInstances).mockRejectedValueOnce(new Error('server offline'));
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('refresh-error').textContent).toBe('server offline'));
+    expect(screen.getByTestId('ready').textContent).toBe('false');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('true'));
+    expect(screen.getByTestId('refresh-error').textContent).toBe('');
+  });
+
+  it('shows the native startup rejection instead of Unknown error', async () => {
+    vi.mocked(studioStatus).mockResolvedValue({ config: { mode: 'local', remote_url: 'http://127.0.0.1:8090', local_service_port: 8090 },
+      service_url: 'http://127.0.0.1:8090', reachable: false, managed_pid: null });
+    vi.mocked(startLocalStudio).mockRejectedValueOnce('The Anthropic API port 8091 is already in use.');
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('connection-error')).toHaveTextContent('Anthropic API port 8091'));
+    expect(screen.getByTestId('ready')).toHaveTextContent('false');
+  });
+
+  it('does not use an external backend until its exact instance is explicitly confirmed', async () => {
+    const server = { instance_id: 'instance-a', workspace_id: 'workspace-a', version: '0.1.0', pid: 1234, launch_mode: 'cli' as const };
+    const pending = { config: { mode: 'local' as const, remote_url: 'http://127.0.0.1:8090', local_service_port: 8090 },
+      service_url: 'http://127.0.0.1:8090', reachable: false, managed_pid: null, connection: 'confirmation_required' as const, server };
+    vi.mocked(studioStatus).mockResolvedValue(pending);
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(capturedRuntime.studio?.connection).toBe('confirmation_required'));
+    expect(capturedRuntime.ready).toBe(false);
+    expect(startLocalStudio).not.toHaveBeenCalled();
+    expect(runtimeApi.runtimeInstances).not.toHaveBeenCalled();
+    vi.mocked(studioStatus).mockResolvedValue({ ...pending, reachable: true, connection: 'external' });
+    vi.mocked(connectExistingStudio).mockResolvedValue({ ...pending, reachable: true, connection: 'external' });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect existing' }));
+    await waitFor(() => expect(capturedRuntime.ready).toBe(true));
+    expect(connectExistingStudio).toHaveBeenCalledExactlyOnceWith('instance-a', 'workspace-a');
+    expect(startLocalStudio).not.toHaveBeenCalled();
+  });
+
+  it('does not query workspace APIs or start a second backend when the existing server is incompatible', async () => {
+    vi.mocked(studioStatus).mockResolvedValue({ config: { mode: 'local', remote_url: 'http://127.0.0.1:8090', local_service_port: 8090 },
+      service_url: 'http://127.0.0.1:8090', reachable: false, managed_pid: null, connection: 'incompatible', connection_error: 'Update the server' });
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('connection-error')).toHaveTextContent('Update the server'));
+    expect(startLocalStudio).not.toHaveBeenCalled();
+    expect(runtimeApi.runtimeInstances).not.toHaveBeenCalled();
+  });
+
+  it('opens an unauthenticated workspace when the desktop credential vault is unavailable', async () => {
+    vi.mocked(studioStatus).mockResolvedValue({ config: { mode: 'local', remote_url: 'http://127.0.0.1:8090', local_service_port: 8090 },
+      service_url: 'http://127.0.0.1:8090', reachable: true, managed_pid: null });
+    vi.mocked(studioCredential).mockRejectedValueOnce('credential vault unavailable');
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    expect(screen.getByTestId('connection-error')).toHaveTextContent('');
+  });
+
+  it('recovers from a native startup failure without restarting the desktop app', async () => {
+    const offline = { config: { mode: 'local' as const, remote_url: 'http://127.0.0.1:8090', local_service_port: 8090 },
+      service_url: 'http://127.0.0.1:8090', reachable: false, managed_pid: null };
+    const online = { ...offline, reachable: true, managed_pid: 1234 };
+    vi.mocked(studioStatus).mockResolvedValueOnce(offline).mockResolvedValueOnce(offline).mockResolvedValueOnce(online);
+    vi.mocked(startLocalStudio).mockRejectedValueOnce('The Anthropic API port 8091 is already in use.').mockResolvedValueOnce(online);
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('connection-error')).toHaveTextContent('Anthropic API port 8091'));
+    const calls = vi.mocked(startLocalStudio).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    expect(screen.getByTestId('connection-error')).toHaveTextContent('');
+    expect(startLocalStudio).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it('still requires API authentication when the desktop credential vault is unavailable', async () => {
+    vi.mocked(studioStatus).mockResolvedValue({ config: { mode: 'local', remote_url: 'http://127.0.0.1:8090', local_service_port: 8090 },
+      service_url: 'http://127.0.0.1:8090', reachable: true, managed_pid: null });
+    vi.mocked(studioCredential).mockRejectedValueOnce('credential vault unavailable');
+    vi.mocked(runtimeApi.runtimeInstances).mockRejectedValueOnce(new ApiError(401, {
+      error: { code: 'unauthorized', message: 'invalid API credential', retryable: false, details: {} },
+    }));
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(capturedRuntime.authenticationRequired).toBe(true));
+    expect(screen.getByTestId('ready')).toHaveTextContent('false');
+  });
+
+  it('点击立即请求 ctx 重载并持有状态直到服务完成', async () => {
+    let finish!: (status: JobResource) => void;
+    const reload = vi.spyOn(runtimeApi, 'configureContext').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload model' }));
+    expect(reload).toHaveBeenCalledExactlyOnceWith(8192, 'instance-a', undefined, undefined, undefined, undefined);
+    expect(screen.getByTestId('reloading')).toHaveTextContent('"instance-a":8192');
+    await act(async () => { finish({ ...activeJob, id: 'context-reload', kind: 'runtime.context' }); });
+    await waitFor(() => expect(screen.getByTestId('reloading')).toHaveTextContent('{}'));
+  });
+
+  it('does not import late jobs from the previous connection', async () => {
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    const oldAddJob = capturedRuntime.addJob;
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    act(() => oldAddJob({ ...activeJob, status: 'succeeded' }));
+    expect(useJobStore.getState().jobs).toEqual([]);
+    act(() => capturedRuntime.addJob({ ...activeJob, id: 'current-job', status: 'succeeded' }));
+    expect(useJobStore.getState().jobs.map((job) => job.id)).toEqual(['current-job']);
+  });
+
+  it('does not restore deleted history from an older background poll after a fresh runtime refresh', async () => {
+    vi.useFakeTimers();
+    const finished = { ...activeJob, status: 'succeeded' } as JobResource;
+    vi.mocked(jobsApi.jobs).mockResolvedValue([finished]);
+    const view = render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    try {
+      await act(async () => {});
+      expect(capturedRuntime.ready).toBe(true);
+      let resolve!: (jobs: JobResource[]) => void;
+      vi.mocked(jobsApi.jobs).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(resolve).toBeDefined();
+      vi.mocked(jobsApi.jobs).mockResolvedValue([]);
+      await act(async () => { await capturedRuntime.refreshRuntime(); });
+      expect(useJobStore.getState().jobs).toEqual([]);
+      await act(async () => { resolve([finished]); });
+      expect(useJobStore.getState().jobs).toEqual([]);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('keeps refreshing transient instances after a load job ends until runtime cleanup settles', async () => {
+    vi.useFakeTimers();
+    const loading = { id: 'instance-a', model: 'test-model', state: 'loading', devices: [],
+      active_sessions: 0, queued_requests: 0 } as RuntimeInstance;
+    vi.mocked(jobsApi.jobs).mockResolvedValue([activeJob]);
+    vi.mocked(runtimeApi.runtimeInstances).mockResolvedValue([loading]);
+    vi.mocked(runtimeApi.runtimeStatus).mockResolvedValue({ runtime_state: 'loading', model: 'test-model' } as RuntimeStatus);
+    vi.spyOn(jobsApi, 'streamJobEvents').mockImplementation(() => new Promise<void>(() => {}));
+    const view = render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    try {
+      await act(async () => {});
+      expect(capturedRuntime.ready).toBe(true);
+      vi.mocked(jobsApi.jobs).mockResolvedValue([{ ...activeJob, status: 'interrupted' }]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(useJobStore.getState().activeJobIds).toEqual([]);
+      expect(capturedRuntime.runtime?.runtime_state).toBe('loading');
+      const calls = vi.mocked(runtimeApi.runtimeInstances).mock.calls.length;
+      vi.mocked(runtimeApi.runtimeInstances).mockResolvedValue([]);
+      vi.mocked(runtimeApi.runtimeStatus).mockResolvedValue({ runtime_state: 'idle' } as RuntimeStatus);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(runtimeApi.runtimeInstances).toHaveBeenCalledTimes(calls + 1);
+      expect(capturedRuntime.runtime?.runtime_state).toBe('idle');
+      expect(capturedRuntime.instances).toEqual([]);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it.each(['runtime', 'background'])('does not drop a newly accepted job when an older %s snapshot arrives', async (source) => {
+    vi.useFakeTimers();
+    const view = render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    try {
+      await act(async () => {});
+      expect(capturedRuntime.ready).toBe(true);
+      let resolve!: (jobs: JobResource[]) => void;
+      vi.mocked(jobsApi.jobs).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+      let pending: Promise<boolean> | undefined;
+      await act(async () => {
+        if (source === 'runtime') pending = capturedRuntime.refreshRuntime();
+        else await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(resolve).toBeDefined();
+      const accepted = { ...activeJob, id: 'newly-accepted', status: 'succeeded' } as JobResource;
+      act(() => capturedRuntime.addJob(accepted));
+      vi.mocked(jobsApi.jobs).mockResolvedValue([accepted]);
+      await act(async () => { resolve([]); await pending; });
+      expect(useJobStore.getState().jobs.map((job) => job.id)).toEqual(['newly-accepted']);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('clears old ctx reload state without refreshing the new server when the old request completes', async () => {
+    let finish!: (status: JobResource) => void;
+    vi.spyOn(runtimeApi, 'configureContext').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload model' }));
+    expect(screen.getByTestId('reloading')).toHaveTextContent('instance-a');
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    expect(screen.getByTestId('reloading')).toHaveTextContent('{}');
+    const calls = vi.mocked(runtimeApi.runtimeInstances).mock.calls.length;
+    await act(async () => { finish({ ...activeJob, id: 'old-context-reload', kind: 'runtime.context' }); });
+    expect(runtimeApi.runtimeInstances).toHaveBeenCalledTimes(calls);
+  });
+
+  it('刷新恢复不会清除任务流故障，任务收到事件后才恢复', async () => {
+    vi.mocked(jobsApi.jobs).mockResolvedValue([activeJob]);
+    let rejectStream: ((cause: Error) => void) | undefined;
+    let resumedEvent: ((event: JobEventResource) => void) | undefined;
+    vi.spyOn(jobsApi, 'streamJobEvents')
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectStream = reject; }))
+      .mockImplementationOnce((_id, onEvent) => {
+        resumedEvent = onEvent;
+        return new Promise<void>(() => {});
+      });
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(rejectStream).toBeDefined());
+    act(() => rejectStream!(new Error('stream offline')));
+    await waitFor(() => expect(screen.getByTestId('stream-error').textContent).toBe('stream offline'));
+
+    vi.mocked(runtimeApi.runtimeInstances).mockRejectedValueOnce(new Error('refresh offline'));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByTestId('refresh-error').textContent).toBe('refresh offline'));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByTestId('refresh-error').textContent).toBe(''));
+    expect(screen.getByTestId('stream-error').textContent).toBe('stream offline');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry stream' }));
+    await waitFor(() => expect(resumedEvent).toBeDefined());
+    expect(screen.getByTestId('stream-error').textContent).toBe('stream offline');
+    act(() => resumedEvent!({
+      job_id: 'job-1',
+      sequence: 1,
+      type: 'progress',
+      level: 'info',
+      data: {},
+      progress: 50,
+      created_at: '2026-09-23T10:10:00Z',
+    }));
+    await waitFor(() => expect(screen.getByTestId('stream-error').textContent).toBe(''));
+  });
+
+  it.each(['model.load', 'download.modelscope'])('返回窗口后重新同步 %s 的进度并恢复断开的事件流', async (kind) => {
+    const job = { ...activeJob, kind, progress: 0.1, updated_at: '2026-10-03T00:00:00Z' } as JobResource;
+    vi.mocked(jobsApi.jobs).mockResolvedValue([job]);
+    const stream = vi.spyOn(jobsApi, 'streamJobEvents').mockImplementation(() => new Promise<void>(() => {}));
+    render(<RuntimeProvider><RuntimeFixture /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByTestId('ready')).toHaveTextContent('true'));
+    await waitFor(() => expect(stream).toHaveBeenCalledTimes(1));
+    vi.mocked(jobsApi.jobs).mockResolvedValue([{ ...job, progress: 0.7, updated_at: '2026-10-03T00:00:05Z' }]);
+    fireEvent(window, new Event('focus'));
+    await waitFor(() => expect(useJobStore.getState().jobs[0].progress).toBe(0.7));
+    await waitFor(() => expect(stream).toHaveBeenCalledTimes(2));
+    const calls = stream.mock.calls;
+    expect(calls[0][2].aborted).toBe(true);
+    expect(calls[1][2].aborted).toBe(false);
+  });
+});

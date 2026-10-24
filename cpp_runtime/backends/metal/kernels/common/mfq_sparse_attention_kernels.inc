@@ -1,0 +1,2085 @@
+// Shared sparse-attention and architecture-adapter Metal source bundle.
+// Generic operators own reusable selection/attention kernels; model adapters
+// consume only their cache-compression and plan-building programs.
+
+constexpr const char* kFp4Header = R"TI_METAL(
+    METAL_FUNC float mfq_dsa_pow2_ceil(float value) {
+        uint bits = as_type<uint>(value);
+        uint exponent = (bits >> 23u) & 0xffu;
+        bool has_mantissa = (bits & 0x7fffffu) != 0u;
+        return as_type<float>((exponent + uint(has_mantissa)) << 23u);
+    }
+
+    METAL_FUNC float mfq_dsa_fp4(float value, float scale) {
+        float normalized = clamp(value / scale, -6.0f, 6.0f);
+        float magnitude = abs(normalized);
+        float quantized;
+        if (magnitude <= 0.25f) {
+            quantized = 0.0f;
+        } else if (magnitude < 0.75f) {
+            quantized = 0.5f;
+        } else if (magnitude <= 1.25f) {
+            quantized = 1.0f;
+        } else if (magnitude < 1.75f) {
+            quantized = 1.5f;
+        } else if (magnitude <= 2.5f) {
+            quantized = 2.0f;
+        } else if (magnitude < 3.5f) {
+            quantized = 3.0f;
+        } else if (magnitude <= 5.0f) {
+            quantized = 4.0f;
+        } else {
+            quantized = 6.0f;
+        }
+        return copysign(quantized * scale, normalized);
+    }
+)TI_METAL";
+constexpr const char* kCompressHeader = R"TI_METAL(
+    METAL_FUNC float mfq_dsa_pow2_ceil(float value) {
+        uint bits = as_type<uint>(value);
+        uint exponent = (bits >> 23u) & 0xffu;
+        bool has_mantissa = (bits & 0x7fffffu) != 0u;
+        return as_type<float>((exponent + uint(has_mantissa)) << 23u);
+    }
+
+    METAL_FUNC float mfq_dsa_fp4(float value, float scale) {
+        float normalized = clamp(value / scale, -6.0f, 6.0f);
+        float magnitude = abs(normalized);
+        float quantized;
+        if (magnitude <= 0.25f) {
+            quantized = 0.0f;
+        } else if (magnitude < 0.75f) {
+            quantized = 0.5f;
+        } else if (magnitude <= 1.25f) {
+            quantized = 1.0f;
+        } else if (magnitude < 1.75f) {
+            quantized = 1.5f;
+        } else if (magnitude <= 2.5f) {
+            quantized = 2.0f;
+        } else if (magnitude < 3.5f) {
+            quantized = 3.0f;
+        } else if (magnitude <= 5.0f) {
+            quantized = 4.0f;
+        } else {
+            quantized = 6.0f;
+        }
+        return copysign(quantized * scale, normalized);
+    }
+
+    METAL_FUNC float mfq_dsa_bf16_round(float value) {
+        uint bits = as_type<uint>(value);
+        uint rounding = 0x7fffu + ((bits >> 16u) & 1u);
+        return as_type<float>((bits + rounding) & 0xffff0000u);
+    }
+
+    METAL_FUNC float mfq_dsa_fp8_e4m3(float value, float scale) {
+        float normalized = clamp(value / scale, -448.0f, 448.0f);
+        float magnitude = abs(normalized);
+        float quantized;
+        if (magnitude < 0x1p-6f) {
+            quantized = rint(magnitude * 512.0f) / 512.0f;
+        } else {
+            float exponent = floor(log2(magnitude));
+            float step = exp2(exponent - 3.0f);
+            quantized = min(rint(magnitude / step) * step, 448.0f);
+        }
+        return copysign(quantized * scale, normalized);
+    }
+)TI_METAL";
+
+constexpr const char* kCompressSource = R"TI_METAL(
+    uint row = threadgroup_position_in_grid.x;
+    uint dimension = thread_index_in_threadgroup;
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    if (row >= uint(B * W) || dimension >= uint(HEAD_DIM)) {
+        return;
+    }
+    uint batch = row / uint(W);
+    uint window_index = row - batch * uint(W);
+    constexpr uint OUT_DIM = OVERLAP != 0 ? 2u * uint(HEAD_DIM) : uint(HEAD_DIM);
+    constexpr uint CANDIDATES = OVERLAP != 0 ? 2u * uint(RATIO) : uint(RATIO);
+    threadgroup float compressed[HEAD_DIM];
+    threadgroup float quant_scales[HEAD_DIM / 32];
+    threadgroup float warp_sums[HEAD_DIM / 32];
+    threadgroup float inverse_rms;
+
+    float maximum = -INFINITY;
+    for (uint candidate = 0u; candidate < CANDIDATES; ++candidate) {
+        float score = -INFINITY;
+        if (OVERLAP == 0) {
+            uint index = (
+                ((batch * uint(W) + window_index) * uint(RATIO) + candidate)
+                    * OUT_DIM + dimension
+            );
+            score = float(gate[index])
+                + ape[candidate * OUT_DIM + dimension];
+        } else if (candidate < uint(RATIO)) {
+            if (window_index > 0u) {
+                uint index = (
+                    ((batch * uint(W) + window_index - 1u) * uint(RATIO)
+                        + candidate) * OUT_DIM + dimension
+                );
+                score = float(gate[index])
+                    + ape[candidate * OUT_DIM + dimension];
+            } else if (HAS_PREV != 0) {
+                uint index = (
+                    (batch * uint(RATIO) + candidate) * uint(HEAD_DIM)
+                        + dimension
+                );
+                score = float(prev_gate[index])
+                    + ape[candidate * OUT_DIM + dimension];
+            }
+        } else {
+            uint ratio_index = candidate - uint(RATIO);
+            uint index = (
+                ((batch * uint(W) + window_index) * uint(RATIO)
+                    + ratio_index) * OUT_DIM + uint(HEAD_DIM) + dimension
+            );
+            score = float(gate[index])
+                + ape[ratio_index * OUT_DIM + uint(HEAD_DIM) + dimension];
+        }
+        maximum = max(maximum, score);
+    }
+
+    float weighted = 0.0f;
+    float denominator = 0.0f;
+    for (uint candidate = 0u; candidate < CANDIDATES; ++candidate) {
+        float value = 0.0f;
+        float score = -INFINITY;
+        if (OVERLAP == 0) {
+            uint index = (
+                ((batch * uint(W) + window_index) * uint(RATIO) + candidate)
+                    * OUT_DIM + dimension
+            );
+            value = float(kv[index]);
+            score = float(gate[index])
+                + ape[candidate * OUT_DIM + dimension];
+        } else if (candidate < uint(RATIO)) {
+            if (window_index > 0u) {
+                uint index = (
+                    ((batch * uint(W) + window_index - 1u) * uint(RATIO)
+                        + candidate) * OUT_DIM + dimension
+                );
+                value = float(kv[index]);
+                score = float(gate[index])
+                    + ape[candidate * OUT_DIM + dimension];
+            } else if (HAS_PREV != 0) {
+                uint index = (
+                    (batch * uint(RATIO) + candidate) * uint(HEAD_DIM)
+                        + dimension
+                );
+                value = float(prev_kv[index]);
+                score = float(prev_gate[index])
+                    + ape[candidate * OUT_DIM + dimension];
+            }
+        } else {
+            uint ratio_index = candidate - uint(RATIO);
+            uint index = (
+                ((batch * uint(W) + window_index) * uint(RATIO)
+                    + ratio_index) * OUT_DIM + uint(HEAD_DIM) + dimension
+            );
+            value = float(kv[index]);
+            score = float(gate[index])
+                + ape[ratio_index * OUT_DIM + uint(HEAD_DIM) + dimension];
+        }
+        if (isfinite(score)) {
+            float candidate_weight = exp(score - maximum);
+            weighted += candidate_weight * value;
+            denominator += candidate_weight;
+        }
+    }
+    float value = weighted / denominator;
+    compressed[dimension] = value;
+
+    float square_sum = simd_sum(value * value);
+    if (lane == 0u) {
+        warp_sums[simd_group] = square_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (dimension == 0u) {
+        square_sum = 0.0f;
+        for (uint group = 0u; group < uint(HEAD_DIM / 32); ++group) {
+            square_sum += warp_sums[group];
+        }
+        inverse_rms = rsqrt(
+            square_sum / float(HEAD_DIM) + params[0]
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    compressed[dimension] = mfq_dsa_bf16_round(
+        value * inverse_rms * norm[dimension]
+    );
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    constexpr uint NOPE_DIM = uint(HEAD_DIM) - 64u;
+    if (dimension >= NOPE_DIM && ((dimension - NOPE_DIM) & 1u) == 0u) {
+        uint pair = (dimension - NOPE_DIM) / 2u;
+        int position = positions[row];
+        position = max(0, min(position, TABLE_LEN - 1));
+        float cosine = cos_table[
+            uint(position) * uint(TABLE_STRIDE) + pair
+        ];
+        float sine = sin_table[
+            uint(position) * uint(TABLE_STRIDE) + pair
+        ];
+        float first = compressed[dimension];
+        float second = compressed[dimension + 1u];
+        compressed[dimension] = mfq_dsa_bf16_round(
+            first * cosine - second * sine
+        );
+        compressed[dimension + 1u] = mfq_dsa_bf16_round(
+            second * cosine + first * sine
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (QUANT_MODE == 2) {
+        for (
+            uint half_width = 1u;
+            half_width < uint(HEAD_DIM);
+            half_width <<= 1u
+        ) {
+            if (dimension < uint(HEAD_DIM / 2)) {
+                uint group = dimension / half_width;
+                uint within = dimension - group * half_width;
+                uint first = group * (2u * half_width) + within;
+                uint second = first + half_width;
+                float first_value = compressed[first];
+                float second_value = compressed[second];
+                compressed[first] = first_value + second_value;
+                compressed[second] = first_value - second_value;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        compressed[dimension] = mfq_dsa_bf16_round(
+            compressed[dimension] * rsqrt(float(HEAD_DIM))
+        );
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if ((dimension & 31u) == 0u) {
+            float absolute_maximum = 6.0f * 0x1p-126f;
+            for (uint item = 0u; item < 32u; ++item) {
+                absolute_maximum = max(
+                    absolute_maximum,
+                    abs(compressed[dimension + item])
+                );
+            }
+            quant_scales[dimension / 32u] = mfq_dsa_pow2_ceil(
+                absolute_maximum / 6.0f
+            );
+        }
+    }
+    if (
+        QUANT_MODE == 1
+        && dimension < NOPE_DIM
+        && (dimension & 63u) == 0u
+    ) {
+        float absolute_maximum = 1e-4f;
+        for (uint item = 0u; item < 64u; ++item) {
+            absolute_maximum = max(
+                absolute_maximum,
+                abs(compressed[dimension + item])
+            );
+        }
+        quant_scales[dimension / 64u] = absolute_maximum / 448.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float result = compressed[dimension];
+    if (QUANT_MODE == 1 && dimension < NOPE_DIM) {
+        result = mfq_dsa_fp8_e4m3(
+            result,
+            quant_scales[dimension / 64u]
+        );
+    } else if (QUANT_MODE == 2) {
+        result = mfq_dsa_fp4(
+            result,
+            quant_scales[dimension / 32u]
+        );
+    }
+    out[row * uint(HEAD_DIM) + dimension] = half(
+        mfq_dsa_bf16_round(result)
+    );
+)TI_METAL";
+
+constexpr const char* kDecodePoolStepSource = R"TI_METAL(
+    uint batch = threadgroup_position_in_grid.x;
+    uint dimension = thread_index_in_threadgroup;
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    if (batch >= uint(B) || dimension >= uint(HEAD_DIM)) {
+        return;
+    }
+    constexpr uint OUT_DIM = OVERLAP != 0 ? 2u * uint(HEAD_DIM) : uint(HEAD_DIM);
+    int length = seq_len[batch];
+    bool has_token = length > 0;
+    uint slot = has_token
+        ? uint(length - 1) % uint(RATIO)
+        : 0u;
+
+    for (
+        uint index = dimension;
+        index < uint(RATIO) * OUT_DIM;
+        index += uint(HEAD_DIM)
+    ) {
+        uint state_slot = index / OUT_DIM;
+        uint feature = index - state_slot * OUT_DIM;
+        uint state_index = batch * uint(RATIO) * OUT_DIM + index;
+        bool update = has_token && state_slot == slot;
+        state_kv_out[state_index] = update
+            ? kv_token[batch * OUT_DIM + feature]
+            : state_kv[state_index];
+        state_gate_out[state_index] = update
+            ? gate_token[batch * OUT_DIM + feature]
+            : state_gate[state_index];
+    }
+    for (
+        uint index = dimension;
+        index < uint(RATIO * HEAD_DIM);
+        index += uint(HEAD_DIM)
+    ) {
+        uint previous_index = batch * uint(RATIO * HEAD_DIM) + index;
+        if (OVERLAP != 0) {
+            prev_kv_out[previous_index] = prev_kv[previous_index];
+            prev_gate_out[previous_index] = prev_gate[previous_index];
+        } else {
+            prev_kv_out[previous_index] = T(0.0f);
+            prev_gate_out[previous_index] = T(0.0f);
+        }
+    }
+    emitted[batch * uint(HEAD_DIM) + dimension] = half(0.0f);
+    if (dimension == 0u) {
+        emit_rows[batch] = -1;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!has_token || slot != uint(RATIO - 1)) {
+        return;
+    }
+    uint output_row = uint(length - 1) / uint(RATIO);
+    if (dimension == 0u) {
+        emit_rows[batch] = int(output_row);
+    }
+
+    threadgroup float compressed[HEAD_DIM];
+    threadgroup float quant_scales[HEAD_DIM / 32];
+    threadgroup float warp_sums[HEAD_DIM / 32];
+    threadgroup float inverse_rms;
+    constexpr uint CANDIDATES = OVERLAP != 0 ? 2u * uint(RATIO) : uint(RATIO);
+    bool have_previous = output_row > 0u;
+    float maximum = -INFINITY;
+    for (uint candidate = 0u; candidate < CANDIDATES; ++candidate) {
+        float score = -INFINITY;
+        if (OVERLAP == 0) {
+            uint index = (
+                (batch * uint(RATIO) + candidate) * OUT_DIM + dimension
+            );
+            score = float(state_gate_out[index])
+                + ape[candidate * OUT_DIM + dimension];
+        } else if (candidate < uint(RATIO)) {
+            if (have_previous) {
+                uint index = (
+                    (batch * uint(RATIO) + candidate) * uint(HEAD_DIM)
+                        + dimension
+                );
+                score = float(prev_gate_out[index])
+                    + ape[candidate * OUT_DIM + dimension];
+            }
+        } else {
+            uint ratio_index = candidate - uint(RATIO);
+            uint index = (
+                (batch * uint(RATIO) + ratio_index) * OUT_DIM
+                    + uint(HEAD_DIM) + dimension
+            );
+            score = float(state_gate_out[index])
+                + ape[ratio_index * OUT_DIM + uint(HEAD_DIM) + dimension];
+        }
+        maximum = max(maximum, score);
+    }
+
+    float weighted = 0.0f;
+    float denominator = 0.0f;
+    for (uint candidate = 0u; candidate < CANDIDATES; ++candidate) {
+        float value = 0.0f;
+        float score = -INFINITY;
+        if (OVERLAP == 0) {
+            uint index = (
+                (batch * uint(RATIO) + candidate) * OUT_DIM + dimension
+            );
+            value = float(state_kv_out[index]);
+            score = float(state_gate_out[index])
+                + ape[candidate * OUT_DIM + dimension];
+        } else if (candidate < uint(RATIO)) {
+            if (have_previous) {
+                uint index = (
+                    (batch * uint(RATIO) + candidate) * uint(HEAD_DIM)
+                        + dimension
+                );
+                value = float(prev_kv_out[index]);
+                score = float(prev_gate_out[index])
+                    + ape[candidate * OUT_DIM + dimension];
+            }
+        } else {
+            uint ratio_index = candidate - uint(RATIO);
+            uint index = (
+                (batch * uint(RATIO) + ratio_index) * OUT_DIM
+                    + uint(HEAD_DIM) + dimension
+            );
+            value = float(state_kv_out[index]);
+            score = float(state_gate_out[index])
+                + ape[ratio_index * OUT_DIM + uint(HEAD_DIM) + dimension];
+        }
+        if (isfinite(score)) {
+            float candidate_weight = exp(score - maximum);
+            weighted += candidate_weight * value;
+            denominator += candidate_weight;
+        }
+    }
+    float value = weighted / denominator;
+    compressed[dimension] = value;
+    float square_sum = simd_sum(value * value);
+    if (lane == 0u) {
+        warp_sums[simd_group] = square_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (dimension == 0u) {
+        square_sum = 0.0f;
+        for (uint group = 0u; group < uint(HEAD_DIM / 32); ++group) {
+            square_sum += warp_sums[group];
+        }
+        inverse_rms = rsqrt(
+            square_sum / float(HEAD_DIM) + params[0]
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    compressed[dimension] = mfq_dsa_bf16_round(
+        value * inverse_rms * norm[dimension]
+    );
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    constexpr uint NOPE_DIM = uint(HEAD_DIM) - 64u;
+    if (dimension >= NOPE_DIM && ((dimension - NOPE_DIM) & 1u) == 0u) {
+        uint pair = (dimension - NOPE_DIM) / 2u;
+        uint table_row = min(output_row, uint(TABLE_LEN - 1));
+        float cosine = cos_table[
+            table_row * uint(TABLE_STRIDE) + pair
+        ];
+        float sine = sin_table[
+            table_row * uint(TABLE_STRIDE) + pair
+        ];
+        float first = compressed[dimension];
+        float second = compressed[dimension + 1u];
+        compressed[dimension] = mfq_dsa_bf16_round(
+            first * cosine - second * sine
+        );
+        compressed[dimension + 1u] = mfq_dsa_bf16_round(
+            second * cosine + first * sine
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (QUANT_MODE == 2) {
+        for (
+            uint half_width = 1u;
+            half_width < uint(HEAD_DIM);
+            half_width <<= 1u
+        ) {
+            if (dimension < uint(HEAD_DIM / 2)) {
+                uint group = dimension / half_width;
+                uint within = dimension - group * half_width;
+                uint first = group * (2u * half_width) + within;
+                uint second = first + half_width;
+                float first_value = compressed[first];
+                float second_value = compressed[second];
+                compressed[first] = first_value + second_value;
+                compressed[second] = first_value - second_value;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        compressed[dimension] = mfq_dsa_bf16_round(
+            compressed[dimension] * rsqrt(float(HEAD_DIM))
+        );
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if ((dimension & 31u) == 0u) {
+            float absolute_maximum = 6.0f * 0x1p-126f;
+            for (uint item = 0u; item < 32u; ++item) {
+                absolute_maximum = max(
+                    absolute_maximum,
+                    abs(compressed[dimension + item])
+                );
+            }
+            quant_scales[dimension / 32u] = mfq_dsa_pow2_ceil(
+                absolute_maximum / 6.0f
+            );
+        }
+    }
+    if (
+        QUANT_MODE == 1
+        && dimension < NOPE_DIM
+        && (dimension & 63u) == 0u
+    ) {
+        float absolute_maximum = 1e-4f;
+        for (uint item = 0u; item < 64u; ++item) {
+            absolute_maximum = max(
+                absolute_maximum,
+                abs(compressed[dimension + item])
+            );
+        }
+        quant_scales[dimension / 64u] = absolute_maximum / 448.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float result = compressed[dimension];
+    if (QUANT_MODE == 1 && dimension < NOPE_DIM) {
+        result = mfq_dsa_fp8_e4m3(
+            result,
+            quant_scales[dimension / 64u]
+        );
+    } else if (QUANT_MODE == 2) {
+        result = mfq_dsa_fp4(
+            result,
+            quant_scales[dimension / 32u]
+        );
+    }
+    emitted[batch * uint(HEAD_DIM) + dimension] =
+        half(mfq_dsa_bf16_round(result));
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (OVERLAP != 0) {
+        for (uint ratio_index = 0u; ratio_index < uint(RATIO); ++ratio_index) {
+            uint state_index = (
+                (batch * uint(RATIO) + ratio_index) * OUT_DIM + dimension
+            );
+            uint previous_index = (
+                (batch * uint(RATIO) + ratio_index) * uint(HEAD_DIM)
+                    + dimension
+            );
+            prev_kv_out[previous_index] = state_kv_out[state_index];
+            prev_gate_out[previous_index] = state_gate_out[state_index];
+        }
+    }
+)TI_METAL";
+
+constexpr const char* kFp4SimSource = R"TI_METAL(
+    uint lane = thread_index_in_simdgroup;
+    uint group = threadgroup_position_in_grid.x;
+    uint offset = group * 32u + lane;
+    float value = float(x[offset]);
+    float maximum = simd_max(abs(value));
+    float scale = mfq_dsa_pow2_ceil(
+        max(maximum, 6.0f * 0x1p-126f) / 6.0f
+    );
+    out[offset] = half(mfq_dsa_fp4(value, scale));
+)TI_METAL";
+
+constexpr const char* kIndexerScoresSource = R"TI_METAL(
+    const int B = q_shape[0];
+    const int M = q_shape[1];
+    const int K = k_shape[1];
+    const int KEY_TILES = (K + 63) / 64;
+    constexpr uint HEADS = uint(INDEX_HEADS);
+    constexpr uint DIM = 128u;
+    constexpr uint KEY_TILE = 64u;
+
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint local_thread = thread_index_in_threadgroup;
+    uint workgroup = threadgroup_position_in_grid.x;
+    uint key_tile_index = workgroup % uint(KEY_TILES);
+    uint query_row = workgroup / uint(KEY_TILES);
+    uint query = query_row % uint(M);
+    uint batch = query_row / uint(M);
+    if (batch >= uint(B)) {
+        return;
+    }
+    uint key_base = key_tile_index * KEY_TILE;
+
+    threadgroup half key_tile[DIM * KEY_TILE];
+    threadgroup float score_tile[32u * KEY_TILE];
+    threadgroup float weighted_sum[KEY_TILE];
+    for (
+        uint index = local_thread;
+        index < DIM * KEY_TILE;
+        index += 256u
+    ) {
+        uint dimension = index / KEY_TILE;
+        uint local_key = index - dimension * KEY_TILE;
+        uint key_index = key_base + local_key;
+        key_tile[index] = key_index < uint(K)
+            ? half(float(k[
+                  (batch * uint(K) + key_index) * DIM + dimension]))
+            : half(0.0f);
+    }
+    if (local_thread < KEY_TILE) {
+        weighted_sum[local_thread] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint quadrant = lane / 4u;
+    uint fragment_row = (quadrant & 4u) + ((lane / 2u) & 3u);
+    uint fragment_col = (quadrant & 2u) * 2u + (lane & 1u) * 2u;
+    uint local_key_base = (simd_group & 3u) * 16u;
+    for (uint head_pass = 0u; head_pass < HEADS / 32u; ++head_pass) {
+        uint head_base = head_pass * 32u + (simd_group / 4u) * 16u;
+        metal::simdgroup_matrix<float, 8, 8> c00;
+        metal::simdgroup_matrix<float, 8, 8> c01;
+        metal::simdgroup_matrix<float, 8, 8> c10;
+        metal::simdgroup_matrix<float, 8, 8> c11;
+        c00.thread_elements()[0] = 0.0f;
+        c00.thread_elements()[1] = 0.0f;
+        c01.thread_elements()[0] = 0.0f;
+        c01.thread_elements()[1] = 0.0f;
+        c10.thread_elements()[0] = 0.0f;
+        c10.thread_elements()[1] = 0.0f;
+        c11.thread_elements()[0] = 0.0f;
+        c11.thread_elements()[1] = 0.0f;
+        uint q_base = (batch * uint(M) + query) * HEADS * DIM;
+        for (uint dimension = 0u; dimension < DIM; dimension += 8u) {
+            metal::simdgroup_matrix<half, 8, 8> a0;
+            metal::simdgroup_matrix<half, 8, 8> a1;
+            metal::simdgroup_matrix<half, 8, 8> b0;
+            metal::simdgroup_matrix<half, 8, 8> b1;
+            a0.thread_elements()[0] = half(float(q[
+                q_base + (head_base + fragment_row) * DIM
+                    + dimension + fragment_col
+            ]));
+            a0.thread_elements()[1] = half(float(q[
+                q_base + (head_base + fragment_row) * DIM
+                    + dimension + fragment_col + 1u
+            ]));
+            a1.thread_elements()[0] = half(float(q[
+                q_base + (head_base + 8u + fragment_row) * DIM
+                    + dimension + fragment_col
+            ]));
+            a1.thread_elements()[1] = half(float(q[
+                q_base + (head_base + 8u + fragment_row) * DIM
+                    + dimension + fragment_col + 1u
+            ]));
+            b0.thread_elements()[0] = key_tile[
+                (dimension + fragment_row) * KEY_TILE
+                    + local_key_base + fragment_col
+            ];
+            b0.thread_elements()[1] = key_tile[
+                (dimension + fragment_row) * KEY_TILE
+                    + local_key_base + fragment_col + 1u
+            ];
+            b1.thread_elements()[0] = key_tile[
+                (dimension + fragment_row) * KEY_TILE
+                    + local_key_base + 8u + fragment_col
+            ];
+            b1.thread_elements()[1] = key_tile[
+                (dimension + fragment_row) * KEY_TILE
+                    + local_key_base + 8u + fragment_col + 1u
+            ];
+            simdgroup_multiply_accumulate(c00, a0, b0, c00);
+            simdgroup_multiply_accumulate(c01, a0, b1, c01);
+            simdgroup_multiply_accumulate(c10, a1, b0, c10);
+            simdgroup_multiply_accumulate(c11, a1, b1, c11);
+        }
+
+        uint local_head0 = (simd_group / 4u) * 16u + fragment_row;
+        uint local_head1 = local_head0 + 8u;
+        uint key0 = local_key_base + fragment_col;
+        uint key1 = key0 + 8u;
+        score_tile[local_head0 * KEY_TILE + key0] =
+            c00.thread_elements()[0];
+        score_tile[local_head0 * KEY_TILE + key0 + 1u] =
+            c00.thread_elements()[1];
+        score_tile[local_head0 * KEY_TILE + key1] =
+            c01.thread_elements()[0];
+        score_tile[local_head0 * KEY_TILE + key1 + 1u] =
+            c01.thread_elements()[1];
+        score_tile[local_head1 * KEY_TILE + key0] =
+            c10.thread_elements()[0];
+        score_tile[local_head1 * KEY_TILE + key0 + 1u] =
+            c10.thread_elements()[1];
+        score_tile[local_head1 * KEY_TILE + key1] =
+            c11.thread_elements()[0];
+        score_tile[local_head1 * KEY_TILE + key1 + 1u] =
+            c11.thread_elements()[1];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (local_thread < KEY_TILE) {
+            float sum = 0.0f;
+            uint weight_base = (batch * uint(M) + query) * HEADS;
+            for (uint local_head = 0u; local_head < 32u; ++local_head) {
+                float dot = score_tile[local_head * KEY_TILE + local_thread];
+                sum += max(dot, 0.0f)
+                    * float(weights[
+                        weight_base + head_pass * 32u + local_head
+                    ]);
+            }
+            weighted_sum[local_thread] += sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (local_thread < KEY_TILE) {
+        uint key_index = key_base + local_thread;
+        if (key_index < uint(K)) {
+            uint visible = min(
+                uint(K),
+                (uint(decode_params[0]) + query + 1u) /
+                    uint(decode_params[1])
+            );
+            out[(batch * uint(M) + query) * uint(K) + key_index] =
+                key_index < visible
+                ? weighted_sum[local_thread] * params[0]
+                : -INFINITY;
+        }
+    }
+)TI_METAL";
+
+constexpr const char* kIndexerDecodeScoresSource = R"TI_METAL(
+    constexpr uint HEADS = uint(INDEX_HEADS);
+    constexpr uint DIM = 128u;
+    constexpr uint HEADS_PER_TILE = 8u;
+    constexpr uint KEYS_PER_SIMD = 8u;
+    constexpr uint SIMD_GROUPS = 8u;
+    constexpr uint KEYS_PER_GROUP = KEYS_PER_SIMD * SIMD_GROUPS;
+    constexpr uint DIM8 = DIM / 8u;
+    constexpr uint DIM16 = DIM / 16u;
+
+    uint local_thread = thread_index_in_threadgroup;
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint workgroup = threadgroup_position_in_grid.x;
+    uint key_tiles = uint(decode_params[4]);
+    uint key_tile = workgroup % key_tiles;
+    uint batch = workgroup / key_tiles;
+    if (batch >= uint(B)) {
+        return;
+    }
+
+    uint first_group_key = key_tile * KEYS_PER_GROUP;
+    uint first_simd_key = first_group_key + simd_group * KEYS_PER_SIMD;
+
+    // This is the same layout used by llama.cpp's fused Lightning Indexer:
+    // stage 64 K rows once, then keep one transposed 128x8 K tile resident in
+    // each SIMDgroup while all 64 query heads pass over it.
+    threadgroup half4x4 key_blocks[KEYS_PER_GROUP * DIM16];
+    threadgroup half* key_shared =
+        reinterpret_cast<threadgroup half*>(key_blocks);
+    for (
+        uint index = local_thread;
+        index < KEYS_PER_GROUP * DIM16;
+        index += uint(THREADS)
+    ) {
+        uint local_key = index / DIM16;
+        uint block = index - local_key * DIM16;
+        uint key_index = first_group_key + local_key;
+        half4x4 value;
+        if (key_index < uint(decode_params[2])) {
+#if TYLOINFER_INDEXER_INPUT_BF16
+            uint value_base =
+                (batch * uint(decode_params[3]) + key_index) * DIM
+                + block * 16u;
+            for (uint column = 0u; column < 4u; ++column) {
+                uint offset = value_base + column * 4u;
+                value[column] = half4(
+                    half(float(k[offset])),
+                    half(float(k[offset + 1u])),
+                    half(float(k[offset + 2u])),
+                    half(float(k[offset + 3u])));
+            }
+#else
+            const device half4x4* row =
+                reinterpret_cast<const device half4x4*>(
+                    k + (batch * uint(decode_params[3]) + key_index) * DIM
+                );
+            value = row[block];
+#endif
+        } else {
+            for (uint column = 0u; column < 4u; ++column) {
+                value[column] = half4(0.0h);
+            }
+        }
+        key_blocks[index] = value;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    metal::simdgroup_matrix<half, 8, 8> key_matrix[DIM8];
+    for (uint block = 0u; block < DIM8; ++block) {
+        simdgroup_load(
+            key_matrix[block],
+            key_shared + simd_group * KEYS_PER_SIMD * DIM + 8u * block,
+            DIM,
+            0,
+            true
+        );
+    }
+
+    threadgroup half4 query4[HEADS_PER_TILE * DIM / 4u];
+    threadgroup half* query_shared =
+        reinterpret_cast<threadgroup half*>(query4);
+    threadgroup float head_weights[HEADS_PER_TILE];
+    threadgroup float score_tile[
+        SIMD_GROUPS * HEADS_PER_TILE * KEYS_PER_SIMD
+    ];
+
+    uint query_base = batch * HEADS * DIM;
+    uint weight_base = batch * HEADS;
+    float score = 0.0f;
+    for (
+        uint head_base = 0u;
+        head_base < HEADS;
+        head_base += HEADS_PER_TILE
+    ) {
+        for (
+            uint index = local_thread;
+            index < HEADS_PER_TILE * DIM / 4u;
+            index += uint(THREADS)
+        ) {
+            uint local_head = index / (DIM / 4u);
+            uint vector_index = index - local_head * (DIM / 4u);
+#if TYLOINFER_INDEXER_INPUT_BF16
+            uint value_base = query_base
+                + (head_base + local_head) * DIM
+                + vector_index * 4u;
+            query4[index] = half4(
+                half(float(q[value_base])),
+                half(float(q[value_base + 1u])),
+                half(float(q[value_base + 2u])),
+                half(float(q[value_base + 3u])));
+#else
+            const device half4* row =
+                reinterpret_cast<const device half4*>(
+                    q + query_base + (head_base + local_head) * DIM
+                );
+            query4[index] = row[vector_index];
+#endif
+        }
+        if (local_thread < HEADS_PER_TILE) {
+            head_weights[local_thread] = float(
+                weights[weight_base + head_base + local_thread]
+            );
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        metal::simdgroup_matrix<float, 8, 8> product(0.0f);
+        for (uint block = 0u; block < DIM8; ++block) {
+            metal::simdgroup_matrix<half, 8, 8> query_matrix;
+            simdgroup_load(
+                query_matrix,
+                query_shared + 8u * block,
+                DIM,
+                0,
+                false
+            );
+            simdgroup_multiply_accumulate(
+                product,
+                query_matrix,
+                key_matrix[block],
+                product
+            );
+        }
+
+        threadgroup float* local_scores =
+            score_tile + simd_group * HEADS_PER_TILE * KEYS_PER_SIMD;
+        simdgroup_store(
+            product,
+            local_scores,
+            KEYS_PER_SIMD,
+            0,
+            false
+        );
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lane < KEYS_PER_SIMD) {
+            for (
+                uint local_head = 0u;
+                local_head < HEADS_PER_TILE;
+                ++local_head
+            ) {
+                score += max(
+                    local_scores[local_head * KEYS_PER_SIMD + lane],
+                    0.0f
+                ) * head_weights[local_head];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (lane < KEYS_PER_SIMD) {
+        uint key_index = first_simd_key + lane;
+        if (key_index < uint(decode_params[2])) {
+            uint visible = min(
+                uint(decode_params[2]),
+                (uint(decode_params[0]) + 1u) /
+                    uint(decode_params[1])
+            );
+            out[batch * uint(decode_params[3]) + key_index] = key_index < visible
+                ? score * params[0]
+                : -INFINITY;
+        }
+    }
+)TI_METAL";
+
+constexpr const char* kTopkHeader = R"TI_METAL(
+    METAL_FUNC uint mfq_dsa_ordered_half(half value) {
+        uint bits = uint(as_type<ushort>(value));
+        return (bits & 0x8000u) != 0u
+            ? ((~bits) & 0xffffu)
+            : (bits | 0x8000u);
+    }
+)TI_METAL";
+
+constexpr const char* kTopkSource = R"TI_METAL(
+    constexpr uint TOPK = 512u;
+    constexpr uint THREADS = 1024u;
+    constexpr uint SIMD_GROUPS = THREADS / 32u;
+    uint row = threadgroup_position_in_grid.x;
+    uint tid = thread_index_in_threadgroup;
+    uint active_k = uint(max(topk_params[0], 0));
+    uint input_base = row * uint(topk_params[1]);
+    uint output_base = row * TOPK;
+    if (active_k <= TOPK) {
+        for (uint index = tid; index < TOPK; index += THREADS) {
+            out[output_base + index] = index < active_k ? int(index) : 0;
+        }
+        return;
+    }
+
+    threadgroup atomic_uint histogram[256];
+    threadgroup atomic_uint counters[2];
+    threadgroup uint state[4];
+    if (tid < 256u) {
+        atomic_store_explicit(
+            &histogram[tid], 0u, memory_order_relaxed
+        );
+    }
+    if (tid < 2u) {
+        atomic_store_explicit(
+            &counters[tid], 0u, memory_order_relaxed
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint index = tid; index < active_k; index += THREADS) {
+        uint key = mfq_dsa_ordered_half(x[input_base + index]);
+        atomic_fetch_add_explicit(
+            &histogram[key >> 8u], 1u, memory_order_relaxed
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        uint greater = 0u;
+        uint threshold_high = 0u;
+        for (int high = 255; high >= 0; --high) {
+            uint count = atomic_load_explicit(
+                &histogram[uint(high)], memory_order_relaxed
+            );
+            if (greater + count >= TOPK) {
+                threshold_high = uint(high);
+                break;
+            }
+            greater += count;
+        }
+        state[0] = threshold_high;
+        state[1] = greater;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid < 256u) {
+        atomic_store_explicit(
+            &histogram[tid], 0u, memory_order_relaxed
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint threshold_high = state[0];
+    for (uint index = tid; index < active_k; index += THREADS) {
+        uint key = mfq_dsa_ordered_half(x[input_base + index]);
+        if ((key >> 8u) == threshold_high) {
+            atomic_fetch_add_explicit(
+                &histogram[key & 0xffu], 1u, memory_order_relaxed
+            );
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        uint greater = state[1];
+        uint threshold_low = 0u;
+        for (int low = 255; low >= 0; --low) {
+            uint count = atomic_load_explicit(
+                &histogram[uint(low)], memory_order_relaxed
+            );
+            if (greater + count >= TOPK) {
+                threshold_low = uint(low);
+                break;
+            }
+            greater += count;
+        }
+        state[2] = (threshold_high << 8u) | threshold_low;
+        state[3] = greater;
+        atomic_store_explicit(
+            &counters[0], 0u, memory_order_relaxed
+        );
+        atomic_store_explicit(
+            &counters[1], greater, memory_order_relaxed
+        );
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint threshold = state[2];
+    if (DETERMINISTIC == 0) {
+        for (uint base = 0u; base < active_k; base += THREADS) {
+            uint index = base + tid;
+            if (index < active_k) {
+                uint key = mfq_dsa_ordered_half(x[input_base + index]);
+                if (key > threshold) {
+                    uint position = atomic_fetch_add_explicit(
+                        &counters[0], 1u, memory_order_relaxed
+                    );
+                    if (position < TOPK) {
+                        out[output_base + position] = int(index);
+                    }
+                } else if (key == threshold) {
+                    uint position = atomic_fetch_add_explicit(
+                        &counters[1], 1u, memory_order_relaxed
+                    );
+                    if (position < TOPK) {
+                        out[output_base + position] = int(index);
+                    }
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        return;
+    }
+
+    threadgroup uint greater_partials[SIMD_GROUPS];
+    threadgroup uint tie_partials[SIMD_GROUPS];
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint lane = thread_index_in_simdgroup;
+    uint segment = (active_k + THREADS - 1u) / THREADS;
+    uint segment_begin = tid * segment;
+    uint segment_end = min(segment_begin + segment, active_k);
+    uint local_greater = 0u;
+    uint local_ties = 0u;
+    for (uint index = segment_begin; index < segment_end; ++index) {
+        uint key = mfq_dsa_ordered_half(x[input_base + index]);
+        local_greater += key > threshold ? 1u : 0u;
+        local_ties += key == threshold ? 1u : 0u;
+    }
+    uint prefix_greater =
+        metal::simd_prefix_exclusive_sum(local_greater);
+    uint prefix_ties =
+        metal::simd_prefix_exclusive_sum(local_ties);
+    if (lane == 31u) {
+        greater_partials[simd_group] =
+            prefix_greater + local_greater;
+        tie_partials[simd_group] = prefix_ties + local_ties;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd_group == 0u) {
+        uint group_greater =
+            lane < SIMD_GROUPS ? greater_partials[lane] : 0u;
+        uint group_ties =
+            lane < SIMD_GROUPS ? tie_partials[lane] : 0u;
+        uint group_greater_prefix =
+            metal::simd_prefix_exclusive_sum(group_greater);
+        uint group_tie_prefix =
+            metal::simd_prefix_exclusive_sum(group_ties);
+        if (lane < SIMD_GROUPS) {
+            greater_partials[lane] = group_greater_prefix;
+            tie_partials[lane] = group_tie_prefix;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint greater_position =
+        greater_partials[simd_group] + prefix_greater;
+    uint tie_position =
+        state[3] + tie_partials[simd_group] + prefix_ties;
+    for (uint index = segment_begin; index < segment_end; ++index) {
+        uint key = mfq_dsa_ordered_half(x[input_base + index]);
+        if (key > threshold) {
+            out[output_base + greater_position++] = int(index);
+        } else if (key == threshold) {
+            if (tie_position < TOPK) {
+                out[output_base + tie_position] = int(index);
+            }
+            tie_position++;
+        }
+    }
+)TI_METAL";
+
+constexpr const char* kSparseIndexerTopkSource = R"TI_METAL(
+    const uint tid = thread_index_in_threadgroup;
+    const uint lane = thread_index_in_simdgroup;
+    const uint sg = simdgroup_index_in_threadgroup;
+    const uint row = threadgroup_position_in_grid.x;
+    const uint width = uint(params[2]), rows = uint(params[3]);
+    const uint query = row % rows;
+    const uint active = min(width, uint((params[0] + int(query) + 1) / params[1]));
+    if (active <= 512u) {
+        out[row * 512u + tid] = int(tid);
+        out[row * 512u + tid + 256u] = int(tid + 256u);
+        return;
+    }
+    threadgroup atomic_uint hist[256];
+    threadgroup uint mins[8], maxs[8], counts[8], ties[8], state[3];
+    uint values[ITEMS];
+    for (uint item = 0; item < uint(ITEMS); ++item) {
+        const uint index = tid * uint(ITEMS) + item;
+        float score = 0.0f;
+        if (index < active) {
+            for (uint head = 0; head < uint(HEADS); ++head)
+                score += max(scores[(ulong(row) * uint(HEADS) + head) * width + index], 0.0f);
+        }
+        values[item] = index < active ? as_type<uint>(score) : 0xffffffffu;
+    }
+    if (tid == 0) { state[0] = 0; state[1] = 0x7f800000u; state[2] = 512; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (;;) {
+        uint lo = 0xffffffffu, hi = 0;
+        for (uint item = 0; item < uint(ITEMS); ++item) {
+            uint key = values[item];
+            if (key >= state[0] && key <= state[1]) { lo = min(lo, key); hi = max(hi, key); }
+        }
+        lo = simd_min(lo); hi = simd_max(hi);
+        if (lane == 0) { mins[sg] = lo; maxs[sg] = hi; }
+        atomic_store_explicit(&hist[tid], 0u, memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sg == 0) {
+            uint a = lane < 8 ? mins[lane] : 0xffffffffu;
+            uint b = lane < 8 ? maxs[lane] : 0;
+            a = simd_min(a); b = simd_max(b);
+            if (lane == 0) { state[0] = a; state[1] = b; }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (state[0] == state[1]) break;
+        const uint shift = uint(max(0, 24 - int(clz(state[0] ^ state[1]))));
+        for (uint item = 0; item < uint(ITEMS); ++item) {
+            uint key = values[item];
+            if (key >= state[0] && key <= state[1])
+                atomic_fetch_add_explicit(&hist[(key >> shift) & 255u], 1u, memory_order_relaxed);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint count = atomic_load_explicit(&hist[255u - tid], memory_order_relaxed);
+        uint prefix = simd_prefix_inclusive_sum(count);
+        if (lane == 31) counts[sg] = prefix;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint group = 0; group < sg; ++group) prefix += counts[group];
+        uint rank = state[2];
+        uint base = shift == 24 ? 0u : state[0] & (0xffffffffu << (shift + 8));
+        uint next_lo = base | ((255u - tid) << shift);
+        uint next_hi = next_lo | ((1u << shift) - 1u);
+        bool selected = rank > prefix - count && rank <= prefix;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (selected) { state[0] = next_lo; state[1] = next_hi; state[2] = rank - (prefix - count); }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const uint threshold = state[0];
+    const uint wanted_ties = state[2];
+    uint n_ties = 0;
+    for (uint item = 0; item < uint(ITEMS); ++item) n_ties += uint(values[item] == threshold);
+    uint tie_prefix = simd_prefix_exclusive_sum(n_ties);
+    if (lane == 31) ties[sg] = tie_prefix + n_ties;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint group = 0; group < sg; ++group) tie_prefix += ties[group];
+    uint discarded_ties = 0;
+    for (uint group = 0; group < 8; ++group) discarded_ties += ties[group];
+    discarded_ties -= wanted_ties;
+    bool selected[ITEMS];
+    uint selected_count = 0;
+    for (uint item = 0; item < uint(ITEMS); ++item) {
+        bool equal = values[item] == threshold;
+        selected[item] = values[item] != 0xffffffffu &&
+            (values[item] > threshold || (equal && tie_prefix >= discarded_ties));
+        tie_prefix += uint(equal);
+        selected_count += uint(selected[item]);
+    }
+    uint output = simd_prefix_exclusive_sum(selected_count);
+    if (lane == 31) counts[sg] = output + selected_count;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint group = 0; group < sg; ++group) output += counts[group];
+    for (uint item = 0; item < uint(ITEMS); ++item) if (selected[item])
+        out[row * 512u + output++] = int(tid * uint(ITEMS) + item);
+)TI_METAL";
+
+// DeepSelect-inspired exact top-512 for FP32 score tensors.
+//
+// The CUDA DeepSelect implementation keeps a moving threshold and only
+// re-selects a compact candidate set.  Metal has no portable equivalent of
+// CUDA thread-block clusters, so each score row is owned by one threadgroup:
+// blocks are visited through a coprime permutation, scores above the current
+// threshold are compacted, and an exact radix selection raises the threshold
+// whenever the bounded candidate arena fills.  Every score is read once from
+// device memory; all repeated selection work stays in threadgroup memory.
+constexpr const char* kDeepSelectTopkHeader = R"TI_METAL(
+    #define TYLOINFER_DEEPSELECT_TOPK 512u
+    #define TYLOINFER_DEEPSELECT_THREADS 1024u
+    #define TYLOINFER_DEEPSELECT_SIMD_GROUPS 32u
+    #define TYLOINFER_DEEPSELECT_CANDIDATES 3840u
+
+    METAL_FUNC uint mfq_deepselect_ordered_float(float value) {
+        value = isnan(value) ? -INFINITY : value;
+        uint bits = as_type<uint>(value);
+        return (bits & 0x80000000u) != 0u
+            ? ~bits
+            : (bits ^ 0x80000000u);
+    }
+
+    METAL_FUNC uint mfq_deepselect_gcd(uint left, uint right) {
+        while (right != 0u) {
+            uint remainder = left % right;
+            left = right;
+            right = remainder;
+        }
+        return left;
+    }
+
+    METAL_FUNC void mfq_deepselect_compact_topk(
+        threadgroup uint* candidate_keys,
+        threadgroup uint* candidate_indices,
+        threadgroup atomic_uint* histogram,
+        threadgroup uint* greater_partials,
+        threadgroup uint* tie_partials,
+        threadgroup uint* state,
+        uint tid,
+        uint simd_group,
+        uint lane) {
+        const uint candidate_count = state[0];
+        if (tid == 0u) {
+            state[2] = 0u;
+            state[3] = TYLOINFER_DEEPSELECT_TOPK;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Resolve the exact FP32 threshold one byte at a time.  The arena is
+        // at most 3.75K entries, so these scans hit threadgroup memory rather
+        // than rereading the full score row.
+        for (uint pass = 0u; pass < 4u; ++pass) {
+            if (tid < 256u) {
+                atomic_store_explicit(
+                    &histogram[tid], 0u, memory_order_relaxed);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            const uint shift = 24u - pass * 8u;
+            const uint prefix = state[2];
+            for (uint slot = tid;
+                 slot < candidate_count;
+                 slot += TYLOINFER_DEEPSELECT_THREADS) {
+                const uint key = candidate_keys[slot];
+                const bool prefix_match = pass == 0u
+                    ? true
+                    : (key >> (shift + 8u)) == prefix;
+                if (prefix_match) {
+                    atomic_fetch_add_explicit(
+                        &histogram[(key >> shift) & 0xffu],
+                        1u,
+                        memory_order_relaxed);
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (tid == 0u) {
+                uint rank = state[3];
+                uint selected = 0u;
+                for (int bucket = 255; bucket >= 0; --bucket) {
+                    const uint count = atomic_load_explicit(
+                        &histogram[uint(bucket)],
+                        memory_order_relaxed);
+                    if (rank <= count) {
+                        selected = uint(bucket);
+                        break;
+                    }
+                    rank -= count;
+                }
+                state[2] = (state[2] << 8u) | selected;
+                state[3] = rank;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        const uint threshold = state[2];
+        const uint ties_needed = state[3];
+        uint local_keys[4];
+        uint local_indices[4];
+        bool local_greater_flags[4];
+        bool local_tie_flags[4];
+        uint local_greater = 0u;
+        uint local_ties = 0u;
+        for (uint item = 0u; item < 4u; ++item) {
+            const uint slot = tid + item * TYLOINFER_DEEPSELECT_THREADS;
+            const bool active = slot < candidate_count;
+            const uint key = active ? candidate_keys[slot] : 0u;
+            local_keys[item] = key;
+            local_indices[item] = active ? candidate_indices[slot] : 0u;
+            local_greater_flags[item] = active && key > threshold;
+            local_tie_flags[item] = active && key == threshold;
+            local_greater += uint(local_greater_flags[item]);
+            local_ties += uint(local_tie_flags[item]);
+        }
+
+        const uint prefix_greater =
+            metal::simd_prefix_exclusive_sum(local_greater);
+        const uint prefix_ties =
+            metal::simd_prefix_exclusive_sum(local_ties);
+        if (lane == 31u) {
+            greater_partials[simd_group] =
+                prefix_greater + local_greater;
+            tie_partials[simd_group] = prefix_ties + local_ties;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group == 0u) {
+            const uint group_greater = lane < TYLOINFER_DEEPSELECT_SIMD_GROUPS
+                ? greater_partials[lane]
+                : 0u;
+            const uint group_ties = lane < TYLOINFER_DEEPSELECT_SIMD_GROUPS
+                ? tie_partials[lane]
+                : 0u;
+            const uint group_greater_prefix =
+                metal::simd_prefix_exclusive_sum(group_greater);
+            const uint group_tie_prefix =
+                metal::simd_prefix_exclusive_sum(group_ties);
+            if (lane < TYLOINFER_DEEPSELECT_SIMD_GROUPS) {
+                greater_partials[lane] = group_greater_prefix;
+                tie_partials[lane] = group_tie_prefix;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint greater_position =
+            greater_partials[simd_group] + prefix_greater;
+        uint tie_position = tie_partials[simd_group] + prefix_ties;
+        const uint greater_count = TYLOINFER_DEEPSELECT_TOPK - ties_needed;
+        for (uint item = 0u; item < 4u; ++item) {
+            if (local_greater_flags[item]) {
+                candidate_keys[greater_position] = local_keys[item];
+                candidate_indices[greater_position] = local_indices[item];
+                ++greater_position;
+            } else if (
+                local_tie_flags[item] && tie_position < ties_needed) {
+                const uint output_position = greater_count + tie_position;
+                candidate_keys[output_position] = local_keys[item];
+                candidate_indices[output_position] = local_indices[item];
+                ++tie_position;
+            } else if (local_tie_flags[item]) {
+                ++tie_position;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            state[0] = TYLOINFER_DEEPSELECT_TOPK;
+            state[1] = threshold;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+)TI_METAL";
+
+constexpr const char* kDeepSelectTopkSource = R"TI_METAL(
+    const uint row = threadgroup_position_in_grid.x;
+    const uint tid = thread_index_in_threadgroup;
+    const uint simd_group = simdgroup_index_in_threadgroup;
+    const uint lane = thread_index_in_simdgroup;
+    const uint width = uint(topk_params[0]);
+    const uint input_base = row * width;
+    const uint output_base = row * TYLOINFER_DEEPSELECT_TOPK;
+    const uint active = min(
+        uint(max(valid_keys[row], 0)),
+        width);
+    if (active <= TYLOINFER_DEEPSELECT_TOPK) {
+        for (uint index = tid;
+             index < TYLOINFER_DEEPSELECT_TOPK;
+             index += TYLOINFER_DEEPSELECT_THREADS) {
+            out[output_base + index] =
+                index < active ? int(index) : int(active);
+        }
+        return;
+    }
+
+    threadgroup uint candidate_keys[TYLOINFER_DEEPSELECT_CANDIDATES];
+    threadgroup uint candidate_indices[TYLOINFER_DEEPSELECT_CANDIDATES];
+    threadgroup atomic_uint histogram[256];
+    threadgroup uint group_counts[TYLOINFER_DEEPSELECT_SIMD_GROUPS];
+    threadgroup uint greater_partials[TYLOINFER_DEEPSELECT_SIMD_GROUPS];
+    threadgroup uint tie_partials[TYLOINFER_DEEPSELECT_SIMD_GROUPS];
+    // candidate count, ordered threshold, radix prefix/rank, append base and
+    // total, block stride/start.
+    threadgroup uint state[8];
+    if (tid == 0u) {
+        state[0] = 0u;
+        state[1] = 0u;
+        const uint blocks =
+            (active + TYLOINFER_DEEPSELECT_THREADS - 1u) / TYLOINFER_DEEPSELECT_THREADS;
+        uint stride = blocks == 1u
+            ? 1u
+            : 1u + (0x9e3779b9u % (blocks - 1u));
+        while (mfq_deepselect_gcd(stride, blocks) != 1u) {
+            ++stride;
+            if (stride >= blocks) {
+                stride = 1u;
+            }
+        }
+        state[6] = stride;
+        state[7] = (row * 0x85ebca6bu) % blocks;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint blocks =
+        (active + TYLOINFER_DEEPSELECT_THREADS - 1u) / TYLOINFER_DEEPSELECT_THREADS;
+    for (uint iteration = 0u; iteration < blocks; ++iteration) {
+        if (state[0] >
+            TYLOINFER_DEEPSELECT_CANDIDATES - TYLOINFER_DEEPSELECT_THREADS) {
+            mfq_deepselect_compact_topk(
+                candidate_keys,
+                candidate_indices,
+                histogram,
+                greater_partials,
+                tie_partials,
+                state,
+                tid,
+                simd_group,
+                lane);
+        }
+
+        const uint block = state[7];
+        const uint index = block * TYLOINFER_DEEPSELECT_THREADS + tid;
+        const bool in_range = index < active;
+        const uint key = in_range
+            ? mfq_deepselect_ordered_float(x[input_base + index])
+            : 0u;
+        const bool accepted = in_range && key > state[1];
+        const uint lane_prefix = metal::simd_prefix_exclusive_sum(
+            uint(accepted));
+        if (lane == 31u) {
+            group_counts[simd_group] =
+                lane_prefix + uint(accepted);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_group == 0u) {
+            const uint count = lane < TYLOINFER_DEEPSELECT_SIMD_GROUPS
+                ? group_counts[lane]
+                : 0u;
+            const uint offset = metal::simd_prefix_exclusive_sum(count);
+            if (lane < TYLOINFER_DEEPSELECT_SIMD_GROUPS) {
+                group_counts[lane] = offset;
+            }
+            if (lane == TYLOINFER_DEEPSELECT_SIMD_GROUPS - 1u) {
+                state[4] = state[0];
+                state[5] = offset + count;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (accepted) {
+            const uint slot = state[4]
+                + group_counts[simd_group]
+                + lane_prefix;
+            candidate_keys[slot] = key;
+            candidate_indices[slot] = index;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            state[0] = state[4] + state[5];
+            const uint next_block = state[7] + state[6];
+            state[7] = next_block >= blocks
+                ? next_block - blocks
+                : next_block;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (state[0] > TYLOINFER_DEEPSELECT_TOPK) {
+        mfq_deepselect_compact_topk(
+            candidate_keys,
+            candidate_indices,
+            histogram,
+            greater_partials,
+            tie_partials,
+            state,
+            tid,
+            simd_group,
+            lane);
+    }
+    for (uint position = tid;
+         position < TYLOINFER_DEEPSELECT_TOPK;
+         position += TYLOINFER_DEEPSELECT_THREADS) {
+        out[output_base + position] = int(candidate_indices[position]);
+    }
+)TI_METAL";
+
+
+constexpr const char* kPrefillPlanSource = R"TI_METAL(
+    const int M = topk_shape[1];
+    const int TOPK_COUNT = topk_shape[2];
+    const int SELECTED = ((plan_params[2] + TOPK_COUNT + 31) / 32) * 32;
+    const int TOTAL = topk_shape[0] * M * SELECTED;
+    uint linear = thread_position_in_grid.x;
+    if (linear >= uint(TOTAL)) {
+        return;
+    }
+    uint slot = linear % uint(SELECTED);
+    uint row = linear / uint(SELECTED);
+    uint query = row % uint(M);
+    uint query_offset = uint(plan_params[0]);
+    uint local_history = uint(plan_params[1]);
+    uint local_width = uint(plan_params[2]);
+    uint pool_len = uint(plan_params[3]);
+    uint ratio = uint(plan_params[4]);
+    uint window = uint(plan_params[5]);
+    uint raw_length = local_history + uint(M);
+    int index = 0;
+    bool valid = false;
+    if (slot < local_width) {
+        uint local_end = local_history + query + 1u;
+        uint local_count = min(window, local_end);
+        if (slot < local_count) {
+            index = int(local_end - local_count + slot);
+            valid = true;
+        }
+    } else if (slot < local_width + uint(TOPK_COUNT)) {
+        int pooled = topk[
+            row * uint(TOPK_COUNT) + slot - local_width];
+        uint visible = min(
+            pool_len,
+            (query_offset + query + 1u) / ratio
+        );
+        if (pooled >= 0 && uint(pooled) < visible) {
+            index = int(raw_length) + pooled;
+            valid = true;
+        }
+    }
+    indices[linear] = index;
+    mask[linear] = valid ? half(0.0f) : half(-INFINITY);
+)TI_METAL";
+
+constexpr const char* kVisiblePrefillPlanSource = R"TI_METAL(
+    const int M = topk_shape[1];
+    const int TOPK_COUNT = topk_shape[2];
+    const int SELECTED = ((plan_params[2] + TOPK_COUNT + 31) / 32) * 32;
+    const int TOTAL = topk_shape[0] * M * SELECTED;
+    uint linear = thread_position_in_grid.x;
+    if (linear >= uint(TOTAL)) {
+        return;
+    }
+    uint slot = linear % uint(SELECTED);
+    uint row = linear / uint(SELECTED);
+    uint query = row % uint(M);
+    int query_offset = plan_params[0];
+    int local_history = plan_params[1];
+    int local_width = plan_params[2];
+    int pool_len = plan_params[3];
+    int ratio = plan_params[4];
+    int window = plan_params[5];
+    uint raw_length = uint(local_history + int(M));
+    int index = 0;
+    bool valid = false;
+    if (slot < uint(local_width)) {
+        int absolute_query = query_offset + int(query);
+        int base = query_offset - local_history;
+        int left_count = max(left[row], 0);
+        int right_count = max(right[row], 0);
+        int left_add = max(left_count - (window - 1), 0);
+        int start = max(base, absolute_query - (window - 1) - left_add);
+        int end = min(query_offset + int(M) - 1, absolute_query + right_count);
+        int count = max(end - start + 1, 0);
+        if (int(slot) < count) {
+            index = start - base + int(slot);
+            valid = true;
+        }
+    } else if (slot < uint(local_width + int(TOPK_COUNT))) {
+        int pooled = topk[
+            row * uint(TOPK_COUNT) + slot - uint(local_width)];
+        uint visible = min(
+            uint(pool_len),
+            uint(query_offset + int(query) + 1) / uint(ratio)
+        );
+        if (pooled >= 0 && uint(pooled) < visible) {
+            index = int(raw_length) + pooled;
+            valid = true;
+        }
+    }
+    indices[linear] = index;
+    mask[linear] = valid ? half(0.0f) : half(-INFINITY);
+)TI_METAL";
+
+constexpr const char* kDecodePlanSource = R"TI_METAL(
+    const int TOPK_COUNT = topk_shape[2];
+    const int POOL_LEN = plan_params[0];
+    const int SELECTED = ((WINDOW + TOPK_COUNT + 31) / 32) * 32;
+    const int TOTAL = topk_shape[0] * SELECTED;
+    uint linear = thread_position_in_grid.x;
+    if (linear >= uint(TOTAL)) {
+        return;
+    }
+    uint slot = linear % uint(SELECTED);
+    uint batch = linear / uint(SELECTED);
+    int length = max(seq_len[batch], 0);
+    int index = 0;
+    bool valid = false;
+    if (slot < uint(WINDOW)) {
+        int local_count = min(length, int(WINDOW));
+        if (int(slot) < local_count) {
+            int absolute = length - local_count + int(slot);
+            index = absolute % int(WINDOW);
+            valid = true;
+        }
+    } else if (slot < uint(WINDOW + TOPK_COUNT)) {
+        int pooled = topk[
+            batch * uint(TOPK_COUNT) + slot - uint(WINDOW)
+        ];
+        int visible = min(length / int(RATIO), int(POOL_LEN));
+        if (pooled >= 0 && pooled < visible) {
+            index = int(WINDOW) + pooled;
+            valid = true;
+        }
+    }
+    indices[linear] = index;
+    mask[linear] = valid ? half(0.0f) : half(-INFINITY);
+)TI_METAL";
+
+constexpr const char* kSparseAttentionSource = R"TI_METAL(
+    const int B = q_shape[0];
+    const int M = q_shape[2];
+    const int MAX_SEQ = kv_shape[1];
+    const int SELECTED = indices_shape[2];
+    constexpr uint HEADS = 64u;
+    constexpr uint DIM = 512u;
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint local_thread = thread_index_in_threadgroup;
+    uint workgroup = threadgroup_position_in_grid.x;
+    uint head = workgroup % HEADS;
+    uint query_row = workgroup / HEADS;
+    uint query = query_row % uint(M);
+    uint batch = query_row / uint(M);
+    if (batch >= uint(B)) {
+        return;
+    }
+
+    threadgroup float partials[8];
+    threadgroup float state[4];
+    if (local_thread == 0u) {
+        state[0] = sinks[head];
+        state[1] = 1.0f;
+        state[2] = 0.0f;
+        state[3] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float accumulator0 = 0.0f;
+    float accumulator1 = 0.0f;
+    uint query_base = ((batch * HEADS + head) * uint(M) + query) * DIM;
+    uint selected_base = (batch * uint(M) + query) * uint(SELECTED);
+    for (uint selected = 0u; selected < uint(SELECTED); ++selected) {
+        float mask_value = float(mask[selected_base + selected]);
+        int cache_row = indices[selected_base + selected];
+        bool valid = isfinite(mask_value)
+            && cache_row >= 0
+            && cache_row < int(MAX_SEQ);
+        uint safe_row = valid ? uint(cache_row) : 0u;
+        uint cache_base = (batch * uint(MAX_SEQ) + safe_row) * DIM;
+        float dot = 0.0f;
+        if (valid) {
+            dot = q[query_base + local_thread]
+                * float(kv[cache_base + local_thread]);
+            dot += q[query_base + local_thread + 256u]
+                * float(kv[cache_base + local_thread + 256u]);
+        }
+        dot = simd_sum(dot);
+        if (lane == 0u) {
+            partials[simd_group] = dot;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (local_thread == 0u) {
+            float score = 0.0f;
+            for (uint group = 0u; group < 8u; ++group) {
+                score += partials[group];
+            }
+            score = valid ? score * params[0] + mask_value : -INFINITY;
+            float old_max = state[0];
+            float new_max = max(old_max, score);
+            float old_scale = exp(old_max - new_max);
+            float new_scale = valid ? exp(score - new_max) : 0.0f;
+            state[0] = new_max;
+            state[1] = state[1] * old_scale + new_scale;
+            state[2] = old_scale;
+            state[3] = new_scale;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float old_scale = state[2];
+        float new_scale = state[3];
+        float value0 = valid
+            ? float(kv[cache_base + local_thread])
+            : 0.0f;
+        float value1 = valid
+            ? float(kv[cache_base + local_thread + 256u])
+            : 0.0f;
+        accumulator0 = accumulator0 * old_scale + value0 * new_scale;
+        accumulator1 = accumulator1 * old_scale + value1 * new_scale;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float inverse = 1.0f / state[1];
+    uint output_base = ((batch * uint(M) + query) * HEADS + head) * DIM;
+    out[output_base + local_thread] = accumulator0 * inverse;
+    out[output_base + local_thread + 256u] = accumulator1 * inverse;
+)TI_METAL";
+
+constexpr const char* kSparseAttentionPrefillMmaSource = R"TI_METAL(
+    const int B = q_shape[0];
+    const int M = q_shape[2];
+    const int MAX_SEQ = kv_shape[1];
+    const int SELECTED = indices_shape[2];
+    constexpr uint HEADS = 64u;
+    constexpr uint DIM = 512u;
+    constexpr uint KEY_TILE = 8u;
+    constexpr uint DIM_TILES = DIM / 8u;
+
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint local_thread = thread_index_in_threadgroup;
+    uint query_row = threadgroup_position_in_grid.x;
+    uint query = query_row % uint(M);
+    uint batch = query_row / uint(M);
+    if (batch >= uint(B)) {
+        return;
+    }
+
+    uint quadrant = lane / 4u;
+    uint fragment_row = (quadrant & 4u) + ((lane / 2u) & 3u);
+    uint fragment_col = (quadrant & 2u) * 2u + (lane & 1u) * 2u;
+    uint head_base = simd_group * 8u;
+    uint fragment_head = head_base + fragment_row;
+
+    threadgroup half key_tile[KEY_TILE * DIM];
+    threadgroup int selected_rows[KEY_TILE];
+    threadgroup float selected_masks[KEY_TILE];
+    threadgroup float score_tile[HEADS * KEY_TILE];
+    threadgroup half probability_tile[HEADS * KEY_TILE];
+    threadgroup float head_maximum[HEADS];
+    threadgroup float head_sum[HEADS];
+    threadgroup float head_rescale[HEADS];
+
+    if (local_thread < HEADS) {
+        head_maximum[local_thread] = sinks[local_thread];
+        head_sum[local_thread] = 1.0f;
+        head_rescale[local_thread] = 1.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    metal::simdgroup_matrix<float, 8, 8> output_tiles[DIM_TILES];
+    for (uint dimension_tile = 0u; dimension_tile < DIM_TILES; ++dimension_tile) {
+        output_tiles[dimension_tile].thread_elements()[0] = 0.0f;
+        output_tiles[dimension_tile].thread_elements()[1] = 0.0f;
+    }
+
+    uint query_base =
+        ((batch * HEADS + head_base) * uint(M) + query) * DIM;
+    uint selected_base = (batch * uint(M) + query) * uint(SELECTED);
+    for (
+        uint selected_tile = 0u;
+        selected_tile < uint(SELECTED);
+        selected_tile += KEY_TILE
+    ) {
+        if (local_thread < KEY_TILE) {
+            uint selected = selected_tile + local_thread;
+            float mask_value = selected < uint(SELECTED)
+                ? float(mask[selected_base + selected])
+                : -INFINITY;
+            int cache_row = selected < uint(SELECTED)
+                ? indices[selected_base + selected]
+                : -1;
+            bool valid = isfinite(mask_value)
+                && cache_row >= 0
+                && cache_row < int(MAX_SEQ);
+            selected_rows[local_thread] = valid ? cache_row : 0;
+            selected_masks[local_thread] = valid ? mask_value : -INFINITY;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (
+            uint index = local_thread;
+            index < KEY_TILE * DIM;
+            index += 256u
+        ) {
+            uint local_key = index / DIM;
+            uint dimension = index - local_key * DIM;
+            int cache_row = selected_rows[local_key];
+            key_tile[index] = isfinite(selected_masks[local_key])
+                ? kv[(batch * uint(MAX_SEQ) + uint(cache_row)) * DIM + dimension]
+                : half(0.0f);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        metal::simdgroup_matrix<float, 8, 8> scores;
+        scores.thread_elements()[0] = 0.0f;
+        scores.thread_elements()[1] = 0.0f;
+        for (uint dimension = 0u; dimension < DIM; dimension += 8u) {
+            metal::simdgroup_matrix<half, 8, 8> query_matrix;
+            metal::simdgroup_matrix<half, 8, 8> key_matrix;
+            query_matrix.thread_elements()[0] = q[
+                query_base + fragment_row * uint(M) * DIM
+                    + dimension + fragment_col
+            ];
+            query_matrix.thread_elements()[1] = q[
+                query_base + fragment_row * uint(M) * DIM
+                    + dimension + fragment_col + 1u
+            ];
+            key_matrix.thread_elements()[0] = key_tile[
+                fragment_col * DIM + dimension + fragment_row
+            ];
+            key_matrix.thread_elements()[1] = key_tile[
+                (fragment_col + 1u) * DIM + dimension + fragment_row
+            ];
+            simdgroup_multiply_accumulate(
+                scores,
+                query_matrix,
+                key_matrix,
+                scores
+            );
+        }
+        score_tile[fragment_head * KEY_TILE + fragment_col] =
+            scores.thread_elements()[0] * params[0]
+                + selected_masks[fragment_col];
+        score_tile[fragment_head * KEY_TILE + fragment_col + 1u] =
+            scores.thread_elements()[1] * params[0]
+                + selected_masks[fragment_col + 1u];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lane < 8u) {
+            uint head = head_base + lane;
+            float tile_maximum = -INFINITY;
+            for (uint local_key = 0u; local_key < KEY_TILE; ++local_key) {
+                tile_maximum = max(
+                    tile_maximum,
+                    score_tile[head * KEY_TILE + local_key]
+                );
+            }
+            float old_maximum = head_maximum[head];
+            float new_maximum = max(old_maximum, tile_maximum);
+            float rescale = metal::fast::exp(old_maximum - new_maximum);
+            float tile_sum = 0.0f;
+            for (uint local_key = 0u; local_key < KEY_TILE; ++local_key) {
+                float score = score_tile[head * KEY_TILE + local_key];
+                float probability = isfinite(score)
+                    ? metal::fast::exp(score - new_maximum)
+                    : 0.0f;
+                probability_tile[head * KEY_TILE + local_key] =
+                    half(probability);
+                tile_sum += probability;
+            }
+            head_maximum[head] = new_maximum;
+            head_sum[head] = head_sum[head] * rescale + tile_sum;
+            head_rescale[head] = rescale;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        float rescale = head_rescale[fragment_head];
+        for (uint dimension_tile = 0u; dimension_tile < DIM_TILES; ++dimension_tile) {
+            output_tiles[dimension_tile].thread_elements()[0] *= rescale;
+            output_tiles[dimension_tile].thread_elements()[1] *= rescale;
+
+            metal::simdgroup_matrix<half, 8, 8> probability_matrix;
+            metal::simdgroup_matrix<half, 8, 8> value_matrix;
+            probability_matrix.thread_elements()[0] = probability_tile[
+                fragment_head * KEY_TILE + fragment_col
+            ];
+            probability_matrix.thread_elements()[1] = probability_tile[
+                fragment_head * KEY_TILE + fragment_col + 1u
+            ];
+            uint dimension = dimension_tile * 8u;
+            value_matrix.thread_elements()[0] = key_tile[
+                fragment_row * DIM + dimension + fragment_col
+            ];
+            value_matrix.thread_elements()[1] = key_tile[
+                fragment_row * DIM + dimension + fragment_col + 1u
+            ];
+            simdgroup_multiply_accumulate(
+                output_tiles[dimension_tile],
+                probability_matrix,
+                value_matrix,
+                output_tiles[dimension_tile]
+            );
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float inverse_sum = 1.0f / head_sum[fragment_head];
+    uint output_base =
+        ((batch * uint(M) + query) * HEADS + fragment_head) * DIM;
+    for (uint dimension_tile = 0u; dimension_tile < DIM_TILES; ++dimension_tile) {
+        uint dimension = dimension_tile * 8u + fragment_col;
+        out[output_base + dimension] =
+            output_tiles[dimension_tile].thread_elements()[0] * inverse_sum;
+        out[output_base + dimension + 1u] =
+            output_tiles[dimension_tile].thread_elements()[1] * inverse_sum;
+    }
+)TI_METAL";
+
+constexpr const char* kSparseAttentionDecodeSource = R"TI_METAL(
+    const int B = q_shape[0];
+    const int M = q_shape[2];
+    const int MAX_SEQ = kv_shape[1];
+    const int SELECTED = indices_shape[2];
+    constexpr uint HEADS = 64u;
+    constexpr uint HEADS_PER_GROUP = 4u;
+    constexpr uint HEAD_GROUPS = HEADS / HEADS_PER_GROUP;
+    constexpr uint DIM = 512u;
+    constexpr uint VALUES_PER_LANE = DIM / 32u;
+
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint workgroup = threadgroup_position_in_grid.x;
+    uint head_group = workgroup % HEAD_GROUPS;
+    uint query_row = workgroup / HEAD_GROUPS;
+    uint query = query_row % uint(M);
+    uint batch = query_row / uint(M);
+    if (batch >= uint(B)) {
+        return;
+    }
+    uint head = head_group * HEADS_PER_GROUP + simd_group;
+
+    uint query_base = ((batch * HEADS + head) * uint(M) + query) * DIM;
+    uint selected_base = (batch * uint(M) + query) * uint(SELECTED);
+    float maximum = sinks[head];
+    float denominator = 1.0f;
+    float accumulators[VALUES_PER_LANE];
+    for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+        accumulators[item] = 0.0f;
+    }
+
+    for (uint selected = 0u; selected < uint(SELECTED); ++selected) {
+        float mask_value = float(mask[selected_base + selected]);
+        int cache_row = indices[selected_base + selected];
+        bool valid = isfinite(mask_value)
+            && cache_row >= 0
+            && cache_row < int(MAX_SEQ);
+        // Circular M=1 has no iteration corresponding to selected-plan
+        // alignment padding. Skip those slots so verifier rows execute the
+        // identical online-softmax instruction sequence.
+        if (!valid) {
+            continue;
+        }
+        uint cache_base =
+            (batch * uint(MAX_SEQ) + uint(cache_row)) * DIM;
+
+        float dot = 0.0f;
+        for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+            uint dimension = lane + item * 32u;
+            dot += q[query_base + dimension]
+                * float(kv[cache_base + dimension]);
+        }
+        float score = simd_sum(dot) * params[0];
+        if (mask_value != 0.0f) {
+            score += mask_value;
+        }
+        float new_maximum = max(maximum, score);
+        float old_scale = metal::fast::exp(maximum - new_maximum);
+        float new_scale = metal::fast::exp(score - new_maximum);
+        denominator = denominator * old_scale + new_scale;
+        maximum = new_maximum;
+
+        for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+            uint dimension = lane + item * 32u;
+            float value = float(kv[cache_base + dimension]);
+            accumulators[item] =
+                accumulators[item] * old_scale + value * new_scale;
+        }
+    }
+
+    float inverse_denominator = 1.0f / denominator;
+    uint output_base =
+        ((batch * uint(M) + query) * HEADS + head) * DIM;
+    for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+        uint dimension = lane + item * 32u;
+        out[output_base + dimension] =
+            accumulators[item] * inverse_denominator;
+    }
+)TI_METAL";
+
+constexpr const char* kSparseAttentionDirectDecodeSource = R"TI_METAL(
+    const int B = q_shape[0];
+    const int POOL_CAPACITY = pooled_kv_shape[1];
+    constexpr uint HEADS = 64u;
+    constexpr uint HEADS_PER_GROUP = 4u;
+    constexpr uint HEAD_GROUPS = HEADS / HEADS_PER_GROUP;
+    constexpr uint DIM = 512u;
+    constexpr uint VALUES_PER_LANE = DIM / 32u;
+
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint workgroup = threadgroup_position_in_grid.x;
+    uint head_group = workgroup % HEAD_GROUPS;
+    uint batch = workgroup / HEAD_GROUPS;
+    if (batch >= uint(B)) {
+        return;
+    }
+    uint head = head_group * HEADS_PER_GROUP + simd_group;
+    uint query_base = (batch * HEADS + head) * DIM;
+    uint seq_len = uint(max(decode_params[0], 0));
+    uint pool_len = uint(max(decode_params[1], 0));
+    uint topk_count = uint(max(decode_params[2], 0));
+    uint topk_base = batch * topk_count;
+    uint local_count = min(seq_len, uint(WINDOW));
+    float maximum = sinks[head];
+    float denominator = 1.0f;
+    float accumulators[VALUES_PER_LANE];
+    for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+        accumulators[item] = 0.0f;
+    }
+
+    for (uint selected = 0u; selected < local_count; ++selected) {
+        uint absolute = seq_len - local_count + selected;
+        uint cache_row = absolute % uint(WINDOW);
+        uint cache_base =
+            (batch * uint(WINDOW) + cache_row) * DIM;
+        float dot = 0.0f;
+        for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+            uint dimension = lane + item * 32u;
+            dot += q[query_base + dimension]
+                * float(local_kv[cache_base + dimension]);
+        }
+        float score = simd_sum(dot) * params[0];
+        float new_maximum = max(maximum, score);
+        float old_scale = metal::fast::exp(maximum - new_maximum);
+        float new_scale = metal::fast::exp(score - new_maximum);
+        denominator = denominator * old_scale + new_scale;
+        maximum = new_maximum;
+
+        for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+            uint dimension = lane + item * 32u;
+            float value = float(local_kv[cache_base + dimension]);
+            accumulators[item] =
+                accumulators[item] * old_scale + value * new_scale;
+        }
+    }
+
+    uint visible = min(pool_len, seq_len / uint(RATIO));
+    for (uint selected = 0u; selected < topk_count; ++selected) {
+        int pooled = topk[topk_base + selected];
+        bool valid = pooled >= 0 && uint(pooled) < visible;
+        uint cache_row = valid ? uint(pooled) : 0u;
+        uint cache_base =
+            (batch * uint(POOL_CAPACITY) + cache_row) * DIM;
+        float dot = 0.0f;
+        for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+            uint dimension = lane + item * 32u;
+            dot += q[query_base + dimension]
+                * float(pooled_kv[cache_base + dimension]);
+        }
+        float score = simd_sum(dot);
+        score = valid ? score * params[0] : -INFINITY;
+        float new_maximum = max(maximum, score);
+        float old_scale = metal::fast::exp(maximum - new_maximum);
+        float new_scale = valid
+            ? metal::fast::exp(score - new_maximum)
+            : 0.0f;
+        denominator = denominator * old_scale + new_scale;
+        maximum = new_maximum;
+        for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+            uint dimension = lane + item * 32u;
+            float value = valid
+                ? float(pooled_kv[cache_base + dimension])
+                : 0.0f;
+            accumulators[item] =
+                accumulators[item] * old_scale + value * new_scale;
+        }
+    }
+
+    float inverse_denominator = 1.0f / denominator;
+    uint output_base = (batch * HEADS + head) * DIM;
+    for (uint item = 0u; item < VALUES_PER_LANE; ++item) {
+        uint dimension = lane + item * 32u;
+        out[output_base + dimension] =
+            accumulators[item] * inverse_denominator;
+    }
+)TI_METAL";

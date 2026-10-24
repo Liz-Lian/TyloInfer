@@ -1,0 +1,7 @@
+/.venv/
+/build/
+/sidecars/
+/Frameworks/
+/Resources/
+/windows-runtime/
+/dist/

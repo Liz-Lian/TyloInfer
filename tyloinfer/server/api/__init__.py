@@ -1,0 +1,181 @@
+
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from tyloinfer.server.api.auth import ApiKeyManager, AuthenticationPolicy, required_scope
+from tyloinfer.server.api.anthropic_compat import error_body as anthropic_error_body, error_type as anthropic_error_type, is_anthropic_request
+from tyloinfer.server.api.routes.anthropic import router as anthropic_router
+from tyloinfer.server.api.routes import ERROR_RESPONSES as ERROR_RESPONSES
+from tyloinfer.server.api.routes.auth import router as auth_router
+from tyloinfer.server.api.routes.jobs import event_router as job_event_router
+from tyloinfer.server.api.routes.jobs import router as job_router
+from tyloinfer.server.api.routes.media import router as media_router
+from tyloinfer.server.api.routes.models import hub_router
+from tyloinfer.server.api.routes.models import router as model_router
+from tyloinfer.server.api.routes.reference import router as reference_router
+from tyloinfer.server.api.routes.openai import router as openai_router
+from tyloinfer.server.api.routes.runtime import profile_router
+from tyloinfer.server.api.routes.runtime import router as runtime_router
+from tyloinfer.server.api.routes.sessions import initial_router as initial_session_router
+from tyloinfer.server.api.routes.sessions import router as session_router
+from tyloinfer.server.api.static import SPAStaticFiles
+from tyloinfer.server.protocol.models import ErrorDetail, ErrorResponse
+from tyloinfer.server.services.service import ServerService, ServiceError
+from tyloinfer.server.instance import server_identity as make_server_identity
+
+
+def create_app(
+    service: ServerService | None = None,
+    *,
+    web_root: str | Path | None = None,
+    api_key: str = "",
+    api_keys: ApiKeyManager | None = None,
+    auth_settings_path: str | Path | None = None,
+    server_identity: dict[str, str | int] | None = None,
+) -> FastAPI:
+    """Create an executable app, or a route-only contract app when service is omitted."""
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            if service is not None:
+                await service.start()
+            yield
+        finally:
+            if service is not None:
+                await service.aclose()
+
+    app = FastAPI(
+        title="TyloInfer Server API",
+        summary="Persistent sessions, media, model workers, and realtime inference",
+        version="1.0.0",
+        openapi_version="3.1.0",
+        lifespan=lifespan,
+    )
+    app.state.service = service
+    app.state.server_identity = server_identity if server_identity is not None else make_server_identity()
+    app.state.api_key = api_key
+    app.state.api_keys = api_keys
+    app.state.auth_policy = AuthenticationPolicy(api_key or (api_keys.root_key if api_keys else ""),
+        enabled=api_keys is not None, path=Path(auth_settings_path) if auth_settings_path is not None else None)
+    @app.middleware("http")
+    async def protect_and_harden(request: Request, call_next: Any) -> Response:
+        expected_instance = request.headers.get("x-tyloinfer-instance-id")
+        if expected_instance and expected_instance != app.state.server_identity["instance_id"]:
+            detail = ErrorDetail(code="server_instance_changed", message="The server instance changed. Reconnect and confirm the new server.")
+            return JSONResponse(status_code=409, content=ErrorResponse(error=detail).model_dump(mode="json"))
+        policy = app.state.auth_policy
+        if policy.enabled and request.method != "OPTIONS" and request.url.path.startswith(("/api/", "/v1")):
+            authorization = request.headers.get("authorization", "")
+            supplied = authorization[7:] if authorization.startswith("Bearer ") else ""
+            anthropic = is_anthropic_request(request)
+            if not supplied and anthropic:
+                supplied = request.headers.get("x-api-key", "")
+            authenticated = api_keys.authenticate(supplied, include_root=False) if api_keys is not None else None
+            legacy = policy.matches(supplied)
+            scope = required_scope(request.method, request.url.path)
+            if not legacy and authenticated is None:
+                detail = ErrorDetail(code="unauthorized", message="invalid API credential")
+                return JSONResponse(
+                    status_code=401,
+                    content=anthropic_error_body(detail.message, "authentication_error") if anthropic else ErrorResponse(error=detail).model_dump(mode="json"),
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            if (
+                not legacy
+                and authenticated is not None
+                and api_keys is not None
+                and not api_keys.permits(authenticated, scope)
+            ):
+                detail = ErrorDetail(
+                    code="insufficient_scope",
+                    message=f"API credential requires the {scope} scope",
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content=anthropic_error_body(detail.message, "permission_error") if anthropic else ErrorResponse(error=detail).model_dump(mode="json"),
+                )
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; "
+            "media-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; font-src 'self' data:"
+        )
+        return response
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:5174",
+            "http://localhost:5174",
+        ],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Authorization", "Content-Type", "X-Content-SHA256", "X-Api-Key", "Anthropic-Version", "Anthropic-Beta", "X-TyloInfer-Instance-ID"],
+    )
+
+    @app.exception_handler(ServiceError)
+    async def handle_service_error(request: Request, error: ServiceError) -> JSONResponse:
+        return JSONResponse(
+            status_code=error.status_code,
+            content=anthropic_error_body(error.detail.message, anthropic_error_type(error.status_code)) if is_anthropic_request(request) else ErrorResponse(error=error.detail).model_dump(mode="json"),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(_: Any, error: RequestValidationError) -> JSONResponse:
+        detail = ErrorDetail(
+            code="invalid_request",
+            message="request validation failed",
+            details={"errors": jsonable_encoder(error.errors())},
+        )
+        return JSONResponse(
+            status_code=422,
+            content=ErrorResponse(error=detail).model_dump(mode="json"),
+        )
+
+    app.include_router(openai_router)
+    app.include_router(anthropic_router)
+    app.include_router(auth_router)
+    app.include_router(initial_session_router)
+    app.include_router(profile_router)
+    app.include_router(job_router)
+    app.include_router(hub_router)
+    app.include_router(job_event_router)
+    app.include_router(session_router)
+    app.include_router(media_router)
+    app.include_router(model_router)
+    app.include_router(reference_router)
+    app.include_router(runtime_router)
+
+    if web_root is not None:
+        root = Path(web_root)
+        if not root.is_dir():
+            raise ValueError(f"web root is not a directory: {root}")
+        app.mount("/", SPAStaticFiles(directory=root, html=True), name="web")
+
+    return app
+
+
+def create_contract_app() -> FastAPI:
+    """Create the route-only application used to generate the public OpenAPI contract."""
+
+    return create_app()

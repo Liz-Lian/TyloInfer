@@ -1,0 +1,130 @@
+import { useState } from 'react';
+import type { JobResource } from '../../shared/api/types';
+import { jobsApi } from '../../shared/api/resources/jobs';
+import { Icon } from '../../app/display';
+import { errorMessage, formatBytes, formatDuration, formatNumber } from '../../app/formatters';
+import { ApiError } from '../../shared/api/client';
+import { useJobStore } from '../../stores/jobStore';
+import { toast } from '../../stores/toastStore';
+import { useSettings } from '../settings/SettingsProvider';
+import type { DownloadOrigin } from './ModelBrowser';
+import { ModelVendorMark } from '../../app/ModelVendorMark';
+import { useConnectionScope } from '../../app/useConnectionScope';
+
+export const isModelDownload = (job: JobResource) => job.kind === 'download.huggingface' || job.kind === 'download.modelscope';
+export const isActiveDownload = (job: JobResource) => ['queued', 'running', 'cancelling'].includes(job.status);
+export const downloadProgress = (job: JobResource) => Number.isFinite(job.progress) ? Math.max(0, Math.min(1, job.progress)) : 0;
+
+export function downloadEtaSeconds(job: JobResource): number | null {
+  const { downloaded_bytes: downloaded, total_bytes: total, bytes_per_second: speed } = job.progress_data ?? {};
+  if (job.status !== 'running' || downloaded == null || total == null || speed == null ||
+    !Number.isFinite(downloaded) || !Number.isFinite(total) || !Number.isFinite(speed) ||
+    downloaded < 0 || total <= downloaded || speed < 1) return null;
+  const seconds = (total - downloaded) / speed;
+  return Number.isFinite(seconds) ? Math.ceil(seconds) : null;
+}
+
+export function DownloadQueue({ jobs, onJobCreated }: {
+  jobs: JobResource[];
+  onJobCreated(job: JobResource, origin: DownloadOrigin): void;
+}) {
+  const { tr } = useSettings();
+  const connectionScope = useConnectionScope();
+  const addJob = useJobStore((state) => state.addJob);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const statusLabels: Record<JobResource['status'], string> = {
+    queued: tr('等待下载', 'Queued'), running: tr('下载中', 'Downloading'),
+    cancelling: tr('正在取消', 'Cancelling'), succeeded: tr('下载完成', 'Completed'),
+    failed: tr('下载失败', 'Failed'), cancelled: tr('已取消', 'Cancelled'),
+    interrupted: tr('下载中断', 'Interrupted'),
+  };
+
+  async function act(job: JobResource, retry: boolean, origin: DownloadOrigin) {
+    const current = connectionScope();
+    if (busyId) return;
+    setBusyId(job.id);
+    try {
+      const next = retry ? await jobsApi.retryJob(job.id) : await jobsApi.cancelJob(job.id);
+      if (!current()) return;
+      if (retry && next.id !== job.id) onJobCreated(next, origin); else addJob(next);
+    } catch (cause) {
+      if (current()) toast.error(errorMessage(cause, tr));
+    } finally {
+      if (current()) setBusyId(null);
+    }
+  }
+
+  async function remove(job: JobResource) {
+    const current = connectionScope();
+    if (busyId) return;
+    setBusyId(job.id);
+    try {
+      await jobsApi.deleteJob(job.id);
+      if (!current()) return;
+      useJobStore.getState().setJobs(useJobStore.getState().jobs.filter((item) => item.id !== job.id));
+    } catch (cause) { if (current()) toast.error(errorMessage(cause, tr)); }
+    finally { if (current()) setBusyId(null); }
+  }
+
+  return (
+    <section className="download-queue" aria-label={tr('下载队列', 'Download queue')}>
+      <div className="download-queue-heading">
+        <h3>{tr('下载队列', 'Download queue')}</h3>
+        <span>{tr(`${jobs.filter(isActiveDownload).length} 个下载中`, `${jobs.filter(isActiveDownload).length} active`)}</span>
+      </div>
+      {!jobs.length && <div className="download-queue-empty"><Icon name="download" size={28} />
+        <strong>{tr('暂无下载', 'No downloads yet')}</strong>
+      </div>}
+      {jobs.map((job) => {
+        const progress = downloadProgress(job);
+        const eta = downloadEtaSeconds(job);
+        const total = job.progress_data?.total_bytes;
+        const downloaded = job.progress_data?.downloaded_bytes;
+        const finishing = total != null && Number.isFinite(total) && total > 0 &&
+          downloaded != null && Number.isFinite(downloaded) && downloaded >= total;
+        const duration = eta == null ? '' : eta < 60 ? `${eta}s` : formatDuration(eta);
+        const etaLabel = eta != null ? tr(`预计剩余 ${duration}`, `${duration} remaining`)
+          : finishing ? tr('正在收尾', 'Finishing download') : tr('剩余时间估算中…', 'Estimating time remaining…');
+        const retry = ['failed', 'cancelled', 'interrupted'].includes(job.status);
+        const files = Array.isArray(job.payload.include)
+          ? Array.from(new Set(job.payload.include.filter((file): file is string => typeof file === 'string' && !!file && !/[?*\[]/.test(file))))
+          : [];
+        const destination = String(job.payload.destination || '');
+        const primary = Array.isArray(job.payload.include) ? job.payload.include.find(
+          (file): file is string => typeof file === 'string' && /\.tq$/i.test(file) && !/(?:^|\/)Engram\//i.test(file)) : undefined;
+        const title = primary || files[0] || destination.split(/[\\/]/).filter(Boolean).pop() || String(job.payload.repo_id || job.kind);
+        return (
+          <article className={`download-queue-item ${job.status}`} key={job.id} data-job-id={job.id}>
+            <div className="download-item-icon"><Icon name={job.status === 'succeeded' ? 'check' : 'download'} size={20} /></div>
+            <div className="download-item-body">
+              <div className="download-item-heading"><strong>{title}</strong><span className="model-identity-trailing">{statusLabels[job.status]}<ModelVendorMark name={String(job.payload.repo_id || '')} /></span></div>
+              <small><span>{String(job.payload.repo_id || job.kind)}</span> · {job.kind === 'download.huggingface' ? 'Hugging Face' : 'ModelScope'}</small>
+              {files.length > 1 && <details className="download-item-files">
+                <summary>{tr(`查看 ${files.length} 个文件`, `View ${files.length} files`)}</summary>
+                <ul>{files.map((file) => <li key={file}>{file}</li>)}</ul>
+              </details>}
+              <small>{tr('保存到', 'Save to')} · {destination}</small>
+              <div className="download-item-progress"><progress aria-label={tr('下载进度', 'Download progress')} max={1} value={progress} /><span>{formatNumber(progress * 100, 1)}%</span></div>
+              {isActiveDownload(job) && job.progress_data?.downloaded_bytes != null && <small className="download-transfer-stats">
+                {(job.progress_data.bytes_per_second ? formatBytes(job.progress_data.bytes_per_second).replace(/\b(KB|MB|GB|TB)\b/g, (unit) => `${unit[0]}iB`) : '0 B')}/s
+                {' · '}{formatBytes(job.progress_data.downloaded_bytes)}{job.progress_data.total_bytes ? ` / ${formatBytes(job.progress_data.total_bytes)}` : ''}
+                {' · '}{job.progress_data.files_completed ?? 0} {tr('个文件完成', 'files completed')}
+                {job.status === 'running' && <>{' · '}<span aria-label={tr('预计剩余时间', 'Estimated time remaining')}>{etaLabel}</span></>}
+              </small>}
+              {job.status === 'running' && job.progress_data?.downloaded_bytes == null &&
+                <small className="download-transfer-stats" aria-label={tr('预计剩余时间', 'Estimated time remaining')}>{etaLabel}</small>}
+              {job.error && <p className="download-item-error">{errorMessage(new ApiError(400, { error: job.error }), tr)}</p>}
+            </div>
+            {(isActiveDownload(job) || retry) && <button disabled={busyId !== null || job.status === 'cancelling'} onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              void act(job, retry, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+            }} type="button">{retry ? tr('重试', 'Retry') : tr('取消', 'Cancel')}</button>}
+            {!isActiveDownload(job) && <button disabled={busyId !== null} aria-label={tr('删除下载记录', 'Delete download record')}
+              title={tr('仅删除任务记录，保留下载文件', 'Remove task history; keep downloaded files')}
+              onClick={() => void remove(job)} type="button"><Icon name="trash" size={16} /></button>}
+          </article>
+        );
+      })}
+    </section>
+  );
+}

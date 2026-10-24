@@ -1,0 +1,27 @@
+struct DirectProjectionLayout {
+    int family = kFamilyNint8Zero;
+    int output_size = 0;
+    int bits = 0;
+    int group_size = 0;
+    int groups = 0;
+    int vector_size = 0;
+    int vectors = 0;
+    int index_bits = 0;
+    int state_bits = 0;
+    int states = 0;
+    int entries = 0;
+    int code_banks = 0;
+    int aux_mode = 0;
+    int code_bank_mode = 0;
+    int execution_layout = 0;
+    int table_banks = 0;
+    int groups_per_supergroup = 0;
+    int supergroups = 0;
+    int blocks = 0;
+    int tile_begin = 0;
+    int tile_end = 0;
+    int output_offset = 0;
+    bool banked_execution = false;
+    bool nvq1_execution = false;
+    bool jsc_execution = false;
+};

@@ -1,0 +1,16 @@
+node_modules/
+.npm-cache/
+dist/
+artifacts/
+playwright-report/
+test-results/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+src-tauri/gen/
+src-tauri/icons/
+src-tauri/target/
+
+
+!src/features/models/
+!src/features/models/**

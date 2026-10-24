@@ -1,0 +1,25 @@
+{
+  "bundle": {
+    "targets": ["dmg"],
+    "externalBin": [
+      "../../packaging/sidecars/mfq-decode-metal",
+      "../../packaging/sidecars/mfq-perplexity"
+    ],
+    "resources": {
+      "../dist": "web-ui",
+      "../../packaging/Resources/mlx.metallib": "mlx.metallib",
+      "../../packaging/Resources/mfq-metal": "mfq-metal",
+      "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
+      "../../packaging/Resources/licenses": "licenses"
+    },
+    "macOS": {
+      "minimumSystemVersion": "26.2",
+      "hardenedRuntime": false,
+      "frameworks": [
+        "../../packaging/Frameworks/libmlx.dylib",
+        "../../packaging/Frameworks/libjaccl.dylib",
+        "../../packaging/Frameworks/libmfq_avfoundation_video.dylib"
+      ]
+    }
+  }
+}

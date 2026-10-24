@@ -1,0 +1,49 @@
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SERVER_HEADER = (ROOT / "cpp_runtime" / "core" / "include" / "tyloinfer" / "runtime.h").read_text(
+    encoding="utf-8"
+)
+TRANSPORT_SRC = ROOT / "cpp_runtime" / "transport"
+SERVER = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in sorted(TRANSPORT_SRC.rglob("*"))
+    if path.suffix in {".cpp", ".h"}
+)
+CUDA_ROOT = ROOT / "cpp_runtime" / "backends" / "cuda"
+RUNTIME = "\n".join(
+    (CUDA_ROOT / name).read_text(encoding="utf-8")
+    for name in (
+        "ops/common/include/cuda_execution.h",
+        "ops/common/cuda_execution.cpp",
+        "engine/generation.h",
+        "engine/generation.cpp",
+    )
+)
+SAMPLING = (
+    ROOT / "cpp_runtime" / "backends" / "cuda" / "ops" / "common" / "include" / "cuda_sampling.h"
+).read_text(encoding="utf-8")
+
+
+def test_prefill_speed_uses_cuda_events_per_bounded_model_chunk() -> None:
+    assert "MfqPrefillCallback" not in SERVER_HEADER + RUNTIME
+    assert "class PrefillCudaTimer" in RUNTIME
+    assert "cudaEventRecord(started_, stream_)" in RUNTIME
+    prefill = RUNTIME.split("double prefill(const mfq::engine::PrefillChunk &chunk)", 1)[1]
+    prefill = prefill.split("std::int64_t first_token()", 1)[0]
+    assert prefill.index("PrefillCudaTimer timer") < prefill.index("auto ids =")
+    logits = prefill.index(".logits_from_hidden(")
+    finished = prefill.index("finish_prefill();", prefill.index("hidden = model.hidden_forward("))
+    sampling = prefill.index("mfq::cuda::sample_logits(", logits)
+    assert finished < logits < sampling
+    assert "return timer.elapsed_ms()" in prefill
+    flow = (ROOT / "cpp_runtime/engine/include/generation_step.h").read_text()
+    assert "next_prefill_chunk(end, offset, chunk_size)" in flow
+    assert "elapsed += ops.prefill(chunk)" in flow
+    assert "co_yield PrefillProgress" in flow
+    assert "inline SamplingOps::Tensor sample_logits(" in SAMPLING
+    assert "sample_apply_penalties_cuda(" in SAMPLING
+    assert "1000.0 * metrics.prefill_tokens / metrics.prefill_ms" in SERVER
+    assert '{"prefill_tps", values.prefill_tps}' in SERVER
+    assert '{"prefill_ms", values.prefill_ms}' in SERVER

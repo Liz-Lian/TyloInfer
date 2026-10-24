@@ -1,0 +1,454 @@
+
+import { useChatAttachments } from './hooks/useChatAttachments';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Context,
+  type ReactNode,
+} from 'react';
+import { useLocation } from 'react-router';
+import { sessionsApi } from '../../shared/api/resources/sessions';
+import { runtimeApi } from '../../shared/api/resources/runtime';
+import type { ContentPart, Session, SessionMode } from '../../shared/api/types';
+import { studioConfirm } from '../../studio';
+import { useRuntime } from '../../app/RuntimeProvider';
+import { errorMessage } from '../../app/formatters';
+import { useSettings } from '../settings/SettingsProvider';
+import { useConversationSessions } from './hooks/useConversationSessions';
+import { useChatGeneration } from './hooks/useChatGeneration';
+import {
+  ChatAttachmentsProvider,
+  useChatAttachmentActions,
+  useChatAttachmentError,
+} from './ChatAttachmentsProvider';
+import { useChatInference } from './hooks/useChatInference';
+import { useMessageActions } from './hooks/useMessageActions';
+import { useVoiceConversation } from '../voice/useVoiceConversation';
+import { isGenerationBusy } from './state/generationController';
+import { conversationActions } from './state/conversationStore';
+
+
+function useChatDomain() {
+  const location = useLocation();
+  const [visited, setVisited] = useState(location.pathname === '/chat');
+  useEffect(() => {
+    if (location.pathname === '/chat') setVisited(true);
+  }, [location.pathname]);
+  const { controller: generation, phase: generationPhase } = useChatGeneration({
+    onSessionState: (id, state, revision) =>
+      conversationActions.setSessions((current) =>
+        current.map((session) => (session.id === id ? { ...session, state, revision } : session)),
+      ),
+    onSynchronized: ({ session, messages, responses }) =>
+      conversationActions.applySynchronized(session, messages, responses),
+  });
+  const conversation = useConversationSessions(
+    visited || location.pathname === '/chat',
+    isGenerationBusy(generationPhase),
+  );
+  const {
+    active,
+    activeId,
+    activeIdRef,
+    setSessions,
+    setMessages,
+    setResponses,
+    setError,
+    setActiveId,
+  } = conversation;
+  const { settings, tr } = useSettings();
+  const runtimeContext = useRuntime();
+  const { connectionRevision, ready, refreshRuntime, voiceComponent } = runtimeContext;
+  const inference = useChatInference(active?.mode ?? 'text');
+  const voice = useVoiceConversation(activeId, connectionRevision, setError, inference.selectedModel);
+  useEffect(() => {
+    const controller = voice.voiceRef.current;
+    if (controller && !controller.active)
+      void controller.setFullDuplex(active?.mode === 'full_duplex');
+  }, [active?.mode, connectionRevision, voice.voiceRef]);
+  const attachments = useChatAttachmentActions();
+  const attachmentError = useChatAttachmentError();
+  const [operationBusy, setBusy] = useState(false);
+  const [voiceComponentBusy, setVoiceComponentBusy] = useState(false);
+  const revisionRef = useRef(connectionRevision);
+  revisionRef.current = connectionRevision;
+  const busy = operationBusy || isGenerationBusy(generationPhase);
+  const recoveryNeeded = generation.getSnapshot().recoveryNeeded;
+  useEffect(() => {
+    generation.reset();
+    setBusy(false);
+  }, [activeId, connectionRevision, generation]);
+  useEffect(() => {
+    if (attachmentError) setError(attachmentError);
+  }, [attachmentError, setError]);
+
+  const inferenceRef = useRef(inference);
+  inferenceRef.current = inference;
+  const voiceRef = voice.voiceRef;
+  const setVoiceMessages = voice.setVoiceMessages;
+  const trRef = useRef(tr);
+  trRef.current = tr;
+
+
+  const realtimeSessionConfig = useCallback(
+    (sessionId: string) => {
+      const value = inferenceRef.current.effectiveSettings;
+      return {
+        sessionId,
+        systemPrompt: value.systemPrompt.trim(),
+        temperature: value.temperature,
+        topP: value.topP,
+        topK: value.topK,
+        repetitionPenalty: value.repetitionPenalty,
+      };
+    },
+    [],
+  );
+
+
+  const generate = useCallback(
+    async (
+      session: Session,
+      input: ContentPart[],
+      optimistic = true,
+      role: 'user' | 'tool' = 'user',
+      onAccepted?: () => void,
+    ) => {
+      if (
+        activeIdRef.current !== session.id ||
+        isGenerationBusy(generation.getPhase()) ||
+        generation.getSnapshot().recoveryNeeded
+      )
+        return;
+      const inference = inferenceRef.current;
+      if (!inference.availableModelNames.includes(inference.selectedModel)) return;
+      setError(null);
+      if (optimistic)
+        setMessages((current) => [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            role: 'user',
+            parts: input,
+            parent_id: current.at(-1)?.id ?? null,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      await generation.start(session.id, {
+        request_id: crypto.randomUUID(),
+        model: inference.selectedModel,
+        expected_revision: session.revision,
+        input,
+        input_role: role,
+        sampling: inference.sampling,
+        system_prompt: inference.effectiveSettings.systemPrompt.trim(),
+        include_reasoning_history: !inference.effectiveSettings.excludeReasoning,
+        tools: [],
+        tool_choice: 'none',
+        stream: true,
+      }, onAccepted);
+      void refreshRuntime();
+    },
+    [
+      activeIdRef,
+      generation,
+      refreshRuntime,
+      setError,
+      setMessages,
+    ],
+  );
+
+
+  const send = useCallback(
+    async (text: string, accepted: () => void) => {
+      if (!active || !conversation.conversationReady || busy || recoveryNeeded) return;
+      const revision = connectionRevision;
+      const isCurrent = () => activeIdRef.current === active.id && revisionRef.current === revision;
+      setBusy(true);
+      setError(null);
+      const controller = voiceRef.current;
+      const resumeCapture = Boolean(controller?.capturing);
+      const currentInference = inferenceRef.current;
+      try {
+        if (
+          active.mode !== 'text' &&
+          currentInference.realtimeAvailable &&
+          controller &&
+          !attachments.getAttachments().length
+        ) {
+          if (!text) return;
+          await controller.submitText(text, realtimeSessionConfig(active.id));
+          if (!isCurrent()) return;
+          accepted();
+          setVoiceMessages((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              sessionId: active.id,
+              role: 'user',
+              text,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+          return;
+        }
+        if (active.mode !== 'text' && controller?.active) await controller.stop();
+        const parts = await attachments.uploadAttachments();
+        if (!isCurrent()) return;
+        if (text) parts.push({ type: 'text', text });
+        if (!parts.length) return;
+        setBusy(false);
+        await generate(active, parts, true, 'user', () => {
+          if (!isCurrent()) return;
+          accepted();
+          attachments.clearAttachments();
+        });
+      } catch (cause) {
+        if (isCurrent()) setError(errorMessage(cause));
+      } finally {
+        if (isCurrent()) {
+          setBusy(false);
+          if (resumeCapture && controller && currentInference.realtimeAvailable) {
+            await controller
+              .start(realtimeSessionConfig(active.id))
+              .catch((cause) => setError(errorMessage(cause)));
+          }
+        }
+      }
+    },
+    [
+      active,
+      conversation.conversationReady,
+      busy,
+      recoveryNeeded,
+      connectionRevision,
+      attachments,
+      activeIdRef,
+      voiceRef,
+      setVoiceMessages,
+      realtimeSessionConfig,
+      generate,
+      setError,
+    ],
+  );
+
+  const messageActions = useMessageActions({
+    conversation,
+    blocked: busy || recoveryNeeded || !conversation.conversationReady,
+    generate,
+    setBusy,
+  });
+  const conversationView = useMemo(
+    () => ({
+      transitioning: conversation.transitioning,
+      error: conversation.error,
+      setError: conversation.setError,
+      selectSession: conversation.selectSession,
+      createSession: conversation.createSession,
+      deleteSession: conversation.deleteSession,
+      renameSession: conversation.renameSession,
+      conversationReady: conversation.conversationReady,
+      historyReady: conversation.historyReady,
+      modelAvailable: conversation.modelAvailable,
+    }),
+    [
+      conversation.transitioning,
+      conversation.error,
+      conversation.setError,
+      conversation.selectSession,
+      conversation.createSession,
+      conversation.deleteSession,
+      conversation.renameSession,
+      conversation.conversationReady,
+      conversation.historyReady,
+      conversation.modelAvailable,
+    ],
+  );
+
+
+  const deleteConversation = useCallback(async (id: string) => {
+    const session = conversation.sessions.find((item) => item.id === id);
+    if (!session || busy || conversation.transitioning) return;
+    const title = session.title || trRef.current('未命名会话', 'Untitled chat');
+    if (!(await studioConfirm(trRef.current(
+      `删除对话“${title}”？此操作无法撤销。`,
+      `Delete "${title}"? This cannot be undone.`,
+    )))) return;
+    if (await conversation.deleteSession(id)) {
+      setVoiceMessages((current) => current.filter((message) => message.sessionId !== id));
+    }
+  }, [conversation.sessions, conversation.transitioning, conversation.deleteSession, busy, setVoiceMessages]);
+
+  const deleteAllConversations = useCallback(async () => {
+    if (busy || conversation.transitioning || !conversation.sessions.length) return;
+    const revision = revisionRef.current;
+    if (!(await studioConfirm(trRef.current(
+      '删除此服务中的全部对话？包括消息与未发送的草稿，此操作无法撤销。',
+      'Delete all conversations on this server, including messages and unsent drafts? This cannot be undone.',
+    ))) || revision !== revisionRef.current) return;
+    const deleted = new Set(await conversation.deleteAllSessions());
+    if (deleted.size) setVoiceMessages((current) => current.filter((message) => !deleted.has(message.sessionId)));
+  }, [busy, conversation.transitioning, conversation.sessions.length, conversation.deleteAllSessions, setVoiceMessages]);
+
+
+  const clearActiveConversation = useCallback(async () => {
+    if (
+      !active ||
+      busy ||
+      recoveryNeeded ||
+      !(await studioConfirm(trRef.current('清空当前对话？', 'Clear this conversation?')))
+    )
+      return;
+    setBusy(true);
+    try {
+      const replacement = await sessionsApi.createSession(undefined, active.mode);
+      await sessionsApi.deleteSession(active.id);
+      if (activeIdRef.current !== active.id) return;
+      setSessions((current) => [
+        replacement,
+        ...current.filter((session) => session.id !== active.id),
+      ]);
+      setVoiceMessages((current) =>
+        current.filter((message) => message.sessionId !== active.id),
+      );
+      setActiveId(replacement.id);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    active,
+    busy,
+    recoveryNeeded,
+    activeIdRef,
+    setSessions,
+    setVoiceMessages,
+    setActiveId,
+    setError,
+  ]);
+
+
+  const selectInteractionMode = useCallback(
+    async (mode: SessionMode) => {
+      if (!active || busy || active.mode === mode) return;
+      setBusy(true);
+      try {
+        await voiceRef.current?.stop();
+        const updated = await sessionsApi.updateSession(active.id, { mode });
+        setSessions((current) =>
+          current.map((session) => (session.id === updated.id ? updated : session)),
+        );
+      } catch (cause) {
+        setError(errorMessage(cause));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [active, busy, voiceRef, setSessions, setError],
+  );
+
+
+  const toggleVoice = useCallback(async () => {
+    if (!active || active.mode === 'text' || !inferenceRef.current.realtimeAvailable || busy) return;
+    await voiceRef.current
+      ?.toggleCapture(realtimeSessionConfig(active.id))
+      .catch((cause) => setError(errorMessage(cause)));
+  }, [active, busy, voiceRef, realtimeSessionConfig, setError]);
+
+
+  const installOrEnableVoiceOutput = useCallback(async () => {
+    if (voiceComponentBusy) return;
+    setVoiceComponentBusy(true);
+    try {
+      if (voiceComponent?.ready) {
+        const result = await runtimeApi.activateVoiceOutputComponent();
+        if (!result.active)
+          throw new Error(result.error || result.reason || 'Voice output activation failed');
+      } else await runtimeApi.installVoiceOutputComponent();
+      await refreshRuntime(false);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setVoiceComponentBusy(false);
+    }
+  }, [voiceComponentBusy, voiceComponent?.ready, refreshRuntime, setError]);
+
+  return useMemo(
+    () => ({
+      conversation: conversationView,
+      inference,
+      voice,
+      messageActions,
+      generation,
+      generationPhase,
+      busy,
+      recoveryNeeded,
+      send,
+      clearActiveConversation,
+      deleteConversation,
+      deleteAllConversations,
+      selectInteractionMode,
+      toggleVoice,
+      voiceComponentBusy,
+      installOrEnableVoiceOutput,
+    }),
+    [
+      conversationView,
+      inference,
+      voice,
+      messageActions,
+      generation,
+      generationPhase,
+      busy,
+      recoveryNeeded,
+      send,
+      clearActiveConversation,
+      deleteConversation,
+      deleteAllConversations,
+      selectInteractionMode,
+      toggleVoice,
+      voiceComponentBusy,
+      installOrEnableVoiceOutput,
+    ],
+  );
+}
+
+const ChatContext: Context<ReturnType<typeof useChatDomain> | null> =
+  import.meta.hot?.data?.chatContext ?? createContext<ReturnType<typeof useChatDomain> | null>(null);
+if (import.meta.hot?.data) import.meta.hot.data.chatContext = ChatContext;
+
+
+
+
+
+
+export function ChatProvider({ children }: { children: ReactNode }) {
+  return (
+    <ChatAttachmentsProvider>
+      <ChatLifecycleProvider>{children}</ChatLifecycleProvider>
+    </ChatAttachmentsProvider>
+  );
+}
+
+
+function ChatLifecycleProvider({ children }: { children: ReactNode }) {
+  const value = useChatDomain();
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
+}
+
+
+
+
+
+
+export function useChat() {
+  const value = useContext(ChatContext);
+  if (!value) throw new Error('ChatProvider is missing');
+  return value;
+}

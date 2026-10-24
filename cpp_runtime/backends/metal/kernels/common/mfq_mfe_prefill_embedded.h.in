@@ -1,0 +1,37 @@
+#pragma once
+
+namespace mfq::metal::detail {
+
+inline constexpr char kSteelMmaSource[] = R"TI_STEEL(
+@TYLOINFER_STEEL_MMA_SOURCE@
+)TI_STEEL";
+
+inline constexpr char kSteelNaxSource[] = R"TI_NAX_STEEL(
+@TYLOINFER_STEEL_NAX_SOURCE@
+)TI_NAX_STEEL";
+
+inline constexpr char kSteelAttentionSource[] = R"TI_ATTN_STEEL(
+@TYLOINFER_STEEL_ATTN_SOURCE@
+)TI_ATTN_STEEL";
+
+inline constexpr char kMfePrefillSource[] = R"TI_MFE(
+@TYLOINFER_MFE_PREFILL_SOURCE@
+)TI_MFE";
+
+inline constexpr char kNintPrefillSource[] = R"TI_NINT_PREFILL(
+@TYLOINFER_NINT_PREFILL_SOURCE@
+)TI_NINT_PREFILL";
+
+inline constexpr char kDsaSparsePrefillSource[] = R"TI_SPARSE(
+@TYLOINFER_DSA_SPARSE_PREFILL_SOURCE@
+)TI_SPARSE";
+
+inline constexpr char kSparseBlockGqaSource[] = R"TI_BLOCK_GQA(
+@TYLOINFER_SPARSE_BLOCK_GQA_SOURCE@
+)TI_BLOCK_GQA";
+
+inline constexpr char kCsa2PrefillSource[] = R"TYLOINFER_CSA2(
+@TYLOINFER_CSA2_PREFILL_SOURCE@
+)TYLOINFER_CSA2";
+
+} // namespace mfq::metal::detail

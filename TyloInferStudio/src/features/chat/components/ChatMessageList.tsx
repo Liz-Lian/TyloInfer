@@ -1,0 +1,92 @@
+
+import { lazy, Suspense } from 'react';
+import { useSettings } from '../../settings/SettingsProvider';
+import { useConversationSelector } from '../state/conversationStore';
+import { Icon } from '../../../app/display';
+import { AudioClip } from '../../voice/AudioClip';
+import { renderMarkdown } from '../MessageMarkdown';
+import { StreamingMessage } from './StreamingMessage';
+import type { ChatPageState } from '../hooks/useChatPageState';
+
+const SavedMessageList = lazy(() =>
+  import('../SavedMessageList').then((module) => ({ default: module.SavedMessageList })),
+);
+
+
+export function ChatMessageList({ page }: { page: ChatPageState }) {
+  const { tr } = useSettings();
+  const messages = useConversationSelector((state) => state.messages);
+  const responses = useConversationSelector((state) => state.responses);
+  const {
+    active, activeId, chat, editDraft, setEditDraft, saveCurrentEdit,
+    createSession, chooseModelDirectory, scroll,
+  } = page;
+  const { voice, generation, inference, messageActions, busy } = chat;
+  const currentVoiceMessages = voice.voiceMessages.filter((message) => message.sessionId === activeId);
+  const live = generation.getSnapshot().live;
+  return (
+    <div className="message-scroller" onScroll={scroll.handleScroll} ref={scroll.scrollerRef}>
+      <div className="message-list">
+        {!messages.length && !currentVoiceMessages.length && !live && (
+          <div className="welcome">
+            <Icon name="chat" size={34} />
+            {!active ? (
+              <>
+                <h1>{tr('开始对话', 'Start a conversation')}</h1>
+                <p>{tr('连接到当前配置的 TyloInfer 服务。', 'Connected to your configured TyloInfer service.')}</p>
+                <button className="open-model-primary" disabled={busy} onClick={() => void createSession()} type="button">
+                  {tr('开始对话', 'Start chat')}
+                </button>
+              </>
+            ) : !chat.conversation.modelAvailable ? (
+              <>
+                <h1>{inference.selectedModelLoading
+                  ? tr('模型加载中', 'Model loading')
+                  : tr('尚未加载模型', 'No model loaded')}</h1>
+                <p>{inference.selectedModelLoading
+                  ? tr('加载完成后即可开始对话。', 'Chat becomes available as soon as loading completes.')
+                  : tr('选择本地检查点后即可开始对话。', 'Choose a local checkpoint to use the inference playground.')}</p>
+                {!inference.selectedModelLoading && (
+                  <button className="open-model-primary" disabled={busy} onClick={chooseModelDirectory} type="button">
+                    <Icon name="folder" />{tr('选择模型', 'Choose model')}
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <h1>{tr('开始对话', 'Start a conversation')}</h1>
+                <p>{tr('连接到当前配置的 TyloInfer 服务。', 'Connected to your configured TyloInfer service.')}</p>
+              </>
+            )}
+          </div>
+        )}
+        <Suspense fallback={<p role="status">{tr('正在加载消息…', 'Loading messages…')}</p>}>
+          <SavedMessageList
+            messages={messages}
+            responses={responses}
+            busy={busy}
+            tr={tr}
+            editDraft={editDraft}
+            setEditDraft={setEditDraft}
+            actions={{ saveEdit: saveCurrentEdit, copyMessage: messageActions.copyMessage,
+              regenerate: messageActions.regenerate }}
+          />
+        </Suspense>
+        {currentVoiceMessages.map((message) => (
+          <article className={`message message-${message.role}`} key={message.id}>
+            <div className="message-body">
+              {message.text && renderMarkdown(message.text, false, message.role === 'assistant')}
+              {message.audioId && <AudioClip audioId={message.audioId} />}
+            </div>
+          </article>
+        ))}
+        {voice.liveVoice?.sessionId === activeId && voice.liveVoice.text && (
+          <article className="message message-assistant live-message">
+            <div className="message-body">{renderMarkdown(voice.liveVoice.text, true, true)}</div>
+          </article>
+        )}
+        <StreamingMessage controller={generation} sessionId={activeId} tr={tr} />
+      </div>
+    </div>
+  );
+}

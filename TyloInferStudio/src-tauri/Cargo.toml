@@ -1,0 +1,26 @@
+[package]
+name = "tyloinfer"
+version = "0.1.0"
+description = "TyloInfer desktop client"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+icns = "0.4.0"
+ico = "0.5.0"
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls", "system-proxy"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+tauri = { version = "2.11.5", features = [] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+url = "2.5.8"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+zip = { version = "8.6", default-features = false, features = ["deflate"] }

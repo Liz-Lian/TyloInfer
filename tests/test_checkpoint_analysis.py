@@ -1,0 +1,453 @@
+from __future__ import annotations
+
+import asyncio
+import math
+import struct
+from pathlib import Path
+
+import httpx
+import numpy as np
+import pytest
+
+from tyloinfer.formats.assets import MODEL_CONFIG_ASSET
+from tyloinfer.formats.header import FileHeader
+from tyloinfer.formats.inspection import inspect_tensor
+from tyloinfer.formats.io import MMapTensorStore, save
+from tyloinfer.formats.tq import TQTensor, TQExpertTensor
+from tyloinfer.server.api import create_app
+from tyloinfer.server.services.checkpoint_analysis import analyze_checkpoint
+from tyloinfer.server.services.service import ServerService
+from tyloinfer.server.state.catalog import ModelCatalog
+from tyloinfer.server.state.storage import SessionStore
+from tyloinfer.tools.split_mfq import split_mfq
+
+
+def tq(bits: list[int]) -> TQTensor:
+    q = np.asarray(bits, dtype=np.uint64)
+    words = q * 8
+    descriptors = np.r_[np.uint64(0), np.cumsum(words[:-1])]
+    descriptors |= (q - 1) << np.uint64(32)
+    descriptors |= np.uint64(0x3c00) << np.uint64(40)
+    return TQTensor(len(q), 256, 16, False, descriptors,
+        np.full(len(q) * 8, 0x89, dtype=np.uint8), np.zeros(int(words.sum()) * 4, dtype=np.uint8))
+
+
+def checkpoint(path: Path, *, fused: bool = False) -> None:
+    import json
+    outputs = 4 if fused else 2
+    pool = TQExpertTensor((tq([8] * outputs), tq([2] * outputs)), 16)
+    tensors = {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": "qwen4_exp_text", "num_hidden_layers": 2,
+            "hidden_size": 16, "num_experts": 2, "num_experts_per_tok": 1,
+            "num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 8,
+            "max_position_embeddings": 32768, "layer_types": ["linear_attention", "full_attention"],
+            "indexer_head_dim": 4, "indexer_compress_ratio": 4}).encode(),
+        "model.block.0.mlp.experts.gate_up.weight" if fused else "model.block.0.mlp.experts.gate.weight": pool,
+        "model.block.0.linear_attention.qkv.weight": np.ones((8, 16), dtype=np.float16),
+        "model.block.1.attention.indexer.query_key.weight": tq([4, 4]),
+        "model.block.1.attention.query.weight": tq([6, 6]),
+        "model.embedding.weight": np.ones((16, 16), dtype=np.float16),
+        "model.block.0.position_embedding.ngram.layer_multipliers": np.arange(4, dtype=np.int64),
+    }
+    save(path, FileHeader(model_arch="test", version=2), tensors)
+
+
+def test_tq_inspection_uses_each_rows_precision() -> None:
+    value = tq([2, 2, 8, 8])
+    payload = value.to_bytes()
+    with memoryview(payload) as blob:
+        result = inspect_tensor("TQ", blob, rows=True)
+    assert result.shape == (4, 256)
+    assert result.family == "TQ"
+    assert result.granularity == "row"
+    assert result.row_bytes.sum() == pytest.approx(len(payload))
+    assert result.row_bytes[2] > result.row_bytes[0]
+    assert result.row_bytes[2] - result.row_bytes[0] == 256 * 6 / 8
+
+
+@pytest.mark.parametrize('shapes', [[], 123, 'not-json', {'weight': 3}])
+def test_invalid_tq_shape_metadata_is_a_warning_not_a_server_error(tmp_path: Path, shapes) -> None:
+    path = tmp_path / 'invalid-shape.tq'
+    save(path, FileHeader(model_arch='test', extra={'tq_shapes': shapes}), {'weight': tq([2, 5])})
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    assert len([warning for warning in result.warnings if warning.startswith('weight:')]) == 1
+    assert result.tensors[0].bpw is None
+
+
+@pytest.mark.parametrize("fused", [False, True])
+def test_checkpoint_metadata_preserves_expert_ids_and_encoded_budget(tmp_path: Path, monkeypatch, fused: bool) -> None:
+    path = tmp_path / "model.tq"
+    checkpoint(path, fused=fused)
+    artifact = ModelCatalog._inspect(tmp_path, path)
+    monkeypatch.setattr(MMapTensorStore, "__getitem__", lambda *_: pytest.fail("analysis must not decode weights"))
+    result = analyze_checkpoint(artifact)
+    assert result.layer_count == 2
+    assert result.attention_distribution == {"GDN": [0], "QSA": [1]}
+    assert result.attention_heads == 2
+    assert result.kv_heads == 1
+    assert result.cache_profile.max_context == 32768
+    # Metal's rolling indexer tail has fixed storage; only pooled index rows
+    # grow with context. The CUDA full indexer is priced separately.
+    assert result.cache_profile.fixed_bytes == (4 + 5) * 4 * 2 + 2
+    assert [(item.name, item.bytes) for item in result.cache_profile.fixed_components] == [
+        ("indexer_tail", 74),
+    ]
+    assert {item.group for item in result.cache_profile.components} == {"QSA"}
+    assert [(item.name, item.bytes_per_row) for item in result.cache_profile.components] == [
+        ("raw_kv", 32), ("indexer_pooled", 16),
+    ]
+    assert not result.warnings
+    assert len(result.experts) == (4 if fused else 2)
+    first = next(item for item in result.experts if item.expert == 0 and item.projection == "gate")
+    second = next(item for item in result.experts if item.expert == 1 and item.projection == "gate")
+    assert first.bpw > second.bpw
+    routed = [item for item in result.tensors if item.category == "routed_experts"]
+    assert sum(item.stored_bytes for item in result.experts) == pytest.approx(sum(item.stored_bytes for item in routed))
+    assert sum(item.parameters for item in result.experts) == sum(item.parameters for item in routed)
+    assert result.average_bpw == pytest.approx(result.stored_bytes * 8 / result.parameters)
+    assert all("layer_multipliers" not in item.name for item in result.tensors)
+    assert result.parameters == sum(math.prod(item.shape) for item in result.tensors)
+
+
+def test_fused_gate_up_does_not_assume_identical_row_precision(tmp_path: Path) -> None:
+    path = tmp_path / "fused.tq"
+    pool = TQExpertTensor((tq([2, 2, 8, 8]),), 16)
+    save(path, FileHeader(model_arch="test"), {"model.block.0.mlp.experts.gate_up.weight": pool})
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    assert result.experts[0].projection == "gate"
+    assert result.experts[1].projection == "up"
+    assert result.experts[1].bpw > result.experts[0].bpw
+    assert result.advanced.ffn_activation is None
+    assert result.advanced.hc_lowrank is None
+    assert result.advanced.active_blocks is None
+    assert result.advanced.expert_hidden_size == 2
+
+
+@pytest.mark.parametrize("source_names", [False, True])
+@pytest.mark.parametrize("dtype", [np.float16, np.float32])
+def test_full_model_bpw_excludes_predictor_and_vision_only(tmp_path: Path, source_names: bool, dtype) -> None:
+    import json
+    path = tmp_path / "model.tq"
+    predictor = "mtp.fc_hidden.weight" if source_names else "predictor.fusion.hidden.weight"
+    vision = "model.visual.patch_embed.proj.weight" if source_names else "vision.patch_embedding.weight"
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": "qwen4_exp", "text_config": {
+            "model_type": "qwen4_exp_text", "num_hidden_layers": 1, "mtp_num_hidden_layers": 1}}).encode(),
+        "model.block.0.attention.query.weight": tq([4, 4]),
+        "model.embedding.weight": np.ones((8, 16), dtype=np.float16),
+        "model.output.weight": np.ones((8, 16), dtype=np.float16),
+        "model.block.0.position_embedding.ngram.shard.0.weight": np.ones((8, 16), dtype=np.float16),
+        predictor: np.ones((32, 16), dtype=dtype),
+        vision: np.ones((32, 16), dtype=dtype),
+    })
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    main = [item for item in result.tensors if item.category not in {"predictor", "vision"}]
+    assert {item.category for item in main} == {"attention", "embedding", "lm_head", "ple"}
+    assert len(main) == 4
+    assert result.average_bpw == pytest.approx(8 * sum(item.stored_bytes for item in main) / sum(item.parameters for item in main))
+    assert result.average_bpw != pytest.approx(8 * result.stored_bytes / result.parameters)
+    assert result.parameters == sum(item.parameters for item in result.tensors)
+    assert result.stored_bytes == sum(item.stored_bytes for item in result.tensors)
+    assert {item.category for item in result.projections} >= {"predictor", "vision"}
+    assert all(item.average_bpw is not None for item in result.projections)
+    assert not result.warnings
+
+
+@pytest.mark.parametrize("name,excluded", [
+    ("predictor.block.0.mlp.experts.down.weight", True),
+    ("vision.block.0.attention.query.weight", True),
+    ("model.block.0.attention.key.weight", False),
+])
+def test_bpw_completeness_check_uses_only_main_weights(tmp_path: Path, name: str, excluded: bool) -> None:
+    path = tmp_path / "model.tq"
+    value = tq([4] * 4)
+    save(path, FileHeader(model_arch="test", extra={"tq_shapes": {name: [4, 513]}}), {
+        "model.block.0.attention.query.weight": np.ones((4, 16), dtype=np.float16),
+        name: value,
+    })
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    main = next(item for item in result.tensors if item.name == "model.block.0.attention.query.weight")
+    if excluded:
+        assert result.average_bpw == pytest.approx(8 * main.stored_bytes / main.parameters)
+    else:
+        assert result.average_bpw is None
+    assert any(name in warning for warning in result.warnings)
+    assert next(item for item in result.tensors if item.name == name).bpw is None
+
+
+def test_auxiliary_only_checkpoint_has_no_full_model_bpw(tmp_path: Path) -> None:
+    path = tmp_path / "auxiliary.tq"
+    save(path, FileHeader(model_arch="test"), {
+        "predictor.fusion.weight": np.ones((4, 16), dtype=np.float16),
+        "vision.patch_embedding.weight": np.ones((4, 16), dtype=np.float16),
+    })
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    assert result.average_bpw is None
+    assert result.parameters > 0
+    assert all(item.average_bpw is not None for item in result.projections)
+
+
+def test_hf_full_model_bpw_excludes_mapped_predictor_and_vision(tmp_path: Path) -> None:
+    import json
+
+    config = {"model_type": "qwen4_exp", "text_config": {
+        "model_type": "qwen4_exp_text", "num_hidden_layers": 1, "mtp_num_hidden_layers": 1}}
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    tensors = {
+        "model.language_model.embed_tokens.weight": np.ones((4, 16), dtype=np.float16),
+        "mtp.fc_hidden.weight": np.ones((32, 16), dtype=np.float32),
+        "model.visual.patch_embed.proj.weight": np.ones((32, 16), dtype=np.float32),
+    }
+    header, payloads, offset = {}, [], 0
+    for name, tensor in tensors.items():
+        payload = tensor.tobytes()
+        header[name] = {"dtype": "F16" if tensor.dtype == np.float16 else "F32",
+            "shape": list(tensor.shape), "data_offsets": [offset, offset + len(payload)]}
+        payloads.append(payload)
+        offset += len(payload)
+    encoded = json.dumps(header).encode()
+    encoded += b" " * (-len(encoded) % 8)
+    (tmp_path / "model.safetensors").write_bytes(struct.pack("<Q", len(encoded)) + encoded + b"".join(payloads))
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, tmp_path))
+    assert result.average_bpw == 16
+    assert result.average_bpw != pytest.approx(8 * result.stored_bytes / result.parameters)
+    assert {item.category for item in result.tensors} == {"embedding", "predictor", "vision"}
+    assert {item.category: item.average_bpw for item in result.projections} == {
+        "embedding": 16, "predictor": 32, "vision": 32}
+
+
+def test_advanced_qwen_details_distinguish_activations_and_sparse_budget(tmp_path: Path) -> None:
+    import json
+    path = tmp_path / "details.tq"
+    config = {"model_type": "qwen4_exp", "text_config": {
+        "model_type": "qwen4_exp_text", "hidden_size": 16, "hidden_act": "silu", "output_gate_type": "sigmoid",
+        "moe_intermediate_size": 2, "shared_expert_intermediate_size": 2, "hc_count": 4, "hc_lowrank": 3,
+        "indexer_compress_ratio": 4, "indexer_budget": 2048, "indexer_n_heads": 4, "indexer_kv_heads": 1,
+        "indexer_head_dim": 128, "num_attention_heads": 4, "num_key_value_heads": 2,
+        "linear_key_head_dim": 4, "linear_value_head_dim": 8, "linear_conv_kernel_dim": 4,
+        "linear_num_key_heads": 2, "linear_num_value_heads": 4,
+        "ngram_size": 3, "heads_per_ngram": 8, "ple_conv_kernel_size": 4, "mtp_num_hidden_layers": 1,
+        "max_position_embeddings": 262144, "vocab_size": 16, "rms_norm_eps": 1e-6,
+        "rope_parameters": {"rope_theta": 10000000, "partial_rotary_factor": 0.25}},
+        "vision_config": {"hidden_act": "gelu"}}
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps(config).encode(),
+        "model.block.0.mlp.shared_expert.gate.weight": np.ones((2, 16), dtype=np.float16),
+        "model.block.0.linear_attention.qkv.weight": np.ones((8, 16), dtype=np.float16),
+        "model.block.0.linear_attention.norm.weight": np.ones(8, dtype=np.float16),
+        "model.block.0.attention.mhc.pre.norm.weight": np.ones(64, dtype=np.float16),
+        "model.block.0.mlp.mhc.pre.norm.weight": np.ones(64, dtype=np.float16),
+        "model.block.1.attention.indexer.query_key.weight": np.ones((4, 16), dtype=np.float16),
+        "model.block.1.attention.query_norm.weight": np.ones(8, dtype=np.float16),
+        "model.block.1.attention.indexer.key_norm.weight": np.ones(4, dtype=np.float16),
+        "model.block.1.position_embedding.key.weight": np.ones((2, 16), dtype=np.float16),
+        "model.block.1.position_embedding.conv_norm.weight": np.ones(64, dtype=np.float16),
+        "predictor.layers.0.weight": np.ones((2, 16), dtype=np.float16),
+        "predictor.hidden_norm.weight": np.ones(64, dtype=np.float16),
+    })
+    info = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path)).advanced
+    assert info.ffn_activation == "silu"
+    assert info.router_activation == "softmax"
+    assert info.router_normalization == "l1_topk"
+    assert info.gdn_conv_activation == "silu"
+    assert info.gdn_conv_type == "causal_depthwise_1d"
+    assert info.gdn_conv_stride == info.gdn_conv_dilation == 1
+    assert info.gdn_gate_activation == "sigmoid"
+    assert info.qsa_gate_activation == "sigmoid"
+    assert info.residual_gate_activation == "sigmoid"
+    assert "attention_gate_activation" not in info.model_dump()
+    assert info.shared_expert_count == 1
+    assert info.expert_hidden_size == info.shared_expert_hidden_size == 2
+    assert (info.hc_count, info.hc_dim, info.hc_lowrank) == (4, 16, 3)
+    assert (info.compression_stride, info.active_blocks, info.active_tokens) == (4, 512, 2048)
+    assert (info.indexer_query_heads, info.indexer_kv_heads, info.indexer_head_dim) == (4, 1, 128)
+    assert (info.linear_key_head_dim, info.linear_value_head_dim, info.linear_conv_kernel) == (4, 8, 4)
+    assert info.ple_layer_ids == [1]
+    assert info.ple_conv_type == "causal_depthwise_1d"
+    assert info.ple_conv_stride == 1
+    assert info.ple_conv_dilation == 3
+    assert info.ple_conv_activation == "silu"
+    assert info.predictor_layers == 1
+    assert info.rope_theta == 10000000
+    assert info.rope_partial_factor == 0.25
+    norms = {(item.component, item.position): item for item in info.normalizations}
+    assert norms["gdn", "output"].kind == "GroupedRMSNorm"
+    assert norms["gdn", "output"].dimension == 8
+    assert norms["gdn", "output"].groups == 4
+    assert norms["gdn", "query"].kind == "L2Norm"
+    assert norms["gdn", "query"].dimension == 4
+    assert norms["gdn", "key"].epsilon == 1e-6
+    assert norms["qsa", "query"].kind == "GroupedRMSNorm"
+    assert norms["qsa", "query"].dimension == 8
+    assert norms["qsa", "query"].groups == 4
+    assert norms["indexer", "key"].dimension == 4
+    assert norms["indexer", "key"].kind == "GroupedRMSNorm"
+    assert norms["indexer", "key"].groups == 1
+    for component, position in (("residual", "attention_input"), ("residual", "ffn_input"), ("ple", "conv")):
+        assert norms[component, position].kind == "GroupedRMSNorm"
+        assert norms[component, position].dimension == 16
+        assert norms[component, position].groups == 4
+        assert norms[component, position].epsilon == 1e-6
+    assert norms["predictor", "hidden_norm"].kind == "RMSNorm"
+    assert norms["predictor", "hidden_norm"].dimension == 64
+    assert norms["predictor", "hidden_norm"].groups is None
+
+
+def test_advanced_shared_expert_bank_and_layerwise_compression(tmp_path: Path) -> None:
+    import json
+    path = tmp_path / "bank.tq"
+    config = {"model_type": "test", "moe_intermediate_size": 2, "n_shared_experts": 3,
+        "compress_ratios": [4, 128, 0, False, "4"], "index_topk": 2048, "index_n_heads": 8,
+        "index_head_dim": 128, "hc_mult": 4, "hidden_size": 16, "scoring_func": "sqrtsoftplus",
+        "mtp_num_hidden_layers": 1, "hidden_act": "gelu"}
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps(config).encode(),
+        "model.block.0.mlp.shared_expert.gate_up.weight": np.ones((12, 16), dtype=np.float16),
+    })
+    info = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path)).advanced
+    assert (info.shared_expert_count, info.shared_expert_hidden_size) == (3, 2)
+    assert info.compression_strides == [4, 128]
+    assert info.compression_stride is None
+    assert info.active_blocks == 2048
+    assert info.active_tokens is None
+    assert info.ffn_activation == "gelu"
+    assert info.router_activation == "sqrtsoftplus"
+    assert info.hc_lowrank is None
+    assert info.predictor_layers == 0
+
+
+def test_gdn_gate_does_not_override_qsa_gate(tmp_path: Path) -> None:
+    import json
+    path = tmp_path / "gates.tq"
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": "qwen4_exp_text", "hidden_act": "silu", "output_gate_type": "silu"}).encode(),
+        "model.block.0.linear_attention.qkv.weight": np.ones((4, 16), dtype=np.float16),
+        "model.block.1.attention.indexer.query_key.weight": np.ones((4, 16), dtype=np.float16),
+    })
+    info = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path)).advanced
+    assert info.gdn_gate_activation == "silu"
+    assert info.qsa_gate_activation == "sigmoid"
+    assert info.residual_gate_activation is None
+
+
+@pytest.mark.parametrize("architecture", ["qwen3_5_text", "qwen3_5_moe_text"])
+def test_qwen35_gdn_output_gate_is_silu(tmp_path: Path, architecture: str) -> None:
+    import json
+    path = tmp_path / "qwen35.tq"
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": architecture, "hidden_act": "silu", "output_gate_type": "sigmoid",
+            "hidden_size": 16, "num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 4, "linear_key_head_dim": 4,
+            "linear_value_head_dim": 8, "rms_norm_eps": 1e-5}).encode(),
+        "model.block.0.linear_attention.qkv.weight": np.ones((4, 16), dtype=np.float16),
+        "model.block.0.attention.norm.weight": np.ones(16, dtype=np.float16),
+        "model.block.0.linear_attention.norm.weight": np.ones(8, dtype=np.float16),
+        "model.block.1.attention.query.weight": np.ones((16, 16), dtype=np.float16),
+        "model.block.1.attention.query_norm.weight": np.ones(4, dtype=np.float16),
+        "model.block.1.attention.key_norm.weight": np.ones(4, dtype=np.float16),
+        "predictor.block.0.attention.query_norm.weight": np.ones(4, dtype=np.float16),
+    })
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    info = result.advanced
+    assert info.gdn_gate_activation == "silu"
+    assert info.gdn_conv_activation == "silu"
+    assert info.full_attention_gate_activation == "sigmoid"
+    assert info.qsa_gate_activation is None
+    assert result.attention_distribution == {"GDN": [0], "GQA": [1]}
+    norms = {(item.component, item.position): item for item in info.normalizations}
+    assert norms["gdn", "input"].dimension == 16
+    assert norms["gdn", "output"].epsilon == 1e-5
+    assert norms["gdn", "query"].epsilon == norms["gdn", "key"].epsilon == 1e-6
+    for position, groups in (("query", 2), ("key", 1)):
+        assert norms["attention", position].kind == "GroupedRMSNorm"
+        assert norms["attention", position].dimension == 4
+        assert norms["attention", position].groups == groups
+    assert norms["gdn", "input"].kind == "RMSNorm"
+    assert norms["gdn", "input"].groups is None
+    assert norms["predictor", "block.0.attention.query_norm"].kind == "GroupedRMSNorm"
+    assert norms["predictor", "block.0.attention.query_norm"].groups == 2
+
+
+def test_deepseek_router_reports_sqrt_softplus_and_selected_l1(tmp_path: Path) -> None:
+    import json
+    path = tmp_path / "deepseek.tq"
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": "deepseek_v4", "scoring_func": "sqrtsoftplus",
+            "norm_topk_prob": True, "hc_mult": 4, "hidden_size": 16, "rms_norm_eps": 1e-6}).encode(),
+        "model.block.0.mlp.router.weight": np.ones((4, 16), dtype=np.float16),
+        "model.block.0.attention.norm.weight": np.ones(16, dtype=np.float16),
+    })
+    info = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path)).advanced
+    assert info.router_activation == "sqrtsoftplus"
+    assert info.router_normalization == "l1_topk"
+    assert info.normalizations[0].kind == "RMSNorm"
+    assert info.normalizations[0].dimension == 16
+    assert info.normalizations[0].groups is None
+
+
+@pytest.mark.parametrize("query_heads,kv_heads,kind", [(8, 2, "GQA"), (8, 8, "MHA"), (8, None, "Attention"), (8, 3, "Attention")])
+def test_full_attention_type_uses_reported_head_geometry(tmp_path: Path, query_heads: int, kv_heads: int | None, kind: str) -> None:
+    import json
+    path = tmp_path / "attention.tq"
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": "qwen3_5_text", "num_attention_heads": query_heads,
+            "num_key_value_heads": kv_heads}).encode(),
+        "model.block.0.attention.query.weight": np.ones((16, 16), dtype=np.float16),
+    })
+    result = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path))
+    assert result.attention_distribution == {kind: [0]}
+    assert result.layers[0].attention_type == kind
+
+
+def test_norm_profiles_preserve_layer_variants_and_unknown_types(tmp_path: Path) -> None:
+    import json
+    path = tmp_path / "norms.tq"
+    save(path, FileHeader(model_arch="test"), {
+        MODEL_CONFIG_ASSET: json.dumps({"model_type": "unknown", "norm_topk_prob": False}).encode(),
+        "model.block.0.mlp.norm.weight": np.ones(16, dtype=np.float16),
+        "model.block.1.mlp.norm.weight": np.ones(16, dtype=np.float16),
+        "model.block.2.mlp.norm.weight": np.ones(8, dtype=np.float16),
+    })
+    info = analyze_checkpoint(ModelCatalog._inspect(tmp_path, path)).advanced
+    assert info.router_normalization == "none"
+    assert len(info.normalizations) == 2
+    assert info.normalizations[0].layers == [0, 1]
+    assert info.normalizations[1].layers == [2]
+    assert all(item.kind is None and item.epsilon is None for item in info.normalizations)
+
+
+def test_analysis_api_handles_shards_unknown_ids_and_no_catalog(tmp_path: Path) -> None:
+    class Backend:
+        async def aclose(self):
+            pass
+
+    async def run():
+        path = tmp_path / "weights.tq"
+        checkpoint(path)
+        output = tmp_path / "library"
+        output.mkdir()
+        split_mfq(path, output / "split.tq", split_max_tensors=2)
+        catalog = ModelCatalog([output])
+        artifact = (await catalog.list()).data[0]
+        service = ServerService(SessionStore(tmp_path / "server.sqlite3"), Backend(), catalog=catalog)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test") as client:
+                response = await client.get(f"/api/v1/models/{artifact.id}/analysis")
+                assert response.status_code == 200
+                body = response.json()
+                assert body["model_id"] == artifact.id
+                assert body["layer_count"] == 2
+                assert str(tmp_path) not in response.text
+                assert (await client.get(f"/api/v1/models/{'0' * 32}/analysis")).status_code == 404
+                sorted(output.glob("*.tq"))[-1].unlink()
+                incomplete = (await catalog.list(refresh=True)).data[0]
+                assert not incomplete.complete
+                assert (await client.get(f"/api/v1/models/{incomplete.id}/analysis")).status_code == 422
+        finally:
+            await service.aclose()
+        service = ServerService(SessionStore(tmp_path / "empty.sqlite3"), Backend())
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test") as client:
+                assert (await client.get(f"/api/v1/models/{artifact.id}/analysis")).status_code == 501
+        finally:
+            await service.aclose()
+    asyncio.run(run())

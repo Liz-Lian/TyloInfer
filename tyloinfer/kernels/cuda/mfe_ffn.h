@@ -1,0 +1,136 @@
+#pragma once
+#include <cuda_runtime_api.h>
+#include <cuda_fp16.h>
+#include <cstdint>
+#include <cstddef>
+#include <algorithm>
+#include "shared_storage.cuh"
+
+namespace mfq::cuda {
+struct MfePackedProjection {
+    const void* fields[9]{};
+    std::int64_t sizes[3]{};
+    const std::int32_t* expert_local=nullptr;
+    int family=0; // 1: canonical NINT; 2: packed NVQ; 3: canonical MXFP4.
+    int local_experts=0,output_rows=0,input_width=0,groups=0,group_size=0;
+    int format=0,sub_bits=0,sign_mode=0,nvec=0,nsign=0;
+    int q_expert_stride=0,fallback=-1;
+    int nint_late_bits=0; // Checked routed width; -1 uses ordinary chunk math, 0 retains existing math.
+    // Shared NINT: -1 dense q8 chunk order, 1/4 dense grouped order, 0 routed.
+    int dense_reduction_warps=0;
+    int nvq_word_signs=0;
+    // E8 stream replaces index/sign/state payloads without padding. Enabled
+    // by the sealed-preload loader after lossless conversion.
+    bool e8_dense_groups=false;
+    // D4 uses paired indices per sign mask.
+    bool d4_dense_groups=false;
+    // Experimental probes: proven expert-local bit offsets. Production keeps
+    // the verified wide compact reader; this field only reuses padding.
+    bool dense_narrow=false;
+    // Checked fixed-width NINT group decoder; reuses existing descriptor padding.
+    bool nint_whole=false;
+    // Sixteen JSC states, two bits per bank; occupies existing padding.
+    std::uint32_t nvq_bank_map=0;
+    std::int64_t decode_record_bytes=0;
+};
+static_assert(sizeof(MfePackedProjection)==184 && offsetof(MfePackedProjection,decode_record_bytes)==176);
+static_assert(std::is_trivially_default_constructible_v<SharedStorage<MfePackedProjection,3>>);
+static_assert(sizeof(SharedStorage<MfePackedProjection,3>)==3*sizeof(MfePackedProjection));
+struct MfeInputQuantization {
+    std::int8_t* values=nullptr;
+    float* scales=nullptr;
+    int groups=0,group_size=0;
+};
+struct MfeFfnBatch {
+    const MfePackedProjection* projections=nullptr;
+    const std::int32_t* cohort_by_expert=nullptr;
+    int projection_offsets[3]{},projection_counts[3]{};
+    const MfePackedProjection* shared=nullptr; // Gate, Up, Down.
+    const __half* input=nullptr;
+    const std::int32_t* ids=nullptr;
+    const float* route_weights=nullptr;
+    std::int32_t* kinds=nullptr; // 0: CPU; positive: GPU, stored in VRAM.
+    const std::int32_t* host_kinds=nullptr;
+    const std::int32_t* host_transfer_index=nullptr;
+    const std::uint32_t* host_aborted=nullptr;
+    const std::uint32_t* plan_ready=nullptr;
+    const std::uint32_t* transfer_ready=nullptr;
+    const MfePackedProjection* transferred=nullptr;
+    std::int32_t* transfer_index=nullptr;
+    const __half* cpu_pairs=nullptr;
+    const std::uint32_t* cpu_ready=nullptr;
+    std::uint32_t* aborted=nullptr;
+    const void* shared_gate=nullptr; // Already evaluated in its original dtype.
+    const __half* sigmoid_table=nullptr;
+    __half* hidden=nullptr;
+    std::int8_t* hidden_quantized=nullptr;
+    float* hidden_scales=nullptr;
+    std::uint32_t* completion=nullptr;
+    __half* resident_pairs=nullptr;
+    // Sparse expert groups built from this call's device route IDs. Each group
+    // holds up to eight original hidden slots; no weight expansion is stored.
+    std::int32_t* token_group_counts=nullptr;
+    std::int32_t* token_group_slots=nullptr;
+    // Four count buckets: [count, original group indices...], for capacities
+    // 1/2/4/8. The fixed graph grid uses each bucket's safe occupancy bound.
+    std::int32_t* token_group_buckets=nullptr;
+    int token_group_capacity=0,token_groups=0;
+    void* output=nullptr;
+    int tokens=0,routes=0,experts=0,input_width=0,output_width=0;
+    int intermediate=0,shared_intermediate=0;
+    float swiglu_limit=0;
+    // Expert activation: 0 is silu(gate)*up, 1 is relu(up)^2 with no gate.
+    // A relu-squared bank has no gate descriptor: projection_counts[0] is 0
+    // for routed experts and projection() hides the shared gate slot.
+    int expert_activation=0,shared_activation=0;
+    // Immutable family metadata across resident/transfer views. Raw callers
+    // default to the complete decoder; the runtime computes its actual mask.
+    std::uint32_t nvq_format_mask=0x3fffeu;
+    int hidden_stride=0,quantized_stride=0,scale_stride=0;
+    bool shared_product_half=false,shared_gate_bfloat=false,output_float=false;
+    bool output_pairs=false;
+    bool shared_dense_math=false;
+    bool resident_plan_overlap=false;
+    bool warp_multi_sum=false;
+    // Immutable descriptor contract, including shared and transfer prototypes.
+    // Raw callers retain all arithmetic branches unless they establish it.
+    bool default_math=false;
+    // All E8 resident views and transfer prototypes permit narrow metadata.
+    bool e8_narrow=false;
+    // All compact E8/D4 resident and transfer views prove local decoder bounds.
+    bool compact_nvq=false;
+    bool token_group_aligned_gu=false;
+    // Every projection proves the short grouped decoder's arithmetic and
+    // compact expert-local address bounds; raw callers retain the wide path.
+    bool token_group_compact=false;
+};
+#ifdef __CUDACC__
+__device__ __forceinline__ __half mfe_ffn_swiglu(const MfeFfnBatch& b,__half gate,__half up,
+        const __half* table,bool shared=false) {
+    if((shared?b.shared_activation:b.expert_activation)==1) {
+        const float positive=fmaxf(__half2float(up),0.0f);
+        return __float2half_rn(positive*positive);
+    }
+    if(b.swiglu_limit>0) {
+        const float g=fminf(__half2float(gate),b.swiglu_limit);
+        const float u=fminf(fmaxf(__half2float(up),-b.swiglu_limit),b.swiglu_limit);
+        return __float2half_rn((g/(1.0f+expf(-g)))*u);
+    }
+    const auto activated=__float2half_rn(__half2float(gate)*__half2float(table[__half_as_ushort(gate)]));
+    return __float2half_rn(__half2float(activated)*__half2float(up));
+}
+#endif
+inline int mfe_token_group_bound(const MfeFfnBatch& b,int capacity) {
+    return b.token_group_buckets ?
+        std::min(b.token_groups,b.tokens*(b.routes+int(b.shared!=nullptr))/(capacity==1?1:capacity/2+1)):
+        b.token_groups;
+}
+void mfe_ffn_prepare(const MfeFfnBatch&,const MfeInputQuantization*,int count,int groups,cudaStream_t);
+void mfe_ffn_gate_up(const MfeFfnBatch&,cudaStream_t);
+void mfe_ffn_resident(const MfeFfnBatch&,cudaStream_t);
+void mfe_ffn_wait_transfer(const MfeFfnBatch&,cudaStream_t);
+void mfe_ffn_transferred(const MfeFfnBatch&,cudaStream_t);
+void mfe_ffn_wait_cpu(const MfeFfnBatch&,cudaStream_t);
+void mfe_ffn_down_reduce_compute(const MfeFfnBatch&,cudaStream_t);
+void mfe_ffn_down_reduce(const MfeFfnBatch&,cudaStream_t);
+}

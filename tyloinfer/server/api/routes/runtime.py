@@ -1,0 +1,579 @@
+"""Runtime profile, instance, cache, component, and realtime routes."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Query, Request, Response, WebSocket, WebSocketDisconnect
+
+from tyloinfer.server.api.dependencies import (
+    ServiceDependency,
+    WebSocketServiceDependency,
+    authorize_websocket,
+)
+from tyloinfer.server.api.routes import ERROR_RESPONSES
+from tyloinfer.server.protocol.models import (
+    CreateRuntimeProfileRequest,
+    JobResource,
+    OperationAccepted,
+    RuntimeCacheClearRequest,
+    RuntimeCacheTrimRequest,
+    RuntimePrefixCachePurgeRequest,
+    RuntimeCapabilitiesResource,
+    RuntimeInstanceList,
+    RuntimeInstanceResource,
+    RuntimeLogLevel,
+    RuntimeLogList,
+    RuntimeMetricList,
+    RuntimeProfileList,
+    RuntimeProfileLoadRequest,
+    RuntimeProfileResource,
+    RuntimeReloadRequest,
+    RuntimeResourceSnapshot,
+    RuntimeListenerRequest,
+    RuntimeMemoryPolicy,
+    RuntimeInferencePolicy,
+    ConfigureQsaKvOffloadRequest,
+    RuntimeContextPolicy,
+    RuntimeModelAliases,
+    UpdateRuntimeInstanceRequest,
+    UpdateRuntimeProfileRequest,
+)
+
+profile_router = APIRouter()
+router = APIRouter()
+
+
+@router.get("/api/v1/runtime/context-policy", response_model=RuntimeContextPolicy, responses=ERROR_RESPONSES, tags=["runtime"])
+async def context_policy(service: ServiceDependency) -> RuntimeContextPolicy:
+    from tyloinfer.server.services.service import ServiceError
+    if not hasattr(service.runtime_manager, "context_policy"):
+        raise ServiceError(501, "context_policy_unavailable", "runtime context policy is unavailable")
+    return service.runtime_manager.context_policy
+
+
+@router.get("/api/v1/runtime/yarn/{instance_id}", responses=ERROR_RESPONSES, tags=["runtime"])
+async def yarn_context_info(service: ServiceDependency, instance_id: UUID) -> dict[str, Any]:
+    from tyloinfer.server.runtime.backend import BackendError
+    from tyloinfer.server.services.service import ServiceError
+    try:
+        return await service.runtime_manager.yarn_context_info(instance_id)
+    except BackendError as error:
+        raise ServiceError(error.status_code or 400, error.code, str(error)) from error
+
+
+@router.put("/api/v1/runtime/context-policy", response_model=RuntimeContextPolicy, responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_context_policy(service: ServiceDependency, body: RuntimeContextPolicy) -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    if not hasattr(service.runtime_manager, "configure_context_policy"):
+        raise ServiceError(501, "context_policy_unavailable", "runtime context policy is unavailable")
+    return await service.runtime_manager.configure_context_policy(body)
+
+
+@router.post("/api/v1/runtime/context", response_model=JobResource, status_code=202, responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_context(service: ServiceDependency, body: RuntimeReloadRequest) -> JobResource:
+    from tyloinfer.server.protocol.models import CreateJobRequest
+    return await service.create_job(CreateJobRequest(kind="runtime.context.configure", payload=body.model_dump(mode="json")))
+
+
+@router.get("/api/v1/runtime/resources", response_model=RuntimeResourceSnapshot, responses=ERROR_RESPONSES, tags=["runtime"])
+async def runtime_resources(service: ServiceDependency) -> dict[str, Any]:
+    from tyloinfer.server.services.resource_monitor import ResourceMonitor
+
+    if not hasattr(service, "resource_monitor"):
+        service.resource_monitor = ResourceMonitor()
+    return await service.resource_monitor.sample(service)
+
+
+@router.get("/api/v1/runtime/model-aliases", response_model=RuntimeModelAliases, responses=ERROR_RESPONSES, tags=["runtime"])
+async def model_aliases(service: ServiceDependency) -> RuntimeModelAliases:
+    return RuntimeModelAliases(aliases=service.model_aliases)
+
+
+@router.put("/api/v1/runtime/model-aliases", response_model=RuntimeModelAliases, responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_model_aliases(service: ServiceDependency, body: RuntimeModelAliases) -> dict[str, Any]:
+    return await service.configure_model_aliases(body.aliases)
+
+
+@router.get("/api/v1/runtime/inference-policy", response_model=RuntimeInferencePolicy, responses=ERROR_RESPONSES, tags=["runtime"])
+async def inference_policy(service: ServiceDependency) -> RuntimeInferencePolicy:
+    from tyloinfer.server.services.service import ServiceError
+    if not hasattr(service.runtime_manager, "inference_policy"):
+        raise ServiceError(501, "inference_policy_unavailable", "runtime inference policy is unavailable")
+    return service.runtime_manager.inference_policy
+
+
+@router.put("/api/v1/runtime/inference-policy", response_model=RuntimeInferencePolicy, responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_inference_policy(service: ServiceDependency, body: RuntimeInferencePolicy) -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    if not hasattr(service.runtime_manager, "configure_inference_policy"):
+        raise ServiceError(501, "inference_policy_unavailable", "runtime inference policy is unavailable")
+    return await service.runtime_manager.configure_inference_policy(body)
+
+
+@router.get("/api/v1/runtime/memory-policy", responses=ERROR_RESPONSES, tags=["runtime"])
+async def memory_policy(service: ServiceDependency) -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    if not hasattr(service.runtime_manager, "memory_policy_status"):
+        raise ServiceError(501, "memory_planning_unavailable", "runtime memory planning is unavailable")
+    return service.runtime_manager.memory_policy_status()
+
+
+@router.put("/api/v1/runtime/memory-policy", response_model=OperationAccepted, status_code=202, responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_memory_policy(service: ServiceDependency, body: RuntimeMemoryPolicy) -> OperationAccepted:
+    from tyloinfer.server.protocol.models import CreateJobRequest
+    current = service.runtime_manager.memory_policy.model_dump() if hasattr(service.runtime_manager, "memory_policy") else {}
+    job = await service.create_job(CreateJobRequest(kind="runtime.memory.configure", payload={**current, **body.model_dump(exclude_unset=True)}))
+    return OperationAccepted(operation_id=job.id, status="accepted")
+
+
+@router.get("/api/v1/runtime/qsa-kv/{instance_id}", responses=ERROR_RESPONSES, tags=["runtime"])
+async def qsa_kv_offload_info(service: ServiceDependency, instance_id: UUID,
+    target_context: int | None = Query(default=None, ge=512, le=2147483647)) -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    from tyloinfer.server.services.jobs import JobExecutionError
+    from tyloinfer.server.runtime.client import BackendError
+    if not hasattr(service.runtime_manager, "qsa_kv_offload_info"):
+        raise ServiceError(501, "qsa_kv_offload_unavailable", "QSA KV offload is unavailable")
+    try:
+        return await service.runtime_manager.qsa_kv_offload_info(instance_id, target_context)
+    except BackendError as error:
+        raise ServiceError(error.status_code or 400, error.code, str(error), retryable=error.retryable) from error
+    except JobExecutionError as error:
+        raise ServiceError(400, error.detail.code, error.detail.message, retryable=error.detail.retryable) from error
+
+
+@router.put("/api/v1/runtime/qsa-kv", response_model=OperationAccepted, status_code=202, responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_qsa_kv_offload(service: ServiceDependency, body: ConfigureQsaKvOffloadRequest) -> OperationAccepted:
+    from tyloinfer.server.protocol.models import CreateJobRequest
+    from tyloinfer.server.services.service import ServiceError
+    if not hasattr(service.runtime_manager, "qsa_kv_offload_info"):
+        raise ServiceError(501, "qsa_kv_offload_unavailable", "QSA KV offload is unavailable")
+    info = await qsa_kv_offload_info(service, body.instance_id)
+    if not info["supported"]:
+        raise ServiceError(400, "qsa_kv_offload_unsupported", "the model or backend does not support QSA KV offload")
+    job = await service.create_job(CreateJobRequest(kind="runtime.qsa-kv.configure", payload=body.model_dump(mode="json")))
+    return OperationAccepted(operation_id=job.id, status="accepted")
+
+
+@router.get("/api/v1/runtime/listener", responses=ERROR_RESPONSES, tags=["runtime"])
+async def runtime_listener(request: Request) -> dict[str, Any]:
+    listener = getattr(request.app.state, "listener", None)
+    if listener is None:
+        return {"host": request.url.hostname, "port": request.url.port or 80, "configurable": False}
+    return listener.listener_status()
+
+
+@router.put("/api/v1/runtime/listener", responses=ERROR_RESPONSES, tags=["runtime"])
+async def configure_runtime_listener(request: Request, body: RuntimeListenerRequest) -> dict[str, Any]:
+    import errno
+    import logging
+    from tyloinfer.server.services.service import ServiceError
+
+    listener = getattr(request.app.state, "listener", None)
+    if listener is None:
+        raise ServiceError(409, "listener_not_managed", "server listener is managed externally")
+    status = listener.listener_status()
+    other_port = status.get("port" if body.protocol == "anthropic" else "anthropic_port")
+    if body.port == other_port:
+        raise ServiceError(409, "listener_port_conflict", "OpenAI and Anthropic must use different ports", details={"port": body.port})
+    try:
+        return await listener.change_port(body.port, body.protocol)
+    except OSError as error:
+        if error.errno == errno.EADDRINUSE:
+            raise ServiceError(409, "listener_port_in_use", "the requested port is already in use", details={"port": body.port}) from error
+        if error.errno in {errno.EACCES, errno.EPERM}:
+            raise ServiceError(409, "listener_permission_denied", "permission denied for the requested port", details={"port": body.port}) from error
+        logging.getLogger(__name__).warning("Could not update service listener", exc_info=True)
+        raise ServiceError(409, "listener_change_failed", "could not save the port change; the previous port remains active") from error
+    except RuntimeError as error:
+        raise ServiceError(409, "listener_not_ready", str(error)) from error
+
+
+@profile_router.post(
+    "/api/v1/runtime/profiles",
+    response_model=RuntimeProfileResource,
+    status_code=201,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def create_runtime_profile(
+    service: ServiceDependency,
+    body: CreateRuntimeProfileRequest,
+) -> RuntimeProfileResource:
+    return await service.create_runtime_profile(body)
+
+
+@profile_router.get(
+    "/api/v1/runtime/profiles",
+    response_model=RuntimeProfileList,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def list_runtime_profiles(
+    service: ServiceDependency,
+) -> RuntimeProfileList:
+    return await service.list_runtime_profiles()
+
+
+@profile_router.get(
+    "/api/v1/runtime/profiles/{profile_id}",
+    response_model=RuntimeProfileResource,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def get_runtime_profile(
+    service: ServiceDependency, profile_id: UUID
+) -> RuntimeProfileResource:
+    return await service.get_runtime_profile(profile_id)
+
+
+@profile_router.put(
+    "/api/v1/runtime/profiles/{profile_id}",
+    response_model=RuntimeProfileResource,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def update_runtime_profile(
+    service: ServiceDependency, profile_id: UUID, body: UpdateRuntimeProfileRequest
+) -> RuntimeProfileResource:
+    return await service.update_runtime_profile(profile_id, body)
+
+
+@profile_router.delete(
+    "/api/v1/runtime/profiles/{profile_id}",
+    status_code=204,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def delete_runtime_profile(service: ServiceDependency, profile_id: UUID) -> Response:
+    await service.delete_runtime_profile(profile_id)
+    return Response(status_code=204)
+
+
+@profile_router.post(
+    "/api/v1/runtime/profiles/{profile_id}/load",
+    response_model=OperationAccepted,
+    status_code=202,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def load_runtime_profile(
+    service: ServiceDependency, profile_id: UUID, body: RuntimeProfileLoadRequest
+) -> OperationAccepted:
+    return await service.load_runtime_profile(profile_id, body)
+
+
+@router.get(
+    "/api/v1/runtime/instances",
+    response_model=RuntimeInstanceList,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def runtime_instances(
+    service: ServiceDependency,
+) -> RuntimeInstanceList:
+    return await service.runtime_instances()
+
+
+@router.patch(
+    "/api/v1/runtime/instances/{instance_id}",
+    response_model=RuntimeInstanceResource,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def update_runtime_instance(
+    service: ServiceDependency,
+    instance_id: UUID,
+    body: UpdateRuntimeInstanceRequest,
+) -> RuntimeInstanceResource:
+    return await service.update_runtime_instance(instance_id, body)
+
+
+@router.get(
+    "/api/v1/runtime/capabilities",
+    response_model=RuntimeCapabilitiesResource,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def runtime_capabilities(
+    service: ServiceDependency,
+    instance_id: UUID | None = None,
+) -> RuntimeCapabilitiesResource:
+    return await service.runtime_capabilities(instance_id)
+
+
+@router.get(
+    "/api/v1/runtime/status",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def runtime_status(
+    service: ServiceDependency, instance_id: UUID | None = None
+) -> dict[str, Any]:
+    return await service.runtime_status(instance_id)
+
+
+@router.get("/api/v1/runtime/serving", responses=ERROR_RESPONSES, tags=["runtime"])
+async def serving_statistics(service: ServiceDependency,
+    scope: Literal["session", "alltime"] = "session", model: str | None = None) -> dict[str, Any]:
+    return await service.serving_statistics(scope, model)
+
+
+@router.get(
+    "/api/v1/runtime/metrics",
+    response_model=RuntimeMetricList,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def runtime_metrics(
+    service: ServiceDependency,
+    instance_id: UUID | None = None,
+    since: datetime | None = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
+) -> RuntimeMetricList:
+    return await service.runtime_metrics(instance_id=instance_id, since=since, limit=limit)
+
+
+@router.get(
+    "/api/v1/runtime/logs",
+    response_model=RuntimeLogList,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def runtime_logs(
+    service: ServiceDependency,
+    instance_id: UUID | None = None,
+    level: RuntimeLogLevel | None = None,
+    after: Annotated[int | None, Query(ge=0)] = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
+) -> RuntimeLogList:
+    return await service.runtime_logs(
+        instance_id=instance_id, level=level, after=after, limit=limit
+    )
+
+
+@router.get(
+    "/api/v1/runtime/models",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def runtime_models(
+    service: ServiceDependency,
+) -> dict[str, Any]:
+    return await service.runtime_models()
+
+
+@router.get(
+    "/api/v1/runtime/realtime/capabilities",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def realtime_capabilities(
+    service: ServiceDependency,
+) -> dict[str, Any]:
+    return await service.realtime_capabilities()
+
+
+@router.post(
+    "/api/v1/runtime/reload",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def reload_runtime(service: ServiceDependency, body: RuntimeReloadRequest) -> dict[str, Any]:
+    return await service.reload_runtime(
+        body.context_size,
+        instance_id=body.instance_id,
+        yarn_enabled=body.yarn_enabled,
+    )
+
+
+@router.get("/api/v1/runtime/cache/entries", responses=ERROR_RESPONSES, tags=["runtime"])
+async def prefix_cache_entries(service: ServiceDependency, namespace: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+    offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200),
+    query: str = Query(default='', max_length=200), search_in: Literal['all', 'text', 'id'] = 'all',
+    text_filter: Literal['all', 'saved', 'missing'] = 'all', chain_filter: Literal['all', 'complete', 'incomplete'] = 'all',
+    sort: Literal['recent', 'oldest', 'length', 'size'] = 'recent') -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    manager = service.runtime_manager
+    if not hasattr(manager, "inspect_prefix_cache"):
+        raise ServiceError(501, "cache_management_unavailable", "prefix cache management is unavailable")
+    return await manager.inspect_prefix_cache(namespace, offset=offset, limit=limit,
+        query=query, search_in=search_in, text_filter=text_filter, chain_filter=chain_filter, sort=sort)
+
+
+@router.get("/api/v1/runtime/cache/entries/{namespace}/{block}/text", responses=ERROR_RESPONSES, tags=["runtime"])
+async def prefix_cache_text(service: ServiceDependency, namespace: str, block: str,
+    offset: int = Query(default=0, ge=0), limit: int = Query(default=8192, ge=1, le=8192)) -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    manager = service.runtime_manager
+    if not hasattr(manager, "prefix_cache_text"):
+        raise ServiceError(501, "cache_management_unavailable", "prefix cache management is unavailable")
+    return await manager.prefix_cache_text(namespace, block, offset=offset, limit=limit)
+
+
+@router.post("/api/v1/runtime/cache/purge", responses=ERROR_RESPONSES, tags=["runtime"])
+async def purge_prefix_cache(service: ServiceDependency, body: RuntimePrefixCachePurgeRequest) -> dict[str, Any]:
+    from tyloinfer.server.services.service import ServiceError
+    manager = service.runtime_manager
+    if not hasattr(manager, "purge_prefix_cache"):
+        raise ServiceError(501, "cache_management_unavailable", "prefix cache management is unavailable")
+    try:
+        return await manager.purge_prefix_cache(body.namespace)
+    except Exception as error:
+        from tyloinfer.server.runtime.client import BackendError
+        if isinstance(error, BackendError):
+            raise ServiceError(error.status_code or 503, error.code, str(error), retryable=error.retryable) from error
+        raise
+
+
+@router.post(
+    "/api/v1/runtime/cache/clear",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def clear_runtime_cache(
+    service: ServiceDependency,
+    body: RuntimeCacheClearRequest | None = None,
+) -> dict[str, Any]:
+    return await service.clear_runtime_cache(
+        instance_id=body.instance_id if body is not None else None,
+    )
+
+
+@router.post(
+    "/api/v1/runtime/cache/trim",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def trim_runtime_cache(
+    service: ServiceDependency,
+    body: RuntimeCacheTrimRequest | None = None,
+) -> dict[str, Any]:
+    return await service.trim_runtime_cache(
+        body.target_bytes if body is not None else 0,
+        instance_id=body.instance_id if body is not None else None,
+    )
+
+
+@router.get(
+    "/api/v1/components/voice-output",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def voice_output_component_status(
+    service: ServiceDependency,
+) -> dict[str, Any]:
+    return await service.voice_output_component_status()
+
+
+@router.post(
+    "/api/v1/components/voice-output/install",
+    response_model=OperationAccepted,
+    status_code=202,
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def install_voice_output_component(
+    service: ServiceDependency,
+) -> OperationAccepted:
+    return await service.install_voice_output_component()
+
+
+@router.post(
+    "/api/v1/components/voice-output/activate",
+    response_model=dict[str, Any],
+    responses=ERROR_RESPONSES,
+    tags=["runtime"],
+)
+async def activate_voice_output_component(
+    service: ServiceDependency,
+) -> dict[str, Any]:
+    return await service.activate_voice_output_component()
+
+
+@router.websocket("/api/v1/runtime/realtime")
+async def runtime_realtime(service: WebSocketServiceDependency, websocket: WebSocket) -> None:
+    if not await authorize_websocket(websocket):
+        return
+    mode = websocket.query_params.get("mode", "audio")
+    if mode != "audio":
+        await websocket.close(code=1008, reason="audio mode is required")
+        return
+    try:
+        await websocket.accept()
+        if await service.realtime_serve(websocket, mode=mode):
+            return
+        connector = service.realtime_connect(mode=mode)
+        async with connector as upstream:
+
+            async def send_upstream() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if message.get("text") is not None:
+                        await upstream.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+
+            async def send_client() -> None:
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = {
+                asyncio.create_task(
+                    send_upstream(),
+                    name="mfq-realtime-client-to-runtime",
+                ),
+                asyncio.create_task(
+                    send_client(),
+                    name="mfq-realtime-runtime-to-client",
+                ),
+            }
+            try:
+                done, _ = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    task.result()
+            finally:
+                # The route itself can be cancelled during application
+                # shutdown before either relay finishes.  Always tear down
+                # both directions so the upstream runtime socket cannot
+                # outlive its client or the ASGI request task.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            with suppress(Exception):
+                await websocket.close(code=1000)
+    except WebSocketDisconnect:
+        return
+    except Exception as error:
+        with suppress(Exception):
+            await websocket.send_json({"type": "error", "error": {"message": str(error)}})
+        with suppress(Exception):
+            await websocket.close(code=1011, reason="realtime proxy failed")
+
+
+@router.websocket("/api/v1/realtime")
+async def realtime(websocket: WebSocket) -> None:
+    if not await authorize_websocket(websocket):
+        return
+    await websocket.close(code=1013, reason="Realtime audio transport is not available")

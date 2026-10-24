@@ -1,0 +1,314 @@
+
+
+
+
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from 'react';
+import { MemoryRouter } from 'react-router';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ChatProvider, useChat } from './ChatProvider';
+import { useConversationStore } from './state/conversationStore';
+import { useDraftStore } from './state/draftStore';
+import { setVoiceLevel } from '../voice/voiceLevelStore';
+import { ChatComposer } from './components/ChatComposer';
+import { ChatToolbar } from './components/ChatToolbar';
+import { SavedMessageList } from './SavedMessageList';
+import type { JobResource, Message, RuntimeModel, Session } from '../../shared/api/types';
+import { sessionsApi } from '../../shared/api/resources/sessions';
+import { studioConfirm } from '../../studio';
+import { TooltipProvider } from '../../shared/ui/Tooltip';
+import { useJobStore } from '../../stores/jobStore';
+
+const mockRuntime = {
+  runtime: null,
+  models: [] as RuntimeModel[],
+  instances: [],
+  jobs: [],
+  capabilities: null,
+  realtime: null,
+  voiceComponent: null,
+  studio: null,
+  selectedModel: '',
+  setSelectedModel: vi.fn(),
+  refreshRuntime: vi.fn().mockResolvedValue(undefined),
+  addJob: vi.fn(),
+  reloadService: vi.fn().mockResolvedValue(undefined),
+  connectionRevision: 1,
+  ready: true,
+  loading: false,
+  error: null,
+};
+
+vi.mock('../../app/RuntimeProvider', () => ({
+  useRuntime: () => mockRuntime,
+}));
+
+const mockSettings = {
+  inheritModelDefaults: true,
+  systemPrompt: '',
+  temperature: 0.7,
+  topP: 0.9,
+  topK: 40,
+  repetitionPenalty: 1.1,
+  maxTokens: 2048,
+};
+const mockUpdateSettings = vi.fn();
+const mockTr = (_zh: string, en: string) => en;
+
+vi.mock('../settings/SettingsProvider', () => ({
+  useSettings: () => ({
+    settings: mockSettings,
+    updateSettings: mockUpdateSettings,
+    tr: mockTr,
+  }),
+}));
+
+vi.mock('../../shared/api/resources/sessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../shared/api/resources/sessions')>();
+  return {
+    ...actual,
+    sessionsApi: {
+      ...actual.sessionsApi,
+      listSessions: vi.fn().mockResolvedValue([]),
+      listMessages: vi.fn().mockResolvedValue([]),
+      listResponses: vi.fn().mockResolvedValue([]),
+    },
+  };
+});
+
+describe('ChatProvider conversation deletion confirmation', () => {
+  const first = { id: 'a', title: 'First chat', model: 'model-a', mode: 'text', revision: 0 } as Session;
+  const second = { ...first, id: 'b', title: 'Second chat' };
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter initialEntries={['/chat']}><ChatProvider>{children}</ChatProvider></MemoryRouter>
+  );
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRuntime.connectionRevision = 1;
+    useConversationStore.getState().reset();
+    useDraftStore.setState({ drafts: {} });
+    vi.mocked(sessionsApi.listSessions).mockResolvedValue([first, second]);
+    vi.mocked(studioConfirm).mockResolvedValue(true);
+    vi.spyOn(sessionsApi, 'deleteSession').mockResolvedValue(undefined);
+  });
+
+  it('cancelling confirmation preserves all conversations and drafts', async () => {
+    vi.mocked(studioConfirm).mockResolvedValue(false);
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(useConversationStore.getState().sessions).toHaveLength(2));
+    useDraftStore.getState().setDraft(first.id, 'unsent');
+    await act(async () => { await result.current.deleteAllConversations(); });
+    expect(studioConfirm).toHaveBeenCalledWith(expect.stringContaining('cannot be undone'));
+    expect(sessionsApi.deleteSession).not.toHaveBeenCalled();
+    expect(useConversationStore.getState().sessions).toHaveLength(2);
+    expect(useDraftStore.getState().drafts[first.id]).toBe('unsent');
+  });
+
+  it('confirmed deletion clears conversations without creating a replacement', async () => {
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(useConversationStore.getState().sessions).toHaveLength(2));
+    useDraftStore.getState().setDraft(first.id, 'unsent');
+    await act(async () => { await result.current.deleteAllConversations(); });
+    expect(sessionsApi.deleteSession).toHaveBeenCalledTimes(2);
+    expect(useConversationStore.getState().sessions).toEqual([]);
+    expect(useConversationStore.getState().activeId).toBeNull();
+    expect(useDraftStore.getState().drafts).toEqual({});
+  });
+
+  it('confirmation opened on the old connection cannot delete the new connection', async () => {
+    let confirm!: (accepted: boolean) => void;
+    vi.mocked(studioConfirm).mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
+    const { result, rerender } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(useConversationStore.getState().sessions).toHaveLength(2));
+    let deletion!: Promise<void>;
+    act(() => { deletion = result.current.deleteAllConversations(); });
+    mockRuntime.connectionRevision = 2;
+    vi.mocked(sessionsApi.listSessions).mockResolvedValue([second]);
+    rerender();
+    await waitFor(() => expect(useConversationStore.getState().sessions).toEqual([second]));
+    await act(async () => { confirm(true); await deletion; });
+    expect(sessionsApi.deleteSession).not.toHaveBeenCalled();
+    expect(useConversationStore.getState().sessions).toEqual([second]);
+  });
+});
+vi.mock('../../studio', () => ({
+  studioConfirm: vi.fn().mockResolvedValue(true),
+}));
+
+describe('ChatProvider model-independent conversations', () => {
+  const session = { id: 'old-chat', title: 'Old chat', model: 'unloaded-model', mode: 'text', revision: 0 } as Session;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter initialEntries={['/chat']}><ChatProvider>{children}</ChatProvider></MemoryRouter>
+  );
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useConversationStore.getState().reset();
+    mockRuntime.models = [{ id: 'model-a' }, { id: 'model-b' }] as RuntimeModel[];
+    mockRuntime.selectedModel = 'model-a';
+    vi.mocked(sessionsApi.listSessions).mockResolvedValue([session]);
+  });
+  afterEach(() => {
+    mockRuntime.models = [];
+    mockRuntime.selectedModel = '';
+  });
+
+  it('sends using the selected model without replacing or rebinding an old conversation', async () => {
+    const fork = vi.spyOn(sessionsApi, 'forkSession');
+    const { result, rerender } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.conversation.conversationReady).toBe(true));
+    const start = vi.spyOn(result.current.generation, 'start').mockResolvedValue(undefined);
+    await act(async () => { await result.current.send('first message', vi.fn()); });
+    expect(start).toHaveBeenLastCalledWith('old-chat', expect.objectContaining({ model: 'model-a' }), expect.any(Function));
+    mockRuntime.selectedModel = 'model-b';
+    mockRuntime.models = [...mockRuntime.models];
+    rerender();
+    await act(async () => { await result.current.send('second message', vi.fn()); });
+    expect(start).toHaveBeenLastCalledWith('old-chat', expect.objectContaining({ model: 'model-b' }), expect.any(Function));
+    expect(useConversationStore.getState().sessions).toEqual([session]);
+    expect(useConversationStore.getState().activeId).toBe('old-chat');
+    expect(fork).not.toHaveBeenCalled();
+  });
+
+  it('keeps unloaded history readable and does not send until a model is available', async () => {
+    mockRuntime.models = [];
+    mockRuntime.selectedModel = '';
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.conversation.historyReady).toBe(true));
+    expect(result.current.conversation.conversationReady).toBe(false);
+    const start = vi.spyOn(result.current.generation, 'start').mockResolvedValue(undefined);
+    const accepted = vi.fn();
+    await act(async () => { await result.current.send('unsent', accepted); });
+    expect(start).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+    expect(useConversationStore.getState().activeId).toBe('old-chat');
+  });
+});
+
+describe('ChatProvider Context 重渲染拦截与缓存', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useConversationStore.getState().reset();
+    useDraftStore.setState({ drafts: {} });
+    setVoiceLevel(0);
+    useJobStore.getState().setJobs([]);
+  });
+
+  it('Profiler 计数表明草稿与音量更新不会提交无关历史列表', async () => {
+    const commits = { toolbar: 0, history: 0 };
+    const onRender: ProfilerOnRenderCallback = (id, phase) => {
+      if (phase !== 'mount' && (id === 'toolbar' || id === 'history')) commits[id] += 1;
+    };
+    function History() {
+      const messages = useConversationStore((state) => state.messages);
+      const { busy } = useChat();
+      return (
+        <SavedMessageList
+          messages={messages}
+          responses={{}}
+          busy={busy}
+          tr={mockTr}
+          editDraft={null}
+          setEditDraft={vi.fn()}
+          actions={{ saveEdit: vi.fn(), copyMessage: vi.fn(), regenerate: vi.fn() }}
+        />
+      );
+    }
+    function Surface() {
+      const { busy, generationPhase, recoveryNeeded } = useChat();
+      return (
+        <>
+          <Profiler id="history" onRender={onRender}><History /></Profiler>
+          <ChatComposer
+            sessionId="profile-session"
+            ready
+            busy={busy}
+            recoveryNeeded={recoveryNeeded}
+            phase={generationPhase}
+            placeholder=""
+            attachmentAccept=""
+            tr={mockTr}
+            onSend={vi.fn()}
+            onStop={vi.fn()}
+            onError={vi.fn()}
+            toolbar={<Profiler id="toolbar" onRender={onRender}><ChatToolbar /></Profiler>}
+          />
+        </>
+      );
+    }
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <TooltipProvider><ChatProvider><Surface /></ChatProvider></TooltipProvider>
+      </MemoryRouter>,
+    );
+    await act(async () => { await Promise.resolve(); });
+    const baseline = { ...commits };
+    await userEvent.setup().type(screen.getByRole('textbox', { name: 'Message' }), 'draft');
+    expect(commits).toEqual(baseline);
+
+    const message = {
+      id: 'history-1', role: 'user', parts: [{ type: 'text', text: 'saved' }], created_at: '2026-09-23T00:00:00Z',
+    } as Message;
+    act(() => useConversationStore.getState().setMessages([message]));
+    expect(commits.history).toBeGreaterThan(baseline.history);
+    expect(commits.toolbar).toBe(baseline.toolbar);
+
+    const afterHistory = { ...commits };
+    for (let index = 1; index <= 10; index += 1)
+      act(() => setVoiceLevel(index / 10));
+    expect(commits.toolbar - afterHistory.toolbar).toBe(10);
+    expect(commits.history).toBe(afterHistory.history);
+
+    const afterVoice = { ...commits };
+    for (let index = 1; index <= 10; index += 1)
+      act(() => useJobStore.getState().setJobs([{
+        id: 'job-a', kind: 'quantization', status: 'running', payload: {}, progress: index / 10,
+      } as JobResource]));
+    expect(commits).toEqual(afterVoice);
+  });
+
+  it('消息写入 store 时不会更新只订阅聊天命令的 Context 消费者', async () => {
+    let renders = 0;
+    function Commands() {
+      useChat();
+      renders += 1;
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatProvider><Commands /></ChatProvider>
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const before = renders;
+    act(() => useConversationStore.getState().setMessages([]));
+    expect(renders).toBe(before);
+  });
+
+  it('ChatProvider 提供 useChat 上下文且导出的业务动作引用保持稳定', () => {
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatProvider>{children}</ChatProvider>
+      </MemoryRouter>
+    );
+
+    const { result, rerender } = renderHook(() => useChat(), { wrapper });
+
+    expect(result.current).toBeDefined();
+    const initialSend = result.current.send;
+    const initialClear = result.current.clearActiveConversation;
+    const initialSelectMode = result.current.selectInteractionMode;
+    const initialToggleVoice = result.current.toggleVoice;
+
+
+    rerender();
+
+
+    expect(result.current.send).toBe(initialSend);
+    expect(result.current.clearActiveConversation).toBe(initialClear);
+    expect(result.current.selectInteractionMode).toBe(initialSelectMode);
+    expect(result.current.toggleVoice).toBe(initialToggleVoice);
+  });
+});

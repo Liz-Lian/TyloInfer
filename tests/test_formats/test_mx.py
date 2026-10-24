@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from tyloinfer.formats.header import FileHeader
+from tyloinfer.formats.io import open_mmap, save
+from tyloinfer.formats.mx import MxTensor
+
+
+def test_mx_tensor_roundtrip_and_streamed_rows(tmp_path):
+    path = tmp_path / "full.tq"
+    fp4_values = np.arange(4 * 48, dtype=np.uint8).reshape(4, 48)
+    fp4_scales = np.full((4, 3), 127, dtype=np.uint8)
+    fp8_values = np.arange(128 * 128, dtype=np.uint8).reshape(128, 128)
+    fp8_values[(fp8_values & 0x7F) == 0x7F] = 126
+    fp8_scales = np.full((1, 1), 127, dtype=np.uint8)
+    save(
+        path,
+        FileHeader(version=2, model_arch="test-full-mfq"),
+        {
+            "fp4.weight": MxTensor("MXFP4", (4, 96), fp4_values, fp4_scales),
+            "fp8.weight": MxTensor("MXFP8", (128, 128), fp8_values, fp8_scales),
+        },
+    )
+
+    with open_mmap(path) as store:
+        assert store.records["fp4.weight"].dtype == "MXFP4"
+        assert store.records["fp8.weight"].dtype == "MXFP8"
+        assert store["fp4.weight"].shape == (4, 96)
+        assert store["fp8.weight"].shape == (128, 128)
+
+@pytest.mark.parametrize("dtype", ["MXFP4", "MXFP8"])
+def test_mx_tensor_rejects_e8m0_nan_scale(dtype: str):
+    rows, width = (4, 128)
+    value_columns = width // 2 if dtype == "MXFP4" else width
+    scale_rows = rows if dtype == "MXFP4" else 1
+    scales = np.full((scale_rows, width // (32 if dtype == "MXFP4" else 128)), 127, np.uint8)
+    scales[0, 0] = 255
+    with pytest.raises(ValueError, match="E8M0 NaN scale"):
+        MxTensor(dtype, (rows, width), np.zeros((rows, value_columns), np.uint8), scales)
+
+
+def test_mxfp8_tensor_rejects_e4m3_nan_code():
+    values = np.zeros((4, 128), dtype=np.uint8)
+    values[2, 17] = 0x7F
+    with pytest.raises(ValueError, match="E4M3 NaN code"):
+        MxTensor("MXFP8", (4, 128), values, np.full((1, 1), 127, np.uint8))
+
+
+@pytest.mark.parametrize(
+    "shape,scale_shape",
+    [
+        ((64, 96), (2, 3)),
+        ((4, 64), (4, 2)),
+    ],
+)
+def test_mxfp8_roundtrips_native_block32_and_row1x32_geometries(
+    shape,
+    scale_shape,
+):
+    values = np.full(shape, 0x38, dtype=np.uint8)
+    scales = np.full(scale_shape, 127, dtype=np.uint8)
+    tensor = MxTensor("MXFP8", shape, values, scales)
+
+    from tyloinfer.formats.mx import pack_mx, unpack_mx
+
+    restored = unpack_mx("MXFP8", pack_mx(tensor))
+    assert restored.shape == shape
+    np.testing.assert_array_equal(restored.values, values)
+    np.testing.assert_array_equal(restored.scales, scales)

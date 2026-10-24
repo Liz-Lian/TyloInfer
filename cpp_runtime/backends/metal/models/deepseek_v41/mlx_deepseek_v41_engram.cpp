@@ -1,0 +1,741 @@
+#include "mlx_deepseek_v41_engram.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <future>
+#include <limits>
+#include <stdexcept>
+#include <string_view>
+#include <thread>
+#include <utility>
+
+namespace mfq::metal {
+namespace {
+
+using mlx::core::Shape;
+using mlx::core::array;
+
+const mlx::core::fast::CustomKernelFunction& engram_gate_kernel() {
+    static const auto kernel = [] {
+        mlx::core::CompileOptions options;
+        options.math_mode = mlx::core::MathMode::Safe;
+        return mlx::core::fast::metal_kernel("mfq_v41_engram_gate",
+            {"hidden", "kv", "weight", "mask", "params"}, {"output"}, R"MSL(
+            const uint row = threadgroup_position_in_grid.x;
+            const uint stream = threadgroup_position_in_grid.y;
+            const uint tid = thread_index_in_threadgroup;
+            threadgroup float partial[3][8];
+            threadgroup float gate;
+            float xx = 0.0f, kk = 0.0f, xk = 0.0f;
+            for (uint d = tid; d < HIDDEN; d += 256u) {
+                const float x = float(hidden[(row * STREAMS + stream) * HIDDEN + d]);
+                const float k = float(kv[row * (STREAMS + 1u) * HIDDEN + stream * HIDDEN + d]);
+                xx += x * x;
+                kk += k * k;
+                xk += (x * k) * weight[stream * HIDDEN + d];
+            }
+            xx = simd_sum(xx); kk = simd_sum(kk); xk = simd_sum(xk);
+            if (thread_index_in_simdgroup == 0u) {
+                const uint group = simdgroup_index_in_threadgroup;
+                partial[0][group] = xx; partial[1][group] = kk; partial[2][group] = xk;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (tid < 32u) {
+                xx = simd_sum(tid < 8u ? partial[0][tid] : 0.0f);
+                kk = simd_sum(tid < 8u ? partial[1][tid] : 0.0f);
+                xk = simd_sum(tid < 8u ? partial[2][tid] : 0.0f);
+                if (tid == 0u) {
+                    const float inverse = metal::precise::rsqrt(xx / float(HIDDEN) + params[0])
+                        * metal::precise::rsqrt(kk / float(HIDDEN) + params[0]);
+                    const float score = (xk * inverse) / metal::precise::sqrt(float(HIDDEN));
+                    const float signed_root = sign(score) * metal::precise::sqrt(max(abs(score), 1e-6f));
+                    gate = 1.0f / (1.0f + metal::precise::exp(-signed_root));
+                    if (MASKED && !mask[row]) gate = 0.0f;
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            for (uint d = tid; d < HIDDEN; d += 256u) {
+                const uint offset = (row * STREAMS + stream) * HIDDEN + d;
+                const float value = float(kv[row * (STREAMS + 1u) * HIDDEN + STREAMS * HIDDEN + d]);
+                output[offset] = T(float(hidden[offset]) + gate * value);
+            }
+            )MSL", "", true, false, options);
+    }();
+    return kernel;
+}
+
+constexpr std::string_view kEngramAsset =
+    "__mfq_asset__/deepseek-v41-engram-v1.bin";
+constexpr std::array<std::uint8_t, 8> kEngramMagic{
+    'M', 'F', 'Q', 'E', 'N', 'G', 'R', '1'};
+constexpr std::int64_t kDeadToken = -1;
+
+class ByteCursor {
+public:
+    explicit ByteCursor(std::span<const std::uint8_t> bytes)
+        : bytes_(bytes) {}
+
+    std::span<const std::uint8_t> take(
+        std::size_t count,
+        std::string_view description) {
+        if (count > bytes_.size() - offset_) {
+            throw std::runtime_error(
+                "truncated DeepSeek-V4.1 Engram " +
+                std::string(description));
+        }
+        auto result = bytes_.subspan(offset_, count);
+        offset_ += count;
+        return result;
+    }
+
+    std::uint32_t u32(std::string_view description) {
+        const auto bytes = take(4, description);
+        std::uint32_t result = 0;
+        for (int index = 0; index < 4; ++index) {
+            result |= static_cast<std::uint32_t>(bytes[index]) << (8 * index);
+        }
+        return result;
+    }
+
+    std::uint64_t u64(std::string_view description) {
+        const auto bytes = take(8, description);
+        std::uint64_t result = 0;
+        for (int index = 0; index < 8; ++index) {
+            result |= static_cast<std::uint64_t>(bytes[index]) << (8 * index);
+        }
+        return result;
+    }
+
+    std::int32_t i32(std::string_view description) {
+        const auto raw = u32(description);
+        std::int32_t result = 0;
+        std::memcpy(&result, &raw, sizeof(result));
+        return result;
+    }
+
+    std::int64_t i64(std::string_view description) {
+        const auto raw = u64(description);
+        std::int64_t result = 0;
+        std::memcpy(&result, &raw, sizeof(result));
+        return result;
+    }
+
+    void require_end() const {
+        if (offset_ != bytes_.size()) {
+            throw std::runtime_error(
+                "DeepSeek-V4.1 Engram asset has trailing bytes");
+        }
+    }
+
+private:
+    std::span<const std::uint8_t> bytes_;
+    std::size_t offset_ = 0;
+};
+
+template <typename T, typename Reader>
+std::vector<T> read_vector(
+    ByteCursor& cursor,
+    std::size_t count,
+    Reader&& reader,
+    std::string_view description) {
+    std::vector<T> result;
+    result.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        result.push_back(reader(cursor, description));
+    }
+    return result;
+}
+
+array dense_array(
+    const MfqContainer& model,
+    const std::string& name,
+    mlx::core::Dtype dtype = mlx::core::float32) {
+    const auto& record = model.record(name);
+    if (record.dtype != "BF16" && record.dtype != "F16" &&
+        record.dtype != "F32") {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 Engram requires dense control tensor " + name);
+    }
+    const auto mapped = model.map_record(name);
+    auto value = load_dense_array(record.dtype, mapped.view());
+    if (value.dtype() != dtype) value = mlx::core::astype(value, dtype);
+    return mlx::core::contiguous(std::move(value));
+}
+
+std::size_t cache_capacity_rows(const DeepseekV41Config& config) {
+    const char* raw = std::getenv("TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_ROWS");
+    if (raw != nullptr && *raw != '\0') {
+        char* end = nullptr;
+        const auto parsed = std::strtoull(raw, &end, 10);
+        if (end == raw || *end != '\0' ||
+            parsed > std::numeric_limits<std::size_t>::max()) {
+            throw std::runtime_error(
+                "invalid TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_ROWS");
+        }
+        return static_cast<std::size_t>(parsed);
+    }
+    constexpr std::size_t fallback_mib = 256;
+    raw = std::getenv("TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_MIB");
+    char* end = nullptr;
+    const auto cache_mib = raw == nullptr || *raw == '\0'
+        ? fallback_mib
+        : std::strtoull(raw, &end, 10);
+    if ((raw != nullptr && *raw != '\0' &&
+         (end == raw || *end != '\0')) ||
+        cache_mib == 0 ||
+        cache_mib > std::numeric_limits<std::size_t>::max() /
+            (std::size_t{1} << 20) ||
+        config.engram_layer_ids.empty() || config.engram_head_dim <= 0) {
+        throw std::runtime_error(
+            "invalid TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_MIB");
+    }
+    const auto bytes_per_table =
+        static_cast<std::size_t>(cache_mib) * (std::size_t{1} << 20) /
+        config.engram_layer_ids.size();
+    const auto decoded_row_bytes =
+        static_cast<std::size_t>(config.engram_head_dim) *
+        sizeof(mlx::core::float16_t);
+    return std::max<std::size_t>(1, bytes_per_table / decoded_row_bytes);
+}
+
+std::size_t io_worker_count() {
+    const auto fallback = std::clamp<std::size_t>(
+        std::size_t{2} * std::thread::hardware_concurrency(), 8, 32);
+    const char* raw = std::getenv("TYLOINFER_DEEPSEEK_V41_ENGRAM_IO_WORKERS");
+    if (raw == nullptr || *raw == '\0') return fallback;
+    char* end = nullptr;
+    const auto parsed = std::strtoull(raw, &end, 10);
+    if (end == raw || *end != '\0' || parsed == 0 ||
+        parsed > std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error(
+            "invalid TYLOINFER_DEEPSEEK_V41_ENGRAM_IO_WORKERS");
+    }
+    return static_cast<std::size_t>(parsed);
+}
+
+std::uint64_t checked_product(
+    std::uint64_t left,
+    std::uint64_t right,
+    std::string_view description) {
+    if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left) {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 Engram " + std::string(description) +
+            " byte size overflows");
+    }
+    return left * right;
+}
+
+} // namespace
+
+array deepseek_v41_engram_gate(const array& hidden, const array& key_value,
+    const array& weight, const std::optional<array>& participation_mask, float eps) {
+    if (hidden.ndim() != 4 || key_value.ndim() != 3 || hidden.shape(0) <= 0 ||
+        hidden.shape(1) <= 0 || hidden.shape(2) <= 0 || hidden.shape(3) <= 0 ||
+        hidden.shape(0) != key_value.shape(0) ||
+        hidden.shape(1) != key_value.shape(1) ||
+        key_value.shape(2) != (hidden.shape(2) + 1) * hidden.shape(3) ||
+        weight.size() != hidden.shape(2) * hidden.shape(3) || !(eps > 0) ||
+        (participation_mask && participation_mask->shape() != Shape{hidden.shape(0), hidden.shape(1)}))
+        throw std::invalid_argument("invalid DeepSeek-V4.1 Engram gate input");
+    auto mask = participation_mask ? mlx::core::contiguous(mlx::core::astype(*participation_mask, mlx::core::bool_))
+        : array({true}, mlx::core::bool_);
+    return engram_gate_kernel()({mlx::core::contiguous(hidden), mlx::core::contiguous(key_value),
+        mlx::core::contiguous(mlx::core::astype(weight, mlx::core::float32)), mask, array({eps})},
+        {hidden.shape()}, {hidden.dtype()}, {hidden.shape(0) * hidden.shape(1) * 256, hidden.shape(2), 1},
+        {256, 1, 1}, {{"HIDDEN", hidden.shape(3)}, {"STREAMS", hidden.shape(2)},
+            {"MASKED", bool(participation_mask)}, {"T", hidden.dtype()}}, std::nullopt, false, {}).front();
+}
+
+std::span<const std::int64_t> DeepseekV41EngramHashBatch::layer(
+    int index) const {
+    if (index < 0 || index >= layers || batch <= 0 || tokens <= 0 ||
+        hash_columns <= 0) {
+        throw std::out_of_range("invalid DeepSeek-V4.1 Engram hash layer");
+    }
+    const auto layer_size = static_cast<std::size_t>(batch) *
+        static_cast<std::size_t>(tokens) *
+        static_cast<std::size_t>(hash_columns);
+    const auto begin = static_cast<std::size_t>(index) * layer_size;
+    if (begin > values.size() || layer_size > values.size() - begin) {
+        throw std::runtime_error("truncated DeepSeek-V4.1 Engram hash batch");
+    }
+    return std::span<const std::int64_t>(values).subspan(begin, layer_size);
+}
+
+MlxDeepseekV41EngramHashState MlxDeepseekV41EngramHashState::load(
+    const MfqContainer& model,
+    const DeepseekV41Config& config) {
+    if (!model.contains(std::string(kEngramAsset))) {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 MFQ has no embedded Engram hash asset");
+    }
+    const auto asset = model.read(std::string(kEngramAsset));
+    ByteCursor cursor(asset);
+    const auto magic = cursor.take(kEngramMagic.size(), "asset magic");
+    if (!std::equal(magic.begin(), magic.end(), kEngramMagic.begin())) {
+        throw std::runtime_error("invalid DeepSeek-V4.1 Engram asset magic");
+    }
+    const auto vocabulary = cursor.u32("vocabulary");
+    const auto compressed = cursor.u32("compressed vocabulary");
+    const auto layer_count = cursor.u32("layer count");
+    const auto max_ngram = cursor.u32("maximum ngram size");
+    const auto heads = cursor.u32("head count");
+    const auto pad_id = cursor.i32("compressed pad token");
+    if (vocabulary > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        compressed > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        layer_count == 0 ||
+        layer_count > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        max_ngram < 2 ||
+        max_ngram > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        heads == 0 ||
+        heads > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("invalid DeepSeek-V4.1 Engram asset dimensions");
+    }
+    const auto layers = static_cast<std::size_t>(layer_count);
+    const auto orders = static_cast<std::size_t>(max_ngram - 1);
+    const auto head_count = static_cast<std::size_t>(heads);
+    const auto bucket_count = checked_product(
+        checked_product(layers, orders, "bucket"),
+        head_count,
+        "bucket");
+    const auto multiplier_count = checked_product(
+        layers,
+        static_cast<std::size_t>(max_ngram),
+        "multiplier");
+    auto layer_ids = read_vector<std::int64_t>(
+        cursor, layers,
+        [](ByteCursor& value, std::string_view what) {
+            return static_cast<std::int64_t>(value.i32(what));
+        },
+        "layer ids");
+    auto table_rows = read_vector<std::int64_t>(
+        cursor, layers,
+        [](ByteCursor& value, std::string_view what) {
+            return value.i64(what);
+        },
+        "table rows");
+    auto primes = read_vector<std::int64_t>(
+        cursor, static_cast<std::size_t>(bucket_count),
+        [](ByteCursor& value, std::string_view what) {
+            return value.i64(what);
+        },
+        "bucket primes");
+    auto offsets = read_vector<std::int64_t>(
+        cursor, static_cast<std::size_t>(bucket_count),
+        [](ByteCursor& value, std::string_view what) {
+            return value.i64(what);
+        },
+        "bucket offsets");
+    auto multipliers = read_vector<std::int64_t>(
+        cursor, static_cast<std::size_t>(multiplier_count),
+        [](ByteCursor& value, std::string_view what) {
+            return value.i64(what);
+        },
+        "hash multipliers");
+    auto token_map = read_vector<std::int32_t>(
+        cursor, vocabulary,
+        [](ByteCursor& value, std::string_view what) {
+            return value.i32(what);
+        },
+        "compressed token map");
+    cursor.require_end();
+
+    if (vocabulary != static_cast<std::uint32_t>(config.vocab) ||
+        compressed != static_cast<std::uint32_t>(config.engram_compressed_vocab_size) ||
+        max_ngram != static_cast<std::uint32_t>(config.engram_max_ngram_size) ||
+        heads != static_cast<std::uint32_t>(config.engram_n_heads) ||
+        layer_ids != config.engram_layer_ids ||
+        table_rows != config.engram_num_embeddings ||
+        pad_id < 0 || pad_id >= static_cast<std::int64_t>(compressed)) {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 Engram asset disagrees with model config");
+    }
+    for (std::size_t layer = 0; layer < layers; ++layer) {
+        const auto last = layer * orders * head_count + orders * head_count - 1;
+        if (primes[last] <= 0 || offsets[last] < 0 ||
+            primes[last] + offsets[last] != table_rows[layer]) {
+            throw std::runtime_error(
+                "DeepSeek-V4.1 Engram bucket layout disagrees with table rows");
+        }
+    }
+    if (std::any_of(
+            token_map.begin(), token_map.end(),
+            [compressed](std::int32_t value) {
+                return value < 0 ||
+                    value >= static_cast<std::int32_t>(compressed);
+            }) ||
+        std::any_of(
+            multipliers.begin(), multipliers.end(),
+            [](std::int64_t value) { return value <= 0 || !(value & 1); })) {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 Engram hash metadata is invalid");
+    }
+    return MlxDeepseekV41EngramHashState(
+        static_cast<int>(vocabulary),
+        static_cast<int>(compressed),
+        static_cast<int>(max_ngram),
+        static_cast<int>(heads),
+        pad_id,
+        std::move(layer_ids),
+        std::move(table_rows),
+        std::move(primes),
+        std::move(offsets),
+        std::move(multipliers),
+        std::move(token_map));
+}
+
+MlxDeepseekV41EngramHashState::MlxDeepseekV41EngramHashState(
+    int vocabulary,
+    int compressed_vocabulary,
+    int max_ngram_size,
+    int heads,
+    std::int64_t pad_id,
+    std::vector<std::int64_t> layer_ids,
+    std::vector<std::int64_t> table_rows,
+    std::vector<std::int64_t> primes,
+    std::vector<std::int64_t> offsets,
+    std::vector<std::int64_t> multipliers,
+    std::vector<std::int32_t> token_map)
+    : vocabulary_(vocabulary),
+      compressed_vocabulary_(compressed_vocabulary),
+      max_ngram_size_(max_ngram_size),
+      heads_(heads),
+      pad_id_(pad_id),
+      layer_ids_(std::move(layer_ids)),
+      table_rows_(std::move(table_rows)),
+      primes_(std::move(primes)),
+      offsets_(std::move(offsets)),
+      multipliers_(std::move(multipliers)),
+      token_map_(std::move(token_map)) {}
+
+void MlxDeepseekV41EngramHashState::reset(int batch) {
+    if (batch <= 0) {
+        throw std::invalid_argument("DeepSeek-V4.1 Engram batch must be positive");
+    }
+    batch_ = batch;
+    position_ = 0;
+    context_.assign(
+        static_cast<std::size_t>(batch * (max_ngram_size_ - 1)),
+        pad_id_);
+}
+
+void MlxDeepseekV41EngramHashState::clear() noexcept {
+    batch_ = 0;
+    position_ = 0;
+    context_.clear();
+}
+
+DeepseekV41EngramHashBatch MlxDeepseekV41EngramHashState::forward(
+    const array& token_ids,
+    int pos0,
+    const std::optional<array>& participation_mask,
+    bool use_cache) {
+    if (token_ids.ndim() != 2 || token_ids.shape(0) <= 0 ||
+        token_ids.shape(1) <= 0 || pos0 < 0) {
+        throw std::invalid_argument(
+            "DeepSeek-V4.1 Engram token IDs must have nonempty [B,T] shape");
+    }
+    const int batch = token_ids.shape(0);
+    const int tokens = token_ids.shape(1);
+    if (!use_cache && pos0 != 0) {
+        throw std::invalid_argument(
+            "stateless DeepSeek-V4.1 Engram hashing must begin at position zero");
+    }
+    if (use_cache) {
+        if (pos0 == 0) reset(batch);
+        if (batch_ != batch || position_ != pos0 || context_.empty()) {
+            throw std::runtime_error(
+                "DeepSeek-V4.1 Engram cache position disagrees");
+        }
+    }
+
+    const bool ids_i32 = token_ids.dtype() == mlx::core::int32;
+    auto host_ids = ids_i32 || token_ids.dtype() == mlx::core::int64
+        ? mlx::core::contiguous(token_ids)
+        : mlx::core::contiguous(
+              mlx::core::astype(token_ids, mlx::core::int64));
+    host_ids.eval();
+    const auto* ids32 = ids_i32 ? host_ids.data<std::int32_t>() : nullptr;
+    const auto* ids64 = ids_i32 ? nullptr : host_ids.data<std::int64_t>();
+
+    std::vector<std::uint8_t> participates(
+        static_cast<std::size_t>(batch * tokens), 1);
+    if (participation_mask) {
+        if (participation_mask->shape() != token_ids.shape()) {
+            throw std::invalid_argument(
+                "DeepSeek-V4.1 Engram participation mask shape disagrees");
+        }
+        auto host_mask = mlx::core::contiguous(
+            mlx::core::astype(*participation_mask, mlx::core::bool_));
+        host_mask.eval();
+        const auto* source = host_mask.data<bool>();
+        std::transform(
+            source,
+            source + participates.size(),
+            participates.begin(),
+            [](bool value) { return static_cast<std::uint8_t>(value); });
+    }
+
+    std::vector<std::int64_t> compressed(
+        static_cast<std::size_t>(batch * tokens));
+    for (std::size_t index = 0; index < compressed.size(); ++index) {
+        const auto token = ids_i32
+            ? static_cast<std::int64_t>(ids32[index])
+            : ids64[index];
+        if (token < 0 || token >= vocabulary_) {
+            throw std::out_of_range(
+                "DeepSeek-V4.1 Engram token ID is outside the vocabulary");
+        }
+        compressed[index] = participates[index]
+            ? static_cast<std::int64_t>(token_map_[static_cast<std::size_t>(token)])
+            : kDeadToken;
+    }
+
+    const int prefix = max_ngram_size_ - 1;
+    const int combined_length = prefix + tokens;
+    const int layers = static_cast<int>(layer_ids_.size());
+    const int columns = hash_columns();
+    DeepseekV41EngramHashBatch result;
+    result.batch = batch;
+    result.tokens = tokens;
+    result.layers = layers;
+    result.hash_columns = columns;
+    result.values.resize(
+        static_cast<std::size_t>(layers) * batch * tokens * columns);
+    std::vector<std::int64_t> history(
+        static_cast<std::size_t>(batch * combined_length), pad_id_);
+
+    for (int bi = 0; bi < batch; ++bi) {
+        auto* row = history.data() + static_cast<std::size_t>(bi * combined_length);
+        if (use_cache) {
+            std::copy_n(
+                context_.data() + static_cast<std::size_t>(bi * prefix),
+                prefix,
+                row);
+        }
+        std::copy_n(
+            compressed.data() + static_cast<std::size_t>(bi * tokens),
+            tokens,
+            row + prefix);
+        for (int token = 0; token < tokens; ++token) {
+            std::array<std::int64_t, 32> ngram_tokens{};
+            if (max_ngram_size_ > static_cast<int>(ngram_tokens.size())) {
+                throw std::runtime_error(
+                    "DeepSeek-V4.1 Engram ngram size exceeds native bound");
+            }
+            bool blocked = false;
+            for (int shift = 0; shift < max_ngram_size_; ++shift) {
+                const auto source = row[prefix + token - shift];
+                blocked = blocked || source == kDeadToken;
+                ngram_tokens[static_cast<std::size_t>(shift)] =
+                    blocked ? pad_id_ : source;
+            }
+            for (int layer = 0; layer < layers; ++layer) {
+                const auto multiplier_base =
+                    static_cast<std::size_t>(layer * max_ngram_size_);
+                std::uint64_t rolling =
+                    static_cast<std::uint64_t>(ngram_tokens[0]) *
+                    static_cast<std::uint64_t>(multipliers_[multiplier_base]);
+                for (int shift = 1; shift < max_ngram_size_; ++shift) {
+                    rolling ^=
+                        static_cast<std::uint64_t>(ngram_tokens[shift]) *
+                        static_cast<std::uint64_t>(
+                            multipliers_[multiplier_base + shift]);
+                    std::int64_t signed_hash = 0;
+                    std::memcpy(&signed_hash, &rolling, sizeof(signed_hash));
+                    for (int head = 0; head < heads_; ++head) {
+                        const int column = (shift - 1) * heads_ + head;
+                        const auto bucket = static_cast<std::size_t>(
+                            layer * columns + column);
+                        const auto prime = primes_[bucket];
+                        auto remainder = signed_hash % prime;
+                        if (remainder < 0) remainder += prime;
+                        const auto hash = remainder + offsets_[bucket];
+                        if (hash < 0 || hash >= table_rows_[layer]) {
+                            throw std::runtime_error(
+                                "DeepSeek-V4.1 Engram hash exceeds table rows");
+                        }
+                        const auto output =
+                            ((static_cast<std::size_t>(layer) * batch + bi) * tokens +
+                             token) * columns + column;
+                        result.values[output] = hash;
+                    }
+                }
+            }
+        }
+    }
+    if (use_cache) {
+        for (int bi = 0; bi < batch; ++bi) {
+            const auto* row = history.data() +
+                static_cast<std::size_t>(bi * combined_length);
+            std::copy_n(
+                row + tokens,
+                prefix,
+                context_.data() + static_cast<std::size_t>(bi * prefix));
+        }
+        position_ += tokens;
+    }
+    return result;
+}
+
+DeepseekV41EngramHashSnapshot MlxDeepseekV41EngramHashState::snapshot() const {
+    return {batch_, position_, context_};
+}
+
+void MlxDeepseekV41EngramHashState::restore(
+    DeepseekV41EngramHashSnapshot snapshot) {
+    const auto expected = snapshot.batch <= 0
+        ? std::size_t{0}
+        : static_cast<std::size_t>(
+              snapshot.batch * (max_ngram_size_ - 1));
+    if (snapshot.position < 0 || snapshot.context.size() != expected) {
+        throw std::invalid_argument(
+            "invalid DeepSeek-V4.1 Engram hash snapshot");
+    }
+    batch_ = snapshot.batch;
+    position_ = snapshot.position;
+    context_ = std::move(snapshot.context);
+}
+
+MlxDeepseekV41Engram MlxDeepseekV41Engram::load(
+    const MfqContainer& model,
+    const DeepseekV41Config& config,
+    int layer) {
+    const auto found = std::find(
+        config.engram_layer_ids.begin(),
+        config.engram_layer_ids.end(),
+        layer);
+    if (found == config.engram_layer_ids.end()) {
+        throw std::invalid_argument(
+            "DeepSeek-V4.1 layer has no Engram component");
+    }
+    const auto hash_layer = static_cast<int>(std::distance(
+        config.engram_layer_ids.begin(), found));
+    const auto prefix = DeepseekV41TensorNames::layer(
+        static_cast<std::size_t>(layer), "associative_memory");
+    auto query = dense_array(model, prefix + ".query.weight");
+    auto key = dense_array(model, prefix + ".key.weight");
+    if (query.shape() != Shape{static_cast<int>(config.hc_mult),
+                               static_cast<int>(config.hidden)} ||
+        key.shape() != query.shape()) {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 Engram query/key geometry disagrees");
+    }
+    auto query_key = mlx::core::contiguous(query * key);
+    query_key.eval();
+    auto projection = MlxLinear::load(model, prefix + ".projection.weight");
+    const int hash_columns = static_cast<int>(
+        (config.engram_max_ngram_size - 1) * config.engram_n_heads);
+    if (projection.input_size() != hash_columns * config.engram_head_dim ||
+        projection.output_size() != (config.hc_mult + 1) * config.hidden) {
+        throw std::runtime_error(
+            "DeepSeek-V4.1 Engram projection geometry disagrees");
+    }
+    return MlxDeepseekV41Engram(
+        config,
+        layer,
+        hash_layer,
+        std::make_shared<MlxQuantizedRowStore>(
+            model,
+            prefix + ".embedding.weight",
+            config.engram_num_embeddings[static_cast<std::size_t>(hash_layer)],
+            static_cast<int>(config.engram_head_dim),
+            cache_capacity_rows(config),
+            io_worker_count()),
+        std::move(projection),
+        std::move(query_key));
+}
+
+MlxDeepseekV41Engram::MlxDeepseekV41Engram(
+    DeepseekV41Config config,
+    int layer,
+    int hash_layer_index,
+    std::shared_ptr<MlxQuantizedRowStore> table,
+    MlxLinear projection,
+    array query_key_weight)
+    : config_(std::move(config)),
+      layer_(layer),
+      hash_layer_index_(hash_layer_index),
+      table_(std::move(table)),
+      projection_(std::move(projection)),
+      query_key_weight_(std::move(query_key_weight)) {}
+
+array MlxDeepseekV41Engram::forward(
+    const array& hidden_streams,
+    const DeepseekV41EngramHashBatch& hashes,
+    const std::optional<array>& participation_mask) const {
+    const int batch = hashes.batch;
+    const int tokens = hashes.tokens;
+    const int streams = static_cast<int>(config_.hc_mult);
+    const int hidden = static_cast<int>(config_.hidden);
+    if (hidden_streams.shape() != Shape{batch, tokens, streams, hidden} ||
+        hashes.layers != static_cast<int>(config_.engram_layer_ids.size()) ||
+        hashes.hash_columns !=
+            (config_.engram_max_ngram_size - 1) * config_.engram_n_heads) {
+        throw std::invalid_argument(
+            "DeepSeek-V4.1 Engram activation geometry disagrees");
+    }
+    const auto row_ids = hashes.layer(hash_layer_index_);
+    if (row_ids.size() != static_cast<std::size_t>(batch) * tokens *
+            hashes.hash_columns) {
+        throw std::invalid_argument(
+            "DeepSeek-V4.1 Engram lookup geometry disagrees");
+    }
+    array gathered(0.0f);
+    if (hashes.prefetched_rows.empty()) {
+        gathered = table_->gather(row_ids);
+    } else {
+        if (hashes.prefetched_rows.size() !=
+                static_cast<std::size_t>(hashes.layers) ||
+            !hashes.prefetched_rows[
+                static_cast<std::size_t>(hash_layer_index_)].valid()) {
+            throw std::logic_error(
+                "DeepSeek-V4.1 Engram prefetch state is incomplete");
+        }
+        gathered = hashes.prefetched_rows[
+            static_cast<std::size_t>(hash_layer_index_)].get().decode();
+    }
+    auto embeddings = mlx::core::reshape(
+        std::move(gathered),
+        Shape{batch, tokens, hashes.hash_columns * table_->width()});
+    auto key_value = projection_(embeddings);
+    return deepseek_v41_engram_gate(hidden_streams, key_value, query_key_weight_,
+        participation_mask, static_cast<float>(config_.rms_eps));
+}
+
+void MlxDeepseekV41Engram::prefetch(
+    DeepseekV41EngramHashBatch& hashes) const {
+    if (hash_layer_index_ < 0 || hash_layer_index_ >= hashes.layers ||
+        hashes.prefetched_rows.size() !=
+            static_cast<std::size_t>(hashes.layers)) {
+        throw std::invalid_argument(
+            "DeepSeek-V4.1 Engram prefetch geometry disagrees");
+    }
+    auto& slot = hashes.prefetched_rows[
+        static_cast<std::size_t>(hash_layer_index_)];
+    if (slot.valid()) {
+        throw std::logic_error(
+            "DeepSeek-V4.1 Engram table was prefetched twice");
+    }
+    auto rows = std::vector<std::int64_t>(
+        hashes.layer(hash_layer_index_).begin(),
+        hashes.layer(hash_layer_index_).end());
+    slot = std::async(
+        std::launch::async,
+        [table = table_, rows = std::move(rows)] {
+            return table->prepare_rows(rows);
+        }).share();
+}
+
+std::size_t MlxDeepseekV41Engram::cached_rows() const noexcept {
+    return table_->cached_rows();
+}
+
+MlxQuantizedRowStoreStats MlxDeepseekV41Engram::ssd_stats() const {
+    return table_->stats();
+}
+
+} // namespace mfq::metal
