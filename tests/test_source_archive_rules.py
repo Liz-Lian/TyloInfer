@@ -14,10 +14,10 @@ def test_model_weights_are_ignored_without_excluding_architecture_sources(tmp_pa
     for path, ignored in (
         ("models/local/checkpoint.tq", True),
         ("build/checkpoint.tq", True),
-        ("cpp_runtime/models/model.cpp", False),
-        ("cpp_runtime/backends/metal/models/deepseek_v41/model.cpp", False),
-        ("cpp_runtime/backends/cuda/models/qwen35/model.cpp", False),
-        ("cpp_runtime/backends/hip/models/qwen35/model.cpp", False),
+        ("csrc/models/model.cpp", False),
+        ("csrc/backends/metal/models/deepseek_v41/model.cpp", False),
+        ("csrc/backends/cuda/models/qwen35/model.cpp", False),
+        ("csrc/backends/hip/models/qwen35/model.cpp", False),
     ):
         result = subprocess.run(
             ["git", "check-ignore", "--no-index", path],

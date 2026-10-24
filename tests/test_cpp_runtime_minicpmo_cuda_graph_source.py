@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
-CUDA_ROOT = ROOT / "cpp_runtime" / "backends" / "cuda"
+CUDA_ROOT = ROOT / "csrc" / "backends" / "cuda"
 CUDA_RUNTIME = "\n".join(
     path.read_text(encoding="utf-8")
     for path in (
@@ -15,7 +15,7 @@ BACKEND_CHECKS = (
     CUDA_ROOT / "diagnostics" / "backend_checks.cpp"
 ).read_text(encoding="utf-8")
 MODEL_METADATA_SOURCE = "\n".join(
-    (ROOT / "cpp_runtime/models" / model / "causal_lm.h").read_text(
+    (ROOT / "csrc/models" / model / "causal_lm.h").read_text(
         encoding="utf-8"
     )
     for model in ("glm_dsa", "minicpmo45")
@@ -73,11 +73,11 @@ ACC_SOURCE = (
 
 SHARED_ENGINE = "\n".join(
     path.read_text(encoding="utf-8")
-    for path in (ROOT / "cpp_runtime" / "engine" / "include").glob("*.h")
+    for path in (ROOT / "csrc" / "engine" / "include").glob("*.h")
 )
 SHARED_MODELS = "\n".join(
     path.read_text(encoding="utf-8")
-    for path in (ROOT / "cpp_runtime" / "models").rglob("*.h")
+    for path in (ROOT / "csrc" / "models").rglob("*.h")
 )
 
 SOURCE += SHARED_ENGINE + SHARED_MODELS
@@ -93,7 +93,7 @@ def test_minicpmo_native_runtime_keeps_cuda_graph_enabled() -> None:
 
 
 def test_static_decode_uses_dynamic_position_for_kv_writes() -> None:
-    causal_lm = (ROOT / "cpp_runtime/models/common/causal_model.h").read_text(
+    causal_lm = (ROOT / "csrc/models/common/causal_model.h").read_text(
         encoding="utf-8"
     )
     static_forward = causal_lm.split(

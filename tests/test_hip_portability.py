@@ -33,7 +33,7 @@ def cmake_path():
     (True, True, ["-DTYLOINFER_BUILD_CUDA_RUNTIME=ON", "-DTYLOINFER_BUILD_HIP_RUNTIME=ON"], None),
 ])
 def test_cmake_accelerator_selection(tmp_path, cuda, hip, flags, expected):
-    source = (ROOT / "cpp_runtime/CMakeLists.txt").read_text()
+    source = (ROOT / "csrc/CMakeLists.txt").read_text()
     options = source.split("include(CheckLanguage)\n", 1)[1].split("\nif(APPLE)\n", 1)[0]
     options = options.replace("check_language(CUDA)", "").replace("check_language(HIP)", "")
     (tmp_path / "CMakeLists.txt").write_text(
@@ -160,7 +160,7 @@ def test_staging_is_content_addressed_and_excludes_cuda(tmp_path):
     cuda = root / "tyloinfer/kernels/cuda"
     cuda.mkdir()
     (cuda / "fixed.cuh").write_text("#pragma once\n#define WIDTH 32\n")
-    native_cuda = root / "cpp_runtime/backends/cuda/kernels"
+    native_cuda = root / "csrc/backends/cuda/kernels"
     native_cuda.mkdir(parents=True)
     (native_cuda / "fixed.cuh").write_text("#pragma once\n#define WIDTH 64\n")
     original = hashes(root)
@@ -170,7 +170,7 @@ def test_staging_is_content_addressed_and_excludes_cuda(tmp_path):
     assert len(set(stages)) == 1
     stage = stages[0]
     assert not (stage / "tyloinfer/kernels/cuda").exists()
-    assert not (stage / "cpp_runtime/backends/cuda/kernels").exists()
+    assert not (stage / "csrc/backends/cuda/kernels").exists()
     target = stage / "tyloinfer/kernels/hip/fixed.cuh"
     stamp = target.stat().st_mtime_ns
     assert stage_sources(root, cache) == stage

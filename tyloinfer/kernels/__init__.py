@@ -1,7 +1,7 @@
 """Hardware-backend kernels.
 
 Mirrors the ggml convention of one file per op. The CUDA kernel sources have one
-home, ``cpp_runtime/backends/cuda/kernels``, compiled into a single extension
+home, ``csrc/backends/cuda/kernels``, compiled into a single extension
 ``mfq_cuda`` (the llama.cpp analog of one libggml-cuda); this package keeps the
 thin Python wrappers and the installed TQ kernel resources. Paths below are
 relative to that kernel directory:

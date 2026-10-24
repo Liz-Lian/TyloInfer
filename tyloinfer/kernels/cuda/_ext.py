@@ -20,13 +20,13 @@ _REPOSITORY_ROOT = str(Path(_DIR).resolve().parents[2])
 # The shared CUDA kernels have one source tree, consumed by the native CMake
 # targets and by this extension.  TQ kernels stay here as installed wheel
 # resources and are built separately by tq.py.
-_CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "cpp_runtime" / "backends" / "cuda"
+_CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "csrc" / "backends" / "cuda"
 _KERNEL_DIR = str(_CUDA_BACKEND / "kernels")
 _CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")
 _CUDA_NATIVE_INCLUDE = str(_CUDA_BACKEND / "native")
 _CUDA_NATIVE_TENSOR_INCLUDE = str(_CUDA_BACKEND / "native" / "tensor")
-_CORE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "cpp_runtime" / "core" / "include")
-_GGML_ROOT = Path(_REPOSITORY_ROOT) / "cpp_runtime" / "components" / "ggml"
+_CORE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "csrc" / "core" / "include")
+_GGML_ROOT = Path(_REPOSITORY_ROOT) / "csrc" / "components" / "ggml"
 _GGML_INCLUDE = str(_GGML_ROOT / "include")
 _GGML_SOURCE_INCLUDE = str(_GGML_ROOT / "src")
 _GGML_CUDA_INCLUDE = str(_GGML_ROOT / "src" / "ggml-cuda")

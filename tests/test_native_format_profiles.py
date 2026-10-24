@@ -60,11 +60,11 @@ def test_legacy_dtype_aliases_are_read_only_metadata(alias, expected):
 
 
 def test_ordinary_build_is_explicit_and_compatibility_is_opt_in():
-    cmake = (ROOT / 'cpp_runtime/CMakeLists.txt').read_text()
+    cmake = (ROOT / 'csrc/CMakeLists.txt').read_text()
     assert 'option(TYLOINFER_ENABLE_MFQ_COMPAT' in cmake
     assert '"Include legacy MFQ inference formats" OFF)' in cmake
     for backend in ('cpu', 'cuda', 'hip', 'metal'):
-        source = (ROOT / f'cpp_runtime/backends/{backend}/CMakeLists.txt').read_text()
+        source = (ROOT / f'csrc/backends/{backend}/CMakeLists.txt').read_text()
         assert 'if(TYLOINFER_ENABLE_MFQ_COMPAT)' in source
         assert 'ops/common/' in source
         assert 'ops/mfq/' in source
@@ -72,7 +72,7 @@ def test_ordinary_build_is_explicit_and_compatibility_is_opt_in():
 
 
 def test_moved_native_operators_keep_resolvable_relative_includes():
-    for path in (ROOT / 'cpp_runtime/backends').rglob('*'):
+    for path in (ROOT / 'csrc/backends').rglob('*'):
         if path.suffix not in {'.h', '.cpp', '.cu', '.hip', '.mm'}:
             continue
         for include in re.findall(r'^#include\s+"(\.\.[^"]+)"', path.read_text(), re.M):

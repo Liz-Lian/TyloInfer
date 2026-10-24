@@ -1,6 +1,6 @@
-#include "cpp_runtime/backends/cuda/kernels/packed_nvq.cuh"
-#include "cpp_runtime/backends/cuda/kernels/nvq_byte_signs.cuh"
-#include "cpp_runtime/backends/cuda/kernels/nvq_cooperative_reads.cuh"
+#include "csrc/backends/cuda/kernels/packed_nvq.cuh"
+#include "csrc/backends/cuda/kernels/nvq_byte_signs.cuh"
+#include "csrc/backends/cuda/kernels/nvq_cooperative_reads.cuh"
 #include <algorithm>
 #include <array>
 #include <cstdio>

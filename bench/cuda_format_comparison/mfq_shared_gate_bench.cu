@@ -3,7 +3,7 @@
 #include "storage/weight_loader.h"
 #include "tyloinfer/model_source.h"
 #include "mfq_cuda_shared_gate.h"
-#include "cpp_runtime/backends/cuda/kernels/shared_gate_fused.cuh"
+#include "csrc/backends/cuda/kernels/shared_gate_fused.cuh"
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <array>

@@ -1,6 +1,6 @@
 #include "hip/hip_runtime.h"
 #include <hip/hip_fp16.h>
-#include "cpp_runtime/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "backend.h"
 #include <hip/hip_runtime.h>
 

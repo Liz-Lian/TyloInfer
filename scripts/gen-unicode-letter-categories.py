@@ -14,7 +14,7 @@ def main():
     # Later versions can reclassify existing characters (e.g. U+0295 in 17.0).
     if unicodedata.unidata_version not in ("15.0.0", "15.1.0"):
         parser.error("Use Unicode 15.0 or 15.1 data to match the runtime table")
-    path = Path(__file__).resolve().parents[1] / "cpp_runtime/components/tokenizer/src/unicode-data.cpp"
+    path = Path(__file__).resolve().parents[1] / "csrc/components/tokenizer/src/unicode-data.cpp"
     text = path.read_text(encoding="utf-8")
     start = text.index("const std::initializer_list<std::pair<uint32_t, uint16_t>> unicode_ranges_flags = {")
     end = text.index("\n};", start)

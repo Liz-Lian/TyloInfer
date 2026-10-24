@@ -3,7 +3,7 @@
 #include "mfq_gr_bench.cpp"
 #undef main
 #include <unordered_set>
-#include "cpp_runtime/backends/cuda/kernels/qwen4_exp.h"
+#include "csrc/backends/cuda/kernels/qwen4_exp.h"
 
 namespace wl=mfq::cuda::weight_loader;
 

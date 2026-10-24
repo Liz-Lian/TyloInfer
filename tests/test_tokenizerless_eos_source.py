@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1] / "cpp_runtime"
+ROOT = Path(__file__).resolve().parents[1] / "csrc"
 
 
 @pytest.mark.parametrize("backend", ["cuda", "hip"])

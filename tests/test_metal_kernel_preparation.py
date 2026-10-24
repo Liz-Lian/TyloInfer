@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-METAL = Path(__file__).resolve().parents[1] / "cpp_runtime/backends/metal"
+METAL = Path(__file__).resolve().parents[1] / "csrc/backends/metal"
 
 
 def test_preparation_does_not_execute_graphs():

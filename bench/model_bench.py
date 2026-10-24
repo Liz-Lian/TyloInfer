@@ -47,7 +47,7 @@ METRIC_KEYS = (
 
 
 def default_runtime(root):
-    for candidate in ("hip", "cuda", "cpp_runtime"):
+    for candidate in ("hip", "cuda", "csrc"):
         path = root / "build" / candidate / "mfq-runtime"
         if path.exists():
             return path

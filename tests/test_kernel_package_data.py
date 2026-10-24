@@ -37,7 +37,7 @@ def test_cuda_jit_sources_and_shared_header_includes_resolve():
     from tyloinfer.kernels.cuda import _ext
 
     repository = Path(__file__).resolve().parents[1]
-    assert Path(_ext._KERNEL_DIR) == repository / "cpp_runtime/backends/cuda/kernels"
+    assert Path(_ext._KERNEL_DIR) == repository / "csrc/backends/cuda/kernels"
     roots = [
         Path(_ext._REPOSITORY_ROOT),
         Path(_ext._KERNEL_DIR),

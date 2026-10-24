@@ -1,5 +1,5 @@
-#include "cpp_runtime/backends/cuda/kernels/mfe_ffn.h"
-#include "cpp_runtime/backends/cuda/kernels/mfe_ffn_launch.h"
+#include "csrc/backends/cuda/kernels/mfe_ffn.h"
+#include "csrc/backends/cuda/kernels/mfe_ffn_launch.h"
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>

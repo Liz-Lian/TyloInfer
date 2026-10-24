@@ -2,7 +2,7 @@
 #include "cuda_execution.h"
 #include "storage/weight_loader.h"
 #include "tyloinfer/model_source.h"
-#include "cpp_runtime/backends/cuda/kernels/bf16_mmvf.cuh"
+#include "csrc/backends/cuda/kernels/bf16_mmvf.cuh"
 #include <array>
 #include <cstring>
 #include <random>
