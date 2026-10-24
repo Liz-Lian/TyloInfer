@@ -85,15 +85,22 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
         throw std::invalid_argument(
             "TQ expert bank must be [experts,out,in]: " + name);
     }
+    return load_tq_routed_weight(execution, source, name, shape[0], shape[1], shape[2]);
+}
+
+std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
+        CudaExecutionContext& execution, const mfq::ModelSource& source,
+        const std::string& name, std::int64_t experts, std::int64_t output,
+        std::int64_t input) {
     auto table = mfq::tq_table(source, name);
-    if (shape[0] > UINT32_MAX || table->rows() !=
-            std::uint64_t(shape[0]) * std::uint64_t(shape[1]) ||
-        table->width() != shape[2]) {
+    if (experts < 1 || experts > UINT32_MAX || output < 1 || input < 1 ||
+        table->rows() != std::uint64_t(experts) * std::uint64_t(output) ||
+        table->width() != input) {
         throw std::invalid_argument("TQ routed projection shape differs: " + name);
     }
     auto cache = ensure_tq_expert_cache(execution);
-    const auto source_id = register_tq_expert_source(cache, table->storage_bytes());
-    return std::make_shared<TqRoutedWeight>(
-        std::move(table), std::move(cache), source_id,
-        shape[0], shape[1], shape[2]);
+    auto result = std::make_shared<TqRoutedWeight>(
+        std::move(table), std::move(cache), 0, experts, output, input);
+    result->source_id = register_tq_expert_source(result->cache, result->table->storage_bytes());
+    return result;
 }

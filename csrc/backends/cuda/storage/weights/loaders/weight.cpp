@@ -1185,9 +1185,7 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
     int64_t experts, int64_t output, int64_t input, const std::string& role) {
     const auto& dtype=require_tensor(file, name).dtype;
     if(dtype=="TQ") {
-        auto weight=load_tq_routed_weight(execution,file,name);
-        TYLOINFER_RUNTIME_CHECK(weight->experts==experts && weight->out==output &&
-            weight->input==input,"TQ routed projection shape differs: ",name);
+        auto weight=load_tq_routed_weight(execution,file,name,experts,output,input);
         Routed result=[weight](CudaExecutionContext&,const Tensor& source,const Tensor& ids) {
             return weight->forward(source,ids);
         };

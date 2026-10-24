@@ -26,3 +26,6 @@ std::uint64_t register_tq_expert_source(
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
     CudaExecutionContext&, const mfq::ModelSource&, const std::string&);
+std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
+    CudaExecutionContext&, const mfq::ModelSource&, const std::string&,
+    std::int64_t experts, std::int64_t output, std::int64_t input);
