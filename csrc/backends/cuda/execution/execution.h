@@ -342,6 +342,9 @@ struct MoeRouteLayerStats {
 
 struct CudaExecutionContext {
     CudaExecutionContext();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::cuda::ContextSet native_contexts;
+#endif
     bool yarn_context_extension=false;
     mfq::models::YarnScaling yarn;
 
@@ -382,6 +385,19 @@ struct CudaExecutionContext {
 };
 
 void mfq_release_host_allocator_cache() noexcept;
+struct CudaScope {
+    MfqCudaGuard device;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::cuda::ContextGuard context;
+#endif
+    explicit CudaScope(CudaExecutionContext& execution)
+        : device(execution.layer_placement.primary_device())
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        , context(execution.native_contexts)
+#endif
+    {}
+};
+
 bool model_parallel_enabled(const CudaExecutionContext& execution);
 const ParallelConfig& model_parallel_config(
     const CudaExecutionContext& execution);

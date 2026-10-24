@@ -177,6 +177,7 @@ private:
 };
 
 struct AllocationBudget;
+struct ParallelBatchMatmulContext;
 struct DeviceMemoryStats {
     std::size_t limit = 0;
     std::size_t allocated = 0;
@@ -186,11 +187,14 @@ struct DeviceMemoryStats {
 class Context final : public std::enable_shared_from_this<Context> {
 public:
     explicit Context(int device);
+    ~Context() noexcept;
 
     int device() const noexcept { return device_; }
     Stream& stream() noexcept { return stream_; }
     const Stream& stream() const noexcept { return stream_; }
     BlasHandle& blas() noexcept { return blas_; }
+    std::shared_ptr<ParallelBatchMatmulContext> parallel_blas;
+    cudaMemPool_t memory_pool() const noexcept { return pool_; }
     bool supports_async_allocations() const noexcept { return async_allocations_; }
     DeviceMemoryStats memory_stats() const noexcept;
     std::pair<std::uint64_t,std::uint64_t> pool_memory_stats() const;
@@ -236,6 +240,7 @@ private:
     Stream stream_;
     BlasHandle blas_;
     cudaMemPool_t pool_ = nullptr;
+    cudaMemPool_t resident_pool_ = nullptr;
     bool async_allocations_ = false;
     std::shared_ptr<AllocationBudget> allocation_budget_;
     void trim_pool_pages() const;
@@ -253,6 +258,20 @@ private:
     };
     std::unique_ptr<WorkspaceLoan> workspace_loan_;
     std::unordered_map<cudaStream_t, GraphPool> graph_pools_;
+};
+
+// One set belongs to one Engine; standalone tensor callers use a thread-local set.
+using ContextSet = std::unordered_map<int, std::shared_ptr<Context>>;
+class ContextGuard final {
+public:
+    explicit ContextGuard(ContextSet& contexts);
+    ~ContextGuard() noexcept;
+    ContextGuard(const ContextGuard&) = delete;
+    ContextGuard& operator=(const ContextGuard&) = delete;
+private:
+    ContextSet* previous_;
+    bool changed_;
+    std::unordered_map<int, StreamHandle> streams_;
 };
 
 std::shared_ptr<Context> default_context(int device = 0);

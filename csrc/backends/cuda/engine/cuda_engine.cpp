@@ -614,7 +614,7 @@ struct CudaBackend {
     template <class F> decltype(auto) visit(F&& run) {
         return std::visit([&](auto& state) -> decltype(auto) {
             if (!state) throw std::runtime_error("CUDA engine is unloaded");
-            MfqCudaGuard guard(state->execution->layer_placement.primary_device());
+            CudaScope guard(*state->execution);
             mfq_tensor_backend::NoGradGuard no_grad;
             return run(*state);
         }, state);
@@ -625,6 +625,7 @@ struct CudaBackend {
         if (dump_env) std::cerr << "cuda knobs at load:\n" << mfq::cuda::env_dump();
         if (!options.context_size) options.context_size = 32768;
         auto execution = std::make_shared<CudaExecutionContext>();
+        CudaScope scope(*execution);
         setup_cuda_load(options, *execution);
         execution->profiler.enabled = false;
         auto weight_memory=std::make_shared<WeightMemoryLedger>();

@@ -556,6 +556,7 @@ auto with_loaded_cuda_model(
         const CudaLoadOptions& options,
         bool load_optional_components,
         F&& run) {
+    CudaScope scope(execution);
     auto source = mfq::open_model_source(options.model_path);
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();

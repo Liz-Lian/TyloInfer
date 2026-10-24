@@ -151,7 +151,7 @@ template <typename Model> struct CudaCausalOps : Model {
     }
 
     auto execution_scope() const {
-        return MfqCudaGuard(this->execution->layer_placement.primary_device());
+        return CudaScope(*this->execution);
     }
     static auto block_scope(const std::unique_ptr<Block> &block) {
         return MfqCudaGuard(block->cuda_device);

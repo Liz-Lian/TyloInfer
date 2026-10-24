@@ -43,13 +43,13 @@ static mfq::engine::PrefillChunk budget_batch_prefill(Model& model,
 
 mfq::engine::PrefillChunk QwenBatchOperations::prefill_chunk(
         const std::shared_ptr<Request>&,mfq::engine::PrefillChunk chunk) {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     return budget_batch_prefill(model_,execution_,chunk);
 }
 
 mfq::engine::PrefillChunk FlashNextBatchOperations::prefill_chunk(
         const std::shared_ptr<Request>& request,mfq::engine::PrefillChunk chunk) {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     initialize_prefill(request,chunk);
     return budget_batch_prefill(model_,execution_,chunk,request->cache->prefill_growth_bytes(chunk.count));
 }
@@ -177,14 +177,14 @@ void QwenBatchOperations::initialize_sampling(Request &request, const Tensor &pr
 
 void QwenBatchOperations::suspend_decode() {
     invalidate_decode_graph();
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     state_adapter_.suspend_decode();
 }
 
 QwenBatchOperations::Sample QwenBatchOperations::prefill(
     const std::shared_ptr<Request> &request, mfq::engine::PrefillChunk chunk) {
     const int primary = execution_.layer_placement.primary_device();
-    MfqCudaGuard guard(primary);
+    CudaScope guard(execution_);
     state_adapter_.prepare_prefill(request->cache, chunk.offset, request->prompt.size());
     if (chunk.offset == 0) {
         request->prefill_ids =
@@ -237,14 +237,14 @@ QwenBatchOperations::Sample QwenBatchOperations::prefill(
 }
 
 void QwenBatchOperations::activate(const std::shared_ptr<Request> &request, const Sample &sample) {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     if (request->counts.defined())
         sample_token_counts_add_cuda(request->counts, sample.next.contiguous());
     state_adapter_.activate(request->cache);
 }
 
 void QwenBatchOperations::resume_decode(int64_t cache_position) {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     state_adapter_.resume_decode(cache_position);
 }
 
@@ -287,7 +287,7 @@ void QwenBatchOperations::invalidate_decode_graph() {
 
 QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
     const int primary = execution_.layer_placement.primary_device();
-    MfqCudaGuard primary_guard(primary);
+    CudaScope primary_guard(execution_);
     for (const auto &request : state.active)
         state_adapter_.ensure_decode_tokens(request->cache, request->cache_length + 1);
     int64_t max_position = 0;
@@ -563,7 +563,7 @@ FlashNextBatchOperations::Sample FlashNextBatchOperations::finish_prefill(
 FlashNextBatchOperations::Sample FlashNextBatchOperations::prefill(
         const std::shared_ptr<Request>& request, mfq::engine::PrefillChunk chunk) {
     try {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     initialize_prefill(request,chunk);
     auto timer = std::make_unique<PrefillCudaTimer>();
     auto hidden = request->cache->prefill(model_,request->prefill_ids.narrow(1,chunk.offset,chunk.count).contiguous());
@@ -586,7 +586,7 @@ int64_t FlashNextBatchOperations::prefill_batch_token_budget() const {
 std::vector<mfq::engine::PrefillBatchResult<FlashNextBatchOperations::Sample>>
 FlashNextBatchOperations::prefill_batch(
         const std::vector<std::pair<std::shared_ptr<Request>,mfq::engine::PrefillChunk>>& items) {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     qwen4_release_decode_graphs(model_,nullptr);
     model_.adapter_begin_forward(false);
     release_moe_decode_buffers(execution_.moe_expert_cache);
@@ -681,7 +681,7 @@ void FlashNextBatchOperations::retire(const std::vector<std::shared_ptr<Request>
     }
 }
 FlashNextBatchOperations::Decoded FlashNextBatchOperations::decode(State& state) {
-    MfqCudaGuard guard(execution_.layer_placement.primary_device());
+    CudaScope guard(execution_);
     std::vector<Qwen4BatchRequestState*> caches;
     std::vector<int64_t> tokens;
     for (const auto& request : state.active) {
