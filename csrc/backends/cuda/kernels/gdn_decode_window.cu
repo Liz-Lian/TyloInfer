@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfq_cuda_linear_attention_ops.h"
 #include <cuda_fp16.h>
 #include <cmath>
@@ -196,7 +197,7 @@ std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::T
   using Gate=decltype(g);using Output=decltype(o);
   const auto kernel=gdn_decode_window_kernel<Gate,Output>;
   static bool reported=false;
-  if(!reported && std::getenv("TYLOINFER_GDN_PROBE_RESOURCES")) {
+  if(!reported && mfq::cuda::env_lookup("TYLOINFER_GDN_PROBE_RESOURCES")) {
    cudaFuncAttributes a;TYLOINFER_CUDA_CHECK(cudaFuncGetAttributes(&a,kernel));reported=true;
    std::fprintf(stderr,"gdn_register_resources registers=%d local=%zu shared=%zu\n",a.numRegs,a.localSizeBytes,a.sharedSizeBytes);
   }

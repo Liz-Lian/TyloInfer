@@ -1,3 +1,4 @@
+#include "env.h"
 #define TYLOINFER_MFE_COMPACT_NVQ 1
 #define TYLOINFER_MFE_PARITY_READ 1
 #include "mfe_ffn_device.cuh"
@@ -12,7 +13,7 @@ namespace mfq::cuda {
 namespace {
 template<uint32_t Formats>
 void parity_down(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
-    const auto* resident=std::getenv("TYLOINFER_MFE_RESIDENT_DOWN");
+    const auto* resident=mfq::cuda::env_lookup("TYLOINFER_MFE_RESIDENT_DOWN");
     if((partition&3)==1 && b.resident_pairs && (!resident || resident[0]!='0')) {
         mfe_ffn_resident_down<Formats>(b,stream);
         static std::atomic<bool> reported{false};
@@ -70,7 +71,7 @@ void parity_token_down(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
 template<uint32_t Formats>
 void parity_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     partition|=16;
-    const auto enabled=[](const char* name){const auto* p=std::getenv(name);return !p || p[0]!='0';};
+    const auto enabled=[](const char* name){const auto* p=mfq::cuda::env_lookup(name);return !p || p[0]!='0';};
     if(b.plan_ready && b.resident_plan_overlap && enabled("TYLOINFER_MFE_EARLY_GU"))partition|=8;
     if(b.shared && enabled("TYLOINFER_MFE_SHARED_FIRST"))partition|=4;
     const auto grid=dim3((width+7)/8,b.tokens*(b.routes+int(b.shared!=nullptr)));
@@ -89,7 +90,7 @@ void parity_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t st
 template<uint32_t Formats>
 void parity_token_single_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     partition|=16;
-    const auto* early=std::getenv("TYLOINFER_MFE_EARLY_GU");
+    const auto* early=mfq::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
     if(b.plan_ready && b.resident_plan_overlap && (!early || early[0]!='0'))partition|=8;
     // Token-group slots already contain their original shared/routed position.
     // The separate hidden quantizer owns Down metadata and completion.
@@ -141,7 +142,7 @@ void mfe_ffn_parity_transfer_routes(const MfeFfnBatch& b,const int32_t* routes,c
 
 namespace mfq::cuda {
 void mfe_ffn_parity_group_gate_up(const MfeFfnBatch& b,int partition,cudaStream_t stream,const int32_t* routes) {
-    const auto* early=std::getenv("TYLOINFER_MFE_EARLY_GU");
+    const auto* early=mfq::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
     if(b.plan_ready && b.resident_plan_overlap && (!early || early[0]!='0'))partition|=8;
     // Four warps per projection cover a GS24 group in three balanced rounds.
     if(routes && (partition&3)==2) {

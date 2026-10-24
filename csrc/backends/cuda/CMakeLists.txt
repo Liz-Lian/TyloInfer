@@ -58,6 +58,7 @@ else()
 endif()
 
 add_library(mfq-cuda-core STATIC
+    ${TYLOINFER_CUDA_ROOT}/native/env.cpp
     ${TYLOINFER_CUDA_ROOT}/native/context.cu
     ${TYLOINFER_CUDA_ROOT}/native/tensor/tensor.cpp
     ${TYLOINFER_CUDA_ROOT}/native/tensor/tensor.cu
@@ -290,6 +291,11 @@ if(BUILD_TESTING)
 
     mfq_add_cuda_test(mfq-cuda-context-test
         ${TYLOINFER_CUDA_ROOT}/tests/mfq_cuda_context_test.cu)
+    add_executable(mfq-cuda-env-test ${TYLOINFER_CUDA_ROOT}/tests/native/env_test.cpp)
+    target_include_directories(mfq-cuda-env-test PRIVATE ${TYLOINFER_CUDA_ROOT})
+    target_link_libraries(mfq-cuda-env-test PRIVATE mfq-cuda-core)
+    target_compile_features(mfq-cuda-env-test PRIVATE cxx_std_20)
+    add_test(NAME mfq-cuda-env-test COMMAND mfq-cuda-env-test)
     if(TYLOINFER_ENABLE_MFQ_COMPAT)
     mfq_add_cuda_test(mfq-cuda-shared-storage-test
         ${TYLOINFER_CUDA_ROOT}/tests/cuda_shared_storage_test.cu)

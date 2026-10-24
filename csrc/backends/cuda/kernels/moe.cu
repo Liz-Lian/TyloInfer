@@ -1,3 +1,4 @@
+#include "env.h"
 // GPU-resident MoE routing and legacy symmetric NINT8-0 kernels.
 //
 // The execution layout follows llama.cpp's CUDA mul_mat_id path:
@@ -1679,11 +1680,11 @@ void launch_nint8_zero_moe_mma(
         (pairs + route_tile_m - 1) / route_tile_m + experts;
     const int64_t max_tasks = max_tiles * ntiles_n;
     static const int block_cap = [] {
-        const char * value = std::getenv("TYLOINFER_MOE_PREFILL_MMA_BLOCKS");
+        const char * value = mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_MMA_BLOCKS");
         return value == nullptr ? 0 : std::max(1, std::atoi(value));
     }();
     static const int forced_bm = [] {
-        const char * value = std::getenv("TYLOINFER_MOE_PREFILL_MMA_BM");
+        const char * value = mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_MMA_BM");
         if (value == nullptr) return 0;
         const int parsed = std::atoi(value);
         return parsed == 16 || parsed == 32 || parsed == 64 ? parsed : 0;
@@ -1746,11 +1747,11 @@ void launch_nint8_zero_grouped_matmul(
         bool routed_input,
         cudaStream_t stream) {
     static const bool disable_token_warp = [] {
-        const char * value = std::getenv("TYLOINFER_DISABLE_MOE_TOKEN_WARP");
+        const char * value = mfq::cuda::env_lookup("TYLOINFER_DISABLE_MOE_TOKEN_WARP");
         return value != nullptr && std::atoi(value) != 0;
     }();
     static const int token_warps = [] {
-        const char * value = std::getenv("TYLOINFER_MOE_TOKEN_WARPS");
+        const char * value = mfq::cuda::env_lookup("TYLOINFER_MOE_TOKEN_WARPS");
         if (value == nullptr) return 16;
         const int parsed = std::atoi(value);
         return parsed == 8 || parsed == 16 || parsed == 32 ? parsed : 16;
@@ -1791,7 +1792,7 @@ void launch_nint8_zero_grouped_matmul(
     const int row_tiles =
         (out_per_expert + kRowsPerBlock - 1) / kRowsPerBlock;
     static const bool disable_persistent = [] {
-        const char * value = std::getenv("TYLOINFER_DISABLE_MOE_PERSISTENT");
+        const char * value = mfq::cuda::env_lookup("TYLOINFER_DISABLE_MOE_PERSISTENT");
         return value != nullptr && std::atoi(value) != 0;
     }();
     if (!disable_persistent && tokens <= 32) {
@@ -1917,7 +1918,7 @@ std::vector<mfq_tensor_backend::Tensor> moe_topk_cuda(
     auto weights = mfq_tensor_backend::empty({rows, top_k}, logits.options().dtype(mfq_tensor_backend::kFloat32));
     const cudaStream_t stream = mfq_current_cuda_stream();
     static const bool disable_topk_sort = [] {
-        const char * value = std::getenv("TYLOINFER_DISABLE_MOE_TOPK_SORT");
+        const char * value = mfq::cuda::env_lookup("TYLOINFER_DISABLE_MOE_TOPK_SORT");
         return value != nullptr && std::atoi(value) != 0;
     }();
     if (!disable_topk_sort && rows == 1 && experts == 128 && top_k == 8 &&
@@ -1945,8 +1946,8 @@ std::vector<mfq_tensor_backend::Tensor> moe_topk_cuda(
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
         return {ids, weights};
     }
-    const char* topk512_flag = std::getenv("TYLOINFER_MOE_TOPK_512");
-    const auto* topk512_batch=std::getenv("TYLOINFER_MOE_TOPK_512_BATCH");
+    const char* topk512_flag = mfq::cuda::env_lookup("TYLOINFER_MOE_TOPK_512");
+    const auto* topk512_batch=mfq::cuda::env_lookup("TYLOINFER_MOE_TOPK_512_BATCH");
     if ((rows == 1 || (rows<=6 && (!topk512_batch || topk512_batch[0]!='0'))) && experts == 512 && top_k == 10 && bias_ptr == nullptr &&
             !use_sigmoid && !use_sqrt_softplus && normalize && !delayed_softmax &&
             (topk512_flag == nullptr || std::atoi(topk512_flag) != 0)) {
@@ -1965,7 +1966,7 @@ std::vector<mfq_tensor_backend::Tensor> moe_topk_cuda(
     const dim3 block(32, 4);
     const int grid = (rows + 3) / 4;
     // Capacity is a register-cache bound; all routing parameters remain runtime values.
-    const char* cache_flag = std::getenv("TYLOINFER_MOE_TOPK_CACHE");
+    const char* cache_flag = mfq::cuda::env_lookup("TYLOINFER_MOE_TOPK_CACHE");
     const bool use_cached = experts <= 16 * kWarpSize &&
         (cache_flag == nullptr || std::atoi(cache_flag) != 0);
     if (use_cached) {

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "qwen4_exp.h"
 #include "mfq_cuda_norm_ops.h"
 
@@ -361,7 +362,7 @@ std::vector<Tensor> gated_residual_post_norm(const Tensor& branch,const Tensor& 
 Tensor block_scores(const Tensor& query, const Tensor& pooled) {
     mfq_selected_attention::values({&query, &pooled});
     MfqCudaGuard guard(query.device());
-    const auto* option=std::getenv("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
     if(query.size(1)>=32 && option && option[0]=='1') {
         // Each index head owns a token matrix. This replaces thousands of
         // four-row GEMMs with a few large GEMMs and retains head reduction.
@@ -406,7 +407,7 @@ Tensor live_block_scores(const Tensor& query,const Tensor& pooled,const Tensor& 
         positions.numel()==query.size(1),"invalid live QSA score geometry");
     const bool supported=(query.scalar_type()==tb::kFloat16 || query.scalar_type()==tb::kFloat32) &&
         (pooled.scalar_type()==tb::kFloat16 || pooled.scalar_type()==tb::kFloat32);
-    const auto* option=std::getenv("TYLOINFER_QSA_LIVE_SCORES");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_QSA_LIVE_SCORES");
     if(!supported || (option && option[0]=='0')) {
         auto scores=block_scores(query,pooled);
         auto ends=(tb::arange(pooled.size(1),positions.options())*pool+pool-1).reshape({1,1,-1});
@@ -483,7 +484,7 @@ __global__ void live_topk_blocks_kernel(const float* source,const int64_t* ids,
 }
 
 Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t pool,int64_t count) {
-    const auto* option=std::getenv("TYLOINFER_QSA_LIVE_TOPK");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_QSA_LIVE_TOPK");
     if((option && option[0]=='0') || count>1024)
         return std::get<1>(tb::topk(scores,count,-1,true,false));
     TYLOINFER_RUNTIME_CHECK(scores.is_cuda() && scores.is_contiguous() && scores.dim()==3 && scores.size(0)==1 &&
@@ -492,7 +493,7 @@ Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t poo
         count>0 && count<=scores.size(2),"invalid live QSA top-k geometry");
     MfqCudaGuard guard(scores.device());
     const int rows=int(scores.size(1)),pools=int(scores.size(2));
-    const auto* compact_option=std::getenv("TYLOINFER_QSA_TOPK_LIVE_TILE");
+    const auto* compact_option=mfq::cuda::env_lookup("TYLOINFER_QSA_TOPK_LIVE_TILE");
     const bool compact=!compact_option || compact_option[0]!='0';
     int columns=pools,stage=0;
     auto keys=scores;Tensor ids;

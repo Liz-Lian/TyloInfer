@@ -1,3 +1,4 @@
+#include "env.h"
 #include "context.h"
 #include "resident_allocations.h"
 #include "tyloinfer/runtime.h"
@@ -75,7 +76,7 @@ std::shared_ptr<AllocationBudget> device_allocation_budget(int device) {
     auto& budget=allocation_budgets[device];
     if(!budget) {
         auto candidate=std::make_shared<AllocationBudget>();
-        if(const auto* value=std::getenv("TYLOINFER_CUDA_VRAM_LIMIT_GIB")) {
+        if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_CUDA_VRAM_LIMIT_GIB")) {
             char* end=nullptr;const double gib=std::strtod(value,&end);
             const long double bytes=static_cast<long double>(gib)*1024*1024*1024;
             if(end==value || *end || !std::isfinite(gib) || gib<0 ||
@@ -472,12 +473,12 @@ void Graph::capture_end() {
             pool_streams_[index].stream());
     }
     TYLOINFER_NATIVE_CUDA_CHECK(capture_status);
-    if (const char* dot_path = std::getenv("TYLOINFER_NATIVE_CUDA_GRAPH_DOT");
+    if (const char* dot_path = mfq::cuda::env_lookup("TYLOINFER_NATIVE_CUDA_GRAPH_DOT");
         dot_path != nullptr && dot_path[0] != '\0') {
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphDebugDotPrint(
             graph_, dot_path, cudaGraphDebugDotFlagsVerbose));
     }
-    if (const char* trace = std::getenv("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH");
+    if (const char* trace = mfq::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH");
         trace != nullptr && std::atoi(trace) != 0) {
         std::size_t count = 0;
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphGetNodes(graph_, nullptr, &count));
@@ -486,7 +487,7 @@ void Graph::capture_end() {
         std::unordered_set<void*> allocations;
         std::unordered_set<void*> frees;
         std::unordered_set<void*> reported_kernels;
-        const char* resources=std::getenv("TYLOINFER_TRACE_NATIVE_CUDA_KERNEL_RESOURCES");
+        const char* resources=mfq::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_KERNEL_RESOURCES");
         std::size_t kernels = 0;
         std::size_t copies = 0;
         for (auto node : nodes) {
@@ -539,7 +540,7 @@ void Graph::capture_end() {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphInstantiate(&executable_, graph_, 0));
     // A first replay may block in the driver while it uploads a large graph.
     // Prepare it before replay can wait for CPU-produced mapped flags.
-    if (const char* upload = std::getenv("TYLOINFER_NATIVE_CUDA_GRAPH_UPLOAD");
+    if (const char* upload = mfq::cuda::env_lookup("TYLOINFER_NATIVE_CUDA_GRAPH_UPLOAD");
         upload == nullptr || std::atoi(upload) != 0) {
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphUpload(executable_, stream_.stream()));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream_.stream()));
@@ -740,7 +741,7 @@ std::size_t Context::available_memory() const {
             const auto available=memory.Budget>memory.CurrentUsage?std::size_t(memory.Budget-memory.CurrentUsage):0;
             if(available<free) {
                 static std::atomic<bool> reported{false};
-                if(std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS") && !reported.exchange(true,std::memory_order_relaxed))
+                if(mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS") && !reported.exchange(true,std::memory_order_relaxed))
                     std::fprintf(stderr,"cuda_residency_budget scope=first_limit cuda_free_bytes=%zu budget_bytes=%llu usage_bytes=%llu available_bytes=%zu\n",
                         free,static_cast<unsigned long long>(memory.Budget),static_cast<unsigned long long>(memory.CurrentUsage),available);
                 free=available;
@@ -762,7 +763,7 @@ void Context::reclaim_idle_memory() {
     // Trimming unused pages leaves live graph-pool allocations untouched.
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceSynchronize());
     trim_pool_pages();
-    if(const auto* trace=std::getenv("TYLOINFER_TRACE_RESIDENCY_MEMORY");trace && trace[0]=='1') {
+    if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY");trace && trace[0]=='1') {
         std::lock_guard lock(graph_pool_mutex_);
         std::size_t cached=0,blocks=0;
         for(const auto& [stream,pool]:graph_pools_)for(const auto& [bytes,pointers]:pool.available) {
@@ -1002,7 +1003,7 @@ void* Context::allocate(std::size_t bytes, cudaStream_t stream) {
         if(pointer) {if(async_allocations_)(void)cudaFreeAsync(pointer,allocation_stream);else (void)cudaFree(pointer);}
         allocation_budget_->release(bytes);throw;
     }
-    if(const auto* trace=std::getenv("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
+    if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
         std::cerr<<"cuda_large_allocate pointer="<<pointer<<" bytes="<<bytes
             <<" graph="<<pooled_allocation<<" resident="<<resident_allocations<<'\n';
     return pointer;
@@ -1066,7 +1067,7 @@ void Context::release(
             (void)cudaFree(pointer);
         }
     });
-    if(const auto* trace=std::getenv("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
+    if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
         std::cerr<<"cuda_large_release pointer="<<pointer<<" bytes="<<bytes<<'\n';
     allocation_budget_->release(bytes);
 }

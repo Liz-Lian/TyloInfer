@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include <cmath>
 #include <limits>
 
@@ -73,11 +74,7 @@ static void check_conditional_compact_sampling() {
 
 static void sampling_key_variant(int variant) {
     const auto set=[](const char* name,const char* value) {
-#ifdef _WIN32
-        if(_putenv_s(name,value))throw std::runtime_error("sampling environment setting failed");
-#else
-        if(setenv(name,value,1))throw std::runtime_error("sampling environment setting failed");
-#endif
+        mfq::cuda::env_set(name,value);
     };
     set("TYLOINFER_SAMPLE_RADIX_TOPK","1");
     set("TYLOINFER_SAMPLE_RADIX_KEYS",variant?"1":"0");

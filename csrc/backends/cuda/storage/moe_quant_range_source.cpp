@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../runtime/execution_options.h"
 #include "moe_quant_range_source.h"
 #include "moe_pinned_expert_arena.h"
@@ -63,7 +64,7 @@ std::size_t expert_fields_bytes(const MixedMoePool& pool) {
 MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<mfq::MfeQuantExpertStore> store)
     :store_(std::move(store)),metadata_(std::make_shared<MixedMoeRuntime>()) {
     if (!store_) throw std::invalid_argument("missing quantized expert range source");
-    const auto* profile=std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS");
+    const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     profile_ssd_=profile && profile[0]=='1';
     const auto dense=mfq::cuda::runtime_options::moe_nvq_dense();
     const auto preload=mfq::cuda::runtime_options::moe_preload_all();

@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
@@ -245,7 +246,7 @@ using MfqCudaStreamGuard = ::c10::cuda::CUDAStreamGuard;
 using MfqCudaGraph = ::at::cuda::CUDAGraph;
 
 inline void mfq_prepare_cuda_graph_memory(MfqCudaGraph& graph) {
-    const char* debug_path = std::getenv("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
+    const char* debug_path = mfq::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
     if (debug_path != nullptr && debug_path[0] != '\0') {
         graph.enable_debug_mode();
     }
@@ -258,7 +259,7 @@ inline void mfq_prepare_cuda_graph_memory(
 }
 
 inline void mfq_debug_dump_cuda_graph(MfqCudaGraph& graph) {
-    const char* debug_path = std::getenv("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
+    const char* debug_path = mfq::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
     if (debug_path != nullptr && debug_path[0] != '\0') {
         TYLOINFER_CUDA_CHECK(cudaGraphDebugDotPrint(
             graph.raw_cuda_graph(), debug_path, cudaGraphDebugDotFlagsVerbose));

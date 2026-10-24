@@ -1,18 +1,15 @@
 #pragma once
+#include "env.h"
 #include "mfe_ffn_runtime.h"
 
 // Compare descriptor-cached bank selection with the original metadata load in
 // complete production FFNs, including grouped routed tokens and graph replay.
 void verify_d4_bank_map(const std::filesystem::path& root,int benchmark=1) {
     struct Option {
-        std::string old;bool present=std::getenv("TYLOINFER_MFE_NVQ_BANK_MAP")!=nullptr;
-        Option(){if(present)old=std::getenv("TYLOINFER_MFE_NVQ_BANK_MAP");}
+        std::string old;bool present=mfq::cuda::env_lookup("TYLOINFER_MFE_NVQ_BANK_MAP")!=nullptr;
+        Option(){if(present)old=mfq::cuda::env_lookup("TYLOINFER_MFE_NVQ_BANK_MAP");}
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MFE_NVQ_BANK_MAP",value);
-#else
-            if(*value)setenv("TYLOINFER_MFE_NVQ_BANK_MAP",value,1);else unsetenv("TYLOINFER_MFE_NVQ_BANK_MAP");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_MFE_NVQ_BANK_MAP",value);else mfq::cuda::env_clear("TYLOINFER_MFE_NVQ_BANK_MAP");
         }
         ~Option(){set(present?old.c_str():"");}
     } option;

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfq_cuda_quant_ops.h"
 
 #include <cuda_runtime_api.h>
@@ -13,33 +14,17 @@ namespace {
 using namespace mfq::cuda;
 bool benchmark_online=false;
 void single_path(bool enabled) {
-#ifdef _WIN32
-    _putenv_s("TYLOINFER_NINT_SINGLE_ROW",enabled ? "1" : "0");
-#else
-    setenv("TYLOINFER_NINT_SINGLE_ROW",enabled ? "1" : "0",1);
-#endif
+    mfq::cuda::env_set("TYLOINFER_NINT_SINGLE_ROW",enabled ? "1" : "0");
 }
 
 void group_path(bool enabled) {
-#ifdef _WIN32
-    _putenv_s("TYLOINFER_NINT_GROUP_DOT", enabled ? "1" : "0");
-#else
-    setenv("TYLOINFER_NINT_GROUP_DOT", enabled ? "1" : "0", 1);
-#endif
+    mfq::cuda::env_set("TYLOINFER_NINT_GROUP_DOT", enabled ? "1" : "0");
 }
 void whole_path(bool enabled) {
-#ifdef _WIN32
-    _putenv_s("TYLOINFER_NINT_WHOLE_GROUP", enabled ? "1" : "0");
-#else
-    setenv("TYLOINFER_NINT_WHOLE_GROUP", enabled ? "1" : "0", 1);
-#endif
+    mfq::cuda::env_set("TYLOINFER_NINT_WHOLE_GROUP", enabled ? "1" : "0");
 }
 void exact_batch_path(bool enabled) {
-#ifdef _WIN32
-    _putenv_s("TYLOINFER_NINT_EXACT_BATCH",enabled ? "1" : "0");
-#else
-    setenv("TYLOINFER_NINT_EXACT_BATCH",enabled ? "1" : "0",1);
-#endif
+    mfq::cuda::env_set("TYLOINFER_NINT_EXACT_BATCH",enabled ? "1" : "0");
 }
 
 double grouped_max_nrmse = 0.0;
@@ -143,7 +128,7 @@ void check_case(int gs, int ng, int m, int width_tail, int storage_offset,
     exact_batch_path(true);
     const auto actual = run(true);
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceSynchronize());
-    const auto* q8_option=std::getenv("TYLOINFER_NINT_Q8_DECODE");
+    const auto* q8_option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");
     const bool reassociated=gs==48 && m>1 && storage_offset==0 &&
         (!q8_option || std::atoi(q8_option)==2);
     const auto compare=[&](const Tensor& value) {

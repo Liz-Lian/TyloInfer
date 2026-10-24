@@ -1,3 +1,4 @@
+#include "env.h"
 // RMSNorm / L2 Norm (ggml norm.cu: ggml_rms_norm / ggml_l2_norm).
 // One block normalizes one row (last dim D). fp32. x viewed as [N, D] (caller flattens).
 
@@ -513,7 +514,7 @@ mfq_tensor_backend::Tensor gdn_rms_norm_gate_cuda(mfq_tensor_backend::Tensor att
     auto output=tb::empty({batch,tokens,heads*width},attended.options().dtype(output_half?tb::kFloat16:tb::kFloat32));
     // Match the arithmetic selected after the old mandatory contiguous copy.
     const bool double_sigmoid=gate.scalar_type()==tb::kFloat32 && tokens>1 && heads>1;
-    const auto* warp_setting=std::getenv("TYLOINFER_GDN_NORM_WARP_REDUCTION");
+    const auto* warp_setting=mfq::cuda::env_lookup("TYLOINFER_GDN_NORM_WARP_REDUCTION");
     const bool warp_tail=warp_setting?warp_setting[0]=='1':width==128 && tokens>=2 && tokens<=8;
     const auto launch=[&]<class Gate,class Output,int Threads>() {
         const auto select=[&](auto tail) {

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "nint_short_decode.h"
 #include <cuda_runtime.h>
 #include <cstdlib>
@@ -276,8 +277,8 @@ __global__ void __launch_bounds__(128) nint_fixed_dual_group_output_kernel(NintW
 }
 
 bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits,cudaStream_t stream) {
-    const auto* fixed_bits=std::getenv("TYLOINFER_NINT_FIXED_BITS");
-    const auto* small_setting=std::getenv("TYLOINFER_NINT_FIXED_SMALL_GROUPS");
+    const auto* fixed_bits=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_BITS");
+    const auto* small_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_SMALL_GROUPS");
     if((!small_setting || small_setting[0]!='0') && (!fixed_bits || fixed_bits[0]!='0') &&
             args.groups<=32 && args.activation_rows<=6 &&
             ((group_size==24 && uniform_bits==6) || (group_size==28 && uniform_bits==5))) {
@@ -308,11 +309,11 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
         }
         return true;
     }
-    const auto* fixed_output=std::getenv("TYLOINFER_NINT_FIXED_OUTPUT");
+    const auto* fixed_output=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_OUTPUT");
     const bool five=group_size==28 && uniform_bits==5 && args.groups<=96 &&
         (!fixed_bits || fixed_bits[0]!='0');
-    const auto* output_warps=std::getenv("TYLOINFER_NINT_OUTPUT_TWO_WARPS");
-    const auto* one_warp_setting=std::getenv("TYLOINFER_NINT_OUTPUT_ONE_WARP");
+    const auto* output_warps=mfq::cuda::env_lookup("TYLOINFER_NINT_OUTPUT_TWO_WARPS");
+    const auto* one_warp_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_OUTPUT_ONE_WARP");
     const bool one_warp=one_warp_setting?one_warp_setting[0]=='1':
         (args.activation_rows==1 && args.rows==2560 &&
             ((group_size==28 && uniform_bits==5 && args.groups==220) ||
@@ -325,17 +326,17 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
     const bool cached_sums=args.activation_sum!=nullptr;
     const bool interleaved=args.activation_interleaved!=nullptr;
     const bool tracing=mfq::cuda::dispatch_trace::enabled();
-    const auto* warp_rows=std::getenv("TYLOINFER_NINT_WARP_ROWS");
-    const auto* fixed_group_setting=std::getenv("TYLOINFER_NINT_FIXED_92_GROUPS");
+    const auto* warp_rows=mfq::cuda::env_lookup("TYLOINFER_NINT_WARP_ROWS");
+    const auto* fixed_group_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_92_GROUPS");
     const bool fixed_92=(fixed_group_setting?fixed_group_setting[0]=='1':
         (args.activation_rows>=2 && args.activation_rows<=6)) && args.groups==92 && args.rows%4==0;
-    const auto* narrow_setting=std::getenv("TYLOINFER_NINT_NARROW_OFFSETS");
+    const auto* narrow_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_NARROW_OFFSETS");
     const bool narrow_offsets=(narrow_setting?narrow_setting[0]=='1':
         (args.activation_rows<=6 && args.activation_rows!=4 && args.activation_rows!=6)) && args.bytes<(uint64_t(1)<<29);
-    const auto* row_setting=std::getenv("TYLOINFER_NINT_FIXED_EXACT_ROWS");
+    const auto* row_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_EXACT_ROWS");
     const bool exact_default=args.activation_rows>=2 || args.groups<=128;
     const bool exact_rows=(row_setting?row_setting[0]=='1':exact_default) && args.activation_rows<=6;
-    const auto* output_narrow_setting=std::getenv("TYLOINFER_NINT_OUTPUT_NARROW");
+    const auto* output_narrow_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_OUTPUT_NARROW");
     const bool narrow_output_default=group_size==24 && uniform_bits==6 && args.rows==2560 &&
         args.groups==256 && args.activation_rows<=2;
     const bool output_narrow=(output_narrow_setting?output_narrow_setting[0]=='1':narrow_output_default) && args.bytes<(uint64_t(1)<<29);
@@ -358,7 +359,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
                 const auto launch_offset=[&](auto narrow) {
                 constexpr bool Narrow=decltype(narrow)::value;
                 const auto launch_proof=[&](auto proof) {
-                const auto* dual_setting=std::getenv("TYLOINFER_NINT_OUTPUT_DUAL_GROUP");
+                const auto* dual_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_OUTPUT_DUAL_GROUP");
                 if(dual_setting && dual_setting[0]=='1' && args.rows%2==0 && args.activation_rows<=6) {
                     nint_fixed_dual_group_output_kernel<GroupSize::value,BitWidth::value,RowCount::value,Sums::value,Exact,Narrow><<<
                         args.rows/2,dim3(32,4),0,stream>>>(args);
@@ -368,7 +369,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
                 }
                 if(one_warp) {
                     if constexpr(RowCount::value==1) {
-                        const auto* setting=std::getenv("TYLOINFER_NINT_FIXED_LONG_GROUPS");
+                        const auto* setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_LONG_GROUPS");
                         constexpr int FixedGroups=GroupSize::value==24?256:220;
                         if(setting && setting[0]=='1' && args.groups==FixedGroups && args.rows==2560 &&
                                 (GroupSize::value==24 || BitWidth::value==5)) {
@@ -395,7 +396,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
                 if(tracing)mfq::cuda::dispatch_trace::record(stream,decltype(proof)::value?"nint_fixed_output_bounds":uniform_bits==5?"nint_fixed5_long_output":"nint_fixed6_output",
                     reinterpret_cast<const void*>(nint_fixed_output_kernel<GroupSize::value,BitWidth::value,RowCount::value,Sums::value,Exact,Narrow,decltype(proof)::value>),details);
                 };
-                const auto* row_bounds=std::getenv("TYLOINFER_NINT_ROW_BOUNDS");
+                const auto* row_bounds=mfq::cuda::env_lookup("TYLOINFER_NINT_ROW_BOUNDS");
                 const bool proof_selected=row_bounds?row_bounds[0]!='0':args.activation_rows<=6 && args.activation_rows!=3;
                 if(proof_selected)launch_proof(std::true_type{});
                 else launch_proof(std::false_type{});
@@ -414,7 +415,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
                 constexpr bool Interleaved=decltype(columns)::value;
                 const auto launch_offset=[&](auto narrow) {
                 constexpr bool Narrow=decltype(narrow)::value;
-                const auto* row_pairs=std::getenv("TYLOINFER_NINT_ROW_PAIRS");
+                const auto* row_pairs=mfq::cuda::env_lookup("TYLOINFER_NINT_ROW_PAIRS");
                 if constexpr(!Interleaved) {
                     if(args.rows%2==0 && row_pairs && row_pairs[0]=='1') {
                         nint_fixed_five_kernel<RowCount::value,Sums::value,2,false,Narrow,Exact><<<args.rows/2,dim3(32,6),0,stream>>>(args);
@@ -431,7 +432,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
                             if(tracing)mfq::cuda::dispatch_trace::record(stream,decltype(proof)::value?"nint_fixed5_warp_rows_bounds":FixedGroups::value?"nint_fixed5_warp_rows_92":Narrow?"nint_fixed5_warp_rows_narrow":Interleaved?"nint_fixed5_warp_rows_interleaved":"nint_fixed5_warp_rows",
                                 reinterpret_cast<const void*>(nint_fixed_five_warp_rows_kernel<RowCount::value,Sums::value,Interleaved,Narrow,Exact,FixedGroups::value,decltype(proof)::value>),details);
                         };
-                        const auto* row_bounds=std::getenv("TYLOINFER_NINT_ROW_BOUNDS");
+                        const auto* row_bounds=mfq::cuda::env_lookup("TYLOINFER_NINT_ROW_BOUNDS");
                         if(row_bounds?row_bounds[0]!='0':args.activation_rows<=6)launch_bounds(std::true_type{});
                         else launch_bounds(std::false_type{});
                     };
@@ -452,7 +453,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
         if(exact_rows && args.activation_rows==RowCount::value)launch_exact(std::true_type{});
         else launch_exact(std::false_type{});
     };
-    const auto* exact=std::getenv("TYLOINFER_NINT_EXACT_BATCH");
+    const auto* exact=mfq::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
     if(args.activation_rows==1)launch(std::integral_constant<int,1>{});
     else if(args.activation_rows==2)launch(std::integral_constant<int,2>{});
     else if(args.activation_rows==3)launch(std::integral_constant<int,3>{});
@@ -464,7 +465,7 @@ bool nint_launch_fixed_decode(NintWholeArgs args,int group_size,int uniform_bits
 }
 
 bool nint_default_activation_sum(int group_size,int groups,int rows,int uniform_bits,bool interleaved) {
-    const auto* long_sum=std::getenv("TYLOINFER_NINT_LONG_ACTIVATION_SUM");
+    const auto* long_sum=mfq::cuda::env_lookup("TYLOINFER_NINT_LONG_ACTIVATION_SUM");
     return (group_size==28 && groups<=96 && (rows<=2 || rows==5 ||
         (uniform_bits==5 && interleaved && rows<=6))) ||
         (group_size==28 && groups>96 && uniform_bits==5 && rows<=6 && rows!=4 &&

@@ -1,3 +1,4 @@
+#include "env.h"
 #include <math_constants.h>
 #include "mfq_cuda_kv_quantization.h"
 
@@ -231,7 +232,7 @@ CacheView view(const tb::Tensor& data,const tb::Tensor& chunks,const QuantizedKv
 }
 
 KvQuantization cuda_kv_quantization() {
-    const char* text=std::getenv("TYLOINFER_KV_TURBOQUANT_BITS");if(!text||!*text)return {};
+    const char* text=mfq::cuda::env_lookup("TYLOINFER_KV_TURBOQUANT_BITS");if(!text||!*text)return {};
     size_t consumed=0;double bits=std::stod(text,&consumed);
     TYLOINFER_RUNTIME_CHECK(consumed==std::string(text).size()&&valid_bits(bits),"invalid TurboQuant KV bit width");return {bits};
 }

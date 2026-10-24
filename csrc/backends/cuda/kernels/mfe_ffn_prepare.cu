@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfe_ffn_prepare.h"
 #include <cuda/atomic>
 #include <cstdlib>
@@ -377,7 +378,7 @@ void mfe_ffn_prepare_publish(const MfeFfnBatch& b,const MfeInputQuantization* in
         int32_t* mapped_ids,uint32_t* ready,cudaStream_t stream) {
     int blocks=(b.tokens*groups+1)/2;
     blocks=std::max(blocks,(b.tokens*(b.routes+(b.shared?1:0))*b.scale_stride+63)/64);
-    const auto* control=std::getenv("TYLOINFER_MFE_PREPARE_LOCAL_CONTROL");
+    const auto* control=mfq::cuda::env_lookup("TYLOINFER_MFE_PREPARE_LOCAL_CONTROL");
     if(ready)prepare_warp<true><<<blocks,64,0,stream>>>(b,inputs,count,mapped_ids,ready,!control || control[0]!='0');
     else prepare_warp<false><<<blocks,64,0,stream>>>(b,inputs,count,nullptr,nullptr,!control || control[0]!='0');
 }
@@ -391,8 +392,8 @@ void mfe_ffn_prepare_publish_cached(const MfeFfnBatch& b,const MfeInputQuantizat
         "mfe_prepare_cooperative_dispatch scope=first_cached_prepare enabled=1 route_lanes=4 snapshot_publish=after_mapped_reads duplicate_check=quad tokens=%d\n",b.tokens);
     int blocks=std::max((b.tokens*groups+1)/2,
         (b.tokens*(b.routes+(b.shared?1:0))*b.scale_stride+63)/64);
-    const auto* stable=std::getenv("TYLOINFER_MFE_CACHE_PREPARE_SYNC");
-    const auto* tag_overlap=std::getenv("TYLOINFER_MFE_TAG_OVERLAP");
+    const auto* stable=mfq::cuda::env_lookup("TYLOINFER_MFE_CACHE_PREPARE_SYNC");
+    const auto* tag_overlap=mfq::cuda::env_lookup("TYLOINFER_MFE_TAG_OVERLAP");
     if(cache.primary_incomplete && (!tag_overlap || tag_overlap[0]!='0') && (!stable || stable[0]!='0')) {
         if(cache.gate.activation)
             prepare_warp<true,true,true,true,true><<<blocks,64,0,stream>>>(b,inputs,count,mapped_ids,ready,true,cache);
@@ -429,7 +430,7 @@ void mfe_ffn_wait_transfer_packet_snapshot(const MfeFfnBatch& b,const int32_t* p
         int32_t* transfer_routes) {
     if(mapped_descriptors && device_descriptors) {
         if(cached_resident_packet) {
-            const auto* early=std::getenv("TYLOINFER_MFE_EARLY_GU");
+            const auto* early=mfq::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
             const bool early_gu=b.resident_plan_overlap && (!early || early[0]!='0');
             transfer_packet<true,true,true><<<1,128,0,stream>>>(b,packet,
                 static_cast<const uint64_t*>(table),static_cast<uint64_t*>(snapshot),capacity,
@@ -442,7 +443,7 @@ void mfe_ffn_wait_transfer_packet_snapshot(const MfeFfnBatch& b,const int32_t* p
             static_cast<const uint64_t*>(mapped_descriptors),static_cast<uint64_t*>(device_descriptors),descriptor_capacity_words);
         return;
     }
-    const auto* option=std::getenv("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET");
     if(b.tokens==1 && b.routes<=32 && b.resident_plan_overlap && option && option[0]!='0') {
         transfer_packet<true,true><<<1,32,0,stream>>>(b,packet,static_cast<const uint64_t*>(table),
             static_cast<uint64_t*>(snapshot),capacity);

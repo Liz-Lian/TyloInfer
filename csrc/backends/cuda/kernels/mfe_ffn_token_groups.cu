@@ -1,3 +1,4 @@
+#include "env.h"
 // The single-entry fallback shares the wide decoder; grouped weight chunks
 // retain their specialized, inlined dot loops below.
 #define TYLOINFER_MFE_PROJECT_INLINE __noinline__
@@ -601,15 +602,15 @@ __global__ void token_reduce(MfeFfnBatch b) {
 }
 
 bool enabled(const MfeFfnBatch& b) {
-    const auto* setting=std::getenv("TYLOINFER_MFE_TOKEN_GROUPS");
-    const auto* grouped=std::getenv("TYLOINFER_MFE_GROUP_DOT");
+    const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS");
+    const auto* grouped=mfq::cuda::env_lookup("TYLOINFER_MFE_GROUP_DOT");
     return (!setting || setting[0]!='0') && (!grouped || grouped[0]!='0') &&
         b.tokens>=2 && b.tokens<=32 && b.token_group_counts && b.token_group_slots && b.resident_pairs;
 }
 template<int Capacity,bool Compact=false>
 void launch_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     if(b.plan_ready && b.resident_plan_overlap) {
-        const auto* early=std::getenv("TYLOINFER_MFE_EARLY_GU");
+        const auto* early=mfq::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
         if(!early || early[0]!='0')partition|=8;
     }
     const int groups=token_launch_bound<Capacity>(b);
@@ -620,7 +621,7 @@ void launch_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t st
         return;
     }
     if(b.token_group_aligned_gu) {
-        const auto* option=std::getenv("TYLOINFER_MFE_ALIGNED_GU_WARPS");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MFE_ALIGNED_GU_WARPS");
         if(option && std::atoi(option)==12)
             token_gate_up_aligned<Capacity,Compact,12><<<dim3(b.scale_stride,groups),dim3(32,12),0,stream>>>(b,partition);
         else token_gate_up_aligned<Capacity,Compact,16><<<dim3(b.scale_stride,groups),dim3(32,16),0,stream>>>(b,partition);
@@ -644,7 +645,7 @@ void mfe_ffn_token_group_shared_plan(const MfeFfnBatch& b,cudaStream_t stream) {
     token_shared_plan<<<1,64,0,stream>>>(b,b.token_group_capacity-kMfeSharedGroupEncoding);
 }
 void mfe_ffn_quantize_hidden(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
-    const auto* option=std::getenv("TYLOINFER_MFE_HIDDEN_QUANT_WARPS");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MFE_HIDDEN_QUANT_WARPS");
     const int warps=option?std::atoi(option):1;
     const auto launch=[&](auto count) {
         constexpr int value=decltype(count)::value;
@@ -657,9 +658,9 @@ void mfe_ffn_quantize_hidden(const MfeFfnBatch& b,int partition,cudaStream_t str
 }
 bool mfe_ffn_token_group_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     if(!enabled(b))return false;
-    const auto* compact=std::getenv("TYLOINFER_MFE_TOKEN_COMPACT");
+    const auto* compact=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_COMPACT");
     if(b.token_group_aligned_gu) {
-        const auto* aligned=std::getenv("TYLOINFER_MFE_ALIGNED_COMPACT");
+        const auto* aligned=mfq::cuda::env_lookup("TYLOINFER_MFE_ALIGNED_COMPACT");
         if(b.tokens<=8 && b.token_group_compact && (!compact || compact[0]!='0') && (!aligned || aligned[0]!='0')) {
             launch_gate_up<1,true>(b,partition,width,stream);
             static std::atomic<bool> reported{false};
@@ -678,7 +679,7 @@ bool mfe_ffn_token_group_gate_up(const MfeFfnBatch& b,int partition,int width,cu
     }else launch_gate_up<2>(b,partition,width,stream);
     bool wide_compact=false;
     if(b.token_group_capacity>=4 && b.token_group_capacity<=8 && b.tokens<=8 && b.token_group_compact && (!compact || compact[0]!='0')) {
-        const auto* wide=std::getenv("TYLOINFER_MFE_TOKEN_WIDE_COMPACT");
+        const auto* wide=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_WIDE_COMPACT");
         wide_compact=!wide || wide[0]!='0';
     }
     if(wide_compact) {
@@ -702,7 +703,7 @@ bool mfe_ffn_token_group_gate_up(const MfeFfnBatch& b,int partition,int width,cu
 bool mfe_ffn_token_group_down(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
     if(!enabled(b))return false;
     if(!mfe_ffn_compact_token_single_down(b,partition,stream))launch_down<1>(b,partition,stream);
-    const auto* compact=std::getenv("TYLOINFER_MFE_TOKEN_COMPACT");
+    const auto* compact=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_COMPACT");
     if(b.tokens<=8 && b.token_group_compact && (!compact || compact[0]!='0')) {
         launch_down<2,true>(b,partition,stream);
         static std::atomic<bool> reported{false};
@@ -712,7 +713,7 @@ bool mfe_ffn_token_group_down(const MfeFfnBatch& b,int partition,cudaStream_t st
     }else launch_down<2>(b,partition,stream);
     bool wide_compact=false;
     if(b.token_group_capacity>=4 && b.token_group_capacity<=8 && b.tokens<=8 && b.token_group_compact && (!compact || compact[0]!='0')) {
-        const auto* wide=std::getenv("TYLOINFER_MFE_TOKEN_WIDE_COMPACT");
+        const auto* wide=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_WIDE_COMPACT");
         wide_compact=!wide || wide[0]!='0';
     }
     if(wide_compact) {

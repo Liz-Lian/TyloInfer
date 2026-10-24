@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -20,22 +21,14 @@ namespace mfe_cached_dispatch_test_detail {
 struct Option {
     const char* name;
     std::string previous;
-    bool present = std::getenv(name) != nullptr;
+    bool present = mfq::cuda::env_lookup(name) != nullptr;
     Option(const char* key, const char* value) : name(key) {
-        if (present) previous = std::getenv(key);
-#ifdef _WIN32
-        _putenv_s(name, value);
-#else
-        setenv(name, value, 1);
-#endif
+        if (present) previous = mfq::cuda::env_lookup(key);
+        mfq::cuda::env_set(name, value);
     }
     ~Option() {
-#ifdef _WIN32
-        _putenv_s(name, present ? previous.c_str() : "");
-#else
-        if (present) setenv(name, previous.c_str(), 1);
-        else unsetenv(name);
-#endif
+        if (present) mfq::cuda::env_set(name, previous.c_str());
+        else mfq::cuda::env_clear(name);
     }
 };
 }  // namespace mfe_cached_dispatch_test_detail

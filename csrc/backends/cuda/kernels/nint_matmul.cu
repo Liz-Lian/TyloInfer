@@ -1,3 +1,4 @@
+#include "env.h"
 // Canonical CUDA execution for NINT.
 //
 // Every ordinary NINT tensor is normalized at the loader boundary to one
@@ -1945,7 +1946,7 @@ NintInputQuantizationScope::NintInputQuantizationScope(
     NintGroupQuantizeArgs args;
     args.input=input.data_ptr();args.rows=int(input.size(0));args.width=int(input.size(1));
     args.fp32=input.scalar_type()==tb::kFloat32;
-    const auto* exact=std::getenv("TYLOINFER_NINT_EXACT_BATCH");
+    const auto* exact=mfq::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
     const int columns=args.rows<=2?2:args.rows<=4?4:(exact && exact[0]=='0')?8:args.rows;
     int total=0;
     for(int gs:sizes) {
@@ -1974,7 +1975,7 @@ NintInputQuantizationScope::~NintInputQuantizationScope() {
 }
 
 bool nint_late_scale_enabled(int64_t input_width,int bits,int /*device*/) {
-    if(const auto* setting=std::getenv("TYLOINFER_NINT_LATE_SCALE"))return setting[0]!='0';
+    if(const auto* setting=mfq::cuda::env_lookup("TYLOINFER_NINT_LATE_SCALE"))return setting[0]!='0';
     if(input_width<2048 || bits<5 || bits>6)return false;
     return true;
 }
@@ -2009,11 +2010,11 @@ static void nint_moe_grouped_matmul_dispatch_cuda(
         reinterpret_cast<__half*>(output.data_ptr()),int(ids.numel()),int(ids.size(1)),int(expert_pool.numel()),
         int(output.size(2)),routed_input,mfq::cuda::warp_multi_sum::enabled());
     };
-    const char* grouped=std::getenv("TYLOINFER_NINT_GROUP_DOT");
-    const char* lanes=std::getenv("TYLOINFER_NINT_ROUTE_LANES");
-    const char* blocks=std::getenv("TYLOINFER_NINT_ROUTE_BLOCKS");
-    const char* rows=std::getenv("TYLOINFER_NINT_ROUTE_ROWS");
-    const char* hint=std::getenv("TYLOINFER_NINT_ROUTE_HINT");
+    const char* grouped=mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
+    const char* lanes=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_LANES");
+    const char* blocks=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_BLOCKS");
+    const char* rows=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_ROWS");
+    const char* hint=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_HINT");
     if((!grouped || grouped[0]!='0') && (!hint || hint[0]!='0') &&
             (group_hint==24 || group_hint==28) && bits_hint>=4 && bits_hint<=6) {
         const auto hinted_warps=[&](auto gs,auto bits,auto warps) {
@@ -2030,7 +2031,7 @@ static void nint_moe_grouped_matmul_dispatch_cuda(
             else launch_scale(std::false_type{});
         };
         const auto hinted=[&](auto gs,auto bits) {
-            const char* warps=std::getenv("TYLOINFER_NINT_ROUTE_WARPS");
+            const char* warps=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_WARPS");
             if(warps && std::atoi(warps)==4)hinted_warps(gs,bits,std::integral_constant<int,4>{});
             else hinted_warps(gs,bits,std::integral_constant<int,1>{});
         };
@@ -2082,10 +2083,10 @@ bool nint_try_single_route_cuda(
         mfq_tensor_backend::Tensor ids,mfq_tensor_backend::Tensor output,
         bool routed_input,int bits_hint,bool metadata_ready) {
     namespace tb=mfq_tensor_backend;
-    const char* setting=std::getenv("TYLOINFER_NINT_DIRECT_POOL");
-    const char* grouped=std::getenv("TYLOINFER_NINT_GROUP_DOT");
-    const char* hint=std::getenv("TYLOINFER_NINT_ROUTE_HINT");
-    const char* warps=std::getenv("TYLOINFER_NINT_ROUTE_WARPS");
+    const char* setting=mfq::cuda::env_lookup("TYLOINFER_NINT_DIRECT_POOL");
+    const char* grouped=mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
+    const char* hint=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_HINT");
+    const char* warps=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_WARPS");
     if((setting && setting[0]=='0') || (grouped && grouped[0]=='0') || (hint && hint[0]=='0') ||
             (warps && std::atoi(warps)==4) || bits_hint<4 || bits_hint>6 ||
             (weight.geometry[1]!=24 && weight.geometry[1]!=28))return false;
@@ -2108,7 +2109,7 @@ bool nint_try_single_route_cuda(
                 reinterpret_cast<__half*>(output.data_ptr()),int(ids.numel()),int(ids.size(1)),
                 int(expert_local.numel()),int(output.size(2)),routed_input,weight,mfq::cuda::warp_multi_sum::enabled());
         };
-        const char* metadata=std::getenv("TYLOINFER_NINT_ROUTE_METADATA");
+        const char* metadata=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_METADATA");
         if(weight.row_metadata && (metadata_ready || (metadata && metadata[0]!='0')))
             launch_metadata(std::true_type{});
         else launch_metadata(std::false_type{});
@@ -2486,7 +2487,7 @@ static mfq_tensor_backend::Tensor nint_decode_impl(
     if constexpr (std::is_same_v<Output, __half>) {
         if ((group_size == 24 || group_size == 28) && width % 4 == 0 &&
                 (reinterpret_cast<std::uintptr_t>(bitstream.data_ptr()) & 3u) == 0 &&
-                std::getenv("TYLOINFER_NINT_DENSE_REFERENCE") == nullptr) {
+                mfq::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE") == nullptr) {
             const auto launch = [&](auto gs) {
                 nint_decode_vec4_kernel<decltype(gs)::value><<<
                     dim3((width / 4 + 127) / 128, std::min(rows, 65535)), 128, 0, mfq_current_cuda_stream()>>>(
@@ -2668,24 +2669,24 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
         {activation_rows, output_rows}, input.options().dtype(mfq_tensor_backend::kFloat16));
     const cudaStream_t stream = mfq_current_cuda_stream();
     const int quantize_threads = group_size <= 32 ? 32 : 64;
-    const char* dense_group_setting = std::getenv("TYLOINFER_NINT_GROUP_DOT");
-    const char* whole_setting_for_sum = std::getenv("TYLOINFER_NINT_WHOLE_GROUP");
-    const char* batch_setting_for_sum = std::getenv("TYLOINFER_NINT_BATCH_WHOLE_GROUP");
-    const char* sum_setting = std::getenv("TYLOINFER_NINT_ACTIVATION_SUM");
-    const auto* interleaved_setting=std::getenv("TYLOINFER_NINT_INTERLEAVED");
+    const char* dense_group_setting = mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
+    const char* whole_setting_for_sum = mfq::cuda::env_lookup("TYLOINFER_NINT_WHOLE_GROUP");
+    const char* batch_setting_for_sum = mfq::cuda::env_lookup("TYLOINFER_NINT_BATCH_WHOLE_GROUP");
+    const char* sum_setting = mfq::cuda::env_lookup("TYLOINFER_NINT_ACTIVATION_SUM");
+    const auto* interleaved_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_INTERLEAVED");
     const bool interleaved_default=activation_rows>=3 && activation_rows<=6;
     const bool interleaved_requested=interleaved_setting?interleaved_setting[0]=='1':interleaved_default;
-    const auto* float_whole_setting=std::getenv("TYLOINFER_NINT_FLOAT_WHOLE_GROUP");
+    const auto* float_whole_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FLOAT_WHOLE_GROUP");
     const bool whole_input=input.scalar_type()==mfq_tensor_backend::kFloat16 ||
         (input.scalar_type()==mfq_tensor_backend::kFloat32 && (!float_whole_setting || float_whole_setting[0]!='0'));
     const bool sum_default=nint_default_activation_sum(int(group_size),groups,activation_rows,uniform_bits,interleaved_requested);
-    const char* q8_decode_option=std::getenv("TYLOINFER_NINT_Q8_DECODE");
+    const char* q8_decode_option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");
     const int q8_decode=q8_decode_option?std::atoi(q8_decode_option):2;
     const bool grouped_router=output_rows==512 && groups==54;
     const bool grouped_q8=aligned_q8 && group_size==48 && q8_decode>0 &&
         (reinterpret_cast<uintptr_t>(bitstream.data_ptr())&3u)==0 &&
         (activation_rows>1 || output_rows>2048 || q8_decode==3 || grouped_router);
-    const auto* q8_sum_setting=std::getenv("TYLOINFER_NINT_Q8_SUM");
+    const auto* q8_sum_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_SUM");
     // Large vocabulary projections amortize this once-per-activation sum.
     // Tiny router/alpha/beta matrices keep their existing launch costs.
     const bool head_sum_default=output_rows>=65536 && groups==54 && activation_rows<=6;
@@ -2698,9 +2699,9 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
         (!dense_group_setting || dense_group_setting[0]!='0') &&
         (!whole_setting_for_sum || whole_setting_for_sum[0]!='0') &&
         (activation_rows==1 || !batch_setting_for_sum || batch_setting_for_sum[0]!='0') &&
-        std::getenv("TYLOINFER_NINT_DENSE_REFERENCE")==nullptr;
+        mfq::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE")==nullptr;
     const bool cached_sums=cached_packed_sums || q8_sums;
-    const auto* fixed_setting=std::getenv("TYLOINFER_NINT_FIXED_BITS");
+    const auto* fixed_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_BITS");
     const bool interleaved=interleaved_requested &&
         uniform_bits==5 && group_size==28 && groups>32 && groups<=96 &&
         activation_rows>=2 && activation_rows<=6 && !aligned_q8 &&
@@ -2710,8 +2711,8 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
         (!whole_setting_for_sum || whole_setting_for_sum[0]!='0') &&
         (!batch_setting_for_sum || batch_setting_for_sum[0]!='0') &&
         (!fixed_setting || fixed_setting[0]!='0') &&
-        std::getenv("TYLOINFER_NINT_DENSE_REFERENCE")==nullptr;
-    const auto* exact_batch=std::getenv("TYLOINFER_NINT_EXACT_BATCH");
+        mfq::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE")==nullptr;
+    const auto* exact_batch=mfq::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
     const int interleaved_columns=activation_rows<=2?2:activation_rows<=4?4:
         (exact_batch && exact_batch[0]=='0')?8:activation_rows;
     const NintPreparedGroupInput* prepared=nullptr;
@@ -2800,7 +2801,7 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
         } else {
         // Specialize only the proven one-row input, independent of device.
         if (activation_rows == 1) {
-        const char* ordered = std::getenv("TYLOINFER_NINT_Q8_ORDERED");
+        const char* ordered = mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_ORDERED");
         if (group_size == 48 && groups <= 64 && output_rows <= 2048 &&
                 (!ordered || ordered[0] != '0')) {
             nint_q8_ordered_kernel<<<output_rows, dim3(32, 4), 0, stream>>>(
@@ -2843,17 +2844,17 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
     } else if ((group_size == 24 || group_size == 28) &&
             (reinterpret_cast<std::uintptr_t>(bitstream.data_ptr()) & 3u) == 0 &&
             (!dense_group_setting || dense_group_setting[0] != '0') &&
-            std::getenv("TYLOINFER_NINT_DENSE_REFERENCE") == nullptr) {
-        const char* whole_setting=std::getenv("TYLOINFER_NINT_WHOLE_GROUP");
-        const char* batch_whole_setting=std::getenv("TYLOINFER_NINT_BATCH_WHOLE_GROUP");
-        const auto* small_group_setting=std::getenv("TYLOINFER_NINT_FIXED_SMALL_GROUPS");
+            mfq::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE") == nullptr) {
+        const char* whole_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_WHOLE_GROUP");
+        const char* batch_whole_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_BATCH_WHOLE_GROUP");
+        const auto* small_group_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_FIXED_SMALL_GROUPS");
         const bool fixed_small=(!small_group_setting || small_group_setting[0]!='0') && groups<=32 &&
             activation_rows<=6 && (!fixed_setting || fixed_setting[0]!='0') &&
             ((group_size==24 && uniform_bits==6) || (group_size==28 && uniform_bits==5));
         if((activation_rows==1 || (activation_rows<=8 && (!batch_whole_setting || batch_whole_setting[0]!='0'))) &&
                 (groups>32 || fixed_small) && whole_input &&
                 (!whole_setting || whole_setting[0]!='0')) {
-            const auto* group_load_option=std::getenv("TYLOINFER_NINT_GROUP_LOAD");
+            const auto* group_load_option=mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_LOAD");
             const bool group_load=group_load_option && group_load_option[0]=='1';
             const NintWholeArgs args{bitstream.data_ptr<uint8_t>(),row_q_bits.data_ptr<uint8_t>(),
                 subgroup_scale.data_ptr<uint8_t>(),subgroup_minimum.data_ptr<uint8_t>(),
@@ -2864,9 +2865,9 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
                 // Preserve the original group-to-lane map and four-term XOR
                 // tree. A projection with at most 96 groups has no work for
                 // warp 3; its contribution is the original positive zero.
-                const auto* short_warps=std::getenv("TYLOINFER_NINT_SHORT_WARPS");
-                const auto* staged=std::getenv("TYLOINFER_NINT_PACKED_STAGE");
-                const auto* warp_rows=std::getenv("TYLOINFER_NINT_WARP_ROWS");
+                const auto* short_warps=mfq::cuda::env_lookup("TYLOINFER_NINT_SHORT_WARPS");
+                const auto* staged=mfq::cuda::env_lookup("TYLOINFER_NINT_PACKED_STAGE");
+                const auto* warp_rows=mfq::cuda::env_lookup("TYLOINFER_NINT_WARP_ROWS");
                 // Two-token projections benefit from four rows per CTA. At
                 // six tokens the extra live accumulators regress, so the
                 // default remains the original three-warps-per-row there.
@@ -2901,7 +2902,7 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
                 if(activation_rows==1)launch_whole(gs,std::integral_constant<int,1>{});
                 else if(activation_rows<=2)launch_whole(gs,std::integral_constant<int,2>{});
                 else if(activation_rows<=4)launch_whole(gs,std::integral_constant<int,4>{});
-                else if(const auto* exact=std::getenv("TYLOINFER_NINT_EXACT_BATCH");!exact || exact[0]!='0') {
+                else if(const auto* exact=mfq::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");!exact || exact[0]!='0') {
                     if(activation_rows==5)launch_whole(gs,std::integral_constant<int,5>{});
                     else if(activation_rows==6)launch_whole(gs,std::integral_constant<int,6>{});
                     else launch_whole(gs,std::integral_constant<int,8>{});
@@ -2968,7 +2969,7 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
             0,
             false,static_cast<uint64_t>(bitstream.numel()));
     };
-    const auto* exact=std::getenv("TYLOINFER_NINT_EXACT_BATCH");
+    const auto* exact=mfq::cuda::env_lookup("TYLOINFER_NINT_EXACT_BATCH");
     if constexpr(!decltype(single)::value) {
         if(!exact || exact[0]!='0') {
             if(activation_rows==1)launch_rows(std::integral_constant<int,1>{});
@@ -2982,7 +2983,7 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
     }
     launch_rows(std::integral_constant<int,8>{});
     };
-    const auto* single=std::getenv("TYLOINFER_NINT_SINGLE_ROW");
+    const auto* single=mfq::cuda::env_lookup("TYLOINFER_NINT_SINGLE_ROW");
     if (activation_rows == 1 && single && std::strcmp(single, "1") == 0 &&
             (reinterpret_cast<std::uintptr_t>(bitstream.data_ptr()) & 3u) == 0) {
         const size_t activation_bytes =
@@ -3013,7 +3014,7 @@ static mfq_tensor_backend::Tensor nint_matmul_ws_impl(
             use_cache = cache_warps > 1 && shared_bytes <= static_cast<size_t>(shared_limit);
         }
         // At least one warp of groups avoids underfilled lanes.
-        const auto* group_flag=std::getenv("TYLOINFER_NINT_GROUP_DOT");
+        const auto* group_flag=mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
         const bool use_group=(!group_flag || std::strcmp(group_flag,"1")==0) &&
             groups>=32 && group_size>=1 && group_size<=64;
         if (use_cache) {

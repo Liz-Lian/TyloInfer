@@ -1,3 +1,4 @@
+#include "env.h"
 #include "kv_memory.h"
 #include "kv_vmm.h"
 #include "kv_budget.h"
@@ -24,7 +25,7 @@ namespace tb = mfq_tensor_backend;
 namespace {
 constexpr const char* insufficient = "kv_memory_insufficient: available VRAM and RAM cannot hold the configured KV cache; choose automatic with SSD KV or reduce context length";
 std::size_t setting(const char* name, std::size_t fallback) {
-    const char* value = std::getenv(name);
+    const char* value = mfq::cuda::env_lookup(name);
     if (!value || !*value) return fallback;
     char* end = nullptr;
     const auto result = std::strtoull(value, &end, 10);
@@ -42,7 +43,7 @@ std::size_t host_available() {
 }
 std::size_t width_bytes(const tb::TensorOptions& options) { return options.scalar_type() == tb::kInt32 ? 4 : 2; }
 bool discrete_device() {
-    if(const auto* value=std::getenv("TYLOINFER_MEMORY_ARCHITECTURE"))return std::string(value)=="discrete";
+    if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_MEMORY_ARCHITECTURE"))return std::string(value)=="discrete";
     int device=0,integrated=0,host_tables=0;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device));
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&integrated,cudaDevAttrIntegrated,device));
@@ -115,10 +116,10 @@ struct KvMemoryAllocation::Virtual {
 
 KvMemoryOptions kv_memory_options() {
     KvMemoryOptions o;
-    if (const auto* p=std::getenv("TYLOINFER_KV_PLACEMENT")) o.placement=p;
+    if (const auto* p=mfq::cuda::env_lookup("TYLOINFER_KV_PLACEMENT")) o.placement=p;
     if (o.placement!="auto" && o.placement!="auto_ssd" && o.placement!="vram" && o.placement!="ram")
         throw std::invalid_argument("invalid KV placement");
-    if (const auto* p=std::getenv("TYLOINFER_KV_ALLOCATION")) {
+    if (const auto* p=mfq::cuda::env_lookup("TYLOINFER_KV_ALLOCATION")) {
         const std::string allocation=p;
         if (allocation!="preallocated" && allocation!="dynamic") throw std::invalid_argument("invalid KV allocation");
         o.dynamic=allocation=="dynamic";
@@ -127,14 +128,14 @@ KvMemoryOptions kv_memory_options() {
         throw std::invalid_argument("kv_dynamic_unavailable: experimental dynamic KV requires VRAM or automatic without SSD");
     o.gpu_limit=setting("TYLOINFER_KV_GPU_LIMIT_BYTES",0);
     o.gpu_budget=setting("TYLOINFER_KV_GPU_BUDGET_BYTES",0);
-    o.budget_policy=std::getenv("TYLOINFER_KV_RAM_PREALLOCATED") || o.gpu_budget;
+    o.budget_policy=mfq::cuda::env_lookup("TYLOINFER_KV_RAM_PREALLOCATED") || o.gpu_budget;
     o.ram_preallocated=setting("TYLOINFER_KV_RAM_PREALLOCATED",1)!=0;
     if(!o.ram_preallocated && o.placement!="auto_ssd")throw std::invalid_argument("kv_ssd_required: disabling RAM preallocation requires SSD KV");
-    o.ram_limit_set=std::getenv("TYLOINFER_KV_RAM_LIMIT_BYTES")!=nullptr;
+    o.ram_limit_set=mfq::cuda::env_lookup("TYLOINFER_KV_RAM_LIMIT_BYTES")!=nullptr;
     o.ram_limit=setting("TYLOINFER_KV_RAM_LIMIT_BYTES",0);
     o.auto_stream_threshold=int64_t(setting("TYLOINFER_KV_AUTO_STREAM_MIN_CONTEXT",65536));
     o.resident_cells=int64_t(setting("TYLOINFER_KV_RESIDENT_CELLS",32768));
-    if (const auto* p=std::getenv("TYLOINFER_RUNTIME_PREFIX_CACHE_DIR")) o.directory=p;
+    if (const auto* p=mfq::cuda::env_lookup("TYLOINFER_RUNTIME_PREFIX_CACHE_DIR")) o.directory=p;
     return o;
 }
 std::size_t KvMemoryAllocation::raw_bytes() const {return std::size_t(maximum)*heads*(key_width+value_width)*width_bytes(options);}
@@ -326,7 +327,7 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
     if(offload_ && expert_loan_)offload_->set_expert_loan(expert_loan_);
     // Reserve shared decode I/O buffers before sizing the expert arenas.
     // Graph capture must not discover a large workspace after admission.
-    const auto* stream_graphs=std::getenv("TYLOINFER_KV_STREAM_GRAPHS");
+    const auto* stream_graphs=mfq::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
     if(offload_ && (!stream_graphs || stream_graphs[0]!='0'))for(auto& weak:allocations_)if(auto a=weak.lock()) {
         if(a->selected_columns)offload_->gather_workspace(8*a->selected_columns,
             a->heads*(a->key_width+a->value_width),a->options.scalar_type(),a->heads,a->key_width);

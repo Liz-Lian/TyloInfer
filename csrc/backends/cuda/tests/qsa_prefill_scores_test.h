@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 
 void qsa_live_pool_write_case() {
     int cases=0;const auto stream=mfq_current_cuda_stream();
@@ -118,13 +119,9 @@ void qsa_live_pool_case() {
 void qsa_live_topk_tile_case() {
     struct Setting {
         std::string old;
-        Setting(){if(const auto* p=std::getenv("TYLOINFER_QSA_TOPK_LIVE_TILE"))old=p;}
+        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_QSA_TOPK_LIVE_TILE"))old=p;}
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_QSA_TOPK_LIVE_TILE",value);
-#else
-            if(*value)setenv("TYLOINFER_QSA_TOPK_LIVE_TILE",value,1);else unsetenv("TYLOINFER_QSA_TOPK_LIVE_TILE");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_QSA_TOPK_LIVE_TILE",value);else mfq::cuda::env_clear("TYLOINFER_QSA_TOPK_LIVE_TILE");
         }
         ~Setting(){set(old.c_str());}
     } setting;
@@ -179,13 +176,9 @@ void qsa_live_scores_case() {
     qsa_live_topk_tile_case();
     struct Setting {
         std::string old;
-        Setting(){if(const auto* p=std::getenv("TYLOINFER_QSA_LIVE_SCORES"))old=p;}
+        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_QSA_LIVE_SCORES"))old=p;}
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_QSA_LIVE_SCORES",value);
-#else
-            if(*value)setenv("TYLOINFER_QSA_LIVE_SCORES",value,1);else unsetenv("TYLOINFER_QSA_LIVE_SCORES");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_QSA_LIVE_SCORES",value);else mfq::cuda::env_clear("TYLOINFER_QSA_LIVE_SCORES");
         }
         ~Setting(){set(old.c_str());}
     } setting;
@@ -256,13 +249,9 @@ void qsa_live_scores_case() {
 void qsa_prefill_scores_case() {
     struct Setting {
         std::string old;
-        Setting(){if(const auto* p=std::getenv("TYLOINFER_QSA_PREFILL_SCORE_GEMM"))old=p;}
+        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_QSA_PREFILL_SCORE_GEMM"))old=p;}
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_QSA_PREFILL_SCORE_GEMM",value);
-#else
-            if(*value)setenv("TYLOINFER_QSA_PREFILL_SCORE_GEMM",value,1);else unsetenv("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_QSA_PREFILL_SCORE_GEMM",value);else mfq::cuda::env_clear("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
         }
         ~Setting(){set(old.c_str());}
     } setting;

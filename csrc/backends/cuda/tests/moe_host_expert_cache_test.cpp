@@ -1,3 +1,4 @@
+#include "env.h"
 #include "runtime/moe_host_expert_cache.h"
 
 #include <chrono>
@@ -695,7 +696,7 @@ int main() try {
         ++batch_cases;
     }
     int keyed_cases=0;
-    if(const auto* option=std::getenv("TYLOINFER_MOE_KEYED_EXCHANGE");option && option[0]=='1')
+    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");option && option[0]=='1')
       for(bool reuse:{false,true})for(bool fail:{false,true}) {
         MoeHostExpertCache cache(192);cache.preserve_resident_experts();
         if(reuse)cache.enable_reuse_priority();

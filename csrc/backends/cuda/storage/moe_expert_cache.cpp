@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../runtime/execution_options.h"
 #include "mfq_cache_provider.h"
 #include "moe_cached_source_internal.h"
@@ -58,7 +59,7 @@ struct MoeSsdPrefillReader {
 };
 
 std::optional<std::size_t> MoeExpertCache::available_host_ram() const {
-    const auto* option=std::getenv("TYLOINFER_PREFILL_BACKUP_PRESSURE");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_PRESSURE");
     if(option && option[0]=='0')return std::nullopt;
     try {
         const auto memory=MoeResidencyManager::sample_host_memory();
@@ -141,7 +142,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
     // those weights, retaining room for prefill, graph warmup and growing KV.
     size_t device_free=0,device_total=0;
     TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&device_free,&device_total));
-    const auto* ssd_option=std::getenv("TYLOINFER_MOE_SSD_EXPERTS");
+    const auto* ssd_option=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");
     if(config_.moe_pipeline && config_.moe_preload_all && ssd_option && ssd_option[0]=='1' &&
             std::all_of(sources_.begin(),sources_.end(),[](const auto& s){return bool(s->quant_source_);})) {
         std::size_t fields=0;
@@ -190,10 +191,10 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
     // graph construction's temporary overlap and allocator page rounding.
     const auto decode_reserve=other_decode_reserve+transfer_reserve+
         (std::size_t(256)<<20);
-    const auto* borrow_option=std::getenv("TYLOINFER_PREFILL_BORROW");
+    const auto* borrow_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     const bool borrowed_prefill=config_.moe_pipeline && config_.moe_preload_all &&
         mfq::cuda::runtime_options::moe_prefill_layer().value_or(0)!=0 && (!borrow_option || borrow_option[0]!='0');
-    const auto reserve=(borrowed_prefill && !std::getenv("TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB")
+    const auto reserve=(borrowed_prefill && !mfq::cuda::env_lookup("TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB")
         ?decode_reserve:mfq::cuda::runtime_options::workspace_reserve_bytes())+kv_growth_reserve;
     if(device_free<=reserve)
         throw std::runtime_error("CUDA VRAM leaves no workspace for expert streaming");
@@ -238,7 +239,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
     // the default: high-precision predictors can displace too much backbone.
     // These are planning preferences, not rigid minima: prefill can still
     // borrow their storage and context growth can shrink the expert cache.
-    const auto* predictor_option=std::getenv("TYLOINFER_MTP_RESIDENT_EXPERTS");
+    const auto* predictor_option=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
     if(config_.moe_preload_all && config_.moe_two_stage_ffn &&
             predictor_option && predictor_option[0]=='1') {
         std::map<MoeGpuArena*,int> predictor_slots;
@@ -537,7 +538,7 @@ void MoeExpertCache::prepare_ssd_placement(MoeCachedSource& source,const std::ve
 
 void MoeExpertCache::initialize_ssd_residency() {
     if(!finalized_)throw std::logic_error("SSD expert cache requires finalized GPU arenas");
-    if(const auto* option=std::getenv("TYLOINFER_MOE_SSD_EXPERTS");option && option[0]=='0')
+    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");option && option[0]=='0')
         throw std::runtime_error("RAM expert preloading is required when SSD expert streaming is disabled");
     initialize_ssd_readers();
     // The checkpoint remains the immutable third tier. Only the current GPU
@@ -599,7 +600,7 @@ void MoeExpertCache::initialize_ssd_residency() {
                 layer_bytes[source->layer_id_]+=largest;
             }
             std::size_t bundle=0;for(const auto& [layer,bytes]:layer_bytes)bundle=std::max(bundle,bytes);
-            const auto groups=std::getenv("TYLOINFER_MOE_PREFILL_GROUP_SIZE")?
+            const auto groups=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE")?
                 std::clamp(mfq::cuda::runtime_options::moe_prefill_group_size(),1,96):64;
             // Backup/upload storage survives across phases. Prefill and
             // decode packets are released at their reader fences and share
@@ -930,7 +931,7 @@ std::size_t MoeExpertCache::prefill_transfer_bytes(bool predictor) const {
 
 MoePrefillWorkspaceBudget MoeExpertCache::prefill_workspace_budget(bool allow_borrow) const {
     MoePrefillWorkspaceBudget budget;
-    const auto* option=std::getenv("TYLOINFER_PREFILL_BORROW");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     allow_borrow=allow_borrow && (!option || option[0]!='0') &&
         complete_residency_ && layer_prefill_ready() && !prefill_loan_;
     if(allow_borrow)for(const auto& [key,arena]:arenas_)
@@ -953,7 +954,7 @@ MoePrefillWorkspaceBudget MoeExpertCache::prefill_workspace_budget(bool allow_bo
         }
         std::size_t largest=1;
         for(const auto& [id,layer]:layers)largest=std::max(largest,layer.largest);
-        auto slots=std::getenv("TYLOINFER_MOE_PREFILL_GROUP_SIZE")
+        auto slots=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE")
             ? mfq::cuda::runtime_options::moe_prefill_group_size() : 64;
         slots=std::min<std::size_t>(std::clamp(slots,1,96),
             std::max<std::size_t>(1,host_experts_->stats().budget_bytes/2/largest));
@@ -986,7 +987,7 @@ MoePrefillWorkspaceBudget MoeExpertCache::prefill_workspace_budget(bool allow_bo
 std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if(prefill_loan_)throw std::logic_error("prefill workspace loan is already active");
-    const auto* option=std::getenv("TYLOINFER_PREFILL_BORROW");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     const bool force=option && std::string_view(option)=="force";
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     // Reclaim revocable expert overflow before backing up and borrowing the
@@ -1005,9 +1006,9 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     const auto needed=workspace_bytes>available?workspace_bytes-available:std::size_t(1);
     const auto desired=force?std::size_t(allocated_bytes_)/3:needed+needed/8+(std::size_t(64)<<20);
     auto loan=std::make_unique<PrefillLoan>();
-    const auto* cache_option=std::getenv("TYLOINFER_PREFILL_BACKUP_CACHE");
+    const auto* cache_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_CACHE");
     const bool cache_backups=!cache_option || cache_option[0]!='0';
-    const auto* backup_option=std::getenv("TYLOINFER_PREFILL_BACKUP_PINNED");
+    const auto* backup_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_PINNED");
     auto backup_budget=mfq::cuda::shared_memory_available(mfq_current_cuda_device()).value_or(0);
     backup_budget=backup_budget>(std::size_t(512)<<20)?backup_budget-(std::size_t(512)<<20):0;
     if(backup_option && backup_option[0]=='0')backup_budget=0;
@@ -1225,7 +1226,7 @@ void MoeExpertCache::end_prefill_loan() {
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     std::vector<std::pair<void*,std::size_t>> touched;
-    const auto* restore_all_option=std::getenv("TYLOINFER_PREFILL_RESTORE_ALL");
+    const auto* restore_all_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_RESTORE_ALL");
     bool restore_all=restore_all_option && restore_all_option[0]=='1';
     if(!restore_all)try {touched=context->workspace_touched_regions();}
         catch(const std::bad_alloc&) {restore_all=true;}
@@ -1412,7 +1413,7 @@ void MoeExpertCache::preload_complete_residency() {
         << " host_required_bytes=" << host_required_bytes
         << " host_field_budget_bytes=" << host_budget << std::endl;
     if(host_required_bytes>host_budget) {
-        const auto* option=std::getenv("TYLOINFER_MOE_SSD_EXPERTS");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");
         if(config_.moe_pipeline && option && option[0]=='1') {
             config_.moe_preload_all=false;config_.moe_assert_resident=false;
             initialize_ssd_residency();return;
@@ -1432,7 +1433,7 @@ void MoeExpertCache::preload_complete_residency() {
     std::unordered_map<MoeGpuArena*,int> predictor_slots;
     for(const auto& source:sources_)if(source->layer_id_<0)for(const auto& cohort:source->cohorts_)
         predictor_slots[cohort.arena]+=cohort.cpu->local_experts;
-    const auto* predictor_option=std::getenv("TYLOINFER_MTP_RESIDENT_EXPERTS");
+    const auto* predictor_option=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
     const bool resident_predictor=config_.moe_two_stage_ffn && predictor_option && predictor_option[0]=='1' &&
         std::all_of(predictor_slots.begin(),predictor_slots.end(),[&](const auto& item){return remaining[item.first]>=item.second;});
     if(resident_predictor)for(const auto& source:sources_)if(source->layer_id_<0)
@@ -1531,7 +1532,7 @@ void MoeExpertCache::preload_complete_residency() {
     host_experts_->preserve_resident_experts();
     measuring_preload_h2d_=true;
     std::uint64_t completed=0;
-    const auto* preload_threads_option=std::getenv("TYLOINFER_MOE_PRELOAD_THREADS");
+    const auto* preload_threads_option=mfq::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_THREADS");
     const int preload_threads=preload_threads_option?std::clamp(std::atoi(preload_threads_option),1,32):
         int(std::min(8u,std::max(1u,std::thread::hardware_concurrency())));
     std::unique_ptr<mfq::HostParallelPool> preload_workers;
@@ -2651,7 +2652,7 @@ void MoeExpertCache::prepare_direct_transfer_cache() {
         charge(std::size_t(tensor_nbytes(arena->packed)));
         for(const auto& field:arena->fields)charge(std::size_t(tensor_nbytes(field)));
     }
-    if(const auto* option=std::getenv("TYLOINFER_MOE_DIRECT_EXPERT_CACHE_BYTES")) {
+    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_DIRECT_EXPERT_CACHE_BYTES")) {
         const auto parsed=std::stoll(option);
         if(parsed<0)throw std::invalid_argument("direct expert cache bytes must be nonnegative");
         bytes=std::min(bytes,std::size_t(parsed));
@@ -2723,10 +2724,10 @@ bool mfq_legacy_set_moe_reuse_learning(const std::shared_ptr<MoeExpertCache>& ca
     return cache?cache->set_reuse_learning(enabled):true;
 }
 void mfq_legacy_begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows) {
-    const auto* option=std::getenv("TYLOINFER_MOE_MTP_COMMITTED_HEAT");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_COMMITTED_HEAT");
     if(cache && cache->moe_residency_ && (!option || option[0]!='0'))
         cache->moe_residency_->begin_speculative_routes(rows);
-    const auto* kv_lru=std::getenv("TYLOINFER_MOE_MTP_KV_LRU");
+    const auto* kv_lru=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_KV_LRU");
     if(cache && cache->kv_expert_loan_ && (!kv_lru || kv_lru[0]!='0'))
         cache->kv_expert_loan_->begin_speculative(rows);
 }

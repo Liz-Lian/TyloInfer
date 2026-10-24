@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include "cuda_activity_trace.h"
 #include "inference.h"
 
@@ -24,7 +25,7 @@
 namespace mfq::cuda::internal {
 
 inline void report_source_file_io(const mfq::ModelSource* source, const char* phase) noexcept {
-    const char* report = std::getenv("TYLOINFER_REPORT_FILE_IO");
+    const char* report = mfq::cuda::env_lookup("TYLOINFER_REPORT_FILE_IO");
     if (!source || !report || report[0] != '1') return;
     const auto stats = source->file_read_stats();
     try {
@@ -82,7 +83,7 @@ int generate_diagnostic_tokens(
         auto t2 = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config, "prefill");
         report_source_file_io(model.source.get(), "prefill");
-        const char * empty_cache_env = std::getenv("TYLOINFER_EMPTY_CACHE_BEFORE_GRAPH");
+        const char * empty_cache_env = mfq::cuda::env_lookup("TYLOINFER_EMPTY_CACHE_BEFORE_GRAPH");
         if (empty_cache_env != nullptr && std::atoi(empty_cache_env) != 0) {
             mfq_cuda_empty_cache();
             report_cuda_memory(execution.config, "prefill_empty_cache");
@@ -96,8 +97,8 @@ int generate_diagnostic_tokens(
         cudaStream_t stream = mfq_get_current_cuda_stream().stream();
         TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(generated_cuda.template data_ptr<int64_t>(), next.template data_ptr<int64_t>(),
                                    sizeof(int64_t), cudaMemcpyDeviceToDevice, stream));
-        const char* graph_env = std::getenv("TYLOINFER_CUDA_GRAPH");
-        const char * profile_graph_env = std::getenv("TYLOINFER_PROFILE_CUDA_GRAPH");
+        const char* graph_env = mfq::cuda::env_lookup("TYLOINFER_CUDA_GRAPH");
+        const char * profile_graph_env = mfq::cuda::env_lookup("TYLOINFER_PROFILE_CUDA_GRAPH");
         const bool profile_cuda_graph = profile && profile_graph_env != nullptr &&
             std::atoi(profile_graph_env) != 0;
         bool use_cuda_graph =
@@ -110,7 +111,7 @@ int generate_diagnostic_tokens(
             !execution.moe_expert_cache &&
             model_parallel_cuda_graph_enabled(execution) &&
             (!profile || profile_cuda_graph) && gen > 1;
-        const char * cuda_profiler_env = std::getenv("TYLOINFER_CUDA_PROFILER_RANGE");
+        const char * cuda_profiler_env = mfq::cuda::env_lookup("TYLOINFER_CUDA_PROFILER_RANGE");
         const bool cuda_profiler_range = cuda_profiler_env != nullptr &&
             std::atoi(cuda_profiler_env) != 0;
         auto decode_replay_t0 = t2;

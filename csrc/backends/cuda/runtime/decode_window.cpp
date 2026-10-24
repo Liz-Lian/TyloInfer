@@ -1,3 +1,4 @@
+#include "env.h"
 #include "decode_window.h"
 #include "execution_options.h"
 #include "context.h"
@@ -58,7 +59,7 @@ void wait_route_publication(const uint32_t* flag,cudaStream_t stream,int timeout
     using Clock=std::chrono::steady_clock;
     const auto start=Clock::now();auto flush=start;
     const auto poll_interval=std::chrono::microseconds(runtime_options::route_poll_interval_us());
-    const auto* option=std::getenv("TYLOINFER_MOE_ROUTE_SPIN");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_ROUTE_SPIN");
     const bool spin=!option || option[0]!='0';
     uint32_t spins=0;
     if(*static_cast<const volatile uint32_t*>(flag)<1)check_route_submission(stream);
@@ -112,7 +113,7 @@ DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independe
     // External CUDA timing events split Windows graph submissions. Device
     // timestamps preserve the graph's submission and use the same clock as
     // Strata's verifier profiler. This storage exists only when tracing.
-    const auto* option=std::getenv("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK");
     if(layer_profile_ && (!option || option[0]!='0'))profile_clock_=std::make_unique<ProfileClock>();
 }
 void DecodeWindow::mark(int layer,const char* phase) {
@@ -120,7 +121,7 @@ void DecodeWindow::mark(int layer,const char* phase) {
     if(!layer_profile_)return;
     // Scope 2 keeps the MFE phase boundaries. Timing every small operation
     // measurably perturbs Windows graph replay; ordinary execution adds none.
-    if(const auto* scope=std::getenv("TYLOINFER_TRACE_LAYER_TIMINGS");scope &&
+    if(const auto* scope=mfq::cuda::env_lookup("TYLOINFER_TRACE_LAYER_TIMINGS");scope &&
             (std::strcmp(scope,"2")==0 || std::strcmp(scope,"3")==0)) {
         constexpr const char* phases[]={"window_begin","window_end","hot_begin","hot_end",
             "dma_end","transfer_gate_up_end","cpu_wait_begin","transfer_end"};
@@ -202,7 +203,7 @@ DecodeWindow::~DecodeWindow() {
     (void)cudaStreamSynchronize(stream_);
     graphs_.clear();
     for(auto& task:tasks_)if(task.cleanup)task.cleanup();
-    if(replays_ && std::getenv("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH"))
+    if(replays_ && mfq::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH"))
         std::cerr<<"native_cuda_window tasks="<<tasks_.size()<<" replays="<<replays_
             <<" capture_ns="<<capture_ns_<<" replay_ns="<<replay_ns_
             <<" reset_ns="<<reset_ns_<<" launch_ns="<<launch_ns_<<" serve_ns="<<serve_ns_
@@ -249,7 +250,7 @@ void DecodeWindow::capture(const std::function<void()>& body,const std::function
         ~Recording(){active=nullptr;}
     } recording(this);
     const auto capture_started=std::chrono::steady_clock::now();
-    const auto* trace_option=std::getenv("TYLOINFER_TRACE_MOE_SERVE");
+    const auto* trace_option=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_SERVE");
     const bool trace=trace_option && trace_option[0] && trace_option[0]!='0';
     const char* phase="prepare";
     const auto checkpoint=[&](const char* next) {
@@ -326,7 +327,7 @@ void DecodeWindow::run() {
     const HostRegistrationBlock registration;
     const mfq::cpu::ScopedHostAffinity placement(runtime_options::decode_host_pin()
         ?mfq::cpu::planned_host_core():-1);
-    const auto* trace_option=std::getenv("TYLOINFER_TRACE_MOE_SERVE");
+    const auto* trace_option=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_SERVE");
     const bool trace=trace_option && trace_option[0] && trace_option[0]!='0' && (replays_<2 || replays_%64==0);
     // Value 2 adds one summary per replay, including later slow tokens that
     // the sampled verbose trace would otherwise omit. Ordinary runs add no I/O.

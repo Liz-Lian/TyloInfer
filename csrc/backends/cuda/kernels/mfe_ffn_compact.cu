@@ -1,3 +1,4 @@
+#include "env.h"
 #define TYLOINFER_MFE_COMPACT_NVQ 1
 #include "mfe_ffn_device.cuh"
 #include "mfe_ffn_compact.h"
@@ -14,17 +15,17 @@ void mfe_ffn_parity_token_single_down(const MfeFfnBatch&,int,cudaStream_t);
 void mfe_ffn_cached_down(const MfeFfnBatch&,const uint32_t*,cudaStream_t);
 namespace {
 bool enabled(const char* name) {
-    const auto* setting=std::getenv(name);
+    const auto* setting=mfq::cuda::env_lookup(name);
     return !setting || setting[0]!='0';
 }
 bool launch_contract(const MfeFfnBatch& b,bool down) {
     if(!mfe_ffn_compact_requested(b,down) || !enabled("TYLOINFER_MFE_GROUP_DOT") ||
             !enabled("TYLOINFER_MFE_GPU_BUNDLE") || !mfe_ffn_format_specialization_enabled())return false;
     if(down) {
-        if(const auto* quad=std::getenv("TYLOINFER_MFE_CANONICAL_QUAD"))if(quad[0]=='1')return false;
+        if(const auto* quad=mfq::cuda::env_lookup("TYLOINFER_MFE_CANONICAL_QUAD"))if(quad[0]=='1')return false;
     }else {
         if(!enabled("TYLOINFER_MFE_PARALLEL_GU"))return false;
-        if(const auto* warps=std::getenv("TYLOINFER_MFE_GU_WARPS"))if(std::atoi(warps)!=8)return false;
+        if(const auto* warps=mfq::cuda::env_lookup("TYLOINFER_MFE_GU_WARPS"))if(std::atoi(warps)!=8)return false;
     }
     return true;
 }
@@ -100,7 +101,7 @@ void single_down(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
 }
 bool mfe_ffn_compact_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     if(!launch_contract(b,false))return false;
-    const auto* parity_read=std::getenv("TYLOINFER_MFE_PARITY_READ");
+    const auto* parity_read=mfq::cuda::env_lookup("TYLOINFER_MFE_PARITY_READ");
     if(parity_read?parity_read[0]!='0':b.tokens==1) {
         mfe_ffn_parity_read_gate_up(b,partition,width,stream);
         static std::atomic<bool> reported{false};
@@ -124,7 +125,7 @@ bool mfe_ffn_compact_transferred_fused(const MfeFfnBatch& b,cudaStream_t stream,
             b.token_group_counts || b.token_group_aligned_gu || !launch_contract(b,false))return false;
     if(group_gate_up(b,2,stream,routes))return true;
     const int width=std::max(b.intermediate,b.shared?b.shared_intermediate:0);
-    const auto* parity_read=std::getenv("TYLOINFER_MFE_PARITY_READ");
+    const auto* parity_read=mfq::cuda::env_lookup("TYLOINFER_MFE_PARITY_READ");
     if(routes && (!parity_read || parity_read[0]!='0'))mfe_ffn_parity_transfer_routes(b,routes,stream);
     else if(!parity_read || parity_read[0]!='0')mfe_ffn_parity_read_gate_up(b,2,width,stream);
     else if(!(b.nvq_format_mask&~0x3f820u))gate_up<0x3f820u>(b,2,width,stream);

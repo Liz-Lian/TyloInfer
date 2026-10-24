@@ -1,3 +1,4 @@
+#include "env.h"
 #include "moe_host_expert_cache.h"
 
 #include <atomic>
@@ -630,7 +631,7 @@ bool MoeHostExpertCache::exchange_batch(const std::vector<Exchange>& changes,
         const std::function<void()>& publish,const std::function<void()>& prepare,bool independent_readers) {
     if(changes.empty())return false;
     auto& state=*impl_;std::unique_lock lock(state.mutex);
-    const auto* option=std::getenv("TYLOINFER_MOE_KEYED_EXCHANGE");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
     const bool keyed=option?option[0]=='1':independent_readers;
     std::unordered_set<mfq::MoeCacheKey,mfq::MoeCacheKeyHash> keys;
     struct Prepared {std::shared_ptr<MoeHostExpert> value;std::list<mfq::MoeCacheKey>::iterator position;bool reused;};

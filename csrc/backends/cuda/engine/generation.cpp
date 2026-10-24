@@ -1,3 +1,4 @@
+#include "env.h"
 #include "runtime/routed_cache_resources.h"
 #include "generation.h"
 #include "generation_flow.h"
@@ -38,7 +39,7 @@ static mfq_tensor_backend::Tensor sample_token(Model &model, mfq_tensor_backend:
         auto logits = model.last_logits(ids).contiguous().view({1, -1});
         return mfq::cuda::sample_logits(sampler, std::move(logits), counts, token_constraint);
     };
-    const auto* setting = std::getenv("TYLOINFER_PROFILE_DECODE");
+    const auto* setting = mfq::cuda::env_lookup("TYLOINFER_PROFILE_DECODE");
     if (!setting || setting[0] != '1' || ids.numel() > 8) return run();
     auto& profiler = model.execution->profiler;
     const bool previous = profiler.enabled;
@@ -347,7 +348,7 @@ template <typename Model> struct CudaGenerationOps {
             sample_token_counts_add_cuda(counts, pending.contiguous());
         }
         if constexpr(requires {model.adapter_prefetch_token_rows(model,known_token_host);}) {
-            const auto* option=std::getenv("TYLOINFER_DECODE_EARLY_PLE");
+            const auto* option=mfq::cuda::env_lookup("TYLOINFER_DECODE_EARLY_PLE");
             if((option && option[0]=='0') || (prepared && prepared->transformed()) ||
                (output && output->stopped()))return;
             if(!known_token_host.defined())known_token_host=mfq_tensor_backend::empty({1,1},
@@ -383,7 +384,7 @@ template <class Model> struct CudaGenerationContext {
         // Request/first-token boundaries only: existing counters need no
         // events or per-token synchronization. Full summaries drain exchanges.
         static const bool enabled=[] {
-            const char* value=std::getenv("TYLOINFER_TRACE_MOE_SUMMARY");
+            const char* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
             return value && value[0] && value[0]!='0';
         }();
         if (!enabled || batching || std::uncaught_exceptions()) return;

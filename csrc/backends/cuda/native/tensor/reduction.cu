@@ -1,3 +1,4 @@
+#include "env.h"
 #include "ops_common.cuh"
 
 #include <limits>
@@ -270,7 +271,7 @@ Tensor reduce_cuda(
     bool row_mean_enabled = true;
     if (source.scalar_type() == kFloat32) {
         const char* value =
-            std::getenv("TYLOINFER_DISABLE_NATIVE_PARALLEL_F32_MEAN");
+            mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_PARALLEL_F32_MEAN");
         row_mean_enabled = value == nullptr || value[0] != '1';
     }
     if (operation == 1 &&
@@ -304,7 +305,7 @@ Tensor reduce_cuda(
         (source.scalar_type()==kFloat16 || source.scalar_type()==kFloat32) &&
         reduced>=16384 && reduced<=std::numeric_limits<int>::max() && outer>0 && outer<=65535 &&
         source.is_contiguous() && selected+1==static_cast<std::size_t>(source.dim()) &&
-        [] {const char* setting=std::getenv("TYLOINFER_NATIVE_ARGMAX_CHUNKS");return !setting || setting[0]!='0';}()) {
+        [] {const char* setting=mfq::cuda::env_lookup("TYLOINFER_NATIVE_ARGMAX_CHUNKS");return !setting || setting[0]!='0';}()) {
         // Use the same comparison tree in independent vocabulary chunks.
         const int chunks=int((reduced+4095)/4096);
         auto values=empty({outer,chunks},source.options().dtype(kFloat32));

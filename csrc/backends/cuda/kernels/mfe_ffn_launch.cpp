@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfe_ffn_launch.h"
 #include "mfe_ffn.h"
 #include "mfe_ffn_compact.h"
@@ -16,34 +17,34 @@ bool mfe_ffn_compact_requested(const MfeFfnBatch& b,bool down) {
     // This module independently proves default arithmetic. The legacy
     // DEFAULT_MATH flag selects the fallback kernel's code specialization;
     // COMPACT=0 retains that choice exactly.
-    if(const auto* setting=std::getenv("TYLOINFER_MFE_NVQ_COMPACT"))
+    if(const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_NVQ_COMPACT"))
         return setting[0]=='1' || setting[0]==(down?'3':'2');
     // Descriptor proofs govern packed reads; launch grids and row tails use
     // the actual matrix dimensions on every GPU.
     return true;
 }
 bool mfe_ffn_nint_whole_requested() {
-    if(const char* setting=std::getenv("TYLOINFER_MFE_NINT_WHOLE"))return setting[0]!='0';
+    if(const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_NINT_WHOLE"))return setting[0]!='0';
     return true;
 }
 bool mfe_ffn_e8_narrow_requested(const MfeFfnBatch& b,bool down) {
-    if(const char* setting=std::getenv("TYLOINFER_MFE_E8_NARROW"))
+    if(const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_E8_NARROW"))
         return setting[0]=='1' || setting[0]==(down?'3':'2');
     return true;
 }
 
 bool mfe_ffn_format_specialization_enabled() {
-    if(const char* setting=std::getenv("TYLOINFER_MFE_FORMAT_SPECIALIZE"))return setting[0]!='0';
+    if(const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_FORMAT_SPECIALIZE"))return setting[0]!='0';
     return true;
 }
 int mfe_ffn_down_launch_warps(const void* kernel,int routes,int tokens) {
-    if(const auto* requested=std::getenv("TYLOINFER_MFE_DOWN_WARPS")) {
+    if(const auto* requested=mfq::cuda::env_lookup("TYLOINFER_MFE_DOWN_WARPS")) {
         char* end=nullptr;const auto value=std::strtol(requested,&end,10);
         if(end==requested || *end || value<1 || value>32 || routes<1 || routes>32)
             throw std::invalid_argument("MFE Down warp override must be 1..32 with 1..32 routes");
         return std::min(int(value),routes);
     }
-    const auto* setting=std::getenv("TYLOINFER_MFE_DOWN_PACK_ROUTES");
+    const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_DOWN_PACK_ROUTES");
     if(setting && std::atoi(setting)!=1)return routes;
     if(!setting && tokens<1)return routes;
     if(routes<1 || routes>32)throw std::invalid_argument("MFE Down route count exceeds shared result geometry");

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "tensor.h"
 #include "weight_memory.h"
 
@@ -301,7 +302,7 @@ void launch_convert(
             std::is_same_v<Destination, __half> &&
             std::is_same_v<Source, __nv_bfloat16>) {
         const char* disabled =
-            std::getenv("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_BF16_TO_F16");
+            mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_BF16_TO_F16");
         if (source.is_contiguous() && destination.is_contiguous() &&
                 (disabled == nullptr || disabled[0] != '1')) {
             convert_contiguous_bf16_to_f16_kernel<<<
@@ -350,7 +351,7 @@ void launch_convert(
         }
     }
     const char* contiguous_disabled =
-        std::getenv("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_CONVERT");
+        mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_CONVERT");
     if (source.is_contiguous() && destination.is_contiguous() &&
             (contiguous_disabled == nullptr || contiguous_disabled[0] != '1')) {
         convert_contiguous_kernel<Destination, Source><<<blocks, threads, 0, stream>>>(

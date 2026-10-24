@@ -107,12 +107,12 @@ void launch_gdn_prefill_columns(int columns, int B, int Hq, int Hv, int T,
     const float* q, const float* k, const float* v, const float* g, const float* beta,
     const float* state, float* out, float* next_state, cudaStream_t stream,bool prepared_decay=false) {
     const dim3 block(32, 4);
-    const auto* pipeline_option=std::getenv("TYLOINFER_GDN_PREFILL_PIPELINED");
+    const auto* pipeline_option=mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_PIPELINED");
     // The verified single-sequence 48/64-head grids do not lose resident
     // blocks from the extra q/k registers. Other shapes retain the old kernel.
     const bool pipelined=pipeline_option?std::atoi(pipeline_option)!=0:
         B==1 && (Hv==48 || Hv==64);
-    const auto* staged_option=std::getenv("TYLOINFER_GDN_PREFILL_STAGED");
+    const auto* staged_option=mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_STAGED");
     bool staged=false;
     if(columns==4 && T>8) {
         if(staged_option)staged=std::atoi(staged_option)!=0;

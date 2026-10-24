@@ -1,3 +1,4 @@
+#include "env.h"
 #include "request_executor.h"
 #include "runtime_checks.h"
 #include <map>
@@ -45,7 +46,7 @@ int run_qwen35_mtp_bench(
     params.seed = 20260907;
     const auto options = mfq_tensor_backend::TensorOptions()
         .device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kInt64);
-    const char* profiler_env = std::getenv("TYLOINFER_CUDA_PROFILER_RANGE");
+    const char* profiler_env = mfq::cuda::env_lookup("TYLOINFER_CUDA_PROFILER_RANGE");
     const bool profiler_range = profiler_env != nullptr && std::atoi(profiler_env) != 0;
     std::cout << "mtp_bench config mode=" << (enable_mtp ? "mtp" : "ordinary")
         << " full_window_batching=1"

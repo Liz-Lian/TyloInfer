@@ -1,3 +1,4 @@
+#include "env.h"
 #include "tensor.h"
 
 #include <cstdlib>
@@ -294,7 +295,7 @@ Tensor Tensor::reshape(std::span<const std::int64_t> shape) const {
         throw std::invalid_argument("cannot reshape an undefined tensor");
     }
     if (!is_contiguous()) {
-        const auto* option=std::getenv("TYLOINFER_TENSOR_VIEW_RESHAPE");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_TENSOR_VIEW_RESHAPE");
         if(option && option[0]=='0')return contiguous().reshape(shape);
         // Validate/infer the requested dimensions without copying storage.
         auto packed=view_;packed.rank=1;packed.sizes[0]=numel();packed.strides[0]=1;

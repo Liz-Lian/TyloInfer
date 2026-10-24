@@ -1,3 +1,4 @@
+#include "env.h"
 #include "storage/weight_loader.h"
 #include "storage/moe_expert_cache.h"
 #include "storage/moe_quant_range_source.h"
@@ -110,7 +111,7 @@ int main(int argc,char** argv) try {
         else throw std::runtime_error("unknown range cache test option");
     }
     if (hybrid && (!host_cache || shared_arena)) throw std::runtime_error("hybrid gate requires --host-cache alone");
-    if (resident && (!host_cache || hybrid || shared_arena || !std::getenv("TYLOINFER_MOE_PRELOAD_ALL")))
+    if (resident && (!host_cache || hybrid || shared_arena || !mfq::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_ALL")))
         throw std::runtime_error("resident gate requires --host-cache and TYLOINFER_MOE_PRELOAD_ALL=1 alone");
     const std::filesystem::path root(argv[1]);
     std::ifstream manifest(root/"cases.txt");
@@ -195,7 +196,7 @@ int main(int argc,char** argv) try {
             continue;
         }
         if (hybrid) {
-            if (!std::getenv("TYLOINFER_MOE_HYBRID_CPU")) throw std::runtime_error("hybrid gate requires TYLOINFER_MOE_HYBRID_CPU=1");
+            if (!mfq::cuda::env_lookup("TYLOINFER_MOE_HYBRID_CPU")) throw std::runtime_error("hybrid gate requires TYLOINFER_MOE_HYBRID_CPU=1");
             // Populate RAM with independent FP32 CPU work, then move only
             // expert2 to VRAM. Experts0/1 must execute from their retained RAM
             // fields without rereading SSD; expert2 must remain on the GPU.

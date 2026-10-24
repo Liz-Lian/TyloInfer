@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include "runtime/moe_pipeline.h"
 
 static void benchmark_decode_kv_cache() {
@@ -6,11 +7,7 @@ static void benchmark_decode_kv_cache() {
     auto handle=mfq_get_stream_from_pool();MfqCudaStreamGuard guard(handle);
     auto context=default_context();const auto stream=handle.stream();context->begin_graph_pool(stream);
     const auto setting=[](const char* name,bool enabled) {
-#ifdef _WIN32
-        _putenv_s(name,enabled?"1":"0");
-#else
-        setenv(name,enabled?"1":"0",1);
-#endif
+        mfq::cuda::env_set(name,enabled?"1":"0");
     };
     const auto measure=[&](const auto& body) {
         constexpr int repeat=64,replays=128;

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../../runtime/execution_options.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_shared_gate.h"
@@ -36,7 +37,7 @@
 namespace mfq::cuda {
 static bool streamed_decode_graphs(const CudaExecutionContext& execution) {
     if(!execution.qsa_kv_store)return true;
-    const auto* option=std::getenv("TYLOINFER_KV_STREAM_GRAPHS");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
     return execution.kv_memory && execution.kv_memory->offload() && (!option || option[0]!='0');
 }
 static mfq_tensor_backend::Tensor join_request_outputs(
@@ -375,7 +376,7 @@ static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down
     shared_weights.scalar_gate=shared_gate_weight;
     shared_weights.gate=[shared_gate,shared_gate_weight](CudaExecutionContext& execution,const Tensor& input) {
         const auto option=mfq::cuda::runtime_options::shared_gate_fused();
-        const auto* nint_option=std::getenv("TYLOINFER_SHARED_GATE_NINT");
+        const auto* nint_option=mfq::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
         if((!option || *option) && (!nint_option || nint_option[0]!='0') && shared_gate_weight &&
                 shared_gate_weight->is_nint() && !shared_gate_weight->tensor_parallel())
             if(auto output=try_nint_shared_gate_sigmoid_cuda(input,shared_gate_weight->nint))return *output;
@@ -958,7 +959,7 @@ struct Qwen4MtpGraph {
             predictor.positions[0]=append_decode_positions(predictor.positions[0],cell.positions,
                 position_storage,predictor.config.maximum,"TYLOINFER_MTP_POSITION_BUFFER");
             predictor.lengths[0]=required;predictor.batch=1;
-            const auto* profile_option=std::getenv("TYLOINFER_PROFILE_MTP");
+            const auto* profile_option=mfq::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
             if(profile_option && profile_option[0]=='1' && ++cell.profile_replays<=(history_only?2:16)) {
                 const auto ms=[](auto begin,auto end){return std::chrono::duration<double,std::milli>(end-begin).count();};
                 std::fprintf(stderr,"runtime_mtp_predictor_profile rows=%lld history=%d replay=%d release_ms=%.4f setup_ms=%.4f exchange_ms=%.4f prepare_ms=%.4f run_ms=%.4f tail_ms=%.4f transfer_mb=%.4f\n",
@@ -1400,7 +1401,7 @@ struct Qwen4DecodeGraph {
             while(kv_capacity<planned)
                 kv_capacity=std::min(model.max_position_embeddings(),kv_capacity>model.max_position_embeddings()/2
                     ? model.max_position_embeddings() : kv_capacity*2);
-            if(const auto* trace=std::getenv("TYLOINFER_RUNTIME_TRACE_CUDA_GRAPH");trace && trace[0]=='1')
+            if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_RUNTIME_TRACE_CUDA_GRAPH");trace && trace[0]=='1')
                 std::cerr<<"runtime_qwen4_graph_capacity position="<<model.cache_pos
                     <<" required="<<required<<" planned="<<planned<<" capacity="<<kv_capacity<<'\n';
         }
@@ -1428,7 +1429,7 @@ struct Qwen4DecodeGraph {
             // rather than leaving that CPU interval outside the I/O overlap.
             // Task reset repeats issue() idempotently; it never advances the
             // context, which is still committed by upload_graph().
-            const auto* early_ple=std::getenv("TYLOINFER_PLE_EARLY_ISSUE");
+            const auto* early_ple=mfq::cuda::env_lookup("TYLOINFER_PLE_EARLY_ISSUE");
             if(!early_ple || early_ple[0]!='0')
                 for(const auto& stage:cell.ple)stage->ple->prefetch_tokens(cell.host_ids);
             finish_moe_expert_exchanges(model.execution->moe_expert_cache);
@@ -1686,8 +1687,8 @@ void qwen4_release_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp) {
 
 std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm& model,const MtpModule* mtp,int maximum_draft_depth) {
     const auto* predictor=dynamic_cast<const qwen4_exp::Qwen4ExpMtp*>(mtp);
-    const auto* reuse=std::getenv("TYLOINFER_QWEN4_REUSE_GRAPHS");
-    const auto* warmup=std::getenv("TYLOINFER_QWEN4_WARMUP_GRAPHS");
+    const auto* reuse=mfq::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
+    const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
     if(!predictor || (reuse && reuse[0]=='0') || (warmup && warmup[0]=='0') ||
             !model.execution->config.moe_pipeline || !streamed_decode_graphs(*model.execution))return 0;
     // The common decode allowance covers verification through four rows.
@@ -1703,7 +1704,7 @@ std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm& model,const MtpModule* 
 }
 
 void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_draft_depth) {
-    const auto* reuse=std::getenv("TYLOINFER_QWEN4_REUSE_GRAPHS");
+    const auto* reuse=mfq::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     model.reuse_decode_graphs=!reuse || reuse[0]!='0';
     auto* predictor=dynamic_cast<qwen4_exp::Qwen4ExpMtp*>(mtp);
     if(predictor)predictor->reuse_decode_graphs=model.reuse_decode_graphs;
@@ -1711,7 +1712,7 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     // Keep TQ startup to the target decode window. Wider verification shapes
     // are captured on demand; predictor graph preparation remains separate.
     if(tq)predictor=nullptr;
-    const auto* warmup=std::getenv("TYLOINFER_QWEN4_WARMUP_GRAPHS");
+    const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
     if(!model.reuse_decode_graphs || (warmup && warmup[0]=='0') ||
         model.max_position_embeddings()<32 || !streamed_decode_graphs(*model.execution) ||
         (!tq && (!model.execution->config.moe_pipeline || !model.execution->moe_expert_cache)))return;
@@ -1741,7 +1742,7 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     for(std::size_t i=0;i<warm_ids.size();++i)warm_ids[i]=int64_t((i*7919+17)%model.vocab_size());
     auto ids=tb::tensor(warm_ids,options.device(tb::kCPU)).to(tb::kCUDA).reshape({1,16});
     model.reset(1);
-    if(std::getenv("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=bootstrap\n";
+    if(mfq::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=bootstrap\n";
     // Bootstrap with single-token rows. A sixteen-row eager forward otherwise
     // materializes a whole expert layer just to initialize graph state, before
     // the prompt's workspace loan exists, and defeats tight expert residency.
@@ -1760,7 +1761,7 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
     // staging and captured scratch before preparing predictor windows.
     release_moe_decode_buffers(model.execution->moe_expert_cache);
     default_context(model.execution->layer_placement.primary_device())->reclaim_idle_memory();
-    if(std::getenv("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=predictor\n";
+    if(mfq::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))std::cerr<<"warmup_memory phase=predictor\n";
     // Capture the normal greedy path and the common MTP verification widths.
     // Synthetic state is cleared afterwards; no prompt or sampling history is saved.
     if(predictor) {
@@ -1782,9 +1783,9 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
             predictor->trim_cache_to(16);
             predictor->history_step(target,raw.narrow(1,0,rows),ids.narrow(1,0,rows));
         }
-        const auto* chain_option=std::getenv("TYLOINFER_MTP_HISTORY_CHAIN");
+        const auto* chain_option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
         const bool history_chain=!chain_option || chain_option[0]!='0';
-        const auto* chain_check=std::getenv("TYLOINFER_VERIFY_MTP_HISTORY_CHAIN");
+        const auto* chain_check=mfq::cuda::env_lookup("TYLOINFER_VERIFY_MTP_HISTORY_CHAIN");
         const bool verify_chain=chain_check && chain_check[0]=='1' && predictor->layers[0]->qsa->supports_session();
         if(history_chain)for(int rows=2;rows<=std::min(4,verification_rows-1);++rows) {
             Qwen4BlockSessionState expected;
@@ -2563,10 +2564,10 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
     const auto tokens=ids.size(1);
     const auto cache_start=model.cache_pos;
     auto& profiler=model.execution->profiler;
-    const auto* profile_once=std::getenv("TYLOINFER_PROFILE_PREFILL_ONCE");
+    const auto* profile_once=mfq::cuda::env_lookup("TYLOINFER_PROFILE_PREFILL_ONCE");
     static std::atomic<uint64_t> profile_requests{0};
     const bool profile_enabled=profile_once && profile_once[0]=='1';
-    const auto* profile_skip=std::getenv("TYLOINFER_PROFILE_PREFILL_SKIP");
+    const auto* profile_skip=mfq::cuda::env_lookup("TYLOINFER_PROFILE_PREFILL_SKIP");
     const auto skipped=profile_skip?std::max<long long>(0,std::atoll(profile_skip)):0;
     const auto profile_request=profile_enabled?profile_requests.fetch_add(1):0;
     const bool collect=profile_enabled && profile_request==uint64_t(skipped);

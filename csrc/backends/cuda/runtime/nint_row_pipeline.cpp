@@ -1,3 +1,4 @@
+#include "env.h"
 #include "nint_row_pipeline.h"
 #include "tyloinfer/nint_row_cache.h"
 #include "tyloinfer/mapped_prefetch_scope.h"
@@ -56,12 +57,12 @@ struct NintRowStage::Impl {
         std::vector<int64_t> dimensions,const tb::Device& device,bool use_mapped)
         :source(identity),rows(n),width(w),payload_bytes(capacity),host_bytes(capacity+n*32),
          mapped(use_mapped),shape(std::move(dimensions)),host(host_bytes,use_mapped) {
-        const auto* trace=std::getenv("TYLOINFER_TRACE_PLE_TIMINGS");profile=trace && trace[0]=='1';
+        const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_PLE_TIMINGS");profile=trace && trace[0]=='1';
         const MfqCudaGuard guard(device);
         auto options=tb::TensorOptions().device(device);
         std::vector<int32_t> initial(static_cast<std::size_t>(n)*6,0);
         for(int64_t row=0;row<n;++row)initial[row*6+4]=w;
-        const auto* packed_option=std::getenv("TYLOINFER_PLE_PACKED_UPLOAD");
+        const auto* packed_option=mfq::cuda::env_lookup("TYLOINFER_PLE_PACKED_UPLOAD");
         const bool packed_upload=!packed_option || packed_option[0]!='0';
         if(mapped) {
             // The stage owns this locked host allocation until the captured
@@ -127,12 +128,12 @@ struct NintRowPipeline::Impl {
     std::thread worker;
     explicit Impl(std::vector<std::shared_ptr<mfq::NintRows>> data,std::shared_ptr<mfq::NintRowCache> rows_cache):tables(std::move(data)) {
         if(rows_cache)cache=std::move(rows_cache);
-        const auto* trace=std::getenv("TYLOINFER_TRACE_PLE_TIMINGS");profile=trace && trace[0]=='1';
-        const auto* serial_setting=std::getenv("TYLOINFER_PLE_SERIAL_SMALL_GATHER");
+        const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_PLE_TIMINGS");profile=trace && trace[0]=='1';
+        const auto* serial_setting=mfq::cuda::env_lookup("TYLOINFER_PLE_SERIAL_SMALL_GATHER");
         serial_small=serial_setting && serial_setting[0]=='1';
-        const auto* worker_setting=std::getenv("TYLOINFER_PLE_REUSE_WORKER");
+        const auto* worker_setting=mfq::cuda::env_lookup("TYLOINFER_PLE_REUSE_WORKER");
         reuse_worker=!worker_setting || worker_setting[0]!='0';
-        const auto* pool_setting=std::getenv("TYLOINFER_PLE_ACTIVE_READ_POOL");
+        const auto* pool_setting=mfq::cuda::env_lookup("TYLOINFER_PLE_ACTIVE_READ_POOL");
         active_read_pool=!pool_setting || pool_setting[0]!='0';
         static std::atomic<uint64_t> next{1};source_id=next.fetch_add(1);
         if(tables.empty() || !tables.front())throw std::invalid_argument("MFQ PLE needs row sources");
@@ -296,7 +297,7 @@ std::shared_ptr<NintRowStage> NintRowPipeline::make_stage(const std::vector<int6
     for(const auto& table:s.tables)row_bytes=std::max(row_bytes,table->selected_row_nbytes_bound());
     if(row_bytes>std::size_t(INT_MAX)/n)throw std::overflow_error("PLE graph payload exceeds bounds");
     const auto capacity=(row_bytes*n+7)&~std::size_t(7);
-    const auto* setting=std::getenv("TYLOINFER_PLE_MAPPED_ROWS");
+    const auto* setting=mfq::cuda::env_lookup("TYLOINFER_PLE_MAPPED_ROWS");
     // Small decode packets need only a few PCIe cache lines. Reading the
     // locked packet in the existing decoder avoids a separate DMA submission
     // and host completion callback. Large windows keep the device upload.

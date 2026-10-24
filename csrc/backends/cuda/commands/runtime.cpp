@@ -1,3 +1,4 @@
+#include "env.h"
 #include "cli.h"
 #include "cuda_runtime_config.h"
 #include "minicpmo45.h"
@@ -176,7 +177,7 @@ int run_transport_runtime(RuntimeOptions& options) {
     auto engine = load_cuda_engine(options);
     const auto info = engine->info();
     if (options.transport_api_key.empty()) {
-        const char* env_key = std::getenv("TYLOINFER_API_KEY");
+        const char* env_key = mfq::cuda::env_lookup("TYLOINFER_API_KEY");
         if (env_key != nullptr) options.transport_api_key = env_key;
     }
 

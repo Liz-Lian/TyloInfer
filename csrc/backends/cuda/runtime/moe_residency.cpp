@@ -1,3 +1,4 @@
+#include "env.h"
 #include "moe_residency.h"
 #include "runtime/decode_window.h"
 #include "runtime/moe_pipeline.h"
@@ -48,11 +49,11 @@ public:
     }
 };
 bool native_residency_dma_enabled() {
-    const auto* residency=std::getenv("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");
+    const auto* residency=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");
     if(residency)return residency[0]=='1' && mfq::cuda::NativeDmaBatch::available();
 #if defined(_WIN32)
     // Follow the measured Windows transfer default; preserve the global opt-out.
-    const auto* pipeline=std::getenv("TYLOINFER_MOE_NATIVE_DMA_BATCH");
+    const auto* pipeline=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_BATCH");
     return (!pipeline || std::atoi(pipeline)>0) && mfq::cuda::NativeDmaBatch::available();
 #else
     return false;
@@ -106,17 +107,17 @@ struct MoeResidencyManager::Impl {
         for(const auto* name:{"TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE","TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE",
                 "TYLOINFER_MOE_RESIDENCY_CACHED_REFILL","TYLOINFER_MOE_RESIDENCY_BATCHED",
                 "TYLOINFER_MOE_RESIDENCY_ASYNC_PUBLISH","TYLOINFER_MOE_RESIDENCY_WINDOW_PREPARE"}) {
-            const auto* value=std::getenv(name);if(value && value[0]!='1')return false;
+            const auto* value=mfq::cuda::env_lookup(name);if(value && value[0]!='1')return false;
         }
-        const auto* promotion=std::getenv("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+        const auto* promotion=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return !promotion || promotion[0]=='2';
     }();
     const bool promote_transfer=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return flag?(flag[0]=='1' || flag[0]=='2'):exchange_defaults;
     }();
     const bool reuse_transfer=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return flag?flag[0]=='2':exchange_defaults;
     }();
     std::vector<std::vector<float>> observations;
@@ -131,7 +132,7 @@ struct MoeResidencyManager::Impl {
     // One streamed expert serves every matching row of a verification window.
     // Rank its avoided transfer once, rather than counting each routed token.
     const int speculative_heat_mode=[] {
-        const auto* option=std::getenv("TYLOINFER_MOE_MTP_WINDOW_HEAT");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_WINDOW_HEAT");
         return option?std::clamp(std::atoi(option),0,2):2;
     }();
     const bool speculative_window_heat=speculative_heat_mode!=0;
@@ -144,45 +145,45 @@ struct MoeResidencyManager::Impl {
     std::vector<std::vector<TransferStage>> transfer_stages;
     bool direct=false;
     bool batched=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_BATCHED");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_BATCHED");
         return flag?flag[0]!='0':exchange_defaults;
     }();
     bool async_publish=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_ASYNC_PUBLISH");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_ASYNC_PUBLISH");
         return flag?flag[0]!='0':exchange_defaults;
     }();
     bool window_prepare=[] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_WINDOW_PREPARE");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_WINDOW_PREPARE");
         return !flag || flag[0]!='0';
     }();
     bool expert_fence=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE");
         return flag?flag[0]=='1':exchange_defaults;
     }();
     bool cached_refill=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
         return flag?flag[0]=='1':exchange_defaults;
     }();
     bool direct_exchange=[this] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE");
         return flag?flag[0]=='1':exchange_defaults;
     }();
     std::uint64_t refill_dma_min=[] {
-        const auto* value=std::getenv("TYLOINFER_MOE_RESIDENCY_REFILL_DMA_MIN_BYTES");
+        const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_REFILL_DMA_MIN_BYTES");
         return value?std::uint64_t(std::max<long long>(0,std::atoll(value))):std::uint64_t(0);
     }();
     std::uint64_t refill_chunk_bytes=[] {
-        const auto* value=std::getenv("TYLOINFER_MOE_RESIDENCY_REFILL_CHUNK_BYTES");
+        const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_REFILL_CHUNK_BYTES");
         if(!value)return std::uint64_t(65536);
         const auto parsed=std::atoll(value);
         return parsed<=0?std::uint64_t(0):std::uint64_t(std::clamp<long long>(parsed,4096,1048576))&~std::uint64_t(15);
     }();
     bool parallel_host=[] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RESIDENCY_PARALLEL_HOST");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PARALLEL_HOST");
         return flag && flag[0]!='0';
     }();
     const bool retire_kv_duplicates=[] {
-        const auto* flag=std::getenv("TYLOINFER_MOE_RETIRE_KV_DUPLICATES");
+        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RETIRE_KV_DUPLICATES");
         return !flag || flag[0]!='0';
     }();
     void retire_promoted_kv() {
@@ -263,7 +264,7 @@ struct MoeResidencyManager::Impl {
     int64_t last_backup_bytes=0,last_small_backup_bytes=0;
     std::size_t last_backup_fields=0,last_small_backup_fields=0;
     const int64_t small_backup_limit=[] {
-        const auto* value=std::getenv("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
+        const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
         return value?std::clamp<int64_t>(std::atoll(value),0,1048576):int64_t(65536);
     }();
     std::unique_ptr<mfq::cuda::HostBuffer> backup_descriptors;
@@ -304,7 +305,7 @@ struct MoeResidencyManager::Impl {
     std::atomic_bool work_pending{false};
     bool work_requested=false,work_ready=false,stopping=false,window_inflight=false;
     const bool predictor_overlap=[] {
-        const auto* option=std::getenv("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
         return !option || option[0]!='0';
     }();
     bool predictor_overlap_scope=false,predictor_overlap_allowed=false;
@@ -559,7 +560,7 @@ MoeResidencyManager::~MoeResidencyManager() {
 void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int tokens,int routes,void* raw_stream) {
     auto& s=*impl_;
     if(layer<0 || !s.cache->config_.moe_residency_adapt || !s.cache->config_.moe_residency_warm)return;
-    const auto* option=std::getenv("TYLOINFER_MOE_PREFILL_RESIDENCY");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_RESIDENCY");
     if(option && option[0]=='0')return;
     const auto stream=static_cast<cudaStream_t>(raw_stream);
     if(!s.prefill_done)TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(&s.prefill_done,cudaEventDisableTiming));
@@ -796,7 +797,7 @@ void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,
     // Rank and exchange at the configured window interval for both paths;
     // exchanging after every speculative verification serializes the next
     // draft behind a multi-millisecond backbone cache transaction.
-    const auto* short_interval=std::getenv("TYLOINFER_MOE_SHORT_DECODE_INTERVAL");
+    const auto* short_interval=mfq::cuda::env_lookup("TYLOINFER_MOE_SHORT_DECODE_INTERVAL");
     const bool interval_decode=tokens==1 || (tokens<=8 &&
         (!independent_sequences || !short_interval || short_interval[0]!='0'));
     if(s.cache->config_.moe_residency_warm && interval_decode && (++s.rounds%s.interval)!=0)return;
@@ -1243,7 +1244,7 @@ void MoeResidencyManager::prepare() {
         return;
     }
     if(cache.ssd_experts() && cache.kv_expert_loan_) {
-        const auto* option=std::getenv("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
         if(!option || option[0]!='0') {
             // CPU images still participate in the bounded RAM exchange, but
             // an immutable extra GPU copy need not cross PCIe a second time.
@@ -1382,9 +1383,9 @@ void MoeResidencyManager::prepare_direct_exchange() {
         copies.clear();
     };
     constexpr int64_t wire_control_bytes=256;
-    const auto* loan_option=std::getenv("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
+    const auto* loan_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
     const bool reuse_loan=(!loan_option || loan_option[0]!='0') && bool(cache.kv_expert_loan_);
-    const auto* keyed_option=std::getenv("TYLOINFER_MOE_KEYED_EXCHANGE");
+    const auto* keyed_option=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
     bool predictor_disjoint=s.predictor_overlap && s.pending_tokens<=8 && reuse_loan && (!keyed_option || keyed_option[0]=='1') &&
         std::all_of(s.pending.begin(),s.pending.end(),[&](const auto& move) {
             return !move.cached_arena && cache.sources_[move.incoming_source]->layer_id_>=0 &&
@@ -1418,8 +1419,8 @@ void MoeResidencyManager::prepare_direct_exchange() {
             incoming_bytes+=bytes;move.uncached_bytes+=bytes;
         }
     }
-    const auto* shadow_option=std::getenv("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW");
-    const auto* shadow_index_option=std::getenv("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
+    const auto* shadow_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW");
+    const auto* shadow_index_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
     const bool indexed_shadow=!shadow_index_option || shadow_index_option[0]!='0';
     if(!shadow_option || shadow_option[0]!='0')for(auto& move:s.pending) {
         const auto& cohort=cache.sources_[move.incoming_source]->cohorts_[move.cohort];
@@ -1466,9 +1467,9 @@ void MoeResidencyManager::prepare_direct_exchange() {
     s.last_gpu_preserve=gpu_preserve;s.last_preserve_bytes=incoming_bytes;
     s.last_backup_bytes=0;s.last_small_backup_bytes=0;
     s.last_backup_fields=0;s.last_small_backup_fields=0;
-    const auto* duplex_option=std::getenv("TYLOINFER_MOE_RESIDENCY_DUPLEX");
+    const auto* duplex_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DUPLEX");
     const bool duplex=gpu_preserve && (!duplex_option || duplex_option[0]!='0');
-    const auto* group_option=std::getenv("TYLOINFER_MOE_RESIDENCY_DUPLEX_CHUNK_BYTES");
+    const auto* group_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DUPLEX_CHUNK_BYTES");
     const int64_t group_limit=group_option?std::clamp<int64_t>(std::atoll(group_option),4096,int64_t(64)<<20):int64_t(8)<<20;
     std::vector<std::vector<std::size_t>> preserve_groups;
     if(duplex) {
@@ -2031,8 +2032,8 @@ MoeResidencyManager::Stats MoeResidencyManager::stats() const noexcept {
 }
 void MoeResidencyManager::trace_rank_summary(std::ostream& out) const {
     const auto& s=*impl_;
-    const auto* enabled=std::getenv("TYLOINFER_TRACE_MOE_RANK_SUMMARY");
-    const auto* ssd_profile=std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS");
+    const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_RANK_SUMMARY");
+    const auto* ssd_profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     if(enabled?enabled[0]!='1':!(s.cache->ssd_experts() && ssd_profile && ssd_profile[0]=='1'))return;
     // Called only after exchanges finish. Estimate the placement restriction
     // from existing decayed observations, without instrumenting GPU work.

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "moe_pipeline.h"
 #include "shared_storage.cuh"
 #include <cuda_fp16.h>
@@ -400,7 +401,7 @@ void moe_snapshot_mapped(const void* table,const uint32_t* cancelled,void* snaps
         static_cast<uint64_t*>(snapshot),capacity);
 }
 void moe_copy_mapped(const void* table,const uint32_t* cancelled,int blocks,int threads,cudaStream_t stream) {
-    const auto* option=std::getenv("TYLOINFER_MOE_COPY_RANGES");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_COPY_RANGES");
     if(option && option[0]=='1')copy_mapped_ranges<<<blocks,std::min(threads,256),0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
     else copy_mapped<<<blocks,threads,0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
 }

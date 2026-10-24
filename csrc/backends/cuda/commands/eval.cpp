@@ -1,3 +1,4 @@
+#include "env.h"
 #include "cli.h"
 #include "storage/model_loader.h"
 #include "eval/kl.h"
@@ -84,7 +85,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 "--kl-reference-n-batch");
         }
         const auto active_env = [](const char * name) {
-            const char * value = std::getenv(name);
+            const char * value = mfq::cuda::env_lookup(name);
             return value != nullptr && value[0] != '\0';
         };
         if (!kl_base.empty() && active_env("TYLOINFER_KL_WINDOW_M")) {

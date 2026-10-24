@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../runtime/execution_options.h"
 #include "weight_loader.h"
 #include "weight_memory.h"
@@ -758,7 +759,7 @@ std::shared_ptr<mfq::NintRows> load_nint_row_table(
         "NINT row table size overflow");
     auto read = source.tensor_reader(name);
     bool parallel=source.supports_parallel_tensor_reads();
-    const auto* batched=std::getenv("TYLOINFER_PLE_BATCH_READ");
+    const auto* batched=mfq::cuda::env_lookup("TYLOINFER_PLE_BATCH_READ");
     auto batch=(!batched || batched[0]!='0') ? source.tensor_batch_reader(name) : mfq::ModelSource::TensorBatchReader{};
     bool mapped_file=false;
     const auto mapped=mfq::cuda::runtime_options::ple_file_map();

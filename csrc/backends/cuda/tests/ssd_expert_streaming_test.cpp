@@ -1,3 +1,4 @@
+#include "env.h"
 #include "storage/moe_expert_cache.h"
 #include "storage/moe_expert_cache_internal.h"
 #include "storage/moe_ffn_pipeline.h"
@@ -514,7 +515,7 @@ struct Run {
         c.moe_pipeline=true;c.moe_two_stage_ffn=true;c.moe_ram_pcie=true;c.moe_direct_ram=true;
         c.moe_preload_all=!streaming || automatic;c.moe_assert_resident=!streaming || automatic;
         if(!pcie_fraction)
-            if(const auto* fraction=std::getenv("TYLOINFER_SSD_EXPERT_TEST_PCIE_FRACTION"))
+            if(const auto* fraction=mfq::cuda::env_lookup("TYLOINFER_SSD_EXPERT_TEST_PCIE_FRACTION"))
                 pcie_fraction=std::stod(fraction);
         c.moe_ram_pcie_fraction=pcie_fraction.value_or(1.);
         hybrid=*c.moe_ram_pcie_fraction<1;
@@ -741,17 +742,13 @@ void check_token_reuse(const std::filesystem::path& root,const std::string& form
     const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();
     const int width=projections[0]->neuron_len,experts=projections[0]->n_experts;
-    const auto* previous=std::getenv("TYLOINFER_MFE_TOKEN_GROUPS");
+    const auto* previous=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS");
     const std::string old=previous?previous:"";
     const auto select=[](const char* mode) {
-#ifdef _WIN32
-        _putenv_s("TYLOINFER_MFE_TOKEN_GROUPS",mode);
-#else
-        if(*mode)setenv("TYLOINFER_MFE_TOKEN_GROUPS",mode,1);else unsetenv("TYLOINFER_MFE_TOKEN_GROUPS");
-#endif
+        if(*mode)mfq::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",mode);else mfq::cuda::env_clear("TYLOINFER_MFE_TOKEN_GROUPS");
     };
     int cases=0;
-    const auto* rows_option=std::getenv("TYLOINFER_TOKEN_REUSE_TEST_ROWS");
+    const auto* rows_option=mfq::cuda::env_lookup("TYLOINFER_TOKEN_REUSE_TEST_ROWS");
     const int only_rows=rows_option?std::atoi(rows_option):0;
     for(int rows:{2,3,4,6,8,16,32})for(int sharing:{0,1,2}) {
         if(only_rows && rows!=only_rows)continue;
@@ -810,7 +807,7 @@ void check_clipped_pipeline(const std::filesystem::path& root) {
         (tb::silu(expected_gate)*expected_up).to(tb::kFloat16));
     int cases=0;
     for(const char* format:{"nint","nvq3j","mxfp4","mixed"}) {
-        if(const auto* selected=std::getenv("TYLOINFER_SSD_EXPERT_TEST_FORMAT");selected &&
+        if(const auto* selected=mfq::cuda::env_lookup("TYLOINFER_SSD_EXPERT_TEST_FORMAT");selected &&
                 std::string(selected).find(format)==std::string::npos)continue;
         if(!std::filesystem::exists(root/(std::string(format)+"-0.mfq")))continue;
         std::map<std::tuple<double,int,int>,tb::Tensor> references;
@@ -877,7 +874,7 @@ void check_clipped_pipeline(const std::filesystem::path& root) {
                     retained=lend_moe_decode_cache_for_prefill(cache,0);
                     if(retained)check(MoeResidencyTestAccess::decode_host_released(cache),
                         "retained indirect graphs kept their pinned decode packet during prefill");
-                    const auto* fallback=std::getenv("TYLOINFER_MOE_WIRE_FALLBACK");
+                    const auto* fallback=mfq::cuda::env_lookup("TYLOINFER_MOE_WIRE_FALLBACK");
                     const bool indirect=loan && mfq::cuda::NativeDmaBatch::available() &&
                         (!fallback || fallback[0]!='0');
                     check(retained==indirect,"private FFN graph lending capability mismatch");
@@ -983,7 +980,7 @@ void check_clipped_pipeline(const std::filesystem::path& root) {
                     "private FFN graphs lost speculative cache commit/cancel accounting");
                 check(cache->stats().pipeline_host_packet_serves>0,"private FFN graphs did not use host cache packets");
                 check(cache->stats().pipeline_kv_projection_hits>0,"private FFN graphs did not reuse borrowed GPU expert copies");
-                const auto* fallback=std::getenv("TYLOINFER_MOE_WIRE_FALLBACK");
+                const auto* fallback=mfq::cuda::env_lookup("TYLOINFER_MOE_WIRE_FALLBACK");
                 if(fallback && fallback[0]=='0')for(const auto& [name,bytes]:moe_expert_memory_metrics(cache))
                     if(name=="expert_transfer_wire_bytes")
                         check(bytes<=16384,"direct FFN packets retained an unused full payload wire");
@@ -1052,7 +1049,7 @@ void check_ssd_predictor_overlap(const std::filesystem::path& root) {
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
             if(wide)quant->host_cache()->erase(quant->host_key(33));
         }
-        if(const auto* cap=std::getenv("TYLOINFER_MOE_RAM_PIN_GIB");cap && std::atof(cap)*(1LL<<30)==16384)
+        if(const auto* cap=mfq::cuda::env_lookup("TYLOINFER_MOE_RAM_PIN_GIB");cap && std::atof(cap)*(1LL<<30)==16384)
             check(pageable_target,"SSD partial pin fixture did not include pageable experts");
         auto x=tb::full({1,width},.017,tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
         auto ids=tb::tensor(std::vector<int32_t>{31,32}).reshape({1,2}).to(tb::kCUDA);
@@ -1090,7 +1087,7 @@ void check_ssd_predictor_overlap(const std::filesystem::path& root) {
         if(wide && !fail_image)check(manager.stats().ssd_gpu_image_bytes>0,"SSD exchange reloaded a complete GPU image from disk");
         if(wide && !fail_image)check(manager.stats().ssd_gpu_image_copies==manager.stats().ssd_gpu_images,
             "contiguous GPU expert fields were not copied as one image");
-        if(const auto* option=std::getenv("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");option && option[0]=='1' &&
+        if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");option && option[0]=='1' &&
                 mfq::cuda::NativeDmaBatch::available() && !fail_image)
             check(manager.stats().native_dma_batches>0,"SSD expert exchange bypassed native DMA batching");
         check(bool(manager.stats().predictor_overlap_serves)==!shared_arena,
@@ -1146,7 +1143,7 @@ int main(int argc,char** argv)try {
     int cases=0;
     if(argc==2){check_ssd_predictor_overlap(argv[1]);check_standalone_prefetch(argv[1]);check_cached_gate_up_overlap(argv[1]);}
     for(const char* format:{"nint","nvq2j","nvq3j","nvq2j-l","nvq2j-xl","nvq3j-l","nint-combined","mixed","phase-wide"}) {
-        if(const auto* selected=std::getenv("TYLOINFER_SSD_EXPERT_TEST_FORMAT");selected && std::string(selected)!=format)continue;
+        if(const auto* selected=mfq::cuda::env_lookup("TYLOINFER_SSD_EXPERT_TEST_FORMAT");selected && std::string(selected)!=format)continue;
         if(argc==3 && std::string(format)!="nint")continue;
         const bool combined=std::string(format)=="nint-combined";
         const auto path=argc==3?std::filesystem::path(argv[1]):std::filesystem::path(argv[1])/(std::string(combined?"nint":format)+".mfq");

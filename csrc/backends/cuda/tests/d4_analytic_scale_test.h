@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 
 void verify_d4_analytic_scales(const std::filesystem::path& root,bool benchmark=true) {
     MfeWideOption capacity("TYLOINFER_MFE_TOKEN_GROUP_CAPACITY","2");
@@ -42,7 +43,7 @@ void verify_d4_analytic_scales(const std::filesystem::path& root,bool benchmark=
             }
         }
         for(int tokens:{1,2,3,4,6,8}) {
-            if(const auto* minimum=std::getenv("TYLOINFER_D4_SCALE_MIN_TOKENS");minimum && tokens<std::atoi(minimum))continue;
+            if(const auto* minimum=mfq::cuda::env_lookup("TYLOINFER_D4_SCALE_MIN_TOKENS");minimum && tokens<std::atoi(minimum))continue;
             if(!benchmark && tokens!=1 && tokens!=3 && tokens!=8)continue;
             capacity.set(tokens>=6?"8":tokens>=3?"4":"2");
             std::vector<float> values(tokens*2560),weights(tokens*10,.1f);

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "cuda_execution.h"
 #include "../runtime/execution_options.h"
 
@@ -9,11 +10,7 @@
 
 namespace {
 void set_option(const char* name, const char* value) {
-#ifdef _WIN32
-    _putenv_s(name, value ? value : "");
-#else
-    if (value) setenv(name, value, 1); else unsetenv(name);
-#endif
+    if (value) mfq::cuda::env_set(name, value); else mfq::cuda::env_clear(name);
 }
 }
 
@@ -59,17 +56,9 @@ int main() {
     if (load_cuda_execution_config().moe_residency_adapt) return 1;
     set_option("TYLOINFER_MOE_RESIDENCY_ADAPT", nullptr);
     if (!load_cuda_execution_config().moe_residency_adapt) return 1;
-#ifdef _WIN32
-    _putenv_s("TYLOINFER_DISABLE_NVQ_FUSION", "1");
-#else
-    setenv("TYLOINFER_DISABLE_NVQ_FUSION", "1", 1);
-#endif
+    mfq::cuda::env_set("TYLOINFER_DISABLE_NVQ_FUSION", "1");
     const auto disabled_config = load_cuda_execution_config();
-#ifdef _WIN32
-    _putenv_s("TYLOINFER_DISABLE_NVQ_FUSION", "");
-#else
-    unsetenv("TYLOINFER_DISABLE_NVQ_FUSION");
-#endif
+    mfq::cuda::env_clear("TYLOINFER_DISABLE_NVQ_FUSION");
     const auto enabled_config = load_cuda_execution_config();
     if (disabled_config.nvq_fusion || !enabled_config.nvq_fusion) return 1;
 

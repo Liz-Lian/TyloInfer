@@ -1,3 +1,4 @@
+#include "env.h"
 // GPU logits sampling helpers.
 // Greedy uses a parallel block reduction. Stochastic full-softmax keeps logits on GPU;
 // random uniforms are passed as a small GPU tensor.
@@ -693,17 +694,17 @@ mfq_tensor_backend::Tensor sample_top_k_top_p_cuda(
                 "sample_top_k_top_p: top_k must be in [1, min(V,1024)]");
     auto out = mfq_tensor_backend::empty({B}, logits.options().dtype(mfq_tensor_backend::kInt64));
 
-    const char* radix_env = std::getenv("TYLOINFER_SAMPLE_RADIX_TOPK");
+    const char* radix_env = mfq::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_TOPK");
     const bool use_radix = B == 1 && top_k <= SAMPLE_RADIX_MAX_TOP_K &&
         (radix_env == nullptr || radix_env[0] != '0');
     if (use_radix) {
         cudaStream_t stream = mfq_current_cuda_stream();
-        const auto* key_option=std::getenv("TYLOINFER_SAMPLE_RADIX_KEYS");
+        const auto* key_option=mfq::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_KEYS");
         if(!key_option || key_option[0]!='0') {
-            const auto* item_option=std::getenv("TYLOINFER_SAMPLE_RADIX_ITEMS");
+            const auto* item_option=mfq::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_ITEMS");
             const int requested=item_option?std::atoi(item_option):(V<=8192?1:V<=65536?4:8);
             const int items=requested==8?8:requested==1?1:4;
-            const auto* bitonic_option=std::getenv("TYLOINFER_SAMPLE_KEY_BITONIC");
+            const auto* bitonic_option=mfq::cuda::env_lookup("TYLOINFER_SAMPLE_KEY_BITONIC");
             const bool bitonic=!bitonic_option || bitonic_option[0]!='0';
             const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
             const int64_t capacity=int64_t(blocks)*top_k;

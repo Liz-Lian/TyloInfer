@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 
 #include "storage/moe_cached_source_internal.h"
 #include <limits>
@@ -268,8 +269,8 @@ void verify_predictor_exchange_overlap(const std::filesystem::path& root) {
         auto expected=forward[1](execution,x,ids,weights).cpu().contiguous();
         if(pressure)MoeResidencyTestAccess::pressure_exchange_loan(*cache);
         std::mutex mutex;std::condition_variable changed;bool release=false,held=false;
-        const auto* enabled=std::getenv("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
-        const auto* keyed=std::getenv("TYLOINFER_MOE_KEYED_EXCHANGE");
+        const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
+        const auto* keyed=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
         const bool expect_overlap=!shared_arena && full_cache && (!enabled || enabled[0]!='0') && (!keyed || keyed[0]=='1');
         auto& manager=MoeResidencyTestAccess::install_manager(*cache,std::make_unique<MoeResidencyManager>(cache.get(),
             [&](const char* event,std::size_t index) {
@@ -321,17 +322,17 @@ void verify_predictor_exchange_overlap(const std::filesystem::path& root) {
 
 void verify_direct_exchange(const std::filesystem::path& root) {
     int cases=0,repeats=0;
-    const char* batching_env=std::getenv("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
-    const bool defaults=std::getenv("TYLOINFER_TEST_RESIDENCY_EXPECT_DEFAULTS")!=nullptr;
+    const char* batching_env=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
+    const bool defaults=mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_EXPECT_DEFAULTS")!=nullptr;
     const bool batching=defaults || (batching_env && std::string(batching_env)=="1");
-    const char* shadow=std::getenv("TYLOINFER_TEST_RESIDENCY_SHADOW");
+    const char* shadow=mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_SHADOW");
     for(const std::string format:{"nint5","nvq3j-512"})
     for(const int cached_projections:{0,1,3})
     for(const bool gpu_wire:{false,true})
     for(const std::string phase:{"none","direct_backup","direct_backup_batch","direct_refill","direct_refill_batch","upload","map","host","publish","reader","window","cancel","prefill"}) {
         if(shadow && phase=="direct_backup_batch")continue;
         if(phase=="direct_refill_batch" && (!batching || (!cached_projections && !gpu_wire)))continue;
-        const auto* small_backup=std::getenv("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
+        const auto* small_backup=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
         if(phase=="direct_backup_batch" && small_backup && std::atoll(small_backup)<=0)continue;
         CudaExecutionContext execution;execution.config.moe_residency_warm=true;
         execution.config.moe_residency_projection_heat=true;execution.config.moe_ram_pcie_fraction=1.0;
@@ -357,7 +358,7 @@ void verify_direct_exchange(const std::filesystem::path& root) {
         }
         if(!MoeResidencyTestAccess::transfer_enabled(*cache))throw std::runtime_error("direct fixture needs transfer caching");
         for(int p=0;p<cached_projections;++p)MoeResidencyTestAccess::seed(*cache,p,1);
-        const bool loan_refill=std::getenv("TYLOINFER_TEST_RESIDENCY_KV_REFILL")!=nullptr;
+        const bool loan_refill=mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_KV_REFILL")!=nullptr;
         if(loan_refill)MoeResidencyTestAccess::seed_kv_refill(*cache);
         if(defaults)MoeResidencyTestAccess::verify_defaults_guard(*cache);
         MoeHostExpertCache::Lease reader;std::atomic_bool complete=false;
@@ -457,7 +458,7 @@ void verify_direct_exchange(const std::filesystem::path& root) {
 
 void verify_indexed_shadow_exchange(const std::filesystem::path& root) {
     int cases=0,refreshes=0;
-    const auto* option=std::getenv("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
     const bool indexed=!option || option[0]!='0';
     for(const std::string format:{"nint5","nvq3j-512"})
     for(int cached_projections:{0,1,3})for(bool gpu_wire:{false,true})
@@ -542,13 +543,9 @@ void verify_indexed_shadow_exchange(const std::filesystem::path& root) {
 void verify_prefill_cpu_prefetch(const std::filesystem::path& root) {
     struct Setting {
         std::string previous;
-        Setting(){if(const auto* p=std::getenv("TYLOINFER_PREFILL_CPU_PREFETCH"))previous=p;}
+        Setting(){if(const auto* p=mfq::cuda::env_lookup("TYLOINFER_PREFILL_CPU_PREFETCH"))previous=p;}
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_PREFILL_CPU_PREFETCH",value);
-#else
-            if(*value)setenv("TYLOINFER_PREFILL_CPU_PREFETCH",value,1);else unsetenv("TYLOINFER_PREFILL_CPU_PREFETCH");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_PREFILL_CPU_PREFETCH",value);else mfq::cuda::env_clear("TYLOINFER_PREFILL_CPU_PREFETCH");
         }
         ~Setting(){set(previous.c_str());}
     } setting;

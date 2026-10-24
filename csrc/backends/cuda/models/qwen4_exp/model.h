@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../../runtime/execution_options.h"
 #pragma once
 #include "cuda_execution.h"
@@ -201,9 +202,9 @@ class Gdn {
         // Only recurrence is split at the confirmation boundary. Both parts
         // share the input projections and one output projection.
         std::vector<Tensor> projected;if(grouped)projected=w_.input_projection(execution,x);
-        const auto* window_option=std::getenv("TYLOINFER_MTP_GDN_REGISTER_WINDOW");
+        const auto* window_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_REGISTER_WINDOW");
         const auto inplace_option=mfq::cuda::runtime_options::gdn_inplace_state();
-        const auto* checkpoint_option=std::getenv("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
+        const auto* checkpoint_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
         if(grouped && confirmed==1 && x.size(0)==1 && x.size(1)>=2 && x.size(1)<=8 &&
             (!window_option || window_option[0]!='0') && nv_<=65535 &&
             (!inplace_option || *inplace_option) && (!checkpoint_option || checkpoint_option[0]!='0') &&
@@ -353,7 +354,7 @@ class Gdn {
                     x.scalar_type()==tb::kFloat16,true,core_workspace_,
                     [] {const auto value=mfq::cuda::runtime_options::gdn_inplace_state();return !value || *value;}());
                 };
-                const auto* checkpoint_option=std::getenv("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
+                const auto* checkpoint_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
                 const bool fused_snapshot=checkpoint_conv.defined() && checkpoint_state.defined() &&
                     (!checkpoint_option || checkpoint_option[0]!='0') &&
                     [] {const auto value=mfq::cuda::runtime_options::gdn_inplace_state();return !value || *value;}();
@@ -721,7 +722,7 @@ class NgramEmbedding {
     RowLookup row_lookup_;
     StageFactory stage_factory_;
     bool reuse_hashes_=[] {
-        const auto* option=std::getenv("TYLOINFER_PLE_HASH_REUSE");return !option || option[0]!='0';
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_PLE_HASH_REUSE");return !option || option[0]!='0';
     }();
     bool hash_ready_=false,hash_reported_=false;
     int cached_tokens_=0;
@@ -1174,7 +1175,7 @@ class Qsa {
             return project_output?w_.output(execution,output):output;
         };
         bool index_written=false;
-        const auto* prepare_option=std::getenv("TYLOINFER_KV_PREPARE_FUSED");
+        const auto* prepare_option=mfq::cuda::env_lookup("TYLOINFER_KV_PREPARE_FUSED");
         const bool begin_prepare=!prepare_option || prepare_option[0]!='0';
         if(exclusive) {
             const auto keys=(quantization_.enabled()?encode_key(p.key):p.key).permute({0,2,1,3});
@@ -1230,8 +1231,8 @@ class Qsa {
             return finish(gated.to(hidden.scalar_type()));
         }
         Tensor block,pooled;
-        const auto* pool_fusion=std::getenv("TYLOINFER_QSA_POOL_FUSED");
-        const auto* pool_write=std::getenv("TYLOINFER_QSA_POOL_WRITE_FUSED");
+        const auto* pool_fusion=mfq::cuda::env_lookup("TYLOINFER_QSA_POOL_FUSED");
+        const auto* pool_write=mfq::cuda::env_lookup("TYLOINFER_QSA_POOL_WRITE_FUSED");
         const bool pool_written=(!pool_fusion || pool_fusion[0]!='0') && (!pool_write || pool_write[0]!='0') &&
             index_.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(index_.storage(),w_.index_key_norm,
                 positions,cache_positions,graph_pooled_,c_.pool,c_.maximum,c_.eps);

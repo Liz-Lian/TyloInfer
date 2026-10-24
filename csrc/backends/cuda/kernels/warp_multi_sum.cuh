@@ -1,3 +1,4 @@
+#include "env.h"
 // Adapted from Strata's src/kernels/cuda/s26_tsum.cuh.
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
 // MIT license: csrc/third_party/strata.LICENSE.
@@ -7,7 +8,7 @@
 
 namespace mfq::cuda::warp_multi_sum {
 inline bool enabled() {
-    const auto* setting=std::getenv("TYLOINFER_CUDA_WARP_MULTI_SUM");
+    const auto* setting=mfq::cuda::env_lookup("TYLOINFER_CUDA_WARP_MULTI_SUM");
     return setting && setting[0]=='1' && setting[1]=='\0';
 }
 template<int Offset>

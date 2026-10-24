@@ -1,29 +1,22 @@
 #pragma once
+#include "env.h"
 
 class GdnColumnsScope {
     std::string previous_;
     bool present_;
 public:
-    explicit GdnColumnsScope(int columns):present_(std::getenv("TYLOINFER_GDN_PREFILL_COLUMNS")!=nullptr) {
-        if(present_)previous_=std::getenv("TYLOINFER_GDN_PREFILL_COLUMNS");
+    explicit GdnColumnsScope(int columns):present_(mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS")!=nullptr) {
+        if(present_)previous_=mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS");
         set(columns);
     }
     static void set(int columns) {
         const auto value=columns<0?std::string():std::to_string(columns);
-#ifdef _WIN32
-        if(_putenv_s("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str()))throw std::runtime_error("GDN columns option");
-#else
-        if(value.empty()?unsetenv("TYLOINFER_GDN_PREFILL_COLUMNS"):setenv("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str(),1))
+        if(value.empty()?mfq::cuda::env_clear("TYLOINFER_GDN_PREFILL_COLUMNS"):mfq::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str()))
             throw std::runtime_error("GDN columns option");
-#endif
     }
     ~GdnColumnsScope() {
-#ifdef _WIN32
-        _putenv_s("TYLOINFER_GDN_PREFILL_COLUMNS",present_?previous_.c_str():"");
-#else
-        if(present_)setenv("TYLOINFER_GDN_PREFILL_COLUMNS",previous_.c_str(),1);
-        else unsetenv("TYLOINFER_GDN_PREFILL_COLUMNS");
-#endif
+        if(present_)mfq::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS",previous_.c_str());
+        else mfq::cuda::env_clear("TYLOINFER_GDN_PREFILL_COLUMNS");
     }
 };
 

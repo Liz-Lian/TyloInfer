@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfq_cuda_kv_hot_cache.h"
 #include "resident_allocations.h"
 #include <algorithm>
@@ -303,7 +304,7 @@ void HotKvCache::append(const tb::Tensor& k,const tb::Tensor& v,const tb::Tensor
 }
 bool HotKvCache::append_decode(const tb::Tensor& k,const tb::Tensor& v,const tb::Tensor& positions,
         const tb::Tensor& index_rows,const tb::Tensor& index_storage,bool begin_prepare) {
-    const auto* option=std::getenv("TYLOINFER_KV_APPEND_FUSED");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_KV_APPEND_FUSED");
     if((option && option[0]=='0') || !exclusive() || positions.numel()<1 || positions.numel()>32 ||
         positions.numel()>keys.size(2) || positions.scalar_type()!=tb::kInt64 || !positions.is_contiguous())return false;
     if(!option && positions.numel()>8)return false;

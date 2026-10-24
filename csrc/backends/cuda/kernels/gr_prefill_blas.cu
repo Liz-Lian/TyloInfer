@@ -1,3 +1,4 @@
+#include "env.h"
 #include "gr_prefill_blas.h"
 #include <cuda_fp16.h>
 #include "gr_prefill_decode.cuh"
@@ -64,7 +65,7 @@ tb::Tensor gr_prefill_blas_fp32(const NintWeight& w,const tb::Tensor& input) {
 
 namespace {
 bool gr_blas_mode() {
- const auto* value=std::getenv("TYLOINFER_GR_PREFILL_MATMUL");return !value || std::atoi(value)==32;
+ const auto* value=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");return !value || std::atoi(value)==32;
 }
 template<class Gate,class Value>
 __global__ void gr_blas_mix_into(const float* projection,const Value* normalized,

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "tq.h"
 #include "tyloinfer/model_source.h"
 #include "weight_memory.h"
@@ -185,7 +186,7 @@ tb::Tensor projection_workspace(const TqWeight& weight,int tokens,tb::ScalarType
             bytes=std::max<std::uint64_t>(bytes,std::min<std::uint64_t>(wanted,available/16));
         }
     }
-    if(bytes>(std::uint64_t(8)<<20) && std::getenv("TYLOINFER_TQ_PROFILE_CACHE"))
+    if(bytes>(std::uint64_t(8)<<20) && mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE"))
         std::fprintf(stderr,"tq_projection_workspace tokens=%d K=%lld N=%lld groups=%d bytes=%llu\n",
             tokens,static_cast<long long>(weight.neuron_len),static_cast<long long>(weight.out),groups,
             static_cast<unsigned long long>(bytes));
@@ -682,7 +683,7 @@ tb::Tensor lookup_tq_shards(const std::vector<std::shared_ptr<TqRowTable>>& shar
     for(const auto& table:shards)if(!table || table->width()!=columns)
         throw std::invalid_argument("TQ table shard widths differ");
     static std::atomic<bool> reported{false};
-    if(std::getenv("TYLOINFER_TQ_PROFILE_CACHE") && !reported.exchange(true))
+    if(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE") && !reported.exchange(true))
         std::fprintf(stderr,"tq_table_shards_dispatch enabled=1 shards=%zu lookups=%zu width=%lld CPU_ids=1\n",
             shards.size(),ids.size(),static_cast<long long>(columns));
     const MfqCudaGuard guard(device);
@@ -763,7 +764,7 @@ public:
         const MfqCudaGuard guard(device);
         retain_stream();
         int can_map=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&can_map,cudaDevAttrCanMapHostMemory,device.index));
-        const auto* setting=std::getenv("TYLOINFER_PLE_MAPPED_ROWS");
+        const auto* setting=mfq::cuda::env_lookup("TYLOINFER_PLE_MAPPED_ROWS");
         mapped_=can_map && (setting?setting[0]=='1':bytes_<=16u*1024);
         host_=std::make_unique<mfq::cuda::HostBuffer>(bytes_,mapped_);
         if(mapped_) {
@@ -993,7 +994,7 @@ class TqExpertCache {
     std::uint64_t calls_=0,gpu_hits_=0,host_hits_=0,source_bytes_=0,transfer_bytes_=0;
     std::uint64_t direct_transfer_bytes_=0,pin_attempts_=0,pin_failures_=0;
     double fetch_ms_=0,upload_submit_ms_=0;
-    const bool profile_=std::getenv("TYLOINFER_TQ_PROFILE_CACHE")!=nullptr;
+    const bool profile_=mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")!=nullptr;
     std::size_t reclaim_host_locked(std::size_t bytes) {
         const auto before=host_used_;
         while(before-host_used_<bytes && !host_recent_.empty()) {
@@ -1506,7 +1507,7 @@ struct TqMoeGraphStage {
             kernels.reserve(planes.size()*((slots+65534)/65535));
         }
         int can_map=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&can_map,cudaDevAttrCanMapHostMemory,source.get_device()));
-        const auto* mapped_option=std::getenv("TYLOINFER_TQ_GRAPH_MAPPED_ROUTES");
+        const auto* mapped_option=mfq::cuda::env_lookup("TYLOINFER_TQ_GRAPH_MAPPED_ROUTES");
         const bool integral=route_dtype==tb::kInt32 || route_dtype==tb::kInt64;
         const auto words=slots*(route_dtype==tb::kInt64?2:1);
         const bool map=can_map && integral && words<=INT_MAX && (!mapped_option || mapped_option[0]!='0');
@@ -1611,7 +1612,7 @@ struct TqMoeGraphStage {
                 unsigned(std::min<std::size_t>(kernel.capacity,planes[kernel.plane].count-kernel.first));
             window->set_kernel_rows(kernel.segment,kernel.node,count);
         }
-        if(window && wide && std::getenv("TYLOINFER_TQ_PROFILE_CACHE")) {
+        if(window && wide && mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
             unsigned mask=0,jobs=0;
             for(int i=9;i<int(planes.size());++i)if(planes[i].count){mask|=1u<<planes[i].tile;jobs+=planes[i].count;}
             if(planes[4].count)mask|=1u<<16;
@@ -1675,7 +1676,7 @@ tb::Tensor tq_graph_forward(const TqMoeBanks& banks,const tb::Tensor& source,con
         throw std::invalid_argument("TQ graph stage geometry changed");
     const bool views=mfq::cuda::runtime_options::window_input_views() && source.is_contiguous() &&
         ids.is_contiguous() && weights.is_contiguous() && weights.scalar_type()==tb::kFloat32;
-    if(std::getenv("TYLOINFER_TQ_PROFILE_CACHE")) {
+    if(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
         const unsigned mode=(stage->mapped_routes?(stage->route_dtype==tb::kInt32?1u:2u):4u)|(views?8u:0u);
         static std::atomic<unsigned> seen{0};const unsigned bit=1u<<mode;
         if(!(seen.fetch_or(bit,std::memory_order_relaxed)&bit))
@@ -1876,7 +1877,7 @@ tb::Tensor TqMoeBanks::forward(tb::Tensor input_value,tb::Tensor ids,
         // Account for allocated scratch before admitting compressed misses.
         const auto image_batch=std::min<std::size_t>(prefill_groups,
             std::max<std::uint64_t>(1,(free_bytes()/2)/image_per_expert));
-        if(std::getenv("TYLOINFER_TQ_PROFILE_CACHE"))std::fprintf(stderr,
+        if(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE"))std::fprintf(stderr,
             "tq_prefill_moe jobs=%zu gemm_jobs=%zu scratch=%lld decoded=%lld image_batch=%zu\n",
             prefill_groups,gemm_groups,static_cast<long long>(activations.numel()),
             static_cast<long long>(decoded.defined()?decoded.numel():0),image_batch);

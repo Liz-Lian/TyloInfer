@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
@@ -9,7 +10,7 @@
 
 namespace mfq::cuda::dispatch_trace {
 inline bool enabled() {
-    const auto* option=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_TRACE_KERNEL_DISPATCH");
     return option && option[0]=='1';
 }
 // Inspect the kernel node actually appended by this launch. Diagnostics run

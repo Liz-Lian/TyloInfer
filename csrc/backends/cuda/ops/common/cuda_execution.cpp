@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../../runtime/execution_options.h"
 #include "cuda_execution.h"
 
@@ -37,7 +38,7 @@
 namespace {
 
 std::optional<std::string> environment(const char* name) {
-    const char* value = std::getenv(name);
+    const char* value = mfq::cuda::env_lookup(name);
     if (value == nullptr || value[0] == '\0') return std::nullopt;
     return value;
 }
@@ -89,25 +90,25 @@ bool enabled_unless_disabled(const char* name) {
 
 namespace mfq::cuda::runtime_options {
 bool kv_vram_preallocated() {
-    const auto* value = std::getenv("TYLOINFER_KV_VRAM_PREALLOCATED");
+    const auto* value = mfq::cuda::env_lookup("TYLOINFER_KV_VRAM_PREALLOCATED");
     return value && value[0] == '1';
 }
 bool vision_resident() {
-    const auto* value = std::getenv("TYLOINFER_CUDA_VISION_RESIDENT");
+    const auto* value = mfq::cuda::env_lookup("TYLOINFER_CUDA_VISION_RESIDENT");
     return value && value[0] == '1';
 }
 namespace {
 bool exact_one(const char* name, bool fallback = false) {
-    const auto* value = std::getenv(name);
+    const auto* value = mfq::cuda::env_lookup(name);
     return value ? std::string_view(value) == "1" : fallback;
 }
 bool first_nonzero(const char* name, bool fallback) {
-    const auto* value = std::getenv(name);
+    const auto* value = mfq::cuda::env_lookup(name);
     return value ? value[0] != '0' : fallback;
 }
 }
 bool resident_plan_overlap() {
-    const auto* value = std::getenv("TYLOINFER_MFE_RESIDENT_PLAN_OVERLAP");
+    const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_RESIDENT_PLAN_OVERLAP");
     if(value)return std::atoi(value)==1;
     // The GPU-only RAM/VRAM path has exact ordinary-generation coverage. Its
     // small early-window gain is retained; steady-tail gain is not established.
@@ -115,12 +116,12 @@ bool resident_plan_overlap() {
     return exact_one("TYLOINFER_MOE_RAM_PCIE_FRACTION");
 }
 std::optional<bool> rotary_fusion() {
-    const auto* value = std::getenv("TYLOINFER_ROTARY_FUSED");
+    const auto* value = mfq::cuda::env_lookup("TYLOINFER_ROTARY_FUSED");
     return value ? std::optional<bool>(std::string_view(value) == "1") : std::nullopt;
 }
 bool mhc_timings() { return exact_one("TYLOINFER_TRACE_MHC_TIMINGS"); }
 bool layer_timings() {
-    const auto* value = std::getenv("TYLOINFER_TRACE_LAYER_TIMINGS");
+    const auto* value = mfq::cuda::env_lookup("TYLOINFER_TRACE_LAYER_TIMINGS");
     return value && std::string_view(value) != "0";
 }
 int route_poll_interval_us() {
@@ -135,7 +136,7 @@ bool decode_host_pin() { return exact_one("TYLOINFER_MOE_DECODE_HOST_PIN"); }
 bool dma_graph_batch() { return exact_one("TYLOINFER_MOE_DMA_GRAPH_BATCH"); }
 bool warp_multi_sum() { return exact_one("TYLOINFER_CUDA_WARP_MULTI_SUM"); }
 float residency_heat_retention() {
-    const auto* setting=std::getenv("TYLOINFER_MOE_RESIDENCY_HEAT_RETENTION");
+    const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_HEAT_RETENTION");
     // A four-token adaptation interval needs to remember experts reused every
     // dozen tokens. With 0.7 decay their score never reaches the admission
     // threshold; 0.9 retains that evidence across roughly 26 tokens. Prefill
@@ -151,20 +152,20 @@ int residency_interval() {
 }
 bool router_lookahead() { return exact_one("TYLOINFER_MOE_ROUTER_LOOKAHEAD"); }
 std::optional<bool> router_lookahead_override() {
-    const auto* value=std::getenv("TYLOINFER_MOE_ROUTER_LOOKAHEAD");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_ROUTER_LOOKAHEAD");
     return value?std::optional<bool>(std::string_view(value)=="1"):std::nullopt;
 }
 bool batch_attention_projections() {
-    const auto* value=std::getenv("TYLOINFER_BATCH_ATTENTION_PROJECTIONS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_BATCH_ATTENTION_PROJECTIONS");
     return !value || value[0]!='0';
 }
 bool gdn_independent_batch() {
-    const auto* value=std::getenv("TYLOINFER_GDN_INDEPENDENT_BATCH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_GDN_INDEPENDENT_BATCH");
     return !value || value[0]!='0';
 }
 bool gdn_independent_batch_trace() { return exact_one("TYLOINFER_TRACE_GDN_BATCH"); }
 bool batch_packed_prefill() {
-    const auto* value=std::getenv("TYLOINFER_BATCH_PACKED_PREFILL");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_BATCH_PACKED_PREFILL");
     return !value || value[0]!='0';
 }
 int batch_packed_prefill_token_budget() {
@@ -175,12 +176,12 @@ bool nint_compressed_decode_batch() {
     return exact_one("TYLOINFER_NINT_COMPRESSED_DECODE_BATCH");
 }
 bool nint_compressed_large_batch(bool vocabulary) {
-    const auto* value=std::getenv("TYLOINFER_NINT_COMPRESSED_LARGE_BATCH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_COMPRESSED_LARGE_BATCH");
     if(!value || std::strcmp(value,"head")==0)return vocabulary;
     return value[0]!='0';
 }
 bool nint_large_output_tiling() {
-    const auto* value=std::getenv("TYLOINFER_NINT_LARGE_OUTPUT_TILING");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_LARGE_OUTPUT_TILING");
     return !value || value[0]!='0';
 }
 int continuous_batch_kv_initial_capacity() {
@@ -188,7 +189,7 @@ int continuous_batch_kv_initial_capacity() {
 }
 std::size_t workspace_reserve_bytes() {
     std::size_t reserve = std::size_t(4) * 1024 * 1024 * 1024;
-    if (const auto* value = std::getenv("TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB")) {
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB")) {
         char* end = nullptr;
         const double gib = std::strtod(value, &end);
         const long double bytes = static_cast<long double>(gib) * 1024 * 1024 * 1024;
@@ -224,169 +225,169 @@ MoeDiagnostics moe_diagnostics() {
     result.dma = exact_one("TYLOINFER_TRACE_MOE_DMA");
     result.dma_fail_alloc = exact_one("TYLOINFER_TRACE_MOE_DMA_FAIL_ALLOC");
     result.shared_cpu_cost = exact_one("TYLOINFER_MOE_SHARED_CPU_COST");
-    if (const auto* path = std::getenv("TYLOINFER_MOE_DISPATCH_RECORD")) result.dispatch_record = path;
-    if (const auto* path = std::getenv("TYLOINFER_MOE_MISS_RECORD")) result.miss_record = path;
-    if (const auto* path = std::getenv("TYLOINFER_MOE_DISPATCH_REPLAY")) result.dispatch_replay = path;
+    if (const auto* path = mfq::cuda::env_lookup("TYLOINFER_MOE_DISPATCH_RECORD")) result.dispatch_record = path;
+    if (const auto* path = mfq::cuda::env_lookup("TYLOINFER_MOE_MISS_RECORD")) result.miss_record = path;
+    if (const auto* path = mfq::cuda::env_lookup("TYLOINFER_MOE_DISPATCH_REPLAY")) result.dispatch_replay = path;
     return result;
 }
 std::optional<int> embedding_mapped() {
-    const auto* value=std::getenv("TYLOINFER_EMBEDDING_MAPPED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_EMBEDDING_MAPPED");
     return value ? std::optional<int>(value[0] - '0') : std::nullopt;
 }
 std::optional<bool> gdn_inplace_state() {
-    const auto* value=std::getenv("TYLOINFER_GDN_INPLACE_STATE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_GDN_INPLACE_STATE");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> gdn_prefill_fused() {
-    const auto* value=std::getenv("TYLOINFER_GDN_PREFILL_FUSED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_FUSED");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> gr_dense_vector() {
-    const auto* value=std::getenv("TYLOINFER_GR_DENSE_VECTOR");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_GR_DENSE_VECTOR");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> mfe_group_dot() {
-    const auto* value=std::getenv("TYLOINFER_MFE_GROUP_DOT");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MFE_GROUP_DOT");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> mfe_nint_late_scale() {
-    const auto* value=std::getenv("TYLOINFER_MFE_NINT_LATE_SCALE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MFE_NINT_LATE_SCALE");
     return value ? std::optional<bool>(std::string_view(value) == "1") : std::nullopt;
 }
 std::optional<bool> mfe_nvq_word_signs() {
-    const auto* value=std::getenv("TYLOINFER_MFE_NVQ_WORD_SIGNS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MFE_NVQ_WORD_SIGNS");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> mfe_shared_dense_math() {
-    const auto* value=std::getenv("TYLOINFER_MFE_SHARED_DENSE_MATH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_DENSE_MATH");
     return value ? std::optional<bool>(std::string_view(value) == "1") : std::nullopt;
 }
 std::optional<bool> moe_assert_resident() {
-    const auto* value=std::getenv("TYLOINFER_MOE_ASSERT_RESIDENT");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_ASSERT_RESIDENT");
     return value ? std::optional<bool>(std::string_view(value) == "1") : std::nullopt;
 }
 std::optional<bool> moe_nvq_dense() {
-    const auto* value=std::getenv("TYLOINFER_MOE_NVQ_DENSE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_NVQ_DENSE");
     return value ? std::optional<bool>(std::string_view(value) == "1") : std::nullopt;
 }
 std::optional<bool> moe_plan_reuse() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PLAN_REUSE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PLAN_REUSE");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_plan_reuse_check() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PLAN_REUSE_CHECK");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PLAN_REUSE_CHECK");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_compact_mma() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_COMPACT_MMA");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_COMPACT_MMA");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_direct_ram() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_DIRECT_RAM");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_DIRECT_RAM");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_expert_batch() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_EXPERT_BATCH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_EXPERT_BATCH");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<std::int64_t> moe_prefill_expert_batch_tokens() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_EXPERT_BATCH_TOKENS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_EXPERT_BATCH_TOKENS");
     return value ? std::optional<std::int64_t>(std::atoll(value)) : std::nullopt;
 }
 std::optional<bool> moe_prefill_graph() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_GRAPH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GRAPH");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_groups() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_GROUPS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUPS");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer_async() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER_ASYNC");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_ASYNC");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer_flush() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER_FLUSH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_FLUSH");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer_major() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER_MAJOR");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_MAJOR");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer_overlap() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER_OVERLAP");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_OVERLAP");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer_phased() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER_PHASED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_PHASED");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_layer_reuse_async() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER_REUSE_ASYNC");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER_REUSE_ASYNC");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_prefill_pool_retain() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_POOL_RETAIN");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_POOL_RETAIN");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> moe_preload_all() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PRELOAD_ALL");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_ALL");
     return value ? std::optional<bool>(std::string_view(value) == "1") : std::nullopt;
 }
 bool nint_dense_reference() {
-    const auto* value=std::getenv("TYLOINFER_NINT_DENSE_REFERENCE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_DENSE_REFERENCE");
     return value != nullptr;
 }
 std::optional<bool> nint_direct_pool() {
-    const auto* value=std::getenv("TYLOINFER_NINT_DIRECT_POOL");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_DIRECT_POOL");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> nint_group_dot() {
-    const auto* value=std::getenv("TYLOINFER_NINT_GROUP_DOT");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_DOT");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> nint_route_hint() {
-    const auto* value=std::getenv("TYLOINFER_NINT_ROUTE_HINT");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_HINT");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> nint_route_row_workspace() {
-    const auto* value=std::getenv("TYLOINFER_NINT_ROUTE_ROW_WORKSPACE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_ROW_WORKSPACE");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<int> nint_route_warps() {
-    const auto* value=std::getenv("TYLOINFER_NINT_ROUTE_WARPS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_WARPS");
     return value ? std::optional<int>(std::atoi(value)) : std::nullopt;
 }
 std::optional<bool> nvq1_group_records() {
-    const auto* value=std::getenv("TYLOINFER_NVQ1_GROUP_RECORDS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NVQ1_GROUP_RECORDS");
     return value ? std::optional<bool>(value[0] == '1') : std::nullopt;
 }
 std::optional<bool> nvq1_integer_delta() {
-    const auto* value=std::getenv("TYLOINFER_NVQ1_INTEGER_DELTA");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NVQ1_INTEGER_DELTA");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 bool nvq_dense_reference() {
-    const auto* value=std::getenv("TYLOINFER_NVQ_DENSE_REFERENCE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_NVQ_DENSE_REFERENCE");
     return value != nullptr;
 }
 std::optional<bool> ple_file_map() {
-    const auto* value=std::getenv("TYLOINFER_PLE_FILE_MAP");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_PLE_FILE_MAP");
     return value ? std::optional<bool>(value[0] == '1') : std::nullopt;
 }
 std::optional<bool> prefill_expert_batch_audit() {
-    const auto* value=std::getenv("TYLOINFER_PREFILL_EXPERT_BATCH_AUDIT");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_PREFILL_EXPERT_BATCH_AUDIT");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> prefill_layer_major_trace() {
-    const auto* value=std::getenv("TYLOINFER_PREFILL_LAYER_MAJOR_TRACE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_PREFILL_LAYER_MAJOR_TRACE");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> qsa_prefill_fused() {
-    const auto* value=std::getenv("TYLOINFER_QSA_PREFILL_FUSED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_QSA_PREFILL_FUSED");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 
@@ -396,35 +397,35 @@ QsaKvOffloadOptions qsa_kv_offload() {
         environment("TYLOINFER_RUNTIME_PREFIX_CACHE_DIR").value_or("")};
 }
 std::optional<bool> qsa_select_fused() {
-    const auto* value=std::getenv("TYLOINFER_QSA_SELECT_FUSED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_QSA_SELECT_FUSED");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> qsa_sparse_gate_fused() {
-    const auto* value=std::getenv("TYLOINFER_QSA_SPARSE_GATE_FUSED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_QSA_SPARSE_GATE_FUSED");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> shared_gate_fused() {
-    const auto* value=std::getenv("TYLOINFER_SHARED_GATE_FUSED");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_SHARED_GATE_FUSED");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> trace_mfe_dispatch() {
-    const auto* value=std::getenv("TYLOINFER_TRACE_MFE_DISPATCH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_MFE_DISPATCH");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
 }
 std::optional<bool> trace_mfe_dispatch_requested() {
-    const auto* value=std::getenv("TYLOINFER_TRACE_MFE_DISPATCH");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_MFE_DISPATCH");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
 }
 std::optional<bool> trace_moe_serve() {
-    const auto* value=std::getenv("TYLOINFER_TRACE_MOE_SERVE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_SERVE");
     return value ? std::optional<bool>(value[0] != '\0' && value[0] != '0') : std::nullopt;
 }
 std::optional<bool> trace_ple_timings() {
-    const auto* value=std::getenv("TYLOINFER_TRACE_PLE_TIMINGS");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_PLE_TIMINGS");
     return value ? std::optional<bool>(value[0] == '1') : std::nullopt;
 }
 int moe_prefill_group_size() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_GROUP_SIZE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE");
     return value ? std::atoi(value) : 16;
 }
 } // namespace mfq::cuda::runtime_options
@@ -679,7 +680,7 @@ void CudaProfiler::reset() {
 void CudaProfiler::report(const std::string& title) {
     if (!enabled) return;
     if (!pending.empty()) cudaEventSynchronize(pending.back().stop);
-    const auto* timeline_setting=std::getenv("TYLOINFER_PREFILL_LAYER_TIMELINE");
+    const auto* timeline_setting=mfq::cuda::env_lookup("TYLOINFER_PREFILL_LAYER_TIMELINE");
     if(!pending.empty() && timeline_setting && std::atoi(timeline_setting)!=0) {
         std::ostringstream trace;
         trace<<"profile_timeline_begin "<<title<<'\n';
@@ -1154,143 +1155,143 @@ void report_cuda_memory(
 
 namespace mfq::cuda::runtime_options {
 std::optional<bool> mfe_token_groups() {
-    if (const auto* value = std::getenv("TYLOINFER_MFE_TOKEN_GROUPS")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> mfe_token_compact_plan() {
-    if (const auto* value = std::getenv("TYLOINFER_MFE_TOKEN_COMPACT_PLAN")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_COMPACT_PLAN")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> mfe_token_aligned_gu() {
-    if (const auto* value = std::getenv("TYLOINFER_MFE_TOKEN_ALIGNED_GU")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_ALIGNED_GU")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> mfe_shared_small_whole() {
-    if (const auto* value = std::getenv("TYLOINFER_MFE_SHARED_SMALL_WHOLE")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_SMALL_WHOLE")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> mfe_nvq_bank_map() {
-    if (const auto* value = std::getenv("TYLOINFER_MFE_NVQ_BANK_MAP")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_NVQ_BANK_MAP")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> nint_fused_fixed_bits() {
-    if (const auto* value = std::getenv("TYLOINFER_NINT_FUSED_FIXED_BITS")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_NINT_FUSED_FIXED_BITS")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> nint_group_quantize() {
-    if (const auto* value = std::getenv("TYLOINFER_NINT_GROUP_QUANTIZE")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_NINT_GROUP_QUANTIZE")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> ple_native_fusion() {
-    if (const auto* value = std::getenv("TYLOINFER_PLE_NATIVE_FUSION")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_PLE_NATIVE_FUSION")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> gdn_strided_projections() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_STRIDED_PROJECTIONS")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_STRIDED_PROJECTIONS")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> gdn_short_inplace() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_SHORT_INPLACE")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_SHORT_INPLACE")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> gdn_short_fusion() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_SHORT_FUSION")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_SHORT_FUSION")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> gdn_batch_projection() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_BATCH_PROJECTION")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_BATCH_PROJECTION")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> nint_prefill_decode_reuse() {
-    if (const auto* value = std::getenv("TYLOINFER_NINT_PREFILL_DECODE_REUSE")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_NINT_PREFILL_DECODE_REUSE")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> moe_prefill_append_tail() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_PREFILL_APPEND_TAIL")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_APPEND_TAIL")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> gdn_prefill_layer_batch() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_PREFILL_LAYER_BATCH")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_LAYER_BATCH")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> gr_prefill_layer_batch() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_PREFILL_LAYER_BATCH")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_LAYER_BATCH")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> gr_chain_ffn_post() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_CHAIN_FFN_POST")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_CHAIN_FFN_POST")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> mtp_predictor_graph() {
-    if (const auto* value = std::getenv("TYLOINFER_MTP_PREDICTOR_GRAPH")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MTP_PREDICTOR_GRAPH")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<std::int64_t> continuous_ffn_tile() {
-    if (const auto* value = std::getenv("TYLOINFER_CONTINUOUS_FFN_TILE")) return std::atoll(value);
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_CONTINUOUS_FFN_TILE")) return std::atoll(value);
     return std::nullopt;
 }
 std::optional<bool> gdn_packed_qkv() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_PACKED_QKV")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_PACKED_QKV")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<int> moe_prefill_shared_chain_streams() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_PREFILL_SHARED_CHAIN_STREAMS")) return std::atoi(value);
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_SHARED_CHAIN_STREAMS")) return std::atoi(value);
     return std::nullopt;
 }
 std::optional<int> moe_prefill_shared_streams() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_PREFILL_SHARED_STREAMS")) return std::atoi(value);
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_SHARED_STREAMS")) return std::atoi(value);
     return std::nullopt;
 }
 std::optional<int> gdn_prefill_projection_streams() {
-    if (const auto* value = std::getenv("TYLOINFER_GDN_PREFILL_PROJECTION_STREAMS")) return std::atoi(value);
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_PROJECTION_STREAMS")) return std::atoi(value);
     return std::nullopt;
 }
 std::optional<bool> trace_gr_dispatch() {
-    if (const auto* value = std::getenv("TYLOINFER_TRACE_GR_DISPATCH")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_TRACE_GR_DISPATCH")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> gr_batch_two_stage() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_BATCH_TWO_STAGE")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_BATCH_TWO_STAGE")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> gr_continuous_two_stage() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_CONTINUOUS_TWO_STAGE")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_CONTINUOUS_TWO_STAGE")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<std::int64_t> gr_prefill_work_chunk() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_PREFILL_WORK_CHUNK")) return std::atoll(value);
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_WORK_CHUNK")) return std::atoll(value);
     return std::nullopt;
 }
 std::optional<bool> position_buffer(const char* name) {
-    if (const auto* value = std::getenv(name)) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup(name)) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> single_output_view() {
-    if (const auto* value = std::getenv("TYLOINFER_SINGLE_OUTPUT_VIEW")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_SINGLE_OUTPUT_VIEW")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<bool> moe_direct_cache_dma() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_DIRECT_CACHE_DMA")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_DIRECT_CACHE_DMA")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> moe_compact_host_stage() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_COMPACT_HOST_STAGE")) return value[0] == '1';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_COMPACT_HOST_STAGE")) return value[0] == '1';
     return std::nullopt;
 }
 std::optional<bool> moe_prefill_host_maps() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_PREFILL_HOST_MAPS")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_HOST_MAPS")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<char> gr_up_group_coefficients() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_UP_GROUP_COEFFICIENTS")) return value[0];
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_UP_GROUP_COEFFICIENTS")) return value[0];
     return std::nullopt;
 }
 std::optional<bool> gr_dense_bf16_direct() {
-    if (const auto* value = std::getenv("TYLOINFER_GR_DENSE_BF16_DIRECT")) return value[0] != '0';
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_GR_DENSE_BF16_DIRECT")) return value[0] != '0';
     return std::nullopt;
 }
 std::optional<int> mfe_token_group_capacity() {
-    if (const auto* value = std::getenv("TYLOINFER_MFE_TOKEN_GROUP_CAPACITY")) {
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUP_CAPACITY")) {
         const std::string_view mode(value);
         if (mode == "2") return 2;
         if (mode == "4") return 4;
@@ -1301,7 +1302,7 @@ std::optional<int> mfe_token_group_capacity() {
     return std::nullopt;
 }
 std::optional<std::int64_t> moe_ram_pin_bytes() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_RAM_PIN_GIB")) {
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_RAM_PIN_GIB")) {
         char* end=nullptr;
         const double gib=std::strtod(value,&end);
         if(end==value || *end || !std::isfinite(gib) || gib<0 || gib>double(INT64_MAX)/(1ull<<30))
@@ -1311,7 +1312,7 @@ std::optional<std::int64_t> moe_ram_pin_bytes() {
     return std::nullopt;
 }
 std::optional<std::int64_t> moe_ram_pin_reserve_bytes() {
-    if (const auto* value = std::getenv("TYLOINFER_MOE_RAM_PIN_RESERVE_GIB")) {
+    if (const auto* value = mfq::cuda::env_lookup("TYLOINFER_MOE_RAM_PIN_RESERVE_GIB")) {
         char* end=nullptr;
         const double gib=std::strtod(value,&end);
         if(end==value || *end || !std::isfinite(gib) || gib<0 || gib>=double(INT64_MAX)/(1ull<<30))

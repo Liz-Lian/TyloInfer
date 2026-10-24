@@ -1,24 +1,17 @@
 #pragma once
+#include "env.h"
 #include "mfe_ffn_runtime.h"
 #include <cstring>
 
 void verify_mfe_token_groups(const std::filesystem::path& root) {
     struct Environment {
         std::string previous;
-        Environment(){if(const auto* s=std::getenv("TYLOINFER_MFE_TOKEN_GROUPS"))previous=s;}
+        Environment(){if(const auto* s=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS"))previous=s;}
         static void select(bool enabled) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MFE_TOKEN_GROUPS",enabled?"1":"0");
-#else
-            setenv("TYLOINFER_MFE_TOKEN_GROUPS",enabled?"1":"0",1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",enabled?"1":"0");
         }
         ~Environment(){
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MFE_TOKEN_GROUPS",previous.c_str());
-#else
-            if(previous.empty())unsetenv("TYLOINFER_MFE_TOKEN_GROUPS");else setenv("TYLOINFER_MFE_TOKEN_GROUPS",previous.c_str(),1);
-#endif
+            if(previous.empty())mfq::cuda::env_clear("TYLOINFER_MFE_TOKEN_GROUPS");else mfq::cuda::env_set("TYLOINFER_MFE_TOKEN_GROUPS",previous.c_str());
         }
     } environment;
     CudaExecutionContext execution;

@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfq_cuda_nvq1_decode.h"
 #include "packed_nvq.cuh"
 #include <cstdlib>
@@ -114,8 +115,8 @@ __global__ void __launch_bounds__(128) decode(DecodeArgs args) {
 }
 template<bool Small,bool Records,bool IntegerDelta>
 void launch(const DecodeArgs& args,cudaStream_t stream) {
-    const auto* lane_setting=std::getenv("TYLOINFER_NVQ1_LANES");
-    const auto* row_setting=std::getenv("TYLOINFER_NVQ1_ROWS");
+    const auto* lane_setting=mfq::cuda::env_lookup("TYLOINFER_NVQ1_LANES");
+    const auto* row_setting=mfq::cuda::env_lookup("TYLOINFER_NVQ1_ROWS");
     const int lanes=lane_setting?std::atoi(lane_setting):16;
     const int rows=row_setting?std::atoi(row_setting):(args.weight.groups<=32?2:1);
     const auto shape=[&](auto l,auto r) {
@@ -143,13 +144,13 @@ void select(const DecodeArgs& args,cudaStream_t stream) {
 bool nvq1_try_decode_cuda(Nvq1DecodeView w,mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor ids,
         mfq_tensor_backend::Tensor local,mfq_tensor_backend::Tensor qx,mfq_tensor_backend::Tensor scales,
         mfq_tensor_backend::Tensor output,int experts,int rows,bool quantized) {
-    const auto* group_dot=std::getenv("TYLOINFER_NVQ_MOE_GROUP_DOT");
-    const auto* native=std::getenv("TYLOINFER_NVQ1_NATIVE_DECODE");
+    const auto* group_dot=mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
+    const auto* native=mfq::cuda::env_lookup("TYLOINFER_NVQ1_NATIVE_DECODE");
     if((native && native[0]=='0') || (group_dot && group_dot[0]=='0') || ids.size(0)>8 ||
        (w.format!=1 && w.format!=8) || w.groups<=0)return false;
     const int routes=int(ids.size(1)),pairs=int(ids.numel()),input_rows=int(x.numel()/x.size(-1));
     auto stream=mfq_current_cuda_stream();
-    const auto* quant_setting=std::getenv("TYLOINFER_NVQ1_QUANT_WARPS");
+    const auto* quant_setting=mfq::cuda::env_lookup("TYLOINFER_NVQ1_QUANT_WARPS");
     const int automatic_warps=!quantized && w.groups<=32 && input_rows>=10?4:1;
     const int requested=quant_setting?std::atoi(quant_setting):automatic_warps;
     const int quant_warps=requested==2 || requested==4 || requested==8?requested:1;

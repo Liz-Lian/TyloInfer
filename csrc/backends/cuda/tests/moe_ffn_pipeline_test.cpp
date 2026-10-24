@@ -1,3 +1,4 @@
+#include "env.h"
 #include "storage/moe_ffn_pipeline.h"
 #include "runtime/decode_window.h"
 #include "runtime/execution_options.h"
@@ -70,13 +71,9 @@ void verify_nvq_dense_default(const std::filesystem::path& root) {
     struct Environment {
         const char* names[3]={"TYLOINFER_MOE_NVQ_DENSE","TYLOINFER_MOE_PRELOAD_ALL","TYLOINFER_MOE_ASSERT_RESIDENT"};
         std::string previous[3];
-        Environment(){for(int i=0;i<3;++i)if(const auto* value=std::getenv(names[i]))previous[i]=value;}
+        Environment(){for(int i=0;i<3;++i)if(const auto* value=mfq::cuda::env_lookup(names[i]))previous[i]=value;}
         void set(int i,const char* value)const {
-#ifdef _WIN32
-            _putenv_s(names[i],value);
-#else
-            if(*value)setenv(names[i],value,1);else unsetenv(names[i]);
-#endif
+            if(*value)mfq::cuda::env_set(names[i],value);else mfq::cuda::env_clear(names[i]);
         }
         ~Environment(){for(int i=0;i<3;++i)set(i,previous[i].c_str());}
     } env;
@@ -494,7 +491,7 @@ void verify_speculative_route_prefix(const std::filesystem::path& root) {
         cache_quant_moe_weight(cache,std::to_string(p),sources[p],1,0,std::to_string(p)));
     auto forward=make_moe_ffn_pipeline({weights[0],weights[1]},{weights[2]});
     finalize_moe_expert_cache(cache);MoeResidencyManager manager(cache.get());
-    const auto* heat_option=std::getenv("TYLOINFER_MOE_MTP_WINDOW_HEAT");
+    const auto* heat_option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_WINDOW_HEAT");
     const int heat_mode=heat_option?std::clamp(std::atoi(heat_option),0,2):2;
     const bool window_heat=heat_mode!=0;
     for(int i=0;i<3;++i) {
@@ -585,13 +582,9 @@ void verify_speculative_route_prefix(const std::filesystem::path& root) {
 void verify_short_decode_residency_interval(const std::filesystem::path& root) {
     struct Interval {
         std::string saved;
-        Interval(){if(const auto* value=std::getenv("TYLOINFER_MOE_RESIDENCY_INTERVAL"))saved=value;set("4");}
+        Interval(){if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_INTERVAL"))saved=value;set("4");}
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MOE_RESIDENCY_INTERVAL",value);
-#else
-            if(*value)setenv("TYLOINFER_MOE_RESIDENCY_INTERVAL",value,1);else unsetenv("TYLOINFER_MOE_RESIDENCY_INTERVAL");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_MOE_RESIDENCY_INTERVAL",value);else mfq::cuda::env_clear("TYLOINFER_MOE_RESIDENCY_INTERVAL");
         }
         ~Interval(){set(saved.c_str());}
     } interval;
@@ -691,7 +684,7 @@ int verify_warm_residency(const std::filesystem::path& root, bool shared_cases=t
         CudaExecutionContext execution;execution.config.moe_residency_warm=true;
         const bool limited=mode==1,shared=mode==2;
         if(shared && !shared_cases)continue;
-        if(std::getenv("TYLOINFER_TEST_RESIDENCY_TRACE"))
+        if(mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_TRACE"))
             std::cerr<<"fence_fixture format="<<format<<" mode="<<mode<<std::endl;
         if(shared && !execution.config.moe_direct_ram)continue;
         execution.config.moe_host_physical_bytes=limited?1024:0;
@@ -714,7 +707,7 @@ int verify_warm_residency(const std::filesystem::path& root, bool shared_cases=t
         }
         finalize_moe_expert_cache(cache);
         if(shared) {
-            if(std::getenv("TYLOINFER_TEST_RESIDENCY_TRACE"))std::cerr<<"fence_shared before_forward"<<std::endl;
+            if(mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_TRACE"))std::cerr<<"fence_shared before_forward"<<std::endl;
             std::vector<float> values(2560);for(int j=0;j<2560;++j)values[j]=std::sin(float(j)*.013f);
             auto x=tb::tensor(values).reshape({1,2560}).to(tb::kFloat16).to(tb::kCUDA);
             // The shared-backup case exchanges `count` expert bundles. Size
@@ -723,7 +716,7 @@ int verify_warm_residency(const std::filesystem::path& root, bool shared_cases=t
             auto ids=tb::zeros({1,count},x.options().dtype(tb::kInt32));
             auto route_weights=tb::ones({1,count},x.options())/count;
             auto reference=forwards[0](execution,x,ids,route_weights).cpu().contiguous();
-            if(std::getenv("TYLOINFER_TEST_RESIDENCY_TRACE"))std::cerr<<"fence_shared after_forward"<<std::endl;
+            if(mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_TRACE"))std::cerr<<"fence_shared after_forward"<<std::endl;
             MoeResidencyManager failed(cache.get(),[](const char* phase,std::size_t) {
                 if(std::string(phase)=="publish")throw std::runtime_error("shared backup publication failure");
             });
@@ -771,7 +764,7 @@ int verify_warm_residency(const std::filesystem::path& root, bool shared_cases=t
         std::atomic_bool prepared=false,copies_complete=false;
         const auto observation_start=std::chrono::steady_clock::now();
         MoeResidencyManager manager(cache.get(),[&](const char* phase,std::size_t index) {
-            if(std::getenv("TYLOINFER_TEST_RESIDENCY_TRACE") && (index==0 || std::string(phase)=="copies_complete"))
+            if(mfq::cuda::env_lookup("TYLOINFER_TEST_RESIDENCY_TRACE") && (index==0 || std::string(phase)=="copies_complete"))
                 std::cerr<<"fence_probe phase="<<phase<<" ms="<<std::chrono::duration<double,std::milli>(
                     std::chrono::steady_clock::now()-observation_start).count()<<std::endl;
             if(std::string(phase)=="copies_complete")copies_complete.store(true,std::memory_order_release);
@@ -779,7 +772,7 @@ int verify_warm_residency(const std::filesystem::path& root, bool shared_cases=t
                 prepared.store(true,std::memory_order_release);
         },std::move(memory));
         const bool in_window=manager.prepare_during_window() && !limited;
-        const char* fence_option=std::getenv("TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE");
+        const char* fence_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE");
         std::unique_ptr<TailGate> tail;
         if(in_window && fence_option && fence_option[0]=='1') {
             tail=std::make_unique<TailGate>(manager,count-1);tail->start();
@@ -966,11 +959,11 @@ int verify_projection_heat(const std::filesystem::path& root,bool transfer_cache
         }
         const auto stats=manager.stats();const bool changed=phase=="none";
         if(transfer_cached && changed) {
-            const auto* mode=std::getenv("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+            const auto* mode=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
             const bool reuse=mode && mode[0]=='2';
             if((stats.cached_copy_bytes>0)!=reuse || (reuse && stats.direct_upload_bytes))
                 throw std::runtime_error("cached promotion did not use the requested RAM/GPU copy source");
-            const auto* refill=std::getenv("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
+            const auto* refill=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
             if(reuse && refill && refill[0]=='1' && !stats.cached_copy_batches)
                 throw std::runtime_error("cached promotion did not exercise the batched GPU refill");
         }
@@ -1218,14 +1211,10 @@ int verify_two_stage_shared(const std::filesystem::path& root,bool transfer_cach
         bool enabled;
         std::string previous;
         void set(const char* value)const {
-#ifdef _WIN32
-            _putenv_s(option,value);
-#else
-            if(*value)setenv(option,value,1);else unsetenv(option);
-#endif
+            if(*value)mfq::cuda::env_set(option,value);else mfq::cuda::env_clear(option);
         }
         explicit MathEnvironment(bool active,const char* name):option(name),enabled(active) {
-            if(active)if(const auto* value=std::getenv(option))previous=value;
+            if(active)if(const auto* value=mfq::cuda::env_lookup(option))previous=value;
         }
         void select(bool candidate)const {if(enabled)set(candidate?"1":"0");}
         ~MathEnvironment(){if(enabled)set(previous.c_str());}
@@ -1237,14 +1226,10 @@ int verify_two_stage_shared(const std::filesystem::path& root,bool transfer_cach
         std::string previous;
         bool present=false;
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MOE_TRANSFER_CACHE",value);
-#else
-            if(*value)setenv("TYLOINFER_MOE_TRANSFER_CACHE",value,1);else unsetenv("TYLOINFER_MOE_TRANSFER_CACHE");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_MOE_TRANSFER_CACHE",value);else mfq::cuda::env_clear("TYLOINFER_MOE_TRANSFER_CACHE");
         }
         explicit RestoreEnvironment(bool enabled) {
-            if(const auto* value=std::getenv("TYLOINFER_MOE_TRANSFER_CACHE")){previous=value;present=true;}
+            if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_TRANSFER_CACHE")){previous=value;present=true;}
             set(enabled?"1":"0");
         }
         ~RestoreEnvironment(){set(present?previous.c_str():"");}
@@ -1464,8 +1449,8 @@ int verify_two_stage_shared(const std::filesystem::path& root,bool transfer_cach
             !counter(caches[1],"pipeline_transfer_cache_misses") || !counter(caches[1],"pipeline_transfer_cache_saved_bytes")))
             throw std::runtime_error("retained transfer fields were not reused by changing shared FFN graphs");
         if(transfer_cache) {
-            const auto* phases=std::getenv("TYLOINFER_MOE_FFN_TRANSFER_PHASES");
-            const auto* mapped=std::getenv("TYLOINFER_MOE_MAPPED_COPY");
+            const auto* phases=mfq::cuda::env_lookup("TYLOINFER_MOE_FFN_TRANSFER_PHASES");
+            const auto* mapped=mfq::cuda::env_lookup("TYLOINFER_MOE_MAPPED_COPY");
             const bool enabled_phase=(!phases || std::string(phases)=="1") && !(mapped && std::string(mapped)=="1");
             const auto actual_phases=counter(caches[1],"pipeline_phased_transfer_serves");
             if(actual_phases!=(comparison?4:enabled_phase?4:0) ||
@@ -1474,13 +1459,13 @@ int verify_two_stage_shared(const std::filesystem::path& root,bool transfer_cach
             if((enabled_phase || comparison) && (!counter(caches[1],"pipeline_gate_up_dma_bytes") || !counter(caches[1],"pipeline_down_dma_bytes")))
                 throw std::runtime_error("phased-transfer test omitted an original projection payload");
             phased_serves+=actual_phases;
-            const auto* enabled=std::getenv("TYLOINFER_MOE_MAPPED_COPY");
+            const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_MOE_MAPPED_COPY");
             if(enabled && std::string(enabled)=="1") {
                 const auto serves=counter(caches[1],"pipeline_mapped_copy_serves");
                 const auto bytes=counter(caches[1],"pipeline_mapped_copy_bytes");
                 if(serves!=4 || !bytes || counter(caches[0],"pipeline_mapped_copy_serves")!=(compare_math?4:0))
                     throw std::runtime_error("shared graph did not compare DMA with mapped RAM transfer");
-                const auto* overlap=std::getenv("TYLOINFER_MOE_MAPPED_COPY_OVERLAP");
+                const auto* overlap=mfq::cuda::env_lookup("TYLOINFER_MOE_MAPPED_COPY_OVERLAP");
                 const auto overlap_serves=counter(caches[1],"pipeline_mapped_overlap_serves");
                 if(overlap_serves!=(overlap && std::string(overlap)=="1"?4:0))
                     throw std::runtime_error("mapped-copy overlap arm was not exercised");
@@ -1511,13 +1496,9 @@ int verify_transfer_hit_reservation(const std::filesystem::path& root) {
     };
     struct Environment {
         std::string old;
-        Environment(){const auto* p=std::getenv("TYLOINFER_MOE_TRANSFER_CACHE");if(p)old=p;}
+        Environment(){const auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_TRANSFER_CACHE");if(p)old=p;}
         static void set(const char* p) {
-#if defined(_WIN32)
-            _putenv_s("TYLOINFER_MOE_TRANSFER_CACHE",p);
-#else
-            if(*p)setenv("TYLOINFER_MOE_TRANSFER_CACHE",p,1);else unsetenv("TYLOINFER_MOE_TRANSFER_CACHE");
-#endif
+            if(*p)mfq::cuda::env_set("TYLOINFER_MOE_TRANSFER_CACHE",p);else mfq::cuda::env_clear("TYLOINFER_MOE_TRANSFER_CACHE");
         }
         ~Environment(){set(old.c_str());}
     } environment;
@@ -1600,26 +1581,22 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
         const char* name;
         std::string old;
         bool existed=false;
-        explicit Environment(const char* key):name(key){if(const auto* value=std::getenv(name)){old=value;existed=true;}}
+        explicit Environment(const char* key):name(key){if(const auto* value=mfq::cuda::env_lookup(name)){old=value;existed=true;}}
         void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s(name,value);
-#else
-            if(*value)setenv(name,value,1);
-            else unsetenv(name);
-#endif
+            if(*value)mfq::cuda::env_set(name,value);
+            else mfq::cuda::env_clear(name);
         }
         ~Environment(){set(existed?old.c_str():"");}
     } environment(input_views?"TYLOINFER_MFE_WINDOW_INPUT_VIEWS":"TYLOINFER_MOE_EARLY_NO_CPU_READY");
-    const bool check_transfer_poll=std::getenv("TYLOINFER_TEST_TRANSFER_POLL")!=nullptr;
-    const bool check_kv_direct=std::getenv("TYLOINFER_TEST_KV_DIRECT_READ")!=nullptr;
-    const bool check_wire_fallback=std::getenv("TYLOINFER_TEST_WIRE_FALLBACK")!=nullptr;
-    const bool adaptive_kv_direct=check_kv_direct && std::getenv("TYLOINFER_TEST_KV_DIRECT_ADAPT");
-    const bool trace_kv_direct=std::getenv("TYLOINFER_TRACE_KV_DIRECT_READ")!=nullptr;
-    const bool force_direct_off=std::getenv("TYLOINFER_TEST_KV_DIRECT_FORCE_OFF")!=nullptr;
-    const int route_count=std::getenv("TYLOINFER_TEST_KV_WIDE_ROUTES")?10:2;
-    const bool partial_gu=std::getenv("TYLOINFER_TEST_KV_PARTIAL_GU")!=nullptr;
-    const bool speculative_lru=std::getenv("TYLOINFER_TEST_MTP_KV_LRU")!=nullptr;
+    const bool check_transfer_poll=mfq::cuda::env_lookup("TYLOINFER_TEST_TRANSFER_POLL")!=nullptr;
+    const bool check_kv_direct=mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_READ")!=nullptr;
+    const bool check_wire_fallback=mfq::cuda::env_lookup("TYLOINFER_TEST_WIRE_FALLBACK")!=nullptr;
+    const bool adaptive_kv_direct=check_kv_direct && mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_ADAPT");
+    const bool trace_kv_direct=mfq::cuda::env_lookup("TYLOINFER_TRACE_KV_DIRECT_READ")!=nullptr;
+    const bool force_direct_off=mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_FORCE_OFF")!=nullptr;
+    const int route_count=mfq::cuda::env_lookup("TYLOINFER_TEST_KV_WIDE_ROUTES")?10:2;
+    const bool partial_gu=mfq::cuda::env_lookup("TYLOINFER_TEST_KV_PARTIAL_GU")!=nullptr;
+    const bool speculative_lru=mfq::cuda::env_lookup("TYLOINFER_TEST_MTP_KV_LRU")!=nullptr;
     Environment notification_environment("TYLOINFER_MOE_POLL_TRANSFER_READY");
     Environment direct_environment("TYLOINFER_MOE_KV_DIRECT_READ");
     Environment lru_environment("TYLOINFER_MOE_MTP_KV_LRU");
@@ -1855,20 +1832,20 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
                 <<" kept="<<candidate.kept<<" reverted="<<candidate.reverted_hits<<" cold="<<candidate.cold_insertions
                 <<" cancels="<<candidate.cancels<<" exact PASS\n";
         }
-        if(const auto* native=std::getenv("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");native && native[0]=='1' && adaptive_kv_direct) {
+        if(const auto* native=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");native && native[0]=='1' && adaptive_kv_direct) {
             const auto batches=counter(caches[1],"residency_native_dma_batches");
             if(!batches)throw std::runtime_error("adaptive native DMA comparison did not execute a batch");
             std::cout<<"adaptive_native_dma format="<<format<<" batches="<<batches
                 <<" copies="<<counter(caches[1],"residency_native_dma_copies")<<" exact PASS\n";
         }
-        if(const auto* native=std::getenv("TYLOINFER_MOE_NATIVE_DMA_BATCH");native && native[0]!='0' && gpu_cold) {
+        if(const auto* native=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_BATCH");native && native[0]!='0' && gpu_cold) {
             const auto batches=counter(caches[1],"pipeline_native_dma_batches");
             if(!batches)throw std::runtime_error("native DMA comparison did not execute a batch");
             std::cout<<"native_dma format="<<format<<" tokens="<<tokens<<" batches="<<batches
                 <<" copies="<<counter(caches[1],"pipeline_native_dma_copies")
                 <<" fallbacks="<<counter(caches[1],"pipeline_native_dma_fallbacks")<<" exact PASS\n";
         }
-        if(const auto* projection=std::getenv("TYLOINFER_MOE_KV_PROJECTION_CACHE");projection && projection[0]=='1' && check_kv_direct) {
+        if(const auto* projection=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_PROJECTION_CACHE");projection && projection[0]=='1' && check_kv_direct) {
             const auto baseline=counter(caches[0],"pipeline_kv_projection_hits");
             const auto hits=counter(caches[1],"pipeline_kv_projection_hits");
             const auto misses=counter(caches[1],"pipeline_kv_projection_misses");
@@ -1879,7 +1856,7 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
                 <<" hits="<<hits<<" misses="<<misses<<" small_hit_bytes="<<small
                 <<" fallbacks="<<counter(caches[1],"pipeline_kv_projection_fallbacks")<<" exact PASS\n";
         }
-        if(std::getenv("TYLOINFER_TEST_GU_BUILD_OVERLAP") && check_kv_direct) {
+        if(mfq::cuda::env_lookup("TYLOINFER_TEST_GU_BUILD_OVERLAP") && check_kv_direct) {
             const auto baseline=counter(caches[0],"pipeline_gu_build_overlap_serves");
             const auto candidate=counter(caches[1],"pipeline_gu_build_overlap_serves");
             if(baseline || ((gpu_cold && !force_direct_off)?!candidate:bool(candidate)))
@@ -1887,7 +1864,7 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
             std::cout<<"gu_build_overlap format="<<format<<" tokens="<<tokens<<" gpu_cold="<<gpu_cold
                 <<" candidate="<<candidate<<" exact PASS\n";
         }
-        if(const auto* early=std::getenv("TYLOINFER_MOE_KV_EARLY_GU");early && early[0]=='1' && check_kv_direct) {
+        if(const auto* early=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_EARLY_GU");early && early[0]=='1' && check_kv_direct) {
             const auto baseline=counter(caches[0],"pipeline_kv_early_gu_serves");
             const auto candidate=counter(caches[1],"pipeline_kv_early_gu_serves");
             if(baseline || ((gpu_cold && !force_direct_off)?!candidate:bool(candidate)))
@@ -1895,7 +1872,7 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
             std::cout<<"early_gu_dma format="<<format<<" tokens="<<tokens<<" gpu_cold="<<gpu_cold
                 <<" candidate="<<candidate<<" exact PASS\n";
         }
-        if(const auto* packet=std::getenv("TYLOINFER_MOE_KV_HOST_PACKET");packet && packet[0]=='1' && check_kv_direct) {
+        if(const auto* packet=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_HOST_PACKET");packet && packet[0]=='1' && check_kv_direct) {
             const auto baseline=counter(caches[0],"pipeline_host_packet_serves");
             const auto served=counter(caches[1],"pipeline_host_packet_serves");
             const auto bytes=counter(caches[1],"pipeline_host_packet_descriptor_bytes");
@@ -1906,14 +1883,14 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
                 throw std::runtime_error("host cache packet did not respect direct-read dispatch: baseline="+
                     std::to_string(baseline)+" serves="+std::to_string(served)+" bytes="+std::to_string(bytes)+
                     " cached="+std::to_string(cached));
-            const auto* projection=std::getenv("TYLOINFER_MOE_KV_PROJECTION_CACHE");
+            const auto* projection=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_PROJECTION_CACHE");
             if(projection && projection[0]=='1' && gpu_cold && !adaptive_kv_direct && !force_direct_off && !cached && !resident)
                 throw std::runtime_error("host cache packet never published a cached phase without DMA");
             std::cout<<"kv_host_packet format="<<format<<" tokens="<<tokens<<" gpu_cold="<<gpu_cold
                 <<" serves="<<served<<" descriptor_bytes="<<bytes<<" cached_phase_publishes="<<cached<<" exact PASS\n";
         }
-        if(std::getenv("TYLOINFER_TEST_DIRECT_PACKET_BATCH") && check_kv_direct) {
-            const auto* option=std::getenv("TYLOINFER_MOE_NATIVE_DIRECT_PACKET");
+        if(mfq::cuda::env_lookup("TYLOINFER_TEST_DIRECT_PACKET_BATCH") && check_kv_direct) {
+            const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DIRECT_PACKET");
             const bool expected=gpu_cold && !force_direct_off && tokens<=8 && (!option || option[0]!='0');
             const auto served=counter(caches[1],"pipeline_direct_packet_serves");
             const auto batched=counter(caches[1],"pipeline_direct_packet_batch_serves");
@@ -1923,14 +1900,14 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
             std::cout<<"direct_packet_batch format="<<format<<" tokens="<<tokens
                 <<" serves="<<served<<" batch_serves="<<batched<<" exact PASS\n";
         }
-        if(const auto* first=std::getenv("TYLOINFER_MOE_KV_LOOKUP_FIRST");first && first[0]=='1' && check_kv_direct) {
+        if(const auto* first=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_LOOKUP_FIRST");first && first[0]=='1' && check_kv_direct) {
             const auto baseline=counter(caches[0],"pipeline_kv_projection_early_hits");
             const auto hits=counter(caches[1],"pipeline_kv_projection_early_hits");
             if(baseline || ((gpu_cold && !force_direct_off)?!hits:bool(hits)))
                 throw std::runtime_error("complete projection cache did not bypass RAM lookup");
             std::cout<<"kv_projection_early_hits format="<<format<<" tokens="<<tokens<<" hits="<<hits<<" exact PASS\n";
         }
-        if(const auto* option=std::getenv("TYLOINFER_MOE_KV_GPU_RESIDENT");option && option[0]=='1' && check_kv_direct) {
+        if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_GPU_RESIDENT");option && option[0]=='1' && check_kv_direct) {
             const auto baseline=counter(caches[0],"pipeline_kv_gpu_resident_experts");
             const auto hits=counter(caches[1],"pipeline_kv_gpu_resident_experts");
             const auto early=counter(caches[1],"pipeline_kv_gpu_early_gu_experts");
@@ -1971,13 +1948,9 @@ void verify_early_no_cpu_ready(const std::filesystem::path& root,bool input_view
 void verify_router_prefetch(const std::filesystem::path& root) {
     struct Environment {
         std::string old;
-        Environment() {if(auto* p=std::getenv("TYLOINFER_MOE_TRANSFER_CACHE"))old=p;set("1");}
+        Environment() {if(auto* p=mfq::cuda::env_lookup("TYLOINFER_MOE_TRANSFER_CACHE"))old=p;set("1");}
         static void set(const char* p) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MOE_TRANSFER_CACHE",p);
-#else
-            if(*p)setenv("TYLOINFER_MOE_TRANSFER_CACHE",p,1);else unsetenv("TYLOINFER_MOE_TRANSFER_CACHE");
-#endif
+            if(*p)mfq::cuda::env_set("TYLOINFER_MOE_TRANSFER_CACHE",p);else mfq::cuda::env_clear("TYLOINFER_MOE_TRANSFER_CACHE");
         }
         ~Environment(){set(old.c_str());}
     } environment;
@@ -2142,13 +2115,9 @@ void verify_router_lookahead_inputs() {
 #include "residency_direct_exchange_test.h"
 void verify_predictor_residency(const std::filesystem::path& root,bool prefer_resident=false) {
     struct Preference {
-        std::string previous=std::getenv("TYLOINFER_MTP_RESIDENT_EXPERTS")?std::getenv("TYLOINFER_MTP_RESIDENT_EXPERTS"):"";
+        std::string previous=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS")?mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS"):"";
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MTP_RESIDENT_EXPERTS",value);
-#else
-            if(*value)setenv("TYLOINFER_MTP_RESIDENT_EXPERTS",value,1);else unsetenv("TYLOINFER_MTP_RESIDENT_EXPERTS");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_MTP_RESIDENT_EXPERTS",value);else mfq::cuda::env_clear("TYLOINFER_MTP_RESIDENT_EXPERTS");
         }
         ~Preference(){set(previous.c_str());}
     } preference;
@@ -2304,15 +2273,11 @@ void verify_prefill_quota_recovery(const std::filesystem::path& root) {
     struct Setting {
         std::string previous;
         Setting() {
-            if(const auto* value=std::getenv("TYLOINFER_MOE_PREFILL_LAYER"))previous=value;
+            if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_LAYER"))previous=value;
             set("1");
         }
         static void set(const char* value) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MOE_PREFILL_LAYER",value);
-#else
-            if(*value)setenv("TYLOINFER_MOE_PREFILL_LAYER",value,1);else unsetenv("TYLOINFER_MOE_PREFILL_LAYER");
-#endif
+            if(*value)mfq::cuda::env_set("TYLOINFER_MOE_PREFILL_LAYER",value);else mfq::cuda::env_clear("TYLOINFER_MOE_PREFILL_LAYER");
         }
         ~Setting(){set(previous.c_str());}
     } setting;
@@ -2601,7 +2566,7 @@ int main(int argc,char** argv)try {
         if(std::string(argv[2])=="--indexed-shadow-check") {verify_indexed_shadow_exchange(root);return 0;}
         if(std::string(argv[2])=="--prefill-cpu-prefetch-check") {verify_prefill_cpu_prefetch(root);return 0;}
         if(std::string(argv[2])=="--transfer-promotion-check") {
-            const auto* mode=std::getenv("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+            const auto* mode=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
             if(!mode || (mode[0]!='1' && mode[0]!='2'))throw std::runtime_error("promotion check requires explicit candidate mode");
             verify_projection_heat(root,true);return 0;
         }
@@ -2678,33 +2643,33 @@ int main(int argc,char** argv)try {
             return 0;
         }
         if(std::string(argv[2])=="--transfer-poll-check") {
-            if(!std::getenv("TYLOINFER_TEST_TRANSFER_POLL"))throw std::runtime_error("missing transfer poll comparison option");
+            if(!mfq::cuda::env_lookup("TYLOINFER_TEST_TRANSFER_POLL"))throw std::runtime_error("missing transfer poll comparison option");
             for(int tokens:{1,2,6})for(bool gpu_cold:{false,true})
                 verify_early_no_cpu_ready(root,true,false,gpu_cold,tokens);
             return 0;
         }
         if(std::string(argv[2])=="--kv-direct-read-check") {
-            if(!std::getenv("TYLOINFER_TEST_KV_DIRECT_READ"))throw std::runtime_error("missing direct KV comparison option");
-            const std::vector<int> token_groups=std::getenv("TYLOINFER_TEST_DIRECT_PACKET_BATCH")?
+            if(!mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_READ"))throw std::runtime_error("missing direct KV comparison option");
+            const std::vector<int> token_groups=mfq::cuda::env_lookup("TYLOINFER_TEST_DIRECT_PACKET_BATCH")?
                 std::vector<int>{1,2,3,4,6,8}:std::vector<int>{1,2,6};
             for(int tokens:token_groups)for(bool gpu_cold:{true,false}) {
-                if(!gpu_cold && std::getenv("TYLOINFER_TEST_KV_DIRECT_GPU_ONLY"))continue;
+                if(!gpu_cold && mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_GPU_ONLY"))continue;
                 verify_early_no_cpu_ready(root,true,false,gpu_cold,tokens);
             }
             return 0;
         }
         if(std::string(argv[2])=="--mtp-kv-lru-check") {
-            if(!std::getenv("TYLOINFER_TEST_KV_DIRECT_READ") || !std::getenv("TYLOINFER_TEST_MTP_KV_LRU"))
+            if(!mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_READ") || !mfq::cuda::env_lookup("TYLOINFER_TEST_MTP_KV_LRU"))
                 throw std::runtime_error("missing speculative KV LRU comparison options");
             for(int tokens:{2,4,6})verify_early_no_cpu_ready(root,true,false,true,tokens);return 0;
         }
         if(std::string(argv[2])=="--kv-direct-read-serial-check") {
-            if(!std::getenv("TYLOINFER_TEST_KV_DIRECT_READ"))throw std::runtime_error("missing serial direct KV comparison option");
+            if(!mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_READ"))throw std::runtime_error("missing serial direct KV comparison option");
             for(int tokens:{1,4,6})verify_early_no_cpu_ready(root,false,false,true,tokens,true);
             return 0;
         }
         if(std::string(argv[2])=="--kv-direct-read-adapt-check") {
-            if(!std::getenv("TYLOINFER_TEST_KV_DIRECT_ADAPT"))throw std::runtime_error("missing adaptive direct KV comparison option");
+            if(!mfq::cuda::env_lookup("TYLOINFER_TEST_KV_DIRECT_ADAPT"))throw std::runtime_error("missing adaptive direct KV comparison option");
             verify_early_no_cpu_ready(root,false,false,true,4);return 0;
         }
         if(std::string(argv[2])=="--shared-window-input-views-check") {
@@ -2932,7 +2897,7 @@ int main(int argc,char** argv)try {
         {
             auto adaptive_stream=mfq_get_stream_from_pool();MfqCudaStreamGuard adaptive_guard(adaptive_stream);
             CudaExecutionContext adaptive;adaptive.config.moe_ram_pcie_fraction.reset();
-            const auto* shared_cost=std::getenv("TYLOINFER_MOE_SHARED_CPU_COST");
+            const auto* shared_cost=mfq::cuda::env_lookup("TYLOINFER_MOE_SHARED_CPU_COST");
             const bool shared_cost_enabled=shared_cost && std::strcmp(shared_cost,"1")==0;
             // Keep whole RAM experts eligible while obtaining repeated cost
             // observations; projection-wise exchanges are covered separately.
@@ -3003,13 +2968,13 @@ int main(int argc,char** argv)try {
                 if(position==std::string::npos)throw std::runtime_error("missing shared CPU cost evidence");
                 return std::stoll(text.substr(position+field.size()));
             };
-            const auto* enabled=std::getenv("TYLOINFER_MOE_SHARED_CPU_COST");
+            const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_MOE_SHARED_CPU_COST");
             if(enabled && std::strcmp(enabled,"1")==0) {
                 if(cost_counter("pipeline_shared_cpu_cost_enabled")!=1 ||
                    cost_counter("pipeline_cpu_cost_queries")<=0 || cost_counter("pipeline_cpu_cost_samples")<=0)
                     throw std::runtime_error("shared CPU cost mode did not observe real adaptive work");
-                const auto* background=std::getenv("TYLOINFER_MOE_CPU_BACKGROUND_CALIBRATION");
-                const auto* budget=std::getenv("TYLOINFER_MOE_CPU_TRANSFER_BUDGET");
+                const auto* background=mfq::cuda::env_lookup("TYLOINFER_MOE_CPU_BACKGROUND_CALIBRATION");
+                const auto* budget=mfq::cuda::env_lookup("TYLOINFER_MOE_CPU_TRANSFER_BUDGET");
                 const bool expected_background=(!background || std::strcmp(background,"1")==0) &&
                     (!budget || budget[0]!='0');
                 const auto jobs=cost_counter("pipeline_cpu_calibration_jobs");
@@ -3068,9 +3033,9 @@ int main(int argc,char** argv)try {
                 throw std::runtime_error("missing RAM transfer counter "+name);
             return std::stoll(match[1]);
         };
-        if(const auto* value=std::getenv("TYLOINFER_TRACE_CPU_ROWS");value && std::strcmp(value,"1")==0) {
+        if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_CPU_ROWS");value && std::strcmp(value,"1")==0) {
             const auto text=statistics.str();
-            const auto* fail=std::getenv("TYLOINFER_TRACE_CPU_ROWS_FAIL_ALLOC");
+            const auto* fail=mfq::cuda::env_lookup("TYLOINFER_TRACE_CPU_ROWS_FAIL_ALLOC");
             if(fail && std::strcmp(fail,"1")==0) {
                 if(text.find("moe_cpu_profile enabled=0 dropped=1 samples=0")==std::string::npos)
                     throw std::runtime_error("optional CPU trace allocation failure did not disable tracing");
@@ -3094,8 +3059,8 @@ int main(int argc,char** argv)try {
             }
             ++cpu_profile_cases;
         }
-        if(const auto* value=std::getenv("TYLOINFER_TRACE_MOE_DMA");value && std::strcmp(value,"1")==0) {
-            const auto text=statistics.str();const auto* fail=std::getenv("TYLOINFER_TRACE_MOE_DMA_FAIL_ALLOC");
+        if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_DMA");value && std::strcmp(value,"1")==0) {
+            const auto text=statistics.str();const auto* fail=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_DMA_FAIL_ALLOC");
             if(fail && std::strcmp(fail,"1")==0) {
                 if(text.find("moe_dma_profile enabled=0 dropped=1 samples=0")==std::string::npos)
                     throw std::runtime_error("optional DMA trace allocation failure did not disable tracing");

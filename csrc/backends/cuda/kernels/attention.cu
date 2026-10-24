@@ -1,3 +1,4 @@
+#include "env.h"
 // Full / Grouped-Query Attention (ggml fattn.cu).
 //
 //   out[b,hq,tq,:] = softmax_tq( (q . k^T) * scale ) . v
@@ -385,7 +386,7 @@ static mfq_tensor_backend::Tensor attention_impl_cuda(mfq_tensor_backend::Tensor
     cudaStream_t stream = mfq_current_cuda_stream();
     int parts = 1;
     const int visible_keys = window > 0 ? std::min(Tk, window) : Tk;
-    const char* split_env = std::getenv("TYLOINFER_ATTENTION_SPLITK");
+    const char* split_env = mfq::cuda::env_lookup("TYLOINFER_ATTENTION_SPLITK");
     if (total < 128 && visible_keys >= 512 && !(split_env && split_env[0] == '0')) {
         parts = (visible_keys + 255) / 256;
         parts = parts < 2 ? 1 : parts;

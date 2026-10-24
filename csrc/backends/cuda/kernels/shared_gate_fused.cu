@@ -1,3 +1,4 @@
+#include "env.h"
 #include "mfq_cuda_shared_gate.h"
 #include "context.h"
 #include "shared_gate_fused.cuh"
@@ -152,10 +153,10 @@ std::optional<mfq_tensor_backend::Tensor> try_nint_shared_gate_sigmoid_cuda(
             input.size(1)!=w.neuron_len || w.neuron_len>w.ng*48 ||
             !w.q_packed.is_cuda() || w.q_packed.device()!=input.device())return std::nullopt;
     // Explicit changes to the reference arithmetic keep their original path.
-    if(const auto* option=std::getenv("TYLOINFER_NINT_Q8_DECODE"))if(std::atoi(option)!=2)return std::nullopt;
+    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE"))if(std::atoi(option)!=2)return std::nullopt;
     if(input.size(0)==1) {
-        if(const auto* option=std::getenv("TYLOINFER_NINT_Q8_ORDERED"))if(option[0]=='0')return std::nullopt;
-    } else if(const auto* option=std::getenv("TYLOINFER_NINT_Q8_SMALL_WARPS"))if(option[0]=='0')return std::nullopt;
+        if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_ORDERED"))if(option[0]=='0')return std::nullopt;
+    } else if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_SMALL_WARPS"))if(option[0]=='0')return std::nullopt;
     for(const auto* tensor:{&w.q_packed,&w.row_q_bit_offsets,&w.sub_scale,&w.sub_min,&w.neuron_scale,&w.neuron_min})
         if(!tensor->is_cuda() || !tensor->is_contiguous() || tensor->device()!=input.device())return std::nullopt;
     if(quantized.defined() && (!scales.defined() || quantized.scalar_type()!=tb::kInt8 ||

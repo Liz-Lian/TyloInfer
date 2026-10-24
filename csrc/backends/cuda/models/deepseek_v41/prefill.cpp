@@ -1,3 +1,4 @@
+#include "env.h"
 #include "ops.h"
 #include "storage/moe_expert_cache.h"
 #include <cstring>
@@ -44,7 +45,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     auto scope = model.execution_scope();
     ids = model.device_ids(std::move(ids));
     const auto batch = ids.size(0), tokens = ids.size(1);
-    const auto* profile=std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS");
+    const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     const bool trace=profile && profile[0]=='1';
     if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=prepare tokens="<<tokens<<'\n';
     TYLOINFER_RUNTIME_CHECK(model.shared && batch > 0 && tokens > 0 && compute_chunk > 0 &&
@@ -66,7 +67,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
         model.reset(batch);
         return true;
     };
-    const auto* profile_layer=std::getenv("TYLOINFER_PROFILE_DSV41_LAYER");
+    const auto* profile_layer=mfq::cuda::env_lookup("TYLOINFER_PROFILE_DSV41_LAYER");
     const auto apply_layer=[&](auto& ops,int64_t layer,Tensor hidden) {
         auto& profiler=model.execution->profiler;
         const bool selected=profile_layer && layer==std::atoi(profile_layer);

@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include "csrc/backends/cuda/kernels/async_copy.cuh"
 
 namespace {
@@ -161,7 +162,7 @@ void launch_gr_prefill_pipeline(const NintWeight& weight,const mfq_tensor_backen
             Zero?weight.q8_zero_scale.data_ptr<__half>():nullptr,Mix?normalized.data_ptr<Value>():nullptr,
             output.data_ptr<Output>(),int(rows),int(weight.neuron_len),int(weight.out),int(weight.ng),int(weight.gs));
     };
-    const auto* option=std::getenv(Mix?"TYLOINFER_GR_PREFILL_FUSED_MIX":"TYLOINFER_GR_PREFILL_MATMUL");
+    const auto* option=mfq::cuda::env_lookup(Mix?"TYLOINFER_GR_PREFILL_FUSED_MIX":"TYLOINFER_GR_PREFILL_MATMUL");
     int mode=option?std::atoi(option):(Mix?(std::is_same<Input,__half>::value?12:10):31);
     if constexpr(!Mix)if(mode==32)mode=31;
     if constexpr(!Mix) {

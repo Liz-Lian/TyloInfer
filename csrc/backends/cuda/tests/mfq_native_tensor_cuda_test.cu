@@ -1,3 +1,4 @@
+#include "env.h"
 #include "context.h"
 #include "tensor.h"
 #include "matmul_rows.h"
@@ -74,15 +75,7 @@ void check_where_broadcast() {
 }
 
 void set_test_environment(const char* name, const char* value) {
-#ifdef _WIN32
-    if (_putenv_s(name, value) != 0) {
-        throw std::runtime_error("failed to set test environment variable");
-    }
-#else
-    if (setenv(name, value, 1) != 0) {
-        throw std::runtime_error("failed to set test environment variable");
-    }
-#endif
+    mfq::cuda::env_set(name, value);
 }
 
 void check_strided_reshape() {

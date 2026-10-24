@@ -63,7 +63,7 @@ _SOURCES = [
         "nepq.cu",
         "nepq_residual.cu",
     )
-] + [os.path.join(_DIR, "mfq_cuda.cpp")]
+] + [os.path.join(_DIR, "mfq_cuda.cpp"), str(_CUDA_BACKEND / "native" / "env.cpp")]
 _module = None
 
 

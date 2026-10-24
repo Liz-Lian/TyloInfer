@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include "runtime/moe_pipeline.h"
 
 static void benchmark_mapped_copy(bool timings=true,bool pinned_source=false) {
@@ -25,11 +26,7 @@ static void benchmark_mapped_copy(bool timings=true,bool pinned_source=false) {
         auto table=tb::tensor(descriptors).to(tb::kCUDA);
         for(int arm:{0,1,0}) {
             const auto option=std::to_string(arm);
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MOE_COPY_RANGES",option.c_str());
-#else
-            setenv("TYLOINFER_MOE_COPY_RANGES",option.c_str(),1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_MOE_COPY_RANGES",option.c_str());
             const auto body=[&]{moe_copy_mapped(table.data_ptr(),reinterpret_cast<uint32_t*>(cancel.data_ptr()),blocks,threads,stream);};
             for(bool aborted:{true,false}) {
                 destination.fill_(255);cancel.fill_(aborted?1:0);body();

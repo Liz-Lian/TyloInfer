@@ -1,10 +1,11 @@
 #pragma once
+#include "env.h"
 
 // FP32 batched GR projection from compressed NINT weights. The only decoded
 // weights are a small shared-memory tile reused by sixty-four token rows.
 namespace {
 bool gr_prefill_selected(const mfq_tensor_backend::Tensor& input) {
-    const auto* option=std::getenv("TYLOINFER_GR_PREFILL_MATMUL");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     return (!option || std::atoi(option)!=0) && input.dim()>0 && input.size(-1)>0 &&
         input.numel()/input.size(-1)>=32;
 }
@@ -129,7 +130,7 @@ mfq_tensor_backend::Tensor gr_prefill_matmul(const NintWeight& weight,
         "GR prefill projection geometry mismatch");
     const auto rows=x.numel()/weight.neuron_len;
     if(gr_prefill_blas_selected(weight,input))return gr_prefill_blas_fp32(weight,x);
-    const auto* trace_geometry=std::getenv("TYLOINFER_GR_PREFILL_GEOMETRY_TRACE");
+    const auto* trace_geometry=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_GEOMETRY_TRACE");
     if(trace_geometry && trace_geometry[0]=='1') {
         thread_local std::map<std::array<int64_t,5>,bool> seen;
         const std::array<int64_t,5> shape={weight.out,weight.neuron_len,weight.gs,int64_t(x.scalar_type()==tb::kFloat16),int64_t(weight.q8_zero)};
@@ -140,7 +141,7 @@ mfq_tensor_backend::Tensor gr_prefill_matmul(const NintWeight& weight,
     }
     TYLOINFER_RUNTIME_CHECK(rows<=65535*16,"GR prefill projection exceeds CUDA grid geometry");
     MfqCudaGuard guard(input.device());
-    const auto* option=std::getenv("TYLOINFER_GR_PREFILL_MATMUL");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     int major=0;
     const bool requested_tf32=option && std::atoi(option)==2;
     const bool requested_half2=option && std::atoi(option)==3;

@@ -1,3 +1,4 @@
+#include "env.h"
 // Gated DeltaNet CUDA kernel (ggml gated_delta_net.cu).
 //
 // grid = B*H (one block per (batch, head)); state S[D,D] in shared memory, T loop in-kernel.
@@ -372,15 +373,15 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_cuda_impl(
     cudaStream_t stream = mfq_current_cuda_stream();
     int shmem = D * D * (int)sizeof(float);
 
-    const char* col_env = std::getenv("TYLOINFER_GDN_COLUMN");
-    const char* warp_env = std::getenv("TYLOINFER_GDN_WARP");
+    const char* col_env = mfq::cuda::env_lookup("TYLOINFER_GDN_COLUMN");
+    const char* warp_env = mfq::cuda::env_lookup("TYLOINFER_GDN_WARP");
     bool use_warp = transposed_state || !(warp_env && warp_env[0] == '0');
-    const char* columns_env = std::getenv("TYLOINFER_GDN_PREFILL_COLUMNS");
+    const char* columns_env = mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_COLUMNS");
     const int columns = columns_env ? std::atoi(columns_env) : (B * Hv >= 16 ? (T==2?2:4) : 0);
-    const auto* short_option=std::getenv("TYLOINFER_GDN_SHORT_COLUMNS");
+    const auto* short_option=mfq::cuda::env_lookup("TYLOINFER_GDN_SHORT_COLUMNS");
     const bool short_columns=!short_option || short_option[0]!='0';
     if (use_warp && !kda && D == 128 && (T>8 || (T>1 && short_columns)) && (columns == 2 || columns == 4)) {
-        const auto* decay_option=std::getenv("TYLOINFER_GDN_PREFILL_PREPARED_DECAY");
+        const auto* decay_option=mfq::cuda::env_lookup("TYLOINFER_GDN_PREFILL_PREPARED_DECAY");
         const bool prepared_decay=T>=128 && (!decay_option || std::atoi(decay_option)!=0);
         mfq_tensor_backend::Tensor decay;
         if(prepared_decay) {
@@ -758,7 +759,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
     mfq_tensor_backend::Tensor checkpoint_convolution={},mfq_tensor_backend::Tensor checkpoint_recurrent={}) {
     constexpr int threads=256;
     const int tiles=[] {
-        const char* value=std::getenv("TYLOINFER_GDN_DECODE_TILES");
+        const char* value=mfq::cuda::env_lookup("TYLOINFER_GDN_DECODE_TILES");
         if(!value || !*value || std::strcmp(value,"4")==0)return 4;
         if(std::strcmp(value,"2")==0)return 2;
         if(std::strcmp(value,"1")==0)return 1;
@@ -812,7 +813,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
         "GDN decode core vector width disagrees");
     MfqCudaGuard guard(device);
     auto output=tb::empty({batch,1,value_heads*width},qkv.options().dtype(output_half?tb::kFloat16:tb::kFloat32));
-    const auto* conv_option=std::getenv("TYLOINFER_GDN_INPLACE_CONV");
+    const auto* conv_option=mfq::cuda::env_lookup("TYLOINFER_GDN_INPLACE_CONV");
     const bool conv_default=batch==1 && key_heads==16 && value_heads==48 && width==128 && taps==4 && transposed_state;
     const bool inplace_conv=(conv_option?conv_option[0]!='0':conv_default) && !independent && inplace_state &&
         tiles>1 && value_heads/key_heads<=24;
@@ -826,7 +827,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
         const auto run=[&]<bool InplaceConv>() {
         const auto normalizations=[&]<int BroadcastNorm>() {
         const auto dispatch=[&]<bool Snapshot>() {
-        if(std::getenv("TYLOINFER_GDN_PROBE_RESOURCES")) {
+        if(mfq::cuda::env_lookup("TYLOINFER_GDN_PROBE_RESOURCES")) {
             cudaFuncAttributes attributes{};
             TYLOINFER_CUDA_CHECK(cudaFuncGetAttributes(&attributes,reinterpret_cast<const void*>(gdn_decode_core_kernel<Tiles,Gate,Output,FixedWidth,FixedTaps,InplaceConv,BroadcastNorm,Snapshot>)));
             std::fprintf(stderr,"gdn_core_resources mode=%d batch=%lld threads=%d registers=%d shared=%zu local=%zu width=%lld tiles=%d inplace_conv=%d\n",
@@ -841,14 +842,14 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
             float(convolution_eps),norm_eps,silu_gate,transposed_state,alpha.stride(0),alpha.stride(2),beta.stride(0),beta.stride(2),
             workspace.defined()?workspace.data_ptr<float>():nullptr,
             independent?state_addresses.data_ptr<int64_t>():nullptr,qkv.stride(0),output_gate.stride(0),
-            [] {const char* option=std::getenv("TYLOINFER_GDN_WARP_REDUCTIONS");return !option || option[0]!='0';}(),
+            [] {const char* option=mfq::cuda::env_lookup("TYLOINFER_GDN_WARP_REDUCTIONS");return !option || option[0]!='0';}(),
             checkpoint_convolution.defined()?checkpoint_convolution.data_ptr<float>():nullptr,
             checkpoint_recurrent.defined()?checkpoint_recurrent.data_ptr<float>():nullptr);
         };
         if(checkpoint_convolution.defined())dispatch.template operator()<true>();
         else dispatch.template operator()<false>();
         };
-        const auto* option=std::getenv("TYLOINFER_GDN_BROADCAST_NORMALIZATION");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_GDN_BROADCAST_NORMALIZATION");
         const int mode=option?std::atoi(option):
             (batch<=2 && key_heads==16 && value_heads==48 && width==128 && taps==4 &&
              transposed_state && Tiles==4 && threads==256?2:0);
@@ -864,7 +865,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
         run.template operator()<false>();
     };
     const auto select_geometry=[&]<int Tiles,class Gate,class Output>() {
-        const char* fixed=std::getenv("TYLOINFER_GDN_FIXED_GEOMETRY");
+        const char* fixed=mfq::cuda::env_lookup("TYLOINFER_GDN_FIXED_GEOMETRY");
         if((!fixed || fixed[0]!='0') && taps==4) {
             if(width==32)launch.template operator()<Tiles,Gate,Output,32,4>();
             else if(width==64)launch.template operator()<Tiles,Gate,Output,64,4>();

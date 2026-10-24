@@ -1,3 +1,4 @@
+#include "env.h"
 #include "cuda_runtime_config.h"
 #include "cuda_execution.h"
 #include "storage/moe_expert_cache.h"
@@ -424,7 +425,7 @@ void setup_cuda_load(
             "--moe-gpu-cache-gb cannot be combined with "
             "tensor/expert parallelism");
     }
-    const auto* auto_profile=std::getenv("TYLOINFER_MOE_AUTO_CACHE_PROFILE");
+    const auto* auto_profile=mfq::cuda::env_lookup("TYLOINFER_MOE_AUTO_CACHE_PROFILE");
     const auto profile_path=mfq::resolve_moe_cache_profile_path(options.moe_cache_profile_path,
         options.moe_gpu_cache_gb>0.0?options.model_path:std::string{},!auto_profile || auto_profile[0]!='0');
     if (!profile_path.empty() &&

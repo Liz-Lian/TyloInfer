@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include "mfe_ffn_prepare.h"
 
 static void benchmark_mfe_transfer(bool timings=true) {
@@ -121,11 +122,7 @@ static void benchmark_mfe_transfer(bool timings=true) {
         batch.aborted=reinterpret_cast<uint32_t*>(abort.data_ptr());batch.resident_plan_overlap=true;
         batch.transfer_ready=gpu;batch.host_aborted=gpu+16;cpu[0]=1;
         const auto select=[&](bool enabled) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET",enabled?"1":"0");
-#else
-            setenv("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET",enabled?"1":"0",1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_MFE_DEVICE_RESIDENT_PACKET",enabled?"1":"0");
         };
         for(bool enabled:{false,true}) {
             select(enabled);

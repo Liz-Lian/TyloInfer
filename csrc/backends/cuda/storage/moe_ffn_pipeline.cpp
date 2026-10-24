@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../runtime/execution_options.h"
 #include "moe_ffn_pipeline.h"
 #include "tyloinfer/host_copy.h"
@@ -450,7 +451,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         if(!cache_->pipeline_prefill_ring_.defined()) {
             capacity=std::clamp(mfq::cuda::runtime_options::moe_prefill_group_size(),1,prefill_group_capacity);
             if(cache_->ssd_experts()) {
-                if(!std::getenv("TYLOINFER_MOE_PREFILL_GROUP_SIZE"))capacity=64;
+                if(!mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE"))capacity=64;
                 std::unordered_map<int,std::size_t> layer_expert_bytes;
                 for(const auto& source:cache_->sources_) {
                     if((source->layer_id_<0)!=predictor)continue;
@@ -1069,7 +1070,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         cache_->record_compute_use();
         cache_->moe_residency_->record_prefill_routes(sources_[0]->layer_id_,
             ids.contiguous().data_ptr<int32_t>(),tokens,routes,stream_);
-        if(cache_->ssd_experts())if(const auto* profile=std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS");profile && profile[0]=='1')
+        if(cache_->ssd_experts())if(const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");profile && profile[0]=='1')
             std::fprintf(stderr,"moe_ssd_prefill_host layer=%d groups=%d tokens=%d wall_ms=%.3f plan_ms=%.3f read_join_ms=%.3f buffer_wait_ms=%.3f compute_submit_ms=%.3f fetch_ms=%.3f route_wait_ms=%.3f setup_ms=%.3f\n",
                 sources_[0]->layer_id_,groups,tokens,elapsed(started)/1e6,(stats.pipeline_plan_ns-plan_before)/1e6,
                 read_join_ns/1e6,buffer_wait_ns/1e6,compute_submit_ns/1e6,(stats.pipeline_fetch_ns-fetch_before)/1e6,
@@ -1389,7 +1390,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 cache_->pipeline_prefill_copy_targets_[slot]==layer_id)return;
         collect_prefill_layer_copy(execution,slot);
         if(cache_->pipeline_prefill_layer_loaded_[slot]==layer_id)return;
-        const auto* option=std::getenv("TYLOINFER_PREFILL_CPU_PREFETCH");
+        const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_CPU_PREFETCH");
         if(background && cache_->pipeline_prefill_layer_overlap_ && prefill_layer_async() &&
                 (!option || option[0]!='0')) {
             std::shared_ptr<CudaProfiler> timing;
@@ -1551,7 +1552,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // First decode can create these arenas after spare VRAM was lent to
         // experts. Return the borrowed pages before allocating their fields.
         cache_->reserve_workspace(std::size_t(arena->slots)*arena->slot_bytes+(std::size_t(64)<<20));
-        if(std::getenv("TYLOINFER_TRACE_RESIDENCY_MEMORY"))
+        if(mfq::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY"))
             std::cerr<<"moe_transfer_arena key="<<key<<" slots="<<arena->slots
                 <<" bytes="<<arena->slots*arena->slot_bytes<<'\n';
         for(const auto& layout:arena->layouts) {
@@ -1626,7 +1627,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 [](const auto& record){return record.cpu.empty();});
         // The same fixed-quota proof also excludes CPU calibration and CPU
         // expert work. Publish only IDs so the DMA planner can start sooner.
-        const auto* input_export=std::getenv("TYLOINFER_MOE_SKIP_GPU_ONLY_INPUT_COPY");
+        const auto* input_export=mfq::cuda::env_lookup("TYLOINFER_MOE_SKIP_GPU_ONLY_INPUT_COPY");
         cell.export_cpu_input=!cell.skip_cpu_wait || (input_export && input_export[0]=='0');
         if(trace && *trace!=0)std::fprintf(stderr,"moe_input_export tokens=%d routes=%d cpu_input=%d\n",
             cell.tokens,cell.routes,int(cell.export_cpu_input));
@@ -1661,8 +1662,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 &cell.fused_projections[1],&cell.fused_projections[2]},cell.input,cell.ids,cell.weights,
                 cache_->pipeline_sigmoid_table_,shared,cell.shared_gate,width_,ff_,&mapping,!shared_,combined_gate_up_,
                 execution.continuous_batch_cache_serial && cell.tokens==8?8:0,swiglu_limit_,up_only_,false);
-            const auto* nint_gate=std::getenv("TYLOINFER_SHARED_GATE_NINT");
-            const auto* reuse_gate=std::getenv("TYLOINFER_SHARED_GATE_REUSE");
+            const auto* nint_gate=mfq::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
+            const auto* reuse_gate=mfq::cuda::env_lookup("TYLOINFER_SHARED_GATE_REUSE");
             const auto fused_gate=mfq::cuda::runtime_options::shared_gate_fused();
             if(cell.tokens<=6 && shared_weights_.scalar_gate && shared_weights_.scalar_gate->is_nint() &&
                     !shared_weights_.scalar_gate->tensor_parallel() && (!fused_gate || *fused_gate) &&
@@ -1676,7 +1677,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             cell.transfer_descriptors=std::make_unique<Mapped>(std::size_t(cell.entries)*3*sizeof(mfq::cuda::MfePackedProjection));
             cell.fused->asynchronous(cell.kind.d<int32_t>(),cell.flags.d<uint32_t>()+16,cell.flags.d<uint32_t>()+32,
                 cell.flags.d<uint32_t>()+48,cell.flags.d<uint32_t>()+64,cell.transfer_index->d<int32_t>(),cell.cpu.device);
-            const auto* route_packet=std::getenv("TYLOINFER_MFE_TRANSFER_ROUTE_PACKET");
+            const auto* route_packet=mfq::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_ROUTE_PACKET");
             if(cell.fused->batch().resident_plan_overlap && (!route_packet || route_packet[0]!='0')) {
                 cell.transfer_route_plan=std::make_unique<Mapped>(std::size_t(cell.entries)*2*sizeof(int32_t));
                 cell.fused->bind_transfer_route_plan(cell.transfer_route_plan->d<int32_t>());
@@ -1703,7 +1704,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         cell.phased_transfer=cell.transfer_cache && !cell.mapped_copy &&
             execution.config.moe_ffn_transfer_phases.value_or(mfq::cuda::runtime_options::phased_transfer());
         cell.mapped_overlap=cell.mapped_copy && mfq::cuda::runtime_options::mapped_copy_overlap();
-        const auto* native_dma=std::getenv("TYLOINFER_MOE_NATIVE_DMA_BATCH");
+        const auto* native_dma=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_BATCH");
 #if defined(_WIN32)
         const int native_default=1;
 #else
@@ -1712,9 +1713,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         const int native_requested=native_dma?std::clamp(std::atoi(native_dma),0,2):native_default;
         if(cell.graph_replay && cell.phased_transfer && native_requested && mfq::cuda::NativeDmaBatch::available())
             cell.native_dma_mode=native_requested;
-        const auto* direct_read=std::getenv("TYLOINFER_MOE_KV_DIRECT_READ");
+        const auto* direct_read=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_DIRECT_READ");
         const bool direct_enabled=direct_read?direct_read[0]!='0':cell.native_dma_mode>0;
-        const auto* poll_ready=std::getenv("TYLOINFER_MOE_POLL_TRANSFER_READY");
+        const auto* poll_ready=mfq::cuda::env_lookup("TYLOINFER_MOE_POLL_TRANSFER_READY");
         const bool poll_enabled=poll_ready?poll_ready[0]=='1':(native_default && cell.native_dma_mode && direct_enabled);
         if(cell.graph_replay && cell.phased_transfer && cell.skip_cpu_wait && poll_enabled) {
             cell.transfer_notification=std::make_unique<mfq::cuda::Event>();
@@ -1726,10 +1727,10 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // thirty-two route lists. Untiled callers retain their shared capacity.
         const int decode_route_rows=cell.tokens>8?
             (execution.continuous_batch_ffn_tiles>0 && cell.tokens<=16?16:32):8;
-        const auto* wire_fallback=std::getenv("TYLOINFER_MOE_WIRE_FALLBACK");
-        const auto* packet_option=std::getenv("TYLOINFER_MOE_NATIVE_DIRECT_PACKET");
-        const auto* host_packet_option=std::getenv("TYLOINFER_MOE_KV_HOST_PACKET");
-        const auto* fused_copy_option=std::getenv("TYLOINFER_MOE_FUSED_TRANSFER_COPY");
+        const auto* wire_fallback=mfq::cuda::env_lookup("TYLOINFER_MOE_WIRE_FALLBACK");
+        const auto* packet_option=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DIRECT_PACKET");
+        const auto* host_packet_option=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_HOST_PACKET");
+        const auto* fused_copy_option=mfq::cuda::env_lookup("TYLOINFER_MOE_FUSED_TRANSFER_COPY");
         cell.wire_fallback=(!wire_fallback || wire_fallback[0]!='0') && cell.tokens<=8 &&
             cell.graph_replay && cell.phased_transfer && cell.skip_cpu_wait && cell.native_dma_mode &&
             direct_enabled && bool(cache_->kv_expert_loan_) && bool(cell.transfer_route_plan) &&
@@ -1899,12 +1900,12 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 const auto bytes=2*(32+32*routes*route_fields);
                 cell.kv_loan_table=std::make_unique<Mapped>(std::size_t(bytes));
                 cell.kv_loan_snapshot=tb::empty({bytes},cell.input.options().dtype(tb::kUInt8));
-                const auto* fuse=std::getenv("TYLOINFER_MOE_FUSED_TRANSFER_COPY");
+                const auto* fuse=mfq::cuda::env_lookup("TYLOINFER_MOE_FUSED_TRANSFER_COPY");
                 cell.fused_transfer_copy=(fuse?fuse[0]!='0':cell.tokens<=8) && bool(cell.transfer_route_plan);
-                const auto* host_packet=std::getenv("TYLOINFER_MOE_KV_HOST_PACKET");
+                const auto* host_packet=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_HOST_PACKET");
                 cell.host_cache_packet=cell.graph_replay && cell.skip_cpu_wait && cell.fused_transfer_copy &&
                     cell.native_dma_mode && direct_enabled && (!host_packet || host_packet[0]=='1');
-                const auto* direct_packet=std::getenv("TYLOINFER_MOE_NATIVE_DIRECT_PACKET");
+                const auto* direct_packet=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DIRECT_PACKET");
                 // The packet owns the union of routed experts, not one row's
                 // routes. Final destinations and both readiness fences remain
                 // valid for short MTP verification windows as well.
@@ -1914,7 +1915,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                     cell.ssd_gate_up_descriptors=std::make_unique<Mapped>(cell.transfer_descriptors->bytes);
                 if(cell.wire_fallback && !cell.direct_packet)
                     throw std::logic_error("wire fallback requires a native direct packet");
-                if(std::getenv("TYLOINFER_TRACE_HOST_CACHE_PACKET"))std::fprintf(stderr,
+                if(mfq::cuda::env_lookup("TYLOINFER_TRACE_HOST_CACHE_PACKET"))std::fprintf(stderr,
                     "host_cache_packet window=%d skip_cpu=%d fused=%d native=%d direct=%d option=%s enabled=%d\n",
                     int(cell.in_window),int(cell.skip_cpu_wait),int(cell.fused_transfer_copy),cell.native_dma_mode,
                     int(direct_enabled),host_packet?host_packet:"unset",int(cell.host_cache_packet));
@@ -1961,9 +1962,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             if(cell.mapped_overlap)cell.copy_events=std::make_unique<CopyEvents>();
             TYLOINFER_CUDA_CHECK(mfq::cuda::moe_mapped_copy_launch_geometry(&cell.wire_blocks,&cell.wire_threads));
         }
-        const auto* cached_resident=std::getenv("TYLOINFER_MOE_KV_GPU_RESIDENT");
-        const auto* projection_cache=std::getenv("TYLOINFER_MOE_KV_PROJECTION_CACHE");
-        const auto* warp_prepare=std::getenv("TYLOINFER_MFE_PREPARE_WARP");
+        const auto* cached_resident=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_GPU_RESIDENT");
+        const auto* projection_cache=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_PROJECTION_CACHE");
+        const auto* warp_prepare=mfq::cuda::env_lookup("TYLOINFER_MFE_PREPARE_WARP");
         cell.cached_resident=cell.host_cache_packet && cell.fused->batch().resident_plan_overlap &&
             cell.tokens*cell.routes<=256 && (!projection_cache || projection_cache[0]=='1') &&
             (!warp_prepare || warp_prepare[0]!='0') && (!cached_resident || cached_resident[0]=='1');
@@ -2149,7 +2150,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             if(!cell.skip_gpu_timing)
                 TYLOINFER_CUDA_CHECK(cudaEventRecordWithFlags(cell.timing.points[point],stream_,event_flags));
         };
-        const auto* publish_prepare=std::getenv("TYLOINFER_MFE_PREPARE_PUBLISH");
+        const auto* publish_prepare=mfq::cuda::env_lookup("TYLOINFER_MFE_PREPARE_PUBLISH");
         const bool prepared_early=cell.two_stage && !cell.export_cpu_input &&
             cell.fused->batch().resident_plan_overlap && cell.fused->batch().transfer_ready &&
             (!publish_prepare || publish_prepare[0]!='0');
@@ -2188,7 +2189,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                         static_cast<void*>(&cell),cell.tokens,int(gate.defined()),int(cell.in_window));
                 }
                 if(!gate.defined())gate=shared_weights_.gate(execution,input);
-                const auto* view=std::getenv("TYLOINFER_MFE_SHARED_GATE_VIEW");
+                const auto* view=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_GATE_VIEW");
                 if(cell.in_window && (!view || view[0]!='0') && gate.is_contiguous() &&
                         gate.scalar_type()==cell.shared_gate.scalar_type())cell.fused->bind_shared_gate(gate);
                 else {cell.shared_gate.copy_(gate);cell.fused->bind_shared_gate(cell.shared_gate);}
@@ -2711,9 +2712,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // DMA/reader fence. Scratch records keep no additional Tensor owners.
         auto& fields=scratch.fields;
         const auto host_limit=cell.ssd_gate_up_host_tail;
-        const auto* projection_option=std::getenv("TYLOINFER_MOE_KV_PROJECTION_CACHE");
-        const auto* lookup_option=std::getenv("TYLOINFER_MOE_KV_LOOKUP_FIRST");
-        const auto* direct_loan=std::getenv("TYLOINFER_MOE_KV_DIRECT_READ");
+        const auto* projection_option=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_PROJECTION_CACHE");
+        const auto* lookup_option=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_LOOKUP_FIRST");
+        const auto* direct_loan=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_DIRECT_READ");
         const bool direct_enabled=direct_loan?direct_loan[0]!='0':cell.native_dma_mode>0;
         const bool projection_cache=cell.phased_transfer && direct_enabled && cell.graph_replay &&
             cell.skip_cpu_wait && cell.two_stage && cell.transfer_cache && cell.kv_loan_table &&
@@ -2905,7 +2906,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             std::array<std::vector<mfq::HostCopy>,2> projection_host_copies;
             std::size_t submitted_projection_copies=0;
             bool projection_gu_submitted=false;
-            const auto* overlap_option=std::getenv("TYLOINFER_MOE_GU_BUILD_OVERLAP");
+            const auto* overlap_option=mfq::cuda::env_lookup("TYLOINFER_MOE_GU_BUILD_OVERLAP");
             const bool overlap_gu_build=cell.wire_fallback && cell.direct_packet && cell.native_dma_mode &&
                 (!overlap_option || overlap_option[0]!='0');
             auto& projection_fields=scratch.projection_fields;projection_fields.assign(fields.size(),false);
@@ -3132,7 +3133,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             auto& batches=projection_copies;
             const auto projection_copy_count=submitted_projection_copies+batches[0].size()+batches[1].size();
             int64_t copies=1+projection_field_count,wire_bytes=cell.wire_header_bytes+projection_field_bytes;
-            const auto* early_gu_option=std::getenv("TYLOINFER_MOE_KV_EARLY_GU");
+            const auto* early_gu_option=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_EARLY_GU");
             const bool early_gu=consume_loan && early_gu_option && early_gu_option[0]=='1' && (!batched || cell.native_dma_mode);
             bool early_gu_submitted=projection_gu_submitted || cell.ssd_gate_up_submitted;
             if(consume_loan)for(int phase=0;phase<2;++phase) {
@@ -3203,7 +3204,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             }
             // Down's immutable format metadata must arrive before hidden-group
             // quantization; its weight fields can remain in flight until use.
-            const auto* mapped_views=std::getenv("TYLOINFER_MOE_GU_BUILD_MAPPED_VIEWS");
+            const auto* mapped_views=mfq::cuda::env_lookup("TYLOINFER_MOE_GU_BUILD_MAPPED_VIEWS");
             const bool early_mapped_views=projection_gu_submitted && cell.direct_packet &&
                 (!mapped_views || mapped_views[0]!='0');
             // The wait kernel already snapshots host views after the phase's
@@ -3549,7 +3550,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         publish_ssd_gate_up(cell);
     }
     bool publish_ssd_gate_up(Cell& cell) {
-        const auto* compute=std::getenv("TYLOINFER_MOE_SSD_PHASED_COMPUTE");
+        const auto* compute=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_PHASED_COMPUTE");
         if(cell.ssd_gate_up_ready || !cell.ssd_gate_up_descriptors || (compute && compute[0]=='0'))return false;
         auto& loan=*cache_->kv_expert_loan_;
         bool complete=true;
@@ -3674,14 +3675,14 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // the same compute stream, including the previous window/prefill.
         // The separate compute event adds no ordering at this boundary.
         // Standalone calls still need their original stream dependency.
-        const auto* route_fence=std::getenv("TYLOINFER_MOE_WINDOW_ROUTE_FENCE");
+        const auto* route_fence=mfq::cuda::env_lookup("TYLOINFER_MOE_WINDOW_ROUTE_FENCE");
         // Cached dispatch observes the graph's published routes and snapshot
         // acknowledgement before fetching. Both follow the prior readers on
         // the compute stream, so the earlier compute event adds no dependency.
         // Explicit overrides retain the original standalone/legacy behavior.
         const bool route_fenced=cell.in_window &&
             (route_fence ? route_fence[0]!='0' : cell.cached_resident);
-        const auto* empty_transfer=std::getenv("TYLOINFER_MOE_EMPTY_TRANSFER");
+        const auto* empty_transfer=mfq::cuda::env_lookup("TYLOINFER_MOE_EMPTY_TRANSFER");
         if(cell.fused_transfer_copy && cell.skip_cpu_wait && cell.transfer_views.empty() &&
                 (!empty_transfer || empty_transfer[0]!='0')) {
             // The preceding DMA has completed above, and route publication
@@ -4070,9 +4071,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             }
             if(cell.batch_decode)cache_->observe_ssd_prediction_demand(requests,
                 {sources_[0]->quant_source_.get(),sources_[1]->quant_source_.get(),sources_[2]->quant_source_.get()});
-            const auto* overlap=std::getenv("TYLOINFER_MOE_SSD_GU_IO_OVERLAP");
-            const auto* projection=std::getenv("TYLOINFER_MOE_KV_PROJECTION_CACHE");
-            const auto* lookup=std::getenv("TYLOINFER_MOE_KV_LOOKUP_FIRST");
+            const auto* overlap=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_GU_IO_OVERLAP");
+            const auto* projection=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_PROJECTION_CACHE");
+            const auto* lookup=mfq::cuda::env_lookup("TYLOINFER_MOE_KV_LOOKUP_FIRST");
             const bool phased_reads=cell.direct_packet && cache_->kv_expert_loan_ &&
                 gate_up_requests<requests.size() &&
                 (!overlap || overlap[0]!='0') && (!projection || projection[0]=='1') && (!lookup || lookup[0]=='1') &&

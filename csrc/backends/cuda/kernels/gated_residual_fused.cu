@@ -1,3 +1,4 @@
+#include "env.h"
 #include "../ops/common/include/float_projection.h"
 #include "qwen4_exp.h"
 #include "../ops/common/include/gated_residual_fused.h"
@@ -983,21 +984,21 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         return int(std::min<int64_t>(w.ng,std::max(1,(resident+blocks-1)/blocks)));};
     TYLOINFER_RUNTIME_CHECK(splits(up)==1,"fused residual requires original up projection unsplit");
     int ds=splits(down);
-    const char* norm_setting=std::getenv("TYLOINFER_GR_SHARE_NORM");
+    const char* norm_setting=mfq::cuda::env_lookup("TYLOINFER_GR_SHARE_NORM");
     const bool share_norm=!norm_setting || norm_setting[0]!='0';
-    const char* group_setting=std::getenv("TYLOINFER_GR_FIXED_GROUPS");
+    const char* group_setting=mfq::cuda::env_lookup("TYLOINFER_GR_FIXED_GROUPS");
     const bool fixed_groups=!group_setting || group_setting[0]=='1';
-    const char* format_setting=std::getenv("TYLOINFER_GR_FIXED_FORMATS");
+    const char* format_setting=mfq::cuda::env_lookup("TYLOINFER_GR_FIXED_FORMATS");
     const bool fixed_formats=!format_setting || format_setting[0]=='1';
-    const auto* down_fused_option=std::getenv("TYLOINFER_GR_DOWN_MMA_FUSED_UP");
+    const auto* down_fused_option=mfq::cuda::env_lookup("TYLOINFER_GR_DOWN_MMA_FUSED_UP");
     const bool down_fused_requested=rows==1 && down_fused_option && down_fused_option[0]!='0';
-    const auto* down_mma_option=std::getenv("TYLOINFER_GR_DOWN_MMA");
-    const auto* combined_option=std::getenv("TYLOINFER_GR_COMBINED_AFFINE");
+    const auto* down_mma_option=mfq::cuda::env_lookup("TYLOINFER_GR_DOWN_MMA");
+    const auto* combined_option=mfq::cuda::env_lookup("TYLOINFER_GR_COMBINED_AFFINE");
     const bool combined_affine=combined_option?combined_option[0]!='0':rows==5;
-    const auto* unsigned_dot_option=std::getenv("TYLOINFER_GR_DOWN_UNSIGNED_DOT");
+    const auto* unsigned_dot_option=mfq::cuda::env_lookup("TYLOINFER_GR_DOWN_UNSIGNED_DOT");
     const bool unsigned_dot=unsigned_dot_option?unsigned_dot_option[0]!='0':(rows==1 || rows==2 || rows==5);
-    const auto* down_plane_option=std::getenv("TYLOINFER_GR_INT_DOT");
-    const auto* down_batch_option=std::getenv("TYLOINFER_GR_BATCH_SHARED_DOWN");
+    const auto* down_plane_option=mfq::cuda::env_lookup("TYLOINFER_GR_INT_DOT");
+    const auto* down_batch_option=mfq::cuda::env_lookup("TYLOINFER_GR_BATCH_SHARED_DOWN");
     const bool down_mma_candidate=(down_mma_option?down_mma_option[0]!='0':rows==6 || down_fused_requested) &&
         share_norm && fixed_groups && down.aligned_q8 && !down.q8_zero && down.gs==48 &&
         down.neuron_len==10240 && down.out==320 && hidden==2560 && streams==4 && rows<=6 &&
@@ -1005,11 +1006,11 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         (!down_batch_option || down_batch_option[0]!='1') &&
         (dense_injection.defined() || (inject && inject->aligned_q8 && !inject->q8_zero));
     if(down_mma_candidate) {
-        const auto* split_option=std::getenv("TYLOINFER_GR_DOWN_MMA_SPLITS");
+        const auto* split_option=mfq::cuda::env_lookup("TYLOINFER_GR_DOWN_MMA_SPLITS");
         ds=split_option?std::atoi(split_option):(rows==1 && !down_fused_requested?32:16);
         TYLOINFER_RUNTIME_CHECK(ds>0 && ds<=down.ng,"GR Down MMA split count is invalid");
     }
-    const auto* down_split_option=std::getenv("TYLOINFER_GR_DOWN_SPLITS");
+    const auto* down_split_option=mfq::cuda::env_lookup("TYLOINFER_GR_DOWN_SPLITS");
     if(rows==1 && !down_mma_candidate && share_norm &&
         down.aligned_q8 && !down.q8_zero && down.gs==48 &&
         down.neuron_len==10240 && down.out==320 && hidden==2560 && streams==4) {
@@ -1019,7 +1020,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
             up.gs==48 && up.neuron_len==320)ds=8;
         TYLOINFER_RUNTIME_CHECK(ds>0 && ds<=down.ng,"GR Down split count is invalid");
     }
-    const auto* s16_down_option=std::getenv("TYLOINFER_GR_DOWN_DIRECT_S16");
+    const auto* s16_down_option=mfq::cuda::env_lookup("TYLOINFER_GR_DOWN_DIRECT_S16");
     const int s16_down_mode=s16_down_option?std::atoi(s16_down_option):0;
     const bool s16_down_requested=s16_down_mode!=0 && rows==1 &&
         share_norm && fixed_groups && fixed_formats && !down_mma_candidate &&
@@ -1028,22 +1029,22 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         up.gs==48 && up.neuron_len==320 && !dense_injection.defined() &&
         inject && inject->aligned_q8 && !inject->q8_zero;
     if(s16_down_requested && !down_split_option)ds=s16_down_mode==2?16:8;
-    const auto* group_read_option=std::getenv("TYLOINFER_GR_GROUP_READ");
+    const auto* group_read_option=mfq::cuda::env_lookup("TYLOINFER_GR_GROUP_READ");
     const int group_read=group_read_option && !down.q8_zero && !down.aligned_q8 &&
         (reinterpret_cast<uintptr_t>(down.q_packed.data_ptr())&3u)==0?std::atoi(group_read_option):0;
-    const char* thread_setting=std::getenv("TYLOINFER_GR_UP_THREADS");
+    const char* thread_setting=mfq::cuda::env_lookup("TYLOINFER_GR_UP_THREADS");
     const int up_threads=thread_setting?std::atoi(thread_setting):512;
-    const auto* up_metadata_option=std::getenv("TYLOINFER_GR_UP_METADATA");
+    const auto* up_metadata_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_METADATA");
     const int up_metadata=up_metadata_option?std::atoi(up_metadata_option):0;
     TYLOINFER_RUNTIME_CHECK(up_threads==128 || up_threads==256 || up_threads==512,
         "residual Up threads must be 128, 256 or 512");
-    const char* projection_setting=std::getenv("TYLOINFER_GR_PROJECTION_THREADS");
+    const char* projection_setting=mfq::cuda::env_lookup("TYLOINFER_GR_PROJECTION_THREADS");
     int projection_threads=projection_setting?std::atoi(projection_setting):256;
     TYLOINFER_RUNTIME_CHECK(projection_threads==128 || projection_threads==256 || projection_threads==512,
         "residual projection threads must be 128, 256 or 512");
     if(!share_norm)projection_threads=256;
     const int tile=projection_threads/32;
-    const char* warp_setting=std::getenv("TYLOINFER_GR_DENSE_FUSION");
+    const char* warp_setting=mfq::cuda::env_lookup("TYLOINFER_GR_DENSE_FUSION");
     const bool dense_warp=(!warp_setting || warp_setting[0]!='0') && share_norm &&
         rows<=8 && dense_injection.defined() && prepared_injection_right.defined() &&
         ((down.out+tile-1)/tile)*ds >= (32+(32/streams)-1)/(32/streams);
@@ -1060,7 +1061,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     auto normalized=tb::empty(residual.sizes().vec(),options),updated=tb::empty(residual.sizes().vec(),options);
     auto shape=residual.sizes().vec();shape.back()=hidden;auto mixed=tb::empty(shape,options);
     shape.back()=streams;auto next_injection=tb::empty(shape,options.dtype(dense_injection.defined() || !half?tb::kFloat32:tb::kFloat16));
-    const char* async_setting=std::getenv("TYLOINFER_GR_ASYNC_NORMALIZED");
+    const char* async_setting=mfq::cuda::env_lookup("TYLOINFER_GR_ASYNC_NORMALIZED");
     const bool asynchronous=share_norm && !half && (!async_setting || async_setting[0]=='1');
     auto promoted_normalized=(dense_injection.defined() || asynchronous) && half?
         tb::empty(residual.sizes().vec(),options.dtype(tb::kFloat32)):tb::Tensor{};
@@ -1080,15 +1081,15 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     auto parts=tb::empty({rows,down.out*ds+streams*is},residual.options().dtype(tb::kFloat32));
     MhcInput input{after?branch.data_ptr():nullptr,residual.data_ptr(),after?injection.data_ptr():nullptr,
         norm.data_ptr<float>(),nullptr,hidden,int(streams),bh,rh,ih,half,after};
-    const auto* fast_norm_option=std::getenv("TYLOINFER_GR_NORM_FAST_RSQRT");
+    const auto* fast_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_FAST_RSQRT");
     const bool verified_fast_gr=hidden==2560 && streams==4 && down.neuron_len==10240 && down.out==320 &&
         up.neuron_len==320 && up.aligned_q8 && !up.q8_zero && up.gs==48;
     input.fast_norm=fast_norm_option?fast_norm_option[0]!='0':verified_fast_gr &&
         ((rows==1 && (!half || !after)) || (rows==2 && !half) || rows==3 || rows==5 ||
          (rows==4 && (!half || !after)) || (rows==6 && (after?!half:half)));
-    const auto* fixed_norm_option=std::getenv("TYLOINFER_GR_NORM_FIXED_TYPES");
+    const auto* fixed_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_FIXED_TYPES");
     const bool fixed_norm_types=fixed_norm_option && fixed_norm_option[0]!='0';
-    const auto* register_norm_option=std::getenv("TYLOINFER_GR_NORM_REGISTER_QUANT");
+    const auto* register_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_REGISTER_QUANT");
     const int register_norm_mode=register_norm_option?std::atoi(register_norm_option):0;
     auto projection_input=input;
     if(asynchronous)projection_input.output_half=false;
@@ -1096,7 +1097,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         promoted_normalized.data_ptr():normalized.data_ptr();
     const auto d=mhc_matrix(down);
     auto u=mhc_matrix(up);
-    const auto* fast_sigmoid_option=std::getenv("TYLOINFER_GR_UP_FAST_SIGMOID");
+    const auto* fast_sigmoid_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_FAST_SIGMOID");
     u.fast_sigmoid=fast_sigmoid_option?fast_sigmoid_option[0]!='0':verified_fast_gr &&
         ((rows==1 && (!half || after)) || (rows==2 && half) ||
          (rows==5 && (half?after:!after)) || (!half && after && (rows==3 || rows==4 || rows==6)));
@@ -1107,7 +1108,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         if(prepared_injection_right.defined())i.row_scale=prepared_injection_right.data_ptr<float>();
     } else i=mhc_matrix(*inject);
     const int down_capacity=((down.ng+ds-1)/ds)*down.gs,inject_capacity=dense_warp?0:((i.groups+is-1)/is)*i.gs;
-    const auto* inline_norm_option=std::getenv("TYLOINFER_GR_INLINE_NORM_DOWN");
+    const auto* inline_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_INLINE_NORM_DOWN");
     const bool inline_norm_down=inline_norm_option && inline_norm_option[0]!='0' &&
         verified_fast_gr && rows==1 && ds==8 && down.aligned_q8 && !down.q8_zero && down.gs==48 &&
         down.ng==214 && i.aligned && !i.zero && !dense_injection.defined() &&
@@ -1150,9 +1151,9 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     TYLOINFER_RUNTIME_CHECK(shared+1056<=48*1024,"fused residual projection exceeds shared memory capacity");
     if(marker)marker("begin");
     const auto launch_norm=[&](auto cache) {
-        const auto* wide_option=std::getenv("TYLOINFER_GR_NORM_WIDE");
+        const auto* wide_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_WIDE");
         if constexpr(decltype(cache)::value)if((!wide_option || wide_option[0]!='0') && streams==4 && rows<=6) {
-            const auto* threads_option=std::getenv("TYLOINFER_GR_NORM_THREADS");
+            const auto* threads_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_THREADS");
             const int norm_threads=threads_option?std::atoi(threads_option):1024;
             TYLOINFER_RUNTIME_CHECK(norm_threads==512 || norm_threads==640 || norm_threads==1024,"GR norm threads must be 512, 640 or 1024");
             const auto launch_wide=[&](auto threads) {
@@ -1176,16 +1177,16 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     };
     // Verified GR geometry uses uniform16 activation planes for M1/M3-M6;
     // M2 and larger rows retain int24. Weight bytes stay unchanged.
-    const auto* packed24_option=std::getenv("TYLOINFER_GR_PACKED24_INT_DOT");
+    const auto* packed24_option=mfq::cuda::env_lookup("TYLOINFER_GR_PACKED24_INT_DOT");
     const int packed24_mode=packed24_option?std::atoi(packed24_option):(rows==1?1:2);
     const bool packed_down=(packed24_mode==1 || packed24_mode==2) &&
         share_norm && fixed_groups && !down.aligned_q8 && !down.q8_zero &&
         down.gs==24 && down.neuron_len==10240 && down.out==320 && streams==4 && rows<=6 &&
         inject && inject->aligned_q8 && !inject->q8_zero &&
         (reinterpret_cast<uintptr_t>(down.q_packed.data_ptr())&3u)==0;
-    const auto* two_plane_option=std::getenv("TYLOINFER_GR_INT_DOT");
+    const auto* two_plane_option=mfq::cuda::env_lookup("TYLOINFER_GR_INT_DOT");
     const int plane_count=packed_down?(packed24_mode==2?4:3):two_plane_option?std::atoi(two_plane_option):((rows==1 || (rows>=3 && rows<=6))?4:3);
-    const auto* batch_down_option=std::getenv("TYLOINFER_GR_BATCH_SHARED_DOWN");
+    const auto* batch_down_option=mfq::cuda::env_lookup("TYLOINFER_GR_BATCH_SHARED_DOWN");
     const bool two_plane=(plane_count==2 || plane_count==3 || plane_count==4) &&
         share_norm && fixed_groups && ((down.aligned_q8 && !down.q8_zero && down.gs==48) || packed_down) &&
         down.neuron_len==10240 && down.out==320 && streams==4 &&
@@ -1193,18 +1194,18 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         (!batch_down_option || batch_down_option[0]!='1');
     tb::Tensor plane_values,plane_scales,plane_sums;
     GrTwoPlane global_quantized{};
-    const auto* norm_quant_option=std::getenv("TYLOINFER_GR_NORM_QUANT_FUSED");
-    const auto* norm_group_option=std::getenv("TYLOINFER_GR_NORM_GROUP_QUANT");
+    const auto* norm_quant_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_QUANT_FUSED");
+    const auto* norm_group_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_GROUP_QUANT");
     const int norm_group_mode=norm_group_option?std::atoi(norm_group_option):0;
-    const auto* wide_norm_option=std::getenv("TYLOINFER_GR_NORM_WIDE");
-    const auto* cached_norm_option=std::getenv("TYLOINFER_GR_NORM_CACHE");
+    const auto* wide_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_WIDE");
+    const auto* cached_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_CACHE");
     const int norm_quant_mode=norm_quant_option?std::atoi(norm_quant_option):
         (rows>6 || norm_group_mode!=0 || (wide_norm_option && wide_norm_option[0]=='0') ||
         (cached_norm_option && cached_norm_option[0]=='0')?0:(rows==1 && half && after?3:2));
     const bool norm_quant_fused=two_plane && norm_quant_mode!=0 &&
         hidden==2560 && streams==4 && rows<=6;
     const bool packed_down_s16=s16_down_requested && norm_quant_fused && plane_count==4;
-    const auto* replicated_norm_option=std::getenv("TYLOINFER_GR_NORM_REPLICATED");
+    const auto* replicated_norm_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_REPLICATED");
     const int replicated_norm_groups=replicated_norm_option?std::atoi(replicated_norm_option):8;
     const bool replicated_norm=(replicated_norm_groups==4 || replicated_norm_groups==8) &&
         norm_quant_fused && !packed_down_s16 && rows<=6 && half && input.residual_half &&
@@ -1217,7 +1218,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     const int norm_counter_slot=norm_group_quant && norm_group_mode==2?gr_norm_counter_slot():-1;
     if(norm_group_mode==2 && norm_counter_slot<0)norm_group_quant=false;
     if(share_norm && !norm_quant_fused && !norm_group_quant) {
-        const auto* cache_option=std::getenv("TYLOINFER_GR_NORM_CACHE");
+        const auto* cache_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_CACHE");
         if(hidden==2560 && (!cache_option || cache_option[0]!='0'))launch_norm(std::true_type{});
         else launch_norm(std::false_type{});
         if(marker)marker("norm");
@@ -1233,7 +1234,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
             reinterpret_cast<float2*>(plane_scales.data_ptr<float>()),reinterpret_cast<int4*>(plane_sums.data_ptr<int32_t>())};
         if(norm_quant_fused && !replicated_norm) {
             norm_inverses=tb::empty({rows,streams},options.dtype(tb::kFloat32));
-            const auto* vector_stats_option=std::getenv("TYLOINFER_GR_NORM_VECTOR_STATS");
+            const auto* vector_stats_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_VECTOR_STATS");
             // M5 Float-before did not improve in the interleaved real-weight
             // probe. Keep its existing statistics kernel unless requested.
             const bool vector_stats=(vector_stats_option?vector_stats_option[0]!='0':
@@ -1305,9 +1306,9 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                 "M="+std::to_string(rows)+" half="+std::to_string(half)+" gs="+std::to_string(down.gs)+" slices="+std::to_string(decltype(slices)::value)+" threads="+std::to_string(decltype(threads)::value));
             };
             if constexpr(decltype(inline_boundary)::value) {
-                const auto* slices=std::getenv("TYLOINFER_GR_NORM_GROUP_SLICES");
+                const auto* slices=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_GROUP_SLICES");
                 const int count=slices?std::atoi(slices):1;
-                const auto* threads_option=std::getenv("TYLOINFER_GR_NORM_GROUP_THREADS");
+                const auto* threads_option=mfq::cuda::env_lookup("TYLOINFER_GR_NORM_GROUP_THREADS");
                 const int threads=threads_option?std::atoi(threads_option):(count==8?256:1024);
                 if(count==8 && threads==256){run_slices(std::integral_constant<int,8>{},std::integral_constant<int,256>{});return;}
                 if(count==4 && threads==512){run_slices(std::integral_constant<int,4>{},std::integral_constant<int,512>{});return;}
@@ -1401,15 +1402,15 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     // M1 uses the same Uniform16 activation representation as the default
     // Up. Compare a single preparation launch with preparation by the last
     // Down CTA; original packed weights and all dot orders stay unchanged.
-    const auto* uniform_prepare_option=std::getenv("TYLOINFER_GR_UP_UNIFORM_PREPARE");
+    const auto* uniform_prepare_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_UNIFORM_PREPARE");
     int uniform_prepare_mode=uniform_prepare_option?std::atoi(uniform_prepare_option):3;
-    const auto* direct_prepare_option=std::getenv("TYLOINFER_GR_UP_DIRECT_S16");
+    const auto* direct_prepare_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_DIRECT_S16");
     if(!uniform_prepare_option && direct_prepare_option && direct_prepare_option[0]=='0')uniform_prepare_mode=1;
-    const auto* prepared_warp_option=std::getenv("TYLOINFER_GR_UP_PREPARED_WARP");
+    const auto* prepared_warp_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_PREPARED_WARP");
     const bool prepared_full_warp=prepared_warp_option && prepared_warp_option[0]!='0';
-    const auto* uniform_prepare_mma=std::getenv("TYLOINFER_GR_UP_MMA");
-    const auto* uniform_prepare_up=std::getenv("TYLOINFER_GR_UP_UNIFORM16");
-    const auto* m1_half_option=std::getenv("TYLOINFER_GR_UP_MMA_F16_M1");
+    const auto* uniform_prepare_mma=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA");
+    const auto* uniform_prepare_up=mfq::cuda::env_lookup("TYLOINFER_GR_UP_UNIFORM16");
+    const auto* m1_half_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA_F16_M1");
     const int m1_half_mode=m1_half_option?std::atoi(m1_half_option):0;
     bool m1_half_candidate=rows==1 && (m1_half_mode==1 || m1_half_mode==2 || (m1_half_mode==3 && half)) &&
         plane_count!=0 && fixed_groups && streams==4 && up_metadata==0 &&
@@ -1418,7 +1419,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     bool uniform_prepare=(uniform_prepare_mode==1 || uniform_prepare_mode==2 || uniform_prepare_mode==3) &&
         (!m1_half_candidate || m1_half_mode==3) && rows==1 && hidden==2560 && streams==4 && two_plane && plane_count==4 &&
         (!down_mma_candidate || down_fused_requested) && !combined_affine && (!unsigned_dot || uniform_prepare_mode!=2) && fixed_formats &&
-        projection_threads==256 && up_metadata==0 && !std::getenv("TYLOINFER_GR_UP_INT_DOT") &&
+        projection_threads==256 && up_metadata==0 && !mfq::cuda::env_lookup("TYLOINFER_GR_UP_INT_DOT") &&
         (!uniform_prepare_mma || std::atoi(uniform_prepare_mma)==0 || std::atoi(uniform_prepare_mma)==3) &&
         (!uniform_prepare_up || uniform_prepare_up[0]!='0') &&
         down.aligned_q8 && !down.q8_zero && down.gs==48 &&
@@ -1426,19 +1427,19 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
         !dense_injection.defined() && i.aligned && !i.zero;
     const int uniform_prepare_slot=uniform_prepare && uniform_prepare_mode>=2?gr_norm_counter_slot():-1;
     if(uniform_prepare_mode>=2 && uniform_prepare_slot<0)uniform_prepare=false;
-    const auto* direct_s16_option=std::getenv("TYLOINFER_GR_UP_DIRECT_S16");
+    const auto* direct_s16_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_DIRECT_S16");
     const int direct_s16_mode=direct_s16_option?std::atoi(direct_s16_option):1;
     const bool direct_s16=uniform_prepare && (uniform_prepare_mode==3 ||
         (uniform_prepare_mode==1 && (direct_s16_mode==1 || direct_s16_mode==2)));
-    const auto* direct_stats_option=std::getenv("TYLOINFER_GR_UP_DIRECT_STATS");
+    const auto* direct_stats_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_DIRECT_STATS");
     const bool direct_stats=direct_s16 && (!direct_stats_option || direct_stats_option[0]!='0');
-    const auto* split_major_option=std::getenv("TYLOINFER_GR_UP_SPLIT_MAJOR");
+    const auto* split_major_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_SPLIT_MAJOR");
     const bool split_major=uniform_prepare && direct_s16 && (uniform_prepare_mode==1 || uniform_prepare_mode==3) &&
         (split_major_option?split_major_option[0]!='0':uniform_prepare_mode==3);
     const bool fused_half_up=!down_mma_candidate && m1_half_candidate && m1_half_mode==3 && half &&
         uniform_prepare && uniform_prepare_mode==3 && direct_s16 && direct_stats && split_major;
     if(m1_half_mode==3 && !fused_half_up)m1_half_candidate=false;
-    const auto* up_int_mma_option=std::getenv("TYLOINFER_GR_UP_INT16_MMA");
+    const auto* up_int_mma_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_INT16_MMA");
     const int up_int_mma_mode=up_int_mma_option?std::atoi(up_int_mma_option):0;
     const bool up_int_mma=!fused_half_up && (up_int_mma_mode==1 || up_int_mma_mode==2 || up_int_mma_mode==3) &&
         uniform_prepare && uniform_prepare_mode==3 && direct_s16 && direct_stats && split_major;
@@ -1498,7 +1499,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                 }
                 return;
             }
-            const auto* pair=std::getenv("TYLOINFER_GR_INT_PAIR_DOWN");
+            const auto* pair=mfq::cuda::env_lookup("TYLOINFER_GR_INT_PAIR_DOWN");
             if(two_plane && rows>=2 && rows<=6 && (!pair || pair[0]=='1') &&
                 (dense_warp || (!dense_injection.defined() && i.aligned && !i.zero))) {
                 const auto launch=[&](auto planes) {
@@ -1529,7 +1530,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                 return;
             }
         }
-        const auto* batch_setting=std::getenv("TYLOINFER_GR_BATCH_SHARED_DOWN");
+        const auto* batch_setting=mfq::cuda::env_lookup("TYLOINFER_GR_BATCH_SHARED_DOWN");
         if constexpr(fixed>0)if(batch_setting && batch_setting[0]=='1' &&
                 rows>=2 && rows<=8 && share_norm &&
                 (dense_warp || (!dense_injection.defined() && i.aligned && !i.zero))) {
@@ -1563,7 +1564,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                             return;
                         }
                         if(uniform_prepare && uniform_prepare_mode==3) {
-                            const auto* tile_option=std::getenv("TYLOINFER_GR_UP_FUSED_DIRECT_TILE");
+                            const auto* tile_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_FUSED_DIRECT_TILE");
                             const int prepare_row_tile=tile_option?std::atoi(tile_option):(ds==8?8:16);
                             TYLOINFER_RUNTIME_CHECK(prepare_row_tile==8 || prepare_row_tile==16 || prepare_row_tile==24 || prepare_row_tile==48,
                                 "fused direct GR Up row tile must divide GS48");
@@ -1622,7 +1623,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                                 reinterpret_cast<const void*>(gated_residual_projection_kernel<48,256,2,true,false,0,planes,true,true,decltype(vector_parts)::value,false,decltype(paired)::value>),
                                 "M=1 half="+std::to_string(half)+" splits="+std::to_string(ds)+" tile="+std::to_string(prepare_row_tile)+" paired_stats="+std::to_string(decltype(paired)::value)+" unsigned="+std::to_string(GrDotFlags<planes>::unsigned_weights));
                             };
-                            const auto* vector_option=std::getenv("TYLOINFER_GR_UP_PARTS_VECTOR");
+                            const auto* vector_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_PARTS_VECTOR");
                             if(vector_option && vector_option[0]!='0' && (ds==13 || ds==16))run(std::true_type{});
                             else run(std::false_type{});
                             };
@@ -1692,7 +1693,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
     };
     if(packed_down && two_plane) {
         const auto launch_packed=[&](auto plane) {
-        const auto* pair_setting=std::getenv("TYLOINFER_GR_PACKED24_PAIR_DOWN");
+        const auto* pair_setting=mfq::cuda::env_lookup("TYLOINFER_GR_PACKED24_PAIR_DOWN");
         const bool pair_default=rows==2 || ((rows==5 || rows==6) && half && after);
         if(rows>=2 && (pair_setting?pair_setting[0]!='0':pair_default)) {
             gated_residual_batch_projection_kernel<24,2,decltype(plane)::value><<<
@@ -1742,21 +1743,21 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
             right.defined()?right:dense_injection.transpose(-1,-2).to(tb::kFloat32));
     }
     if(marker && dense_projection.defined())marker("dense_projection");
-    const auto* prepare_setting=std::getenv("TYLOINFER_GR_UP_INT_DOT");
-    const auto* half_groups_setting=std::getenv("TYLOINFER_GR_UP_HALF_GROUPS");
+    const auto* prepare_setting=mfq::cuda::env_lookup("TYLOINFER_GR_UP_INT_DOT");
+    const auto* half_groups_setting=mfq::cuda::env_lookup("TYLOINFER_GR_UP_HALF_GROUPS");
     const bool half_groups_default=(!half_groups_setting || half_groups_setting[0]!='0') &&
         plane_count!=0 && rows==1 && half && after;
     const int prepare_mode=prepare_setting?std::atoi(prepare_setting):
         (plane_count!=0 && rows>=2 && rows<=6?7:5);
-    const auto* mma_setting=std::getenv("TYLOINFER_GR_UP_MMA");
+    const auto* mma_setting=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA");
     const int mma_mode=mma_setting?std::atoi(mma_setting):3;
     const bool mma_up=(mma_mode==1 || mma_mode==2 || (mma_mode==3 && rows>=2)) &&
         plane_count!=0 && rows<=6 && fixed_groups && streams==4 &&
         up.aligned_q8 && !up.q8_zero && up.gs==48 && up.neuron_len==320 && hidden==2560 &&
         down.neuron_len==10240 && down.out==320 && up_metadata==0;
-    const auto* mma_uniform_option=std::getenv("TYLOINFER_GR_UP_MMA_UNIFORM16");
+    const auto* mma_uniform_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA_UNIFORM16");
     const bool mma_uniform16=mma_up && rows>=2 && mma_uniform_option && mma_uniform_option[0]!='0';
-    const auto* mma_half_option=std::getenv("TYLOINFER_GR_UP_MMA_F16_SPLIT");
+    const auto* mma_half_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA_F16_SPLIT");
     const int mma_half_mode=mma_half_option?std::atoi(mma_half_option):2;
     if(m1_half_candidate || (mma_up && rows>=2 &&
             (mma_half_mode==1 || (mma_half_mode==2 && (half || rows==2))))) {
@@ -1781,14 +1782,14 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                     reinterpret_cast<const void*>(gated_residual_prepare_up_half_kernel<decltype(one)::value,decltype(registers)::value,decltype(vector_parts)::value>),
                     "M="+std::to_string(rows)+" half="+std::to_string(half));
                 };
-                const auto* vector_option=std::getenv("TYLOINFER_GR_UP_PARTS_VECTOR");
+                const auto* vector_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_PARTS_VECTOR");
                 if constexpr(!decltype(registers)::value) {
                     const bool selected=vector_option?vector_option[0]!='0':half && rows==6;
                     if(selected && (ds==13 || ds==16))kernel(std::true_type{});
                     else kernel(std::false_type{});
                 }else kernel(std::false_type{});
             };
-            const auto* register_option=std::getenv("TYLOINFER_GR_UP_MMA_F16_REGISTER_PREPARE");
+            const auto* register_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA_F16_REGISTER_PREPARE");
             if(register_option && register_option[0]!='0')run(std::true_type{});else run(std::false_type{});
         };
         if(!local_half && !fused_half_up) {
@@ -1808,7 +1809,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                     " local_prepare="+std::to_string(std::decay_t<decltype(local)>::value)+
                     " group_unroll="+std::to_string(decltype(unroll)::value));
                 };
-                const auto* unroll_option=std::getenv("TYLOINFER_GR_UP_MMA_F16_GROUP_UNROLL");
+                const auto* unroll_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_MMA_F16_GROUP_UNROLL");
                 const int unroll=unroll_option?std::atoi(unroll_option):
                     half && (rows==2 || rows==3 || rows==4 || rows==6)?7:1;
                 if(unroll==7)kernel(std::integral_constant<int,7>{});
@@ -1852,7 +1853,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                 if(direct_stats)statistics(std::true_type{});else statistics(std::false_type{});
             }else statistics(std::false_type{});
             };
-            const auto* vector_option=std::getenv("TYLOINFER_GR_UP_PARTS_VECTOR");
+            const auto* vector_option=mfq::cuda::env_lookup("TYLOINFER_GR_UP_PARTS_VECTOR");
             if constexpr(decltype(packed)::value) {
                 if(split_major)run(std::false_type{},std::true_type{});
                 else if(vector_option && vector_option[0]!='0' && (ds==13 || ds==16))run(std::true_type{},std::false_type{});
@@ -1922,7 +1923,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                 const auto launch_metadata=[&](auto shared_metadata) {
                 const auto launch_integer=[&](auto integer_up) {
                 constexpr int up_mode=int(decltype(integer_up)::value);
-                const auto* group_threads_setting=std::getenv("TYLOINFER_GR_UP_GROUP_THREADS");
+                const auto* group_threads_setting=mfq::cuda::env_lookup("TYLOINFER_GR_UP_GROUP_THREADS");
                 const int group_threads=group_threads_setting?std::atoi(group_threads_setting):
                     up_mode==24?128:(up_mode==13 || (up_mode==11 && rows==1 && half && after)?512:256);
                 TYLOINFER_RUNTIME_CHECK((group_threads==128 && up_mode==24) || group_threads==256 || group_threads==512,"GR Up grouped threads must be 256 or 512");
@@ -1938,14 +1939,14 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                     "M="+std::to_string(rows)+" half="+std::to_string(half)+" capacity="+std::to_string(count));
                 };
                 if constexpr(fixed==48 && std::decay_t<decltype(width)>::value==320 && decltype(shared_metadata)::value==0) {
-                    const auto* integer_up=std::getenv("TYLOINFER_GR_UP_INT_DOT");
+                    const auto* integer_up=mfq::cuda::env_lookup("TYLOINFER_GR_UP_INT_DOT");
                     const bool verified_geometry=hidden==2560 && down.neuron_len==10240 && down.out==320;
-                    const auto* uniform_up=std::getenv("TYLOINFER_GR_UP_UNIFORM16");
-                    const auto* preload_up=std::getenv("TYLOINFER_GR_UP_PRELOAD");
+                    const auto* uniform_up=mfq::cuda::env_lookup("TYLOINFER_GR_UP_UNIFORM16");
+                    const auto* preload_up=mfq::cuda::env_lookup("TYLOINFER_GR_UP_PRELOAD");
                     if(uniform_prepare) {
                         if constexpr(count==1) {
-                            const auto* vector_weights=std::getenv("TYLOINFER_GR_UP_VECTOR_WEIGHTS");
-                            const auto* direct_groups=std::getenv("TYLOINFER_GR_UP_DIRECT_GROUPS");
+                            const auto* vector_weights=mfq::cuda::env_lookup("TYLOINFER_GR_UP_VECTOR_WEIGHTS");
+                            const auto* direct_groups=mfq::cuda::env_lookup("TYLOINFER_GR_UP_DIRECT_GROUPS");
                             if(direct_stats && direct_groups && direct_groups[0]!='0')launch_integer(std::integral_constant<int,24>{});
                             else if(direct_stats && vector_weights && vector_weights[0]!='0')launch_integer(std::integral_constant<int,23>{});
                             else if(direct_stats && direct_s16_mode==2)launch_integer(std::integral_constant<int,22>{});
@@ -1988,7 +1989,7 @@ std::vector<mfq_tensor_backend::Tensor> gated_residual_two_stage_cuda(
                     else launch_metadata(std::integral_constant<int,0>{});
                 }else launch_metadata(std::integral_constant<int,0>{});
             };
-            const auto* shared_up=std::getenv("TYLOINFER_GR_BATCH_SHARED_UP");
+            const auto* shared_up=mfq::cuda::env_lookup("TYLOINFER_GR_BATCH_SHARED_UP");
             if constexpr(fixed>0)if(rows>=4 && rows<=32 && shared_up &&
                     std::strcmp(shared_up,"4")==0) {
                 run(std::integral_constant<int,4>{});return;

@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 
 #include "moe_cache_profile.h"
 
@@ -26,7 +27,7 @@ inline int moe_decode_transfer_slots(int rows, int routes) {
 }
 inline constexpr std::size_t moe_ssd_residency_stage_limit_bytes=std::size_t(256)<<20;
 inline bool moe_predictor_transfer_cache_enabled() {
-    const auto* option=std::getenv("TYLOINFER_MOE_PREDICTOR_TRANSFER_CACHE");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_TRANSFER_CACHE");
     return !option || option[0]!='0';
 }
 inline std::string moe_packed_transfer_prefix(int projection,bool predictor) {

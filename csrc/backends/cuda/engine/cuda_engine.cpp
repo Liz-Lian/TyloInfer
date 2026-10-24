@@ -1,3 +1,4 @@
+#include "env.h"
 #include "runtime/routed_cache_resources.h"
 #include "cuda_runtime_config.h"
 #include "cuda_execution.h"
@@ -129,7 +130,7 @@ struct CudaEngineState {
             if(name=="ram_expert_payload_bytes" || name=="ssd_expert_payload_bytes")streamed+=std::size_t(value);
         }
         if(!ssd)return;
-        if(const auto* profile=std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS");profile && profile[0]=='1' && language.source) {
+        if(const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");profile && profile[0]=='1' && language.source) {
             const auto io=language.source->file_read_stats();
             std::cerr<<"runtime_model_io_stats boundary=prefill_end calls="<<io.calls
                 <<" logical_bytes="<<io.logical_bytes<<" physical_bytes="<<io.physical_bytes
@@ -180,7 +181,7 @@ struct CudaEngineState {
     void prepare_graph_depth(const InferenceRequest& input) {
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
             if(!components.mtp)return;
-            const auto* warmup=std::getenv("TYLOINFER_QWEN4_WARMUP_GRAPHS");
+            const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
             if(!language.reuse_decode_graphs || !execution->config.moe_pipeline || (warmup && warmup[0]=='0'))return;
             const auto& sampling=input.sampling;
             const bool wide=sampling.temperature<=0 || sampling.top_k==1 ||
@@ -313,7 +314,7 @@ struct CudaEngineState {
             // Exercise the same draft/verify/commit loop as a real request.
             // Graph-only warmup cannot cover its history replay, sampling and
             // expert exchange boundaries. No synthetic policy/history survives.
-            const auto* warmup=std::getenv("TYLOINFER_QWEN4_WARMUP_MTP");
+            const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_MTP");
             if(language.graph_registry && components.mtp &&
                     language.max_position_embeddings()>=48 && (!warmup || warmup[0]!='0')) {
                 struct CacheLearningScope {
@@ -619,6 +620,9 @@ struct CudaBackend {
         }, state);
     }
     std::pair<EngineInfo, std::unique_ptr<TextProcessor>> load() {
+        const bool dump_env = mfq::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
+        mfq::cuda::env_freeze();
+        if (dump_env) std::cerr << "cuda knobs at load:\n" << mfq::cuda::env_dump();
         if (!options.context_size) options.context_size = 32768;
         auto execution = std::make_shared<CudaExecutionContext>();
         setup_cuda_load(options, *execution);
@@ -672,6 +676,8 @@ struct CudaBackend {
         return std::visit([](const auto& state) { return state && state->exclusive(); }, state);
     }
     void unload() {
+        if (mfq::cuda::env_frozen() && mfq::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
+            std::cerr << "cuda knobs in use:\n" << mfq::cuda::env_dump();
         state = std::unique_ptr<CudaEngineState<Qwen35CausalLm>>{};
     }
 };

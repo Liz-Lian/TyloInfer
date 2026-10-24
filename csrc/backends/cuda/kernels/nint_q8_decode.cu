@@ -1,3 +1,4 @@
+#include "env.h"
 #include "nint_short_decode.h"
 #include <cuda_runtime.h>
 #include <cstdlib>
@@ -67,21 +68,21 @@ __global__ void __launch_bounds__(128) nint_q8_small_kernel(NintWholeArgs a) {
 }
 
 void nint_launch_grouped_q8(NintWholeArgs a,cudaStream_t stream) {
-    const auto* vector_setting=std::getenv("TYLOINFER_NINT_Q8_VECTOR");
+    const auto* vector_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_VECTOR");
     const bool head_vector_default=a.rows>=65536 && a.groups==54 &&
         a.activation_rows>=4 && a.activation_rows<=6;
     const bool vectors=vector_setting?vector_setting[0]=='1':head_vector_default;
-    const auto* exact_setting=std::getenv("TYLOINFER_NINT_Q8_EXACT_ROWS");
+    const auto* exact_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_EXACT_ROWS");
     const bool projection_exact_default=a.groups==54 && a.rows>=512 && a.rows<=16384 &&
         a.activation_rows>=2 && a.activation_rows<=6 && !a.activation_sum;
     const bool exact_rows=(exact_setting?exact_setting[0]=='1':
         (head_vector_default || projection_exact_default)) && a.activation_rows<=6;
     const bool tracing=mfq::cuda::dispatch_trace::enabled();
-    const auto* unsigned_setting=std::getenv("TYLOINFER_NINT_Q8_U8S8");
+    const auto* unsigned_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_U8S8");
     const bool unsigned_default=a.rows>=65536 && a.groups==54 &&
         (a.activation_rows==1 || a.activation_rows==4 || a.activation_rows==6);
     const bool unsigned_weights=unsigned_setting?unsigned_setting[0]=='1':unsigned_default;
-    const auto* small_setting=std::getenv("TYLOINFER_NINT_Q8_SMALL_WARPS");
+    const auto* small_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_SMALL_WARPS");
     const bool small=(!small_setting || small_setting[0]!='0') && a.rows<=128 &&
         a.groups<=64 && a.activation_rows>=2 && a.activation_rows<=6;
     const auto launch=[&](auto rows) {

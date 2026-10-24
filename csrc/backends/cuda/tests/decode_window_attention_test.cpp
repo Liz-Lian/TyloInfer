@@ -1,3 +1,4 @@
+#include "env.h"
 #include "models/qwen4_exp/model.h"
 #include "runtime/decode_window.h"
 #include "context.h"
@@ -113,16 +114,12 @@ class GdnTileScope {
     std::string previous_;
     bool present_;
     static void set(const char* value) {
-#ifdef _WIN32
-        if(_putenv_s("TYLOINFER_GDN_DECODE_TILES",value)!=0)throw std::runtime_error("cannot set GDN tile option");
-#else
-        const int result=*value?setenv("TYLOINFER_GDN_DECODE_TILES",value,1):unsetenv("TYLOINFER_GDN_DECODE_TILES");
-        if(result!=0)throw std::runtime_error("cannot set GDN tile option");
-#endif
+        if (*value) mfq::cuda::env_set("TYLOINFER_GDN_DECODE_TILES",value);
+        else mfq::cuda::env_clear("TYLOINFER_GDN_DECODE_TILES");
     }
 public:
-    explicit GdnTileScope(int tiles):present_(std::getenv("TYLOINFER_GDN_DECODE_TILES")!=nullptr) {
-        if(present_)previous_=std::getenv("TYLOINFER_GDN_DECODE_TILES");
+    explicit GdnTileScope(int tiles):present_(mfq::cuda::env_lookup("TYLOINFER_GDN_DECODE_TILES")!=nullptr) {
+        if(present_)previous_=mfq::cuda::env_lookup("TYLOINFER_GDN_DECODE_TILES");
         set(std::to_string(tiles).c_str());
     }
     ~GdnTileScope(){
@@ -290,11 +287,7 @@ void layer_profile_case() {
         throw std::runtime_error("GPU profile lost captured replay timing events");
 }
 void layer_profile_invalid_case() {
-#ifdef _WIN32
-    if(_putenv_s("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK","1"))throw std::runtime_error("profile clock option");
-#else
-    if(setenv("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK","1",1))throw std::runtime_error("profile clock option");
-#endif
+    mfq::cuda::env_set("TYLOINFER_TRACE_LAYER_TIMINGS_CLOCK","1");
     auto input=data({1,1,2560},29),output=tb::empty_like(input);
     DecodeWindow window(mfq_current_cuda_stream(),true);
     window.capture([&] {
@@ -450,11 +443,7 @@ void gdn_prefix_checkpoint_case() {
             throw std::runtime_error(std::string(label)+" changed bytes");
     };
     const auto option=[](const char* value) {
-#ifdef _WIN32
-        _putenv_s("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT",value);
-#else
-        setenv("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT",value,1);
-#endif
+        mfq::cuda::env_set("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT",value);
     };
     int checked=0;
     for(int width:{32,128})for(int tokens:{2,3,4,6})for(int confirmed:{1,tokens-1}) {
@@ -694,8 +683,8 @@ void gdn_core_case(bool inplace=false,int head_ratio=3) {
                 nk,nv,width,1e-6,eps,silu,half,transposed,workspace,inplace);
             if(inplace && result[2].data_ptr()!=input_state.data_ptr())
                 throw std::runtime_error("GDN inplace state storage was replaced");
-            const auto* conv_option=std::getenv("TYLOINFER_GDN_INPLACE_CONV");
-            const auto* tile_option=std::getenv("TYLOINFER_GDN_DECODE_TILES");
+            const auto* conv_option=mfq::cuda::env_lookup("TYLOINFER_GDN_INPLACE_CONV");
+            const auto* tile_option=mfq::cuda::env_lookup("TYLOINFER_GDN_DECODE_TILES");
             const bool conv_default=batch==1 && nk==16 && nv==48 && width==128 && taps==4 && transposed;
             const bool conv_alias=inplace && (conv_option?conv_option[0]!='0':conv_default) && head_ratio<=24 &&
                 (!tile_option || tile_option[0]!='1');
@@ -887,42 +876,26 @@ void gdn_core_benchmark(bool compare_geometry=false,bool compare_inplace=false,b
     const std::vector<int> tile_cases=(compare_geometry || compare_inplace || compare_reductions || compare_conv || compare_broadcast)?std::vector<int>{4,4,4,4,4,4}:std::vector<int>{4,2,1,1,2,4};
     int arm=0;
     for(int tiles:tile_cases) {
-        const char* fixed_setting=std::getenv("TYLOINFER_GDN_FIXED_GEOMETRY");
+        const char* fixed_setting=mfq::cuda::env_lookup("TYLOINFER_GDN_FIXED_GEOMETRY");
         const bool fixed=compare_geometry?arm%3==1:(!fixed_setting || fixed_setting[0]!='0');
         const bool inplace=compare_broadcast || compare_conv || (compare_inplace && arm%3==1);
         const bool inplace_conv=compare_broadcast || (compare_conv && arm%3==1);
         const bool broadcast=compare_broadcast && arm%3==1;
-        const char* broadcast_candidate=std::getenv("TYLOINFER_GDN_BROADCAST_PROBE_MODE");
-        const char* broadcast_baseline=std::getenv("TYLOINFER_GDN_BROADCAST_PROBE_BASELINE");
+        const char* broadcast_candidate=mfq::cuda::env_lookup("TYLOINFER_GDN_BROADCAST_PROBE_MODE");
+        const char* broadcast_baseline=mfq::cuda::env_lookup("TYLOINFER_GDN_BROADCAST_PROBE_BASELINE");
         if(compare_broadcast) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_GDN_BROADCAST_NORMALIZATION",broadcast?(broadcast_candidate?broadcast_candidate:"1"):(broadcast_baseline?broadcast_baseline:"0"));
-#else
-            setenv("TYLOINFER_GDN_BROADCAST_NORMALIZATION",broadcast?(broadcast_candidate?broadcast_candidate:"1"):(broadcast_baseline?broadcast_baseline:"0"),1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_GDN_BROADCAST_NORMALIZATION",broadcast?(broadcast_candidate?broadcast_candidate:"1"):(broadcast_baseline?broadcast_baseline:"0"));
         }
         const bool reductions=compare_reductions?arm%3==1:true;
         if(compare_reductions) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_GDN_WARP_REDUCTIONS",reductions?"1":"0");
-#else
-            setenv("TYLOINFER_GDN_WARP_REDUCTIONS",reductions?"1":"0",1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_GDN_WARP_REDUCTIONS",reductions?"1":"0");
         }
         if(compare_inplace || compare_conv || compare_broadcast){state.copy_(initial_state);conv.copy_(initial_conv);}
         if(compare_conv) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_GDN_INPLACE_CONV",inplace_conv?"1":"0");
-#else
-            setenv("TYLOINFER_GDN_INPLACE_CONV",inplace_conv?"1":"0",1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_GDN_INPLACE_CONV",inplace_conv?"1":"0");
         }
         if(compare_geometry) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_GDN_FIXED_GEOMETRY",fixed?"1":"0");
-#else
-            setenv("TYLOINFER_GDN_FIXED_GEOMETRY",fixed?"1":"0",1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_GDN_FIXED_GEOMETRY",fixed?"1":"0");
         }
         ++arm;
         GdnTileScope setting(tiles);std::vector<Tensor> result;
@@ -1134,11 +1107,7 @@ void qsa_sparse_gate_benchmark(bool compare_query=false) {
             mfq_qwen4_exp::sparse_gqa_attention(query,key,value,indices),gate,true).cpu().contiguous();
         for(bool fused:{false,true,false,false,true,false}) {
             if(compare_query) {
-#ifdef _WIN32
-                _putenv_s("TYLOINFER_QSA_SPARSE_QUERY_FUSED",fused?"1":"0");
-#else
-                setenv("TYLOINFER_QSA_SPARSE_QUERY_FUSED",fused?"1":"0",1);
-#endif
+                mfq::cuda::env_set("TYLOINFER_QSA_SPARSE_QUERY_FUSED",fused?"1":"0");
             }
             Tensor output;
             const auto compute=[&]{output=(fused || compare_query)?
@@ -1194,36 +1163,24 @@ int main(int argc,char** argv)try {
     else if(argc==2 && std::string(argv[1])=="--gdn-conv-inplace-bench")gdn_core_benchmark(false,false,false,true);
     else if(argc==2 && std::string(argv[1])=="--gdn-broadcast-bench")gdn_core_benchmark(false,false,false,false,true);
     else if(argc==2 && std::string(argv[1])=="--gdn-broadcast-check") {
-        const char* candidate=std::getenv("TYLOINFER_GDN_BROADCAST_PROBE_MODE");
-#ifdef _WIN32
-        _putenv_s("TYLOINFER_GDN_BROADCAST_NORMALIZATION",candidate?candidate:"1");
-#else
-        setenv("TYLOINFER_GDN_BROADCAST_NORMALIZATION",candidate?candidate:"1",1);
-#endif
+        const char* candidate=mfq::cuda::env_lookup("TYLOINFER_GDN_BROADCAST_PROBE_MODE");
+        mfq::cuda::env_set("TYLOINFER_GDN_BROADCAST_NORMALIZATION",candidate?candidate:"1");
         for(int ratio:{1,2,3,4}) {GdnTileScope setting(4);gdn_core_case(true,ratio);}
         gdn_independent_state_case();
     }
     else if(argc==2 && std::string(argv[1])=="--gdn-model-graph-check") {gdn_case();gdn_case(true);}
     else if(argc==2 && std::string(argv[1])=="--gdn-conv-inplace-check") {
-#ifdef _WIN32
-        _putenv_s("TYLOINFER_GDN_INPLACE_CONV","1");
-#else
-        setenv("TYLOINFER_GDN_INPLACE_CONV","1",1);
-#endif
+        mfq::cuda::env_set("TYLOINFER_GDN_INPLACE_CONV","1");
         for(int tiles:{4,2,1})for(int ratio:{1,2,3,4,24,25}) {
             GdnTileScope setting(tiles);gdn_core_case(true,ratio);
         }
     }
     else if(argc==2 && std::string(argv[1])=="--gdn-batch-bench")gdn_batch_core_benchmark();
     else if(argc==2 && std::string(argv[1])=="--gdn-broadcast-batch-bench") {
-        const char* candidate=std::getenv("TYLOINFER_GDN_BROADCAST_PROBE_MODE");
-        const char* baseline=std::getenv("TYLOINFER_GDN_BROADCAST_PROBE_BASELINE");
+        const char* candidate=mfq::cuda::env_lookup("TYLOINFER_GDN_BROADCAST_PROBE_MODE");
+        const char* baseline=mfq::cuda::env_lookup("TYLOINFER_GDN_BROADCAST_PROBE_BASELINE");
         for(int arm=0;arm<3;++arm) {
-#ifdef _WIN32
-            _putenv_s("TYLOINFER_GDN_BROADCAST_NORMALIZATION",arm==1?(candidate?candidate:"1"):(baseline?baseline:"0"));
-#else
-            setenv("TYLOINFER_GDN_BROADCAST_NORMALIZATION",arm==1?(candidate?candidate:"1"):(baseline?baseline:"0"),1);
-#endif
+            mfq::cuda::env_set("TYLOINFER_GDN_BROADCAST_NORMALIZATION",arm==1?(candidate?candidate:"1"):(baseline?baseline:"0"));
             std::cout<<"gdn_broadcast_batch_arm="<<arm<<'\n';gdn_batch_core_benchmark(2);
         }
     }

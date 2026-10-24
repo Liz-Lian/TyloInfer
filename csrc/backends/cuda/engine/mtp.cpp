@@ -1,3 +1,4 @@
+#include "env.h"
 #include "runtime/routed_cache_resources.h"
 #include "generation.h"
 #include "token_row_prefetch.h"
@@ -81,7 +82,7 @@ template <class Model> struct CudaMtpOps {
   std::shared_ptr<MoeExpertCache> target_route_cache;
   static bool profile_target() {
     static const bool enabled=[] {
-      const auto* option=std::getenv("TYLOINFER_PROFILE_MTP");
+      const auto* option=mfq::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
       return option && option[0]=='1';
     }();
     return enabled;
@@ -124,14 +125,14 @@ template <class Model> struct CudaMtpOps {
   bool gradual_mtp_warmup() const {return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>;}
   bool metal_mtp_policy() const {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      const auto* option=std::getenv("TYLOINFER_MTP_METAL_POLICY");
+      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_METAL_POLICY");
       return !option || option[0]!='0';
     }
     return false;
   }
   bool prefetch_target_ids(int32_t token,const std::vector<int32_t>& drafts) {
     if constexpr(requires {model.adapter_prefetch_token_rows(model,early_ple_ids_host);}) {
-      const auto* option=std::getenv("TYLOINFER_MTP_EARLY_PLE");
+      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_EARLY_PLE");
       if(option && option[0]=='0')return false;
       const int tokens=mtp.split_target_verification()?1:1+int(drafts.size());
       if(!early_ple_ids_host.defined() || early_ple_ids_host.size(1)<tokens)
@@ -157,11 +158,11 @@ template <class Model> struct CudaMtpOps {
   }
   void prefetch_target_first(int32_t token) {prefetch_target_ids(token,{});}
   void prefetch_target_prefix(int32_t token,const std::vector<int32_t>& drafts) {
-    const auto* option=std::getenv("TYLOINFER_MTP_PLE_DRAFT_PREFIX");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_PLE_DRAFT_PREFIX");
     if(!option || option[0]!='0')prefetch_target_ids(token,drafts);
   }
   void prefetch_committed_token(int32_t token) {
-    const auto* option=std::getenv("TYLOINFER_MTP_PLE_PUBLICATION");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_PLE_PUBLICATION");
     if(option && option[0]=='0')return;
     if(prefetch_target_ids(token,{})) {
       static bool reported=false;
@@ -171,12 +172,12 @@ template <class Model> struct CudaMtpOps {
     }
   }
   bool stream_prompt_history(int64_t tokens) const {
-    const auto* option=std::getenv("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
     return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && tokens>16384 && (!option || option[0]!='0');
   }
   bool host_prompt_history(int64_t tokens) const {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      const auto* option=std::getenv("TYLOINFER_MTP_HOST_PROMPT_HISTORY");
+      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HOST_PROMPT_HISTORY");
       if(option)return option[0]!='0';
       const auto bytes=std::size_t(tokens)*model.hidden_size()*model.hc_mult()*sizeof(uint16_t);
       return bytes+(std::size_t(32)<<20)>
@@ -193,7 +194,7 @@ template <class Model> struct CudaMtpOps {
         <<" predictor_workspace_ms="<<workspace_ms<<" streamed="<<stream_prompt_history(input_ids.size(1))<<std::endl;
   }
   bool bootstrap_before_publication() const {
-    const auto* option=std::getenv("TYLOINFER_MTP_EARLY_BOOTSTRAP");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_EARLY_BOOTSTRAP");
     return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && (!option || option[0]!='0');
   }
   bool retains_partial_target_prefix(int accepted) const {
@@ -208,17 +209,17 @@ template <class Model> struct CudaMtpOps {
     // During plain-decode calibration, consume a full warmed graph tile
     // while that short cycle has room. Re-entry otherwise pays for several
     // history replays immediately before drafting and target verification.
-    const auto* option=std::getenv("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
     return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && (!option || option[0]!='0')?4:512;
   }
   std::size_t predictor_parked_history_flush_threshold() const {
     // Amortize the target/predictor expert-exchange boundary while bounding
     // final and re-entry maintenance by four warmed, headless graph tiles.
-    const auto* option=std::getenv("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
     return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && (!option || option[0]!='0')?16:512;
   }
   void trace_cycle(uint64_t cycle,int depth,int accepted,double draft_ms,double verify_ms,double commit_ms) {
-      const auto* option=std::getenv("TYLOINFER_PROFILE_MTP");
+      const auto* option=mfq::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
       const bool profile=option && option[0]=='1';
       if(profile || (cycle<=32 && draft_ms+verify_ms+commit_ms>=55.0)) {
         std::cerr<<(profile?"runtime_mtp_cycle_profile cycle=":"runtime_mtp_slow_cycle cycle=")<<cycle<<" depth="<<depth<<" accepted="<<accepted
@@ -256,7 +257,7 @@ template <class Model> struct CudaMtpOps {
   }
   auto &sampler() { return *sampler_; }
   bool captured_compact_requested() const {
-    const auto* option=std::getenv("TYLOINFER_MTP_CONDITIONAL_TOPK");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_CONDITIONAL_TOPK");
     if(option && option[0]=='0')return true;
     const auto& parameters=sampler_->params();
     return !sampler_->greedy() && !penalties && parameters.top_k>0 && parameters.top_k<=64;
@@ -470,7 +471,7 @@ template <class Model> struct CudaMtpOps {
 #endif
         // Earlier teacher-forced rows contribute only predictor attention KV.
         // Their FFN/readout has no consumer; draft from the final row alone.
-        const auto* chain_option=std::getenv("TYLOINFER_MTP_HISTORY_CHAIN");
+        const auto* chain_option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
         if(prefix>1 && (!chain_option || chain_option[0]!='0')) {
           predictor_history_step(hidden.narrow(1,0,prefix),ids.narrow(1,0,prefix),
               positions.defined()?positions.narrow(-1,0,prefix):Tensor{},true);
@@ -572,7 +573,7 @@ template <class Model> struct CudaMtpOps {
   }
   bool cache_only_prompt_history() const {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      const auto* option=std::getenv("TYLOINFER_MTP_CACHE_ONLY_PRIME");
+      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_CACHE_ONLY_PRIME");
       const auto* predictor=dynamic_cast<const mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
       return (!option || option[0]!='0') && predictor && predictor->layers.size()==1;
     }
@@ -687,7 +688,7 @@ template <class Model> struct CudaMtpOps {
         parameters.temperature, parameters.top_k, parameters.top_p);
   }
   bool compact_radix_enabled(const Tensor& logits) const {
-    const auto* option=std::getenv("TYLOINFER_MTP_RADIX_TOPK");
+    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_RADIX_TOPK");
     return option && option[0]=='1' && logits.size(0)<=32;
   }
   std::vector<mfq::engine::mtp::CompactDistribution>

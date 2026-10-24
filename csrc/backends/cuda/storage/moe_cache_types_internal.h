@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 
 #include "storage/moe_expert_cache.h"
 
@@ -338,7 +339,7 @@ inline int64_t moe_packed_slot_bytes(const std::vector<int64_t>& fields) {
 }
 
 inline bool moe_packed_transfer_stages_enabled() {
-    const auto* value=std::getenv("TYLOINFER_MOE_PACKED_TRANSFER_STAGE");
+    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PACKED_TRANSFER_STAGE");
     return !value || value[0]!='0';
 }
 

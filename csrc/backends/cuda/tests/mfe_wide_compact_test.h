@@ -1,19 +1,16 @@
 #pragma once
+#include "env.h"
 #include "mfe_ffn_runtime.h"
 #include "mfe_ffn_token_groups.h"
 
 class MfeWideOption {
     const char* key_;std::string old_;bool present_;
 public:
-    explicit MfeWideOption(const char* key,const char* value):key_(key),present_(std::getenv(key)!=nullptr) {
-        if(present_)old_=std::getenv(key);set(value);
+    explicit MfeWideOption(const char* key,const char* value):key_(key),present_(mfq::cuda::env_lookup(key)!=nullptr) {
+        if(present_)old_=mfq::cuda::env_lookup(key);set(value);
     }
     void set(const char* value)const {
-#ifdef _WIN32
-        _putenv_s(key_,value);
-#else
-        if(*value)setenv(key_,value,1);else unsetenv(key_);
-#endif
+        if(*value)mfq::cuda::env_set(key_,value);else mfq::cuda::env_clear(key_);
     }
     ~MfeWideOption(){set(present_?old_.c_str():"");}
 };
@@ -28,7 +25,7 @@ void verify_mfe_wide_compact(const std::filesystem::path& root,bool benchmark=tr
     CudaExecutionContext execution;const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     const auto stream=mfq_current_cuda_stream();context->begin_graph_pool(stream);
     const auto sigmoid=moe_swiglu_sigmoid_table_cuda();int checks=0,wide_buckets=0;
-    int case_index=0;const auto* start_option=std::getenv("TYLOINFER_MFE_WIDE_START_CASE");
+    int case_index=0;const auto* start_option=mfq::cuda::env_lookup("TYLOINFER_MFE_WIDE_START_CASE");
     const int start_case=start_option?std::atoi(start_option):0;
     std::array<NintWeight,3> shared_weights;
     for(int p=0;p<3;++p) {

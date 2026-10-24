@@ -1,4 +1,5 @@
 #pragma once
+#include "env.h"
 #include "dma_copy_batch.h"
 #include <cuda.h>
 #include <array>
@@ -52,7 +53,7 @@ public:
         if(!mode || copies.empty() || !entry())return false;
         constexpr std::size_t capacity=128;
         if(copies.size()>capacity) {
-            const auto* multiple=std::getenv("TYLOINFER_MOE_NATIVE_DMA_MULTI_BATCH");
+            const auto* multiple=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_MULTI_BATCH");
             if(multiple && multiple[0]=='0')return false;
         }
         struct Packet {
