@@ -1,7 +1,7 @@
-#include "tyloinfer/hf_model_source.h"
+#include "hf_model_source.h"
 
-#include "tyloinfer/fp8_sq_blob.h"
-#include "mfq_legacy_tensor_names.h"
+#include "formats/fp8_sq_blob.h"
+#include "compat/mfq_legacy_tensor_names.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -661,9 +661,8 @@ const TensorMetadata* HfModelSource::find_tensor(
         : &impl_->tensors[found->second];
 }
 
-const MfqLegacyTensorAliases&
-HfModelSource::legacy_tensor_compatibility() const noexcept {
-    return impl_->legacy_tensor_compatibility;
+TensorLayout HfModelSource::tensor_layout() const noexcept {
+    return impl_->legacy_tensor_compatibility.layout;
 }
 
 void HfModelSource::read_range_into(

@@ -1,15 +1,11 @@
 #pragma once
 
 #include <string_view>
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-#include "mfq_format_compat.h"
-#endif
 
 namespace mfq {
 
 inline bool supported_tensor_dtype(std::string_view dtype) noexcept {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    dtype = canonical_format_dtype(dtype);
     if (dtype == "NINT" || dtype == "NINT8-0" || dtype == "NVQ" ||
         dtype == "MFE" || dtype == "MFED" || dtype == "NPQ" ||
         dtype == "NEPQ" || dtype == "MXFP4-SQ" ||

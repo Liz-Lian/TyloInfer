@@ -1,8 +1,8 @@
-#include "tyloinfer/nint_rows.h"
+#include "nint_rows.h"
 
-#include "tyloinfer/nint_blob.h"
-#include "tyloinfer/host_parallel.h"
-#include "tyloinfer/packed_row_range.h"
+#include "nint_blob.h"
+#include "backends/cpu/native/host_parallel.h"
+#include "packed_row_range.h"
 
 #include <algorithm>
 #include <cstring>

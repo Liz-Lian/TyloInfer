@@ -1,11 +1,21 @@
 #pragma once
-#include "tyloinfer/model_source.h"
 #include <algorithm>
 #include <array>
+#include <climits>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <memory>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace mfq {
+using TqRead = std::function<void(
+    std::uint64_t, std::byte*, std::size_t)>;
+
 struct TqLayout {
     std::uint32_t rows=0,width=0,gs=0,packed_bytes=0;
     bool columns=false;
@@ -39,11 +49,11 @@ struct TqLayout {
 
 // Retained bounded reads; no expanded weights and no expert/cache ownership.
 class TqRows {
-    ModelSource::TensorReader read_;
+    TqRead read_;
     TqLayout layout_;
     std::array<std::uint8_t,64> header_{};
 public:
-    TqRows(std::size_t bytes,ModelSource::TensorReader read):read_(std::move(read)) {
+    TqRows(std::size_t bytes,TqRead read):read_(std::move(read)) {
         if(bytes<64)throw std::invalid_argument("truncated TQ header");
         read_(0,reinterpret_cast<std::byte*>(header_.data()),header_.size());
         layout_=TqLayout(header_.data(),bytes);
@@ -143,7 +153,7 @@ public:
 };
 
 inline std::vector<std::shared_ptr<TqRows>> tq_row_segments(
-        std::size_t bytes, ModelSource::TensorReader read, std::uint64_t logical_width) {
+        std::size_t bytes, TqRead read, std::uint64_t logical_width) {
     if (bytes < 64) throw std::invalid_argument("truncated TQ tensor header");
     std::array<std::uint8_t, 64> header{};
     read(0, reinterpret_cast<std::byte*>(header.data()), header.size());
@@ -189,7 +199,7 @@ inline std::vector<std::shared_ptr<TqRows>> tq_row_segments(
 }
 
 inline std::vector<std::int64_t> tq_tensor_shape(std::size_t bytes,
-        const ModelSource::TensorReader& read, std::vector<std::int64_t> logical = {}) {
+        const TqRead& read, std::vector<std::int64_t> logical = {}) {
     if (bytes < 64) throw std::invalid_argument("truncated TQ tensor header");
     std::array<std::uint8_t,64> header{};
     read(0, reinterpret_cast<std::byte*>(header.data()), header.size());

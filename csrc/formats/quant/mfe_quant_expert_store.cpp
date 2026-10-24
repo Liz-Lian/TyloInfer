@@ -1,7 +1,6 @@
-#include "tyloinfer/mfe_quant_expert_store.h"
-#include "tyloinfer/packed_nint_expert_store.h"
-#include "tyloinfer/host_parallel.h"
-#include "mfq_format_compat.h"
+#include "mfe_quant_expert_store.h"
+#include "packed_nint_expert_store.h"
+#include "backends/cpu/native/host_parallel.h"
 
 #include <algorithm>
 #include <cstring>
@@ -265,8 +264,8 @@ MfeQuantExpertStore::MfeQuantExpertStore(std::size_t bytes,Read reader,NintRows:
         Pool pool;
         pool.offset=static_cast<std::size_t>(cursor);
         pool.bytes=static_cast<std::size_t>(bytes);
-        pool.dtype=std::string(mfq::canonical_format_dtype(std::string(
-            reinterpret_cast<const char*>(metadata.data()+std::size_t(count)*4),dtype_bytes)));
+        pool.dtype=std::string(reinterpret_cast<const char*>(
+            metadata.data()+std::size_t(count)*4), dtype_bytes);
         pool.ids.resize(count);
         for (std::uint32_t local=0; local<count; ++local) {
             const auto expert=value<std::int32_t>(metadata,std::size_t(local)*4);
@@ -275,8 +274,8 @@ MfeQuantExpertStore::MfeQuantExpertStore(std::size_t bytes,Read reader,NintRows:
             pool.ids[local]=expert;
             owners_[expert]={static_cast<int>(index),static_cast<int>(local)};
         }
-        // Capture the immutable range callback rather than the ModelSource
-        // owner by reference; callers supply its owning tensor_reader handle.
+        // Capture the immutable range callback rather than its owner by
+        // reference; callers supply the owning range-reader handle.
         const auto body=[reader=read_,offset=static_cast<std::size_t>(cursor),bytes](std::size_t position,
                 std::uint8_t* output,std::size_t size) {
             if (position>bytes || size>bytes-position) throw std::runtime_error("mixed expert row read exceeds pool");

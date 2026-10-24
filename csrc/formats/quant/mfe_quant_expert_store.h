@@ -1,7 +1,7 @@
 #pragma once
 
-#include "tyloinfer/nint_rows.h"
-#include "tyloinfer/nvq_rows.h"
+#include "nint_rows.h"
+#include "nvq_rows.h"
 
 #include <memory>
 #include <functional>

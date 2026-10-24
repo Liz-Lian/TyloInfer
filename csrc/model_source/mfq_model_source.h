@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tyloinfer/model_source.h"
+#include "model_source.h"
 
 #include <filesystem>
 #include <memory>
@@ -44,8 +44,7 @@ public:
     const std::vector<TensorMetadata>& tensors() const noexcept override;
     const TensorMetadata* find_tensor(
         std::string_view name) const noexcept override;
-    const MfqLegacyTensorAliases& legacy_tensor_compatibility()
-        const noexcept override;
+    TensorLayout tensor_layout() const noexcept override;
     void read_range_into(
         std::string_view name,
         std::uint64_t relative_offset,

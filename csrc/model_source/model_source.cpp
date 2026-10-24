@@ -1,9 +1,9 @@
-#include "tyloinfer/model_source.h"
+#include "model_source.h"
 
-#include "tyloinfer/hf_model_source.h"
-#include "tyloinfer/mfq_model_source.h"
-#include "tyloinfer/tq_fixture_source.h"
-#include "mfq_legacy_model_graph.h"
+#include "hf_model_source.h"
+#include "mfq_model_source.h"
+#include "tq_fixture_source.h"
+#include "compat/mfq_legacy_model_graph.h"
 
 #include <cstdlib>
 

@@ -6,7 +6,7 @@
 #include <functional>
 #include <optional>
 #include <vector>
-#include "tyloinfer/read_span.h"
+#include "components/io/read_span.h"
 
 namespace mfq {
 // Index over a canonical NVQ/NPQ tensor. Only its compact header and

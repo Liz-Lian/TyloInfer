@@ -1,5 +1,5 @@
-#include "tyloinfer/tq_fixture_source.h"
-#include "tyloinfer/mfq_model_source.h"
+#include "tq_fixture_source.h"
+#include "mfq_model_source.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <array>

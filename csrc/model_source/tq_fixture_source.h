@@ -1,5 +1,5 @@
 #pragma once
-#include "tyloinfer/model_source.h"
+#include "model_source.h"
 
 namespace mfq {
 // Explicit synthetic benchmark input. No normal model load creates this source.

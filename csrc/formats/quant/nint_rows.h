@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <vector>
-#include "tyloinfer/read_span.h"
+#include "components/io/read_span.h"
 
 namespace mfq {
 

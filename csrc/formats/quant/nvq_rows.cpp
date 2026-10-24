@@ -1,5 +1,5 @@
-#include "tyloinfer/nvq_rows.h"
-#include "tyloinfer/packed_row_range.h"
+#include "nvq_rows.h"
+#include "packed_row_range.h"
 
 #include <cstring>
 #include <limits>

@@ -1,12 +1,12 @@
-#include "tyloinfer/mfq_model_source.h"
-#include "tyloinfer/tensor_dtype.h"
-#include "tyloinfer/async_range_reader.h"
-#include "tyloinfer/mapped_read_profile.h"
-#include "tyloinfer/mapped_prefetch_scope.h"
-#include "tyloinfer/mapped_tensor_pages.h"
+#include "mfq_model_source.h"
+#include "formats/tensor_dtype.h"
+#include "components/io/async_range_reader.h"
+#include "mapped_read_profile.h"
+#include "mapped_prefetch_scope.h"
+#include "mapped_tensor_pages.h"
 
-#include "mfq_format_compat.h"
-#include "mfq_legacy_tensor_names.h"
+#include "compat/mfq_format_compat.h"
+#include "compat/mfq_legacy_tensor_names.h"
 
 #include <algorithm>
 #include <atomic>
@@ -479,12 +479,17 @@ ParsedFile parse_file(const std::filesystem::path& requested) {
         MfqStoredRecord record;
         record.tensor.name = input.string("record name");
         record.tensor.stored_dtype = input.string("record dtype");
-        if (!supported_tensor_dtype(record.tensor.stored_dtype)) {
+        const auto dtype =
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+            canonical_format_dtype(record.tensor.stored_dtype);
+#else
+            std::string_view(record.tensor.stored_dtype);
+#endif
+        if (!supported_tensor_dtype(dtype)) {
             throw std::runtime_error("TyloInfer does not support tensor format "
                 + record.tensor.stored_dtype + ": " + record.tensor.name);
         }
-        record.tensor.dtype = std::string(
-            canonical_format_dtype(record.tensor.stored_dtype));
+        record.tensor.dtype = std::string(dtype);
         record.tensor.nbytes = input.scalar<std::uint64_t>("record length");
         record.asset = record.tensor.name.compare(
                            0, kAssetPrefix.size(), kAssetPrefix) == 0;
@@ -779,9 +784,8 @@ const TensorMetadata* MfqModelSource::find_tensor(std::string_view name) const n
         : &impl_->tensors[found->second];
 }
 
-const MfqLegacyTensorAliases&
-MfqModelSource::legacy_tensor_compatibility() const noexcept {
-    return impl_->legacy_tensor_compatibility;
+TensorLayout MfqModelSource::tensor_layout() const noexcept {
+    return impl_->legacy_tensor_compatibility.layout;
 }
 
 void MfqModelSource::read_range_into(

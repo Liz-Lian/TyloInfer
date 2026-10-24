@@ -1,9 +1,8 @@
 #pragma once
 
-#include "tyloinfer/model_graph.h"
-#include "tyloinfer/file_range_reader.h"
-#include "tyloinfer/read_span.h"
-#include "mfq_legacy_tensor_names.h"
+#include "formats/model_graph.h"
+#include "components/io/file_range_reader.h"
+#include "components/io/read_span.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +32,14 @@ struct TensorMetadata {
     std::uint64_t nbytes = 0;
 };
 
+// The small set of legacy numeric-layout facts still needed by model loaders.
+// Name aliases remain private to each source implementation.
+struct TensorLayout {
+    double norm_weight_offset = 1.0;
+    bool linear_attention_a_is_log = true;
+    bool qwen_gdn_gguf_layout = false;
+};
+
 // A capability refusal, distinct from invalid metadata or a failed read.
 class TensorReaderUnsupported : public std::runtime_error {
 public:
@@ -57,11 +64,7 @@ public:
     virtual const std::vector<TensorMetadata>& tensors() const noexcept = 0;
     virtual const TensorMetadata* find_tensor(
         std::string_view name) const noexcept = 0;
-    virtual const MfqLegacyTensorAliases& legacy_tensor_compatibility()
-        const noexcept {
-        static const MfqLegacyTensorAliases compatibility;
-        return compatibility;
-    }
+    virtual TensorLayout tensor_layout() const noexcept { return {}; }
     virtual void read_range_into(
         std::string_view name,
         std::uint64_t relative_offset,

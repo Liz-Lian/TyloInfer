@@ -1,5 +1,5 @@
 #pragma once
-#include "tyloinfer/mxfp4_sq_blob.h"
+#include "mxfp4_sq_blob.h"
 #include <cmath>
 
 namespace mfq::sq {
