@@ -19,6 +19,12 @@ struct MfqDropFileCacheGuard {
     }
 };
 
+const mfq::TensorMetadata& require_tensor(
+    const mfq::ModelSource& source, std::string_view name);
+std::vector<std::uint8_t> read_tensor(
+    const mfq::ModelSource& source, std::string_view name);
+bool is_quant_dtype(const std::string& dtype);
+
 bool has_tensor(const mfq::ModelSource& source, std::string_view name) noexcept;
 
 std::shared_ptr<mfq::NintRows> load_nint_row_table(

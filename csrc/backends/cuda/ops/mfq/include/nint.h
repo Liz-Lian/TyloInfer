@@ -1,7 +1,6 @@
 #pragma once
 
 #include "backend.h"
-#include "tyloinfer/model_source.h"
 #include "tyloinfer/nint_rows.h"
 
 #include <cstdint>

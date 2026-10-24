@@ -2,6 +2,8 @@
 
 #include "mfe_weight.h"
 
+namespace mfq { class ModelSource; }
+
 struct MfeCpuPool {
     std::vector<int32_t> expert_ids;
     std::string dtype;

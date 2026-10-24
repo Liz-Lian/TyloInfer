@@ -5,6 +5,8 @@
 #include "runtime/row_stage.h"
 #include <array>
 
+namespace mfq { class ModelSource; }
+
 class TqGemmResources;
 struct TqWeight {
     // Keep execution streams alive until image storage has fenced its users.

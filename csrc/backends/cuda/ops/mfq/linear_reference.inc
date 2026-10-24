@@ -1,4 +1,4 @@
-static mfq_tensor_backend::Tensor dequant_nint_dense_f32(const NintWeight & w) {
+mfq_tensor_backend::Tensor dequant_nint_dense_f32(const NintWeight & w) {
     if (w.q8_zero) {
         return nint8_zero_dequant_f32_cuda(
             w.q_packed, w.q8_zero_scale, w.neuron_len).contiguous();

@@ -881,6 +881,17 @@ set_target_properties(mfq-cuda-runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+    add_executable(mfq-cuda-weight-loader-test
+        ${TYLOINFER_CUDA_ROOT}/tests/weight_loader_test.cpp)
+    mfq_configure_cuda_runtime_target(mfq-cuda-weight-loader-test)
+    target_compile_definitions(mfq-cuda-weight-loader-test PRIVATE
+        TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+    target_link_libraries(mfq-cuda-weight-loader-test PRIVATE mfq-cuda-runtime)
+    if(MSVC)
+        target_compile_options(mfq-cuda-weight-loader-test PRIVATE /EHsc)
+    endif()
+    add_test(NAME mfq-cuda-weight-loader-test COMMAND mfq-cuda-weight-loader-test)
+    set_tests_properties(mfq-cuda-weight-loader-test PROPERTIES SKIP_RETURN_CODE 77)
     target_link_libraries(mfq-flash-next-test PRIVATE
         mfq-cuda-runtime)
     # The execution-scope and runtime-state fixtures exercise legacy MFQ runtime state.

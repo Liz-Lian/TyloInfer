@@ -1,4 +1,5 @@
 #include "tq.h"
+#include "tyloinfer/model_source.h"
 #include "weight_memory.h"
 #include "nlohmann/json.hpp"
 #include "storage/moe_expert_cache.h"

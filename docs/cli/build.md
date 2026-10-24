@@ -67,6 +67,10 @@ context and tensor implementation behind the `backend.h` seam, `kernels/` the
 device sources, `ops/` the operator adapters, and `engine/`, `models/`,
 `storage/` the runtime above them.
 
+Shared linear operators in `ops/common/quant_linear.cpp` consume loaded weights.
+Model-source reads, dtype selection, shard planning and linear loading belong to
+`storage/weight_loader.cpp`.
+
 `csrc/backends/cuda/kernels/` is the only source of the shared CUDA
 kernels. The native CMake targets (`TYLOINFER_CUDA_KERNEL_ROOT`) and the Python
 JIT extension (`tyloinfer.kernels.cuda._ext`) compile the same files; the Python

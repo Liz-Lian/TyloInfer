@@ -1,4 +1,5 @@
 #include "mfq_cuda_norm_ops.h"
+#include "memory_tensor_source.h"
 #include "cuda_execution.h"
 #include "cuda_runtime_config.h"
 #include "cuda_sampling.h"
@@ -37,30 +38,6 @@ static void check(bool ok, const char *message) {
     if (!ok)
         throw std::runtime_error(message);
 }
-
-struct MemoryTensorSource final : mfq::ModelSource {
-    std::vector<uint8_t> bytes;
-    std::vector<mfq::TensorMetadata> records{{"weight", "F32", "F32", std::nullopt, 0}};
-    std::vector<std::filesystem::path> paths;
-    std::unordered_map<std::string, std::string> meta;
-    std::vector<std::string> asset_names;
-    const std::vector<std::filesystem::path>& source_paths() const noexcept override { return paths; }
-    std::string_view architecture() const noexcept override { return {}; }
-    const std::unordered_map<std::string, std::string>& metadata() const noexcept override { return meta; }
-    const std::vector<mfq::TensorMetadata>& tensors() const noexcept override { return records; }
-    const mfq::TensorMetadata* find_tensor(std::string_view name) const noexcept override {
-        for(const auto& record:records)if(record.name==name)return &record;
-        return nullptr;
-    }
-    void read_range_into(std::string_view, uint64_t offset, std::byte* output, size_t size) const override {
-        check(offset <= bytes.size() && size <= bytes.size() - offset, "memory fixture range");
-        if (size) std::memcpy(output, bytes.data() + offset, size);
-    }
-    const std::vector<std::string>& assets() const noexcept override { return asset_names; }
-    bool has_asset(std::string_view) const noexcept override { return false; }
-    std::vector<std::byte> read_asset(std::string_view) const override { throw std::runtime_error("no assets"); }
-    std::optional<mfq::ModelGraph> model_graph() const override { return std::nullopt; }
-};
 
 static void check_sampling_fallback() {
     namespace tb=mfq_tensor_backend;
@@ -174,56 +151,6 @@ static void check_graph_warmup_state() {
     check(rejected, "graph warmup accepted unconfirmed recurrent state");
 }
 
-static void check_dense_loading() {
-    using namespace mfq_tensor_backend;
-    MemoryTensorSource source;
-    CudaExecutionContext execution;
-    const uint32_t rank = 2;
-    const int64_t shape[] = {2, 2};
-    const size_t header = sizeof(rank) + sizeof(shape);
-    auto same = [](Tensor value, const Tensor &expected) {
-        value = value.cpu().contiguous();
-        return value.scalar_type() == expected.scalar_type() && value.sizes() == expected.sizes() &&
-               std::memcmp(value.data_ptr(), expected.data_ptr(), expected.nbytes()) == 0;
-    };
-    for (const auto &[name, dtype] : std::vector<std::pair<std::string, ScalarType>>{
-             {"BF16", kBFloat16}, {"F16", kFloat16}, {"F32", kFloat32}, {"I64", kInt64}, {"I32", kInt32}}) {
-        const auto expected = tensor(std::vector<float>{-3.25, 0, 1.125, 7}).reshape({2, 2}).to(dtype);
-        source.records[0].dtype = name;
-        source.bytes.resize(header + expected.nbytes());
-        std::memcpy(source.bytes.data(), &rank, sizeof(rank));
-        std::memcpy(source.bytes.data() + sizeof(rank), shape, sizeof(shape));
-        std::memcpy(source.bytes.data() + header, expected.data_ptr(), expected.nbytes());
-        source.records[0].nbytes = source.bytes.size();
-        auto native = load_dense_native_gpu(execution, source, "weight");
-        check(same(native, expected), "dense native dtype/value changed");
-        const auto promoted = name == "BF16" || name == "F16" ? kFloat32 : dtype;
-        for (bool cpu_layer : {false, true}) {
-            execution.loading_cpu_layer = cpu_layer;
-            auto value = load_dense_gpu(execution, source, "weight");
-            check(value.is_cuda() != cpu_layer && value.scalar_type() == promoted &&
-                      same(value, expected.to(promoted)), "dense load placement/promotion changed");
-        }
-    }
-    const auto valid = source.bytes;
-    auto rejects = [&] {
-        source.records[0].nbytes = source.bytes.size();
-        bool rejected = false;
-        try { (void)load_dense_cpu(execution, source, "weight"); }
-        catch (const std::exception&) { rejected = true; }
-        check(rejected, "malformed dense tensor accepted");
-    };
-    for (size_t size : {size_t(0), size_t(3), header - 1, valid.size() - 1}) {
-        source.bytes = valid;
-        source.bytes.resize(size);
-        rejects();
-    }
-    for (int64_t extent : {int64_t(-1), std::numeric_limits<int64_t>::max()}) {
-        source.bytes = valid;
-        std::memcpy(source.bytes.data() + sizeof(rank), &extent, sizeof(extent));
-        rejects();
-    }
-}
 
 static void check_cached_moe_binding() {
     using namespace mfq_tensor_backend;
@@ -1649,7 +1576,6 @@ int main(int argc, char** argv) try {
     check_sampling_storage();
     check_linear_execution();
     check_graph_warmup_state();
-    check_dense_loading();
     check_cached_moe_binding();
     check_gemma_composition();
     check_tts_sampling();

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "backend.h"
-#include "tyloinfer/model_source.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -10,10 +9,6 @@
 #include <string_view>
 #include <vector>
 
-const mfq::TensorMetadata& require_tensor(
-    const mfq::ModelSource& source, std::string_view name);
-std::vector<std::uint8_t> read_tensor(
-    const mfq::ModelSource& source, std::string_view name);
 std::int64_t read_i64_from(
     const std::vector<std::uint8_t>& bytes, std::size_t& offset);
 std::uint32_t read_u32_from(

@@ -263,6 +263,21 @@ def test_cuda_quant_runtime_implementations_stay_out_of_headers() -> None:
 
 
 
+def test_cuda_linear_execution_consumes_loaded_weights() -> None:
+    source = (CUDA_OPS / "common/quant_linear.cpp").read_text()
+    header = (CUDA_OPS / "common/include/quant_linear.h").read_text()
+    formats = (CUDA_OPS / "common/include/format.h").read_text()
+    for dependency in ("ModelSource", "TensorMetadata", "storage/", "weight_loader.h",
+                       "require_tensor(", "read_tensor(", "read_asset("):
+        assert dependency not in source, dependency
+    for function in ("load_dense_gpu(", "load_quant_linear(", "load_quant_group(",
+                     "load_paired_gate_up(", "is_quant_dtype("):
+        assert function not in source
+        assert function not in header
+    assert "ModelSource" not in formats
+    assert "TensorMetadata" not in formats
+
+
 def test_moe_cache_api_receives_resources_without_execution_context() -> None:
     api = (CUDA_OPS.parent / "storage/moe_expert_cache.h").read_text()
     assert "CudaExecutionContext" not in api

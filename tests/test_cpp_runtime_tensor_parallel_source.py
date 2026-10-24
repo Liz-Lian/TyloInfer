@@ -64,12 +64,13 @@ def test_tensor_parallel_has_a_native_partition_test_target():
 
 def test_tq_parallel_preserves_compressed_rows_and_input_rings():
     linear = (CUDA_ROOT / "ops" / "common" / "quant_linear.cpp").read_text(encoding="utf-8")
+    loader = (CUDA_ROOT / "storage" / "weight_loader.cpp").read_text(encoding="utf-8")
     header = (CUDA_ROOT / "ops" / "common" / "include" / "quant_linear.h").read_text(encoding="utf-8")
     shard = header.split("struct QuantLinearShard {", 1)[1].split("};", 1)[0]
     assert "TqWeight tq;" in shard
-    assert "rows.slice_rows(slice.begin,slice.end)" in linear
-    assert "rows.slice_columns(slice.begin*256,slice.end*256)" in linear
-    assert "shard.tq=to_device_tq" in linear
+    assert "rows.slice_rows(slice.begin,slice.end)" in loader
+    assert "rows.slice_columns(slice.begin*256,slice.end*256)" in loader
+    assert "shard.tq=to_device_tq" in loader
     assert 'profiler.measure("tq.tensor_parallel"' in linear
     assert "if(is_tq() && !tensor_parallel())" in linear
     for method, logical in (("out", "logical_out"), ("neuron_len", "logical_neuron_len")):
