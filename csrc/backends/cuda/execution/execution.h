@@ -44,6 +44,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 class MoeExpertCache;
 class TqExpertCache;
+class TqExec;
 
 // One load owner outlives its execution context and every model borrowing it.
 struct CudaStores {
@@ -397,6 +398,7 @@ struct CudaExecutionContext {
     ModelParallelCollectiveRuntime model_parallel_collectives;
     LayerPlacementConfig layer_placement;
     CudaStores& stores;
+    std::shared_ptr<TqExec> tq;
     std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
 
     void drain();

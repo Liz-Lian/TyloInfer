@@ -4,16 +4,12 @@
 #include "tyloinfer/kernels/cuda/tq_ops.h"
 #include <array>
 
-class TqGemmResources;
-std::shared_ptr<TqGemmResources> tq_gemm_resources(int device);
 struct TqWeight {
-    // Keep execution streams alive until image storage has fenced its users.
-    std::shared_ptr<TqGemmResources> gemm;
     mfq_tensor_backend::Tensor image;
     TrellisProjectionView view{};
     std::int64_t out=0,neuron_len=0;
-    mfq_tensor_backend::Tensor forward(mfq_tensor_backend::Tensor)const;
-    mfq_tensor_backend::Tensor forward_groupwise(mfq_tensor_backend::Tensor,std::int64_t groups)const;
+    mfq_tensor_backend::Tensor forward(TqExec&,mfq_tensor_backend::Tensor)const;
+    mfq_tensor_backend::Tensor forward_groupwise(TqExec&,mfq_tensor_backend::Tensor,std::int64_t groups)const;
     mfq_tensor_backend::Tensor embedding(mfq_tensor_backend::Tensor)const;
 };
 // Device row plan only; compressed weights retain their original storage.
@@ -30,8 +26,8 @@ public:
     explicit TqProjectionGroup(std::vector<TqWeight>);
     void join_prefix(std::size_t count);
     bool defined()const noexcept{return !weights_.empty();}
-    std::vector<mfq_tensor_backend::Tensor> forward(mfq_tensor_backend::Tensor)const;
-    mfq_tensor_backend::Tensor swiglu(mfq_tensor_backend::Tensor)const;
+    std::vector<mfq_tensor_backend::Tensor> forward(TqExec&,mfq_tensor_backend::Tensor)const;
+    mfq_tensor_backend::Tensor swiglu(TqExec&,mfq_tensor_backend::Tensor)const;
 };
 
 struct TqRoutedWeight {

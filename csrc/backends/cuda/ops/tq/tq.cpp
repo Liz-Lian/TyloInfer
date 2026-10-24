@@ -1,5 +1,6 @@
 #include "env.h"
 #include "tq.h"
+#include "execution/tq.h"
 #include "storage/weights/tq/load.h"
 #include "weight_memory.h"
 #include "storage/weights/moe/expert_cache.h"
@@ -26,100 +27,6 @@
 
 namespace tb=mfq_tensor_backend;
 
-// Pinned plans are reused only after their last consumer completes. Keeping
-// them with model resources avoids a host allocation/free barrier per batch.
-struct TqPrefillPlan {
-    tb::Tensor host,device;
-    mfq::cuda::Event done;
-    ~TqPrefillPlan()noexcept {try{done.synchronize();}catch(...) {}}
-};
-struct TqPrefillPlanLease {
-    std::shared_ptr<TqPrefillPlan> plan;
-    cudaStream_t stream;
-    ~TqPrefillPlanLease()noexcept {
-        // Also fence uploads on exceptional exits before allowing reuse.
-        if(cudaEventRecord(plan->done.get(),stream)!=cudaSuccess)(void)cudaStreamSynchronize(stream);
-    }
-};
-
-// cuBLAS configuration is mutable. Give each execution stream a stable handle
-// so simultaneous prefill requests never redirect each other's GEMM work.
-// Weights and expert caches retain the pool, including streams/workspaces used
-// by captured graphs; its lifetime follows the loaded TQ model resources.
-class TqGemmResources {
-    struct Entry {
-        MfqCudaStream stream;
-        std::unique_ptr<mfq::cuda::BlasHandle> handle;
-    };
-    int device_;
-    bool indexed_mma_=false;
-    bool prefill_mma_=false;
-    bool host_register_=false;
-    std::mutex mutex_;
-    std::unordered_map<cudaStream_t,Entry> handles_;
-    std::vector<std::shared_ptr<TqPrefillPlan>> prefill_plans_;
-public:
-    explicit TqGemmResources(int device):device_(device) {
-        int major=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,device));
-        // The m16n8k16 FP16 instruction used by wide row tiles requires SM80.
-        indexed_mma_=major>=8;
-        // FP16 m16n16k16 WMMA is available from SM70. cp.async is optional.
-        prefill_mma_=major>=7;
-        int supported=0;
-        const auto registered=cudaDeviceGetAttribute(&supported,cudaDevAttrHostRegisterSupported,device);
-        if(registered==cudaSuccess)host_register_=supported!=0;
-        else if(registered==cudaErrorInvalidValue)(void)cudaGetLastError();
-        else TYLOINFER_CUDA_CHECK(registered);
-    }
-    bool indexed_mma()const noexcept{return indexed_mma_;}
-    bool prefill_mma()const noexcept{return prefill_mma_;}
-    bool host_register()const noexcept{return host_register_;}
-    std::shared_ptr<TqPrefillPlan> prefill_plan(std::int64_t bytes) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        for(auto it=prefill_plans_.begin();it!=prefill_plans_.end();) {
-            if(it->use_count()!=1 || !(*it)->done.ready()){++it;continue;}
-            if((*it)->host.numel()>=bytes) {
-                mfq_cuda_record_stream((*it)->device,mfq_get_current_cuda_stream(device_));
-                return *it;
-            }
-            // Drop obsolete, completed capacities rather than accumulating
-            // every prompt size ever used by the model.
-            it=prefill_plans_.erase(it);
-        }
-        auto plan=std::make_shared<TqPrefillPlan>();
-        const auto capacity=(bytes+4095)&~std::int64_t(4095);
-        plan->host=tb::empty({capacity},tb::TensorOptions().dtype(tb::kUInt8).pinned_memory(true));
-        plan->device=tb::empty({capacity},tb::TensorOptions().dtype(tb::kUInt8).device(tb::Device(tb::kCUDA,device_)));
-        prefill_plans_.push_back(plan);
-        return plan;
-    }
-    void retain(const MfqCudaStream& stream) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        handles_.try_emplace(stream.stream(),Entry{stream,{}});
-    }
-    cublasHandle_t get() {
-        const auto stream=mfq_get_current_cuda_stream(device_);
-        std::lock_guard<std::mutex> guard(mutex_);
-        auto found=handles_.find(stream.stream());
-        if(found==handles_.end())found=handles_.emplace(stream.stream(),Entry{stream,{}}).first;
-        if(!found->second.handle) {
-            auto handle=std::make_unique<mfq::cuda::BlasHandle>(device_);
-            handle->set_stream(stream.stream());
-            found->second.handle=std::move(handle);
-        }
-        return found->second.handle->get();
-    }
-};
-
-std::shared_ptr<TqGemmResources> tq_gemm_resources(int device) {
-    static std::mutex mutex;
-    static std::unordered_map<int,std::weak_ptr<TqGemmResources>> pools;
-    std::lock_guard<std::mutex> guard(mutex);
-    if(auto existing=pools[device].lock())return existing;
-    auto result=std::make_shared<TqGemmResources>(device);pools[device]=result;
-    return result;
-}
-
 namespace {
 int dtype(tb::ScalarType type) {
     if(type==tb::kFloat16)return 0;
@@ -144,15 +51,17 @@ bool short_q8(tb::ScalarType type,int64_t tokens) {
         (type==tb::kFloat32 || type==tb::kFloat16);
 }
 
-void project_tokens(const TqWeight& weight,const void* input,void* output,int tokens,
+void project_tokens(const TqWeight& weight,const std::shared_ptr<TqGemmResources>& gemm,
+        const void* input,void* output,int tokens,
         int type,void* workspace=nullptr,std::uint64_t workspace_bytes=0) {
     if(workspace && (type==0 || type==2) && tokens<=4) {
         status(mfq_tq_q8_tokens(weight.view,input,output,tokens,1,type,workspace,workspace_bytes,mfq_current_cuda_stream()));
     }else if(workspace && tokens>=(type==0?32:128)) {
+        if(!gemm)throw std::logic_error("TQ GEMM resource lease is missing");
         if(type==0)status(mfq_tq_gemm(weight.view,input,output,tokens,workspace,workspace_bytes,
-            weight.gemm->get(),mfq_current_cuda_stream()));
+            gemm->get(),mfq_current_cuda_stream()));
         else status(mfq_tq_float_gemm(weight.view,input,output,tokens,1,type,workspace,workspace_bytes,
-            weight.gemm->get(),mfq_current_cuda_stream()));
+            gemm->get(),mfq_current_cuda_stream()));
     }else status(mfq_tq_gemv_tokens(weight.view,input,output,tokens,type,mfq_current_cuda_stream()));
 }
 
@@ -198,7 +107,6 @@ namespace {
 TqWeight promote_tq(const TqWeight& weight,const tb::Device& device) {
     TqWeight result=weight;
     result.image=weight.image.to(device,false,false).contiguous();
-    result.gemm=tq_gemm_resources(device.index);
     const auto old=reinterpret_cast<std::uintptr_t>(weight.image.data_ptr());
     const auto target=reinterpret_cast<std::uintptr_t>(result.image.data_ptr());
     auto address=[&](const void* p){return p?target+(reinterpret_cast<std::uintptr_t>(p)-old):std::uintptr_t(0);};
@@ -210,8 +118,8 @@ TqWeight promote_tq(const TqWeight& weight,const tb::Device& device) {
 }
 }
 
-tb::Tensor TqWeight::forward(tb::Tensor input)const {
-    if(!image.is_cuda() && input.is_cuda())return promote_tq(*this,input.device()).forward(std::move(input));
+tb::Tensor TqWeight::forward(TqExec& exec,tb::Tensor input)const {
+    if(!image.is_cuda() && input.is_cuda())return promote_tq(*this,input.device()).forward(exec,std::move(input));
     if(input.size(-1)!=neuron_len || !input.is_cuda() || input.get_device()!=image.get_device())
         throw std::invalid_argument("TQ projection input shape or device differs");
     const MfqCudaGuard guard(image.get_device());
@@ -220,16 +128,18 @@ tb::Tensor TqWeight::forward(tb::Tensor input)const {
     const auto tokens=source.numel()/neuron_len;
     const auto element=source.element_size();
     const auto workspace=projection_workspace(*this,static_cast<int>(std::min<std::int64_t>(tokens,65535)),source.scalar_type());
+    const auto gemm = tokens >= gemm_min_tokens(source.scalar_type())
+        ? exec.get(image.get_device()) : std::shared_ptr<TqGemmResources>{};
     for(std::int64_t start=0;start<tokens;start+=65535) {
         const int count=static_cast<int>(std::min<std::int64_t>(65535,tokens-start));
-        project_tokens(*this,static_cast<const std::uint8_t*>(source.data_ptr())+start*neuron_len*element,
+        project_tokens(*this,gemm,static_cast<const std::uint8_t*>(source.data_ptr())+start*neuron_len*element,
             static_cast<std::uint8_t*>(result.data_ptr())+start*out*element,count,dtype(input.scalar_type()),
             workspace.defined()?workspace.data_ptr():nullptr,workspace.defined()?workspace.nbytes():0);
     }
     return result;
 }
-tb::Tensor TqWeight::forward_groupwise(tb::Tensor input,std::int64_t groups)const {
-    if(!image.is_cuda())return promote_tq(*this,input.device()).forward_groupwise(std::move(input),groups);
+tb::Tensor TqWeight::forward_groupwise(TqExec& exec,tb::Tensor input,std::int64_t groups)const {
+    if(!image.is_cuda())return promote_tq(*this,input.device()).forward_groupwise(exec,std::move(input),groups);
     if(!input.is_cuda() || input.get_device()!=image.get_device() || groups<1 || groups>INT_MAX ||
        out%groups || input.dim()<2 || input.size(-1)!=neuron_len || input.size(-2)!=groups ||
        neuron_len>INT_MAX/groups)
@@ -241,6 +151,8 @@ tb::Tensor TqWeight::forward_groupwise(tb::Tensor input,std::int64_t groups)cons
     auto shape=input.sizes().vec();shape.pop_back();shape.back()=out;
     auto result=tb::empty(shape,input.options());
     const auto workspace=projection_workspace(*this,static_cast<int>(std::min<std::int64_t>(tokens,65535)),source.scalar_type(),static_cast<int>(groups));
+    const auto gemm = tokens >= gemm_min_tokens(source.scalar_type())
+        ? exec.get(image.get_device()) : std::shared_ptr<TqGemmResources>{};
     for(std::int64_t start=0;start<tokens;start+=65535) {
         const int count=static_cast<int>(std::min<std::int64_t>(65535,tokens-start));
         const auto* x=static_cast<const uint8_t*>(source.data_ptr())+start*groups*neuron_len*element;
@@ -249,6 +161,7 @@ tb::Tensor TqWeight::forward_groupwise(tb::Tensor input,std::int64_t groups)cons
             status(mfq_tq_q8_tokens(view,x,y,count,static_cast<int>(groups),dtype(source.scalar_type()),workspace.data_ptr(),
                 workspace.nbytes(),mfq_current_cuda_stream()));
         }else if(workspace.defined() && count>=gemm_min_tokens(source.scalar_type())) {
+            if(!gemm)throw std::logic_error("TQ grouped GEMM resource lease is missing");
             if(source.scalar_type()==tb::kFloat16)status(mfq_tq_grouped_gemm(view,x,y,count,static_cast<int>(groups),workspace.data_ptr(),
                 workspace.nbytes(),gemm->get(),mfq_current_cuda_stream()));
             else status(mfq_tq_float_gemm(view,x,y,count,static_cast<int>(groups),dtype(source.scalar_type()),workspace.data_ptr(),
@@ -304,7 +217,7 @@ void TqProjectionGroup::join_prefix(std::size_t count) {
     for(std::size_t i=0;i<count;++i)joined_rows_+=weights_[i].out;
 }
 
-std::vector<tb::Tensor> TqProjectionGroup::forward(tb::Tensor input)const {
+std::vector<tb::Tensor> TqProjectionGroup::forward(TqExec& exec,tb::Tensor input)const {
     if(!defined() || !input.is_cuda() || input.device()!=plan_.device() || input.size(-1)!=input_)
         throw std::invalid_argument("TQ group input shape or device differs");
     const MfqCudaGuard guard(input.get_device());
@@ -320,7 +233,7 @@ std::vector<tb::Tensor> TqProjectionGroup::forward(tb::Tensor input)const {
     };
     if(tokens>=gemm_min_tokens(source.scalar_type())) {
         std::vector<tb::Tensor> result;result.reserve(weights_.size());
-        for(const auto& weight:weights_)result.push_back(weight.forward(source));
+        for(const auto& weight:weights_)result.push_back(weight.forward(exec,source));
         return join(std::move(result));
     }
     if(tokens>1 || short_q8(source.scalar_type(),tokens)) {
@@ -375,14 +288,14 @@ std::vector<tb::Tensor> TqProjectionGroup::forward(tb::Tensor input)const {
     return result;
 }
 
-tb::Tensor TqProjectionGroup::swiglu(tb::Tensor input)const {
+tb::Tensor TqProjectionGroup::swiglu(TqExec& exec,tb::Tensor input)const {
     if(weights_.size()!=2 || weights_[0].out!=weights_[1].out || !input.is_cuda() ||
        input.device()!=plan_.device() || input.size(-1)!=input_)
         throw std::invalid_argument("TQ SwiGLU group requires two matching projections");
     const MfqCudaGuard guard(input.get_device());
     const auto source=input.contiguous();
     if(source.numel()/input_>=gemm_min_tokens(source.scalar_type())) {
-        const auto gate=weights_[0].forward(source),up=weights_[1].forward(source);
+        const auto gate=weights_[0].forward(exec,source),up=weights_[1].forward(exec,source);
         return silu_mul_cuda(gate,up);
     }
     const auto rows=weights_[0].out;
@@ -522,6 +435,10 @@ class TqExpertCache {
         std::array<std::unique_ptr<Stage>,2> stages;
         unsigned index=0;
     };
+    // Keep the execution pool alive until all cached images and their tensor
+    // storage have been destroyed; native tensor stream fences may still
+    // reference streams retained by this pool during member teardown.
+    std::shared_ptr<TqExec> tq_;
     std::unordered_map<std::uint64_t,HostEntry> host_;
     std::unordered_map<DeviceKey,DeviceEntry,DeviceKeyHash> device_;
     std::unordered_map<std::uint64_t,std::vector<ViewTable>> view_tables_;
@@ -533,7 +450,6 @@ class TqExpertCache {
     std::size_t payload_bytes_=0;
     std::size_t process_host_limit_=0;
     std::uint64_t host_evictions_=0,device_evictions_=0,source_reads_=0;
-    std::unordered_map<int,std::shared_ptr<TqGemmResources>> gemm_;
     struct GraphPool {
         MfqCudaStream stream;
         std::shared_ptr<mfq::cuda::Context> context;
@@ -595,9 +511,14 @@ class TqExpertCache {
         upload_submit_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
     }
 public:
-    TqExpertCache(std::size_t budget,std::size_t host_budget,std::size_t process_limit,bool retain_all)
-        :host_limit_(host_budget?host_budget:available_host_bytes(process_limit)/5*4),device_limit_(budget),
-         retain_all_(retain_all),process_host_limit_(process_limit) {}
+    TqExpertCache(std::size_t budget,std::size_t host_budget,std::size_t process_limit,bool retain_all,
+                  std::shared_ptr<TqExec> tq)
+        :tq_(std::move(tq)),
+         host_limit_(host_budget?host_budget:available_host_bytes(process_limit)/5*4),device_limit_(budget),
+         retain_all_(retain_all),process_host_limit_(process_limit) {
+        if(!tq_)throw std::invalid_argument("TQ expert cache requires its execution pool");
+    }
+    std::shared_ptr<TqExec> pool() const noexcept { return tq_; }
     ~TqExpertCache(){
         host_transfers_.clear();
         for(auto& [_,pool]:graph_pools_)pool.context->end_graph_pool(pool.stream.stream());
@@ -764,8 +685,7 @@ public:
             const mfq::TqTable& table,std::int64_t out,int device) {
         const MfqCudaGuard device_guard(device);
         std::lock_guard<std::mutex> guard(mutex_);
-        const auto resources=tq_gemm_resources(device);
-        gemm_.try_emplace(device,resources);
+        const auto resources=tq_->get(device);
         std::vector<TqWeight> result;result.reserve(count);
         const auto stream=mfq_get_current_cuda_stream(device);
         std::shared_ptr<mfq::cuda::Event> uploaded;
@@ -784,7 +704,7 @@ public:
             if(resident->second.producer!=stream.stream()) {
                 const auto event=resident->second.uploaded->get();
                 if(waited.insert(event).second)TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(stream.stream(),event,0));
-                resident->second.weight.gemm->retain(stream);
+                resources->retain(stream);
                 mfq_cuda_record_stream(resident->second.weight.image,stream);
             }
             device_recent_.splice(device_recent_.begin(),device_recent_,resident->second.recent);
@@ -886,7 +806,7 @@ std::shared_ptr<TqExpertCache> ensure_tq_expert_cache(CudaExecutionContext& exec
             bool(execution.stores.moe_expert_cache);
         execution.stores.tq_expert_cache=std::make_shared<TqExpertCache>(
             budget,execution.config.moe_host_cache_bytes,
-            execution.config.moe_host_physical_bytes,!explicit_budget);
+            execution.config.moe_host_physical_bytes,!explicit_budget,execution.tq);
     }
     return execution.stores.tq_expert_cache;
 }
@@ -1044,7 +964,9 @@ struct TqMoeGraphStage {
         if(slots>INT_MAX)throw std::overflow_error("TQ graph route count exceeds plan limits");
         route_bytes=slots*sizeof(int64_t);
         if(tokens>1) {
-            wide=type==0 && tq_gemm_resources(source.get_device())->indexed_mma();
+            const auto pool=b.gate->cache->pool();
+            if(!pool)throw std::logic_error("TQ graph cache has no execution pool");
+            wide=type==0 && pool->get(source.get_device())->indexed_mma();
             for(int i=0;i<int(planes.size());++i) {
                 auto& plane=planes[i];
                 // GU1..4, GU8, Down1..4, Down5..8, in execution order.
@@ -1288,7 +1210,9 @@ tb::Tensor TqMoeBanks::forward(tb::Tensor input_value,tb::Tensor ids,
     const auto phase=[&](const char* name,auto&& operation) {
         return profiler?profiler->measure(name,operation):operation();
     };
-    if(!gate || !up || !down || gate->experts!=up->experts || up->experts!=down->experts ||
+    if(!gate || !up || !down || !gate->cache || !up->cache || !down->cache ||
+       gate->cache->pool()!=up->cache->pool() || gate->cache->pool()!=down->cache->pool() ||
+       gate->experts!=up->experts || up->experts!=down->experts ||
        gate->input!=up->input || gate->out!=up->out || down->input!=up->out ||
        ids.dim()!=2 || ids.size(1)<1 || ids.size(1)>INT_MAX || input_value.dim()!=2 ||
        !input_value.is_cuda() || weights.device()!=input_value.device() ||
@@ -1309,6 +1233,7 @@ tb::Tensor TqMoeBanks::forward(tb::Tensor input_value,tb::Tensor ids,
     auto result=tb::empty({tokens,width},source.options());
     if(!tokens)return result;
     const auto type=dtype(source.scalar_type());
+    const auto pool=gate->cache->pool();
     const auto coefficients=weights.to(tb::kFloat32).contiguous();
     // Exactly one route readback for all three banks, independent of the
     // number of selected tokens and their expert reuse pattern.
@@ -1353,7 +1278,7 @@ tb::Tensor TqMoeBanks::forward(tb::Tensor input_value,tb::Tensor ids,
     for(std::size_t i=0;i<unique.size();++i)if(slots[i].size()>=std::size_t(gemm_min_tokens(source.scalar_type()))) {
         std::swap(unique[i],unique[long_groups]);std::swap(slots[i],slots[long_groups]);++long_groups;
     }
-    const auto resources=tq_gemm_resources(source.get_device());
+    const auto resources=pool->get(source.get_device());
     std::size_t prefill_groups=0;
     if(type==0 && width==up->input && hidden<=INT_MAX/2) {
         // Batch up to two 128-token reuse tiles to amortize expert dispatch.
@@ -1502,12 +1427,12 @@ tb::Tensor TqMoeBanks::forward(tb::Tensor input_value,tb::Tensor ids,
             const auto gathered=source.index_select(0,token_index);
             tb::Tensor activated;
             if(limit>0) {
-                const auto gv=g[0].forward(gathered),uv=u[0].forward(gathered);
+                const auto gv=g[0].forward(*pool,gathered),uv=u[0].forward(*pool,gathered);
                 if(type==0)activated=clipped_silu_mul_cuda(gv,uv,limit);
                 else activated=(tb::silu(tb::clamp_max(gv.to(tb::kFloat32),limit))*
                     tb::clamp(uv.to(tb::kFloat32),-limit,limit)).to(source.scalar_type()).contiguous();
-            }else activated=TqProjectionGroup({g[0],u[0]}).swiglu(gathered);
-            flat_pairs.index_copy_(0,slot_index,d[0].forward(std::move(activated)));
+            }else activated=TqProjectionGroup({g[0],u[0]}).swiglu(*pool,gathered);
+            flat_pairs.index_copy_(0,slot_index,d[0].forward(*pool,std::move(activated)));
         }
     }
     if(long_groups<unique.size()) {
@@ -1554,7 +1479,7 @@ tb::Tensor TqMoeBanks::forward(tb::Tensor input_value,tb::Tensor ids,
                     static_cast<int>(hidden),type,mfq_current_cuda_stream()));return 0;});
             }else {
                 auto [gu_tiles,down_tiles,wide_tiles,wide_gu]=tq_indexed_jobs(g,u,d,slots,begin,routes,up->input,hidden,width,
-                    type==0 && g.front().gemm->indexed_mma());
+                    type==0 && resources->indexed_mma());
                 std::vector<TrellisIndexedProjectionJob> gu_jobs,down_jobs;
                 std::vector<TrellisIndexedWideProjectionJob> wide_jobs;
                 for(int tile=0;tile<4;++tile) {

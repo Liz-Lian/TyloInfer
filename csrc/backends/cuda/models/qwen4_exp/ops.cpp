@@ -316,7 +316,7 @@ static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down
         shared_tq=std::make_shared<TqProjectionGroup>(std::vector<TqWeight>{shared_g->tq,shared_u->tq});
     auto shared_raw=[sg,su,sd,shared_gate,shared_tq](CudaExecutionContext& execution,const Tensor& source) {
         if(shared_tq) {
-            auto output=sd(execution,shared_tq->swiglu(source));
+            auto output=sd(execution,shared_tq->swiglu(*execution.tq,source));
             return tb::sigmoid(shared_gate(execution,source))*output;
         }
         auto unfused=[](const auto&...){return std::optional<Tensor>{};};

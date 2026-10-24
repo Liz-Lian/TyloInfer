@@ -215,9 +215,9 @@ mfq_tensor_backend::Tensor FFN::forward_tensor_parallel_dense(CudaExecutionConte
             local_x, geglu, swiglu_limit, unfused, unfused,
             [&](Tensor input) {
                 auto gate =
-                    run_quant_linear_shard(execution.profiler, execution.kl_mmq, gate_shard, input);
+                    run_quant_linear_shard(execution.profiler, execution.kl_mmq, *execution.tq, gate_shard, input);
                 auto up =
-                    run_quant_linear_shard(execution.profiler, execution.kl_mmq, up_shard, input);
+                    run_quant_linear_shard(execution.profiler, execution.kl_mmq, *execution.tq, up_shard, input);
                 return std::array<Tensor, 2>{std::move(gate), std::move(up)};
             },
             [&](Tensor gate_output, Tensor up_output, auto activation_kind, double limit) {
@@ -238,7 +238,7 @@ mfq_tensor_backend::Tensor FFN::forward_tensor_parallel_dense(CudaExecutionConte
                 return activation;
             },
             [&](Tensor activation) {
-                return run_quant_linear_shard(execution.profiler, execution.kl_mmq, down_shard,
+                return run_quant_linear_shard(execution.profiler, execution.kl_mmq, *execution.tq, down_shard,
                                               activation);
             },
             unfused);

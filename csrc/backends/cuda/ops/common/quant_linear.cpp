@@ -68,6 +68,7 @@ static mfq_tensor_backend::Tensor dequant_mxfp4_sq_cpu(const Mxfp4SqWeight& weig
 mfq_tensor_backend::Tensor run_quant_linear_shard(
         CudaProfiler& profiler,
         KlMmqState& kl_mmq,
+        TqExec& tq,
         const QuantLinearShard & shard,
         mfq_tensor_backend::Tensor x,
         MfqOptional<mfq_tensor_backend::Tensor> gate,
@@ -82,7 +83,7 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
                 ? mfq_tensor_backend::sigmoid(local_gate)
                 : mfq_tensor_backend::silu(local_gate));
         }
-        return profiler.measure("tq.tensor_parallel", [&] { return shard.tq.forward(std::move(x)); });
+        return profiler.measure("tq.tensor_parallel", [&] { return shard.tq.forward(tq,std::move(x)); });
     }
     if ((mfq::mfq_compat_enabled && shard.kind == QuantLinearKind::Mxfp4Sq) ||
             (mfq::mfq_compat_enabled && shard.kind == QuantLinearKind::Fp8Sq)) {
@@ -510,7 +511,7 @@ forward_tensor_parallel_output_projections(
                     projection->tensor_parallel_shards[shard];
                 MfqCudaGuard guard(weight.device);
                 local_outputs[shard] = run_quant_linear_shard(
-                    execution.profiler, execution.kl_mmq,
+                    execution.profiler, execution.kl_mmq, *execution.tq,
                     weight, local_inputs[shard]);
             }
             MfqCudaGuard primary_guard(primary);
@@ -550,7 +551,7 @@ forward_tensor_parallel_output_projections(
                 projection < projections.size(); ++projection) {
             local_outputs[projection][shard] =
                 run_quant_linear_shard(
-                    execution.profiler, execution.kl_mmq,
+                    execution.profiler, execution.kl_mmq, *execution.tq,
                     projections[projection]
                         ->tensor_parallel_shards[shard], local_x);
         }
@@ -946,7 +947,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_tensor_parallel_flat(
         } else {
             local_outputs[index] =
                 run_quant_linear_shard(
-                    execution.profiler, execution.kl_mmq,
+                    execution.profiler, execution.kl_mmq, *execution.tq,
                     shard, local_x,
                     gate.has_value()
                         ? MfqOptional<mfq_tensor_backend::Tensor>(
@@ -1004,7 +1005,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_dense(mfq_tensor_backend::Tensor
 mfq_tensor_backend::Tensor QuantLinear::forward(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x) const {
-    if(is_tq() && !tensor_parallel())return execution.profiler.measure("tq.linear",[&] {return tq.forward(std::move(x));});
+    if(is_tq() && !tensor_parallel())return execution.profiler.measure("tq.linear",[&] {return tq.forward(*execution.tq,std::move(x));});
     if (tensor_parallel() || (mfq::mfq_compat_enabled && is_nint()) || (mfq::mfq_compat_enabled && is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -1182,7 +1183,7 @@ QuantLinearGroup::forward_tensor_parallel_output_group(
 std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x) const {
-    if(tq.defined())return execution.profiler.measure("tq.parallel",[&] {return tq.forward(std::move(x));});
+    if(tq.defined())return execution.profiler.measure("tq.parallel",[&] {return tq.forward(*execution.tq,std::move(x));});
     const bool default_mmq =
         execution.kl_mmq.mode == KlMmqMode::Default;
     if (!x.is_cuda()) {
@@ -1270,7 +1271,7 @@ mfq_tensor_backend::Tensor QuantLinearGroup::forward_swiglu(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x) const {
     if(tq.defined() && outs.size()==2 && outs[0]==outs[1])
-        return execution.profiler.measure("tq.swiglu",[&] {return tq.swiglu(std::move(x));});
+        return execution.profiler.measure("tq.swiglu",[&] {return tq.swiglu(*execution.tq,std::move(x));});
     const bool default_mmq =
         execution.kl_mmq.mode == KlMmqMode::Default;
     if (mfq::mfq_compat_enabled && default_mmq && nint_grouped && nint.split_w.empty() &&

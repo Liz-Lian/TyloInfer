@@ -33,9 +33,6 @@ TqWeight tq_view(mfq_tensor_backend::Tensor image,
     const auto relative_offset = words_offset + layout.packed_bytes;
     TqWeight result;
     result.image = std::move(image);
-    if (result.image.is_cuda()) {
-        result.gemm = tq_gemm_resources(result.image.get_device());
-    }
     auto* data = result.image.data_ptr<std::uint8_t>();
     int gslog = 0;
     for (auto gs = layout.gs; gs > 1; gs >>= 1) ++gslog;

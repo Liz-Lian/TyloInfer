@@ -52,6 +52,7 @@ mfq_tensor_backend::Tensor tensor_to_cuda_device(
 mfq_tensor_backend::Tensor run_quant_linear_shard(
     CudaProfiler& profiler,
     KlMmqState& kl_mmq,
+    TqExec& tq,
     const struct QuantLinearShard& shard,
     mfq_tensor_backend::Tensor input,
     MfqOptional<mfq_tensor_backend::Tensor> gate = mfq_nullopt,

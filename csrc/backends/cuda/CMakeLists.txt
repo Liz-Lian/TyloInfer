@@ -500,6 +500,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/execution/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/execution/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/execution/decode_window.cpp
     ${TYLOINFER_CUDA_ROOT}/execution/graph_registry.cpp
 )

@@ -1,6 +1,7 @@
 #include "env.h"
 #include "execution/options.h"
 #include "execution/execution.h"
+#include "execution/tq.h"
 #include "storage/weights/moe/expert_cache.h"
 #include "storage/state/kv_offload.h"
 
@@ -862,6 +863,7 @@ KlKvCacheCapacityScope::~KlKvCacheCapacityScope() {
 CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
     : config(load_cuda_execution_config()), stores(borrowed) {
     profiler.filter = config.profile_filter;
+    tq = std::make_shared<TqExec>();
 }
 
 CudaExecutionContext::~CudaExecutionContext() {
@@ -874,7 +876,8 @@ CudaExecutionContext::~CudaExecutionContext() {
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (native_contexts.empty() && !stores.moe_expert_cache &&
-        !stores.tq_expert_cache && !stores.qsa_kv_store) return;
+        !stores.tq_expert_cache && !stores.qsa_kv_store &&
+        (!tq || tq->empty())) return;
 #endif
     CudaScope scope(*this);
     std::exception_ptr failure;
@@ -898,11 +901,13 @@ void CudaExecutionContext::drain() {
         TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     });
 #endif
+    if (tq) finish([&] { tq->drain(); });
     if (failure) std::rethrow_exception(failure);
 }
 
 void CudaExecutionContext::reset() {
     drain();
+    tq = std::make_shared<TqExec>();
     profiler.reset();
     model_parallel_collectives.reset();
     tensor_parallel = {};
