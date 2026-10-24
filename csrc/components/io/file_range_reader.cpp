@@ -1,6 +1,6 @@
-#include "tyloinfer/file_range_reader.h"
-#include "tyloinfer/host_parallel.h"
-#include "tyloinfer/host_copy.h"
+#include "file_range_reader.h"
+#include "backends/cpu/native/host_parallel.h"
+#include "backends/cpu/native/host_copy.h"
 
 #include <algorithm>
 #include <array>

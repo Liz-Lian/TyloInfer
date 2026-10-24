@@ -1,8 +1,10 @@
-#include "tyloinfer/cpu_expert_pool.h"
+#include "topology.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -89,7 +91,7 @@ std::vector<Core> os_cores() {
 }
 }
 
-CpuTopology detect_cpu_topology(bool reserve_caller, PoolAffinity affinity,HostCore host) {
+CpuTopology detect_cpu_topology(bool reserve_caller, PoolAffinity affinity, HostCore host) {
     const auto cores = os_cores();
     const auto maximum = std::max_element(cores.begin(), cores.end(),
         [](const Core& a, const Core& b) { return a.performance < b.performance; })->performance;
@@ -103,8 +105,9 @@ CpuTopology detect_cpu_topology(bool reserve_caller, PoolAffinity affinity,HostC
     }
     result.is_hybrid = result.e_cores != 0;
     if (reserve_caller && !result.worker_cores.empty()) {
-        if(host==HostCore::Last && !result.is_hybrid) {
-            result.host_core=result.worker_cores.back();result.worker_cores.pop_back();
+        if (host == HostCore::Last && !result.is_hybrid) {
+            result.host_core = result.worker_cores.back();
+            result.worker_cores.pop_back();
         } else {
             result.host_core = result.worker_cores.front();
             result.worker_cores.erase(result.worker_cores.begin());
@@ -112,33 +115,25 @@ CpuTopology detect_cpu_topology(bool reserve_caller, PoolAffinity affinity,HostC
     }
     return result;
 }
-namespace {
+
 HostCore host_core_setting() {
-    const auto* value=std::getenv("TYLOINFER_CPU_HOST_CORE");
-    if(!value || std::string(value)=="first")return HostCore::First;
-    if(std::string(value)=="last")return HostCore::Last;
+    const auto* value = std::getenv("TYLOINFER_CPU_HOST_CORE");
+    if (!value || std::string(value) == "first") return HostCore::First;
+    if (std::string(value) == "last") return HostCore::Last;
     throw std::invalid_argument("TYLOINFER_CPU_HOST_CORE must be first or last");
 }
-void pin_worker_thread(int core) {
-#ifdef _WIN32
-    GROUP_AFFINITY target{};target.Group=static_cast<WORD>(core/64);
-    target.Mask=KAFFINITY(1)<<(core&63);
-    (void)SetThreadGroupAffinity(GetCurrentThread(),&target,nullptr);
-#else
-    (void)pin_current_thread(core);
-#endif
-}
-}
+
 int planned_host_core() {
-    const auto requested=host_core_setting();
-    thread_local HostCore cached_setting=HostCore::First;
-    thread_local int cached_core=-1;
-    if(cached_core<0 || requested!=cached_setting) {
-        cached_core=detect_cpu_topology(true,PoolAffinity::All,requested).host_core;
-        cached_setting=requested;
+    const auto requested = host_core_setting();
+    thread_local HostCore cached_setting = HostCore::First;
+    thread_local int cached_core = -1;
+    if (cached_core < 0 || requested != cached_setting) {
+        cached_core = detect_cpu_topology(true, PoolAffinity::All, requested).host_core;
+        cached_setting = requested;
     }
     return cached_core;
 }
+
 std::vector<int> physical_cores(bool reserve_caller, PoolAffinity affinity) {
     return detect_cpu_topology(reserve_caller, affinity).worker_cores;
 }
@@ -147,10 +142,10 @@ ThreadAffinity pin_current_thread(int core) {
     ThreadAffinity previous;
     if (core < 0) return previous;
 #ifdef _WIN32
-    ULONG target=0;
-    if(!detail::thread_cpu_sets(previous.cpu_sets) || !detail::cpu_set_for_core(core,target))return {};
-    if(previous.cpu_sets.size()==1 && previous.cpu_sets[0]==target)return {};
-    previous.valid=SetThreadSelectedCpuSets(GetCurrentThread(),&target,1)!=0;
+    ULONG target = 0;
+    if (!detail::thread_cpu_sets(previous.cpu_sets) || !detail::cpu_set_for_core(core, target)) return {};
+    if (previous.cpu_sets.size() == 1 && previous.cpu_sets[0] == target) return {};
+    previous.valid = SetThreadSelectedCpuSets(GetCurrentThread(), &target, 1) != 0;
 #elif defined(__linux__)
     const auto count = std::max<long>(sysconf(_SC_NPROCESSORS_CONF), core + 1);
     const auto bytes = CPU_ALLOC_SIZE(count);
@@ -165,46 +160,15 @@ ThreadAffinity pin_current_thread(int core) {
 #endif
     return previous;
 }
+
 void restore_thread_affinity(const ThreadAffinity& previous) {
     if (!previous.valid) return;
 #ifdef _WIN32
-    (void)SetThreadSelectedCpuSets(GetCurrentThread(),previous.cpu_sets.empty()?nullptr:previous.cpu_sets.data(),
+    (void)SetThreadSelectedCpuSets(GetCurrentThread(), previous.cpu_sets.empty() ? nullptr : previous.cpu_sets.data(),
         static_cast<ULONG>(previous.cpu_sets.size()));
 #elif defined(__linux__)
     sched_setaffinity(0, previous.native.size() * sizeof(std::uint64_t),
         reinterpret_cast<const cpu_set_t*>(previous.native.data()));
 #endif
-}
-
-ExpertPool::ExpertPool(int workers, bool pin)
-    : topology_(detect_cpu_topology(true,PoolAffinity::All,host_core_setting())), pin_(pin) {
-    if (workers < 0) throw std::invalid_argument("negative CPU worker count");
-    if (!workers) workers = static_cast<int>(topology_.worker_cores.size());
-    participants_ = workers + 1;
-    const auto placements = topology_.worker_cores;
-    pool_ = std::make_unique<mfq::HostParallelPool>([placements, pin](std::size_t index) {
-        if (pin && index < placements.size()) {
-            try { pin_worker_thread(placements[index]); }
-            catch (const std::bad_alloc&) {} // Optional worker placement.
-        }
-    },false);
-}
-ExpertPool::~ExpertPool() = default;
-void ExpertPool::rows(std::int64_t count,
-        const std::function<void(std::int64_t, std::int64_t)>& callback,
-        mfq::HostParallelProfile* profile) {
-    if (count <= 0) { if(profile)*profile={}; return; }
-    struct Restore {
-        ThreadAffinity saved;
-        ~Restore() { restore_thread_affinity(saved); }
-    } placement{pin_ ? pin_current_thread(topology_.host_core) : ThreadAffinity{}};
-    pool_->run(0, count, 1, participants_, callback, profile);
-}
-ExpertPool& expert_pool() {
-    static ExpertPool pool([] {
-        const auto* text = std::getenv("TYLOINFER_CPU_EXPERT_THREADS");
-        return text ? std::max(1, std::atoi(text)) - 1 : 0;
-    }());
-    return pool;
 }
 } // namespace mfq::cpu

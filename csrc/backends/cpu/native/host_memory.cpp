@@ -1,4 +1,4 @@
-#include "tyloinfer/host_memory.h"
+#include "host_memory.h"
 #include <stdexcept>
 #if defined(_WIN32)
 #ifndef NOMINMAX

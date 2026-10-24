@@ -1,4 +1,4 @@
-#include "tyloinfer/host_parallel.h"
+#include "host_parallel.h"
 
 #include <algorithm>
 #include <atomic>

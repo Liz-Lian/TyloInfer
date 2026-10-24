@@ -1,5 +1,5 @@
-#include "tyloinfer/host_copy.h"
-#include "tyloinfer/host_parallel.h"
+#include "host_copy.h"
+#include "host_parallel.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
