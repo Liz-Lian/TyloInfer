@@ -80,6 +80,9 @@ target_include_directories(mfq-cuda-core PUBLIC
     ${TYLOINFER_CUDA_ROOT}/native/tensor
     ${CUDAToolkit_INCLUDE_DIRS}
 )
+target_include_directories(mfq-cuda-core PRIVATE
+    ${PROJECT_SOURCE_DIR}
+)
 target_link_libraries(mfq-cuda-core PUBLIC CUDA::cudart CUDA::cublas mfq-host-parallel)
 if(WIN32)
     target_link_libraries(mfq-cuda-core PUBLIC dxgi)
@@ -196,6 +199,7 @@ target_compile_definitions(mfq-cuda-native-kernels PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1
 )
 target_include_directories(mfq-cuda-native-kernels PRIVATE
+    ${PROJECT_SOURCE_DIR}
     ${TYLOINFER_CUDA_ROOT}
     ${TYLOINFER_REPOSITORY_ROOT}
     ${TYLOINFER_CUDA_ROOT}/include
@@ -206,7 +210,7 @@ target_include_directories(mfq-cuda-native-kernels PRIVATE
 )
 target_link_libraries(mfq-cuda-native-kernels
     PUBLIC mfq-cuda-core CUDA::cuda_driver
-    PRIVATE mfq-model-source mfq-ggml-internal-headers mfq-ggml
+    PRIVATE mfq-formats mfq-ggml-internal-headers mfq-ggml
 )
 target_compile_options(mfq-cuda-native-kernels PRIVATE
     "$<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>"
@@ -391,6 +395,7 @@ find_package(OpenMP QUIET)
 
 function(mfq_configure_cuda_backend_target target)
     target_include_directories(${target} PRIVATE
+        ${PROJECT_SOURCE_DIR}
         ${TYLOINFER_REPOSITORY_ROOT}
         ${TYLOINFER_CUDA_ROOT}
         ${TYLOINFER_CUDA_ROOT}/include
@@ -406,7 +411,7 @@ function(mfq_configure_cuda_backend_target target)
         ${CUDAToolkit_INCLUDE_DIRS}
     )
     target_link_libraries(${target} PRIVATE
-        mfq-core
+        mfq-formats
         mfq-cpu-ops
         mfq-json
         mfq-ggml-internal-headers
@@ -430,8 +435,16 @@ function(mfq_configure_cuda_runtime_target target)
         ${TYLOINFER_CUDA_ROOT}/models
         ${TYLOINFER_CUDA_ROOT}/commands
         ${TYLOINFER_CUDA_ROOT}/engine
+        ${PROJECT_SOURCE_DIR}/engine/models
     )
-    target_link_libraries(${target} PRIVATE mfq-models mfq-engine)
+    target_link_libraries(${target} PRIVATE
+        mfq-model-source
+        mfq-quant-readers
+        mfq-engine
+        mfq-prefix-blocks
+        mfq-qsa-kv-store
+        mfq-cpu-execution
+    )
 endfunction()
 
 set(TYLOINFER_CUDA_MODEL_SOURCES
@@ -482,6 +495,8 @@ endif()
 
 add_library(mfq-cuda-ops OBJECT ${TYLOINFER_CUDA_RUNTIME_OP_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-ops)
+target_link_libraries(mfq-cuda-ops PRIVATE
+    mfq-model-source mfq-quant-readers)
 target_compile_definitions(mfq-cuda-ops PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -497,6 +512,7 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
+target_link_libraries(mfq-cuda-execution PRIVATE mfq-cpu-execution)
 target_compile_definitions(mfq-cuda-execution PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -984,6 +1000,7 @@ add_executable(mfq-runtime
 target_link_libraries(mfq-runtime PRIVATE
     mfq-cuda-runtime mfq-runtime-communication)
 target_include_directories(mfq-runtime PRIVATE
+    ${PROJECT_SOURCE_DIR}
     ${TYLOINFER_CUDA_ROOT}
     ${TYLOINFER_CUDA_ROOT}/include
     ${TYLOINFER_CUDA_ROOT}/engine

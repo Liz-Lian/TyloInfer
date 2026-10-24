@@ -72,9 +72,10 @@ endif()
 # Common code is split by responsibility. JSON is defined first because the
 # canonical model graph and several public policy headers consume it.
 add_subdirectory(components/json)
-add_subdirectory(core)
+add_subdirectory(formats)
 add_subdirectory(backends/cpu)
-add_subdirectory(models)
+add_subdirectory(components/io)
+add_subdirectory(model_source)
 
 if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION OR TYLOINFER_BUILD_METAL_RUNTIME)
     add_subdirectory(components/ggml)

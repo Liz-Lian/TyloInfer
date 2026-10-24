@@ -13,13 +13,15 @@ add_library(mfq::runtime-communication ALIAS mfq-runtime-communication)
 target_include_directories(mfq-runtime-communication PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+target_include_directories(mfq-runtime-communication PRIVATE
+    ${PROJECT_SOURCE_DIR}
+)
 target_link_libraries(mfq-runtime-communication
     PUBLIC
         mfq-runtime-scheduler
     PRIVATE
         mfq-http
         mfq-json
-        mfq-paged-prefix-cache
         Threads::Threads
 )
 target_compile_definitions(mfq-runtime-communication PRIVATE NOMINMAX)
