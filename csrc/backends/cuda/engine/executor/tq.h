@@ -2,6 +2,7 @@
 
 #include "backend.h"
 #include "context.h"
+#include "native/blas.h"
 
 #include <cstdint>
 #include <memory>
@@ -40,6 +41,7 @@ public:
     cublasHandle_t get();
     std::vector<std::int64_t> routes(const mfq_tensor_backend::Tensor& ids);
     void prepare_graph();
+    mfq::cuda::BlasResources& blas() noexcept { return blas_; }
 
 private:
     struct RouteReadback;
@@ -47,16 +49,12 @@ private:
         MfqCudaStream stream;
         std::shared_ptr<mfq::cuda::Context> context;
     };
-    struct Entry {
-        MfqCudaStream stream;
-        std::unique_ptr<mfq::cuda::BlasHandle> handle;
-    };
     int device_;
     bool indexed_mma_ = false;
     bool prefill_mma_ = false;
     bool host_register_ = false;
     std::mutex mutex_;
-    std::unordered_map<cudaStream_t, Entry> handles_;
+    mfq::cuda::BlasResources blas_;
     std::vector<std::shared_ptr<TqPrefillPlan>> prefill_plans_;
     std::vector<std::shared_ptr<RouteReadback>> route_readbacks_;
     std::unordered_map<cudaStream_t, GraphPool> graph_pools_;

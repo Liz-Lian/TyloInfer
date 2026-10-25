@@ -1,5 +1,6 @@
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/executor/tq.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 
@@ -22,7 +23,10 @@ mfq_tensor_backend::Tensor output_projection(CudaExecutionContext &execution,
         return profile ? profiler.measure(name, operation) : operation();
     };
     if(output_a.is_tq()) {
-        auto low_rank=measure("dsv4.output_a",[&] {return output_a.tq.forward_groupwise(*execution.tq,grouped,groups);});
+        auto low_rank=measure("dsv4.output_a",[&] {
+            const auto resources=execution.tq->get(grouped.get_device());
+            return output_a.tq.forward_groupwise(&resources->blas(),grouped,groups);
+        });
         return measure("dsv4.output_b",[&] {
             return output_b.forward(execution,low_rank).reshape({batch,tokens,output_b.out()});
         });

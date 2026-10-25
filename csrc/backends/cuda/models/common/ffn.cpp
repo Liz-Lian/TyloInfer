@@ -7,6 +7,7 @@
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
 
 #include <algorithm>
 #include <array>
@@ -92,7 +93,8 @@ Tensor dense_expert_activation(ActivationKind activation, Tensor gate, Tensor up
 void FFN::prefetch_moe(CudaExecutionContext& execution,const mfq_tensor_backend::Tensor& x,
         MfqOptional<mfq_tensor_backend::Tensor> input_ids) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(!moe_pipeline_prefetch || !moe_expert_cache_ssd_router_prefetch(execution.stores.moe_expert_cache) ||
+    auto pipeline=moe_pipeline.lock();
+    if(!pipeline || !moe_expert_cache_ssd_router_prefetch(execution.stores.moe_expert_cache) ||
             x.dim()<2 || x.numel()/x.size(-1)>32)return;
     namespace tb=mfq_tensor_backend;
     tb::Tensor ids;
@@ -118,7 +120,9 @@ void FFN::prefetch_moe(CudaExecutionContext& execution,const mfq_tensor_backend:
     if(!reported.load(std::memory_order_relaxed) && !reported.exchange(true,std::memory_order_relaxed))
         std::fprintf(stderr,"moe_ssd_router_candidates scope=first_forecast rows=%lld candidates_per_row=%lld\n",
             static_cast<long long>(ids.size(0)),static_cast<long long>(ids.size(1)));
-    moe_pipeline_prefetch(ids.transpose(0,1).contiguous().reshape({1,-1}));
+    auto task=prefetch_moe_ffn_pipeline(pipeline,ids.transpose(0,1).contiguous().reshape({1,-1}));
+    if(auto* window=mfq::cuda::DecodeWindow::recording())window->enroll(std::move(task));
+    else task.serve();
 #else
     return;
 #endif
@@ -435,8 +439,13 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
         Tensor shared_gate_logits;
         bool projection_bundle_prefetched = false;
         const bool expert_parallel = expert_parallel_moe_compatible();
-        const bool use_pipeline=bool(moe_pipeline_forward) &&
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        auto pipeline=moe_pipeline.lock();
+        const bool use_pipeline=bool(pipeline) &&
             execution.kl_mmq.mode==KlMmqMode::Default && !execution.force_moe_materialized_swiglu;
+#else
+        const bool use_pipeline=false;
+#endif
         struct ExpertOutput {
             Tensor values;
             bool reduced;
@@ -715,10 +724,12 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                     return {down_pair, false};
                 }
                 if(use_pipeline) {
-                    auto result=moe_pipeline_forward(execution,routed_input,selected.at(0),
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+                    auto result=run_moe_ffn_pipeline(pipeline,execution,routed_input,selected.at(0),
                                                      selected.at(1));
                     if(result.dim()==3)result=moe_weighted_reduce_cuda(result,selected.at(1));
                     return {finish_latent(result),true};
+#endif
                 }
                 if (expert_parallel) {
                     auto result = profiler.measure("moe.expert_parallel", [&] {

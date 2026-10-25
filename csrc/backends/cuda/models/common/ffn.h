@@ -2,12 +2,15 @@
 
 #include "quant_linear.h"
 #include "mfe_weight.h"
+#include "backends/cuda/engine/executor/tq_moe.h"
 #include "engine/models/common/gated_mlp.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <functional>
+
+class MoeFfnPipeline;
 
 // Default bound on the expert matrices dense_routed_projection gathers at once.
 inline constexpr std::size_t kDenseRoutedGatherBudgetBytes = std::size_t(512) << 20;
@@ -64,10 +67,7 @@ struct FFN {
     double moe_router_scale = 1.0;
     double swiglu_limit = 0.0;
     int moe_layer = -1;
-    std::function<mfq_tensor_backend::Tensor(CudaExecutionContext&,
-        const mfq_tensor_backend::Tensor&,const mfq_tensor_backend::Tensor&,
-        const mfq_tensor_backend::Tensor&)> moe_pipeline_forward;
-    std::function<void(const mfq_tensor_backend::Tensor&)> moe_pipeline_prefetch;
+    std::weak_ptr<MoeFfnPipeline> moe_pipeline;
 
     bool uses_moe_expert_cache() const;
     void prefetch_moe(CudaExecutionContext&,const mfq_tensor_backend::Tensor&,

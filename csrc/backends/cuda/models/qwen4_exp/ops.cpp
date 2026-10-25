@@ -1,6 +1,7 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/executor/tq.h"
+#include "backends/cuda/engine/executor/tq_moe.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_shared_gate.h"
 #include "mfq_cuda_sampling_ops.h"
@@ -307,7 +308,7 @@ static Projection qwen_gdn_profile_projection(Projection project,const char* beg
     };
 }
 
-static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
+static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_up, weight_loader::Routed down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
                        const Config &c, MoeFfnPrefetch* prefetch=nullptr) {
     std::shared_ptr<TqProjectionGroup> shared_tq;
@@ -317,7 +318,8 @@ static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down
         shared_tq=std::make_shared<TqProjectionGroup>(std::vector<TqWeight>{shared_g->tq,shared_u->tq});
     auto shared_raw=[sg,su,sd,shared_gate,shared_tq](CudaExecutionContext& execution,const Tensor& source) {
         if(shared_tq) {
-            auto output=sd(execution,shared_tq->swiglu(*execution.tq,source));
+            const auto resources=execution.tq->get(source.get_device());
+            auto output=sd(execution,shared_tq->swiglu(&resources->blas(),source));
             return tb::sigmoid(shared_gate(execution,source))*output;
         }
         auto unfused=[](const auto&...){return std::optional<Tensor>{};};
@@ -396,23 +398,42 @@ static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down
         tq=std::make_shared<TqMoeBanks>();
         tq->gate=gate_up.tq_projections[0];tq->up=gate_up.tq_projections[1];tq->down=down.tq_projections[0];
     }
-    MoeFfnForward pipeline;
+    std::weak_ptr<MoeFfnPipeline> pipeline;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(!tq)pipeline=make_moe_ffn_pipeline(gate_up.projections,down.projections,shared,{},std::move(shared_weights),prefetch);
+    std::shared_ptr<MoeFfnPipeline> owned_pipeline;
+    MoeFfnPrefetch prefetch_fn;
+    if(!tq) {
+        owned_pipeline=make_moe_ffn_pipeline(gate_up.projections,down.projections,shared,{},std::move(shared_weights));
+        if(owned_pipeline) {
+            const std::weak_ptr<MoeFfnPipeline> borrowed=owned_pipeline;
+            if(prefetch)prefetch_fn=[borrowed](const Tensor& ids) {
+                if(auto pipeline=borrowed.lock())return prefetch_moe_ffn_pipeline(pipeline,ids);
+                return mfq::cuda::DecodeWindow::Task{};
+            };
+            pipeline=borrowed;
+        }
+    }
 #endif
-    return [gate_up, down, router, shared, pipeline, tq, c](CudaExecutionContext &execution,
+    auto result=[gate_up, down, router, shared, pipeline, tq, c](CudaExecutionContext &execution,
                                                                const Tensor &x) {
         auto source = x.reshape({-1, c.hidden}).to(tb::kFloat16);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        auto borrowed=pipeline.lock();
+#endif
         const auto layer_prefill = mfq::cuda::runtime_options::moe_prefill_layer();
         const bool combined_prefill = source.size(0)>8 &&
             execution.kl_mmq.mode==KlMmqMode::Default &&
             ((layer_prefill && *layer_prefill!=0 && moe_expert_cache_layer_prefill_ready(execution.stores.moe_expert_cache)) ||
              moe_expert_cache_ssd_experts(execution.stores.moe_expert_cache));
-        const bool use_pipeline=pipeline && (gate_up.projections.size()!=1 ||
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        const bool use_pipeline=borrowed && (gate_up.projections.size()!=1 ||
             combined_prefill ||
             ((source.size(0)<=8 || (source.size(0)<=32 && execution.continuous_batch_cache_serial)) &&
              execution.config.moe_two_stage_ffn &&
              execution.kl_mmq.mode==KlMmqMode::Default));
+#else
+        const bool use_pipeline=false;
+#endif
         const auto routing = c.routing();
         return mfq::models::mixture_of_experts(
             [&] { return qwen_prefill_preserve_rows(source,[&](const Tensor& part){return router(execution,part);}).contiguous(); },
@@ -426,7 +447,10 @@ static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down
                 return use_pipeline ? Tensor{} : shared(execution,source);
             },
             [&](const auto &selected) {
-                if(use_pipeline)return pipeline(execution,source,selected[0].to(tb::kInt32).contiguous(),selected[1]);
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+                if(use_pipeline)return run_moe_ffn_pipeline(borrowed,execution,source,
+                    selected[0].to(tb::kInt32).contiguous(),selected[1]);
+#endif
                 if(tq)return execution.profiler.measure("tq.moe",[&] {
                     return tq->forward_parallel(execution,source,selected[0],selected[1]);
                 });
@@ -452,6 +476,13 @@ static Linear qwen_moe(weight_loader::Routed gate_up, weight_loader::Routed down
                 return (routed + shared_output).reshape(x.sizes());
             });
     };
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if(owned_pipeline) {
+        execution.register_moe_pipeline(std::move(owned_pipeline));
+        if(prefetch)*prefetch=std::move(prefetch_fn);
+    }
+#endif
+    return result;
 }
 
 struct BlockLoader : weight_loader::Loader {
@@ -565,7 +596,7 @@ struct BlockLoader : weight_loader::Loader {
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
         if(router_capture)*router_capture=router;
         if(tq_graph_capture)*tq_graph_capture=gate_up.tq_projections.size()==2 && down.tq_projections.size()==1;
-        return qwen_moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
+        return qwen_moe(execution,std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                         std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
     }
     auto embedding(const std::string &name) const {

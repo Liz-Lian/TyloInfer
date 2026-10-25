@@ -469,6 +469,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/ops/common/moe_routes.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/gated_residual.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/tq/tq.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/tq/moe.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/mx.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/quant_linear.cpp
 )
@@ -493,6 +494,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/graph_registry.cpp
 )
@@ -513,6 +515,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/routed.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/rows.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp

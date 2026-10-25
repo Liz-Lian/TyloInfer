@@ -1,6 +1,9 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/executor/execution.h"
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
+#endif
 #include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "storage/state/kv_offload.h"
@@ -871,13 +874,21 @@ CudaExecutionContext::~CudaExecutionContext() {
     catch (const std::exception& error) {
         std::cerr << "runtime_execution_cleanup error=" << error.what() << '\n';
     }
+    // Release pipelines while their borrowed branch streams still exist.
+    moe_pipelines.clear();
 }
+
+#if !TYLOINFER_ENABLE_MFQ_COMPAT
+void CudaExecutionContext::register_moe_pipeline(std::shared_ptr<MoeFfnPipeline>) {
+    throw std::invalid_argument("MoE FFN pipeline support is disabled");
+}
+#endif
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (native_contexts.empty() && !stores.moe_expert_cache &&
         !stores.tq_expert_cache && !stores.qsa_kv_store &&
-        (!tq || tq->empty()) && branches.empty()) return;
+        (!tq || tq->empty()) && moe_pipelines.empty() && branches.empty()) return;
 #endif
     CudaScope scope(*this);
     std::exception_ptr failure;
@@ -885,6 +896,10 @@ void CudaExecutionContext::drain() {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
     finish([&] { finish_moe_expert_exchanges(stores.moe_expert_cache); });
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    for (const auto& pipeline : moe_pipelines)
+        finish([&] { drain_moe_ffn_pipeline(pipeline); });
+#endif
     if (stores.qsa_kv_store) finish([&] { stores.qsa_kv_store->flush(); });
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -908,6 +923,7 @@ void CudaExecutionContext::drain() {
 
 void CudaExecutionContext::reset() {
     drain();
+    moe_pipelines.clear();
     tq = std::make_shared<TqExec>();
     branches.clear();
     profiler.reset();

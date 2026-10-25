@@ -108,7 +108,7 @@ TqPrefillPlanLease::~TqPrefillPlanLease() noexcept {
     }
 }
 
-TqGemmResources::TqGemmResources(int device) : device_(device) {
+TqGemmResources::TqGemmResources(int device) : device_(device), blas_(device) {
     int major = 0;
     TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(
         &major, cudaDevAttrComputeCapabilityMajor, device));
@@ -166,22 +166,11 @@ std::shared_ptr<TqPrefillPlan> TqGemmResources::prefill_plan(std::int64_t bytes)
 
 void TqGemmResources::retain(const MfqCudaStream& stream) {
     std::lock_guard<std::mutex> guard(mutex_);
-    handles_.try_emplace(stream.stream(), Entry{stream, {}});
+    blas_.retain(stream);
 }
 
 cublasHandle_t TqGemmResources::get() {
-    const auto stream = mfq_get_current_cuda_stream(device_);
-    std::lock_guard<std::mutex> guard(mutex_);
-    auto found = handles_.find(stream.stream());
-    if (found == handles_.end()) {
-        found = handles_.emplace(stream.stream(), Entry{stream, {}}).first;
-    }
-    if (!found->second.handle) {
-        auto handle = std::make_unique<mfq::cuda::BlasHandle>(device_);
-        handle->set_stream(stream.stream());
-        found->second.handle = std::move(handle);
-    }
-    return found->second.handle->get();
+    return blas_.get();
 }
 
 TqExec::~TqExec() noexcept {

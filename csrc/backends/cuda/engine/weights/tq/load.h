@@ -1,12 +1,14 @@
 #pragma once
 
 #include "model_source/model_source.h"
-#include "tq.h"
+#include "backends/cuda/engine/weights/tq/routed.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+struct CudaExecutionContext;
 
 TqWeight load_tq_weight(
     const mfq::ModelSource&, const std::string&, int device, bool cuda = true);

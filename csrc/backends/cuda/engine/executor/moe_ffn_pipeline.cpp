@@ -380,6 +380,9 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     bool up_only_=false;
     bool single_up()const{return combined_gate_up_||up_only_;}
     cudaStream_t stream_=nullptr;
+    bool stream_bound_=false;
+    int stream_device_=0;
+    bool active_=false;
     bool failed_=false;
     std::shared_ptr<Mapped> cached_expert_fields_;
     uint64_t cached_resident_experts_=0;
@@ -387,6 +390,15 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     double cpu_ns_=0,cpu_work_=0,gpu_ns_=0,gpu_samples_=0;
     double stage_ns_=0,stage_bytes_=0;
     std::vector<mfq::MoeCpuCostModel::Key> cpu_cost_keys_;
+    void bind_stream(cudaStream_t current) {
+        const int device=mfq_current_cuda_device();
+        if(stream_bound_) {
+            if(stream_!=current || stream_device_!=device)
+                throw std::runtime_error("MFQ FFN session changed its CUDA stream or device");
+            return;
+        }
+        stream_=current;stream_device_=device;stream_bound_=true;
+    }
     mfq::MoeCpuCostModel::Key cpu_cost_key(const mfq::MoeDispatchGroup& group)const {
         auto key=cpu_cost_keys_[group.expert];key[3]=group.positions.size();return key;
     }
@@ -4335,6 +4347,7 @@ public:
             ids.scalar_type()!=tb::kInt32 || !ids.is_cuda() ||
             (!cache_->ssd_experts() && (!cache_->pipeline_transfer_cache_ || cache_->pipeline_mapped_copy_)))
             throw std::invalid_argument("MFQ prefetch requires CUDA int32 candidates, DMA and transfer caching");
+        bind_stream(mfq_current_cuda_stream());
         if(cache_->ssd_experts()) {
             const auto* window=mfq::cuda::DecodeWindow::recording();
             const int count=int(ids.numel());
@@ -4415,7 +4428,24 @@ public:
                 owner->prediction_cells_.erase(window);
             }};
     }
+    void drain() {
+        std::exception_ptr failure;
+        const auto finish=[&](auto&& work) {
+            try { work(); } catch(...) { if(!failure)failure=std::current_exception(); }
+        };
+        if(stream_bound_)finish([&] {
+            MfqCudaGuard guard(stream_device_);
+            TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream_));
+        });
+        if(cache_->weight_stream_)finish([&] {
+            MfqCudaGuard guard(stream_device_);
+            TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(cache_->weight_stream_));
+        });
+        if(failure)std::rethrow_exception(failure);
+    }
     void register_idle_reclaimer() {
+        cache_->pipeline_decode_release_.reserve(cache_->pipeline_decode_release_.size()+1);
+        cache_->pipeline_decode_indirect_.reserve(cache_->pipeline_decode_indirect_.size()+1);
         cache_->pipeline_decode_release_.push_back([owner=weak_from_this()] {
             if(auto pipeline=owner.lock()) {
                 pipeline->cells_.clear();pipeline->prediction_cells_.clear();pipeline->window_routes_.clear();
@@ -4432,18 +4462,39 @@ public:
             return true;
         });
     }
+    void activate() {
+        if(active_)return;
+        const std::array<int,3> bundle{sources_[0]->id_,sources_[1]->id_,sources_[2]->id_};
+        const auto release_size=cache_->pipeline_decode_release_.size();
+        const auto indirect_size=cache_->pipeline_decode_indirect_.size();
+        bool added_bundle=false;
+        try {
+            if(std::find(cache_->pipeline_bundles_.begin(),cache_->pipeline_bundles_.end(),bundle)==cache_->pipeline_bundles_.end()) {
+                if(cache_->moe_residency_)throw std::logic_error("MFQ cannot add an expert bundle after scheduling starts");
+                cache_->pipeline_bundles_.push_back(bundle);added_bundle=true;
+            }
+            register_idle_reclaimer();
+            active_=true;
+        } catch(...) {
+            cache_->pipeline_decode_release_.resize(release_size);
+            cache_->pipeline_decode_indirect_.resize(indirect_size);
+            if(added_bundle && !cache_->pipeline_bundles_.empty() && cache_->pipeline_bundles_.back()==bundle)
+                cache_->pipeline_bundles_.pop_back();
+            throw;
+        }
+    }
     ~MoeFfnPipeline() {
         // A host error releases every graph wait. Drain both producers before
         // destroying mapped flags that a graph or DMA callback still uses.
-        if(stream_)(void)cudaStreamSynchronize(stream_);
-        if(cache_->weight_stream_)(void)cudaStreamSynchronize(cache_->weight_stream_);
+        try { drain(); } catch (...) {}
     }
     MoeFfnPipeline(std::array<std::shared_ptr<MoeCachedSource>,3> sources,MoeFfnShared shared,MoeFfnDispatchObserver observer,
             MoeFfnSharedWeights shared_weights,double swiglu_limit)
         :sources_(std::move(sources)),cache_(sources_[0]->cache_),shared_(std::move(shared)),shared_weights_(std::move(shared_weights)),observer_(std::move(observer)),
         width_(sources_[0]->cpu_->neuron_len),ff_(sources_[2]->cpu_->neuron_len),experts_(sources_[0]->n_experts()),
         combined_gate_up_(sources_[0]==sources_[1] && sources_[0]->cpu_->out_per_expert!=sources_[2]->cpu_->neuron_len),
-        up_only_(sources_[0]==sources_[1] && sources_[0]->cpu_->out_per_expert==sources_[2]->cpu_->neuron_len) {
+        up_only_(sources_[0]==sources_[1] && sources_[0]->cpu_->out_per_expert==sources_[2]->cpu_->neuron_len),
+        stream_device_(mfq_current_cuda_device()) {
         swiglu_limit_=swiglu_limit;
         const auto trace=mfq::cuda::runtime_options::trace_moe_serve();
         trace_serve_=trace && *trace;
@@ -4463,17 +4514,11 @@ public:
             cpu_cost_keys_[e][p]=reinterpret_cast<std::uintptr_t>(
                 source.cohorts_[source.expert_to_cohort_[e]].arena);
         }
-        if(std::find(cache_->pipeline_bundles_.begin(),cache_->pipeline_bundles_.end(),bundle)==cache_->pipeline_bundles_.end()) {
-            if(cache_->moe_residency_)throw std::logic_error("MFQ cannot add an expert bundle after scheduling starts");
-            cache_->pipeline_bundles_.push_back(bundle);
-        }
     }
     tb::Tensor forward(CudaExecutionContext& execution,const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights) {
         if(failed_)throw std::runtime_error("MFQ FFN session requires recovery after its previous error");
         if(!cache_->pipeline_ready())throw std::runtime_error("MFQ FFN needs completed startup cache initialization");
         const auto current=mfq_current_cuda_stream();
-        if(stream_ && stream_!=current)throw std::runtime_error("MFQ FFN session changed its CUDA stream");
-        stream_=current;
         auto* window=mfq::cuda::DecodeWindow::recording();
         const int tokens=static_cast<int>(ids.size(0)),routes=static_cast<int>(ids.size(1));
         // Concurrency rows are decode tokens from independent sequences. Keep
@@ -4483,6 +4528,7 @@ public:
         if(input.dim()!=2 || input.size(0)!=tokens || input.size(1)!=width_ || !input.is_cuda() ||
             input.scalar_type()!=tb::kFloat16 || ids.dim()!=2 || ids.scalar_type()!=tb::kInt32 || !ids.is_cuda() ||
             weights.sizes().vec()!=ids.sizes().vec())throw std::invalid_argument("MFQ FFN input/route geometry mismatch");
+        bind_stream(current);
         // Keep temporary pages reusable across every prefill path. The existing
         // allocation limits still apply, and decode restores the old threshold.
         if(!window && !batch_decode)retain_prefill_pool(ids);
@@ -4629,13 +4675,11 @@ public:
         }
         return cell->output;
     }
-    friend MoeFfnForward make_moe_ffn_pipeline(const std::vector<std::shared_ptr<MfeWeight>>&,
-        const std::vector<std::shared_ptr<MfeWeight>>&,MoeFfnShared,MoeFfnDispatchObserver,MoeFfnSharedWeights,MoeFfnPrefetch*,double);
 };
 
-MoeFfnForward make_moe_ffn_pipeline(const std::vector<std::shared_ptr<MfeWeight>>& gate_up,
+std::shared_ptr<MoeFfnPipeline> make_moe_ffn_pipeline(const std::vector<std::shared_ptr<MfeWeight>>& gate_up,
         const std::vector<std::shared_ptr<MfeWeight>>& down,MoeFfnShared shared,MoeFfnDispatchObserver observer,
-        MoeFfnSharedWeights shared_weights,MoeFfnPrefetch* prefetch,double swiglu_limit) {
+        MoeFfnSharedWeights shared_weights,double swiglu_limit) {
     if((gate_up.size()!=1 && gate_up.size()!=2) || down.size()!=1)return {};
     const auto& up=gate_up.back();
     for(const auto& w:{gate_up[0],up,down[0]})if(!w || !w->cached_source)return {};
@@ -4650,9 +4694,29 @@ MoeFfnForward make_moe_ffn_pipeline(const std::vector<std::shared_ptr<MfeWeight>
     if(!gate_up[0]->cached_source->pipeline_enabled())return {};
     auto runtime=std::make_shared<MoeFfnPipeline>(std::array<std::shared_ptr<MoeCachedSource>,3>{
         gate_up[0]->cached_source,up->cached_source,down[0]->cached_source},std::move(shared),std::move(observer),std::move(shared_weights),swiglu_limit);
-    runtime->register_idle_reclaimer();
-    if(prefetch)*prefetch=[runtime](const tb::Tensor& ids){return runtime->prediction(ids);};
-    return [runtime](CudaExecutionContext& execution,const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights){
-        return runtime->forward(execution,input,ids,weights);
-    };
+    return runtime;
+}
+
+tb::Tensor run_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline,
+        CudaExecutionContext& execution,const tb::Tensor& input,const tb::Tensor& ids,
+        const tb::Tensor& weights) {
+    if(!pipeline)throw std::runtime_error("MoE FFN pipeline is no longer available");
+    return pipeline->forward(execution,input,ids,weights);
+}
+
+mfq::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
+        std::shared_ptr<MoeFfnPipeline> pipeline,const tb::Tensor& ids) {
+    if(!pipeline)throw std::runtime_error("MoE FFN pipeline is no longer available");
+    return pipeline->prediction(ids);
+}
+
+void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline) {
+    if(pipeline)pipeline->drain();
+}
+
+void CudaExecutionContext::register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline) {
+    if(!pipeline)throw std::invalid_argument("cannot register an empty MoE FFN pipeline");
+    moe_pipelines.push_back(pipeline);
+    try { pipeline->activate(); }
+    catch(...) { moe_pipelines.pop_back(); throw; }
 }

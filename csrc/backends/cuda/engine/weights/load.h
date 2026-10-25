@@ -4,6 +4,7 @@
 #include "mfe_weight.h"
 #include "model_source/read.h"
 #include "gated_residual.h"
+#include "backends/cuda/engine/weights/tq/routed.h"
 
 struct MfqDropFileCacheGuard {
     bool& setting;

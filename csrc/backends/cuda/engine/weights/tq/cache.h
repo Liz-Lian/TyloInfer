@@ -5,6 +5,7 @@
 
 #include <array>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -12,6 +13,7 @@
 
 namespace mfq { class TqTable; }
 namespace mfq::cuda { class Event; }
+class TqExec;
 
 // Selected weights own their backing after eviction; uploads retain host data
 // until DMA completes. Cache mutation is serialized across request streams.

@@ -44,6 +44,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #endif
 
 class MoeExpertCache;
+class MoeFfnPipeline;
 class TqCache;
 class TqExec;
 
@@ -400,11 +401,13 @@ struct CudaExecutionContext {
     LayerPlacementConfig layer_placement;
     CudaStores& stores;
     std::shared_ptr<TqExec> tq;
+    std::vector<std::shared_ptr<MoeFfnPipeline>> moe_pipelines;
     mfq::cuda::Branches branches;
     std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
 
     void drain();
     void reset();
+    void register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);
 };
 
 void mfq_release_host_allocator_cache() noexcept;

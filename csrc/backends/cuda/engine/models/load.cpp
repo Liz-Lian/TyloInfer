@@ -5,6 +5,7 @@
 #include "models/common/full_block.h"
 #include "moe.h"
 #include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
+#include "backends/cuda/engine/executor/tq_moe.h"
 
 #include <cstdio>
 #include <fstream>
@@ -205,7 +206,7 @@ void prepare_ffn(CudaExecutionContext &execution, FFN &f) {
 
 void prepare_moe_ffn(CudaExecutionContext& execution, FFN& f) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(f.moe_pipeline_forward || !f.uses_moe_expert_cache() || f.expert_parallel_moe_compatible() ||
+    if(!f.moe_pipeline.expired() || !f.uses_moe_expert_cache() || f.expert_parallel_moe_compatible() ||
             f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
             !execution.config.moe_route_stats_path.empty())return;
     std::vector<std::shared_ptr<MfeWeight>> gate_up;
@@ -215,15 +216,12 @@ void prepare_moe_ffn(CudaExecutionContext& execution, FFN& f) {
         gate_up={std::make_shared<MfeWeight>(f.moe_up),std::make_shared<MfeWeight>(f.moe_up)};
     else if(f.moe_split_gate_up)gate_up={std::make_shared<MfeWeight>(f.moe_gate),std::make_shared<MfeWeight>(f.moe_up)};
     else gate_up={std::make_shared<MfeWeight>(f.moe_gate_up)};
-    MoeFfnPrefetch prefetch;
-    f.moe_pipeline_forward=make_moe_ffn_pipeline(gate_up,{std::make_shared<MfeWeight>(f.moe_down)},
-        {},{},{},&prefetch,f.swiglu_limit);
-    if(prefetch)f.moe_pipeline_prefetch=[prefetch=std::move(prefetch)](const auto& ids) {
-        auto task=prefetch(ids);
-        if(auto* window=mfq::cuda::DecodeWindow::recording())window->enroll(std::move(task));
-        else task.serve();
-    };
-    if(f.moe_pipeline_forward)std::fprintf(stderr,"moe_generic_pipeline_dispatch layer=%d clipped_swiglu=%g\n",
+    auto pipeline=make_moe_ffn_pipeline(gate_up,{std::make_shared<MfeWeight>(f.moe_down)},
+        {},{},{},f.swiglu_limit);
+    if(!pipeline)return;
+    execution.register_moe_pipeline(pipeline);
+    f.moe_pipeline=pipeline;
+    std::fprintf(stderr,"moe_generic_pipeline_dispatch layer=%d clipped_swiglu=%g\n",
         f.moe_layer,f.swiglu_limit);
 #else
     return;
