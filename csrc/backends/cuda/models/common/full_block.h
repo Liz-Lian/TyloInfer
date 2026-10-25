@@ -2,45 +2,15 @@
 
 #include "models/common/block.h"
 #include "models/common/ffn.h"
+#include "ops/attention/full.h"
 #include "backends/cuda/engine/state/kv_cache.h"
 
 #include <cstdint>
 
-struct FullBlock : Block {
-    int layer = -1;
-    bool sliding = false;
-    bool value_equals_key = false;
-    int64_t attention_heads = 0;
-    int64_t kv_heads = 0;
-    int64_t attention_head_dim = 0;
-    int64_t attention_rotary_dim = 0;
-    int64_t attention_window = 0;
-    int64_t max_position_embeddings = 0;
-    double attention_scale = 0.0;
-    double rms_norm_eps = 1e-6;
-    double norm_weight_offset = 1.0;
-    bool official_bf16 = false;
-    // NoPE GQA: skip every rotary callback while keeping the KV cache normal.
-    bool no_rope = false;
-    RopeCache attention_rope;
-
-    mfq_tensor_backend::Tensor attn_norm;
+struct FullBlock : Block, mfq::cuda::FullAttention {
     mfq_tensor_backend::Tensor ffn_norm;
-    mfq_tensor_backend::Tensor q_norm;
-    mfq_tensor_backend::Tensor k_norm;
-    mfq_tensor_backend::Tensor v_norm;
-    QuantLinearGroup qkv;
-    bool attention_output_gate = false;
-    bool split_q_kv_projections = false;
-    QuantLinear q_projection;
-    QuantLinear k_projection;
-    QuantLinear v_projection;
-    QuantLinear o;
     FFN ffn;
     KVCache cache;
-    mfq::cuda::KvQuantization kv_quantization;
-
-    static constexpr int64_t kDecodeAttentionMaxParts = 16;
 
     bool supports_speculation() const noexcept override { return !sliding; }
     void reset(int64_t batch) override;

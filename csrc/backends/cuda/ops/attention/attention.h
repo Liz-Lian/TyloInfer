@@ -23,7 +23,11 @@ struct AttentionKvView {
     KvQuantization quantization;
     std::int64_t page_size = 0;
     std::int64_t pages_per_chunk = 0;
-    std::int64_t paged_heads = 0;
+    std::int64_t heads = 0;
+    bool ring = false;
+    std::int64_t batch = 0;
+    std::int64_t head_dim = 0;
+    mfq_tensor_backend::ScalarType dtype = mfq_tensor_backend::kFloat16;
 
     bool paged() const noexcept { return page_size > 0; }
 
@@ -31,7 +35,7 @@ struct AttentionKvView {
         return paged() ? QuantizedKvPages{key_chunk_ptrs, value_chunk_ptrs, page_table,
                                            static_cast<int>(page_size),
                                            static_cast<int>(pages_per_chunk),
-                                           static_cast<int>(paged_heads)}
+                                           static_cast<int>(heads)}
                        : QuantizedKvPages{};
     }
 };

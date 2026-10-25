@@ -1,12 +1,10 @@
 #pragma once
 
 #include "backend.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "ops/attention/attention.h"
 
 #include <cstdint>
 #include <utility>
-
-struct CudaExecutionConfig;
 
 struct KVCache {
     mfq_tensor_backend::Tensor k;
@@ -58,15 +56,10 @@ struct KVCache {
     mfq_tensor_backend::ScalarType scalar_type() const {
         return is_paged() || quantization.enabled() ? paged_dtype : k.scalar_type();
     }
-    mfq::cuda::QuantizedKvPages quantized_pages() const {
-        return is_paged()?mfq::cuda::QuantizedKvPages{k_chunk_ptrs,v_chunk_ptrs,page_table,int(page_size),int(pages_per_chunk),int(paged_heads)}:mfq::cuda::QuantizedKvPages{};
+    mfq::cuda::AttentionKvView view() const {
+        return {{}, {}, k, v, k_chunk_ptrs, v_chunk_ptrs, page_table, quantization,
+                page_size, pages_per_chunk, is_paged() ? paged_heads : k.size(1), ring,
+                batch_size(), is_paged() || quantization.enabled() ? paged_head_dim : k.size(3),
+                scalar_type()};
     }
-    std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append(
-        const CudaExecutionConfig& config,
-        mfq_tensor_backend::Tensor key,
-        mfq_tensor_backend::Tensor value,
-        mfq_tensor_backend::Tensor positions,
-        int64_t start_position,
-        int64_t end_position,
-        bool contiguous_prefill_prefix = false);
 };

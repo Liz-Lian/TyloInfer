@@ -466,6 +466,8 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/native/profile.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/attention/attention.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/attention/full.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/attention/kv.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/norm/rms.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/rope.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/format.cpp

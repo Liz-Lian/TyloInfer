@@ -246,7 +246,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 return attention_paged_cache_decode_cuda(
                     qh, kv.key_chunk_ptrs, kv.value_chunk_ptrs, kv.page_table,
                     request.sequence_lengths.value(), attn_scale, kv.page_size,
-                    kv.pages_per_chunk, kv.paged_heads, scratch.partial_o, scratch.partial_m,
+                    kv.pages_per_chunk, kv.heads, scratch.partial_o, scratch.partial_m,
                     scratch.partial_l, parts, dynamic_parts);
             }
             if (aten_decode_enabled) {
