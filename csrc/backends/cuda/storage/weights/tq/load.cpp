@@ -1,68 +1,15 @@
 #include "storage/weights/tq/load.h"
 
 #include "model_source/tq_source.h"
+#include "execution/execution.h"
+#include "storage/weights/tq/cache.h"
+#include "storage/weights/tq/image.h"
+#include "storage/weights/moe/expert_cache.h"
 
 #include <climits>
 #include <cstring>
 #include <stdexcept>
 #include <utility>
-
-std::vector<std::uint8_t> tq_image(
-        const std::vector<std::uint8_t>& blob, const mfq::TqLayout& layout) {
-    // Keep the packed words aligned in the single image consumed by CUDA.
-    const auto words_offset = (layout.packed + 3) & ~std::size_t(3);
-    const auto relative_offset = words_offset + layout.packed_bytes;
-    std::vector<std::uint8_t> image(relative_offset + 32);
-    std::memcpy(image.data(), blob.data(), layout.packed);
-    std::memcpy(image.data() + words_offset,
-                blob.data() + layout.packed, layout.packed_bytes);
-    constexpr std::uint16_t relative[]{
-        0x3400, 0x34d0, 0x35ca, 0x36f7, 0x3830, 0x390a, 0x3a10, 0x3b4b,
-        0x3c63, 0x3d47, 0x3e59, 0x3fa4, 0x4098, 0x4187, 0x42a6, 0x4400};
-    std::memcpy(image.data() + relative_offset, relative, sizeof(relative));
-    return image;
-}
-
-TqWeight tq_view(mfq_tensor_backend::Tensor image,
-                 const mfq::TqLayout& layout, std::int64_t columns) {
-    if (columns < 1 || columns > layout.width || layout.rows > INT_MAX ||
-        layout.width > INT_MAX) {
-        throw std::invalid_argument("invalid TQ CUDA logical shape");
-    }
-    const auto words_offset = (layout.packed + 3) & ~std::size_t(3);
-    const auto relative_offset = words_offset + layout.packed_bytes;
-    TqWeight result;
-    result.image = std::move(image);
-    auto* data = result.image.data_ptr<std::uint8_t>();
-    int gslog = 0;
-    for (auto gs = layout.gs; gs > 1; gs >>= 1) ++gslog;
-    result.view = {
-        reinterpret_cast<const std::uint32_t*>(data + words_offset),
-        reinterpret_cast<const std::uint64_t*>(data + 64),
-        data + layout.scales, data + relative_offset, nullptr,
-        static_cast<int>(layout.rows), static_cast<int>(layout.width),
-        static_cast<int>(columns), gslog, int(layout.columns)};
-    result.out = layout.rows;
-    result.neuron_len = columns;
-    return result;
-}
-
-TqWeight to_device_tq(const std::vector<std::uint8_t>& blob,
-                      std::int64_t columns, int device, bool cuda) {
-    const mfq::TqLayout layout(blob.data(), blob.size());
-    const auto image = tq_image(blob, layout);
-    const MfqCudaGuard guard(device);
-    auto storage = mfq_tensor_backend::from_blob(
-        const_cast<std::uint8_t*>(image.data()),
-        {static_cast<std::int64_t>(image.size())},
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8)).clone();
-    if (cuda) {
-        storage = storage.to(
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device),
-            false, false).contiguous();
-    }
-    return tq_view(std::move(storage), layout, columns);
-}
 
 TqWeight load_tq_weight(const mfq::ModelSource& source,
                          const std::string& name, int device, bool cuda) {
@@ -94,13 +41,24 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
         std::int64_t input) {
     auto table = mfq::tq_table(source, name);
     if (experts < 1 || experts > UINT32_MAX || output < 1 || input < 1 ||
-        table->rows() != std::uint64_t(experts) * std::uint64_t(output) ||
+        table->rows() % experts || table->rows() / experts != std::uint64_t(output) ||
         table->width() != input) {
         throw std::invalid_argument("TQ routed projection shape differs: " + name);
     }
-    auto cache = ensure_tq_expert_cache(execution);
-    auto result = std::make_shared<TqRoutedWeight>(
-        std::move(table), std::move(cache), 0, experts, output, input);
-    result->source_id = register_tq_expert_source(result->cache, result->table->storage_bytes());
+    auto& cache = execution.stores.tq_expert_cache;
+    if (!cache) {
+        const auto budget = execution.config.moe_device_cache_bytes.value_or(
+            moe_expert_cache_budget_bytes(execution.stores.moe_expert_cache));
+        const bool explicit_budget = execution.config.moe_device_cache_bytes.has_value() ||
+            bool(execution.stores.moe_expert_cache);
+        cache = std::make_shared<TqCache>(budget, execution.config.moe_host_cache_bytes,
+            execution.config.moe_host_physical_bytes, !explicit_budget, execution.tq);
+    }
+    auto result = std::make_shared<TqRoutedWeight>();
+    result->cache = cache;
+    result->experts = experts;
+    result->out = output;
+    result->input = input;
+    result->source_id = cache->add(std::move(table), output);
     return result;
 }

@@ -43,7 +43,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #endif
 
 class MoeExpertCache;
-class TqExpertCache;
+class TqCache;
 class TqExec;
 
 // One load owner outlives its execution context and every model borrowing it.
@@ -53,7 +53,7 @@ struct CudaStores {
     CudaStores& operator=(const CudaStores&) = delete;
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv_memory;
     std::shared_ptr<MoeExpertCache> moe_expert_cache;
-    std::shared_ptr<TqExpertCache> tq_expert_cache;
+    std::shared_ptr<TqCache> tq_expert_cache;
     std::shared_ptr<mfq::cuda::KvOffloadStore> qsa_kv_store;
 
     // Drain execution before retiring backing; leases may retain individual handles.

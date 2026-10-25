@@ -1,5 +1,6 @@
 #include "env.h"
 #include "execution/options.h"
+#include "execution/tq.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_shared_gate.h"
 #include "mfq_cuda_sampling_ops.h"
@@ -1439,8 +1440,9 @@ struct Qwen4DecodeGraph {
             // storage; refresh pooled keys even when this graph is already valid.
             for(auto* attention:qsa)attention->prepare_graph(model.positions,kv_capacity);
             if(!cell.window.valid()) {
-                if(!prepare_moe_graph_pool(model.execution->stores.moe_expert_cache))
-                    prepare_tq_graph_pool(model.execution->stores.tq_expert_cache);
+                if(!prepare_moe_graph_pool(model.execution->stores.moe_expert_cache) &&
+                   model.execution->stores.tq_expert_cache)
+                    model.execution->tq->get(mfq_current_cuda_device())->prepare_graph();
                 DecodeGraphBranchScope branch_scope(
                     model.execution->decode_graph_serial_branches);
                 const auto capture_started=std::chrono::steady_clock::now();
@@ -2208,11 +2210,14 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
             }
         // Cached MFE owns its graph pool and initializes it during preparation.
         // Dense fixtures need a pool owned by this decoder instead.
-        if (!prepare_moe_graph_pool(model.execution->stores.moe_expert_cache) &&
-                !prepare_tq_graph_pool(model.execution->stores.tq_expert_cache)) {
-            graph.memory_pool = std::make_unique<Graph>();
-            graph.memory_pool->prepare_memory();
-            default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
+        if (!prepare_moe_graph_pool(model.execution->stores.moe_expert_cache)) {
+            if (model.execution->stores.tq_expert_cache) {
+                model.execution->tq->get(mfq_current_cuda_device())->prepare_graph();
+            } else {
+                graph.memory_pool = std::make_unique<Graph>();
+                graph.memory_pool->prepare_memory();
+                default_context(mfq_current_cuda_device())->end_graph_warmup(mfq_current_cuda_stream());
+            }
         }
         graph.window = std::make_unique<DecodeWindow>(
             mfq_current_cuda_stream(),mfq::cuda::runtime_options::layer_timings(),true);

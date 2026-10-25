@@ -18,6 +18,7 @@
 #include "storage/weights/moe/expert_store.h"
 #include "storage/weights/moe/quant_range_source.h"
 #include "storage/weights/tq/load.h"
+#include "storage/weights/tq/image.h"
 #include "model_source/tq_source.h"
 #include "formats/quant/packed_nint_expert_store.h"
 #include <cstdlib>

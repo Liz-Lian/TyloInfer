@@ -2,7 +2,7 @@
 
 #include "env.h"
 #include "tq.h"
-#include "storage/weights/tq/load.h"
+#include "storage/weights/tq/image.h"
 #include "weight_memory.h"
 
 #include <algorithm>

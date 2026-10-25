@@ -2,10 +2,97 @@
 
 #include "backend.h"
 #include "context.h"
+#include "kernels/moe/pipeline.h"
+#include "execution/decode_window.h"
+
+#include <atomic>
+#include <climits>
 
 #include <algorithm>
 #include <exception>
 #include <stdexcept>
+
+namespace tb = mfq_tensor_backend;
+
+struct TqGemmResources::RouteReadback {
+    int device;
+    MfqCudaStream stream;
+    std::mutex mutex;
+    std::unique_ptr<mfq::cuda::HostBuffer> host;
+    void* mapped=nullptr;
+    bool can_map=false;
+    RouteReadback(int device,MfqCudaStream stream):device(device),stream(std::move(stream)) {
+        int supported=0;
+        TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&supported,cudaDevAttrCanMapHostMemory,device));
+        can_map=supported!=0;
+    }
+};
+
+std::vector<std::int64_t> TqGemmResources::routes(const tb::Tensor& ids) {
+    const auto source=ids.contiguous();
+    std::vector<std::int64_t> result(source.numel());
+    if(!source.numel())return result;
+    if(!source.is_cuda() || (source.scalar_type()!=tb::kInt32 && source.scalar_type()!=tb::kInt64)) {
+        const auto host=source.cpu().to(tb::kInt64);
+        std::copy_n(host.data_ptr<std::int64_t>(),result.size(),result.data());return result;
+    }
+    const MfqCudaGuard device_guard(source.get_device());
+    const auto stream=mfq_get_current_cuda_stream(source.get_device());
+    std::shared_ptr<RouteReadback> readback;
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        for(const auto& candidate:route_readbacks_)
+            if(candidate->device==source.get_device() && candidate->stream.stream()==stream.stream()) {
+                readback=candidate;break;
+            }
+        if(!readback) {
+            readback=std::make_shared<RouteReadback>(source.get_device(),stream);
+            route_readbacks_.push_back(readback);
+        }
+    }
+    // Keep a stable DMA destination per execution stream. Pageable tensor
+    // allocation and GPU integer conversion are unnecessary for this ID list.
+    std::lock_guard<std::mutex> guard(readback->mutex);
+    const auto required=source.nbytes()+64;
+    if(!readback->host || readback->host->size()<required) {
+        const auto bytes=readback->host && readback->host->size()<=SIZE_MAX/2?
+            std::max(required,readback->host->size()*2):required;
+        readback->host=std::make_unique<mfq::cuda::HostBuffer>(bytes,readback->can_map);
+        readback->mapped=nullptr;
+        if(readback->can_map)TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&readback->mapped,readback->host->data(),0));
+    }
+    auto* values=static_cast<std::uint8_t*>(readback->host->data())+64;
+    if(readback->mapped && source.scalar_type()==tb::kInt32 && source.numel()<=INT_MAX) {
+        auto* ready=static_cast<std::uint32_t*>(readback->host->data());
+        *static_cast<volatile std::uint32_t*>(ready)=0;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        // Reuse the format-independent route publication already used by
+        // DecodeWindow. The GPU publishes IDs plus a system-visible flag;
+        // no copy-engine transfer or stream-wide synchronization is needed.
+        mfq::cuda::moe_publish_routes(nullptr,source.data_ptr<std::int32_t>(),nullptr,
+            reinterpret_cast<std::int32_t*>(readback->mapped)+16,
+            static_cast<std::uint32_t*>(readback->mapped),0,static_cast<int>(source.numel()),stream.stream());
+        TYLOINFER_CUDA_CHECK(cudaGetLastError());
+        mfq::cuda::wait_route_publication(ready,stream.stream());
+    }else {
+        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(values,source.data_ptr(),source.nbytes(),cudaMemcpyDeviceToHost,stream.stream()));
+        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
+    }
+    if(source.scalar_type()==tb::kInt32) {
+        std::copy_n(reinterpret_cast<const std::int32_t*>(values),result.size(),result.data());
+    }else std::copy_n(reinterpret_cast<const std::int64_t*>(values),result.size(),result.data());
+    return result;
+}
+
+void TqGemmResources::prepare_graph() {
+    const auto stream=mfq_get_current_cuda_stream();
+    std::lock_guard<std::mutex> guard(mutex_);
+    if(graph_pools_.count(stream.stream()))return;
+    const auto context=mfq::cuda::default_context(stream.device());
+    context->begin_graph_pool(stream.stream());
+    try {graph_pools_.emplace(stream.stream(),GraphPool{stream,context});}
+    catch(...) {context->end_graph_pool(stream.stream());throw;}
+}
 
 TqPrefillPlan::~TqPrefillPlan() noexcept {
     try {
@@ -40,7 +127,10 @@ TqGemmResources::TqGemmResources(int device) : device_(device) {
     }
 }
 
-TqGemmResources::~TqGemmResources() noexcept = default;
+TqGemmResources::~TqGemmResources() noexcept {
+    for (auto& [_, pool] : graph_pools_)
+        pool.context->end_graph_pool(pool.stream.stream());
+}
 
 bool TqGemmResources::indexed_mma() const noexcept { return indexed_mma_; }
 bool TqGemmResources::prefill_mma() const noexcept { return prefill_mma_; }

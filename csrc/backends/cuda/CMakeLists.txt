@@ -518,6 +518,8 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/storage/state/kv_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/load.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/image.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/cache.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/rows.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/cache_api.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders/weight.cpp

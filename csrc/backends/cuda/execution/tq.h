@@ -38,8 +38,15 @@ public:
     std::shared_ptr<TqPrefillPlan> prefill_plan(std::int64_t bytes);
     void retain(const MfqCudaStream& stream);
     cublasHandle_t get();
+    std::vector<std::int64_t> routes(const mfq_tensor_backend::Tensor& ids);
+    void prepare_graph();
 
 private:
+    struct RouteReadback;
+    struct GraphPool {
+        MfqCudaStream stream;
+        std::shared_ptr<mfq::cuda::Context> context;
+    };
     struct Entry {
         MfqCudaStream stream;
         std::unique_ptr<mfq::cuda::BlasHandle> handle;
@@ -51,6 +58,8 @@ private:
     std::mutex mutex_;
     std::unordered_map<cudaStream_t, Entry> handles_;
     std::vector<std::shared_ptr<TqPrefillPlan>> prefill_plans_;
+    std::vector<std::shared_ptr<RouteReadback>> route_readbacks_;
+    std::unordered_map<cudaStream_t, GraphPool> graph_pools_;
 };
 
 class TqExec {
