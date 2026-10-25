@@ -99,8 +99,8 @@ struct MfeWeight {
         for (size_t launch_position = 0;
              launch_position < expert_parallel_shards.size();
              ++launch_position) {
-            const size_t index = model_parallel_launch_index(
-                execution.config, launch_position, expert_parallel_shards.size());
+            const size_t index = parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, expert_parallel_shards.size());
             const auto & shard = expert_parallel_shards[index];
             if (!shard.weight) {
                 throw std::runtime_error(

@@ -1,6 +1,7 @@
 #pragma once
 
-#include "backends/cuda/engine/executor/execution.h"
+#include "native/profile.h"
+#include "parallel.h"
 #include "backend.h"
 #include "formats/mx_blob.h"
 

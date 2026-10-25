@@ -1,10 +1,10 @@
 #pragma once
 
-#include "backends/cuda/engine/executor/execution.h"
+#include "native/profile.h"
+#include "parallel.h"
+#include "backend.h"
 #include "formats/quant/vq_blob.h"
 #include "nint.h"
-
-enum class TensorParallelAxis;
 
 struct NvqWorkspace {
     int M = 0;
@@ -55,7 +55,6 @@ struct NvqWeight {
     }
 };
 
-bool nvq_fusion_enabled(const CudaExecutionConfig& config);
 void prepare_nvq_integer_codebook(NvqWeight& weight);
 void prepare_nvq_decode_records(NvqWeight& weight,bool immutable=false);
 bool prepare_nvq_dense_groups(NvqWeight& weight);
@@ -112,14 +111,14 @@ mfq::nvq::Data select_nvq_cpu_rows(
 NvqWeight to_device_nvq(
     const mfq::nvq::Data& source,
     bool cuda,
-    const CudaExecutionConfig& config = {});
+    bool nvq2 = false, bool extended = false);
 NvqWeight to_gpu_nvq(
     const mfq::nvq::Data& source,
-    const CudaExecutionConfig& config = {});
+    bool nvq2 = false, bool extended = false);
 NvqWeight to_cuda_device_nvq(
     const mfq::nvq::Data& source,
     int device,
-    const CudaExecutionConfig& config = {});
+    bool nvq2 = false, bool extended = false);
 NvqWeight to_cpu_nvq(const mfq::nvq::Data& source);
 mfq::nepq::Data select_nepq_cpu_rows(
     const mfq::nepq::Data& source,

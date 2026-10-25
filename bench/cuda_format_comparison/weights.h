@@ -84,7 +84,7 @@ static void prepare_bench_execution_layout(MixedMoePool& pool) {
     copy(w.sub_scale_packed,c.sub_scale_packed);copy(w.codebook,c.codebook);
     copy(w.neuron_scale.to(tb::kFloat16),c.neuron_scale_h);
     CudaExecutionConfig config;config.nvq_extended_group_exec=true;
-    auto converted=to_device_nvq(c,true,config);
+    auto converted=to_device_nvq(c,true,config.nvq2_exec,config.nvq_extended_group_exec);
     verify_bench_nvq_records(w,converted);
     w=std::move(converted);
     for(auto* field:fields(pool))if(field->defined())*field=field->to(tb::kCPU).contiguous();

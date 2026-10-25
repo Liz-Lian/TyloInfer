@@ -178,7 +178,8 @@ mfq_tensor_backend::Tensor FFN::forward_tensor_parallel_dense(CudaExecutionConte
     std::vector<mfq_tensor_backend::Tensor> partials(shard_count);
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index =
-            model_parallel_launch_index(execution.config, launch_position, shard_count);
+            parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, shard_count);
         const auto &gate_shard = gate_up.layers[0].tensor_parallel_shards[index];
         const auto &up_shard = gate_up.layers[1].tensor_parallel_shards[index];
         const auto &down_shard = down.tensor_parallel_shards[index];
@@ -261,7 +262,8 @@ FFN::forward_expert_parallel_moe(CudaExecutionContext &execution, mfq_tensor_bac
     }
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index =
-            model_parallel_launch_index(execution.config, launch_position, shard_count);
+            parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, shard_count);
         const auto &gate_shard = moe_gate_up.expert_parallel_shards[index];
         const auto &down_shard = moe_down.expert_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
@@ -939,7 +941,7 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
         [&](const Tensor &input, Activation activation, double limit) -> std::optional<Tensor> {
             if (activation != Activation::silu || limit > 0.0)
                 return {};
-            if (mfq::mfq_compat_enabled && nvq_fusion_enabled(execution.config) && input.numel() / input.size(-1) == 1 &&
+            if (mfq::mfq_compat_enabled && execution.config.nvq_fusion && input.numel() / input.size(-1) == 1 &&
                 gate_up.nvq_prefix2 && gate_up.layers.size() == 2 && gate_up.layers[0].is_nvq() &&
                 gate_up.layers[1].is_nvq() && down.is_nvq() && gate_up.outs.size() == 2 &&
                 gate_up.outs[0] == gate_up.outs[1] && gate_up.outs[0] == down.nvq.neuron_len &&
@@ -1007,7 +1009,7 @@ bool FFN::can_forward_fused_residual(const CudaExecutionConfig &config,
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (config.diagnostic_fp32_residual)
         return false;
-    if (!nvq_fusion_enabled(config) || is_moe || geglu || swiglu_limit > 0.0 || important_neurons ||
+    if (!config.nvq_fusion || is_moe || geglu || swiglu_limit > 0.0 || important_neurons ||
         tensor_parallel_dense_compatible() || !x.is_cuda() || !residual.is_cuda() ||
         x.scalar_type() != mfq_tensor_backend::kFloat16 ||
         residual.scalar_type() != mfq_tensor_backend::kFloat16 || !x.is_contiguous() ||

@@ -402,10 +402,10 @@ QuantLinear load_quant_linear(
             }
         } else {
             if (cpu_layer) {
-                result.nvq = to_device_nvq(cpu, false, execution.config);
+                result.nvq = to_device_nvq(cpu, false, execution.config.nvq2_exec, execution.config.nvq_extended_group_exec);
             } else {
                 MfqCudaGuard guard(active_weight_load_device(execution));
-                result.nvq = to_device_nvq(cpu, true, execution.config);
+                result.nvq = to_device_nvq(cpu, true, execution.config.nvq2_exec, execution.config.nvq_extended_group_exec);
             }
         }
     } else if (dtype == "MXFP4-SQ") {

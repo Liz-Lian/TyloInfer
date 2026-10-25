@@ -6,6 +6,8 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include "native/branches.h"
 #include "native/collectives.h"
 #include "native/profile.h"
+#include "ops/common/include/mmq.h"
+#include "ops/common/include/parallel.h"
 #include "ops/attention/scratch.h"
 #include "engine/weights/tensor_parallel.h"
 #include "engine/models/common/yarn.h"
@@ -111,31 +113,6 @@ public:
     }
     CudaImageMaskScope(const CudaImageMaskScope&)=delete;
     CudaImageMaskScope& operator=(const CudaImageMaskScope&)=delete;
-};
-
-enum class KlMmqMode {
-    Default,
-    Nint8One,
-    Fp16,
-};
-
-struct KlMmqState {
-    KlMmqMode mode = KlMmqMode::Default;
-    int64_t activation_quantize_calls = 0;
-    int64_t dense_calls = 0;
-    int64_t moe_calls = 0;
-    int64_t fallback_calls = 0;
-    int64_t kv_cache_capacity = 0;
-
-    mfq_tensor_backend::Tensor prepare_activation(
-        mfq_tensor_backend::Tensor input);
-    void reset() noexcept;
-};
-
-enum class TensorParallelAxis {
-    Mirrored,
-    Output,
-    Input,
 };
 
 struct ParallelConfig {
@@ -345,12 +322,7 @@ const ParallelConfig& moe_parallel_config(
     const CudaExecutionContext& execution);
 int model_parallel_primary_device(const CudaExecutionContext& execution);
 bool model_parallel_cuda_graph_enabled(const CudaExecutionContext& execution);
-size_t model_parallel_launch_index(
-    const CudaExecutionConfig& config,
-    size_t launch_position,
-    size_t shard_count);
 int active_weight_load_device(const CudaExecutionContext& execution);
-const char* kl_mmq_mode_name(KlMmqMode mode);
 void record_moe_route_stats(
     CudaExecutionContext& execution,
     int layer,
@@ -369,23 +341,6 @@ void trace_gemma_stage(
 void report_cuda_memory(
     const CudaExecutionConfig& config,
     const char* stage);
-
-struct KlMmqScope {
-    KlMmqState& state;
-    KlMmqState previous;
-
-    KlMmqScope(KlMmqMode mode, KlMmqState& state);
-    ~KlMmqScope();
-};
-
-struct KlKvCacheCapacityScope {
-    KlMmqState& state;
-    int64_t previous_capacity;
-
-    KlKvCacheCapacityScope(
-        int64_t capacity, KlMmqState& state);
-    ~KlKvCacheCapacityScope();
-};
 
 struct DecodeGraphBranchScope {
     bool& setting;

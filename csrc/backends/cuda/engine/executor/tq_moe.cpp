@@ -575,7 +575,8 @@ tb::Tensor TqMoeBanks::forward_parallel(CudaExecutionContext& execution,tb::Tens
     const auto slices=plan_moe_expert_parallel_slices(parallel,gate->experts,"TQ experts");
     std::vector<tb::Tensor> partials(slices.size());
     for(std::size_t launch=0;launch<slices.size();++launch) {
-        const auto index=model_parallel_launch_index(execution.config,launch,slices.size());
+        const auto index=parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch,slices.size());
         const auto& slice=slices[index];
         const MfqCudaGuard guard(slice.device);
         auto local_input=execution.collectives.copy(input, slice.device);

@@ -235,8 +235,8 @@ forward_tensor_parallel_output_projections(
         std::vector<mfq_tensor_backend::Tensor> local_inputs(shard_count);
         for (size_t launch_position = 0;
              launch_position < shard_count; ++launch_position) {
-            const size_t shard = model_parallel_launch_index(
-                execution.config, launch_position, shard_count);
+            const size_t shard = parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, shard_count);
             const int device =
                 projections.front()->tensor_parallel_shards[shard].device;
             MfqCudaGuard guard(device);
@@ -250,8 +250,8 @@ forward_tensor_parallel_output_projections(
             std::vector<mfq_tensor_backend::Tensor> local_outputs(shard_count);
             for (size_t launch_position = 0;
                  launch_position < shard_count; ++launch_position) {
-                const size_t shard = model_parallel_launch_index(
-                execution.config, launch_position, shard_count);
+                const size_t shard = parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, shard_count);
                 const auto & weight =
                     projection->tensor_parallel_shards[shard];
                 MfqCudaGuard guard(weight.device);
@@ -280,8 +280,8 @@ forward_tensor_parallel_output_projections(
     }
     for (size_t launch_position = 0;
          launch_position < shard_count; ++launch_position) {
-        const size_t shard = model_parallel_launch_index(
-                execution.config, launch_position, shard_count);
+        const size_t shard = parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, shard_count);
         const int device =
             projections.front()->tensor_parallel_shards[shard].device;
         MfqCudaGuard guard(device);
@@ -646,8 +646,8 @@ mfq_tensor_backend::Tensor QuantLinear::forward_tensor_parallel_flat(
     for (size_t launch_position = 0;
          launch_position < tensor_parallel_shards.size();
          ++launch_position) {
-        const size_t index = model_parallel_launch_index(
-            execution.config, launch_position, tensor_parallel_shards.size());
+        const size_t index = parallel_index(
+            execution.config.model_parallel_peer_first_launch, launch_position, tensor_parallel_shards.size());
         const auto & shard = tensor_parallel_shards[index];
         MfqCudaGuard guard(shard.device);
         mfq_tensor_backend::Tensor local_x = x;
@@ -942,7 +942,7 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
             execution.profiler, execution.kl_mmq, execution.branches,
             execution.config, execution.decode_graph_serial_branches, x);
     }
-    if (mfq::mfq_compat_enabled && default_mmq && nvq_prefix2 && nvq_fusion_enabled(execution.config)) {
+    if (mfq::mfq_compat_enabled && default_mmq && nvq_prefix2 && execution.config.nvq_fusion) {
         auto shape = x.sizes().vec();
         const auto flat =
             x.reshape({-1, x.size(-1)});
@@ -1018,7 +1018,7 @@ mfq_tensor_backend::Tensor QuantLinearGroup::forward_swiglu(
         return nint.forward_swiglu(execution.profiler, x);
     }
     if (mfq::mfq_compat_enabled && default_mmq && nvq_prefix2 && layers.size() == 2 &&
-            nvq_fusion_enabled(execution.config)) {
+            execution.config.nvq_fusion) {
         auto shape = x.sizes().vec();
         auto y = nvq_matmul_swiglu(
             execution.profiler, layers[0].nvq, layers[1].nvq,

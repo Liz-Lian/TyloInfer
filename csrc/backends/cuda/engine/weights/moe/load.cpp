@@ -242,7 +242,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
                 throw std::runtime_error("mixed NVQ/NPQ cohort shape mismatch");
             }
             pool.nvq = cuda
-                ? to_gpu_nvq(parsed, config)
+                ? to_gpu_nvq(parsed, config.nvq2_exec, config.nvq_extended_group_exec)
                 : to_cpu_nvq(parsed);
         }
         runtime->pools.push_back(std::move(pool));
@@ -430,7 +430,7 @@ MfeWeight to_cuda_device_moe_expert_slice(
             pool.family = MixedMoeFamily::Nvq;
             auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
             pool.nvq = to_gpu_nvq(
-                select_nvq_cpu_rows(parsed, rows), config);
+                select_nvq_cpu_rows(parsed, rows), config.nvq2_exec, config.nvq_extended_group_exec);
         }
         runtime->pools.push_back(std::move(pool));
     }
