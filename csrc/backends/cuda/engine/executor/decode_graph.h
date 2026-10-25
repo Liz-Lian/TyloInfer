@@ -15,7 +15,7 @@ std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
     const ParallelConfig& parallel);
 std::vector<MfqCudaStream> cuda_graph_participant_streams(
     const std::vector<MfqCudaStream>& compute_streams,
-    const ModelParallelCollectiveRuntime& collectives);
+    const mfq::cuda::Collectives& collectives);
 std::vector<std::unique_ptr<MfqCudaStreamGuard>>
 activate_cuda_graph_compute_streams(
     const std::vector<MfqCudaStream>& compute_streams);
@@ -48,7 +48,7 @@ struct DecodeGraphCache {
     explicit DecodeGraphCache(int64_t context_capacity);
     void ensure_compute_streams(const ParallelConfig& parallel);
     std::vector<MfqCudaStream> graph_participant_streams(
-        const ModelParallelCollectiveRuntime& collectives) const;
+        const mfq::cuda::Collectives& collectives) const;
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy) const;
     void ensure_storage(int64_t vocab_size);
@@ -141,7 +141,7 @@ bool DecodeGraphCache::ensure_captured(
     try {
         prepare_decode_graph_memory(
             model, *graph, sample, graph_participant_streams(
-                model.execution->model_parallel_collectives));
+                model.execution->collectives));
         graph->capture_begin();
         static_next = sample();
         commit(static_next);

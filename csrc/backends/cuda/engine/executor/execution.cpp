@@ -657,101 +657,7 @@ double PrefillCudaTimer::elapsed_ms() const {
 
 } // namespace mfq::cuda::internal
 
-ModelParallelCollectiveRuntime::~ModelParallelCollectiveRuntime() {
-    reset();
-}
 
-void ModelParallelCollectiveRuntime::reset() noexcept {
-    // Release CUDA-owned state while every device context is still alive.
-    // Static destruction is too late: the CUDA allocator may already be
-    // shutting down when tensors on secondary model-parallel devices are
-    // destroyed.
-    for (int device : devices) {
-        (void)cudaSetDevice(device);
-        (void)cudaDeviceSynchronize();
-    }
-    reduction_buffers.clear();
-#ifdef TYLOINFER_HAVE_NCCL
-    for (auto communicator : communicators) {
-        if (communicator != nullptr) (void)ncclCommDestroy(communicator);
-    }
-    communicators.clear();
-#endif
-    for (size_t index = 0; index < devices.size(); ++index) {
-        (void)cudaSetDevice(devices[index]);
-        if (index < ready.size() && ready[index] != nullptr) {
-            (void)cudaEventDestroy(ready[index]);
-        }
-        if (index < completed.size() && completed[index] != nullptr) {
-            (void)cudaEventDestroy(completed[index]);
-        }
-    }
-    devices.clear();
-    streams.clear();
-    ready.clear();
-    completed.clear();
-    collectives_enabled = false;
-}
-
-void ModelParallelCollectiveRuntime::configure(
-        const std::vector<int>& requested_devices,
-        bool allow_duplicate_devices) {
-    reset();
-    if (requested_devices.size() < 2 || allow_duplicate_devices) return;
-
-    devices = requested_devices;
-    streams.reserve(devices.size());
-    ready.resize(devices.size(), nullptr);
-    completed.resize(devices.size(), nullptr);
-    reduction_buffers.resize(devices.size());
-    for (size_t index = 0; index < devices.size(); ++index) {
-        MfqCudaGuard guard(devices[index]);
-        streams.push_back(mfq_get_stream_from_pool(false, devices[index]));
-        TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
-            &ready[index], cudaEventDisableTiming));
-        TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
-            &completed[index], cudaEventDisableTiming));
-    }
-#ifdef TYLOINFER_HAVE_NCCL
-    communicators.resize(devices.size(), nullptr);
-    TYLOINFER_NCCL_CHECK(ncclCommInitAll(
-        communicators.data(),
-        static_cast<int>(devices.size()),
-        devices.data()));
-    // Warm both directions before graph capture triggers NCCL's lazy setup.
-    std::vector<mfq_tensor_backend::Tensor> p2p_warmup_buffers;
-    p2p_warmup_buffers.reserve(devices.size());
-    for (const int device : devices) {
-        MfqCudaGuard guard(device);
-        p2p_warmup_buffers.push_back(mfq_tensor_backend::empty(
-            {1}, mfq_tensor_backend::TensorOptions()
-                .device(mfq_tensor_backend::Device(
-                    mfq_tensor_backend::kCUDA, device))
-                .dtype(mfq_tensor_backend::kUInt8)));
-    }
-    for (size_t peer = 1; peer < devices.size(); ++peer) {
-        TYLOINFER_NCCL_CHECK(ncclGroupStart());
-        TYLOINFER_NCCL_CHECK(ncclSend(
-            p2p_warmup_buffers[0].data_ptr(), 1, ncclUint8,
-            static_cast<int>(peer), communicators[0], streams[0].stream()));
-        TYLOINFER_NCCL_CHECK(ncclRecv(
-            p2p_warmup_buffers[peer].data_ptr(), 1, ncclUint8,
-            0, communicators[peer], streams[peer].stream()));
-        TYLOINFER_NCCL_CHECK(ncclSend(
-            p2p_warmup_buffers[peer].data_ptr(), 1, ncclUint8,
-            0, communicators[peer], streams[peer].stream()));
-        TYLOINFER_NCCL_CHECK(ncclRecv(
-            p2p_warmup_buffers[0].data_ptr(), 1, ncclUint8,
-            static_cast<int>(peer), communicators[0], streams[0].stream()));
-        TYLOINFER_NCCL_CHECK(ncclGroupEnd());
-    }
-    for (size_t index = 0; index < devices.size(); ++index) {
-        MfqCudaGuard guard(devices[index]);
-        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(streams[index].stream()));
-    }
-    collectives_enabled = true;
-#endif
-}
 
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());
@@ -823,7 +729,8 @@ void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (native_contexts.empty() && !stores.moe_expert_cache &&
         !stores.tq_expert_cache && !stores.qsa_kv_store &&
-        (!tq || tq->empty()) && moe_pipelines.empty() && branches.empty() && attention_scratch.empty()) return;
+        (!tq || tq->empty()) && moe_pipelines.empty() && branches.empty() &&
+        attention_scratch.empty() && collectives.streams().empty()) return;
 #endif
     CudaScope scope(*this);
     std::exception_ptr failure;
@@ -835,6 +742,7 @@ void CudaExecutionContext::drain() {
     for (const auto& pipeline : moe_pipelines)
         finish([&] { drain_moe_ffn_pipeline(pipeline); });
 #endif
+    finish([&] { collectives.drain(); });
     if (stores.qsa_kv_store) finish([&] { stores.qsa_kv_store->flush(); });
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -863,7 +771,7 @@ void CudaExecutionContext::reset() {
     tq = std::make_shared<TqExec>();
     branches.clear();
     profiler.reset();
-    model_parallel_collectives.reset();
+    collectives.reset();
     tensor_parallel = {};
     expert_parallel = {};
     layer_placement = {};
@@ -929,7 +837,7 @@ bool model_parallel_cuda_graph_enabled(
             !execution.tensor_parallel.enabled()
         ? execution.config.expert_parallel_cuda_graph
         : execution.config.tensor_parallel_cuda_graph;
-    return execution.model_parallel_collectives.collectives_enabled && enabled;
+    return execution.collectives.enabled() && enabled;
 }
 
 size_t model_parallel_launch_index(

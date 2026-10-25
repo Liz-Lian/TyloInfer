@@ -106,9 +106,7 @@ struct Qwen35Mtp final : MtpModule {
             }
             Tensor positions(Tensor explicit_pos, int64_t start, int64_t tokens) {
                 return explicit_pos.defined()
-                           ? tensor_to_cuda_device(
-                                 model.execution->model_parallel_collectives, explicit_pos,
-                                 model.execution->layer_placement.primary_device())
+                           ? model.execution->collectives.copy(explicit_pos, model.execution->layer_placement.primary_device())
                                  .to(mfq_tensor_backend::kInt64)
                                  .contiguous()
                            : mfq_tensor_backend::arange(start, start + tokens,

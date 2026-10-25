@@ -25,17 +25,10 @@ class MoeCachedSource;
 struct MixedMoeRuntime;
 struct MoeRoutePlan;
 
-mfq_tensor_backend::Tensor moe_tensor_to_device(
-    ModelParallelCollectiveRuntime& collectives,
-    mfq_tensor_backend::Tensor value,
-    int device);
 const MoeRoutePlan& moe_route_to_device(
-    ModelParallelCollectiveRuntime& collectives,
+    mfq::cuda::Collectives& collectives,
     const MoeRoutePlan& route,
     int device);
-mfq_tensor_backend::Tensor reduce_model_parallel_outputs(
-    CudaExecutionContext& execution,
-    std::vector<mfq_tensor_backend::Tensor> outputs);
 int select_nint_prefill_route_tile(
     const MoeRoutePlan& route, int tokens, int routes, int experts);
 const mfq_tensor_backend::Tensor& nint_route_tile_bounds(

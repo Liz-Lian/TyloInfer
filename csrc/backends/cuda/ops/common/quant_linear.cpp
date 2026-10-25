@@ -52,10 +52,6 @@
 using mfq_tensor_backend::indexing::Slice;
 using namespace mfq::cuda::quant_format;
 
-mfq_tensor_backend::Tensor reduce_model_parallel_outputs(
-    CudaExecutionContext& execution,
-    std::vector<mfq_tensor_backend::Tensor> outputs);
-
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 static NintLinearGroup make_linear_group(const std::vector<NintWeight>& weights);
 static mfq_tensor_backend::Tensor dequant_mxfp4_sq_cpu(const Mxfp4SqWeight& weight);
@@ -134,263 +130,9 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
     return mxfp8_matmul(profiler, shard.mxfp8, x);
 }
 
-mfq_tensor_backend::Tensor tensor_to_cuda_device(
-        ModelParallelCollectiveRuntime& collectives,
-        mfq_tensor_backend::Tensor value,
-        int device,
-        mfq_tensor_backend::Tensor reusable) {
-    if (value.is_cuda() && value.get_device() == device) {
-        return value.contiguous();
-    }
-    const auto reusable_matches = [&]() {
-        return reusable.defined() && reusable.is_cuda() &&
-            reusable.get_device() == device &&
-            reusable.sizes() == value.sizes() &&
-            reusable.scalar_type() == value.scalar_type() &&
-            reusable.is_contiguous();
-    };
-    const auto destination_tensor = [&]() {
-        if (reusable_matches()) return reusable;
-        MfqCudaGuard destination_guard(device);
-        return mfq_tensor_backend::empty(
-            value.sizes(),
-            value.options().device(
-                mfq_tensor_backend::Device(
-                    mfq_tensor_backend::kCUDA, device)));
-    };
-    if (value.numel() == 0) {
-        return destination_tensor();
-    }
-#if defined(TYLOINFER_NATIVE_CUDA_RUNTIME) && defined(TYLOINFER_HAVE_NCCL)
-    auto& runtime = collectives;
-    if (value.is_cuda() && runtime.collectives_enabled) {
-        const int source_device = value.get_device();
-        const auto source_rank_it = std::find(
-            runtime.devices.begin(), runtime.devices.end(), source_device);
-        const auto destination_rank_it = std::find(
-            runtime.devices.begin(), runtime.devices.end(), device);
-        if (source_rank_it != runtime.devices.end() &&
-                destination_rank_it != runtime.devices.end()) {
-            const auto source_stream =
-                mfq_get_current_cuda_stream(source_device);
-            cudaStreamCaptureStatus capture_status =
-                cudaStreamCaptureStatusNone;
-            {
-                MfqCudaGuard source_guard(source_device);
-                TYLOINFER_CUDA_CHECK(cudaStreamIsCapturing(
-                    source_stream.stream(), &capture_status));
-            }
-            if (capture_status != cudaStreamCaptureStatusNone) {
-                auto source = value.contiguous();
-                auto destination = destination_tensor();
-                const auto source_rank = static_cast<size_t>(
-                    source_rank_it - runtime.devices.begin());
-                const auto destination_rank = static_cast<size_t>(
-                    destination_rank_it - runtime.devices.begin());
-                {
-                    MfqCudaGuard source_guard(source_device);
-                    TYLOINFER_CUDA_CHECK(cudaEventRecord(
-                        runtime.ready[source_rank],
-                        source_stream.stream()));
-                    TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                        runtime.streams[source_rank].stream(),
-                        runtime.ready[source_rank], 0));
-                }
-                {
-                    MfqCudaGuard destination_guard(device);
-                    // Cross-device event waits make the receiving NCCL stream
-                    // participate in the same capture before ncclRecv runs.
-                    TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                        runtime.streams[destination_rank].stream(),
-                        runtime.ready[source_rank], 0));
-                }
-                TYLOINFER_NCCL_CHECK(ncclGroupStart());
-                TYLOINFER_NCCL_CHECK(ncclSend(
-                    source.data_ptr(), source.nbytes(), ncclUint8,
-                    static_cast<int>(destination_rank),
-                    runtime.communicators[source_rank],
-                    runtime.streams[source_rank].stream()));
-                TYLOINFER_NCCL_CHECK(ncclRecv(
-                    destination.data_ptr(), destination.nbytes(), ncclUint8,
-                    static_cast<int>(source_rank),
-                    runtime.communicators[destination_rank],
-                    runtime.streams[destination_rank].stream()));
-                TYLOINFER_NCCL_CHECK(ncclGroupEnd());
-                {
-                    MfqCudaGuard source_guard(source_device);
-                    TYLOINFER_CUDA_CHECK(cudaEventRecord(
-                        runtime.completed[source_rank],
-                        runtime.streams[source_rank].stream()));
-                    TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                        source_stream.stream(),
-                        runtime.completed[source_rank], 0));
-                }
-                {
-                    MfqCudaGuard destination_guard(device);
-                    const auto destination_stream =
-                        mfq_get_current_cuda_stream(device);
-                    TYLOINFER_CUDA_CHECK(cudaEventRecord(
-                        runtime.completed[destination_rank],
-                        runtime.streams[destination_rank].stream()));
-                    TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                        destination_stream.stream(),
-                        runtime.completed[destination_rank], 0));
-                }
-                return destination;
-            }
-        }
-    }
-#endif
-    MfqCudaGuard guard(device);
-    if (reusable_matches()) {
-        reusable.copy_(value, true);
-        return reusable;
-    }
-    return value.to(
-        value.options().device(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device)),
-        true, false).contiguous();
-}
 
-mfq_tensor_backend::Tensor reduce_model_parallel_outputs(
-        CudaExecutionContext& execution,
-        std::vector<mfq_tensor_backend::Tensor> outputs) {
-    if (outputs.empty()) {
-        throw std::runtime_error(
-            "cannot reduce an empty model-parallel output");
-    }
-#ifdef TYLOINFER_HAVE_NCCL
-    auto& runtime = execution.model_parallel_collectives;
-    if (runtime.collectives_enabled &&
-            outputs.size() == runtime.devices.size()) {
-        const auto shape = outputs.front().sizes().vec();
-        const auto output_dtype = outputs.front().scalar_type();
-        const int64_t elements = outputs.front().numel();
-        const bool reduce_to_primary =
-            execution.config.model_parallel_reduce_to_primary;
-        // A two-input FP16 sum has the same final FP16 rounding as the former
-        // FP32 reduction, while avoiding both conversion passes.
-        const bool fp16_reduce =
-            execution.config.model_parallel_fp16_reduce &&
-            reduce_to_primary &&
-            outputs.size() == 2 &&
-            output_dtype == mfq_tensor_backend::kFloat16;
-        const int primary = model_parallel_primary_device(execution);
-        const auto primary_rank_it = std::find(
-            runtime.devices.begin(), runtime.devices.end(), primary);
-        if (primary_rank_it == runtime.devices.end()) {
-            throw std::runtime_error(
-                "model-parallel primary device is absent from NCCL ranks");
-        }
-        const auto primary_rank = static_cast<size_t>(
-            primary_rank_it - runtime.devices.begin());
-        for (size_t index = 0; index < outputs.size(); ++index) {
-            const int device = runtime.devices[index];
-            if (!outputs[index].defined() || !outputs[index].is_cuda() ||
-                    outputs[index].get_device() != device ||
-                    outputs[index].sizes().vec() != shape ||
-                    outputs[index].scalar_type() != output_dtype) {
-                throw std::runtime_error(
-                    "NCCL model-parallel reduction received mismatched shards");
-            }
-            MfqCudaGuard guard(device);
-            if (fp16_reduce) {
-                outputs[index] = outputs[index].contiguous();
-            }
-            const auto producer =
-                mfq_get_current_cuda_stream(device);
-            TYLOINFER_CUDA_CHECK(cudaEventRecord(
-                runtime.ready[index], producer.stream()));
-            const auto communication = runtime.streams[index];
-            TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                communication.stream(), runtime.ready[index], 0));
-            if (fp16_reduce) {
-                mfq_cuda_record_stream(outputs[index], communication);
-            } else {
-                MfqCudaStreamGuard stream_guard(communication);
-                auto & buffer = runtime.reduction_buffers[index];
-                if (!buffer.defined() || buffer.sizes().vec() != shape ||
-                        buffer.get_device() != device ||
-                        buffer.scalar_type() != mfq_tensor_backend::kFloat32) {
-                    buffer = mfq_tensor_backend::empty(
-                        shape,
-                        outputs[index].options().dtype(mfq_tensor_backend::kFloat32));
-                }
-                buffer.copy_(outputs[index], true);
-                mfq_cuda_record_stream(outputs[index], communication);
-            }
-        }
 
-        TYLOINFER_NCCL_CHECK(ncclGroupStart());
-        for (size_t index = 0; index < outputs.size(); ++index) {
-            auto & buffer = runtime.reduction_buffers[index];
-            if (reduce_to_primary) {
-                void * reduction_data = fp16_reduce
-                    ? outputs[index].data_ptr()
-                    : buffer.data_ptr<float>();
-                TYLOINFER_NCCL_CHECK(ncclReduce(
-                    reduction_data,
-                    reduction_data,
-                    static_cast<size_t>(elements),
-                    fp16_reduce ? ncclFloat16 : ncclFloat32,
-                    ncclSum,
-                    static_cast<int>(primary_rank),
-                    runtime.communicators[index],
-                    runtime.streams[index].stream()));
-            } else {
-                TYLOINFER_NCCL_CHECK(ncclAllReduce(
-                    buffer.data_ptr<float>(),
-                    buffer.data_ptr<float>(),
-                    static_cast<size_t>(elements),
-                    ncclFloat32,
-                    ncclSum,
-                    runtime.communicators[index],
-                    runtime.streams[index].stream()));
-            }
-        }
-        TYLOINFER_NCCL_CHECK(ncclGroupEnd());
 
-        mfq_tensor_backend::Tensor result;
-        for (size_t index = 0; index < outputs.size(); ++index) {
-            MfqCudaGuard guard(runtime.devices[index]);
-            const auto communication = runtime.streams[index];
-            if (runtime.devices[index] == primary) {
-                if (fp16_reduce) {
-                    result = outputs[index];
-                } else {
-                    MfqCudaStreamGuard stream_guard(communication);
-                    result = runtime.reduction_buffers[index]
-                        .to(output_dtype).contiguous();
-                }
-            }
-            TYLOINFER_CUDA_CHECK(cudaEventRecord(
-                runtime.completed[index], communication.stream()));
-        }
-        MfqCudaGuard primary_guard(primary);
-        const auto parent = mfq_get_current_cuda_stream(primary);
-        TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-            parent.stream(), runtime.completed[primary_rank], 0));
-        mfq_cuda_record_stream(result, parent);
-        return result;
-    }
-#endif
-    const int primary = model_parallel_primary_device(execution);
-    MfqCudaGuard primary_guard(primary);
-    const auto output_dtype =
-        outputs.front().scalar_type();
-    mfq_tensor_backend::Tensor reduced;
-    for (auto & output : outputs) {
-        auto partial =
-            tensor_to_cuda_device(
-                execution.model_parallel_collectives, output, primary)
-                .to(mfq_tensor_backend::kFloat32);
-        if (!reduced.defined()) {
-            reduced = std::move(partial);
-        } else {
-            reduced.add_(partial);
-        }
-    }
-    return reduced.to(output_dtype).contiguous();
-}
 
 mfq_tensor_backend::Tensor quant_embedding_lookup(
         const QuantLinear & embedding,
@@ -498,8 +240,7 @@ forward_tensor_parallel_output_projections(
             const int device =
                 projections.front()->tensor_parallel_shards[shard].device;
             MfqCudaGuard guard(device);
-            local_inputs[shard] = tensor_to_cuda_device(
-                execution.model_parallel_collectives, flat, device);
+            local_inputs[shard] = execution.collectives.copy(flat, device);
         }
 
         const int primary = model_parallel_primary_device(execution);
@@ -522,9 +263,7 @@ forward_tensor_parallel_output_projections(
             std::vector<mfq_tensor_backend::Tensor> gathered;
             gathered.reserve(shard_count);
             for (auto & output : local_outputs) {
-                gathered.push_back(tensor_to_cuda_device(
-                    execution.model_parallel_collectives,
-                    output, primary));
+                gathered.push_back(execution.collectives.copy(output, primary));
             }
             auto combined = mfq_tensor_backend::cat(
                 gathered, -1).contiguous();
@@ -549,8 +288,7 @@ forward_tensor_parallel_output_projections(
         // All projections consume the same immutable activation. Transfer it
         // once per rank, then keep the independent local projection work on
         // that rank before gathering each output.
-        auto local_x = tensor_to_cuda_device(
-            execution.model_parallel_collectives, flat, device);
+        auto local_x = execution.collectives.copy(flat, device);
         for (size_t projection = 0;
                 projection < projections.size(); ++projection) {
             local_outputs[projection][shard] =
@@ -569,9 +307,7 @@ forward_tensor_parallel_output_projections(
         std::vector<mfq_tensor_backend::Tensor> gathered;
         gathered.reserve(shard_count);
         for (auto & output : projection_outputs) {
-            gathered.push_back(tensor_to_cuda_device(
-                execution.model_parallel_collectives,
-                output, primary));
+            gathered.push_back(execution.collectives.copy(output, primary));
         }
         auto combined = mfq_tensor_backend::cat(
             gathered, -1).contiguous();
@@ -690,7 +426,7 @@ DenseLinearGroup make_dense_group(const std::vector<mfq_tensor_backend::Tensor> 
 #endif
 
 static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
-        ModelParallelCollectiveRuntime& collectives, int primary,
+        mfq::cuda::Collectives& collectives, int primary,
         const QuantLinear& linear) {
     if (!linear.tensor_parallel()) {
         if (linear.is_tq()) {
@@ -790,8 +526,7 @@ static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
                 "unsupported tensor-parallel shard kind for reconstruction");
         }
         parts.push_back(
-            tensor_to_cuda_device(
-                collectives, part, primary)
+            collectives.copy(part, primary)
                 .to(mfq_tensor_backend::kFloat32).contiguous());
     }
     MfqCudaGuard primary_guard(primary);
@@ -808,7 +543,7 @@ static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
 }
 
 DenseLinearGroup make_fp32_quant_group(
-        ModelParallelCollectiveRuntime& collectives,
+        mfq::cuda::Collectives& collectives,
         int primary,
         QuantLinearGroup group) {
     DenseLinearGroup dense;
@@ -929,14 +664,10 @@ mfq_tensor_backend::Tensor QuantLinear::forward_tensor_parallel_flat(
         } else if (gate.has_value()) {
             local_gate = gate.value();
         }
-        local_x = tensor_to_cuda_device(
-            execution.model_parallel_collectives,
-            local_x, shard.device);
+        local_x = execution.collectives.copy(local_x, shard.device);
         if (gate.has_value()) {
             local_gate =
-                tensor_to_cuda_device(
-                    execution.model_parallel_collectives,
-                    local_gate, shard.device);
+                execution.collectives.copy(local_gate, shard.device);
         }
         if (is_mxfp8() &&
                 tensor_parallel_axis == TensorParallelAxis::Input) {
@@ -966,15 +697,13 @@ mfq_tensor_backend::Tensor QuantLinear::forward_tensor_parallel_flat(
         gathered.reserve(local_outputs.size());
         for (auto & output : local_outputs) {
             gathered.push_back(
-                tensor_to_cuda_device(
-                    execution.model_parallel_collectives,
-                    output, primary));
+                execution.collectives.copy(output, primary));
         }
         return mfq_tensor_backend::cat(gathered, -1).contiguous();
     }
 
-    auto reduced = reduce_model_parallel_outputs(
-        execution, std::move(local_outputs));
+    auto reduced = execution.collectives.sum(std::move(local_outputs), model_parallel_primary_device(execution),
+            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
     return is_mxfp8()
         ? reduced.to(x.scalar_type()).contiguous()
         : reduced;
@@ -1065,13 +794,12 @@ mfq_tensor_backend::Tensor QuantLinear::forward_mxfp8_groupwise(
         auto local = grouped.narrow(
             -1, shard.input_begin,
             shard.input_end - shard.input_begin);
-        local = tensor_to_cuda_device(
-            execution.model_parallel_collectives,
-            local, shard.device);
+        local = execution.collectives.copy(local, shard.device);
         partials.push_back(mxfp8_groupwise_matmul_f32(
             execution.profiler, shard.mxfp8, local, groups));
     }
-    return reduce_model_parallel_outputs(execution, std::move(partials))
+    return execution.collectives.sum(std::move(partials), model_parallel_primary_device(execution),
+            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce)
         .to(grouped.scalar_type()).contiguous();
 }
 

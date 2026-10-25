@@ -20,11 +20,11 @@ std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
 
 std::vector<MfqCudaStream> cuda_graph_participant_streams(
         const std::vector<MfqCudaStream>& compute_streams,
-        const ModelParallelCollectiveRuntime& collectives) {
+        const mfq::cuda::Collectives& collectives) {
     auto participants = compute_streams;
     participants.insert(
         participants.end(),
-        collectives.streams.begin(), collectives.streams.end());
+        collectives.streams().begin(), collectives.streams().end());
     return participants;
 }
 
@@ -51,7 +51,7 @@ void DecodeGraphCache::ensure_compute_streams(
 }
 
 std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(
-        const ModelParallelCollectiveRuntime& collectives) const {
+        const mfq::cuda::Collectives& collectives) const {
     return cuda_graph_participant_streams(compute_streams, collectives);
 }
 

@@ -8,16 +8,8 @@ static std::atomic<uint64_t> g_moe_route_generation{1};
 #include <cstring>
 #include <limits>
 
-mfq_tensor_backend::Tensor moe_tensor_to_device(
-        ModelParallelCollectiveRuntime& collectives,
-        mfq_tensor_backend::Tensor value, int device) {
-    return value.defined()
-        ? tensor_to_cuda_device(collectives, std::move(value), device)
-        : value;
-}
-
 static void copy_route_tensor(
-        ModelParallelCollectiveRuntime& collectives,
+        mfq::cuda::Collectives& collectives,
         mfq_tensor_backend::Tensor& destination,
         const mfq_tensor_backend::Tensor& source,
         int device) {
@@ -26,13 +18,12 @@ static void copy_route_tensor(
     } else if (source.is_cuda() && source.get_device() == device) {
         destination = source.contiguous();
     } else {
-        destination = tensor_to_cuda_device(
-            collectives, source, device, std::move(destination));
+        destination = collectives.copy(source, device, std::move(destination));
     }
 }
 
 const MoeRoutePlan& moe_route_to_device(
-        ModelParallelCollectiveRuntime& collectives,
+        mfq::cuda::Collectives& collectives,
         const MoeRoutePlan& source,
         int device) {
     auto& replica = (*source.device_replicas)[device];

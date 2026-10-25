@@ -2551,7 +2551,7 @@ void Qwen4Model::adapter_begin_forward(bool) {
 mfq_tensor_backend::Tensor
 Qwen4Model::adapter_block_positions(const mfq_tensor_backend::Tensor &full_positions,
                                     const mfq_tensor_backend::Tensor &, int device) const {
-    return tensor_to_cuda_device(execution->model_parallel_collectives, full_positions, device);
+    return execution->collectives.copy(full_positions, device);
 }
 
 void Qwen4Model::adapter_finish_forward(const mfq_tensor_backend::Tensor &full_positions,

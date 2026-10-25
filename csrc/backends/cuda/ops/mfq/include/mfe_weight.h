@@ -107,17 +107,16 @@ struct MfeWeight {
                     "expert-parallel MoE shard is missing");
             }
             MfqCudaGuard guard(shard.device);
-            auto local_x = moe_tensor_to_device(
-                execution.model_parallel_collectives, x, shard.device);
+            auto local_x = x.defined() ? execution.collectives.copy(x, shard.device) : x;
             const auto& local_route = moe_route_to_device(
-                execution.model_parallel_collectives, route, shard.device);
+                execution.collectives, route, shard.device);
             outputs[index] = forward(
                 *shard.weight,
                 local_x,
                 local_route);
         }
-        return reduce_model_parallel_outputs(
-            execution, std::move(outputs));
+        return execution.collectives.sum(std::move(outputs), model_parallel_primary_device(execution),
+            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
     }
 
     void prefetch(const MoeRoutePlan & route) const {

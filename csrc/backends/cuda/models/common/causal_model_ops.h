@@ -177,9 +177,7 @@ template <typename Model> struct CudaCausalOps : Model {
     static int64_t size(const Tensor &value, int axis) { return value.size(axis); }
     static Tensor batch_ids(Tensor ids) { return ids.unsqueeze(0); }
     Tensor device_ids(Tensor ids) const {
-        return tensor_to_cuda_device(this->execution->model_parallel_collectives,
-                                     ids.to(mfq_tensor_backend::kInt64),
-                                     this->execution->layer_placement.primary_device())
+        return this->execution->collectives.copy(ids.to(mfq_tensor_backend::kInt64), this->execution->layer_placement.primary_device())
             .contiguous();
     }
     Tensor embed_tokens(Tensor ids) const {
@@ -226,8 +224,7 @@ template <typename Model> struct CudaCausalOps : Model {
         static int64_t elements(const Tensor &value) { return value.numel(); }
 
         Tensor device_ids(Tensor value) {
-            return tensor_to_cuda_device(model.execution->model_parallel_collectives,
-                                         value.to(mfq_tensor_backend::kInt64), primary)
+            return model.execution->collectives.copy(value.to(mfq_tensor_backend::kInt64), primary)
                 .contiguous();
         }
         void prepare_inputs() { ids = device_ids(ids); }
@@ -263,8 +260,7 @@ template <typename Model> struct CudaCausalOps : Model {
                 }
             }
             return model.adapter_prepare_hidden(
-                tensor_to_cuda_device(model.execution->model_parallel_collectives, input_embeddings,
-                                      primary)
+                model.execution->collectives.copy(input_embeddings, primary)
                     .contiguous(),
                 B, T);
         }
@@ -273,13 +269,11 @@ template <typename Model> struct CudaCausalOps : Model {
             auto local_ids =
                 b->cpu_offloaded
                     ? cpu_ids
-                    : tensor_to_cuda_device(model.execution->model_parallel_collectives, ids,
-                                            b->cuda_device);
+                    : model.execution->collectives.copy(ids, b->cuda_device);
             auto local_pos =
                 b->cpu_offloaded
                     ? cpu_pos
-                    : tensor_to_cuda_device(model.execution->model_parallel_collectives, pos,
-                                            b->cuda_device);
+                    : model.execution->collectives.copy(pos, b->cuda_device);
             MfqOptional<mfq_tensor_backend::Tensor> local_cache_positions = mfq_nullopt;
             // Grid-MRoPE semantic coordinates never double as physical KV
             // slots, during either prepared prefill or delta-adjusted decode.
@@ -288,29 +282,25 @@ template <typename Model> struct CudaCausalOps : Model {
                 local_cache_positions =
                     b->cpu_offloaded
                         ? cpu_cache_positions
-                        : tensor_to_cuda_device(model.execution->model_parallel_collectives,
-                                                cache_positions, b->cuda_device);
+                        : model.execution->collectives.copy(cache_positions, b->cuda_device);
             }
             MfqOptional<mfq_tensor_backend::Tensor> local_seq_len = mfq_nullopt;
             if (seq_len.has_value()) {
                 local_seq_len =
                     b->cpu_offloaded
                         ? cpu_seq_len.value()
-                        : tensor_to_cuda_device(model.execution->model_parallel_collectives,
-                                                seq_len.value(), b->cuda_device);
+                        : model.execution->collectives.copy(seq_len.value(), b->cuda_device);
             }
             MfqOptional<mfq_tensor_backend::Tensor> local_attention_mask = mfq_nullopt;
             if (effective_attention_mask.has_value()) {
                 local_attention_mask =
                     b->cpu_offloaded
                         ? cpu_attention_mask.value()
-                        : tensor_to_cuda_device(model.execution->model_parallel_collectives,
-                                                effective_attention_mask.value(), b->cuda_device);
+                        : model.execution->collectives.copy(effective_attention_mask.value(), b->cuda_device);
             }
             x = b->cpu_offloaded
                     ? x.to(mfq_tensor_backend::kCPU).contiguous()
-                    : tensor_to_cuda_device(model.execution->model_parallel_collectives, x,
-                                            b->cuda_device);
+                    : model.execution->collectives.copy(x, b->cuda_device);
             b->set_token_ids(local_ids);
             const RopeCache &active_rope =
                 b->cpu_offloaded
@@ -338,12 +328,12 @@ template <typename Model> struct CudaCausalOps : Model {
         void trace(const Tensor &x) {
             if (block_trace)
                 block_trace->push_back(
-                    tensor_to_cuda_device(model.execution->model_parallel_collectives, x, primary)
+                    model.execution->collectives.copy(x, primary)
                         .to(mfq_tensor_backend::kFloat32)
                         .clone());
         }
         Tensor finish(Tensor x, int64_t B, int64_t T) {
-            x = tensor_to_cuda_device(model.execution->model_parallel_collectives, x, primary);
+            x = model.execution->collectives.copy(x, primary);
             auto finalized = model.finalize_hidden(x, B, T);
             if (raw_hidden)
                 *raw_hidden = model.adapter_raw_hidden(x, finalized);

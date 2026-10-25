@@ -44,11 +44,6 @@ mfq_tensor_backend::Tensor run_nvq_linear(
     const NvqWeight& weight, mfq_tensor_backend::Tensor input,
     MfqOptional<mfq_tensor_backend::Tensor> gate = mfq_nullopt, InputGateMode mode = InputGateMode::None);
 
-mfq_tensor_backend::Tensor tensor_to_cuda_device(
-    ModelParallelCollectiveRuntime& collectives,
-    mfq_tensor_backend::Tensor value,
-    int device,
-    mfq_tensor_backend::Tensor reusable = {});
 mfq_tensor_backend::Tensor run_quant_linear_shard(
     CudaProfiler& profiler,
     KlMmqState& kl_mmq,
@@ -221,7 +216,7 @@ mfq_tensor_backend::Tensor quant_embedding_lookup(
     const QuantLinear& weight, mfq_tensor_backend::Tensor token_ids);
 
 DenseLinearGroup make_fp32_quant_group(
-    ModelParallelCollectiveRuntime& collectives,
+    mfq::cuda::Collectives& collectives,
     int primary,
     QuantLinearGroup group);
 

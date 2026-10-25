@@ -4,15 +4,13 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
 #include "native/branches.h"
+#include "native/collectives.h"
 #include "native/profile.h"
 #include "ops/attention/scratch.h"
 #include "engine/weights/tensor_parallel.h"
 #include "engine/models/common/yarn.h"
 
 #include <cuda_runtime_api.h>
-#ifdef TYLOINFER_HAVE_NCCL
-#include <nccl.h>
-#endif
 
 #include <chrono>
 #include <cstdint>
@@ -32,17 +30,6 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
         throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err__)); \
     } \
 } while (0)
-#endif
-
-#ifdef TYLOINFER_HAVE_NCCL
-#ifndef TYLOINFER_NCCL_CHECK
-#define TYLOINFER_NCCL_CHECK(expr) do { \
-    ncclResult_t err__ = (expr); \
-    if (err__ != ncclSuccess) { \
-        throw std::runtime_error(std::string("NCCL error: ") + ncclGetErrorString(err__)); \
-    } \
-} while (0)
-#endif
 #endif
 
 class MoeExpertCache;
@@ -163,26 +150,6 @@ struct ParallelConfig {
     int primary_device() const {
         return devices.empty() ? 0 : devices.front();
     }
-};
-
-struct ModelParallelCollectiveRuntime {
-    using Stream = decltype(mfq_get_stream_from_pool(false));
-
-    std::vector<int> devices;
-    std::vector<Stream> streams;
-    std::vector<cudaEvent_t> ready;
-    std::vector<cudaEvent_t> completed;
-    std::vector<mfq_tensor_backend::Tensor> reduction_buffers;
-#ifdef TYLOINFER_HAVE_NCCL
-    std::vector<ncclComm_t> communicators;
-#endif
-    bool collectives_enabled = false;
-
-    ~ModelParallelCollectiveRuntime();
-    void reset() noexcept;
-    void configure(
-        const std::vector<int>& requested_devices,
-        bool allow_duplicate_devices);
 };
 
 struct LayerPlacementConfig {
@@ -342,7 +309,7 @@ struct CudaExecutionContext {
         gemma_stage_trace = nullptr;
     ParallelConfig tensor_parallel;
     ParallelConfig expert_parallel;
-    ModelParallelCollectiveRuntime model_parallel_collectives;
+    mfq::cuda::Collectives collectives;
     LayerPlacementConfig layer_placement;
     CudaStores& stores;
     std::shared_ptr<TqExec> tq;

@@ -129,7 +129,7 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::
         b->compressor.overlap = b->compress_ratio == 4;
         b->compressor.cache_quant_mode = 1;
         b->compressor.projection = make_fp32_quant_group(
-            execution.model_parallel_collectives, model_parallel_primary_device(execution),
+            execution.collectives, model_parallel_primary_device(execution),
             load_quant_group(execution, mfq,
                                         {p + "attention.compressor.key_value.weight",
                                          p + "attention.compressor.gate.weight"}));
@@ -146,7 +146,7 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::
         b->indexer_compressor.overlap = true;
         b->indexer_compressor.cache_quant_mode = 2;
         b->indexer_compressor.projection = make_fp32_quant_group(
-            execution.model_parallel_collectives, model_parallel_primary_device(execution),
+            execution.collectives, model_parallel_primary_device(execution),
             load_quant_group(execution, mfq,
                                         {p + "attention.indexer.compressor.key_value.weight",
                                          p + "attention.indexer.compressor.gate.weight"}));

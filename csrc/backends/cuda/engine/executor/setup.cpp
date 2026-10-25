@@ -223,7 +223,7 @@ static void configure_model_parallel(
         const std::string & expert_devices_arg,
         const std::string & expert_split_arg,
         bool allow_duplicate_devices = false) {
-    execution.model_parallel_collectives.reset();
+    execution.collectives.reset();
     execution.tensor_parallel = {};
     execution.expert_parallel = {};
 
@@ -279,7 +279,7 @@ static void configure_model_parallel(
             }
         }
     }
-    execution.model_parallel_collectives.configure(
+    execution.collectives.configure(
         config.devices, allow_duplicate_devices);
     TYLOINFER_CUDA_CHECK(cudaSetDevice(config.primary_device()));
     print_parallel_config(
@@ -288,7 +288,7 @@ static void configure_model_parallel(
         "expert_parallel", execution.expert_parallel);
     std::cerr << "model_parallel ranks=" << config.devices.size()
               << " collective_backend="
-              << (execution.model_parallel_collectives.collectives_enabled
+              << (execution.collectives.enabled()
                   ? "nccl" : "serial")
               << '\n';
 }

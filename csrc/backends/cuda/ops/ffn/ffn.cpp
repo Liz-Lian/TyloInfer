@@ -184,7 +184,7 @@ mfq_tensor_backend::Tensor FFN::forward_tensor_parallel_dense(CudaExecutionConte
         const auto &down_shard = down.tensor_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
         auto local_x =
-            tensor_to_cuda_device(execution.model_parallel_collectives, flat, gate_shard.device);
+            execution.collectives.copy(flat, gate_shard.device);
         using Tensor = mfq_tensor_backend::Tensor;
         auto unfused = [](const auto &...) { return std::optional<Tensor>{}; };
         partials[index] = mfq::models::gated_mlp(
@@ -219,7 +219,8 @@ mfq_tensor_backend::Tensor FFN::forward_tensor_parallel_dense(CudaExecutionConte
             },
             unfused);
     }
-    auto output = reduce_model_parallel_outputs(execution, std::move(partials));
+    auto output = execution.collectives.sum(std::move(partials), model_parallel_primary_device(execution),
+            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
     shape.back() = output.size(-1);
     return output.reshape(shape);
 }
@@ -265,11 +266,10 @@ FFN::forward_expert_parallel_moe(CudaExecutionContext &execution, mfq_tensor_bac
         const auto &down_shard = moe_down.expert_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
         auto local_x =
-            tensor_to_cuda_device(execution.model_parallel_collectives, x, gate_shard.device);
-        auto local_weights = tensor_to_cuda_device(execution.model_parallel_collectives,
-                                                   route_weights, gate_shard.device);
+            execution.collectives.copy(x, gate_shard.device);
+        auto local_weights = execution.collectives.copy(route_weights, gate_shard.device);
         const auto &local_route =
-            moe_route_to_device(execution.model_parallel_collectives, route, gate_shard.device);
+            moe_route_to_device(execution.collectives, route, gate_shard.device);
         using Tensor = mfq_tensor_backend::Tensor;
         Tensor gate_up_pair;
         auto down_pair = mfq::models::gated_mlp(
@@ -322,12 +322,14 @@ FFN::forward_expert_parallel_moe(CudaExecutionContext &execution, mfq_tensor_bac
     if (!execution.config.moe_route_stats_path.empty()) {
         mfq_tensor_backend::Tensor complete_down;
         if (collect_output_energy) {
-            complete_down = reduce_model_parallel_outputs(execution, std::move(down_partials));
+            complete_down = execution.collectives.sum(std::move(down_partials), model_parallel_primary_device(execution),
+            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
         }
         record_moe_route_stats(execution, moe_layer, route.ids, route_weights, complete_down,
                                moe_gate_up.n_experts);
     }
-    return reduce_model_parallel_outputs(execution, std::move(routed_partials));
+    return execution.collectives.sum(std::move(routed_partials), model_parallel_primary_device(execution),
+            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif

@@ -167,7 +167,7 @@ int generate_diagnostic_tokens(
                         {planned_len, attention_parts});
                 }, cuda_graph_participant_streams(
                     graph_compute_streams,
-                    execution.model_parallel_collectives));
+                    execution.collectives));
                 profiler.reset();
                 profiler.graph_events = profile_cuda_graph;
                 graph.capture_begin();

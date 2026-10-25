@@ -98,7 +98,7 @@ struct QwenContinuousDecodeGraph {
     }
 
     std::vector<MfqCudaStream>
-    participant_streams(const ModelParallelCollectiveRuntime &collectives) const {
+    participant_streams(const mfq::cuda::Collectives &collectives) const {
         return cuda_graph_participant_streams(compute_streams, collectives);
     }
 
@@ -403,7 +403,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
                     prepare_decode_graph_memory(
                         model_, *decode_graph->graph, [&]() { (void)invoke(); },
                         decode_graph->participant_streams(
-                            execution_.model_parallel_collectives));
+                            execution_.collectives));
                     decode_graph->graph->capture_begin();
                     decode_graph->static_next = invoke();
                     decode_graph->graph->capture_end();
