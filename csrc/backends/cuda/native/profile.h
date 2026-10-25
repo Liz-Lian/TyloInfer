@@ -6,7 +6,12 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+namespace mfq::cuda {
+using Trace = std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>>;
+}
 
 struct ProfileStat {
     double ms = 0.0;

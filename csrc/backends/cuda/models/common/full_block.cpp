@@ -71,7 +71,22 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
         std::move(pos), seq_len, cache_positions, attention_mask,
         cache_pos, planned_kv_length, decode_attention_parts};
     auto attention = FullAttention::forward(
-        execution, std::move(x), step, cache.view(), execution.attention_scratch[this], rope);
+        execution.projector(), execution.profiler, {
+            .kernels = {
+                .bf16_flash128 = execution.config.minicpm_bf16_flash128,
+                .flash128_casts = execution.config.minicpm_flash128_specialized_casts,
+                .bf16_gqa_decode = execution.config.minicpm_bf16_gqa_decode,
+                .decode_aten = execution.config.attention_decode_aten,
+                .mma_prefill = execution.config.mma_attention,
+                .mma_decode = execution.config.mma_attention_decode,
+                .split_k = execution.config.attention_decode_split_k},
+            .fused_norm = execution.config.minicpm_fused_bf16_rmsnorm,
+            .fused_rope = execution.config.minicpm_fused_bf16_rope,
+            .fused_qk_rope_kv = execution.config.minicpm_fused_qk_norm_rope_kv,
+            .fused_rope_kv = execution.config.minicpm_fused_rope_kv,
+            .write_aten = execution.config.kv_cache_write_aten},
+        std::move(x), step, cache.view(), execution.attention_scratch[this], rope,
+        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
 }
 

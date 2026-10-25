@@ -1,12 +1,10 @@
 #pragma once
 
 #include "ops/attention/attention.h"
-#include "ops/common/include/quant_linear.h"
+#include "ops/common/include/projection.h"
 #include "ops/common/include/rope.h"
 
 #include <array>
-
-struct CudaExecutionContext;
 
 namespace mfq::cuda {
 
@@ -21,6 +19,15 @@ struct AttentionStep {
 };
 
 struct FullAttention {
+    struct Options {
+        AttentionOptions kernels;
+        bool fused_norm = true;
+        bool fused_rope = true;
+        bool fused_qk_rope_kv = true;
+        bool fused_rope_kv = true;
+        bool write_aten = false;
+    };
+
     int layer = -1;
     bool sliding = false;
     bool value_equals_key = false;
@@ -54,12 +61,13 @@ struct FullAttention {
     static constexpr int64_t kDecodeAttentionMaxParts = 16;
 
     std::array<mfq_tensor_backend::Tensor, 2> forward(
-        CudaExecutionContext& execution,
+        const Projector& project, CudaProfiler& profiler, const Options& options,
         mfq_tensor_backend::Tensor input,
         const AttentionStep& step,
         AttentionKvView cache,
         AttentionScratch& scratch,
-        const RopeCache& rope) const;
+        const RopeCache& rope,
+        Trace* trace = nullptr) const;
 };
 
 } // namespace mfq::cuda

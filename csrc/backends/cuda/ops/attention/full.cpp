@@ -1,5 +1,4 @@
 #include "full.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "kv.h"
 #include "ops/norm/rms.h"
 #include "engine/models/common/attention.h"
@@ -18,9 +17,10 @@ using mfq_tensor_backend::indexing::Slice;
 namespace mfq::cuda {
 
 std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor x,
+        const Projector& project, CudaProfiler& profiler, const Options& options,
+        mfq_tensor_backend::Tensor x,
         const AttentionStep& step, AttentionKvView cache,
-        AttentionScratch& scratch, const RopeCache& rope) const {
+        AttentionScratch& scratch, const RopeCache& rope, Trace* trace) const {
     const auto& pos = step.positions;
     const auto& seq_len = step.sequence_lengths;
     const auto& cache_positions = step.cache_positions;
@@ -28,15 +28,14 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
     const auto cache_pos = step.cache_position;
     const auto planned_kv_length = step.planned_kv_length;
     const auto decode_attention_parts = step.decode_attention_parts;
-    auto &profiler = execution.profiler;
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     auto trace_qwen_stage = [&](const char *name, const mfq_tensor_backend::Tensor &value,
                                 int token_axis = 1) {
-        if (!attention_output_gate || execution.gemma_stage_trace == nullptr ||
-            layer != execution.gemma_trace_layer)
+        if (!attention_output_gate || trace == nullptr)
             return;
         auto ordered = token_axis == 1 ? value : value.transpose(1, token_axis).contiguous();
-        trace_gemma_stage(execution, layer, name, ordered.reshape({B, T, -1}));
+        trace->emplace_back(name, ordered.reshape({B, T, -1})
+                                     .to(mfq_tensor_backend::kFloat32).contiguous().clone());
     };
     if (official_bf16 && x.scalar_type() != mfq_tensor_backend::kBFloat16) {
         x = x.to(mfq_tensor_backend::kBFloat16).contiguous();
@@ -54,7 +53,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         [&](mfq_tensor_backend::Tensor x) {
             return profiler.measure("full.attn_norm", [&]() {
                 return official_bf16
-                           ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm, x.reshape({B * T, H}), attn_norm,
+                           ? qwen_rms_norm_bf16(options.fused_norm, x.reshape({B * T, H}), attn_norm,
                                                 rms_norm_eps, norm_weight_offset)
                                  .reshape({B, T, H})
                            : qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
@@ -86,7 +85,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                 q_norm.defined() && k_norm.defined() && active_rope.rotary_dim == 128 &&
                 active_rope.sections.numel() == 0 && nh == 32 && nkh == 8 && hd == 128 &&
                 cache.dtype == mfq_tensor_backend::kBFloat16 &&
-                execution.config.minicpm_fused_qk_norm_rope_kv;
+                options.fused_qk_rope_kv;
             std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> kv;
             bool attention_token_major = false;
             return mfq::models::full_attention(
@@ -95,13 +94,13 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     trace_qwen_stage("qwen.attn_norm", xn);
                     auto parts = profiler.measure("full.qkv", [&]() {
                         if (!split_q_kv_projections) {
-                            return execution.projector().run(qkv, xn);
+                            return project.run(qkv, xn);
                         }
                         std::vector<mfq_tensor_backend::Tensor> result;
                         result.reserve(3);
-                        result.push_back(execution.projector().run(q_projection, xn));
-                        result.push_back(execution.projector().run(k_projection, xn));
-                        result.push_back(execution.projector().run(v_projection, xn));
+                        result.push_back(project.run(q_projection, xn));
+                        result.push_back(project.run(k_projection, xn));
+                        result.push_back(project.run(v_projection, xn));
                         return result;
                     });
                     if (parts.size() != (value_equals_key ? 2u : 3u)) {
@@ -167,7 +166,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     auto &v = heads.value;
 
                     const bool fused_bf16_norm =
-                        official_bf16 && execution.config.minicpm_fused_bf16_rmsnorm;
+                        official_bf16 && options.fused_norm;
                     if (fused_bf16_norm && q_norm.defined() && k_norm.defined() &&
                         q.scalar_type() == mfq_tensor_backend::kBFloat16 &&
                         k.scalar_type() == mfq_tensor_backend::kBFloat16) {
@@ -190,7 +189,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                         if (q_norm.defined())
                             q = profiler.measure("full.q_norm", [&]() {
                                 return official_bf16
-                                           ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm,
+                                           ? qwen_rms_norm_bf16(options.fused_norm,
                                                                 q.reshape({-1, hd}), q_norm,
                                                                 rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(q)
@@ -202,7 +201,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                         if (k_norm.defined())
                             k = profiler.measure("full.k_norm", [&]() {
                                 return official_bf16
-                                           ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm,
+                                           ? qwen_rms_norm_bf16(options.fused_norm,
                                                                 k.reshape({-1, hd}), k_norm,
                                                                 rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(k)
@@ -215,7 +214,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     if (v_norm.defined())
                         v = profiler.measure("full.v_norm", [&]() {
                             return official_bf16
-                                       ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm, v.reshape({-1, hd}),
+                                       ? qwen_rms_norm_bf16(options.fused_norm, v.reshape({-1, hd}),
                                                             v_norm, rms_norm_eps,
                                                             norm_weight_offset)
                                              .reshape_as(v)
@@ -236,7 +235,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                         active_rope.rotary_dim == 128 && active_rope.sections.numel() == 0 &&
                         nh == 32 && nkh == 8 && hd == 128 &&
                         cache.dtype == mfq_tensor_backend::kBFloat16 &&
-                        execution.config.minicpm_fused_rope_kv;
+                        options.fused_rope_kv;
                     if (!fused_rope_kv)
                         return false;
 
@@ -256,11 +255,11 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     auto &k = heads.key;
 
                     q = profiler.measure("full.q_rope", [&]() {
-                        return official_bf16 ? active_rope.apply_bf16(execution.config.minicpm_fused_bf16_rope, q, pos)
+                        return official_bf16 ? active_rope.apply_bf16(options.fused_rope, q, pos)
                                              : active_rope.apply(q, pos, grid_mrope_positions);
                     });
                     k = profiler.measure("full.k_rope", [&]() {
-                        return official_bf16 ? active_rope.apply_bf16(execution.config.minicpm_fused_bf16_rope, k, pos)
+                        return official_bf16 ? active_rope.apply_bf16(options.fused_rope, k, pos)
                                              : active_rope.apply(k, pos, grid_mrope_positions);
                     });
                 },
@@ -268,7 +267,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     auto &k = heads.key;
                     auto &v = heads.value;
                     kv = profiler.measure("full.kv_write", [&]() {
-                        return append_kv(cache, execution.config.kv_cache_write_aten, k, v, write_positions, cache_pos,
+                        return append_kv(cache, options.write_aten, k, v, write_positions, cache_pos,
                                             cache_pos + T, !seq_len.has_value());
                     });
                 },
@@ -295,13 +294,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                             .sliding = sliding,
                             .window = attention_window,
                             .scale = attention_scale,
-                            .bf16_flash128 = execution.config.minicpm_bf16_flash128,
-                            .flash128_casts = execution.config.minicpm_flash128_specialized_casts,
-                            .bf16_gqa_decode = execution.config.minicpm_bf16_gqa_decode,
-                            .decode_aten = execution.config.attention_decode_aten,
-                            .mma_prefill = execution.config.mma_attention,
-                            .mma_decode = execution.config.mma_attention_decode,
-                            .split_k = execution.config.attention_decode_split_k},
+                            .kernels = options.kernels},
                         scratch, profiler);
                     attention_token_major = result.token_major;
                     return result.value;
@@ -320,7 +313,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                             return q_gate.contiguous().reshape({B, T, attn_width});
                         });
                         oo = profiler.measure("full.o_proj_gate", [&]() {
-                            return execution.projector().gated(o, af, gf, InputGateMode::Sigmoid);
+                            return project.gated(o, af, gf, InputGateMode::Sigmoid);
                         });
                     } else {
                         auto af = profiler.measure("full.attn_out_view", [&]() {
@@ -329,8 +322,8 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                                        : a.transpose(1, 2).contiguous().reshape({B, T, attn_width});
                         });
                         oo = profiler.measure("full.o_proj", [&]() {
-                            return official_bf16 ? execution.projector().run(o, af).to(mfq_tensor_backend::kBFloat16).contiguous()
-                                                 : execution.projector().run(o, af);
+                            return official_bf16 ? project.run(o, af).to(mfq_tensor_backend::kBFloat16).contiguous()
+                                                 : project.run(o, af);
                         });
                     }
                     trace_qwen_stage("qwen.o_projection", oo);

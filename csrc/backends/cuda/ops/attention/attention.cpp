@@ -160,9 +160,9 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 const bool bf16_flash128 =
                     !config.sliding && head_dim == 128 && heads == 4 * kv_heads &&
                     !request.sequence_lengths.has_value() &&
-                    !request.attention_mask.has_value() && config.bf16_flash128;
+                    !request.attention_mask.has_value() && config.kernels.bf16_flash128;
                 if (bf16_flash128) {
-                    const bool specialized_casts = config.flash128_casts;
+                    const bool specialized_casts = config.kernels.flash128_casts;
                     auto flash_q = profiler.measure("full.flash128_q_cast", [&]() {
                         return specialized_casts ? minicpm_flash128_q_cast_cuda(qh)
                                                  : qh.to(tb::kFloat32).contiguous();
@@ -200,7 +200,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                                         !mask.has_value(), attn_scale, false);
             }
 
-            const bool mma_attention_enabled = config.mma_prefill;
+            const bool mma_attention_enabled = config.kernels.mma_prefill;
             if (!config.sliding && tokens % 256 == 0 && head_dim == 512 &&
                 heads == 8 * kv_heads && mma_attention_enabled) {
                 attention_token_major = true;
@@ -230,12 +230,12 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                                   ? request.planned_kv_length
                                                   : request.cache_position + tokens;
             const bool bf16_gqa_decode = config.official_bf16 && tokens == 1 &&
-                                         config.bf16_gqa_decode;
+                                         config.kernels.bf16_gqa_decode;
             const bool aten_decode_enabled =
-                (config.official_bf16 && !bf16_gqa_decode) || config.decode_aten;
-            const bool mma_decode_enabled = config.mma_decode;
+                (config.official_bf16 && !bf16_gqa_decode) || config.kernels.decode_aten;
+            const bool mma_decode_enabled = config.kernels.mma_decode;
             if (kv.paged()) {
-                const bool split_enabled = config.split_k;
+                const bool split_enabled = config.kernels.split_k;
                 std::int64_t parts = split_enabled && request.cache_position >= 192
                                          ? (request.cache_position + 127) / 128
                                          : 1;
@@ -305,7 +305,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                     qh, kv.physical_key, kv.physical_value, request.sequence_lengths.value(),
                     attn_scale, config.window, planned_len);
 
-            const bool split_enabled = config.split_k;
+            const bool split_enabled = config.kernels.split_k;
             std::int64_t parts = split_enabled && request.cache_position >= 192
                                      ? (request.cache_position + 127) / 128
                                      : 1;

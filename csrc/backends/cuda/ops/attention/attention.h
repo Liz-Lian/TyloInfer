@@ -53,11 +53,7 @@ struct AttentionInput {
     std::int64_t decode_attention_parts = 0;
 };
 
-struct AttentionConfig {
-    bool official_bf16 = false;
-    bool sliding = false;
-    std::int64_t window = 0;
-    double scale = 0.0;
+struct AttentionOptions {
     bool bf16_flash128 = false;
     bool flash128_casts = false;
     bool bf16_gqa_decode = false;
@@ -65,6 +61,14 @@ struct AttentionConfig {
     bool mma_prefill = false;
     bool mma_decode = false;
     bool split_k = false;
+};
+
+struct AttentionConfig {
+    bool official_bf16 = false;
+    bool sliding = false;
+    std::int64_t window = 0;
+    double scale = 0.0;
+    AttentionOptions kernels;
 };
 
 struct AttentionResult {

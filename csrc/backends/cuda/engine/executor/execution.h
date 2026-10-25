@@ -283,8 +283,7 @@ struct CudaExecutionContext {
     int continuous_batch_ffn_tiles = 1;
     int moe_cache_registration_min_slots = 8;
     int gemma_trace_layer = -1;
-    std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>>*
-        gemma_stage_trace = nullptr;
+    mfq::cuda::Trace* gemma_stage_trace = nullptr;
     ParallelConfig tensor_parallel;
     ParallelConfig expert_parallel;
     mfq::cuda::Collectives collectives;
