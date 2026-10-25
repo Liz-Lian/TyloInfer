@@ -521,7 +521,6 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/image.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/cache.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/rows.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/cache_api.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders/weight.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/transformer_loader.cpp
 )
@@ -533,6 +532,9 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/residency.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/nint_row_pipeline.cpp
     )
+else()
+    list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
+        ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/disabled.cpp)
 endif()
 add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES})
 mfq_configure_cuda_runtime_target(mfq-cuda-loading)

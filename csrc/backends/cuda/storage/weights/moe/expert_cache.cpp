@@ -1,6 +1,6 @@
 #include "env.h"
 #include "execution/options.h"
-#include "mfq_cache_provider.h"
+#include "storage/weights/moe/expert_cache.h"
 #include "storage/weights/moe/cached_source_internal.h"
 #include "storage/weights/moe/host_cache_policy.h"
 #include "storage/weights/moe/pinned_expert_arena.h"
@@ -997,7 +997,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     if(!force && context->available_memory()>=workspace_bytes)return 0;
     const auto loan_started=std::chrono::steady_clock::now();
     finish_pipeline_exchanges();
-    mfq_legacy_release_moe_prefill_buffers(this);
+    release_moe_prefill_buffers(this);
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     context->reclaim_idle_memory();
     const auto available=context->available_memory();
@@ -1222,7 +1222,7 @@ void MoeExpertCache::end_prefill_loan() {
     if(!prefill_loan_)return;
     const auto restore_started=std::chrono::steady_clock::now();
     suspend_prefill_loan();
-    mfq_legacy_release_moe_prefill_buffers(this);
+    release_moe_prefill_buffers(this);
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
     const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
     std::vector<std::pair<void*,std::size_t>> touched;
@@ -1272,10 +1272,10 @@ std::size_t MoePrefillWorkspaceLoan::begin(std::size_t bytes) {
 }
 void MoePrefillWorkspaceLoan::suspend(){if(active_)cache_->suspend_prefill_loan();}
 void MoePrefillWorkspaceLoan::finish(){if(active_){cache_->end_prefill_loan();active_=false;}}
-std::size_t mfq_legacy_moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor) {
+std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor) {
     return cache?cache->prefill_transfer_bytes(predictor):0;
 }
-MoePrefillWorkspaceBudget mfq_legacy_moe_prefill_workspace_budget(
+MoePrefillWorkspaceBudget moe_prefill_workspace_budget(
         const std::shared_ptr<MoeExpertCache>& cache,bool allow_borrow) {
     return cache?cache->prefill_workspace_budget(allow_borrow):MoePrefillWorkspaceBudget{};
 }
@@ -2472,7 +2472,7 @@ MfeWeight cache_moe_weight(
         std::shared_ptr<MoeCachedSource>(cache, source.get()), runtime);
 }
 
-std::shared_ptr<MoeExpertCache> mfq_legacy_make_moe_expert_cache(
+std::shared_ptr<MoeExpertCache> make_moe_expert_cache(
         std::int64_t bytes,
         const CudaExecutionConfig& config) {
     return std::make_shared<MoeExpertCache>(bytes, config);
@@ -2486,12 +2486,12 @@ MfeWeight cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
     return wrap_cached_moe_source(std::shared_ptr<MoeCachedSource>(cache,source.get()),runtime);
 }
 
-bool mfq_legacy_moe_expert_cache_has_sources(
+bool moe_expert_cache_has_sources(
         const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->has_sources();
 }
 
-std::vector<std::pair<std::string, double>> mfq_legacy_moe_expert_memory_metrics(
+std::vector<std::pair<std::string, double>> moe_expert_memory_metrics(
         const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? cache->memory_metrics() : std::vector<std::pair<std::string, double>>{
         {"ssd_expert_enabled",0.0}, {"ssd_expert_payload_bytes",0.0}, {"ssd_expert_bytes_read",0.0},
@@ -2499,52 +2499,52 @@ std::vector<std::pair<std::string, double>> mfq_legacy_moe_expert_memory_metrics
         {"ram_expert_pcie_read_bytes", 0.0}};
 }
 
-bool mfq_legacy_moe_expert_cache_finalized(
+bool moe_expert_cache_finalized(
         const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->finalized();
 }
-std::uint64_t mfq_legacy_moe_expert_graph_captures(const std::shared_ptr<MoeExpertCache>& cache) {
+std::uint64_t moe_expert_graph_captures(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache?cache->stats().pipeline_graph_captures:0;
 }
 
-std::size_t mfq_legacy_moe_expert_cache_minimum_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
+std::size_t moe_expert_cache_minimum_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? cache->minimum_bytes() : 0;
 }
-bool mfq_legacy_moe_expert_cache_layer_prefill_ready(const std::shared_ptr<MoeExpertCache>& cache) {
+bool moe_expert_cache_layer_prefill_ready(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->layer_prefill_ready();
 }
-bool mfq_legacy_moe_expert_cache_ssd_experts(const std::shared_ptr<MoeExpertCache>& cache) {
+bool moe_expert_cache_ssd_experts(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->ssd_experts();
 }
-bool mfq_legacy_moe_expert_cache_ssd_router_prefetch(const std::shared_ptr<MoeExpertCache>& cache) {
+bool moe_expert_cache_ssd_router_prefetch(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->ssd_experts() && cache->reuse_learning() &&
         mfq::cuda::runtime_options::router_lookahead_override().value_or(cache->ssd_router_prefetch());
 }
-std::size_t mfq_legacy_moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
+std::size_t moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? std::size_t(cache->budget_bytes()) : 0;
 }
-void mfq_legacy_resize_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes) {
+void resize_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes) {
     if(!cache)return;
-    mfq_legacy_release_moe_decode_buffers(cache);
+    release_moe_decode_buffers(cache);
     cache->resize(bytes);
 }
-void mfq_legacy_set_moe_workspace_reservation(const std::shared_ptr<MoeExpertCache>& cache,
+void set_moe_workspace_reservation(const std::shared_ptr<MoeExpertCache>& cache,
         std::function<void(std::size_t)> reserve,std::function<void(std::size_t)> reserve_ram) {
     if(cache)cache->set_workspace_reservation(std::move(reserve),std::move(reserve_ram));
 }
-void mfq_legacy_reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes) {
+void reserve_moe_workspace(const std::shared_ptr<MoeExpertCache>& cache,std::size_t bytes) {
     if(cache)cache->reserve_workspace(bytes);
 }
-std::size_t mfq_legacy_reclaim_moe_optional_host(const std::shared_ptr<MoeExpertCache>& cache,std::size_t allocation_bytes) {
+std::size_t reclaim_moe_optional_host(const std::shared_ptr<MoeExpertCache>& cache,std::size_t allocation_bytes) {
     return cache?cache->reclaim_optional_host(allocation_bytes):0;
 }
 
-void mfq_legacy_finalize_moe_expert_cache(
+void finalize_moe_expert_cache(
         const std::shared_ptr<MoeExpertCache>& cache, std::size_t kv_growth_reserve, std::size_t kv_budget_charge) {
     if (cache && !cache->finalized()) cache->finalize(kv_growth_reserve,kv_budget_charge);
 }
 
-void mfq_legacy_print_moe_expert_cache_stats(
+void print_moe_expert_cache_stats(
         const std::shared_ptr<MoeExpertCache>& cache,
         std::ostream& output) {
     if (cache) {
@@ -2552,7 +2552,7 @@ void mfq_legacy_print_moe_expert_cache_stats(
         cache->print_stats(output);
     }
 }
-double mfq_legacy_moe_expert_cache_ram_pcie_fraction(const std::shared_ptr<MoeExpertCache>& cache) {
+double moe_expert_cache_ram_pcie_fraction(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? cache->ram_pcie_fraction() : 0;
 }
 void MoeExpertCache::record_prefill_copy(const PrefillCopySubmission& copy) {
@@ -2590,14 +2590,14 @@ void MoeExpertCache::finish_prefill_copies() {
     if(failure)std::rethrow_exception(failure);
 }
 
-void mfq_legacy_release_moe_prefill_buffers(const std::shared_ptr<MoeExpertCache>& cache) {
+void release_moe_prefill_buffers(const std::shared_ptr<MoeExpertCache>& cache) {
     // Public request/decode boundary: borrowed weights must have been restored.
     // Internal prefill cleanup uses the raw overload while retiring loan views.
     if(cache && cache->prefill_loan_active())
         throw std::runtime_error("expert workspace loan must be returned before decode");
-    mfq_legacy_release_moe_prefill_buffers(cache.get());
+    release_moe_prefill_buffers(cache.get());
 }
-void mfq_legacy_release_moe_prefill_buffers(MoeExpertCache* cache) {
+void release_moe_prefill_buffers(MoeExpertCache* cache) {
     if(!cache)return;
     if(!cache->pipeline_prefill_copy_pending_ && cache->pipeline_prefill_release_.empty() &&
             !cache->pipeline_prefill_layer_buffer_.defined() && !cache->pipeline_prefill_pool_ &&
@@ -2639,7 +2639,7 @@ void mfq_legacy_release_moe_prefill_buffers(MoeExpertCache* cache) {
     cache->transfer_ready_recorded_=false;
 }
 
-std::uint64_t mfq_legacy_moe_expert_streamed_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
+std::uint64_t moe_expert_streamed_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache?cache->streamed_bytes():0;
 }
 void MoeExpertCache::prepare_direct_transfer_cache() {
@@ -2692,12 +2692,12 @@ void MoeExpertCache::bind_host_device_cache_hints() {
             if(const auto hints=weak.lock())hints->publish(offset+std::size_t(expert),base!=nullptr);
         },hints,true);
 }
-void mfq_legacy_set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<mfq::cuda::KvExpertLoan> loan) {
+void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<mfq::cuda::KvExpertLoan> loan) {
     if(cache) {
         const bool changed=cache->kv_expert_loan_!=loan;
         // Cached-dispatch observers belong to the loan object. Retire their
         // consumers before replacing it, even if the storage sizes match.
-        if(changed && cache->kv_expert_loan_)mfq_legacy_release_moe_decode_buffers(cache);
+        if(changed && cache->kv_expert_loan_)release_moe_decode_buffers(cache);
         else if(changed)cache->release_direct_transfer_cache();
         if(loan && cache->ssd_experts())loan->set_reuse_priority(true);
         if(loan)loan->set_reuse_learning(cache->reuse_learning());
@@ -2705,25 +2705,25 @@ void mfq_legacy_set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& ca
         if(changed)cache->bind_host_device_cache_hints();
     }
 }
-void mfq_legacy_prepare_moe_decode_residency(const std::shared_ptr<MoeExpertCache>& cache) {
+void prepare_moe_decode_residency(const std::shared_ptr<MoeExpertCache>& cache) {
     if(!cache)return;
-    mfq_legacy_release_moe_prefill_buffers(cache);
+    release_moe_prefill_buffers(cache);
     cache->prepare_decode_residency();
 }
-void mfq_legacy_finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache) {
+void finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache) {
     if(cache)cache->finish_pipeline_exchanges();
 }
-void mfq_legacy_prepare_moe_predictor_exchange(const std::shared_ptr<MoeExpertCache>& cache) {
+void prepare_moe_predictor_exchange(const std::shared_ptr<MoeExpertCache>& cache) {
     if(cache)cache->prepare_predictor_exchange();
 }
 
-bool mfq_legacy_suspend_moe_residency(const std::shared_ptr<MoeExpertCache>& cache,bool suspended) {
+bool suspend_moe_residency(const std::shared_ptr<MoeExpertCache>& cache,bool suspended) {
     return cache?cache->suspend_residency(suspended):false;
 }
-bool mfq_legacy_set_moe_reuse_learning(const std::shared_ptr<MoeExpertCache>& cache,bool enabled) {
+bool set_moe_reuse_learning(const std::shared_ptr<MoeExpertCache>& cache,bool enabled) {
     return cache?cache->set_reuse_learning(enabled):true;
 }
-void mfq_legacy_begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows) {
+void begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows) {
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_COMMITTED_HEAT");
     if(cache && cache->moe_residency_ && (!option || option[0]!='0'))
         cache->moe_residency_->begin_speculative_routes(rows);
@@ -2731,16 +2731,16 @@ void mfq_legacy_begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCach
     if(cache && cache->kv_expert_loan_ && (!kv_lru || kv_lru[0]!='0'))
         cache->kv_expert_loan_->begin_speculative(rows);
 }
-void mfq_legacy_commit_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows) {
+void commit_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows) {
     if(cache && cache->moe_residency_)cache->moe_residency_->commit_speculative_routes(rows);
     if(cache && cache->kv_expert_loan_)cache->kv_expert_loan_->commit_speculative(rows);
 }
-void mfq_legacy_discard_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache) noexcept {
+void discard_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache) noexcept {
     if(cache && cache->moe_residency_)cache->moe_residency_->discard_speculative_routes();
     if(cache && cache->kv_expert_loan_)cache->kv_expert_loan_->discard_speculative();
 }
 
-bool mfq_legacy_lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExpertCache>& cache,
+bool lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExpertCache>& cache,
         std::size_t workspace_bytes) {
     if(!cache || !cache->ssd_experts() || !cache->kv_expert_loan_)return false;
     for(const auto& indirect:cache->pipeline_decode_indirect_)if(!indirect())return false;
@@ -2751,7 +2751,7 @@ bool mfq_legacy_lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExper
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     cache->ssd_pending_forecast_={};
     cache->ssd_forecast_gpu_fields_.clear();
-    mfq_legacy_release_moe_prefill_buffers(cache);
+    release_moe_prefill_buffers(cache);
     for(const auto& held:cache->pipeline_transfer_slots_)
         if(held.book->slot_for(held.key)==held.slot)held.book->clear_inflight(held.slot);
     cache->pipeline_transfer_slots_.clear();cache->pipeline_dma_leases_.clear();
@@ -2771,14 +2771,14 @@ bool mfq_legacy_lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExper
     return retained;
 }
 
-void mfq_legacy_release_moe_decode_buffers(const std::shared_ptr<MoeExpertCache>& cache) {
+void release_moe_decode_buffers(const std::shared_ptr<MoeExpertCache>& cache) {
     if(!cache)return;
     cache->ssd_pending_prediction_.clear();
     cache->ssd_forecast_gpu_fields_.clear();
     cache->finish_pipeline_exchanges();
     TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     cache->ssd_pending_forecast_={};
-    mfq_legacy_release_moe_prefill_buffers(cache);
+    release_moe_prefill_buffers(cache);
     for(const auto& held:cache->pipeline_transfer_slots_)
         if(held.book->slot_for(held.key)==held.slot)held.book->clear_inflight(held.slot);
     cache->pipeline_transfer_slots_.clear();cache->pipeline_dma_leases_.clear();
@@ -2800,8 +2800,8 @@ void mfq_legacy_release_moe_decode_buffers(const std::shared_ptr<MoeExpertCache>
     cache->pipeline_prefetched_keys_.clear();cache->transfer_ready_recorded_=false;
 }
 
-bool mfq_legacy_prepare_moe_graph_pool(const std::shared_ptr<MoeExpertCache>& cache) {
-    if (!cache || !mfq_legacy_moe_expert_cache_has_sources(cache)) return false;
+bool prepare_moe_graph_pool(const std::shared_ptr<MoeExpertCache>& cache) {
+    if (!cache || !moe_expert_cache_has_sources(cache)) return false;
     const auto stream = mfq_current_cuda_stream();
     if (!cache->pipeline_pool_context_) {
         cache->pipeline_pool_context_ = mfq::cuda::default_context(mfq_current_cuda_device());
@@ -2813,7 +2813,7 @@ bool mfq_legacy_prepare_moe_graph_pool(const std::shared_ptr<MoeExpertCache>& ca
 }
 
 
-void mfq_legacy_prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>& cache,bool replay) {
+void prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>& cache,bool replay) {
     if(!cache || !cache->complete_residency_ || cache->config_.moe_residency_adapt ||
         !cache->pipeline_transfer_cache_ || cache->pipeline_mapped_copy_)
         throw std::logic_error("MFQ pipeline comparison requires complete residency, fixed primary tiers and DMA transfer caching");
@@ -2822,7 +2822,7 @@ void mfq_legacy_prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertC
     if(!replay && !cache->pipeline_dispatch_replay_.empty())
         throw std::logic_error("MFQ pipeline comparison cannot combine an external dispatch replay");
     if(replay) {
-        mfq_legacy_finish_moe_pipeline_comparison(cache);
+        finish_moe_pipeline_comparison(cache);
         if(cache->pipeline_comparison_records_.empty())
             cache->pipeline_comparison_records_=cache->pipeline_dispatch_records_;
     }
@@ -2849,9 +2849,9 @@ void mfq_legacy_prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertC
     cache->pipeline_comparison_cpu_policy_=false;
     cache->pipeline_cpu_policy_changed_routes_=0;
 }
-void mfq_legacy_prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExpertCache>& cache,
+void prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExpertCache>& cache,
         bool replay,bool transfer_budget) {
-    mfq_legacy_prepare_moe_pipeline_comparison(cache,replay);
+    prepare_moe_pipeline_comparison(cache,replay);
     if(!cache->pipeline_shared_cpu_cost_)
         throw std::logic_error("CPU budget comparison needs shared measured CPU costs");
     cache->pipeline_cpu_transfer_budget_=transfer_budget;
@@ -2860,13 +2860,13 @@ void mfq_legacy_prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExper
     // measured policy naturally and retain the first baseline for final replay.
     if(cache->pipeline_comparison_cpu_policy_)cache->pipeline_dispatch_replay_.clear();
 }
-void mfq_legacy_prepare_moe_cpu_calibration_comparison(const std::shared_ptr<MoeExpertCache>& cache,bool replay) {
-    mfq_legacy_prepare_moe_cpu_budget_comparison(cache,replay,true);
+void prepare_moe_cpu_calibration_comparison(const std::shared_ptr<MoeExpertCache>& cache,bool replay) {
+    prepare_moe_cpu_budget_comparison(cache,replay,true);
     mfq::reset_moe_cpu_calibration(
         cache->pipeline_cpu_calibration_, cache->pipeline_cpu_cost_);
     cache->pipeline_cpu_cost_={};
 }
-std::size_t mfq_legacy_finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>& cache) {
+std::size_t finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>& cache) {
     if(!cache || !cache->pipeline_dispatch_capture_required_ || cache->pipeline_dispatch_records_.empty())
         throw std::logic_error("MFQ pipeline comparison did not capture dispatch records");
     const auto& expected=cache->pipeline_comparison_cpu_policy_
@@ -2890,7 +2890,7 @@ std::size_t mfq_legacy_finish_moe_pipeline_comparison(const std::shared_ptr<MoeE
     return cache->pipeline_dispatch_records_.size();
 }
 
-void mfq_legacy_set_moe_expert_cache_profile(
+void set_moe_expert_cache_profile(
         MoeExpertCache& cache,
         mfq::MoeCacheProfile profile) {
     cache.set_profile(std::move(profile));

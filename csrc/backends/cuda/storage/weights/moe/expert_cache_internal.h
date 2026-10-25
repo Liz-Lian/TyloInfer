@@ -1,6 +1,6 @@
 #include "execution/options.h"
 #pragma once
-#include "mfq_cache_provider.h"
+#include "storage/weights/moe/expert_cache.h"
 
 #include "storage/weights/moe/cache_types_internal.h"
 #include "context.h"
@@ -1351,18 +1351,18 @@ private:
     friend class MoeCachedSource;
     friend class MoeFfnPipeline;
     friend class MoeResidencyManager;
-    friend void mfq_legacy_release_moe_prefill_buffers(MoeExpertCache* cache);
-    friend void mfq_legacy_release_moe_decode_buffers(const std::shared_ptr<MoeExpertCache>& cache);
-    friend bool mfq_legacy_lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExpertCache>&,std::size_t);
-    friend void mfq_legacy_begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>&,int);
-    friend void mfq_legacy_commit_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>&,int);
-    friend void mfq_legacy_discard_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>&) noexcept;
-    friend bool mfq_legacy_prepare_moe_graph_pool(const std::shared_ptr<MoeExpertCache>& cache);
+    friend void release_moe_prefill_buffers(MoeExpertCache* cache);
+    friend void release_moe_decode_buffers(const std::shared_ptr<MoeExpertCache>& cache);
+    friend bool lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExpertCache>&,std::size_t);
+    friend void begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>&,int);
+    friend void commit_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>&,int);
+    friend void discard_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>&) noexcept;
+    friend bool prepare_moe_graph_pool(const std::shared_ptr<MoeExpertCache>& cache);
     friend struct MoeResidencyTestAccess;
-    friend void mfq_legacy_prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>&,bool);
-    friend void mfq_legacy_prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExpertCache>&,bool,bool);
-    friend void mfq_legacy_prepare_moe_cpu_calibration_comparison(const std::shared_ptr<MoeExpertCache>&,bool);
-    friend std::size_t mfq_legacy_finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>&);
+    friend void prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>&,bool);
+    friend void prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExpertCache>&,bool,bool);
+    friend void prepare_moe_cpu_calibration_comparison(const std::shared_ptr<MoeExpertCache>&,bool);
+    friend std::size_t finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>&);
     std::unique_ptr<MoeResidencyManager> moe_residency_;
     std::vector<std::array<int,3>> pipeline_bundles_;
     std::unordered_map<std::string,std::unique_ptr<MoeGpuArena>> pipeline_stages_;
