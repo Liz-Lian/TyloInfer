@@ -1,4 +1,4 @@
-#include "backends/cuda/engine/executor/moe_plan.h"
+#include "engine/weights/moe/prepare.h"
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
@@ -634,7 +634,7 @@ void MoeExpertCache::initialize_ssd_residency() {
     pipeline_prefill_layer_layout_=false;
     for(const auto& source:sources_) {
         source->quant_source_->mark_preload_complete(false);
-        prepare_moe(*source->active_,config_);
+        prepare_moe(*source->active_, config_.moe_nvq_heterogeneous);
     }
     ssd_experts_=true;
     host_experts_->enable_reuse_priority();
@@ -1342,7 +1342,7 @@ void MoeExpertCache::resize(std::size_t bytes) {
                 cohort.active.expert_local.copy_(map);
                 cohort.map_dirty=false;
             }
-            prepare_moe(*source->active_,config_);
+            prepare_moe(*source->active_, config_.moe_nvq_heterogeneous);
         }
     };
     // Retire all derived views before returning old arenas to the allocator.
@@ -1601,7 +1601,7 @@ void MoeExpertCache::preload_complete_residency() {
             else throw std::logic_error("expert has no RAM or VRAM copy after preload");
         }
         quant.mark_preload_complete(config_.moe_assert_resident);
-        prepare_moe(*source->active_,config_);
+        prepare_moe(*source->active_, config_.moe_nvq_heterogeneous);
     }
     measuring_preload_h2d_=false;
     std::int64_t h2d_bytes=0;
@@ -2374,66 +2374,20 @@ bool MoeExpertCache::prepare_bundle_deferred(
     return begin_deferred_range_read(deferred_source, experts);
 }
 
-static MfeWeight wrap_cached_moe_source(
+static mfq::cuda::Experts wrap_cached_moe_source(
         const std::shared_ptr<MoeCachedSource> & source,
         const std::shared_ptr<MixedMoeRuntime> & cpu) {
-    MfeWeight result =
+    mfq::cuda::Experts result =
         cpu_mixed_moe_metadata(cpu);
     result.mixed_weight_bytes = source->logical_weight_bytes();
     result.cached_source = source;
-    result.cache_prefetch = [source](
-            const MoeRoutePlan & route) {
-        source->prefetch(route);
-    };
-    result.cache_prefetch_begin = [source](
-            const MoeRoutePlan & route) {
-        source->begin_prefetch(route);
-    };
-    result.mixed_forward = [source](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            const MoeRoutePlan & route) {
-        return source->forward(execution, x, route);
-    };
-    result.mixed_prequantized_forward = [source](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            const MoeRoutePlan & route) {
-        return source->forward_prequantized(execution, x, route);
-    };
-    result.mixed_glu_output_forward = [source](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            const MoeRoutePlan & route,
-            bool gelu) {
-        return source->forward_glu_output(
-            execution, x, route, gelu);
-    };
-    result.mixed_glu_forward = [source](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor gate_up,
-            const MoeRoutePlan & route,
-            bool gelu) {
-        return source->forward_glu(
-            execution, gate_up, route, gelu);
-    };
-    if (source->supports_clamped_swiglu()) {
-        result.mixed_clamped_swiglu_forward = [source](
-                CudaExecutionContext& execution,
-                mfq_tensor_backend::Tensor gate_up,
-                const MoeRoutePlan & route,
-                double limit) {
-            return source->forward_clamped_swiglu(
-                execution, gate_up, route, limit);
-        };
-    }
     return result;
 }
 
-bool prefetch_cached_moe_projection_bundle(
-        const MfeWeight & gate,
-        const MfeWeight & up,
-        const MfeWeight & down,
+bool mfq::cuda::prefetch_cached_moe_projection_bundle(
+        const mfq::cuda::Experts & gate,
+        const mfq::cuda::Experts & up,
+        const mfq::cuda::Experts & down,
         const MoeRoutePlan & route) {
     if (!gate.cached_source ||
             !up.cached_source ||
@@ -2445,9 +2399,9 @@ bool prefetch_cached_moe_projection_bundle(
         route);
 }
 
-bool prefetch_cached_moe_projection_bundle(
-        const MfeWeight & gate_up,
-        const MfeWeight & down,
+bool mfq::cuda::prefetch_cached_moe_projection_bundle(
+        const mfq::cuda::Experts & gate_up,
+        const mfq::cuda::Experts & down,
         const MoeRoutePlan & route) {
     if (!gate_up.cached_source || !down.cached_source) {
         return false;
@@ -2456,7 +2410,7 @@ bool prefetch_cached_moe_projection_bundle(
         {gate_up.cached_source, down.cached_source}, route);
 }
 
-MfeWeight cache_moe_weight(
+mfq::cuda::Experts cache_moe_weight(
         const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,
         const std::shared_ptr<MixedMoeRuntime>& runtime,
@@ -2480,7 +2434,7 @@ std::shared_ptr<MoeExpertCache> make_moe_expert_cache(
     return std::make_shared<MoeExpertCache>(bytes, config);
 }
 
-MfeWeight cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
+mfq::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,std::shared_ptr<MoeQuantRangeSource> range,
         int minimum_slots,int layer_id,const std::string& role) {
     auto runtime=range->metadata();

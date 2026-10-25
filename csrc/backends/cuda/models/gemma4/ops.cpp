@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "engine/executor/experts.h"
 #include "engine/executor/ffn.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
@@ -25,8 +26,8 @@ struct Gemma4Block final : ::FullBlock {
     mfq_tensor_backend::Tensor ffn_pre_norm_2;
     mfq_tensor_backend::Tensor ffn_post_norm_2;
     mfq_tensor_backend::Tensor layer_scale;
-    MfeWeight gemma_moe_gate_up;
-    MfeWeight gemma_moe_down;
+    mfq::cuda::Experts gemma_moe_gate_up;
+    mfq::cuda::Experts gemma_moe_down;
     mfq_tensor_backend::Tensor gemma_router;
     mfq_tensor_backend::Tensor gemma_router_norm_scale;
     mfq_tensor_backend::Tensor gemma_expert_scale;
@@ -144,7 +145,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                     Tensor packed;
                     auto prefetch_down = [&] {
                         if (!projection_bundle_prefetched)
-                            gemma_moe_down.prefetch(route);
+                            mfq::cuda::prefetch_experts(gemma_moe_down, route);
                     };
                     auto down_pair = mfq::models::gated_mlp(
                         moe_input, true, 0.0,
@@ -153,15 +154,14 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                             if (tracing || !gemma_moe_gate_up.supports_projection_glu_epilogue())
                                 return {};
                             auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
-                                return gemma_moe_gate_up.forward_glu_output(execution, input, route,
-                                                                            true);
+                                return mfq::cuda::glu_experts(execution, gemma_moe_gate_up, input, route, true);
                             });
                             prefetch_down();
                             return hidden;
                         },
                         [&](Tensor input) {
                             packed = profiler.measure("gemma.moe_gate_up", [&] {
-                                return gemma_moe_gate_up.forward(execution, input, route);
+                                return mfq::cuda::run_experts(execution, gemma_moe_gate_up, input, route);
                             });
                             prefetch_down();
                             trace_gemma_stage(execution, layer, "moe_gate_up", packed);
@@ -178,14 +178,14 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                         },
                         [&](Tensor hidden) {
                             return profiler.measure("gemma.moe_down", [&] {
-                                return gemma_moe_down.forward(execution, hidden, route);
+                                return mfq::cuda::run_experts(execution, gemma_moe_down, hidden, route);
                             });
                         },
                         [&](const Tensor &, const Tensor &, auto, double) -> std::optional<Tensor> {
                             if (tracing || packed.size(0) > 4)
                                 return {};
                             return profiler.measure("gemma.moe_geglu_down", [&] {
-                                return gemma_moe_down.forward_geglu(execution, packed, route);
+                                return mfq::cuda::gated_experts(execution, gemma_moe_down, packed, route, true);
                             });
                         });
                     trace_gemma_stage(execution, layer, "moe_down", down_pair);
@@ -278,7 +278,7 @@ struct BlockLoader {
     auto experts(const std::string &name, int layer, const char *projection) {
         return load_mfe_gpu(execution, source, name, true, layer, projection);
     }
-    static auto expert_shape(const MfeWeight &weight) {
+    static auto expert_shape(const mfq::cuda::Experts &weight) {
         return std::array<int64_t, 3>{weight.n_experts, weight.out_per_expert, weight.neuron_len};
     }
     static auto shape(const mfq_tensor_backend::Tensor &t) { return t.sizes().vec(); }

@@ -9,6 +9,7 @@
 #include <string_view>
 
 namespace mfq { class ModelSource; }
+struct CudaExecutionContext;
 
 struct TransformerWeightLoader {
     CudaExecutionContext& execution;
@@ -31,7 +32,7 @@ struct TransformerWeightLoader {
         const std::string& down, const std::string& gate, const std::string& up) const;
     void experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
-    MfeWeight headwise(const std::string& name) const;
+    mfq::cuda::Experts headwise(const std::string& name) const;
     static auto shape(const mfq_tensor_backend::Tensor& value) { return value.sizes().vec(); }
     static int64_t elements(const mfq_tensor_backend::Tensor& value) { return value.numel(); }
 };

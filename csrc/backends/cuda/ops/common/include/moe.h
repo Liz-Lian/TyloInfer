@@ -1,6 +1,9 @@
 #pragma once
 
-#include "mfe_weight.h"
+#include "moe_types.h"
+#include "mmq.h"
+
+#include <optional>
 
 enum class MixedMoeFamily {
     Nint,
@@ -113,6 +116,16 @@ struct MixedNintInputPlan {
     int total_groups=0;
 };
 
+struct MoeOptions {
+    bool prefill = true;
+    int min_tokens = 9;
+    bool nvq_decode = true;
+    bool active_decode = true;
+    bool nint_decode = true;
+    std::optional<bool> row_workspace, direct_pool, group_dot, route_hint;
+    std::optional<int> route_warps;
+};
+
 struct MixedMoeRuntime {
     int n_experts = 0;
     int out_per_expert = 0;
@@ -141,20 +154,16 @@ struct MixedMoeRuntime {
     std::vector<MoeActivationGeometry> activation_geometry() const;
 
     mfq_tensor_backend::Tensor forward(
-            const CudaExecutionConfig& config,
+            const MoeOptions& options,
             KlMmqState& kl_mmq,
-            bool force_prefill_mma_off,
-            bool force_pool_path,
             mfq_tensor_backend::Tensor x,
             const MoeRoutePlan & route,
             bool input_prequantized = false,
             int epilogue_mode = 0) const;
 
     mfq_tensor_backend::Tensor forward_glu_output(
-            const CudaExecutionConfig& config,
+            const MoeOptions& options,
             KlMmqState& kl_mmq,
-            bool force_prefill_mma_off,
-            bool force_pool_path,
             mfq_tensor_backend::Tensor x,
             const MoeRoutePlan & route,
             bool gelu) const;
@@ -162,16 +171,9 @@ struct MixedMoeRuntime {
     bool supports_clamped_swiglu() const;
 
     mfq_tensor_backend::Tensor forward_clamped_swiglu(
-            const CudaExecutionConfig& config,
+            const MoeOptions& options,
             KlMmqState& kl_mmq,
-            bool force_prefill_mma_off,
-            bool force_pool_path,
             mfq_tensor_backend::Tensor gate_up,
             const MoeRoutePlan & route,
             double limit) const;
 };
-
-std::vector<mfq::TensorParallelSlice> plan_moe_expert_parallel_slices(
-    const ParallelConfig& parallel,
-    int64_t extent,
-    const std::string& name);

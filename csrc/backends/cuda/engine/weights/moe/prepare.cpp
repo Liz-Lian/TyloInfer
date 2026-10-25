@@ -1,4 +1,4 @@
-#include "backends/cuda/engine/executor/moe_plan.h"
+#include "engine/weights/moe/prepare.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_quant_ops.h"
 
@@ -79,7 +79,7 @@ static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
 
 void prepare_moe(
         MixedMoeRuntime & runtime,
-        const CudaExecutionConfig& config,bool dense_prefill,
+        bool heterogeneous,bool dense_prefill,
         const std::vector<std::vector<int32_t>>* expert_local_host) {
     if(expert_local_host && expert_local_host->size()!=runtime.pools.size())
         throw std::invalid_argument("mixed NVQ host-map pool count mismatch");
@@ -97,7 +97,7 @@ void prepare_moe(
     }
     initialize_mixed_nint_dispatch(runtime);
     runtime.nvq_dispatch.reset();
-    if (!config.moe_nvq_heterogeneous) return;
+    if (!heterogeneous) return;
     bool has_dense_groups=false;
     for(const auto& pool:runtime.pools)
         if(pool.family==MixedMoeFamily::Nvq && pool.nvq.dense_groups)has_dense_groups=true;

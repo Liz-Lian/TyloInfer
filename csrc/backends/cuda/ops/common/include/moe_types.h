@@ -1,6 +1,5 @@
 #pragma once
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "fp8_sq.h"
 #include "mx.h"
 #include "mxfp4_sq.h"
@@ -18,12 +17,12 @@
 #include <vector>
 
 namespace mfq::cuda {
-class MfeMxfp4ExpertStore;
+class Collectives;
 }
 
-class MoeCachedSource;
-struct MixedMoeRuntime;
 struct MoeRoutePlan;
+
+MoeRoutePlan build_moe_route_plan(mfq_tensor_backend::Tensor ids, int n_experts);
 
 const MoeRoutePlan& moe_route_to_device(
     mfq::cuda::Collectives& collectives,

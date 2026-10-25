@@ -1,4 +1,6 @@
 #include "backends/cuda/engine/weights/mapped_embedding.h"
+#include "engine/executor/execution.h"
+#include "engine/executor/experts.h"
 #include <iostream>
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "env.h"
@@ -729,7 +731,7 @@ std::shared_ptr<mfq::NintRows> load_nint_row_table(
 #endif
 }
 
-MfeWeight load_mfe_gpu(
+mfq::cuda::Experts load_mfe_gpu(
         CudaExecutionContext& execution,
         const mfq::ModelSource & mfq, const std::string & name,
         bool cacheable,
@@ -808,7 +810,7 @@ MfeWeight load_mfe_gpu(
     if (moe_parallel_config(execution).enabled()) {
         auto slices = plan_moe_expert_parallel_slices(
             moe_parallel_config(execution), cpu.n_experts, name);
-        MfeWeight result;
+        mfq::cuda::Experts result;
         result.n_experts = cpu.n_experts;
         result.out_per_expert =
             cpu.out_per_expert;
@@ -816,7 +818,7 @@ MfeWeight load_mfe_gpu(
             cpu.neuron_len;
         for (const auto & slice : slices) {
             auto shard =
-                std::make_shared<MfeWeight>(
+                std::make_shared<mfq::cuda::Experts>(
                     to_cuda_device_moe_expert_slice(
                         cpu, slice.begin,
                         slice.end,
@@ -1152,12 +1154,12 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
     // Predictor layers have their own expert images and must not share the
     // backbone's layer-zero transfer range or prefill lookahead.
     if(name.starts_with("predictor."))layer=-1-layer;
-    auto w=std::make_shared<MfeWeight>(load_mfe_gpu(execution, file,name,true,layer,role));
+    auto w=std::make_shared<mfq::cuda::Experts>(load_mfe_gpu(execution, file,name,true,layer,role));
     TYLOINFER_RUNTIME_CHECK(w->n_experts==experts && w->out_per_expert==output && w->neuron_len==input,
         "routed tensor shape mismatch: ",name);
     Routed result=[w,experts](CudaExecutionContext& execution, const Tensor& x,const Tensor& ids) {
         auto route=build_moe_route_plan(ids.to(tb::kInt32).contiguous(),int(experts));
-        return w->forward(execution,x.contiguous(),route);
+        return mfq::cuda::run_experts(execution, *w, x.contiguous(), route);
     };
     result.projections.push_back(w);
     return result;

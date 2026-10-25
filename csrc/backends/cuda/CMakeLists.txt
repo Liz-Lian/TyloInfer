@@ -488,6 +488,7 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/fp8_sq.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/mxfp4_sq.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/moe.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/mfq/mfe.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/mfe_ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/nint.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/vq.cpp
@@ -504,6 +505,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/ffn.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/experts.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
@@ -511,8 +513,7 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
-        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_ffn_pipeline.cpp
-        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_plan.cpp)
+        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_ffn_pipeline.cpp)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
@@ -535,6 +536,7 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/expert_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/load.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/prepare.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/quant_range_source.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/host_expert_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/residency.cpp

@@ -1,4 +1,5 @@
 #include "weights.h"
+#include "engine/executor/experts.h"
 #include "mfe_ffn_runtime.h"
 #include "mfq_cuda_moe_ops.h"
 #include "quant_linear.h"
@@ -194,7 +195,7 @@ struct Call {
         fused->run();
     }
     tb::Tensor projection(int p,const tb::Tensor& input) {
-        return layer.projections[p].forward(execution.config,execution.kl_mmq,true,false,input,route);
+        return layer.projections[p].forward(mfq::cuda::moe_options(execution.config, true, false), execution.kl_mmq, input, route);
     }
     double verify(bool shared) {
         auto gate=projection(0,x),up=projection(1,x);

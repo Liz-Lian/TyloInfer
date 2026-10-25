@@ -1,4 +1,5 @@
 #include "ffn.h"
+#include "engine/executor/experts.h"
 #include "execution.h"
 #include "tq_moe.h"
 #include "engine/weights/moe/load.h"
@@ -140,12 +141,11 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
             [&](const Tensor &input, auto, double limit) -> std::optional<Tensor> {
                 if (limit <= 0.0 && !execution.force_moe_materialized_swiglu &&
                     gate_shard.weight->supports_projection_glu_epilogue())
-                    return gate_shard.weight->forward_glu_output(execution, input, local_route,
-                                                                 false);
+                    return mfq::cuda::glu_experts(execution, *gate_shard.weight, input, local_route, false);
                 return {};
             },
             [&](Tensor input) {
-                gate_up_pair = gate_shard.weight->forward(execution, input, local_route);
+                gate_up_pair = mfq::cuda::run_experts(execution, *gate_shard.weight, input, local_route);
                 const auto width = gate_up_pair.size(-1) / 2;
                 return std::array<Tensor, 2>{gate_up_pair.narrow(-1, 0, width),
                                              gate_up_pair.narrow(-1, width, width)};
@@ -160,7 +160,7 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
                     .contiguous();
             },
             [&](Tensor hidden) {
-                return down_shard.weight->forward(execution, hidden, local_route);
+                return mfq::cuda::run_experts(execution, *down_shard.weight, hidden, local_route);
             },
             [&](const Tensor &, const Tensor &, auto, double limit) -> std::optional<Tensor> {
                 const bool allow_fusion =
@@ -171,10 +171,9 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
                 if (!allow_fusion)
                     return {};
                 if (limit <= 0.0)
-                    return down_shard.weight->forward_swiglu(execution, gate_up_pair, local_route);
+                    return mfq::cuda::gated_experts(execution, *down_shard.weight, gate_up_pair, local_route, false);
                 if (down_shard.weight->supports_clamped_swiglu())
-                    return down_shard.weight->forward_clamped_swiglu(execution, gate_up_pair,
-                                                                     local_route, limit);
+                    return mfq::cuda::clamped_experts(execution, *down_shard.weight, gate_up_pair, local_route, limit);
                 return {};
             });
         if (collect_output_energy) {
@@ -398,20 +397,20 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                 if (mfq::mfq_compat_enabled && !sharded_experts && !use_pipeline && !tq_routed) {
                     if (f.moe_split_gate_up) {
                         if (execution.config.moe_delayed_route_readback) {
-                            f.moe_gate.prefetch_begin(route);
+                            mfq::cuda::prefetch_experts(f.moe_gate, route, true);
                         } else {
                             projection_bundle_prefetched = prefetch_projection_bundle();
                             if (!projection_bundle_prefetched) {
-                                f.moe_gate.prefetch(route);
+                                mfq::cuda::prefetch_experts(f.moe_gate, route);
                             }
                         }
                     } else {
                         if (execution.config.moe_delayed_route_readback) {
-                            f.moe_gate_up.prefetch_begin(route);
+                            mfq::cuda::prefetch_experts(f.moe_gate_up, route, true);
                         } else {
                             projection_bundle_prefetched = prefetch_projection_bundle();
                             if (!projection_bundle_prefetched) {
-                                f.moe_gate_up.prefetch(route);
+                                mfq::cuda::prefetch_experts(f.moe_gate_up, route);
                             }
                         }
                     }
@@ -428,9 +427,9 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                     projection_bundle_prefetched = prefetch_projection_bundle();
                     if (!projection_bundle_prefetched) {
                         if (f.moe_split_gate_up) {
-                            f.moe_gate.prefetch(route);
+                            mfq::cuda::prefetch_experts(f.moe_gate, route);
                         } else {
-                            f.moe_gate_up.prefetch(route);
+                            mfq::cuda::prefetch_experts(f.moe_gate_up, route);
                         }
                     }
                 }
@@ -540,34 +539,34 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                     TYLOINFER_RUNTIME_CHECK(f.moe_up.n_experts > 0,
                                       "ungated routed MoE requires an Up bank");
                     if (!projection_bundle_prefetched) {
-                        f.moe_up.prefetch(route);
-                        f.moe_down.prefetch(route);
+                        mfq::cuda::prefetch_experts(f.moe_up, route);
+                        mfq::cuda::prefetch_experts(f.moe_down, route);
                     }
-                    std::optional<MfeWeight> staged_up;
-                    const MfeWeight *active_up = &f.moe_up;
+                    std::optional<mfq::cuda::Experts> staged_up;
+                    const mfq::cuda::Experts *active_up = &f.moe_up;
                     if (f.cpu_moe_up) {
                         staged_up.emplace(profiler.measure("moe.cpu_offload_up_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_up, execution.config);
+                            return stage_cpu_mixed_moe(f.cpu_moe_up, execution.config.moe_nvq_heterogeneous);
                         }));
                         active_up = &staged_up.value();
                     }
                     auto up = profiler.measure("moe.up", [&]() {
-                        return active_up->forward(execution, routed_input, route);
+                        return mfq::cuda::run_experts(execution, *active_up, routed_input, route);
                     });
                     auto hidden = profiler.measure("moe.relu_squared", [&]() {
                         return relu_squared_cuda(up.contiguous());
                     });
                     staged_up.reset();
-                    std::optional<MfeWeight> staged_down;
-                    const MfeWeight *active_down = &f.moe_down;
+                    std::optional<mfq::cuda::Experts> staged_down;
+                    const mfq::cuda::Experts *active_down = &f.moe_down;
                     if (f.cpu_moe_down) {
                         staged_down.emplace(profiler.measure("moe.cpu_offload_down_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_down, execution.config);
+                            return stage_cpu_mixed_moe(f.cpu_moe_down, execution.config.moe_nvq_heterogeneous);
                         }));
                         active_down = &staged_down.value();
                     }
                     auto down_pair = profiler.measure("moe.down", [&] {
-                        return active_down->forward(execution, hidden, route);
+                        return mfq::cuda::run_experts(execution, *active_down, hidden, route);
                     });
                     record_moe_route_stats(execution, f.moe_layer, selected.at(0),
                                            selected.at(1), down_pair, f.moe_up.n_experts);
@@ -596,24 +595,24 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                         result = moe_weighted_reduce_cuda(result, selected.at(1));
                     return {finish_latent(result), true};
                 }
-                std::optional<MfeWeight> staged_gate_up;
-                std::optional<MfeWeight> staged_gate;
-                std::optional<MfeWeight> staged_up;
-                const MfeWeight *active_gate_up = &f.moe_gate_up;
-                const MfeWeight *active_gate = &f.moe_gate;
-                const MfeWeight *active_up = &f.moe_up;
+                std::optional<mfq::cuda::Experts> staged_gate_up;
+                std::optional<mfq::cuda::Experts> staged_gate;
+                std::optional<mfq::cuda::Experts> staged_up;
+                const mfq::cuda::Experts *active_gate_up = &f.moe_gate_up;
+                const mfq::cuda::Experts *active_gate = &f.moe_gate;
+                const mfq::cuda::Experts *active_up = &f.moe_up;
                 mfq_tensor_backend::Tensor gate_up_pair;
                 mfq_tensor_backend::Tensor projected_hidden;
                 if (f.moe_split_gate_up) {
                     if (f.cpu_moe_gate) {
                         staged_gate.emplace(profiler.measure("moe.cpu_offload_gate_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_gate, execution.config);
+                            return stage_cpu_mixed_moe(f.cpu_moe_gate, execution.config.moe_nvq_heterogeneous);
                         }));
                         active_gate = &staged_gate.value();
                     }
                     if (f.cpu_moe_up) {
                         staged_up.emplace(profiler.measure("moe.cpu_offload_up_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_up, execution.config);
+                            return stage_cpu_mixed_moe(f.cpu_moe_up, execution.config.moe_nvq_heterogeneous);
                         }));
                         active_up = &staged_up.value();
                     }
@@ -622,9 +621,9 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                             execution.config.split_moe_activation_reuse &&
                             execution.kl_mmq.mode == KlMmqMode::Default && xf.size(0) <= 8 &&
                             active_gate->can_reuse_activation_for(*active_up);
-                        auto gate = active_gate->forward(execution, xf, route);
+                        auto gate = mfq::cuda::run_experts(execution, *active_gate, xf, route);
                         if (!projection_bundle_prefetched) {
-                            active_up->prefetch(route);
+                            mfq::cuda::prefetch_experts(*active_up, route);
                         }
                         if (!f.moe_shared_ungated && !shared_gate_logits.defined()) {
                             shared_gate_logits = profiler.measure("moe.shared_gate", [&]() {
@@ -634,15 +633,15 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                             });
                         }
                         auto up = reuse_gate_activation
-                                      ? active_up->forward_prequantized(execution, xf, route)
-                                      : active_up->forward(execution, xf, route);
+                                      ? mfq::cuda::run_experts(execution, *active_up, xf, route, true)
+                                      : mfq::cuda::run_experts(execution, *active_up, xf, route);
                         return mfq_tensor_backend::cat({gate, up}, -1).contiguous();
                     });
                 } else {
                     if (f.cpu_moe_gate_up) {
                         staged_gate_up.emplace(
                             profiler.measure("moe.cpu_offload_gate_up_h2d", [&]() {
-                                return stage_cpu_mixed_moe(f.cpu_moe_gate_up, execution.config);
+                                return stage_cpu_mixed_moe(f.cpu_moe_gate_up, execution.config.moe_nvq_heterogeneous);
                             }));
                         active_gate_up = &staged_gate_up.value();
                     }
@@ -651,11 +650,11 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                         active_gate_up->supports_projection_glu_epilogue();
                     if (fuse_projection_glu) {
                         projected_hidden = profiler.measure("moe.gate_up_swiglu", [&]() {
-                            return active_gate_up->forward_glu_output(execution, xf, route, false);
+                            return mfq::cuda::glu_experts(execution, *active_gate_up, xf, route, false);
                         });
                     } else {
                         gate_up_pair = profiler.measure("moe.gate_up", [&]() {
-                            return active_gate_up->forward(execution, xf, route);
+                            return mfq::cuda::run_experts(execution, *active_gate_up, xf, route);
                         });
                     }
                 }
@@ -663,13 +662,13 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                 staged_gate.reset();
                 staged_up.reset();
                 if (!projection_bundle_prefetched) {
-                    f.moe_down.prefetch(route);
+                    mfq::cuda::prefetch_experts(f.moe_down, route);
                 }
-                std::optional<MfeWeight> staged_down;
-                const MfeWeight *active_down = &f.moe_down;
+                std::optional<mfq::cuda::Experts> staged_down;
+                const mfq::cuda::Experts *active_down = &f.moe_down;
                 if (f.cpu_moe_down) {
                     staged_down.emplace(profiler.measure("moe.cpu_offload_down_h2d", [&]() {
-                        return stage_cpu_mixed_moe(f.cpu_moe_down, execution.config);
+                        return stage_cpu_mixed_moe(f.cpu_moe_down, execution.config.moe_nvq_heterogeneous);
                     }));
                     active_down = &staged_down.value();
                 }
@@ -706,7 +705,7 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                     },
                     [&](Tensor hidden) {
                         return profiler.measure("moe.down", [&] {
-                            return active_down->forward(execution, hidden, route);
+                            return mfq::cuda::run_experts(execution, *active_down, hidden, route);
                         });
                     },
                     [&](const Tensor &, const Tensor &, auto,
@@ -720,12 +719,11 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                             return {};
                         if (limit <= 0.0)
                             return profiler.measure("moe.swiglu_down", [&] {
-                                return active_down->forward_swiglu(execution, gate_up_pair, route);
+                                return mfq::cuda::gated_experts(execution, *active_down, gate_up_pair, route, false);
                             });
                         if (active_down->supports_clamped_swiglu())
                             return profiler.measure("moe.swiglu_down", [&] {
-                                return active_down->forward_clamped_swiglu(execution, gate_up_pair,
-                                                                           route, limit);
+                                return mfq::cuda::clamped_experts(execution, *active_down, gate_up_pair, route, limit);
                             });
                         return {};
                     });

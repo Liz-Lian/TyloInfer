@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/common/include/quant_linear.h"
-#include "mfe_weight.h"
+#include "engine/weights/moe/experts.h"
 #include "engine/models/common/gated_mlp.h"
 
 #include <memory>
@@ -22,10 +22,10 @@ struct Ffn {
     bool moe_split_gate_up = false;
     // Routed experts without a gate projection use the activation above.
     bool moe_ungated_experts = false;
-    MfeWeight moe_gate_up;
-    MfeWeight moe_gate;
-    MfeWeight moe_up;
-    MfeWeight moe_down;
+    Experts moe_gate_up;
+    Experts moe_gate;
+    Experts moe_up;
+    Experts moe_down;
     // Ordinary TQ row tables retain their own cache and never enter MFE pools.
     std::shared_ptr<TqMoeBanks> moe_tq;
     std::shared_ptr<MixedMoeRuntime> cpu_moe_gate_up;

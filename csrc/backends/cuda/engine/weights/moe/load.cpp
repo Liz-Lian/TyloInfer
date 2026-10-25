@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/weights/moe/load.h"
 
-#include "backends/cuda/engine/executor/moe_plan.h"
+#include "engine/weights/moe/prepare.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "mfq_cuda_quant_ops.h"
 
@@ -10,7 +10,7 @@
 #include <numeric>
 #include <unordered_set>
 
-static void initialize_mfe_nint_runtime(MfeWeight & result) {
+static void initialize_mfe_nint_runtime(mfq::cuda::Experts & result) {
     if (result.pools.empty()) {
         throw std::runtime_error("MFE NINT runtime requires at least one pool");
     }
@@ -36,8 +36,8 @@ static void initialize_mfe_nint_runtime(MfeWeight & result) {
     }
 }
 
-MfeWeight to_gpu_mfe(const mfq::mfe::Data & cpu) {
-    MfeWeight result;
+mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data & cpu) {
+    mfq::cuda::Experts result;
     result.unified_nint_projection = true;
     result.n_experts = cpu.n_experts;
     result.out_per_expert = cpu.out_per_expert;
@@ -248,14 +248,14 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
         runtime->pools.push_back(std::move(pool));
     }
     if (cuda) {
-        prepare_moe(*runtime, config);
+        prepare_moe(*runtime, config.moe_nvq_heterogeneous);
     }
     return runtime;
 }
 
-static MfeWeight wrap_mixed_moe_runtime(
+static mfq::cuda::Experts wrap_mixed_moe_runtime(
         const std::shared_ptr<MixedMoeRuntime> & runtime) {
-    MfeWeight result;
+    mfq::cuda::Experts result;
     result.unified_nint_projection = runtime->nint_only();
     result.n_experts = runtime->n_experts;
     result.out_per_expert = runtime->out_per_expert;
@@ -264,56 +264,18 @@ static MfeWeight wrap_mixed_moe_runtime(
     result.mixed_weight_bytes = mixed_moe_storage_bytes(*runtime);
     result.activation_geometries = runtime->activation_geometry();
     result.activation_workspace_domain = 2;
-    result.mixed_forward = [runtime](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x, const MoeRoutePlan & route) {
-        return runtime->forward(
-            execution.config, execution.kl_mmq,
-            execution.force_moe_prefill_mma_off,
-            execution.force_moe_pool_path, x, route);
-    };
-    result.mixed_prequantized_forward = [runtime](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x, const MoeRoutePlan & route) {
-        return runtime->forward(
-            execution.config, execution.kl_mmq,
-            execution.force_moe_prefill_mma_off,
-            execution.force_moe_pool_path, x, route, true);
-    };
-    result.mixed_glu_output_forward = [runtime](
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            const MoeRoutePlan & route,
-            bool gelu) {
-        return runtime->forward_glu_output(
-            execution.config, execution.kl_mmq,
-            execution.force_moe_prefill_mma_off,
-            execution.force_moe_pool_path, x, route, gelu);
-    };
-    if (runtime->supports_clamped_swiglu()) {
-        result.mixed_clamped_swiglu_forward = [runtime](
-                CudaExecutionContext& execution,
-                mfq_tensor_backend::Tensor gate_up,
-                const MoeRoutePlan & route,
-                double limit) {
-            return runtime->forward_clamped_swiglu(
-                execution.config, execution.kl_mmq,
-                execution.force_moe_prefill_mma_off,
-                execution.force_moe_pool_path,
-                gate_up, route, limit);
-        };
-    }
+    result.resident = runtime;
     return result;
 }
 
-MfeWeight to_gpu_mixed_moe(
+mfq::cuda::Experts to_gpu_mixed_moe(
         const mfq::mfe::Data & cpu,
         const CudaExecutionConfig& config) {
     return wrap_mixed_moe_runtime(
         make_mixed_moe_runtime(cpu, true, config));
 }
 
-MfeWeight to_cuda_device_moe_expert_slice(
+mfq::cuda::Experts to_cuda_device_moe_expert_slice(
         const mfq::mfe::Data & cpu,
         int64_t expert_begin,
         int64_t expert_end,
@@ -438,7 +400,7 @@ MfeWeight to_cuda_device_moe_expert_slice(
         throw std::runtime_error(
             "expert-parallel MoE shard has no owned experts");
     }
-    prepare_moe(*runtime, config);
+    prepare_moe(*runtime, config.moe_nvq_heterogeneous);
     return wrap_mixed_moe_runtime(runtime);
 }
 
@@ -533,9 +495,9 @@ static NepqWeight copy_cpu_nepq_to_cuda(const NepqWeight & source) {
     return result;
 }
 
-MfeWeight stage_cpu_mixed_moe(
+mfq::cuda::Experts stage_cpu_mixed_moe(
         const std::shared_ptr<MixedMoeRuntime> & cpu,
-        const CudaExecutionConfig& config) {
+        bool heterogeneous) {
     if (!cpu) throw std::runtime_error("missing CPU-offloaded MoE state");
     auto runtime = std::make_shared<MixedMoeRuntime>();
     runtime->n_experts = cpu->n_experts;
@@ -566,13 +528,13 @@ MfeWeight stage_cpu_mixed_moe(
         }
         runtime->pools.push_back(std::move(pool));
     }
-    prepare_moe(*runtime, config);
+    prepare_moe(*runtime, heterogeneous);
     return wrap_mixed_moe_runtime(runtime);
 }
 
-MfeWeight cpu_mixed_moe_metadata(
+mfq::cuda::Experts cpu_mixed_moe_metadata(
         const std::shared_ptr<MixedMoeRuntime> & runtime) {
-    MfeWeight result;
+    mfq::cuda::Experts result;
     result.unified_nint_projection = runtime->nint_only();
     result.n_experts = runtime->n_experts;
     result.out_per_expert = runtime->out_per_expert;

@@ -1,4 +1,3 @@
-#include "backends/cuda/engine/executor/options.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_quant_ops.h"
 #include "mfq_cuda_nint_route_hint.h"
@@ -183,10 +182,8 @@ std::vector<MoeActivationGeometry> MixedMoeRuntime::activation_geometry() const 
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
-        const CudaExecutionConfig& config,
+        const MoeOptions& options,
         KlMmqState& kl_mmq,
-        bool force_prefill_mma_off,
-        bool force_pool_path,
         mfq_tensor_backend::Tensor x,
         const MoeRoutePlan & route,
         bool input_prequantized,
@@ -229,9 +226,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
     std::unordered_set<
         MixedMoeActivationKey, MixedMoeActivationKeyHash> quantized;
     const bool use_f16_mma =
-        config.moe_prefill_mma &&
-        !force_prefill_mma_off &&
-        (tokens >= config.moe_prefill_mma_min_tokens || prefill_only) &&
+        options.prefill &&
+        (tokens >= options.min_tokens || prefill_only) &&
         route.map_ready &&
         route.ids_dst.numel() == route.ids.numel();
     const bool use_kl_mmq =
@@ -246,9 +242,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
     const bool use_nvq_decode =
         !use_f16_mma && !use_kl_mmq && nvq_dispatch && !nvq_dispatch->dense_groups &&
         nvq_dispatch->pool_count > 1 &&
-        tokens <= 8 && !prefill_only && !force_pool_path &&
-        config.moe_nvq_heterogeneous_decode;
-    const bool use_active_nvq=use_nvq_decode && config.moe_nvq_active_decode &&
+        tokens <= 8 && !prefill_only && options.nvq_decode;
+    const bool use_active_nvq=use_nvq_decode && options.active_decode &&
         route.ids.numel()>0 && route.ids.numel()<=1024;
     mfq_tensor_backend::Tensor active_nvq_plan;
     if(use_active_nvq) {
@@ -332,8 +327,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         quantized.insert(activation_key);
     }
 
-    const bool use_nint_decode=config.moe_nint_heterogeneous_decode && nint_dispatch &&
-        !use_f16_mma && !use_kl_mmq && !prefill_only && !force_pool_path && tokens<=8 &&
+    const bool use_nint_decode=options.nint_decode && nint_dispatch &&
+        !use_f16_mma && !use_kl_mmq && !prefill_only && tokens<=8 &&
         int64_t(tokens)*routes<=65535 && epilogue_mode==0;
     if(use_nint_decode) {
         auto found=nint_input_plans.find(input_rows);
@@ -361,11 +356,11 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             found=nint_input_plans.emplace(input_rows,std::move(plan)).first;
         }
         auto& plan=found->second;
-        const auto row_setting=mfq::cuda::runtime_options::nint_route_row_workspace();
-        const auto direct_setting=mfq::cuda::runtime_options::nint_direct_pool();
-        const auto group_setting=mfq::cuda::runtime_options::nint_group_dot();
-        const auto hint_setting=mfq::cuda::runtime_options::nint_route_hint();
-        const auto warp_setting=mfq::cuda::runtime_options::nint_route_warps();
+        const auto row_setting=options.row_workspace;
+        const auto direct_setting=options.direct_pool;
+        const auto group_setting=options.group_dot;
+        const auto hint_setting=options.route_hint;
+        const auto warp_setting=options.route_warps;
         bool request_rows=row_setting && *row_setting;
         if(!row_setting && tokens==1 && nint_dispatch->pools.size()==1) {
             const auto& w=pools[nint_dispatch->pools.front()].nint;
@@ -686,20 +681,18 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward_glu_output(
-        const CudaExecutionConfig& config,
+        const MoeOptions& options,
         KlMmqState& kl_mmq,
-        bool force_prefill_mma_off,
-        bool force_pool_path,
         mfq_tensor_backend::Tensor x,
         const MoeRoutePlan & route,
         bool gelu) const {
     if (nint_only() && kl_mmq.mode == KlMmqMode::Default) {
         return forward(
-            config, kl_mmq, force_prefill_mma_off, force_pool_path,
+            options, kl_mmq,
             x, route, false, gelu ? 2 : 1);
     }
     auto gate_up = forward(
-        config, kl_mmq, force_prefill_mma_off, force_pool_path,
+        options, kl_mmq,
         x, route);
     return gelu
         ? moe_geglu_split_cuda(gate_up)
@@ -711,10 +704,8 @@ bool MixedMoeRuntime::supports_clamped_swiglu() const {
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward_clamped_swiglu(
-        const CudaExecutionConfig& config,
+        const MoeOptions& options,
         KlMmqState& kl_mmq,
-        bool force_prefill_mma_off,
-        bool force_pool_path,
         mfq_tensor_backend::Tensor gate_up,
         const MoeRoutePlan & route,
         double limit) const {
@@ -739,6 +730,6 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward_clamped_swiglu(
     auto activation =
         (mfq_tensor_backend::silu(gate) * up).contiguous();
     return forward(
-        config, kl_mmq, force_prefill_mma_off, force_pool_path,
+        options, kl_mmq,
         activation, route);
 }

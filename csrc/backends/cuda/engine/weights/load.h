@@ -1,10 +1,18 @@
 #pragma once
 
 #include "quant_linear.h"
-#include "mfe_weight.h"
+#include "engine/weights/moe/experts.h"
 #include "model_source/read.h"
 #include "gated_residual.h"
 #include "backends/cuda/engine/weights/tq/routed.h"
+
+struct CudaExecutionContext;
+struct ParallelConfig;
+
+std::vector<mfq::TensorParallelSlice> plan_moe_expert_parallel_slices(
+    const ParallelConfig& parallel,
+    int64_t extent,
+    const std::string& name);
 
 struct MfqDropFileCacheGuard {
     bool& setting;
@@ -28,7 +36,7 @@ QuantLinear load_embedding(CudaExecutionContext& execution, const mfq::ModelSour
 std::shared_ptr<mfq::NintRows> load_nint_row_table(
     const mfq::ModelSource& source, const std::string& name, bool prefer_mapping=false);
 
-MfeWeight load_mfe_gpu(
+mfq::cuda::Experts load_mfe_gpu(
     CudaExecutionContext& execution,
     const mfq::ModelSource& source,
     const std::string& name,
@@ -112,7 +120,7 @@ struct ResidualLinear {
 struct Routed {
     using Function=std::function<Tensor(CudaExecutionContext&,const Tensor&,const Tensor&)>;
     Function function;
-    std::vector<std::shared_ptr<MfeWeight>> projections;
+    std::vector<std::shared_ptr<mfq::cuda::Experts>> projections;
     std::vector<std::shared_ptr<TqRoutedWeight>> tq_projections;
     Routed()=default;
     template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>

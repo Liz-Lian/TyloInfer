@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "engine/executor/experts.h"
 #include "engine/executor/ffn.h"
 #include "env.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -29,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-static double mfe_weight_bytes(const MfeWeight & weight) {
+static double mfe_weight_bytes(const mfq::cuda::Experts & weight) {
     double bytes = static_cast<double>(weight.mixed_weight_bytes);
     for (const auto & shard :
          weight.expert_parallel_shards) {
@@ -76,7 +77,7 @@ int run_expert_parallel_moe_check(
     execution.tensor_parallel = {};
     execution.expert_parallel = {};
     execution.expert_parallel.devices = {saved.primary_device()};
-    MfeWeight full;
+    mfq::cuda::Experts full;
     try {
         full = load_mfe_gpu(execution,
             mfq, tensor_name, false, 0, role);
@@ -143,10 +144,10 @@ int run_expert_parallel_moe_check(
         build_moe_route_plan(
             ids, full.n_experts);
     auto reference =
-        full.forward(execution, x, route)
+        mfq::cuda::run_experts(execution, full, x, route)
             .to(mfq_tensor_backend::kFloat32);
     auto test =
-        sharded.forward(execution, x, route)
+        mfq::cuda::run_experts(execution, sharded, x, route)
             .to(mfq_tensor_backend::kFloat32);
     mfq_cuda_synchronize();
     auto difference = test - reference;
@@ -218,7 +219,7 @@ int run_mfe_tensor_check(
         throw std::runtime_error("MFE tensor check routes exceed expert count");
     }
     if (split_width > 0 &&
-            (split_width >= weight.out_per_expert || weight.mixed_forward)) {
+            (split_width >= weight.out_per_expert || (weight.resident || weight.cached_source))) {
         throw std::runtime_error(
             "MFE merged/split check requires a resident NINT tensor "
             "and an interior split width");
@@ -260,8 +261,8 @@ int run_mfe_tensor_check(
     auto route = build_moe_route_plan(ids, weight.n_experts);
     mfq_tensor_backend::Tensor output;
     for (int warmup = 0; warmup < 5; ++warmup) {
-        output = weight.forward(execution, x, route);
-        if (warmup == 0) weight.prefetch(route);
+        output = mfq::cuda::run_experts(execution, weight, x, route);
+        if (warmup == 0) mfq::cuda::prefetch_experts(weight, route);
     }
     mfq_cuda_synchronize();
     cudaEvent_t start, stop;
@@ -269,7 +270,7 @@ int run_mfe_tensor_check(
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&stop));
     auto stream = mfq_get_current_cuda_stream().stream();
     TYLOINFER_CUDA_CHECK(cudaEventRecord(start, stream));
-    for (int index = 0; index < reps; ++index) output = weight.forward(execution, x, route);
+    for (int index = 0; index < reps; ++index) output = mfq::cuda::run_experts(execution, weight, x, route);
     TYLOINFER_CUDA_CHECK(cudaEventRecord(stop, stream));
     TYLOINFER_CUDA_CHECK(cudaEventSynchronize(stop));
     float elapsed = 0.0f;
@@ -286,7 +287,7 @@ int run_mfe_tensor_check(
                   << " out=" << weight.out_per_expert
                   << " k=" << weight.neuron_len
                   << " routed_input=" << (routed_input ? 1 : 0)
-                  << " mixed=" << (weight.mixed_forward ? 1 : 0)
+                  << " mixed=" << ((weight.resident || weight.cached_source) ? 1 : 0)
                   << " weight_bytes=" << mfe_weight_bytes(weight)
                   << " cuda_ms=" << elapsed / reps
                   << '\n';
@@ -328,7 +329,7 @@ int run_mfe_tensor_check(
               << " out=" << weight.out_per_expert
               << " k=" << weight.neuron_len
               << " routed_input=" << (routed_input ? 1 : 0)
-              << " mixed=" << (weight.mixed_forward ? 1 : 0)
+              << " mixed=" << ((weight.resident || weight.cached_source) ? 1 : 0)
               << " weight_bytes=" << mfe_weight_bytes(weight)
               << " cuda_ms=" << elapsed / reps
               << " dense_reference_rel=" << dense_reference_rel
@@ -347,7 +348,7 @@ int run_mfe_tensor_check(
 
     if (split_width > 0) {
         auto run_segment = [&](int width, int row_offset) {
-            return weight.forward(execution, x, route)
+            return mfq::cuda::run_experts(execution, weight, x, route)
                 .narrow(2, row_offset, width).contiguous();
         };
         mfq_tensor_backend::Tensor merged;
@@ -422,9 +423,9 @@ int run_mfe_tensor_check(
         };
         set_env("TYLOINFER_NVQ_MOE_WARPS", "0");
         set_env("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", "1");
-        auto candidate = weight.forward(execution, x, route);
+        auto candidate = mfq::cuda::run_experts(execution, weight, x, route);
         set_env("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", "0");
-        auto baseline = weight.forward(execution, x, route);
+        auto baseline = mfq::cuda::run_experts(execution, weight, x, route);
         mfq_cuda_synchronize();
         restore_env(
             "TYLOINFER_NVQ_MOE_WARPS", had_original_env, original_value);
@@ -467,8 +468,7 @@ int run_mfe_tensor_check(
             .reshape({tokens, routes, 2 * weight.neuron_len})
             .contiguous();
         auto run_candidate = [&]() {
-            return weight.forward_clamped_swiglu(
-                execution, gate_up, route, limit);
+            return mfq::cuda::clamped_experts(execution, weight, gate_up, route, limit);
         };
         auto run_baseline = [&]() {
             const int64_t width = weight.neuron_len;
@@ -479,7 +479,7 @@ int run_mfe_tensor_check(
                 -limit, limit);
             auto hidden = (mfq_tensor_backend::silu(gate) * up)
                 .to(mfq_tensor_backend::kFloat16).contiguous();
-            return weight.forward(execution, hidden, route);
+            return mfq::cuda::run_experts(execution, weight, hidden, route);
         };
         mfq_tensor_backend::Tensor candidate;
         mfq_tensor_backend::Tensor baseline;
@@ -643,10 +643,10 @@ static int run_gemma_moe_check(
             const bool projection_bundle_prefetched =
                 prefetch_cached_moe_projection_bundle(
                     gate_up, down, route);
-            auto gate_pair = gate_up.forward(execution, x, route);
+            auto gate_pair = mfq::cuda::run_experts(execution, gate_up, x, route);
             auto hidden = moe_geglu_split_cuda(gate_pair);
-            if (!projection_bundle_prefetched) down.prefetch(route);
-            auto down_pair = down.forward(execution, hidden, route);
+            if (!projection_bundle_prefetched) mfq::cuda::prefetch_experts(down, route);
+            auto down_pair = mfq::cuda::run_experts(execution, down, hidden, route);
             return moe_weighted_reduce_cuda(down_pair, weights);
         };
         auto forward_gate_glu = [&]() {
@@ -654,9 +654,9 @@ static int run_gemma_moe_check(
             const bool projection_bundle_prefetched =
                 prefetch_cached_moe_projection_bundle(
                     gate_up, down, route);
-            auto hidden = gate_up.forward_glu_output(execution, x, route, true);
-            if (!projection_bundle_prefetched) down.prefetch(route);
-            auto down_pair = down.forward(execution, hidden, route);
+            auto hidden = mfq::cuda::glu_experts(execution, gate_up, x, route, true);
+            if (!projection_bundle_prefetched) mfq::cuda::prefetch_experts(down, route);
+            auto down_pair = mfq::cuda::run_experts(execution, down, hidden, route);
             return moe_weighted_reduce_cuda(down_pair, weights);
         };
         const bool gate_glu_supported = tokens <= 4;
@@ -693,13 +693,13 @@ static int run_gemma_moe_check(
 
         if (tokens == 1) {
             auto stage_route = build_moe_route_plan(ids, experts);
-            auto stage_hidden = gate_up.forward_glu_output(execution, x, stage_route, true);
-            auto stage_down = down.forward(execution, stage_hidden, stage_route);
+            auto stage_hidden = mfq::cuda::glu_experts(execution, gate_up, x, stage_route, true);
+            auto stage_down = mfq::cuda::run_experts(execution, down, stage_hidden, stage_route);
             mfq_cuda_synchronize();
             auto gate_stage = time_ms(
-                [&]() { return gate_up.forward_glu_output(execution, x, stage_route, true); }, reps);
+                [&]() { return mfq::cuda::glu_experts(execution, gate_up, x, stage_route, true); }, reps);
             auto down_stage = time_ms(
-                [&]() { return down.forward(execution, stage_hidden, stage_route); }, reps);
+                [&]() { return mfq::cuda::run_experts(execution, down, stage_hidden, stage_route); }, reps);
             auto reduce_stage = time_ms(
                 [&]() { return moe_weighted_reduce_cuda(stage_down, weights); }, reps);
             std::cout << "gemma_moe_stage"

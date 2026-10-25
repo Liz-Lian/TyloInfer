@@ -1,5 +1,5 @@
 #pragma once
-#include "mfe_weight.h"
+#include "engine/weights/moe/experts.h"
 #include "engine/weights/dispatch_plan.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 #include <array>
@@ -16,8 +16,8 @@ struct MoeFfnSharedWeights {
     MoeFfnShared gate;
     std::shared_ptr<const QuantLinear> scalar_gate;
 };
-std::shared_ptr<MoeFfnPipeline> make_moe_ffn_pipeline(const std::vector<std::shared_ptr<MfeWeight>>& gate_up,
-    const std::vector<std::shared_ptr<MfeWeight>>& down,MoeFfnShared shared={},MoeFfnDispatchObserver observer={},
+std::shared_ptr<MoeFfnPipeline> make_moe_ffn_pipeline(const std::vector<std::shared_ptr<mfq::cuda::Experts>>& gate_up,
+    const std::vector<std::shared_ptr<mfq::cuda::Experts>>& down,MoeFfnShared shared={},MoeFfnDispatchObserver observer={},
     MoeFfnSharedWeights shared_weights={},double swiglu_limit=0);
 mfq_tensor_backend::Tensor run_moe_ffn_pipeline(
     std::shared_ptr<MoeFfnPipeline> pipeline,CudaExecutionContext& execution,

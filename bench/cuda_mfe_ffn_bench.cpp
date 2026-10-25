@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/weights/moe/load.h"
+#include "engine/executor/experts.h"
 #include "packed_bench_utils.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfe_ffn_runtime.h"
@@ -161,11 +162,11 @@ struct Call {
     void original() {
         auto route=build_moe_route_plan(ids,experts);
         moe_quantize_shared_input_cuda(input,quant_descriptors,quant_groups);
-        auto g=bank.projections[0].forward(execution.config,execution.kl_mmq,true,false,input,route,true);
-        auto u=bank.projections[1].forward(execution.config,execution.kl_mmq,true,false,input,route,true);
+        auto g=bank.projections[0].forward(mfq::cuda::moe_options(execution.config, true, false), execution.kl_mmq, input, route, true);
+        auto u=bank.projections[1].forward(mfq::cuda::moe_options(execution.config, true, false), execution.kl_mmq, input, route, true);
         oracle_hidden=moe_swiglu_rounded_cuda(g,u,moe_table());
         if(ffn_width!=intermediate)oracle_hidden.narrow(2,ffn_width,intermediate-ffn_width).zero_();
-        auto pairs=bank.projections[2].forward(execution.config,execution.kl_mmq,true,false,oracle_hidden,route);
+        auto pairs=bank.projections[2].forward(mfq::cuda::moe_options(execution.config, true, false), execution.kl_mmq, oracle_hidden, route);
         if(output_width!=hidden)pairs=pairs.narrow(2,0,output_width).contiguous();
         if(cpu)pairs=tb::where(cpu_mask,cpu_pairs,pairs);
         oracle_output=moe_weighted_reduce_cuda(pairs,weights);

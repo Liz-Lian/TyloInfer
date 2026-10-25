@@ -1,6 +1,7 @@
 #pragma once
 
 #include "formats/quant/mfe_quant_expert_store.h"
+
 #include "moe.h"
 #include "backends/cuda/engine/weights/moe/host_expert_cache.h"
 #include <atomic>
@@ -36,7 +37,7 @@ public:
     const std::shared_ptr<MoeHostExpertCache>& host_cache() const { return host_cache_; }
     mfq::MoeCacheKey host_key(int expert) const;
     mfq_tensor_backend::Tensor forward_cpu(
-        CudaExecutionContext& execution,mfq_tensor_backend::Tensor input,const MoeRoutePlan& route,
+        mfq_tensor_backend::Tensor input,const MoeRoutePlan& route,
         const std::unordered_map<int,MoeHostExpertCache::Lease>* prepared = nullptr) const;
     std::uint64_t cpu_projections() const { return cpu_projections_.load(); }
     void record_cpu_projections(std::size_t experts) const { cpu_projections_.fetch_add(experts); }

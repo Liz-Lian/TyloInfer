@@ -1,4 +1,5 @@
 #include "weights.h"
+#include "engine/executor/experts.h"
 #include "nint_row_metadata.h"
 #include "mfq_cuda_moe_ops.h"
 #include <set>
@@ -112,7 +113,7 @@ struct Replay {
     cudaGraph_t captured=nullptr;
     Replay(std::vector<std::unique_ptr<Bank>>& banks,const tb::Tensor& x,const MoeRoutePlan& route,CudaExecutionContext& execution)
         :calls(banks.size()*8) {
-        auto run=[&](size_t i){return banks[i%banks.size()]->runtime.forward(execution.config,execution.kl_mmq,true,false,x,route);};
+        auto run=[&](size_t i){return banks[i%banks.size()]->runtime.forward(mfq::cuda::moe_options(execution.config, true, false), execution.kl_mmq, x, route);};
         mfq_prepare_cuda_graph_memory(graph);output.reserve(calls);
         for(size_t i=0;i<calls;++i)output.push_back(run(i));
         fb::check(cudaStreamSynchronize(mfq_current_cuda_stream()));output.clear();
@@ -162,7 +163,7 @@ static void verify_routes(const fb::Case& c,std::vector<MixedMoePool>& leaves,bo
                 tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16));
             auto ids=tb::zeros({tokens,routes},x.options().dtype(tb::kInt32));
             MoeRoutePlan route;route.ids=ids;route.n_experts=routes;
-            auto run=[&](){return bank.runtime.forward(execution.config,execution.kl_mmq,true,dispatch==0,x,route);};
+            auto run=[&](){return bank.runtime.forward(mfq::cuda::moe_options(execution.config, true, dispatch==0), execution.kl_mmq, x, route);};
             grouped_paths(true);if(compare_option)nvq_option(option,on_value);
             MfqCudaGraph graph;mfq_prepare_cuda_graph_memory(graph);
             auto result=run();fb::check(cudaStreamSynchronize(mfq_current_cuda_stream()));

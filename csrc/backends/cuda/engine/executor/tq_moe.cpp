@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/executor/tq_moe.h"
+#include "engine/weights/load.h"
 #include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"

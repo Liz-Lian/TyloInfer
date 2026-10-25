@@ -58,9 +58,9 @@ inline void residency_copy_benchmark(const std::filesystem::path& root) {
         execution.config.moe_host_cache_bytes=3*gpu_bytes;
         c.cache=make_moe_expert_cache(gpu_bytes,execution.config);
         for(std::size_t layer=0;layer<formats.size();++layer) {
-            std::vector<std::shared_ptr<MfeWeight>> gates,downs;
+            std::vector<std::shared_ptr<mfq::cuda::Experts>> gates,downs;
             for(int p=0;p<3;++p) {
-                auto weight=std::make_shared<MfeWeight>(cache_quant_moe_weight(c.cache,
+                auto weight=std::make_shared<mfq::cuda::Experts>(cache_quant_moe_weight(c.cache,
                     std::to_string(layer)+"/"+std::to_string(p),c.sources[layer][p],1,int(layer),std::to_string(p)));
                 (p==2?downs:gates).push_back(std::move(weight));
             }

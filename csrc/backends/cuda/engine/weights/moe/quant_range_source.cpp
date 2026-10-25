@@ -494,7 +494,7 @@ void MoeQuantRangeSource::mark_gpu_resident(int expert,bool resident) {
     if (resident && host_cache_) host_cache_->promote(host_key(expert));
 }
 
-tb::Tensor MoeQuantRangeSource::forward_cpu(CudaExecutionContext& execution,tb::Tensor input,
+tb::Tensor MoeQuantRangeSource::forward_cpu(tb::Tensor input,
         const MoeRoutePlan& route,const std::unordered_map<int,MoeHostExpertCache::Lease>* prepared) const {
     const int tokens=static_cast<int>(route.ids.size(0)),routes=static_cast<int>(route.ids.size(1));
     if (route.n_experts!=store_->num_experts() || input.size(0)!=tokens || input.size(-1)!=store_->neuron_len() ||

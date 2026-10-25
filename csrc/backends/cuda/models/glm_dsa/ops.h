@@ -1,5 +1,6 @@
 #pragma once
 #include "mfq_cuda_attention_ops.h"
+#include "engine/executor/experts.h"
 #include "engine/executor/ffn.h"
 #include "mfq_cuda_cache_ops.h"
 #include "mfq_cuda_norm_ops.h"
@@ -107,8 +108,8 @@ struct GlmDsaBlock : Block {
     mfq_tensor_backend::Tensor index_k_norm, index_k_bias;
     QuantLinearGroup input_proj;
     QuantLinearGroup q_proj;
-    MfeWeight embed_q;
-    MfeWeight unembed_out;
+    mfq::cuda::Experts embed_q;
+    mfq::cuda::Experts unembed_out;
     QuantLinear o_proj;
     mfq::cuda::Ffn ffn;
     mfq_tensor_backend::Tensor kv_cache;
@@ -123,7 +124,7 @@ struct GlmDsaBlock : Block {
     }
 
     mfq_tensor_backend::Tensor headwise_project(CudaExecutionContext &execution,
-                                                const MfeWeight &weight,
+                                                const mfq::cuda::Experts &weight,
                                                 mfq_tensor_backend::Tensor x, int64_t B, int64_t T,
                                                 int64_t heads) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -135,7 +136,7 @@ struct GlmDsaBlock : Block {
         const int64_t rows = B * T * heads;
         const auto &route = shared_state->head_route(rows, static_cast<int>(heads));
         auto y =
-            weight.forward(execution, x.contiguous().reshape({rows, weight.neuron_len}), route);
+            mfq::cuda::run_experts(execution, weight, x.contiguous().reshape({rows, weight.neuron_len}), route);
         return y.reshape({B, T, heads, weight.out_per_expert});
 
 #else

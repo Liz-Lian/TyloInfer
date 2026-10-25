@@ -134,7 +134,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
     }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    MfeWeight* weight = nullptr;
+    mfq::cuda::Experts* weight = nullptr;
     std::shared_ptr<MixedMoeRuntime>* cpu = nullptr;
     const char* role = nullptr;
     switch (projection) {
@@ -154,7 +154,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-MfeWeight TransformerWeightLoader::headwise(const std::string& name) const {
+mfq::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     return load_mfe_gpu(execution, source, name);
@@ -211,14 +211,14 @@ void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& f) {
     if(!f.moe_pipeline.expired() || !mfq::cuda::uses_expert_cache(f) || mfq::cuda::expert_parallel(f) ||
             f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
             !execution.config.moe_route_stats_path.empty())return;
-    std::vector<std::shared_ptr<MfeWeight>> gate_up;
+    std::vector<std::shared_ptr<mfq::cuda::Experts>> gate_up;
     // An ungated bank publishes Up in both slots; the pipeline detects the
     // single-image layout from the projection geometry, not the model name.
     if(f.moe_ungated_experts)
-        gate_up={std::make_shared<MfeWeight>(f.moe_up),std::make_shared<MfeWeight>(f.moe_up)};
-    else if(f.moe_split_gate_up)gate_up={std::make_shared<MfeWeight>(f.moe_gate),std::make_shared<MfeWeight>(f.moe_up)};
-    else gate_up={std::make_shared<MfeWeight>(f.moe_gate_up)};
-    auto pipeline=make_moe_ffn_pipeline(gate_up,{std::make_shared<MfeWeight>(f.moe_down)},
+        gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_up),std::make_shared<mfq::cuda::Experts>(f.moe_up)};
+    else if(f.moe_split_gate_up)gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_gate),std::make_shared<mfq::cuda::Experts>(f.moe_up)};
+    else gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_gate_up)};
+    auto pipeline=make_moe_ffn_pipeline(gate_up,{std::make_shared<mfq::cuda::Experts>(f.moe_down)},
         {},{},{},f.swiglu_limit);
     if(!pipeline)return;
     execution.register_moe_pipeline(pipeline);
