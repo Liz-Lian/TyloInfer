@@ -420,7 +420,7 @@ MixedMoePool MoeQuantRangeSource::decode_expert(int expert,const mfq::MfeQuantEx
     pool.local_experts=1;
     if (encoded.dtype=="NINT") {
         pool.family=MixedMoeFamily::Nint;
-        pool.nint=to_device_mfe_nint(unpack_nint(encoded.payload),1,store_->out_per_expert(),false);
+        pool.nint=to_device_mfe_nint(mfq::nint::unpack(encoded.payload),1,store_->out_per_expert(),false);
         const auto stride=q_strides_.at(index);
         if (pool.nint.q_expert_stride>stride) throw std::runtime_error("NINT expert exceeded metadata stride");
         if (pool.nint.q_expert_stride!=stride) {

@@ -9,8 +9,8 @@ struct MfeCpuPool {
     std::string dtype;
     std::vector<uint8_t> payload;
     std::vector<uint8_t> runtime_payload;
-    NintCpu weight;
-    Nint8ZeroCpu q8_zero;
+    mfq::nint::Data weight;
+    mfq::nint::Q8 q8_zero;
     mfq::mx::Fp4 mxfp4;
 };
 

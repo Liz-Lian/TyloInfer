@@ -62,43 +62,6 @@ std::string read_str(std::istream & is) {
     return s;
 }
 
-std::vector<uint8_t> unpack_bits(const std::vector<uint8_t> & blob, size_t & off, size_t count, int bits) {
-    if (bits < 1 || bits > 8 ||
-            count > (std::numeric_limits<size_t>::max() - 7) /
-                static_cast<size_t>(bits)) {
-        throw std::runtime_error("invalid packed-bit stream dimensions");
-    }
-    const size_t required =
-        (count * static_cast<size_t>(bits) + 7) / 8;
-    if (off > blob.size() || required > blob.size() - off) {
-        throw std::runtime_error("truncated packed-bit stream");
-    }
-    std::vector<uint8_t> out(count);
-    if (bits == 8) {
-        std::copy(blob.begin() + (ptrdiff_t)off, blob.begin() + (ptrdiff_t)(off + count), out.begin());
-        off += count;
-        return out;
-    }
-    if (bits == 4) {
-        size_t nbytes = (count + 1) / 2;
-        for (size_t i = 0; i < count; ++i) {
-            uint8_t p = blob[off + i / 2];
-            out[i] = (i & 1) ? (p >> 4) : (p & 0x0f);
-        }
-        off += nbytes;
-        return out;
-    }
-    size_t nbytes = (count * (size_t)bits + 7) / 8;
-    const uint32_t mask=(1u<<bits)-1;
-    for (size_t i = 0; i < count; ++i) {
-        const size_t bit=i*static_cast<size_t>(bits),byte=bit/8;
-        uint32_t word=blob[off+byte];
-        if(byte+1<nbytes)word|=uint32_t(blob[off+byte+1])<<8;
-        out[i]=static_cast<uint8_t>((word>>(bit&7))&mask);
-    }
-    off += nbytes;
-    return out;
-}
 mfq_tensor_backend::Tensor cpu_u8_tensor(const std::vector<uint8_t> & v, std::initializer_list<int64_t> shape) {
     return mfq_tensor_backend::from_blob((void *)v.data(), shape, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8)).clone();
 }

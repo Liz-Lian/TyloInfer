@@ -71,7 +71,7 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                     "MFE MXFP4 pool weight shape mismatch");
             }
         } else if (pool.dtype == "NINT8-0") {
-            pool.q8_zero = unpack_nint8_zero(pool.payload);
+            pool.q8_zero = mfq::nint::unpack8(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
             if (pool.q8_zero.axis != 0 ||
@@ -84,7 +84,7 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                     "MFE NINT8-0 pool weight shape mismatch");
             }
         } else if (pool.dtype == "NINT") {
-            pool.weight = unpack_nint(pool.payload);
+            pool.weight = mfq::nint::unpack(pool.payload);
             int expected_rows = (int)expert_count * result.out_per_expert;
             if (pool.weight.axis != 0 || pool.weight.out != expected_rows ||
                 pool.weight.neuron_len != result.neuron_len ||
@@ -679,7 +679,7 @@ MfeCpu load_mfe_cpu(
         MfeCpuPool pool;
         pool.dtype = "NINT";
         pool.payload = read_tensor(mfq, name);
-        pool.weight = unpack_nint(pool.payload);
+        pool.weight = mfq::nint::unpack(pool.payload);
         const auto& shape = pool.weight.shape;
         TYLOINFER_RUNTIME_CHECK(pool.weight.axis == 0 && shape.size() == 3 &&
             shape[0] > 0 && shape[0] <= std::numeric_limits<int>::max() &&

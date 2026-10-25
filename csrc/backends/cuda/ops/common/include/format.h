@@ -22,11 +22,6 @@ int32_t read_i32_from(const std::vector<uint8_t>& bytes, size_t& offset);
 uint16_t read_u16_from(const std::vector<uint8_t>& bytes, size_t& offset);
 uint64_t read_u64_from(const std::vector<uint8_t>& bytes, size_t& offset);
 std::string read_str(std::istream& input);
-std::vector<uint8_t> unpack_bits(
-    const std::vector<uint8_t>& blob,
-    size_t& offset,
-    size_t count,
-    int bits);
 
 mfq_tensor_backend::Tensor cpu_u8_tensor(
     const std::vector<uint8_t>& values,

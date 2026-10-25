@@ -4,6 +4,8 @@ target_include_directories(mfq-formats INTERFACE
 
 add_library(mfq-quant-readers STATIC
     quant/nint_rows.cpp
+    quant/nint_blob.cpp
+    quant/nint_blob.h
     quant/nvq_rows.cpp
     quant/mfe_quant_expert_store.cpp
     quant/mfe_index.cpp

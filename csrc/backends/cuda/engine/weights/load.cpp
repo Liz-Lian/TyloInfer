@@ -68,7 +68,7 @@ mfq_tensor_backend::Tensor load_dense_gpu(
     }
     auto blob = read_tensor(execution.drop_file_cache, mfq, name);
     if (rec.dtype == "NINT8-0") {
-        const auto source = unpack_nint8_zero(blob);
+        const auto source = mfq::nint::unpack8(blob);
         if (cpu_layer) {
             return dequant_nint8_zero_cpu(source);
         }
@@ -86,7 +86,7 @@ mfq_tensor_backend::Tensor load_dense_gpu(
         }
         return dense;
     }
-    auto dense = dequant_nint_dense_f32(to_gpu_nint(unpack_nint(blob)));
+    auto dense = dequant_nint_dense_f32(to_gpu_nint(mfq::nint::unpack(blob)));
     return cpu_layer
         ? dense.cpu().contiguous()
         : dense;
@@ -246,7 +246,7 @@ QuantLinear load_quant_linear(
         const auto blob = read_tensor(
             execution.drop_file_cache, mfq, name);
         if (dtype == "NINT8-0") {
-            const auto cpu = unpack_nint8_zero(blob);
+            const auto cpu = mfq::nint::unpack8(blob);
             result.logical_out = cpu.out;
             result.logical_neuron_len = cpu.neuron_len;
             if (execution.tensor_parallel.enabled() &&
@@ -301,7 +301,7 @@ QuantLinear load_quant_linear(
                 }
             }
         } else {
-            const auto cpu = unpack_nint(blob);
+            const auto cpu = mfq::nint::unpack(blob);
             result.logical_out = cpu.out;
             result.logical_neuron_len = cpu.neuron_len;
             if (execution.tensor_parallel.enabled() &&
