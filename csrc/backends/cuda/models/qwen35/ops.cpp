@@ -2,6 +2,11 @@
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "linear_attention.h"
+#include "ops/norm/rms.h"
+#include "engine/models/common/transformer_layer.h"
+#include "mfq_cuda_norm_ops.h"
+
+#include <type_traits>
 
 #include "backends/cuda/engine/models/load.h"
 
@@ -13,6 +18,16 @@ struct BlockLoader : TransformerWeightLoader {
     }
     auto linear_block() const { return std::make_unique<LinearAttentionBlock>(); }
     template <class T> static std::unique_ptr<::Block> finish(std::unique_ptr<T> block) {
+        if constexpr (std::is_same_v<T, LinearAttentionBlock>) {
+            const auto& config = block->qwen_config;
+            block->key_heads = config.linear_num_key_heads;
+            block->value_heads = config.linear_num_value_heads;
+            block->key_dim = config.linear_key_head_dim;
+            block->value_dim = config.linear_value_head_dim;
+            block->conv_kernel = config.linear_conv_kernel_dim;
+            block->rms_norm_eps = config.rms_norm_eps;
+            block->norm_weight_offset = config.legacy_tensor_layout.norm_weight_offset;
+        }
         return block;
     }
     static auto log_negative(mfq_tensor_backend::Tensor value) { return mfq_tensor_backend::log(-value); }
@@ -99,8 +114,144 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::
     return mfq::models::qwen35::load_block(loader, config, layer, type, tensor_root);
 }
 
+void LinearAttentionBlock::reset(int64_t batch) {
+    clear_speculative();
+    mixer.reset(batch);
+}
+
+void LinearAttentionBlock::prepare(const mfq_tensor_backend::Tensor& input) {
+    if (mixer.convolution.defined()) return;
+    const auto batch = input.size(0);
+    const auto width = 2 * key_heads * key_dim + value_heads * value_dim;
+    auto options = input.options().dtype(mfq_tensor_backend::kFloat32);
+    mixer.convolution = mfq_tensor_backend::zeros({batch, conv_kernel - 1, width}, options);
+    mixer.recurrent = mfq_tensor_backend::zeros({batch, value_heads, value_dim, value_dim}, options);
+}
+
+mfq_tensor_backend::Tensor LinearAttentionBlock::forward_ffn(
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
+        mfq_tensor_backend::Tensor attention_output) {
+    const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
+    if (!residual.is_cuda()) {
+        return mfq::models::residual_ffn(
+            std::move(residual), std::move(attention_output),
+            [&](mfq_tensor_backend::Tensor residual,
+                mfq_tensor_backend::Tensor attention_output) {
+              auto x = (residual.to(mfq_tensor_backend::kFloat32) +
+                        attention_output.to(mfq_tensor_backend::kFloat32))
+                           .to(residual.scalar_type())
+                           .contiguous();
+              residual = x;
+              auto xn =
+                  qwen_rms_norm(
+                      x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
+                      ffn_norm, rms_norm_eps,
+                      norm_weight_offset)
+                      .reshape({B, T, H});
+              return std::array<mfq_tensor_backend::Tensor, 2>{residual, xn};
+            },
+            [&](mfq_tensor_backend::Tensor residual,
+                mfq_tensor_backend::Tensor xn) {
+              return mfq::models::feed_forward(
+                  std::move(residual), std::move(xn),
+                  [](const auto &, const auto &) {
+                    return std::optional<mfq_tensor_backend::Tensor>{};
+                  },
+                  [&](mfq_tensor_backend::Tensor xn) {
+                    return ffn.forward(execution, xn.reshape({B * T, H}))
+                        .reshape({B, T, H});
+                  },
+                  [&](mfq_tensor_backend::Tensor residual,
+                      mfq_tensor_backend::Tensor ff) {
+                    return (residual.to(mfq_tensor_backend::kFloat32) +
+                            ff.to(mfq_tensor_backend::kFloat32))
+                        .to(residual.scalar_type())
+                        .contiguous();
+                  });
+            });
+
+    }
+    auto& profiler = execution.profiler;
+    auto oo = std::move(attention_output);
+
+    auto attn_pair =
+        profiler.measure("linear.attn_residual_ffn_norm", [&]() {
+          auto rr = residual.reshape({-1, H});
+          auto oo2 = oo.reshape({-1, H});
+          if (oo2.scalar_type() != rr.scalar_type()) {
+            oo2 = oo2.to(rr.scalar_type()).contiguous();
+          }
+          if (execution.config.diagnostic_fp32_residual) {
+            return acc_rms_norm_cuda(
+                rr.to(mfq_tensor_backend::kFloat32),
+                oo2.to(mfq_tensor_backend::kFloat32), ffn_norm,
+                rms_norm_eps,
+                norm_weight_offset);
+          }
+          if (rr.scalar_type() == mfq_tensor_backend::kFloat16 &&
+              oo2.scalar_type() == mfq_tensor_backend::kFloat16) {
+            return acc_rms_norm_f16_cuda(
+                rr, oo2, ffn_norm, rms_norm_eps,
+                norm_weight_offset);
+          }
+          return acc_rms_norm_cuda(
+              rr, oo2, ffn_norm, rms_norm_eps,
+              norm_weight_offset);
+        });
+
+    residual = attn_pair[0].reshape({B, T, H});
+    auto xn = attn_pair[1].reshape({B, T, H});
+    return mfq::models::feed_forward(
+        std::move(residual), std::move(xn),
+        [&](mfq_tensor_backend::Tensor xn, mfq_tensor_backend::Tensor residual)
+            -> std::optional<mfq_tensor_backend::Tensor> {
+          auto ffn_input = xn.reshape({B * T, H});
+          auto residual_flat = residual.reshape({B * T, H});
+          if (ffn.can_forward_fused_residual(execution.config, ffn_input,
+                                             residual_flat)) {
+            return profiler.measure("linear.ffn_down_residual", [&]() {
+              return ffn
+                  .forward_fused_residual(profiler, execution.config, ffn_input,
+                                          residual_flat)
+                  .reshape({B, T, H});
+            });
+          }
+          return {};
+        },
+        [&](mfq_tensor_backend::Tensor xn) {
+          return ffn.forward(execution, xn.reshape({B * T, H}))
+              .reshape({B, T, H});
+        },
+        [&](mfq_tensor_backend::Tensor residual,
+            mfq_tensor_backend::Tensor ff) {
+          return profiler.measure("linear.ffn_residual", [&]() {
+            auto rr = residual.reshape({-1, H});
+            auto ff2 = ff.reshape({-1, H});
+            if (execution.config.diagnostic_fp32_residual) {
+              rr = rr.to(mfq_tensor_backend::kFloat32);
+              ff2 = ff2.to(mfq_tensor_backend::kFloat32);
+            } else if (ff2.scalar_type() != rr.scalar_type()) {
+              ff2 = ff2.to(rr.scalar_type()).contiguous();
+            }
+            return acc_cuda(rr, ff2).reshape({B, T, H});
+          });
+        });
+}
+
+mfq_tensor_backend::Tensor LinearAttentionBlock::forward(
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor input,
+        mfq_tensor_backend::Tensor, int64_t,
+        const MfqOptional<mfq_tensor_backend::Tensor>&, const RopeCache&,
+        const MfqOptional<mfq_tensor_backend::Tensor>&,
+        const MfqOptional<mfq_tensor_backend::Tensor>&) {
+    prepare(input);
+    auto attention = LinearAttention::forward(execution, std::move(input),
+        {mixer.convolution, mixer.recurrent, transposed_gdn_state});
+    return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]));
+}
+
 void LinearAttentionBlock::clear_speculative() noexcept {
-    speculative_inputs = LinearRecurrentInputs();
+    speculative_inputs = LinearInputs();
     speculative_start = -1;
     speculative_confirmed = 0;
     speculative_tokens = 0;
@@ -129,9 +280,10 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
         // Match Metal: evaluate the complete [confirmed, drafts...] window
         // once so projections and FFN stay batched. Rollback replays only the
         // recurrent state prefix from this layer's retained projections.
-        auto attention =
-            forward_attention_cuda(execution, std::move(input), &speculative_inputs);
-        auto result = forward_ffn_cuda(execution, std::move(attention[0]), std::move(attention[1]));
+        auto attention = LinearAttention::forward(
+            execution, std::move(input),
+            {mixer.convolution, mixer.recurrent, transposed_gdn_state}, &speculative_inputs);
+        auto result = forward_ffn(execution, std::move(attention[0]), std::move(attention[1]));
         ++speculative_projection_batches;
         ++speculative_ffn_batches;
         return result;
@@ -154,7 +306,8 @@ void LinearAttentionBlock::rollback_speculative(int64_t keep_position) {
     try {
         // Restore only convolution/GDN state from the retained projected
         // rows; target projections, output projection and FFN are not rerun.
-        replay_recurrent_cuda(speculative_inputs, retained);
+        LinearAttention::replay({mixer.convolution, mixer.recurrent, transposed_gdn_state},
+                                speculative_inputs, retained);
         clear_speculative();
     } catch (...) {
         clear_speculative();
