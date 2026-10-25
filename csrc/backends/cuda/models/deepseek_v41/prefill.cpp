@@ -1,6 +1,6 @@
 #include "env.h"
 #include "ops.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include <cstring>
 
 namespace mfq::cuda {

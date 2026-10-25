@@ -5,8 +5,8 @@
 #include "mfq_cuda_norm_ops.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "execution/options.h"
-#include "storage/weights/moe/expert_cache.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/load.h"
 
 #include <algorithm>
 #include <array>

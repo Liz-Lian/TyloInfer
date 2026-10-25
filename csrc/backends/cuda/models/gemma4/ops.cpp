@@ -1,6 +1,7 @@
+#include "backends/cuda/engine/models/load.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "engine/models/common/transformer_layer.h"
@@ -272,7 +273,7 @@ struct BlockLoader {
     auto gate_up(const std::vector<std::string> &names, const QuantLinear &down) {
         return load_paired_gate_up(execution, source, names, down);
     }
-    void workspace(FFN &ffn) { prepare_ffn_workspaces(execution, ffn); }
+    void workspace(FFN &ffn) { prepare_ffn(execution, ffn); }
     auto experts(const std::string &name, int layer, const char *projection) {
         return load_mfe_gpu(execution, source, name, true, layer, projection);
     }

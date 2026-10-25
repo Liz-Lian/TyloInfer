@@ -1,5 +1,5 @@
-#include "models/common/transformer_loader.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/models/load.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 
@@ -20,7 +20,7 @@ FFN load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
     result.moe_router_scale = config.routed_scaling;
     result.swiglu_limit = config.swiglu_limit;
     result.shared->swiglu_limit = config.swiglu_limit;
-    result.prepare_moe_pipeline(execution);
+    prepare_moe_ffn(execution, result);
     return result;
 }
 

@@ -3,7 +3,7 @@
 #include "engine/model_components.h"
 #include "eval/kl.h"
 #include "execution/execution.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <algorithm>
 #include <cstdlib>

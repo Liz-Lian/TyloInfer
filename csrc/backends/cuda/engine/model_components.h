@@ -13,8 +13,8 @@
 #include "models/common/mtp.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "cuda_runtime_config.h"
-#include "storage/weights/loaders/weight.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "storage/state/kv_memory.h"
 
 #include <chrono>
@@ -24,9 +24,9 @@
 #include <utility>
 
 
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "execution/options.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/common/grid_vision.h"
 
 #include "models/common/causal_model_ops.h"

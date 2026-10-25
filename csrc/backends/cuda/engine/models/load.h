@@ -59,3 +59,16 @@ void load_important_neuron_branch(
     const std::string& down_name,
     const std::string& gate_name,
     const std::string& up_name);
+
+void prepare_ffn(CudaExecutionContext& execution, FFN& ffn);
+void prepare_moe_ffn(CudaExecutionContext& execution, FFN& ffn);
+
+namespace mfq::cuda {
+
+std::string load_model_config_json(
+    const mfq::ModelSource& source,
+    const std::string& external_path = {});
+
+void validate_model_source(const mfq::ModelSource& source);
+
+} // namespace mfq::cuda

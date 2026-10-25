@@ -1,7 +1,7 @@
 #pragma once
 #include "execution/execution.h"
-#include "storage/weights/tq/cache.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/tq/cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 namespace mfq::cuda {
 // Resource ownership follows the loaded bank implementation. The service uses

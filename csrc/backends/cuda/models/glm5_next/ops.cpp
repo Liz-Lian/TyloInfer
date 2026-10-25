@@ -2,7 +2,7 @@
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/moe.h"
 #include "engine/models/common/transformer_layer.h"

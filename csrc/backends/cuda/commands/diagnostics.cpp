@@ -1,7 +1,8 @@
+#include "backends/cuda/engine/models/load.h"
 #include "env.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "cli.h"
 #include "diagnostics/token_generation.h"
 #include "engine/model_components.h"
@@ -11,7 +12,7 @@
 #include "diagnostics/flash_next_mtp.h"
 #include "minicpmo45.h"
 #include "execution/execution.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "execution/options.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 

@@ -1,5 +1,5 @@
-#include "models/common/transformer_loader.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/models/load.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
 #include "model.h"
 #include "models/common/session_codec.h"
@@ -317,7 +317,7 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext& execution,
             mfq::models::nemotron_h::load_moe(*block, loader, config, layer, tensor_root);
             // An expert cache turns the routed bank into the two-stage MFE
             // pipeline; without one the same FFN keeps the direct path.
-            block->ffn.prepare_moe_pipeline(execution);
+            prepare_moe_ffn(execution, block->ffn);
             return BlockLoader::finish(std::move(block));
         }
         case mfq::models::nemotron_h::MixerKind::mlp: {

@@ -2,7 +2,7 @@
 
 #include "quant_linear.h"
 #include "mfe_weight.h"
-#include "models/common/model_source.h"
+#include "model_source/model_source.h"
 #include "gated_residual.h"
 
 struct MfqDropFileCacheGuard {

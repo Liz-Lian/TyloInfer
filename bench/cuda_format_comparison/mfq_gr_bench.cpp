@@ -1,7 +1,7 @@
 #include "timing.h"
 #include "execution/execution.h"
 #include "gated_residual_fused.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "model_source/model_source.h"
 #include <array>
 #include <climits>

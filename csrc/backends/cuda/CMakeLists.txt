@@ -33,14 +33,10 @@ find_package(Threads REQUIRED)
 
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
 add_library(mfq-cuda-storage STATIC
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/expert_store.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/expert_store.cpp
 )
 add_library(mfq::cuda-storage ALIAS mfq-cuda-storage)
-target_include_directories(mfq-cuda-storage PUBLIC
-    ${TYLOINFER_CUDA_ROOT}/execution
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe
-)
+target_include_directories(mfq-cuda-storage PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(mfq-cuda-storage PUBLIC Threads::Threads)
 target_compile_features(mfq-cuda-storage PUBLIC cxx_std_20)
 set_target_properties(mfq-cuda-storage PROPERTIES
@@ -401,8 +397,6 @@ function(mfq_configure_cuda_backend_target target)
         ${TYLOINFER_CUDA_ROOT}/ops/tq/include
         ${TYLOINFER_CUDA_ROOT}/ops/mfq/include
         ${TYLOINFER_CUDA_ROOT}/execution
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe
         ${TYLOINFER_CUDA_KERNEL_ROOT}
         ${CUDAToolkit_INCLUDE_DIRS}
     )
@@ -517,25 +511,25 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/storage/state/kv_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/load.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/image.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/tq/rows.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/loaders/weight.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/common/transformer_loader.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/rows.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/load.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/expert_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/load.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/quant_range_source.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/host_expert_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/residency.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/weights/nint_row_pipeline.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/expert_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/load.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/quant_range_source.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/host_expert_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/residency.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/weights/nint_row_pipeline.cpp
     )
 else()
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
-        ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/disabled.cpp)
+        ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/disabled.cpp)
 endif()
 add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES})
 mfq_configure_cuda_runtime_target(mfq-cuda-loading)

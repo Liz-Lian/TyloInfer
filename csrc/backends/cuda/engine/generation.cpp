@@ -1,5 +1,5 @@
 #include "env.h"
-#include "storage/weights/routed_cache.h"
+#include "backends/cuda/engine/weights/routed_cache.h"
 #include "generation.h"
 #include "engine/executor/flow.h"
 #include "token_row_prefetch.h"
@@ -16,7 +16,7 @@
 #include "cuda_sampling.h"
 #include "storage/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "execution/options.h"
 #include "engine/batch/prefill_budget.h"
 

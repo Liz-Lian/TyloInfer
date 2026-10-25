@@ -1,7 +1,7 @@
 #include "env.h"
 #include "cuda_runtime_config.h"
 #include "execution/execution.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
 #include "backend.h"

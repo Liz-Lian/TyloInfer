@@ -1,7 +1,7 @@
-#include "storage/weights/moe/load.h"
+#include "backends/cuda/engine/weights/moe/load.h"
 
 #include "execution/moe_plan.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "format.h"
 #include "mfq_cuda_quant_ops.h"
 

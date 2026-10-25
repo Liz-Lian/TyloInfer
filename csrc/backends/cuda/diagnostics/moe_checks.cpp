@@ -1,5 +1,6 @@
+#include "backends/cuda/engine/models/load.h"
 #include "env.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "model_checks.h"
 
 #include "models/deepseek_v4/ops.h"
@@ -8,7 +9,7 @@
 #include "models/glm_dsa/ops.h"
 #include "quant_linear.h"
 #include "execution/execution.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "mfq_cuda_moe_ops.h"
 
 #include <cuda_runtime_api.h>

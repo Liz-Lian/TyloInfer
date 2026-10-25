@@ -1,9 +1,14 @@
-#include "storage/weights/moe/load.h"
-#include "models/common/transformer_loader.h"
-#include "storage/weights/loaders/weight.h"
-#include "storage/weights/tq/load.h"
+#include "backends/cuda/engine/models/load.h"
+#include "backends/cuda/engine/weights/moe/load.h"
+#include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/weights/tq/load.h"
 #include "models/common/full_block.h"
 #include "moe.h"
+#include "execution/moe_ffn_pipeline.h"
+
+#include <cstdio>
+#include <fstream>
+#include <iterator>
 
 void load_important_neuron_branch(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
                                   int64_t hidden_size, int64_t intermediate_size, FFN &f,
@@ -80,7 +85,7 @@ void TransformerWeightLoader::qkv(FullBlock& block, const std::vector<std::strin
                                     preserve_projection_boundaries);
     }
 }
-void TransformerWeightLoader::workspace(FFN& ffn) const { prepare_ffn_workspaces(execution, ffn); }
+void TransformerWeightLoader::workspace(FFN& ffn) const { prepare_ffn(execution, ffn); }
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, FFN& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {
     load_important_neuron_branch(execution, source, hidden, intermediate, ffn, down, gate, up);
@@ -177,3 +182,78 @@ FFN load_moe_weights(CudaExecutionContext& execution, const mfq::ModelSource& so
     result.moe_router_projection=std::move(loader.router_projection);
     return result;
 }
+
+void prepare_ffn(CudaExecutionContext &execution, FFN &f) {
+    if (execution.loading_cpu_layer)
+        return;
+    if (f.down.tensor_parallel())
+        return;
+    if (mfq::mfq_compat_enabled && f.gate_up.nvq_prefix2 && f.gate_up.layers.size() == 2 && f.down.is_nvq() &&
+        f.gate_up.outs.size() == 2 && f.gate_up.outs[0] == f.gate_up.outs[1] &&
+        f.gate_up.outs[0] == f.down.nvq.neuron_len) {
+        NvqWorkspace &ws = f.gate_up.layers[0].nvq.workspace(1);
+        ws.swiglu_scratch = mfq_tensor_backend::empty({f.gate_up.outs[0]},
+                                                      mfq_tensor_backend::TensorOptions()
+                                                          .device(mfq_tensor_backend::kCUDA)
+                                                          .dtype(mfq_tensor_backend::kFloat32));
+        (void)f.down.nvq.workspace(1);
+    }
+    if (f.important_neurons) {
+        prepare_ffn(execution, *f.important_neurons);
+    }
+}
+
+void prepare_moe_ffn(CudaExecutionContext& execution, FFN& f) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if(f.moe_pipeline_forward || !f.uses_moe_expert_cache() || f.expert_parallel_moe_compatible() ||
+            f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
+            !execution.config.moe_route_stats_path.empty())return;
+    std::vector<std::shared_ptr<MfeWeight>> gate_up;
+    // An ungated bank publishes Up in both slots; the pipeline detects the
+    // single-image layout from the projection geometry, not the model name.
+    if(f.moe_ungated_experts)
+        gate_up={std::make_shared<MfeWeight>(f.moe_up),std::make_shared<MfeWeight>(f.moe_up)};
+    else if(f.moe_split_gate_up)gate_up={std::make_shared<MfeWeight>(f.moe_gate),std::make_shared<MfeWeight>(f.moe_up)};
+    else gate_up={std::make_shared<MfeWeight>(f.moe_gate_up)};
+    MoeFfnPrefetch prefetch;
+    f.moe_pipeline_forward=make_moe_ffn_pipeline(gate_up,{std::make_shared<MfeWeight>(f.moe_down)},
+        {},{},{},&prefetch,f.swiglu_limit);
+    if(prefetch)f.moe_pipeline_prefetch=[prefetch=std::move(prefetch)](const auto& ids) {
+        auto task=prefetch(ids);
+        if(auto* window=mfq::cuda::DecodeWindow::recording())window->enroll(std::move(task));
+        else task.serve();
+    };
+    if(f.moe_pipeline_forward)std::fprintf(stderr,"moe_generic_pipeline_dispatch layer=%d clipped_swiglu=%g\n",
+        f.moe_layer,f.swiglu_limit);
+#else
+    return;
+#endif
+}
+
+namespace mfq::cuda {
+
+std::string load_model_config_json(
+        const mfq::ModelSource& source,
+        const std::string& external_path) {
+    if (external_path.empty()) return source.model_config_json();
+    std::ifstream input(external_path, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open config: " + external_path);
+    return {std::istreambuf_iterator<char>(input), {}};
+}
+
+void validate_model_source(const mfq::ModelSource& source) {
+    if (source.find_tensor("model.token_embedding.weight") == nullptr) {
+        throw std::runtime_error(
+            "canonical text tensor inventory has no token embedding");
+    }
+    for (const auto& component : source.resolved_model_graph().components) {
+        if (component.tensor_root != "runtime" &&
+                !has_tensor_prefix(source, component.tensor_root)) {
+            throw std::runtime_error(
+                "model graph declares " + component.kind +
+                " but its canonical tensor inventory is missing");
+        }
+    }
+}
+
+} // namespace mfq::cuda

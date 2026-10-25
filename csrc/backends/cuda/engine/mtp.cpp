@@ -1,5 +1,5 @@
 #include "env.h"
-#include "storage/weights/routed_cache.h"
+#include "backends/cuda/engine/weights/routed_cache.h"
 #include "generation.h"
 #include "token_row_prefetch.h"
 #include "engine/executor/speculative_sequence.h"
@@ -19,7 +19,7 @@
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/qwen4_exp/mtp.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <cuda_runtime_api.h>
 

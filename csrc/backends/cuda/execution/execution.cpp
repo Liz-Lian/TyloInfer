@@ -2,7 +2,7 @@
 #include "execution/options.h"
 #include "execution/execution.h"
 #include "execution/tq.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "storage/state/kv_offload.h"
 
 #include "mfq_cuda_quant_ops.h"

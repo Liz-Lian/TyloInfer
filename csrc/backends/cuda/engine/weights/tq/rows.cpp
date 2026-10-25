@@ -1,8 +1,8 @@
-#include "storage/weights/tq/rows.h"
+#include "backends/cuda/engine/weights/tq/rows.h"
 
 #include "env.h"
 #include "tq.h"
-#include "storage/weights/tq/image.h"
+#include "backends/cuda/engine/weights/tq/image.h"
 #include "weight_memory.h"
 
 #include <algorithm>

@@ -1,4 +1,4 @@
-#include "storage/weights/moe/load.h"
+#include "backends/cuda/engine/weights/moe/load.h"
 #include "models/common/ffn.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/moe.h"
@@ -6,8 +6,7 @@
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
-#include "storage/weights/moe/expert_cache.h"
-#include "execution/moe_ffn_pipeline.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -89,34 +88,6 @@ Tensor dense_expert_activation(ActivationKind activation, Tensor gate, Tensor up
 }
 
 } // namespace
-
-void FFN::prepare_moe_pipeline(CudaExecutionContext& execution) const {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(moe_pipeline_initialized || !uses_moe_expert_cache() || expert_parallel_moe_compatible() ||
-            cpu_moe_gate || cpu_moe_up || cpu_moe_gate_up || cpu_moe_down ||
-            !execution.config.moe_route_stats_path.empty())return;
-    std::vector<std::shared_ptr<MfeWeight>> gate_up;
-    // An ungated bank publishes Up in both slots; the pipeline detects the
-    // single-image layout from the projection geometry, not the model name.
-    if(moe_ungated_experts)
-        gate_up={std::make_shared<MfeWeight>(moe_up),std::make_shared<MfeWeight>(moe_up)};
-    else if(moe_split_gate_up)gate_up={std::make_shared<MfeWeight>(moe_gate),std::make_shared<MfeWeight>(moe_up)};
-    else gate_up={std::make_shared<MfeWeight>(moe_gate_up)};
-    MoeFfnPrefetch prefetch;
-    moe_pipeline_forward=make_moe_ffn_pipeline(gate_up,{std::make_shared<MfeWeight>(moe_down)},
-        {},{},{},&prefetch,swiglu_limit);
-    if(prefetch)moe_pipeline_prefetch=[prefetch=std::move(prefetch)](const auto& ids) {
-        auto task=prefetch(ids);
-        if(auto* window=mfq::cuda::DecodeWindow::recording())window->enroll(std::move(task));
-        else task.serve();
-    };
-    moe_pipeline_initialized=true;
-    if(moe_pipeline_forward)std::fprintf(stderr,"moe_generic_pipeline_dispatch layer=%d clipped_swiglu=%g\n",
-        moe_layer,swiglu_limit);
-#else
-    return;
-#endif
-}
 
 void FFN::prefetch_moe(CudaExecutionContext& execution,const mfq_tensor_backend::Tensor& x,
         MfqOptional<mfq_tensor_backend::Tensor> input_ids) const {
@@ -1074,24 +1045,4 @@ mfq_tensor_backend::Tensor FFN::forward_with_router_bias(CudaExecutionContext& e
          (bias.dim()==2 && bias.size(0)==x.numel()/x.size(-1) && bias.size(1)==(moe_router_projection?moe_router_projection->out():moe_router.size(0)))),
                       "MoE router correction bias shape mismatch");
     return forward_impl(execution,std::move(x),std::move(input_ids),true,bias);
-}
-
-void prepare_ffn_workspaces(CudaExecutionContext &execution, FFN &f) {
-    if (execution.loading_cpu_layer)
-        return;
-    if (f.down.tensor_parallel())
-        return;
-    if (mfq::mfq_compat_enabled && f.gate_up.nvq_prefix2 && f.gate_up.layers.size() == 2 && f.down.is_nvq() &&
-        f.gate_up.outs.size() == 2 && f.gate_up.outs[0] == f.gate_up.outs[1] &&
-        f.gate_up.outs[0] == f.down.nvq.neuron_len) {
-        NvqWorkspace &ws = f.gate_up.layers[0].nvq.workspace(1);
-        ws.swiglu_scratch = mfq_tensor_backend::empty({f.gate_up.outs[0]},
-                                                      mfq_tensor_backend::TensorOptions()
-                                                          .device(mfq_tensor_backend::kCUDA)
-                                                          .dtype(mfq_tensor_backend::kFloat32));
-        (void)f.down.nvq.workspace(1);
-    }
-    if (f.important_neurons) {
-        prepare_ffn_workspaces(execution, *f.important_neurons);
-    }
 }

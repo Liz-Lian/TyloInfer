@@ -11,7 +11,7 @@
 #include "ops/common/include/rope.h"
 #include "csrc/backends/cuda/kernels/qwen4_exp.h"
 #include "csrc/backends/cuda/kernels/ple_fused.h"
-#include "storage/weights/nint_row_pipeline.h"
+#include "backends/cuda/engine/weights/nint_row_pipeline.h"
 #include "execution/layer_inputs.h"
 #include "storage/state/kv_offload.h"
 #include "storage/state/kv_memory.h"

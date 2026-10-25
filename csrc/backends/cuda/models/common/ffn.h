@@ -67,14 +67,12 @@ struct FFN {
     double moe_router_scale = 1.0;
     double swiglu_limit = 0.0;
     int moe_layer = -1;
-    mutable bool moe_pipeline_initialized=false;
-    mutable std::function<mfq_tensor_backend::Tensor(CudaExecutionContext&,
+    std::function<mfq_tensor_backend::Tensor(CudaExecutionContext&,
         const mfq_tensor_backend::Tensor&,const mfq_tensor_backend::Tensor&,
         const mfq_tensor_backend::Tensor&)> moe_pipeline_forward;
-    mutable std::function<void(const mfq_tensor_backend::Tensor&)> moe_pipeline_prefetch;
+    std::function<void(const mfq_tensor_backend::Tensor&)> moe_pipeline_prefetch;
 
     bool uses_moe_expert_cache() const;
-    void prepare_moe_pipeline(CudaExecutionContext& execution) const;
     void prefetch_moe(CudaExecutionContext&,const mfq_tensor_backend::Tensor&,
         MfqOptional<mfq_tensor_backend::Tensor> input_ids=mfq_nullopt) const;
     bool tensor_parallel_dense_compatible() const;
@@ -113,5 +111,3 @@ struct FFN {
         mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor input_ids,
         const mfq_tensor_backend::Tensor& bias) const;
 };
-
-void prepare_ffn_workspaces(CudaExecutionContext& execution, FFN& ffn);

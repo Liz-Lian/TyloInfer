@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/weights/moe/load.h"
 #include "packed_bench_utils.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfe_ffn_runtime.h"

@@ -1,10 +1,10 @@
-#include "storage/weights/tq/load.h"
+#include "backends/cuda/engine/weights/tq/load.h"
 
 #include "model_source/tq_source.h"
 #include "execution/execution.h"
-#include "storage/weights/tq/cache.h"
-#include "storage/weights/tq/image.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/tq/cache.h"
+#include "backends/cuda/engine/weights/tq/image.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <climits>
 #include <cstring>

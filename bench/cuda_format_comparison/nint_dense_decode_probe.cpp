@@ -1,6 +1,6 @@
 #include "timing.h"
 #include "execution/execution.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "model_source/model_source.h"
 #include "csrc/backends/cuda/kernels/qwen4_exp.h"
 #include "csrc/backends/cuda/kernels/ple_fused.h"

@@ -7,7 +7,7 @@
 #include "execution/execution.h"
 #include "engine/decode_graph.h"
 #include "models/common/full_block.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/qwen4_exp/ops.h"
 #include "backend.h"
 #include "model_source/model_source.h"

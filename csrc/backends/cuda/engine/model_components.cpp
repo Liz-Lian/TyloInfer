@@ -1,7 +1,8 @@
+#include "backends/cuda/engine/models/load.h"
 #include "execution/options.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "engine/model_components.h"
-#include "storage/weights/mapped_embedding.h"
+#include "backends/cuda/engine/weights/mapped_embedding.h"
 #include "weight_memory.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
@@ -12,7 +13,7 @@
 #include "execution/execution.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "kernels/gr_prefill_blas.h"
-#include "storage/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <algorithm>
 #include <iostream>

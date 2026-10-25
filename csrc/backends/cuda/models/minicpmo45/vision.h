@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/vision_block_ops.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/minicpmo45/causal_lm.h"
 

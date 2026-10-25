@@ -1,6 +1,6 @@
-#include "storage/weights/tq/cache.h"
+#include "backends/cuda/engine/weights/tq/cache.h"
 
-#include "storage/weights/tq/image.h"
+#include "backends/cuda/engine/weights/tq/image.h"
 #include "formats/tq_table.h"
 #include "execution/tq.h"
 #include "execution/execution.h"

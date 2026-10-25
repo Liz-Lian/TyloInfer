@@ -1,5 +1,5 @@
-#include "models/common/transformer_loader.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/models/load.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 

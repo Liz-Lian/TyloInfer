@@ -1,9 +1,9 @@
 #pragma once
 
-#include "storage/weights/moe/load.h"
+#include "backends/cuda/engine/weights/moe/load.h"
 
 #include "mfq_cuda_moe_ops.h"
-#include "storage/weights/moe/expert_cache_internal.h"
+#include "backends/cuda/engine/weights/moe/expert_cache_internal.h"
 #include "engine/weights/dispatch_plan.h"
 
 struct MoeCachedCohort {

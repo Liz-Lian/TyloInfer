@@ -2,7 +2,7 @@
 #include "mfe_ffn_runtime.h"
 #include "mfq_cuda_moe_ops.h"
 #include "quant_linear.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "e8_dense_group_pack.h"
 #include <array>
 #include <functional>

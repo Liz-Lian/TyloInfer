@@ -1,9 +1,9 @@
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "linear_attention.h"
 
-#include "models/common/transformer_loader.h"
+#include "backends/cuda/engine/models/load.h"
 
 namespace mfq::cuda::qwen35 {
 struct BlockLoader : TransformerWeightLoader {

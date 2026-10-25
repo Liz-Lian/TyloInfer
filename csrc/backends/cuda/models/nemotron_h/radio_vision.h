@@ -3,7 +3,7 @@
 #include "models/common/block.h"
 #include "models/common/vision_block_ops.h"
 #include "engine/models/nemotron_h/vision.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 
 #include "execution/execution.h"
 #include "engine/requests/media.h"

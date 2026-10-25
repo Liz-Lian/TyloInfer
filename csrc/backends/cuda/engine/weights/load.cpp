@@ -1,7 +1,7 @@
-#include "storage/weights/moe/load.h"
+#include "backends/cuda/engine/weights/moe/load.h"
 #include "env.h"
 #include "execution/options.h"
-#include "storage/weights/loaders/weight.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "weight_memory.h"
 #include "mfq_cuda_quant_ops.h"
 #include "float_projection.h"
@@ -11,15 +11,13 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <fstream>
-#include <iterator>
 #include <numeric>
 #include "moe.h"
-#include "storage/weights/moe/expert_cache.h"
-#include "storage/weights/moe/expert_store.h"
-#include "storage/weights/moe/quant_range_source.h"
-#include "storage/weights/tq/load.h"
-#include "storage/weights/tq/image.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "backends/cuda/engine/weights/moe/expert_store.h"
+#include "backends/cuda/engine/weights/moe/quant_range_source.h"
+#include "backends/cuda/engine/weights/tq/load.h"
+#include "backends/cuda/engine/weights/tq/image.h"
 #include "model_source/tq_source.h"
 #include "formats/quant/packed_nint_expert_store.h"
 #include <cstdlib>
@@ -1306,31 +1304,3 @@ mfq_tensor_backend::Tensor load_dense_native_gpu(CudaExecutionContext &execution
     MfqCudaGuard guard(active_weight_load_device(execution));
     return load_dense_cpu(execution, source, name).to(mfq_tensor_backend::kCUDA).contiguous();
 }
-
-namespace mfq::cuda {
-
-std::string load_model_config_json(
-        const mfq::ModelSource& source,
-        const std::string& external_path) {
-    if (external_path.empty()) return source.model_config_json();
-    std::ifstream input(external_path, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open config: " + external_path);
-    return {std::istreambuf_iterator<char>(input), {}};
-}
-
-void validate_model_source(const mfq::ModelSource& source) {
-    if (source.find_tensor("model.token_embedding.weight") == nullptr) {
-        throw std::runtime_error(
-            "canonical text tensor inventory has no token embedding");
-    }
-    for (const auto& component : source.resolved_model_graph().components) {
-        if (component.tensor_root != "runtime" &&
-                !has_tensor_prefix(source, component.tensor_root)) {
-            throw std::runtime_error(
-                "model graph declares " + component.kind +
-                " but its canonical tensor inventory is missing");
-        }
-    }
-}
-
-} // namespace mfq::cuda

@@ -2,7 +2,7 @@
 #include "storage/state/kv_memory.h"
 #include "storage/state/kv_vmm.h"
 #include "storage/state/kv_budget.h"
-#include "storage/weights/moe/kv_expert_loan.h"
+#include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "execution/options.h"
 #include "context.h"
 #include "resident_allocations.h"
