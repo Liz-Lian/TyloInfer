@@ -1,12 +1,11 @@
 #pragma once
 
-#include "quant_linear.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "projection.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
-#include "engine/models/common/grid_vision_model.h"
+#include "engine/models/common/gated_mlp.h"
+#include "engine/models/common/transformer_layer.h"
 
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -21,8 +20,8 @@ struct Affine {
     QuantLinear linear;
     Tensor bias;
 
-    Tensor operator()(CudaExecutionContext& execution, Tensor input) const {
-        auto output = execution.projector().run(linear, std::move(input));
+    Tensor operator()(const Projector& projector, Tensor input) const {
+        auto output = projector.run(linear, std::move(input));
         return bias.defined()
             ? output + bias.to(output.scalar_type())
             : output;
@@ -143,7 +142,7 @@ inline Tensor segmented_attention(
         : mfq_tensor_backend::cat(outputs, 0);
 }
 
-struct VisionAttention {
+struct Attention {
     Affine qkv;
     Affine output;
     std::int64_t hidden = 0;
@@ -152,38 +151,56 @@ struct VisionAttention {
     double theta = 10'000.0;
 
     Tensor operator()(
-        CudaExecutionContext& execution,
+        const Projector& projector,
         const Tensor& input,
         const std::vector<std::int32_t>& positions,
         const std::vector<std::int32_t>& segment_lengths) const {
         const std::int64_t tokens = input.size(0);
-        return mfq::models::grid_vision::attention(
-            input,
-            [&](Tensor value) { return qkv(execution, std::move(value)); },
-            [&](Tensor value) {
-                auto projected = value.reshape({tokens, 3, heads, head_dim});
-                return std::array<Tensor, 3>{
-                    projected.select(1, 0),
-                    projected.select(1, 1),
-                    projected.select(1, 2),
-                };
-            },
-            [&](Tensor value) {
-                return apply_axial_rope(value, positions, theta);
-            },
-            [&](Tensor q, Tensor k, Tensor v) {
-                return segmented_attention(q, k, v, segment_lengths);
-            },
-            [&](Tensor value) {
-                return output(
-                    execution,
-                    value.reshape({tokens, hidden}));
-            });
+        auto projected = qkv(projector, input).reshape({tokens, 3, heads, head_dim});
+        auto query = apply_axial_rope(projected.select(1, 0), positions, theta);
+        auto key = apply_axial_rope(projected.select(1, 1), positions, theta);
+        auto value = projected.select(1, 2);
+        auto attended = segmented_attention(query, key, value, segment_lengths);
+        return output(projector, attended.reshape({tokens, hidden}));
     }
 };
 
 inline Tensor gelu_tanh(const Tensor& input) {
     return mfq_tensor_backend::gelu(input, "tanh");
 }
+
+struct LayerNorm {
+    Tensor weight, bias;
+    double epsilon = 1e-6;
+
+    Tensor operator()(const Tensor& input) const {
+        if (input.dim() == 0 || input.size(-1) != weight.size(0))
+            throw std::runtime_error("grid-ViT LayerNorm input width mismatch");
+        return mfq_tensor_backend::layer_norm(input, {weight.size(0)}, weight, bias, epsilon);
+    }
+};
+
+struct Layer {
+    LayerNorm norm1;
+    Attention attention;
+    LayerNorm norm2;
+    Affine mlp_up, mlp_down;
+
+    Tensor operator()(const Projector& projector, const Tensor& input,
+                      const std::vector<std::int32_t>& positions,
+                      const std::vector<std::int32_t>& segment_lengths) const {
+        return mfq::models::pre_norm_layer(
+            input, [&](const Tensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
+            [&](Tensor x) { return attention(projector, x, positions, segment_lengths); },
+            [&](Tensor x) {
+                return mfq::models::mlp(
+                    std::move(x), [&](Tensor value) { return mlp_up(projector, std::move(value)); },
+                    gelu_tanh, [&](Tensor value) { return mlp_down(projector, std::move(value)); });
+            },
+            [](Tensor residual, Tensor branch) {
+                return residual + branch.to(residual.scalar_type());
+            });
+    }
+};
 
 } // namespace mfq::cuda::vision

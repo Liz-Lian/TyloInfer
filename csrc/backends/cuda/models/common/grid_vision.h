@@ -21,58 +21,6 @@ namespace mfq::cuda::grid_vision_runtime {
 
 using Tensor = mfq_tensor_backend::Tensor;
 
-namespace detail {
-
-using vision::Affine;
-using vision::VisionAttention;
-using vision::gelu_tanh;
-using vision::to_cuda;
-using vision::vision_workspace;
-using vision::weight_bytes;
-
-struct LayerNorm {
-    Tensor weight;
-    Tensor bias;
-    double epsilon = 1e-6;
-
-    template <class Visitor>
-    void visit_tensors(Visitor visit) {
-        visit(weight);
-        visit(bias);
-    }
-
-    static LayerNorm load(CudaExecutionContext &execution, const mfq::ModelSource &model,
-                          GridVisionTensorRole weight, GridVisionTensorRole bias, int64_t width,
-                          double epsilon, size_t block = 0);
-
-    Tensor operator()(const Tensor &input) const;
-};
-
-struct VisionBlock {
-    LayerNorm norm1;
-    VisionAttention attention;
-    LayerNorm norm2;
-    Affine mlp_up;
-    Affine mlp_down;
-
-    template <class Visitor>
-    void visit_tensors(Visitor visit) {
-        norm1.visit_tensors(visit);
-        norm2.visit_tensors(visit);
-        vision::visit_tensors(attention.qkv, visit);
-        vision::visit_tensors(attention.output, visit);
-        vision::visit_tensors(mlp_up, visit);
-        vision::visit_tensors(mlp_down, visit);
-    }
-
-    Tensor operator()(CudaExecutionContext &execution, const Tensor &input,
-                      const GridVisionLayout &layout) const;
-};
-
-} // namespace detail
-
-using detail::Affine;
-
 class CudaGridVisionEncoder {
   public:
     static CudaGridVisionEncoder load(CudaExecutionContext &execution,
@@ -87,13 +35,13 @@ class CudaGridVisionEncoder {
 
   private:
     CudaGridVisionEncoder(GridVisionConfig config, Tensor patch_weight, Tensor patch_bias,
-                          Tensor position_weight, std::vector<detail::VisionBlock> blocks);
+                          Tensor position_weight, std::vector<vision::Layer> blocks);
 
     GridVisionConfig config_;
     Tensor patch_weight_;
     Tensor patch_bias_;
     Tensor position_weight_;
-    std::vector<detail::VisionBlock> blocks_;
+    std::vector<vision::Layer> blocks_;
 };
 
 class CudaGridVisionPromptComponent {
@@ -166,20 +114,20 @@ class CudaGridVisionPromptComponent {
                     [](Tensor value, int64_t rows, int64_t width) {
                         return value.reshape({rows, width});
                     },
-                    [&](Tensor value) { return up(*language.execution, std::move(value)); },
+                    [&](Tensor value) { return up(language.execution->projector(), std::move(value)); },
                     [](Tensor value) { return mfq_tensor_backend::gelu(value, "none"); },
-                    [&](Tensor value) { return down(*language.execution, std::move(value)); });
+                    [&](Tensor value) { return down(language.execution->projector(), std::move(value)); });
             };
             if (encoder_.host_weights()) {
-                const auto bytes = detail::weight_bytes(merger_norm_) +
-                                   detail::weight_bytes(merger_up_) +
-                                   detail::weight_bytes(merger_down_);
-                merged = detail::vision_workspace(
+                const auto bytes = vision::weight_bytes(merger_norm_) +
+                                   vision::weight_bytes(merger_up_) +
+                                   vision::weight_bytes(merger_down_);
+                merged = vision::vision_workspace(
                     *language.execution, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20),
                     [&] {
-                        auto norm = detail::to_cuda(merger_norm_);
-                        auto up = detail::to_cuda(merger_up_);
-                        auto down = detail::to_cuda(merger_down_);
+                        auto norm = vision::to_cuda(merger_norm_);
+                        auto up = vision::to_cuda(merger_up_);
+                        auto down = vision::to_cuda(merger_down_);
                         return merge(norm, up, down);
                     });
             } else {
@@ -228,15 +176,15 @@ class CudaGridVisionPromptComponent {
     const std::string &position_policy() const noexcept { return position_policy_; }
 
   private:
-    CudaGridVisionPromptComponent(CudaGridVisionEncoder encoder, detail::LayerNorm merger_norm,
-                                  detail::Affine merger_up, detail::Affine merger_down,
+    CudaGridVisionPromptComponent(CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm,
+                                  vision::Affine merger_up, vision::Affine merger_down,
                                   int64_t image_token_id, int64_t video_token_id,
                                   std::string input_contract, std::string position_policy);
 
     CudaGridVisionEncoder encoder_;
-    detail::LayerNorm merger_norm_;
-    detail::Affine merger_up_;
-    detail::Affine merger_down_;
+    vision::LayerNorm merger_norm_;
+    vision::Affine merger_up_;
+    vision::Affine merger_down_;
     int64_t image_token_id_ = -1;
     int64_t video_token_id_ = -1;
     std::string input_contract_;

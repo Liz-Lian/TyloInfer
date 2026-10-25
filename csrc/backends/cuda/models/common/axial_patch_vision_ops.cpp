@@ -88,7 +88,7 @@ struct CudaAxialPatchVisionTower::Impl {
             { HostLoading loading(execution);
               patch = affine(execution, *source, "vision.patch_embedding", config.patch_width(), hidden); }
             value = use_weights(execution, std::move(patch), activations,
-                                [&](const auto& weight) { return weight(execution, patches); });
+                                [&](const auto& weight) { return weight(execution.projector(), patches); });
         }
         co_yield mfq::StepState::advanced;
         std::vector<std::int32_t> positions;
@@ -110,7 +110,8 @@ struct CudaAxialPatchVisionTower::Impl {
                 block.down = affine(execution, *source, prefix + ".mlp.down", config.intermediate, hidden);
             }
             value = use_weights(execution, std::move(block), activations, [&](const auto& weights) {
-                auto qkv = weights.qkv(execution, weights.norm1(value));
+                const auto projector = execution.projector();
+                auto qkv = weights.qkv(projector, weights.norm1(value));
                 const auto rope = [&](int index) {
                     return vision::apply_axial_rope(
                         qkv.narrow(-1, index * hidden, hidden).reshape({count, heads, dim}), positions, config.rope_theta);
@@ -118,9 +119,9 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto query = rope(0), key = rope(1);
                 auto v = qkv.narrow(-1, 2 * hidden, hidden).reshape({count, heads, dim});
                 auto attended = vision::segmented_attention(query, key, v, {std::int32_t(count)}).reshape({count, hidden});
-                auto result = value + weights.output(execution, std::move(attended));
-                auto gate_up = weights.gate_up(execution, weights.norm2(result));
-                return result + weights.down(execution,
+                auto result = value + weights.output(projector, std::move(attended));
+                auto gate_up = weights.gate_up(projector, weights.norm2(result));
+                return result + weights.down(projector,
                     mfq_tensor_backend::silu(gate_up.narrow(-1, 0, config.intermediate)) *
                     gate_up.narrow(-1, config.intermediate, config.intermediate));
             });
@@ -138,13 +139,15 @@ struct CudaAxialPatchVisionTower::Impl {
                 weights.output = affine(execution, *source, "vision.aligner.output", config.output_hidden, config.output_hidden);
             }
             value = use_weights(execution, std::move(weights), activations, [&](const auto& device) {
+                const auto projector = execution.projector();
                 auto padded = mfq_tensor_backend::cat({device.norm(value), mfq_tensor_backend::zeros({1, hidden}, value.options())}, 0);
                 auto index = mfq_tensor_backend::tensor(indices,
                     mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32).device(mfq_tensor_backend::kCPU))
                     .to(mfq_tensor_backend::kInt64).to(mfq_tensor_backend::kCUDA);
                 auto gathered = padded.index_select(0, index).reshape({grid.count(), ratio * ratio, hidden})
                     .transpose(1, 2).contiguous().reshape({grid.count(), hidden * ratio * ratio});
-                return device.output(execution, mfq_tensor_backend::gelu(device.input(execution, std::move(gathered)), "none"));
+                auto projected = device.input(projector, std::move(gathered));
+                return device.output(projector, mfq_tensor_backend::gelu(projected, "none"));
             });
         }
         co_yield std::move(value);
