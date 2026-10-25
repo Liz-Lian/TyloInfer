@@ -1,4 +1,7 @@
 #include "models/common/axial_patch_vision_ops.h"
+#include "backends/cuda/engine/executor/vision.h"
+#include "backends/cuda/engine/models/vision.h"
+#include "backends/cuda/engine/weights/vision.h"
 #include "engine/executor/sequence.h"
 
 #include <limits>
@@ -9,8 +12,8 @@
 namespace mfq::cuda::axial_patch_vision {
 namespace {
 using Tensor = mfq_tensor_backend::Tensor;
-using vision_ops::Affine;
-using vision_ops::RmsNorm;
+using vision::Affine;
+using vision::RmsNorm;
 
 struct HostLoading {
     bool& flag;
@@ -22,7 +25,7 @@ struct HostLoading {
 
 Affine affine(CudaExecutionContext& execution, const mfq::ModelSource& source,
               const std::string& prefix, std::int64_t input, std::int64_t output) {
-    auto result = Affine::load(execution, source, prefix + ".weight", prefix + ".bias");
+    auto result = vision::load_affine(execution, source, prefix + ".weight", prefix + ".bias");
     TYLOINFER_RUNTIME_CHECK(result.linear.neuron_len() == input && result.linear.out() == output,
                       "axial patch vision affine geometry mismatch: " + prefix);
     return result;
@@ -30,10 +33,7 @@ Affine affine(CudaExecutionContext& execution, const mfq::ModelSource& source,
 
 RmsNorm norm(CudaExecutionContext& execution, const mfq::ModelSource& source,
              const std::string& name, std::int64_t width, double epsilon) {
-    auto weight = load_dense_gpu(execution, source, name).to(mfq_tensor_backend::kFloat32).contiguous();
-    TYLOINFER_RUNTIME_CHECK(weight.dim() == 1 && weight.size(0) == width,
-                      "axial patch vision norm geometry mismatch: " + name);
-    return {std::move(weight), epsilon};
+    return vision::load_rms_norm(execution, source, name, width, epsilon);
 }
 
 struct BlockWeights {
@@ -41,8 +41,8 @@ struct BlockWeights {
     Affine qkv, output, gate_up, down;
     template<class F> void visit_tensors(F visit) {
         norm1.visit_tensors(visit); norm2.visit_tensors(visit);
-        qkv.visit_tensors(visit); output.visit_tensors(visit);
-        gate_up.visit_tensors(visit); down.visit_tensors(visit);
+        vision::visit_tensors(qkv, visit); vision::visit_tensors(output, visit);
+        vision::visit_tensors(gate_up, visit); vision::visit_tensors(down, visit);
     }
 };
 
@@ -50,15 +50,16 @@ struct AlignerWeights {
     RmsNorm norm;
     Affine input, output;
     template<class F> void visit_tensors(F visit) {
-        norm.visit_tensors(visit); input.visit_tensors(visit); output.visit_tensors(visit);
+        norm.visit_tensors(visit); vision::visit_tensors(input, visit);
+        vision::visit_tensors(output, visit);
     }
 };
 
 template<class Weights, class Forward>
 Tensor use_weights(CudaExecutionContext& execution, Weights weights,
                    std::size_t activations, Forward forward) {
-    return vision_ops::vision_workspace(execution, vision_ops::weight_bytes(weights) + activations, [&] {
-        auto device = vision_ops::to_cuda(std::move(weights));
+    return vision::vision_workspace(execution, vision::weight_bytes(weights) + activations, [&] {
+        auto device = vision::to_cuda(std::move(weights));
         return forward(device);
     });
 }
@@ -111,12 +112,12 @@ struct CudaAxialPatchVisionTower::Impl {
             value = use_weights(execution, std::move(block), activations, [&](const auto& weights) {
                 auto qkv = weights.qkv(execution, weights.norm1(value));
                 const auto rope = [&](int index) {
-                    return vision_ops::apply_axial_rope(
+                    return vision::apply_axial_rope(
                         qkv.narrow(-1, index * hidden, hidden).reshape({count, heads, dim}), positions, config.rope_theta);
                 };
                 auto query = rope(0), key = rope(1);
                 auto v = qkv.narrow(-1, 2 * hidden, hidden).reshape({count, heads, dim});
-                auto attended = vision_ops::segmented_attention(query, key, v, {std::int32_t(count)}).reshape({count, hidden});
+                auto attended = vision::segmented_attention(query, key, v, {std::int32_t(count)}).reshape({count, hidden});
                 auto result = value + weights.output(execution, std::move(attended));
                 auto gate_up = weights.gate_up(execution, weights.norm2(result));
                 return result + weights.down(execution,

@@ -1,5 +1,7 @@
 #include "models/common/grid_vision.h"
 
+#include "backends/cuda/engine/models/vision.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
 
 #include <algorithm>
@@ -88,12 +90,12 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(CudaExecutionContext &executio
                                     GridVisionTensorRole::block_norm1_bias, hidden,
                                     config.layer_norm_eps, index),
             {
-                Affine::load(execution, model,
+                vision::load_affine(execution, model,
                              grid_vision_canonical_name(
                                  GridVisionTensorRole::block_attention_qkv_weight, index),
                              grid_vision_canonical_name(
                                  GridVisionTensorRole::block_attention_qkv_bias, index)),
-                Affine::load(execution, model,
+                vision::load_affine(execution, model,
                              grid_vision_canonical_name(
                                  GridVisionTensorRole::block_attention_output_weight, index),
                              grid_vision_canonical_name(
@@ -106,12 +108,12 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(CudaExecutionContext &executio
             detail::LayerNorm::load(execution, model, GridVisionTensorRole::block_norm2_weight,
                                     GridVisionTensorRole::block_norm2_bias, hidden,
                                     config.layer_norm_eps, index),
-            Affine::load(execution, model,
+            vision::load_affine(execution, model,
                          grid_vision_canonical_name(
                              GridVisionTensorRole::block_mlp_up_weight, index),
                          grid_vision_canonical_name(
                              GridVisionTensorRole::block_mlp_up_bias, index)),
-            Affine::load(execution, model,
+            vision::load_affine(execution, model,
                          grid_vision_canonical_name(
                              GridVisionTensorRole::block_mlp_down_weight, index),
                          grid_vision_canonical_name(
@@ -249,11 +251,11 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
         execution, model, GridVisionTensorRole::merger_norm_weight,
         GridVisionTensorRole::merger_norm_bias, vision.hidden_size, vision.layer_norm_eps);
     auto merger_up =
-        Affine::load(execution, model,
+        vision::load_affine(execution, model,
                      grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_up_weight),
                      grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_up_bias));
     auto merger_down =
-        Affine::load(execution, model,
+        vision::load_affine(execution, model,
                      grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_down_weight),
                      grid_vision_canonical_name(GridVisionTensorRole::merger_mlp_down_bias));
     if (merger_up.linear.neuron_len() != unit * vision.hidden_size ||

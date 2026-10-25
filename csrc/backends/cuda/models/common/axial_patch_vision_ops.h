@@ -1,11 +1,14 @@
 #pragma once
 
-#include "models/common/vision_ops.h"
+#include "backend.h"
 #include "engine/models/common/axial_patch_vision.h"
 #include "engine/executor/sequence.h"
 
 #include <cstdint>
 #include <memory>
+
+struct CudaExecutionContext;
+namespace mfq { class ModelSource; }
 
 namespace mfq::cuda::axial_patch_vision {
 

@@ -1,6 +1,8 @@
 #pragma once
 
-#include "models/common/vision_ops.h"
+#include "backends/cuda/engine/executor/vision.h"
+#include "backends/cuda/engine/weights/vision.h"
+#include "ops/vision/vision.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"
 #include "engine/requests/media.h"
@@ -13,18 +15,20 @@
 #include <utility>
 #include <vector>
 
+namespace mfq { class ModelSource; }
+
 namespace mfq::cuda::grid_vision_runtime {
 
 using Tensor = mfq_tensor_backend::Tensor;
 
 namespace detail {
 
-using vision_ops::Affine;
-using vision_ops::VisionAttention;
-using vision_ops::gelu_tanh;
-using vision_ops::to_cuda;
-using vision_ops::vision_workspace;
-using vision_ops::weight_bytes;
+using vision::Affine;
+using vision::VisionAttention;
+using vision::gelu_tanh;
+using vision::to_cuda;
+using vision::vision_workspace;
+using vision::weight_bytes;
 
 struct LayerNorm {
     Tensor weight;
@@ -55,10 +59,10 @@ struct VisionBlock {
     void visit_tensors(Visitor visit) {
         norm1.visit_tensors(visit);
         norm2.visit_tensors(visit);
-        attention.qkv.visit_tensors(visit);
-        attention.output.visit_tensors(visit);
-        mlp_up.visit_tensors(visit);
-        mlp_down.visit_tensors(visit);
+        vision::visit_tensors(attention.qkv, visit);
+        vision::visit_tensors(attention.output, visit);
+        vision::visit_tensors(mlp_up, visit);
+        vision::visit_tensors(mlp_down, visit);
     }
 
     Tensor operator()(CudaExecutionContext &execution, const Tensor &input,

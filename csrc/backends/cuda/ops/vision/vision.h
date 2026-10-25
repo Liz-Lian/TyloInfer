@@ -1,139 +1,26 @@
 #pragma once
 
-#include "backends/cuda/engine/executor/execution.h"
+#include "quant_linear.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "engine/models/common/grid_vision_model.h"
-#include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "backends/cuda/engine/weights/load.h"
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
-#include <string>
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::vision_ops {
+namespace mfq::cuda::vision {
 
 using Tensor = mfq_tensor_backend::Tensor;
-
-// Streamed vision weights are visited before the expert arena may lend the
-// encoder its scratch. Keeping the transaction in one place lets Qwen grid
-// ViT and the axial patch ViT share the same residency behaviour.
-template <class Visitor>
-void visit_linear(QuantLinear& weight, Visitor visit) {
-    TYLOINFER_RUNTIME_CHECK(
-        !weight.tensor_parallel(),
-        "streamed vision weights require one CUDA device");
-    auto& n = weight.nint;
-    auto& v = weight.nvq;
-    for (auto* tensor : {
-             &weight.dense,
-             &n.q_packed,
-             &n.row_q_bits,
-             &n.row_q_bit_offsets,
-             &n.q8_zero_scale,
-             &n.sub_scale,
-             &n.sub_min,
-             &n.neuron_scale,
-             &n.neuron_min,
-             &n.route_metadata,
-             &v.indices_packed,
-             &v.aux_packed,
-             &v.sub_scale_packed,
-             &v.neuron_scale,
-             &v.codebook,
-             &v.integer_codebook,
-             &v.decode_records,
-             &weight.mxfp4.weight.values,
-             &weight.mxfp4.weight.scales,
-             &weight.mxfp8.weight.values,
-             &weight.mxfp8.weight.scales,
-             &weight.mxfp4_sq.weight.blob,
-             &weight.mxfp4_sq.weight.row_q,
-             &weight.mxfp4_sq.weight.row_symbol_byte_offsets,
-             &weight.mxfp4_sq.weight.row_auxiliary,
-             &weight.fp8_sq.weight.blob,
-             &weight.fp8_sq.weight.row_q,
-             &weight.fp8_sq.weight.row_symbol_byte_offsets,
-         }) {
-        if (tensor->defined()) visit(*tensor);
-    }
-    n.workspaces.clear();
-    v.workspaces.clear();
-}
-
-template <class Weights>
-Weights to_cuda(Weights weights) {
-    weights.visit_tensors(
-        [](Tensor& tensor) { tensor = tensor.to(mfq_tensor_backend::kCUDA); });
-    return weights;
-}
-
-template <class Weights>
-std::size_t weight_bytes(Weights weights) {
-    std::size_t bytes = 0;
-    weights.visit_tensors(
-        [&](Tensor& tensor) { bytes += tensor.nbytes(); });
-    return bytes;
-}
-
-// Finish each loan before yielding to the scheduler. Another request can then
-// decode using the restored experts, including if image preparation is
-// cancelled.
-template <class Forward>
-Tensor vision_workspace(
-    CudaExecutionContext& execution,
-    std::size_t bytes,
-    Forward forward) {
-    MoePrefillWorkspaceLoan loan(execution.stores.moe_expert_cache);
-    const bool borrowed = loan.begin(bytes) != 0;
-    auto result = forward();
-    if (borrowed) {
-        loan.suspend();
-        result = result.clone();
-        loan.finish();
-    }
-    return result;
-}
 
 struct Affine {
     QuantLinear linear;
     Tensor bias;
 
-    template <class Visitor>
-    void visit_tensors(Visitor visit) {
-        visit_linear(linear, visit);
-        if (bias.defined()) visit(bias);
-    }
-
-    static Affine load(
-        CudaExecutionContext& execution,
-        const mfq::ModelSource& model,
-        const std::string& weight_name,
-        const std::string& bias_name) {
-        Affine result{
-            load_quant_linear(execution, model, weight_name),
-            {},
-        };
-        if (has_tensor(model, bias_name)) {
-            result.bias = load_dense_gpu(execution, model, bias_name);
-            if (result.bias.dim() != 1 ||
-                result.bias.size(0) != result.linear.out()) {
-                throw std::runtime_error(
-                    "vision affine bias shape mismatch: " + bias_name);
-            }
-        }
-        return result;
-    }
-
-    Tensor operator()(
-        CudaExecutionContext& execution,
-        Tensor input) const {
+    Tensor operator()(CudaExecutionContext& execution, Tensor input) const {
         auto output = linear.forward(execution, std::move(input));
         return bias.defined()
             ? output + bias.to(output.scalar_type())
@@ -150,26 +37,9 @@ struct RmsNorm {
         visit(weight);
     }
 
-    static RmsNorm load(
-        CudaExecutionContext& execution,
-        const mfq::ModelSource& model,
-        const std::string& name,
-        std::int64_t width,
-        double epsilon) {
-        auto weight = load_dense_native_gpu(execution, model, name)
-                          .to(mfq_tensor_backend::kFloat32)
-                          .contiguous();
-        if (weight.dim() != 1 || weight.size(0) != width) {
-            throw std::runtime_error(
-                "vision RMSNorm width mismatch: " + name);
-        }
-        return {std::move(weight), epsilon};
-    }
-
     Tensor operator()(const Tensor& input) const {
         if (input.dim() == 0 || input.size(-1) != weight.size(0)) {
-            throw std::runtime_error(
-                "vision RMSNorm input width mismatch");
+            throw std::runtime_error("vision RMSNorm input width mismatch");
         }
         const auto shape = input.sizes().vec();
         auto normalized = rms_norm_cuda(
@@ -189,8 +59,7 @@ inline Tensor apply_axial_rope(
     if (input.dim() != 3 || input.size(0) <= 0 ||
         input.size(2) <= 0 || input.size(2) % 4 != 0 ||
         positions.size() != static_cast<std::size_t>(input.size(0) * 2)) {
-        throw std::runtime_error(
-            "vision axial RoPE geometry mismatch");
+        throw std::runtime_error("vision axial RoPE geometry mismatch");
     }
     const std::int64_t tokens = input.size(0);
     const std::int64_t head_dim = input.size(2);
@@ -246,8 +115,7 @@ inline Tensor segmented_attention(
     std::int64_t offset = 0;
     for (const std::int32_t length : lengths) {
         if (length <= 0 || offset + length > query.size(0)) {
-            throw std::runtime_error(
-                "vision attention segment is invalid");
+            throw std::runtime_error("vision attention segment is invalid");
         }
         const auto segment = [offset, length](const Tensor& input) {
             return input.narrow(0, offset, length)
@@ -303,8 +171,7 @@ struct VisionAttention {
                 return apply_axial_rope(value, positions, theta);
             },
             [&](Tensor q, Tensor k, Tensor v) {
-                return segmented_attention(
-                    q, k, v, segment_lengths);
+                return segmented_attention(q, k, v, segment_lengths);
             },
             [&](Tensor value) {
                 return output(
@@ -318,4 +185,4 @@ inline Tensor gelu_tanh(const Tensor& input) {
     return mfq_tensor_backend::gelu(input, "tanh");
 }
 
-} // namespace mfq::cuda::vision_ops
+} // namespace mfq::cuda::vision
