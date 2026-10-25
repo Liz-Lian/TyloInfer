@@ -2,7 +2,7 @@
 #include "engine/executor/experts.h"
 #include "packed_bench_utils.h"
 #include "mfq_cuda_moe_ops.h"
-#include "mfe_ffn_runtime.h"
+#include "engine/executor/moe_batch.h"
 #include "model_source/model_source.h"
 #include <array>
 #include <atomic>
@@ -108,7 +108,7 @@ struct Call {
     CudaExecutionContext execution(stores);
     tb::Tensor input,ids,weights,shared_gate,kinds,cpu_pairs,cpu_mask,quant_descriptors,oracle_hidden,oracle_output;
     int quant_groups=0;
-    std::unique_ptr<MfeFfnRuntime> fused;
+    std::unique_ptr<mfq::cuda::MoeBatch> fused;
     Call(Bank& b,int m,bool shared,bool cpu_result,bool cropped=false,bool shared_float=true):bank(b),tokens(m),
             output_width(hidden-(cropped?1:0)),ffn_width(intermediate-(cropped?1:0)),with_shared(shared),cpu(cpu_result) {
         const auto opts=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat16);
@@ -130,7 +130,7 @@ struct Call {
         quant_descriptors=tb::tensor(pointers).reshape({int64_t(geometries.size()),4}).to(tb::kCUDA);
         std::array<const NintWeight*,3> sw{};if(shared)for(int p=0;p<3;++p)sw[p]=&bank.shared[p];
         const auto table=moe_swiglu_sigmoid_table_cuda();
-        fused=std::make_unique<MfeFfnRuntime>(std::array<MixedMoeRuntime*,3>{&bank.projections[0],&bank.projections[1],&bank.projections[2]},
+        fused=std::make_unique<mfq::cuda::MoeBatch>(std::array<const MixedMoeRuntime*,3>{&bank.projections[0],&bank.projections[1],&bank.projections[2]},
             input,ids,weights,table,sw,shared?shared_gate:tb::Tensor{},output_width,ffn_width);
         if(cpu)fused->cpu_results(kinds,cpu_pairs);update(0);
     }

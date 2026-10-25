@@ -1,6 +1,6 @@
 #include "env.h"
-#include "backends/cuda/engine/executor/options.h"
-#include "mfe_ffn_runtime.h"
+#include "options.h"
+#include "moe_batch.h"
 #include "mfe_e8_narrow_bounds.h"
 #include "mfe_ffn_launch.h"
 #include "mfe_ffn_compact.h"
@@ -9,7 +9,7 @@
 #include "mfe_ffn_shared.h"
 #include "mfe_nvq_dense_bounds.h"
 #include "mfq_cuda_nint_route_hint.h"
-#include "backends/cuda/engine/executor/decode_window.h"
+#include "decode_window.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -86,7 +86,9 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<tb::Tensor>& owners
     result.expert_local=pool.expert_local.data_ptr<int32_t>();owners.push_back(pool.expert_local);return result;
 }
 }
-MfeFfnRuntime::MfeFfnRuntime(const std::array<MixedMoeRuntime*,3>& projections,
+namespace mfq::cuda {
+
+MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights,const tb::Tensor& sigmoid,
         const std::array<const NintWeight*,3>& shared,const tb::Tensor& shared_gate,
         int output_columns,int intermediate_columns,const std::array<std::vector<int32_t>,3>* cohort_by_expert,bool output_pairs,
@@ -380,14 +382,14 @@ MfeFfnRuntime::MfeFfnRuntime(const std::array<MixedMoeRuntime*,3>& projections,
         }
     }
 }
-void MfeFfnRuntime::cpu_results(const tb::Tensor& kinds,const tb::Tensor& pairs,const uint32_t* ready) {
+void MoeBatch::cpu_results(const tb::Tensor& kinds,const tb::Tensor& pairs,const uint32_t* ready) {
     if(!kinds.is_cuda() || !pairs.is_cuda() || kinds.get_device()!=input_.get_device() ||
         pairs.get_device()!=input_.get_device() || kinds.numel()!=batch_.experts || kinds.scalar_type()!=tb::kInt32 || !kinds.is_contiguous() ||
         pairs.dim()!=3 || pairs.size(0)!=batch_.tokens || pairs.size(1)!=batch_.routes || pairs.size(2)!=batch_.output_width ||
         pairs.scalar_type()!=tb::kFloat16 || !pairs.is_contiguous())throw std::invalid_argument("two-stage MFE CPU result contract mismatch");
     kinds_=kinds;cpu_=pairs;batch_.kinds=kinds.data_ptr<int32_t>();batch_.cpu_pairs=reinterpret_cast<const __half*>(pairs.data_ptr());batch_.cpu_ready=ready;
 }
-void MfeFfnRuntime::bind_window_inputs(const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights) {
+void MoeBatch::bind_window_inputs(const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights) {
     if(!mfq::cuda::DecodeWindow::recording() ||
         input.sizes()!=input_.sizes() || ids.sizes()!=ids_.sizes() || weights.sizes()!=weights_.sizes() ||
         !input.is_cuda() || !ids.is_cuda() || !weights.is_cuda() ||
@@ -401,11 +403,11 @@ void MfeFfnRuntime::bind_window_inputs(const tb::Tensor& input,const tb::Tensor&
     batch_.input=reinterpret_cast<const __half*>(input.data_ptr());
     batch_.ids=ids.data_ptr<int32_t>();batch_.route_weights=weights.data_ptr<float>();
 }
-void MfeFfnRuntime::use_staged_inputs() {
+void MoeBatch::use_staged_inputs() {
     batch_.input=reinterpret_cast<const __half*>(input_.data_ptr());
     batch_.ids=ids_.data_ptr<int32_t>();batch_.route_weights=weights_.data_ptr<float>();
 }
-void MfeFfnRuntime::bind_shared_gate(const tb::Tensor& gate) {
+void MoeBatch::bind_shared_gate(const tb::Tensor& gate) {
     if(!gate.defined()) {
         bound_shared_gate_={};batch_.shared_gate=shared_gate_.defined()?shared_gate_.data_ptr():nullptr;
         return;
@@ -417,7 +419,7 @@ void MfeFfnRuntime::bind_shared_gate(const tb::Tensor& gate) {
     // Retaining the tensor prevents graph scratch from recycling the result.
     bound_shared_gate_=gate;batch_.shared_gate=bound_shared_gate_.data_ptr();
 }
-void MfeFfnRuntime::asynchronous(const int32_t* kinds,const uint32_t* plan,const uint32_t* transfer,
+void MoeBatch::asynchronous(const int32_t* kinds,const uint32_t* plan,const uint32_t* transfer,
         const uint32_t* cpu_ready,const uint32_t* abort,const int32_t* indices,const void* cpu_pairs) {
     if(!kinds || !plan || !transfer || !cpu_ready || !abort || !indices || !cpu_pairs)
         throw std::invalid_argument("two-stage MFE asynchronous resources incomplete");
@@ -435,7 +437,7 @@ void MfeFfnRuntime::asynchronous(const int32_t* kinds,const uint32_t* plan,const
     batch_.cpu_pairs=reinterpret_cast<const __half*>(cpu_pairs);
     batch_.resident_plan_overlap=mfq::cuda::runtime_options::resident_plan_overlap();
 }
-mfq::cuda::MfePackedProjection MfeFfnRuntime::projection_view(int p,View view)const {
+mfq::cuda::MfePackedProjection MoeBatch::projection_view(int p,View view)const {
     if(!combined_gate_up_ || p!=1)return view;
     const auto shift=[&](int field,int64_t bytes) {
         if(view.fields[field])view.fields[field]=static_cast<const uint8_t*>(view.fields[field])+bytes;
@@ -457,7 +459,7 @@ mfq::cuda::MfePackedProjection MfeFfnRuntime::projection_view(int p,View view)co
     }
     return view;
 }
-mfq::cuda::MfePackedProjection MfeFfnRuntime::expert_view(int p,int expert,
+mfq::cuda::MfePackedProjection MoeBatch::expert_view(int p,int expert,
         const std::vector<int64_t>& bytes,int slot)const {
     if(p<0 || p>2 || expert<0 || expert>=batch_.experts)throw std::invalid_argument("MFE transfer projection/expert invalid");
     // Ungated banks have no Gate descriptor; Gate transfers alias Up.
@@ -490,7 +492,7 @@ mfq::cuda::MfePackedProjection MfeFfnRuntime::expert_view(int p,int expert,
         throw std::invalid_argument("MFE transferred compact buffers violate local decoder contract");
     return view;
 }
-void MfeFfnRuntime::trace_dispatch() {
+void MoeBatch::trace_dispatch() {
     if(dispatch_trace_reported_)return;
     dispatch_trace_reported_=true;
     const auto trace=mfq::cuda::runtime_options::trace_mfe_dispatch_requested();
@@ -523,7 +525,7 @@ void MfeFfnRuntime::trace_dispatch() {
             static_cast<void*>(this),format,count,rejected,max_experts);
     }
 }
-void MfeFfnRuntime::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
+void MoeBatch::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
         const std::array<std::vector<std::vector<int64_t>>,3>& bytes,uint32_t* snapshot_ready) {
     if(!mapped || !snapshot_ready || cached_dispatch_.mapped || !batch_.resident_plan_overlap || batch_.tokens*batch_.routes>256)
         throw std::invalid_argument("MFE cached resident dispatch contract invalid");
@@ -571,7 +573,7 @@ void MfeFfnRuntime::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* map
     if(batch_.tokens==1 && batch_.routes<=32)
         cached_transfer_routes_=tb::empty({batch_.routes+2},input_.options().dtype(tb::kInt32));
 }
-bool MfeFfnRuntime::try_fuse_prepare_shared_gate(const NintWeight& w,const tb::Tensor& output) {
+bool MoeBatch::try_fuse_prepare_shared_gate(const NintWeight& w,const tb::Tensor& output) {
     if(!cached_dispatch_.mapped || !batch_.shared || batch_.tokens<1 || batch_.tokens>6 ||
         !w.aligned_q8 || w.q8_zero || w.out!=1 || w.gs!=48 || w.ng<1 || w.ng>64 ||
         w.neuron_len!=batch_.input_width || w.neuron_len>w.ng*48 || !output.is_cuda() ||
@@ -602,7 +604,7 @@ bool MfeFfnRuntime::try_fuse_prepare_shared_gate(const NintWeight& w,const tb::T
     shared_gate_=output;bind_shared_gate(output);
     return true;
 }
-void MfeFfnRuntime::prepare(int32_t* published_ids,uint32_t* ready){
+void MoeBatch::prepare(int32_t* published_ids,uint32_t* ready){
     trace_dispatch();
     if(ready && published_ids)start_shared(true);
     auto prepared=batch_;
@@ -632,7 +634,7 @@ void MfeFfnRuntime::prepare(int32_t* published_ids,uint32_t* ready){
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     }
 }
-std::pair<tb::Tensor,tb::Tensor> MfeFfnRuntime::reserve_input_quantization(int groups,int group_size) {
+std::pair<tb::Tensor,tb::Tensor> MoeBatch::reserve_input_quantization(int groups,int group_size) {
     if(group_size<4 || group_size>64 || groups!=(batch_.input_width+group_size-1)/group_size)
         throw std::invalid_argument("MFE additional input quantization geometry is invalid");
     const auto key=std::make_pair(groups,group_size);
@@ -652,13 +654,13 @@ std::pair<tb::Tensor,tb::Tensor> MfeFfnRuntime::reserve_input_quantization(int g
     quantization_=upload(views);quantization_count_=int(views.size());
     return {q,s};
 }
-void MfeFfnRuntime::gate_up(){mfq::cuda::mfe_ffn_gate_up(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
-void MfeFfnRuntime::resident(){
+void MoeBatch::gate_up(){mfq::cuda::mfe_ffn_gate_up(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
+void MoeBatch::resident(){
     start_shared(false);
     mfq::cuda::mfe_ffn_resident(arithmetic_batch(),mfq_current_cuda_stream());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
-void MfeFfnRuntime::start_shared(bool early){
+void MoeBatch::start_shared(bool early){
     if(shared_in_flight_)return;
     if(early) {
         const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_EARLY");
@@ -755,10 +757,10 @@ void MfeFfnRuntime::start_shared(bool early){
         }
     }
 }
-void MfeFfnRuntime::join_shared(){
+void MoeBatch::join_shared(){
     if(shared_in_flight_)TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(mfq_current_cuda_stream(),shared_done_->get(),0));
 }
-void MfeFfnRuntime::wait_transfer(const void* mapped_table,void* snapshot,uint64_t capacity,
+void MoeBatch::wait_transfer(const void* mapped_table,void* snapshot,uint64_t capacity,
         const void* mapped_descriptors,uint64_t descriptor_capacity_words){
     const auto* route_list=mfq::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_ROUTE_LIST");
     const auto* fused_hidden=mfq::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_HIDDEN_FUSED");
@@ -775,7 +777,7 @@ void MfeFfnRuntime::wait_transfer(const void* mapped_table,void* snapshot,uint64
     else mfq::cuda::mfe_ffn_wait_transfer(batch_,mfq_current_cuda_stream());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
-void MfeFfnRuntime::transferred(){
+void MoeBatch::transferred(){
     const auto stream=mfq_current_cuda_stream();
     const auto b=arithmetic_batch();
     if(!cached_dispatch_.mapped || !mfq::cuda::mfe_ffn_compact_transferred_fused(b,stream,
@@ -783,8 +785,8 @@ void MfeFfnRuntime::transferred(){
         mfq::cuda::mfe_ffn_transferred(b,stream);
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
-void MfeFfnRuntime::wait_cpu(){mfq::cuda::mfe_ffn_wait_cpu(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
-void MfeFfnRuntime::down_reduce_compute(){
+void MoeBatch::wait_cpu(){mfq::cuda::mfe_ffn_wait_cpu(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
+void MoeBatch::down_reduce_compute(){
     join_shared();
     const auto b=arithmetic_batch();const auto stream=mfq_current_cuda_stream();
     const auto* cached=cached_transfer_routes_ready_?
@@ -793,4 +795,6 @@ void MfeFfnRuntime::down_reduce_compute(){
         mfq::cuda::mfe_ffn_down_reduce_compute(b,stream);
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();shared_in_flight_=false;
 }
-void MfeFfnRuntime::down_reduce(){wait_cpu();down_reduce_compute();}
+void MoeBatch::down_reduce(){wait_cpu();down_reduce_compute();}
+
+} // namespace mfq::cuda

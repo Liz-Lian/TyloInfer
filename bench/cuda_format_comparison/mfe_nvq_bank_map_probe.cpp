@@ -17,8 +17,8 @@ static void bind_compact_production(Call& call,int group_hint=0) {
     }
     std::array<const NintWeight*,3> shared{};
     if(call.shared_gate.defined())for(int p=0;p<3;++p)shared[p]=&call.layer.shared[p].nint;
-    call.fused=std::make_unique<MfeFfnRuntime>(
-        std::array<MixedMoeRuntime*,3>{&projections[0],&projections[1],&projections[2]},
+    call.fused=std::make_unique<mfq::cuda::MoeBatch>(
+        std::array<const MixedMoeRuntime*,3>{&projections[0],&projections[1],&projections[2]},
         call.x,call.ids,call.weights,call.table,shared,call.shared_gate,0,0,nullptr,false,false,group_hint);
     call.fused->run();
 }

@@ -489,7 +489,6 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/mxfp4_sq.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/moe.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/mfe.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/mfe_ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/nint.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/mfq/vq.cpp
     )
@@ -513,7 +512,8 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
-        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_ffn_pipeline.cpp)
+        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_ffn_pipeline.cpp
+        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_batch.cpp)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)

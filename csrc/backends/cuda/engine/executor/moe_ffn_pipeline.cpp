@@ -17,7 +17,7 @@
 #include "backends/cuda/engine/weights/moe/native_dma_batch.h"
 #include "context.h"
 #include "engine/executor/error.h"
-#include "mfe_ffn_runtime.h"
+#include "engine/executor/moe_batch.h"
 #include "quant_linear.h"
 #include <cuda.h>
 #include <array>
@@ -315,7 +315,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         bool reuse_plan=false;
         bool check_reused_views=false;
         std::array<MixedMoeRuntime,3> fused_projections;
-        std::unique_ptr<MfeFfnRuntime> fused;
+        std::unique_ptr<mfq::cuda::MoeBatch> fused;
         std::unique_ptr<Mapped> transfer_index,transfer_descriptors,ssd_gate_up_descriptors;
         std::unique_ptr<Mapped> transfer_route_plan;
         std::unique_ptr<Mapped> mapped_copy_table;
@@ -1665,7 +1665,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 for(int p=0;p<3;++p)shared[p]=&shared_weights_.projections[p]->nint;
                 cell.shared_gate=shared_weights_.gate(execution,cell.input).contiguous();
             }
-            cell.fused=std::make_unique<MfeFfnRuntime>(std::array<MixedMoeRuntime*,3>{&cell.fused_projections[0],
+            cell.fused=std::make_unique<mfq::cuda::MoeBatch>(std::array<const MixedMoeRuntime*,3>{&cell.fused_projections[0],
                 &cell.fused_projections[1],&cell.fused_projections[2]},cell.input,cell.ids,cell.weights,
                 cache_->pipeline_sigmoid_table_,shared,cell.shared_gate,width_,ff_,&mapping,!shared_,combined_gate_up_,
                 execution.continuous_batch_cache_serial && cell.tokens==8?8:0,swiglu_limit_,up_only_,false);

@@ -1,6 +1,6 @@
 #include "weights.h"
 #include "engine/executor/experts.h"
-#include "mfe_ffn_runtime.h"
+#include "engine/executor/moe_batch.h"
 #include "mfq_cuda_moe_ops.h"
 #include "quant_linear.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -67,7 +67,7 @@ struct Layer {
         }
         return false;
     }
-    int enable_dense_nvq(MfeFfnRuntime& runtime,bool e8,bool d4) {
+    int enable_dense_nvq(mfq::cuda::MoeBatch& runtime,bool e8,bool d4) {
         if(const auto* grouped=std::getenv("TYLOINFER_MFE_GROUP_DOT");grouped && grouped[0]=='0')
             throw std::runtime_error("dense NVQ probe requires grouped MFE arithmetic");
         const auto selected=[&](int format) {
@@ -170,7 +170,7 @@ struct Call {
     CudaExecutionContext execution(stores);
     tb::Tensor x,xd,ids,weights,table,shared_gate;
     MoeRoutePlan route;
-    std::unique_ptr<MfeFfnRuntime> fused;
+    std::unique_ptr<mfq::cuda::MoeBatch> fused;
     int dense_views=0;
     Call(Layer& bank,bool shared,int batch=1):layer(bank),tokens(batch) {
         x=tb::tensor(fb::input(tokens,hidden)).reshape({tokens,hidden}).to(tb::kCUDA,tb::kFloat16);
@@ -185,7 +185,7 @@ struct Call {
             shared_gate=tb::sigmoid(execution.projector().run(layer.shared_router, x));
             for(int p=0;p<3;++p)sw[p]=&layer.shared[p].nint;
         }
-        fused=std::make_unique<MfeFfnRuntime>(std::array<MixedMoeRuntime*,3>{&layer.projections[0],&layer.projections[1],&layer.projections[2]},
+        fused=std::make_unique<mfq::cuda::MoeBatch>(std::array<const MixedMoeRuntime*,3>{&layer.projections[0],&layer.projections[1],&layer.projections[2]},
             x,ids,weights,table,sw,shared_gate);
         const auto enabled=[](const char* name){const auto* value=std::getenv(name);return value && value[0]=='1';};
         const bool all_dense=enabled("TYLOINFER_BENCH_NVQ_DENSE");
