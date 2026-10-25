@@ -90,26 +90,17 @@ struct TqCache::Stage {
 
 TqCache::HostTransfer::~HostTransfer() noexcept { try { ready->synchronize(); } catch (...) {} }
 
-std::size_t TqCache::reclaim_host_locked(std::size_t bytes) {
-    const auto before=host_used_;
-    while(before-host_used_<bytes && !host_recent_.empty()) {
-        const auto key=host_recent_.back();host_recent_.pop_back();
-        host_used_-=host_.at(key).image->bytes.size();host_.erase(key);++host_evictions_;
-    }
-    return before-host_used_;
-}
-
 std::size_t TqCache::reserve_host_locked(std::size_t bytes) {
     if(!bytes || host_.empty())return 0;
     const auto available=available_host_bytes(process_host_limit_);
-    return available>=bytes?0:reclaim_host_locked(bytes-available);
+    return available>=bytes?0:host_.trim(bytes-available);
 }
 
 void TqCache::report()const {
     if(profile_)std::fprintf(stderr,"tq_cache calls=%llu gpu_hits=%llu host_hits=%llu source_bytes=%llu h2d_bytes=%llu fetch_ms=%.3f upload_submit_ms=%.3f gpu_bytes=%zu host_bytes=%zu host_limit=%zu direct_h2d_bytes=%llu pin_attempts=%llu pin_failures=%llu\n",
         static_cast<unsigned long long>(calls_),static_cast<unsigned long long>(gpu_hits_),
         static_cast<unsigned long long>(host_hits_),static_cast<unsigned long long>(source_bytes_),
-        static_cast<unsigned long long>(transfer_bytes_),fetch_ms_,upload_submit_ms_,device_used_,host_used_,host_limit_,
+        static_cast<unsigned long long>(transfer_bytes_),fetch_ms_,upload_submit_ms_,device_.used(),host_.used(),*host_.limit(),
         static_cast<unsigned long long>(direct_transfer_bytes_),static_cast<unsigned long long>(pin_attempts_),
         static_cast<unsigned long long>(pin_failures_));
 }
@@ -144,8 +135,9 @@ void TqCache::upload(const tb::Tensor& destination,const std::vector<std::uint8_
 TqCache::TqCache(std::size_t budget,std::size_t host_budget,std::size_t process_limit,bool retain_all,
               std::shared_ptr<TqExec> tq)
     :tq_(std::move(tq)),
-     host_limit_(host_budget?host_budget:available_host_bytes(process_limit)/5*4),device_limit_(budget),
-     retain_all_(retain_all),process_host_limit_(process_limit),
+     host_(host_budget?host_budget:available_host_bytes(process_limit)/5*4),
+     device_(retain_all?std::nullopt:std::optional<std::size_t>(budget)),
+     process_host_limit_(process_limit),
      profile_(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")!=nullptr) {
     if(!tq_)throw std::invalid_argument("TQ expert cache requires its execution pool");
 }
@@ -172,17 +164,12 @@ std::uint64_t TqCache::add(std::shared_ptr<const mfq::TqTable> table, std::int64
 
 std::size_t TqCache::budget() {
     std::lock_guard<std::mutex> guard(mutex_);
-    return retain_all_?std::max(payload_bytes_,device_used_):device_limit_;
+    return device_.limit().value_or(std::max(payload_bytes_,device_.used()));
 }
 
 void TqCache::resize(std::size_t bytes) {
     std::lock_guard<std::mutex> guard(mutex_);
-    retain_all_=false;
-    device_limit_=bytes;
-    while(device_used_>bytes && !device_recent_.empty()) {
-        const auto key=device_recent_.back();device_recent_.pop_back();
-        device_used_-=device_.at(key).weight.image.nbytes();device_.erase(key);++device_evictions_;
-    }
+    device_.limit(bytes);
 }
 
 std::size_t TqCache::reserve(std::size_t bytes) {
@@ -193,25 +180,25 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
     std::lock_guard<std::mutex> guard(mutex_);
     std::size_t covered=0,staging=0;
     std::unordered_set<std::uint64_t> covered_images;
-    covered_images.reserve(device_.size()+host_.size());
-    for(const auto& [key,entry]:device_)
-        if(covered_images.insert(key.image).second)covered+=entry.source_bytes;
-    for(const auto& [key,entry]:host_)
-        if(covered_images.insert(key).second)covered+=entry.image->source_bytes;
+    covered_images.reserve(device_.entries().size()+host_.entries().size());
+    for(const auto& [key,entry]:device_.entries())
+        if(covered_images.insert(key.image).second)covered+=entry.value.source_bytes;
+    for(const auto& [key,entry]:host_.entries())
+        if(covered_images.insert(key).second)covered+=entry.value->source_bytes;
     for(const auto& [_,arenas]:stages_)for(const auto& stage:arenas.stages)
         if(stage)staging+=stage->host.size();
     const auto cold=payload_bytes_>covered?payload_bytes_-covered:0;
     const auto misses=calls_-gpu_hits_;
-    return {{"resident_expert_cache_bytes",double(device_used_)},
-        {"expert_cache_budget_bytes",double(retain_all_?std::max(payload_bytes_,device_used_):device_limit_)},
-        {"ram_expert_enabled",host_used_?1.0:0.0},
-        {"ram_expert_payload_bytes",double(host_used_)},
-        {"ram_expert_cache_budget_bytes",double(host_limit_)},
+    return {{"resident_expert_cache_bytes",double(device_.used())},
+        {"expert_cache_budget_bytes",double(device_.limit().value_or(std::max(payload_bytes_,device_.used())))},
+        {"ram_expert_enabled",host_.used()?1.0:0.0},
+        {"ram_expert_payload_bytes",double(host_.used())},
+        {"ram_expert_cache_budget_bytes",double(*host_.limit())},
         {"ram_expert_pcie_read_bytes",double(transfer_bytes_)},
         {"ram_expert_direct_pcie_read_bytes",double(direct_transfer_bytes_)},
         {"ram_expert_cache_hits",double(host_hits_)},
         {"ram_expert_cache_misses",double(misses-host_hits_)},
-        {"ram_expert_cache_evictions",double(host_evictions_)},
+        {"ram_expert_cache_evictions",double(host_.evictions())},
         {"ssd_expert_enabled",cold?1.0:0.0},
         {"ssd_expert_payload_bytes",double(cold)},
         {"ssd_expert_bytes_read",double(source_bytes_)},
@@ -221,7 +208,7 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
         {"expert_decode_transfer_bytes",double(staging)},
         {"expert_cache_hits",double(gpu_hits_)},
         {"expert_cache_misses",double(misses)},
-        {"expert_cache_evictions",double(device_evictions_)},
+        {"expert_cache_evictions",double(device_.evictions())},
         {"host_tensor_bytes",double(mfq::cuda::tensor_host_bytes.load())}};
 }
 
@@ -288,25 +275,21 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
     const auto key=(source<<32)|expert;
     const DeviceKey device_key{key,device};
     ++calls_;
-    const auto resident=device_.find(device_key);
-    if(resident!=device_.end()) {
-        if(resident->second.producer!=stream.stream()) {
-            const auto event=resident->second.uploaded->get();
+    if(const auto* resident=device_.get(device_key)) {
+        if(resident->producer!=stream.stream()) {
+            const auto event=resident->uploaded->get();
             if(waited.insert(event).second)TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(stream.stream(),event,0));
             resources->retain(stream);
-            mfq_cuda_record_stream(resident->second.weight.image,stream);
+            mfq_cuda_record_stream(resident->weight.image,stream);
         }
-        device_recent_.splice(device_recent_.begin(),device_recent_,resident->second.recent);
-        ++gpu_hits_;result.push_back(resident->second.weight);
+        ++gpu_hits_;result.push_back(resident->weight);
         if((calls_&4095)==0)report();
         continue;
     }
     const auto fetch_started=std::chrono::steady_clock::now();
     std::shared_ptr<HostImage> image;
-    const auto cached=host_.find(key);
-    if(cached!=host_.end()) {
-        host_recent_.splice(host_recent_.begin(),host_recent_,cached->second.recent);
-        image=cached->second.image;++host_hits_;
+    if(const auto* cached=host_.get(key)) {
+        image=*cached;++host_hits_;
         if(resources->host_register() && !image->pin_attempted) {
             if(auto registration=mfq::cuda::try_host_registration();registration.owns_lock()) {
                 image->try_pin();++pin_attempts_;
@@ -321,20 +304,12 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
         reserve_host_locked(wire.size());
         const bool admit=available_host_bytes(process_host_limit_)>=wire.size();
         source_bytes_+=wire.size();++source_reads_;image=HostImage::create(wire);
-        while(host_used_+image->bytes.size()>host_limit_ && !host_recent_.empty()) {
-            const auto old=host_recent_.back();host_recent_.pop_back();
-            host_used_-=host_.at(old).image->bytes.size();host_.erase(old);++host_evictions_;
-        }
-        if(admit && image->bytes.size()<=host_limit_) {
-            host_recent_.push_front(key);host_.emplace(key,HostEntry{image,host_recent_.begin()});host_used_+=image->bytes.size();
-        }
+        host_.reserve(image->bytes.size());
+        if(admit)host_.put(key,image,image->bytes.size());
     }
     fetch_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-fetch_started).count();
     const auto needed=image->bytes.size();
-    while(!retain_all_ && device_used_+needed>device_limit_ && !device_recent_.empty()) {
-        const auto old=device_recent_.back();device_recent_.pop_back();
-        device_used_-=device_.at(old).weight.image.numel();device_.erase(old);++device_evictions_;
-    }
+    device_.reserve(needed);
     auto storage=tb::empty({static_cast<std::int64_t>(needed)},tb::TensorOptions().device(tb::Device(tb::kCUDA,device)).dtype(tb::kUInt8));
     auto weight=tq_view(std::move(storage),image->layout,table.width());
     if(image->registered) {
@@ -351,11 +326,9 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
         transfer_bytes_+=image->bytes.size();direct_transfer_bytes_+=image->bytes.size();
         upload_submit_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
     }else upload(weight.image,image->bytes);
-    if(retain_all_ || weight.image.numel()<=device_limit_) {
+    if(!device_.limit() || needed<=*device_.limit()) {
         if(!uploaded)uploaded=std::make_shared<mfq::cuda::Event>(cudaEventDisableTiming);
-        device_recent_.push_front(device_key);
-        device_.emplace(device_key,DeviceEntry{weight,device_recent_.begin(),uploaded,stream.stream(),image->source_bytes});
-        device_used_+=weight.image.numel();
+        device_.put(device_key,DeviceEntry{weight,uploaded,stream.stream(),image->source_bytes},needed);
     }
     result.push_back(std::move(weight));
     if((calls_&4095)==0)report();

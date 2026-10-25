@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/tq/include/tq.h"
+#include "engine/weights/lru.h"
 
 #include <array>
 #include <list>
@@ -36,10 +37,6 @@ private:
         std::vector<std::shared_ptr<HostImage>> images;
         ~HostTransfer() noexcept;
     };
-    struct HostEntry {
-        std::shared_ptr<HostImage> image;
-        std::list<std::uint64_t>::iterator recent;
-    };
     struct DeviceKey {
         std::uint64_t image;
         int device;
@@ -52,7 +49,6 @@ private:
     };
     struct DeviceEntry {
         TqWeight weight;
-        std::list<DeviceKey>::iterator recent;
         std::shared_ptr<mfq::cuda::Event> uploaded;
         cudaStream_t producer = nullptr;
         std::size_t source_bytes = 0;
@@ -75,15 +71,11 @@ private:
 
     // Streams outlive every cached tensor and its final consumer fence.
     std::shared_ptr<TqExec> tq_;
-    std::unordered_map<std::uint64_t, HostEntry> host_;
-    std::unordered_map<DeviceKey, DeviceEntry, DeviceKeyHash> device_;
+    mfq::weights::Lru<std::uint64_t, std::shared_ptr<HostImage>> host_;
+    mfq::weights::Lru<DeviceKey, DeviceEntry, DeviceKeyHash> device_;
     std::unordered_map<std::uint64_t, std::vector<ViewTable>> view_tables_;
-    std::list<std::uint64_t> host_recent_;
-    std::list<DeviceKey> device_recent_;
-    std::size_t host_used_ = 0, device_used_ = 0, host_limit_ = 0, device_limit_ = 0;
-    bool retain_all_ = false;
     std::size_t payload_bytes_ = 0, process_host_limit_ = 0;
-    std::uint64_t host_evictions_ = 0, device_evictions_ = 0, source_reads_ = 0;
+    std::uint64_t source_reads_ = 0;
     std::vector<Source> sources_;
     std::mutex mutex_;
     std::unordered_map<int, DeviceStages> stages_;
@@ -93,7 +85,6 @@ private:
     double fetch_ms_ = 0, upload_submit_ms_ = 0;
     bool profile_;
 
-    std::size_t reclaim_host_locked(std::size_t bytes);
     std::size_t reserve_host_locked(std::size_t bytes);
     void report() const;
     void upload(const mfq_tensor_backend::Tensor&, const std::vector<std::uint8_t>&);
