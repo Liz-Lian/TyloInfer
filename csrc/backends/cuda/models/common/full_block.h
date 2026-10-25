@@ -39,12 +39,6 @@ struct FullBlock : Block {
     FFN ffn;
     KVCache cache;
     mfq::cuda::KvQuantization kv_quantization;
-    mfq_tensor_backend::Tensor decode_partial_o;
-    mfq_tensor_backend::Tensor decode_partial_m;
-    mfq_tensor_backend::Tensor decode_partial_l;
-    mfq_tensor_backend::Tensor decode_mma_mask;
-    mfq_tensor_backend::Tensor decode_mma_kv_max;
-    mfq_tensor_backend::Tensor decode_mma_meta;
 
     static constexpr int64_t kDecodeAttentionMaxParts = 16;
 

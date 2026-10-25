@@ -195,15 +195,6 @@ void Qwen35BatchStateAdapter::bind_paged_slots() {
     page_table_dirty_ = false;
 }
 
-static void clear_full_attention_decode_workspaces(FullBlock &block) {
-    block.decode_partial_o = Tensor();
-    block.decode_partial_m = Tensor();
-    block.decode_partial_l = Tensor();
-    block.decode_mma_mask = Tensor();
-    block.decode_mma_kv_max = Tensor();
-    block.decode_mma_meta = Tensor();
-}
-
 bool Qwen35BatchStateAdapter::has_moe() const {
     for (const auto &block : model_.blocks) {
         if (const auto *full = dynamic_cast<const FullBlock *>(block.get())) {
@@ -291,7 +282,6 @@ QwenBatchState Qwen35BatchStateAdapter::take(int64_t batch) {
                 layer.ring = full->cache.ring;
             }
             full->cache = KVCache();
-            clear_full_attention_decode_workspaces(*full);
         } else if (auto *linear = dynamic_cast<LinearBlock *>(block.get())) {
             TYLOINFER_RUNTIME_CHECK(linear->mixer.convolution.defined() &&
                                   linear->mixer.recurrent.defined() &&
@@ -335,7 +325,6 @@ void Qwen35BatchStateAdapter::restore(const QwenBatchState &state, int64_t cache
                 full->cache.v = saved.second;
                 full->cache.quantization = full->kv_quantization;
             }
-            clear_full_attention_decode_workspaces(*full);
         } else if (auto *linear = dynamic_cast<LinearBlock *>(block.get())) {
             TYLOINFER_RUNTIME_CHECK(saved.kind == QwenBatchLayerState::Kind::Recurrent &&
                                   saved.first.size(0) == state.batch &&

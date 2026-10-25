@@ -3,12 +3,12 @@
 #include "engine/models/common/attention.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/transformer_layer.h"
+#include "ops/attention/attention.h"
 #include <array>
 
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
-#include "mfq_cuda_paged_kv.h"
 
 #include <algorithm>
 #include <cmath>
@@ -40,12 +40,6 @@ void FullBlock::reset(int64_t B) {
     if (cache.defined() && cache.batch_size() == B)
         return;
     cache = KVCache();
-    decode_partial_o = mfq_tensor_backend::Tensor();
-    decode_partial_m = mfq_tensor_backend::Tensor();
-    decode_partial_l = mfq_tensor_backend::Tensor();
-    decode_mma_mask = mfq_tensor_backend::Tensor();
-    decode_mma_kv_max = mfq_tensor_backend::Tensor();
-    decode_mma_meta = mfq_tensor_backend::Tensor();
 }
 
 mfq_tensor_backend::Tensor
@@ -106,26 +100,15 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16, kv_quantization);
     }
     cache.quantization=kv_quantization;
-    if (x.is_cuda()) {
-        const int64_t total = B * nh;
-        if (!decode_partial_o.defined() || decode_partial_o.size(0) < total ||
-            decode_partial_o.size(1) != kDecodeAttentionMaxParts ||
-            decode_partial_o.size(2) != hd) {
-            auto opts = mfq_tensor_backend::TensorOptions()
-                            .device(x.device())
-                            .dtype(mfq_tensor_backend::kFloat32);
-            decode_partial_o =
-                mfq_tensor_backend::empty({total, kDecodeAttentionMaxParts, hd}, opts);
-            decode_partial_m = mfq_tensor_backend::empty({total, kDecodeAttentionMaxParts}, opts);
-            decode_partial_l = mfq_tensor_backend::empty({total, kDecodeAttentionMaxParts}, opts);
-        }
-    }
+    auto& scratch = execution.attention_scratch[this];
+    if (x.is_cuda())
+        scratch.split(B * nh, kDecodeAttentionMaxParts, hd, x.device());
     return mfq::models::attention_layer(
         x,
         [&](mfq_tensor_backend::Tensor x) {
             return profiler.measure("full.attn_norm", [&]() {
                 return official_bf16
-                           ? qwen_rms_norm_bf16(execution.config, x.reshape({B * T, H}), attn_norm,
+                           ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm, x.reshape({B * T, H}), attn_norm,
                                                 rms_norm_eps, norm_weight_offset)
                                  .reshape({B, T, H})
                            : qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
@@ -261,7 +244,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                         if (q_norm.defined())
                             q = profiler.measure("full.q_norm", [&]() {
                                 return official_bf16
-                                           ? qwen_rms_norm_bf16(execution.config,
+                                           ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm,
                                                                 q.reshape({-1, hd}), q_norm,
                                                                 rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(q)
@@ -273,7 +256,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                         if (k_norm.defined())
                             k = profiler.measure("full.k_norm", [&]() {
                                 return official_bf16
-                                           ? qwen_rms_norm_bf16(execution.config,
+                                           ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm,
                                                                 k.reshape({-1, hd}), k_norm,
                                                                 rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(k)
@@ -286,7 +269,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     if (v_norm.defined())
                         v = profiler.measure("full.v_norm", [&]() {
                             return official_bf16
-                                       ? qwen_rms_norm_bf16(execution.config, v.reshape({-1, hd}),
+                                       ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm, v.reshape({-1, hd}),
                                                             v_norm, rms_norm_eps,
                                                             norm_weight_offset)
                                              .reshape_as(v)
@@ -344,367 +327,47 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     });
                 },
                 [&](auto &heads) {
-                    auto &q = heads.query;
-                    auto &k = heads.key;
-                    auto &v = heads.value;
-
-                    trace_qwen_stage("qwen.q_rope", q, 2);
-                    trace_qwen_stage("qwen.k_rope", k, 2);
-                    auto minicpmo45_attention_mask = [&](int64_t visible_len,
-                                                         bool explicit_causal) {
-                        MfqOptional<mfq_tensor_backend::Tensor> result = mfq_nullopt;
-                        if (!official_bf16 || (!explicit_causal && !seq_len.has_value() &&
-                                               !attention_mask.has_value())) {
-                            return result;
-                        }
-                        auto options = mfq_tensor_backend::TensorOptions()
-                                           .device(x.device())
-                                           .dtype(mfq_tensor_backend::kInt64);
-                        auto key_positions = mfq_tensor_backend::arange(visible_len, options);
-                        auto query_positions =
-                            write_positions.to(x.device(), mfq_tensor_backend::kInt64);
-                        if (query_positions.dim() == 1) {
-                            query_positions = query_positions.reshape({1, T}).expand({B, T});
-                        }
-                        auto allowed = key_positions.reshape({1, 1, visible_len}) <=
-                                       query_positions.unsqueeze(-1);
-                        if (seq_len.has_value()) {
-                            auto lengths = seq_len.value()
-                                               .to(x.device(), mfq_tensor_backend::kInt64)
-                                               .reshape({B, 1, 1});
-                            allowed =
-                                allowed & (key_positions.reshape({1, 1, visible_len}) < lengths);
-                        }
-                        if (attention_mask.has_value()) {
-                            auto valid = attention_mask.value().to(x.device());
-                            if (valid.dim() != 2 || valid.size(0) != B ||
-                                valid.size(1) < visible_len) {
-                                throw std::runtime_error(
-                                    "MiniCPM-o attention_mask must cover [batch,visible_tokens]");
-                            }
-                            valid = valid.narrow(1, 0, visible_len).ne(0);
-                            allowed = allowed & valid.unsqueeze(1);
-                            auto attended = allowed.any(-1, true);
-                            allowed = mfq_tensor_backend::where(
-                                attended, allowed, mfq_tensor_backend::ones_like(allowed));
-                        }
-                        const auto mask_dtype =
-                            official_bf16 ? mfq_tensor_backend::kBFloat16 : x.scalar_type();
-                        auto additive = mfq_tensor_backend::zeros(
-                            {B, 1, T, visible_len}, mfq_tensor_backend::TensorOptions()
-                                                        .device(x.device())
-                                                        .dtype(mask_dtype));
-                        const double mask_min =
-                            static_cast<double>(std::numeric_limits<mfq_bfloat16>::lowest());
-                        additive.masked_fill_(allowed.logical_not().unsqueeze(1), mask_min);
-                        result = additive.contiguous();
-                        return result;
-                    };
-                    double attn_scale =
-                        attention_scale > 0.0 ? attention_scale : 1.0 / std::sqrt((double)hd);
-                    mfq_tensor_backend::Tensor a;
-                    a = profiler.measure("full.attention", [&]() {
-                        if(cache.quantization.enabled()) {
-                            attention_token_major=true;
-                            const auto capacity=planned_kv_length>0?planned_kv_length:cache_pos+T;
-                            return mfq::cuda::cuda_kv_attention(q,cache.k,cache.v,cache.quantization,{},write_positions,
-                                cache_pos,cache.quantized_pages(),capacity,seq_len.value_or(mfq_tensor_backend::Tensor{}),
-                                attention_mask.value_or(mfq_tensor_backend::Tensor{}),attn_scale);
-                        }
-                        if (!x.is_cuda()) {
-                            TYLOINFER_RUNTIME_CHECK(
-                                !sliding, "CPU dense offload does not support sliding attention");
-                            const auto cpu_attention_dtype = official_bf16
-                                                                 ? mfq_tensor_backend::kBFloat16
-                                                                 : mfq_tensor_backend::kFloat32;
-                            auto qh = q.to(cpu_attention_dtype).contiguous();
-                            auto kh = kv.first.to(cpu_attention_dtype).contiguous();
-                            auto vh = kv.second.to(cpu_attention_dtype).contiguous();
-                            if (nkh != nh) {
-                                TYLOINFER_RUNTIME_CHECK(nh % nkh == 0,
-                                                  "CPU attention head ratio is invalid");
-                                const int64_t repeat = nh / nkh;
-                                kh = kh.repeat_interleave(repeat, 1);
-                                vh = vh.repeat_interleave(repeat, 1);
-                            }
-                            MfqOptional<mfq_tensor_backend::Tensor> mask = mfq_nullopt;
-                            if (official_bf16) {
-                                mask = minicpmo45_attention_mask(kh.size(2), T > 1);
-                            } else if (T > 1 || seq_len.has_value()) {
-                                const int64_t visible = kh.size(2);
-                                auto key_positions = mfq_tensor_backend::arange(
-                                    visible, mfq_tensor_backend::TensorOptions()
-                                                 .device(mfq_tensor_backend::kCPU)
-                                                 .dtype(mfq_tensor_backend::kInt64));
-                                mfq_tensor_backend::Tensor allowed;
-                                if (T > 1) {
-                                    auto query_positions =
-                                        pos.dim() == 1
-                                            ? pos.to(mfq_tensor_backend::kCPU,
-                                                     mfq_tensor_backend::kInt64)
-                                            : pos.select(0, 0).to(mfq_tensor_backend::kCPU,
-                                                                  mfq_tensor_backend::kInt64);
-                                    allowed =
-                                        key_positions.unsqueeze(0) <= query_positions.unsqueeze(1);
-                                    allowed = allowed.unsqueeze(0).expand({B, T, visible});
-                                } else {
-                                    allowed = mfq_tensor_backend::ones(
-                                        {B, T, visible}, mfq_tensor_backend::TensorOptions()
-                                                             .device(mfq_tensor_backend::kCPU)
-                                                             .dtype(mfq_tensor_backend::kBool));
-                                }
-                                if (seq_len.has_value()) {
-                                    auto lengths = seq_len.value()
-                                                       .to(mfq_tensor_backend::kCPU,
-                                                           mfq_tensor_backend::kInt64)
-                                                       .reshape({B, 1, 1});
-                                    allowed = allowed &
-                                              (key_positions.reshape({1, 1, visible}) < lengths);
-                                }
-                                mask = allowed.unsqueeze(1);
-                            }
-                            return mfq_scaled_dot_product_attention(qh, kh, vh, mask, 0.0, false,
-                                                                    attn_scale, false);
-                        }
-                        const auto attention_dtype = official_bf16 ? mfq_tensor_backend::kBFloat16
-                                                                   : mfq_tensor_backend::kFloat16;
-                        auto qh = q.to(attention_dtype).contiguous();
-                        auto kh = k.to(attention_dtype).contiguous();
-                        auto vh = v.to(attention_dtype).contiguous();
-                        if (cache_pos == 0 && T > 1) {
-                            if (official_bf16) {
-                                const bool bf16_flash128 = !sliding && hd == 128 && nh == 4 * nkh &&
-                                                           !seq_len.has_value() &&
-                                                           !attention_mask.has_value() &&
-                                                           execution.config.minicpm_bf16_flash128;
-                                if (bf16_flash128) {
-                                    const bool specialized_casts =
-                                        execution.config.minicpm_flash128_specialized_casts;
-                                    auto flash_q = profiler.measure("full.flash128_q_cast", [&]() {
-                                        return specialized_casts
-                                                   ? minicpm_flash128_q_cast_cuda(qh)
-                                                   : qh.to(mfq_tensor_backend::kFloat32)
-                                                         .contiguous();
-                                    });
-                                    auto flash_kv =
-                                        profiler.measure("full.flash128_kv_cast", [&]() {
-                                            if (specialized_casts) {
-                                                return minicpm_flash128_kv_cast_cuda(kh, vh);
-                                            }
-                                            return std::vector<mfq_tensor_backend::Tensor>{
-                                                kh.to(mfq_tensor_backend::kFloat16).contiguous(),
-                                                vh.to(mfq_tensor_backend::kFloat16).contiguous()};
-                                        });
-                                    a = profiler.measure("full.flash128_kernel", [&]() {
-                                        return mfq_attention_mma128_cuda(flash_q, flash_kv[0],
-                                                                         flash_kv[1], attn_scale);
-                                    });
-                                    a = profiler.measure("full.flash128_output_cast", [&]() {
-                                        return specialized_casts
-                                                   ? minicpm_flash128_output_cast_cuda(a)
-                                                   : a.to(mfq_tensor_backend::kBFloat16)
-                                                         .contiguous();
-                                    });
-                                    attention_token_major = true;
-                                } else {
-                                    auto repeated_k = kh;
-                                    auto repeated_v = vh;
-                                    if (nkh != nh) {
-                                        TYLOINFER_RUNTIME_CHECK(
-                                            nh % nkh == 0,
-                                            "MiniCPM-o Qwen3 attention head ratio is invalid");
-                                        const int64_t repeat = nh / nkh;
-                                        repeated_k = kh.repeat_interleave(repeat, 1).contiguous();
-                                        repeated_v = vh.repeat_interleave(repeat, 1).contiguous();
-                                    }
-                                    auto mask = minicpmo45_attention_mask(T, false);
-                                    a = mfq_scaled_dot_product_attention(
-                                        qh, repeated_k, repeated_v, mask, 0.0, !mask.has_value(),
-                                        attn_scale, false);
-                                }
-                            } else {
-                                const bool mma_attention_enabled = execution.config.mma_attention;
-                                if (!sliding && T % 256 == 0 && hd == 512 && nh == 8 * nkh &&
-                                    mma_attention_enabled) {
-                                    a = mfq_attention_mma512_cuda(
-                                        q.to(mfq_tensor_backend::kFloat32).contiguous(), kh, vh,
-                                        attn_scale);
-                                    attention_token_major = true;
-                                } else if (sliding && T >= 32 && hd == 256 && nh == 2 * nkh &&
-                                           mma_attention_enabled) {
-                                    a = mfq_attention_mma256_swa_cuda(
-                                        q.to(mfq_tensor_backend::kFloat32).contiguous(), kh, vh,
-                                        attn_scale, attention_window);
-                                    attention_token_major = true;
-                                } else if (!sliding && T >= 32 && hd == 256 &&
-                                           (nh == 4 * nkh || nh == 8 * nkh) &&
-                                           mma_attention_enabled) {
-                                    a = mfq_attention_mma256_cuda(
-                                        q.to(mfq_tensor_backend::kFloat32).contiguous(), kh, vh,
-                                        attn_scale);
-                                    attention_token_major = true;
-                                } else if (sliding) {
-                                    a = attention_swa_cuda(qh, kh, vh, attn_scale,
-                                                           attention_window);
-                                } else {
-                                    a = mfq_scaled_dot_product_attention(
-                                        qh, kh, vh, std::nullopt, 0.0, true, attn_scale, true);
-                                }
-                            }
-                        } else if (seq_len.has_value()) {
-                            const int64_t planned_len =
-                                planned_kv_length > 0 ? planned_kv_length : cache_pos + T;
-                            const bool bf16_gqa_decode =
-                                official_bf16 && T == 1 && execution.config.minicpm_bf16_gqa_decode;
-                            const bool aten_decode_enabled = (official_bf16 && !bf16_gqa_decode) ||
-                                                             execution.config.attention_decode_aten;
-                            const bool mma_decode_enabled = execution.config.mma_attention_decode;
-                            auto prepare_mma_decode_workspace = [&](int64_t visible_len,
-                                                                    int64_t kv_tile) {
-                                const int64_t mask_stride =
-                                    (visible_len + kv_tile - 1) / kv_tile * kv_tile;
-                                const int64_t ntiles_kv = (visible_len + kv_tile - 1) / kv_tile;
-                                const int64_t max_blocks = B * nkh * ntiles_kv;
-                                const int64_t meta_float2 = max_blocks * 8 * (2 + hd / 2);
-                                auto cuda = mfq_tensor_backend::TensorOptions().device(
-                                    mfq_tensor_backend::kCUDA);
-                                if (!decode_mma_mask.defined() || decode_mma_mask.size(0) != B ||
-                                    decode_mma_mask.size(1) < mask_stride) {
-                                    decode_mma_mask = mfq_tensor_backend::empty(
-                                        {B, mask_stride}, cuda.dtype(mfq_tensor_backend::kFloat16));
-                                }
-                                if (!decode_mma_kv_max.defined() || decode_mma_kv_max.numel() < B) {
-                                    decode_mma_kv_max = mfq_tensor_backend::empty(
-                                        {B}, cuda.dtype(mfq_tensor_backend::kInt32));
-                                }
-                                if (!decode_mma_meta.defined() ||
-                                    decode_mma_meta.numel() < 2 * meta_float2) {
-                                    decode_mma_meta = mfq_tensor_backend::empty(
-                                        {2 * meta_float2},
-                                        cuda.dtype(mfq_tensor_backend::kFloat32));
-                                }
-                            };
-                            if (cache.is_paged()) {
-                                const bool split_enabled =
-                                    execution.config.attention_decode_split_k;
-                                int64_t parts =
-                                    split_enabled && cache_pos >= 192 ? (cache_pos + 127) / 128 : 1;
-                                const bool dynamic_parts =
-                                    split_enabled && decode_attention_parts > 1;
-                                if (dynamic_parts)
-                                    parts = decode_attention_parts;
-                                parts = std::min<int64_t>(parts, kDecodeAttentionMaxParts);
-                                a = attention_paged_cache_decode_cuda(
-                                    qh, cache.k_chunk_ptrs, cache.v_chunk_ptrs, cache.page_table,
-                                    seq_len.value(), attn_scale, cache.page_size,
-                                    cache.pages_per_chunk, cache.paged_heads, decode_partial_o,
-                                    decode_partial_m, decode_partial_l, parts, dynamic_parts);
-                            } else if (aten_decode_enabled) {
-                                const int64_t visible_len =
-                                    sliding ? std::min<int64_t>(attention_window, cache_pos + T)
-                                            : cache_pos + T;
-                                auto cached_k =
-                                    cache.k
-                                        .index({Slice(), Slice(), Slice(0, visible_len), Slice()})
-                                        .contiguous();
-                                auto cached_v =
-                                    cache.v
-                                        .index({Slice(), Slice(), Slice(0, visible_len), Slice()})
-                                        .contiguous();
-                                auto mask =
-                                    minicpmo45_attention_mask(visible_len, cache_pos > 0 && T > 1);
-                                if (official_bf16 && nkh != nh) {
-                                    TYLOINFER_RUNTIME_CHECK(
-                                        nh % nkh == 0,
-                                        "MiniCPM-o Qwen3 attention head ratio is invalid");
-                                    const int64_t repeat = nh / nkh;
-                                    cached_k = cached_k.repeat_interleave(repeat, 1).contiguous();
-                                    cached_v = cached_v.repeat_interleave(repeat, 1).contiguous();
-                                }
-                                a = mfq_scaled_dot_product_attention(qh, cached_k, cached_v, mask,
-                                                                     0.0, false, attn_scale,
-                                                                     !official_bf16);
-                            } else if (sliding && T == 1 && mma_decode_enabled && hd == 256 &&
-                                       nh == 2 * nkh) {
-                                const int64_t visible_len =
-                                    std::min<int64_t>(attention_window, planned_len);
-                                prepare_mma_decode_workspace(visible_len, 64);
-                                a = mfq_attention_mma256_swa_decode_cuda(
-                                    q.to(mfq_tensor_backend::kFloat32).contiguous(), cache.k,
-                                    cache.v, seq_len.value(), attn_scale, visible_len,
-                                    decode_mma_mask, decode_mma_kv_max, decode_mma_meta);
-                                attention_token_major = true;
-                            } else if (!sliding && T == 1 && mma_decode_enabled && nh == 8 * nkh &&
-                                       (hd == 256 || hd == 512)) {
-                                const int64_t kv_tile = hd == 512 ? 32 : 64;
-                                prepare_mma_decode_workspace(planned_len, kv_tile);
-                                a = hd == 512 ? mfq_attention_mma512_decode_cuda(
-                                                    q.to(mfq_tensor_backend::kFloat32).contiguous(),
-                                                    cache.k, cache.v, seq_len.value(), attn_scale,
-                                                    planned_len, decode_mma_mask, decode_mma_kv_max,
-                                                    decode_mma_meta)
-                                              : mfq_attention_mma256_decode_cuda(
-                                                    q.to(mfq_tensor_backend::kFloat32).contiguous(),
-                                                    cache.k, cache.v, seq_len.value(), attn_scale,
-                                                    planned_len, decode_mma_mask, decode_mma_kv_max,
-                                                    decode_mma_meta);
-                                attention_token_major = true;
-                            } else if (sliding) {
-                                a = attention_cache_swa_planned_cuda(qh, cache.k, cache.v,
-                                                                     seq_len.value(), attn_scale,
-                                                                     attention_window, planned_len);
-                            } else {
-                                const bool split_enabled =
-                                    execution.config.attention_decode_split_k;
-                                int64_t parts =
-                                    split_enabled && cache_pos >= 192 ? (cache_pos + 127) / 128 : 1;
-                                if (split_enabled && decode_attention_parts > 0) {
-                                    parts = decode_attention_parts;
-                                }
-                                parts = std::min<int64_t>(parts, kDecodeAttentionMaxParts);
-                                a = decode_attention_parts > 1
-                                        ? attention_cache_decode_dynamic_cuda(
-                                              qh, cache.k, cache.v, seq_len.value(), attn_scale,
-                                              decode_partial_o, decode_partial_m, decode_partial_l,
-                                              parts)
-                                    : parts > 1
-                                        ? attention_cache_decode_split_cuda(
-                                              qh, cache.k, cache.v, seq_len.value(), attn_scale,
-                                              decode_partial_o, decode_partial_m, decode_partial_l,
-                                              parts)
-                                        : attention_cache_decode_cuda(qh, cache.k, cache.v,
-                                                                      seq_len.value(), attn_scale);
-                            }
-                        } else {
-                            if (official_bf16) {
-                                auto cached_k = kv.first.contiguous();
-                                auto cached_v = kv.second.contiguous();
-                                if (nkh != nh) {
-                                    TYLOINFER_RUNTIME_CHECK(
-                                        nh % nkh == 0,
-                                        "MiniCPM-o Qwen3 attention head ratio is invalid");
-                                    const int64_t repeat = nh / nkh;
-                                    cached_k = cached_k.repeat_interleave(repeat, 1).contiguous();
-                                    cached_v = cached_v.repeat_interleave(repeat, 1).contiguous();
-                                }
-                                auto mask = minicpmo45_attention_mask(cached_k.size(2),
-                                                                      cache_pos > 0 && T > 1);
-                                a = mfq_scaled_dot_product_attention(
-                                    qh, cached_k, cached_v, mask, 0.0,
-                                    !mask.has_value() && cache_pos == 0 && T > 1, attn_scale,
-                                    false);
-                            } else {
-                                a = sliding
-                                        ? attention_swa_cuda(qh, kv.first.contiguous(),
-                                                             kv.second.contiguous(), attn_scale,
-                                                             attention_window)
-                                        : attention_cuda(qh, kv.first.contiguous(),
-                                                         kv.second.contiguous(), attn_scale, true);
-                            }
-                        }
-                        return a;
-                    });
-                    return a;
+                    trace_qwen_stage("qwen.q_rope", heads.query, 2);
+                    trace_qwen_stage("qwen.k_rope", heads.key, 2);
+                    auto result = mfq::cuda::dispatch_attention(
+                        mfq::cuda::AttentionInput{
+                            heads.query,
+                            heads.key,
+                            heads.value,
+                            pos,
+                            write_positions,
+                            seq_len,
+                            attention_mask,
+                            cache_pos,
+                            planned_kv_length,
+                            decode_attention_parts},
+                        mfq::cuda::AttentionKvView{
+                            kv.first,
+                            kv.second,
+                            cache.k,
+                            cache.v,
+                            cache.k_chunk_ptrs,
+                            cache.v_chunk_ptrs,
+                            cache.page_table,
+                            cache.quantization,
+                            cache.page_size,
+                            cache.pages_per_chunk,
+                            cache.paged_heads},
+                        mfq::cuda::AttentionConfig{
+                            .official_bf16 = official_bf16,
+                            .sliding = sliding,
+                            .window = attention_window,
+                            .scale = attention_scale,
+                            .bf16_flash128 = execution.config.minicpm_bf16_flash128,
+                            .flash128_casts = execution.config.minicpm_flash128_specialized_casts,
+                            .bf16_gqa_decode = execution.config.minicpm_bf16_gqa_decode,
+                            .decode_aten = execution.config.attention_decode_aten,
+                            .mma_prefill = execution.config.mma_attention,
+                            .mma_decode = execution.config.mma_attention_decode,
+                            .split_k = execution.config.attention_decode_split_k},
+                        scratch, profiler);
+                    attention_token_major = result.token_major;
+                    return result.value;
                 },
                 [&](mfq_tensor_backend::Tensor a, std::optional<mfq_tensor_backend::Tensor> gate) {
                     auto q_gate = gate.value_or(mfq_tensor_backend::Tensor{});
@@ -770,7 +433,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
                             .to(rr.scalar_type())
                             .contiguous();
                     auto normalized =
-                        official_bf16 ? qwen_rms_norm_bf16(execution.config, summed, ffn_norm,
+                        official_bf16 ? qwen_rms_norm_bf16(execution.config.minicpm_fused_bf16_rmsnorm, summed, ffn_norm,
                                                            rms_norm_eps, norm_weight_offset)
                                       : qwen_rms_norm(summed.to(mfq_tensor_backend::kFloat32),
                                                       ffn_norm, rms_norm_eps, norm_weight_offset);
@@ -904,35 +567,4 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
                     return output;
                 });
         });
-}
-
-mfq_tensor_backend::Tensor qwen_rms_norm(mfq_tensor_backend::Tensor x,
-                                         mfq_tensor_backend::Tensor weight, double eps,
-                                         double weight_offset) {
-    if (!x.is_cuda()) {
-        auto xf = x.contiguous().to(mfq_tensor_backend::kFloat32);
-        auto wf = weight.contiguous().to(mfq_tensor_backend::kFloat32);
-        if (weight_offset != 0.0)
-            wf = wf + weight_offset;
-        auto inverse = mfq_tensor_backend::rsqrt(xf.square().mean(-1, true) + eps);
-        return (xf * inverse * wf).contiguous();
-    }
-    return rms_norm_offset_cuda(x, weight, eps, weight_offset);
-}
-
-mfq_tensor_backend::Tensor qwen_rms_norm_bf16(const CudaExecutionConfig &config,
-                                              mfq_tensor_backend::Tensor x,
-                                              mfq_tensor_backend::Tensor weight, double eps,
-                                              double weight_offset) {
-    auto input = x.contiguous().to(mfq_tensor_backend::kBFloat16);
-    if (input.is_cuda() && config.minicpm_fused_bf16_rmsnorm) {
-        return qwen_rms_norm_bf16_cuda(input, weight.contiguous(), eps, weight_offset);
-    }
-    auto xf = input.to(mfq_tensor_backend::kFloat32);
-    auto inverse = mfq_tensor_backend::rsqrt(xf.square().mean(-1, true) + eps);
-    auto normalized = (xf * inverse).to(mfq_tensor_backend::kBFloat16);
-    auto scale = weight.contiguous().to(mfq_tensor_backend::kBFloat16);
-    if (weight_offset != 0.0)
-        scale = scale + weight_offset;
-    return (scale * normalized).contiguous();
 }

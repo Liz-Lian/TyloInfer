@@ -1,24 +1,12 @@
 #pragma once
 
 #include "ops/common/include/rope.h"
+#include "ops/norm/rms.h"
 
 #include <cstdint>
 #include <vector>
 
 struct CudaExecutionContext;
-
-mfq_tensor_backend::Tensor qwen_rms_norm(
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor weight,
-    double eps,
-    double weight_offset);
-
-mfq_tensor_backend::Tensor qwen_rms_norm_bf16(
-    const CudaExecutionConfig& config,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor weight,
-    double eps,
-    double weight_offset);
 
 struct Block {
     struct Context {
