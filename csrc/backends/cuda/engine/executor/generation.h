@@ -2,8 +2,8 @@
 
 #include "engine/executor/step.h"
 #include "cuda_batching.h"
-#include "execution/execution.h"
-#include "engine/decode_graph.h"
+#include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/executor/decode_graph.h"
 #include "models/common/mtp.h"
 #include "cuda_runtime_config.h"
 

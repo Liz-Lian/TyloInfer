@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/generation.h"
+#include "backends/cuda/engine/executor/generation.h"
 
 namespace mfq::cuda::diagnostics {
 struct GenerationResult {

@@ -1,6 +1,7 @@
 std::vector<mfq_tensor_backend::Tensor> NintLinearGroup::forward(
             CudaProfiler& profiler,
             KlMmqState& kl_mmq,
+            mfq::cuda::Branches& branches,
             const CudaExecutionConfig& config,
             bool serial_branches,
             mfq_tensor_backend::Tensor x) const {
@@ -36,7 +37,7 @@ std::vector<mfq_tensor_backend::Tensor> NintLinearGroup::forward(
         const bool parallel =
             decode_branch_parallel_enabled(
                 config, serial_branches, xf.size(0)) &&
-            branch_executor->run(
+            branches.run(
                 split_w.size(),
                 [&](size_t index) {
                     return run_nint_linear(

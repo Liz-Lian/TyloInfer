@@ -377,7 +377,7 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                        decode_branch_parallel_enabled(
                            execution.config, execution.decode_graph_serial_branches, rows) &&
                        execution.config.important_neuron_branch_parallel &&
-                       important_neuron_executor->run(2, run_branch, outputs);
+                       execution.branches.run(2, run_branch, outputs);
             },
             [&](auto low, auto high) {
                 if (use_f32_down)

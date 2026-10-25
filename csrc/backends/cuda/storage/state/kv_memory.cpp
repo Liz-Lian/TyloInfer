@@ -3,7 +3,7 @@
 #include "storage/state/kv_vmm.h"
 #include "storage/state/kv_budget.h"
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "context.h"
 #include "resident_allocations.h"
 #include <algorithm>

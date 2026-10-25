@@ -4,7 +4,7 @@
 #include "backends/cuda/engine/weights/tq/load.h"
 #include "models/common/full_block.h"
 #include "moe.h"
-#include "execution/moe_ffn_pipeline.h"
+#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
 
 #include <cstdio>
 #include <fstream>

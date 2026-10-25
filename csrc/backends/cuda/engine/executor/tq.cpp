@@ -1,9 +1,9 @@
-#include "execution/tq.h"
+#include "backends/cuda/engine/executor/tq.h"
 
 #include "backend.h"
 #include "context.h"
 #include "kernels/moe/pipeline.h"
-#include "execution/decode_window.h"
+#include "backends/cuda/engine/executor/decode_window.h"
 
 #include <atomic>
 #include <climits>

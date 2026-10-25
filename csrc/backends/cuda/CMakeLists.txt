@@ -396,7 +396,6 @@ function(mfq_configure_cuda_backend_target target)
         ${TYLOINFER_CUDA_ROOT}/ops/common/include
         ${TYLOINFER_CUDA_ROOT}/ops/tq/include
         ${TYLOINFER_CUDA_ROOT}/ops/mfq/include
-        ${TYLOINFER_CUDA_ROOT}/execution
         ${TYLOINFER_CUDA_KERNEL_ROOT}
         ${CUDAToolkit_INCLUDE_DIRS}
     )
@@ -492,15 +491,15 @@ target_compile_definitions(mfq-cuda-ops PRIVATE
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/execution/execution.cpp
-    ${TYLOINFER_CUDA_ROOT}/execution/tq.cpp
-    ${TYLOINFER_CUDA_ROOT}/execution/decode_window.cpp
-    ${TYLOINFER_CUDA_ROOT}/execution/graph_registry.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/graph_registry.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
-        ${TYLOINFER_CUDA_ROOT}/execution/moe_ffn_pipeline.cpp
-        ${TYLOINFER_CUDA_ROOT}/execution/moe_plan.cpp)
+        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_ffn_pipeline.cpp
+        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_plan.cpp)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
@@ -542,12 +541,12 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/load_options.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/model_components.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/decode_graph.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_engine.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/generation.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/session/text_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/session/deepseek_v41_paged.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/mtp.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/cuda_batching.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp

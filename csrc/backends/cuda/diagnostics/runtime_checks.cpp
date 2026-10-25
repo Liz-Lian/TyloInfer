@@ -4,7 +4,7 @@
 #include <map>
 
 #include "cuda_runtime_config.h"
-#include "engine/generation.h"
+#include "backends/cuda/engine/executor/generation.h"
 #include "storage/session/text_cache.h"
 #include "engine/cuda_batching.h"
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "execution/layer_inputs.h"
+#include "backends/cuda/engine/executor/layer_inputs.h"
 #include "formats/tq_table.h"
 
 #include <cstddef>

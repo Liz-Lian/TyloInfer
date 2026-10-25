@@ -1,10 +1,10 @@
 #include "env.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
-#include "generation.h"
-#include "token_row_prefetch.h"
+#include "backends/cuda/engine/executor/generation.h"
+#include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/executor/speculative_sequence.h"
 
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "cuda_sampling.h"
 #include "engine/requests/policy.h"
 #include "engine/requests/inference.h"

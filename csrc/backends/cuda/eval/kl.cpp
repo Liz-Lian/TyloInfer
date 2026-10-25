@@ -11,7 +11,7 @@
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "quant_linear.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"

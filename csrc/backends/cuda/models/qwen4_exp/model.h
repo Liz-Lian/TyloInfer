@@ -1,7 +1,7 @@
 #include "env.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #pragma once
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "resident_allocations.h"
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
@@ -12,10 +12,10 @@
 #include "csrc/backends/cuda/kernels/qwen4_exp.h"
 #include "csrc/backends/cuda/kernels/ple_fused.h"
 #include "backends/cuda/engine/weights/nint_row_pipeline.h"
-#include "execution/layer_inputs.h"
+#include "backends/cuda/engine/executor/layer_inputs.h"
 #include "storage/state/kv_offload.h"
 #include "storage/state/kv_memory.h"
-#include "execution/decode_window.h"
+#include "backends/cuda/engine/executor/decode_window.h"
 #include "mfq_cuda_kv_quantization.h"
 #include "storage/session/state.h"
 #include <array>

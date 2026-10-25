@@ -5,7 +5,7 @@
 #include "engine/models/nemotron_h/vision.h"
 #include "backends/cuda/engine/weights/load.h"
 
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "engine/requests/media.h"
 #include "mfq_cuda_activation_ops.h"
 #include "formats/model_graph.h"

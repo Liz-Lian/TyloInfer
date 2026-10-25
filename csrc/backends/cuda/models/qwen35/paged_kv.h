@@ -3,7 +3,7 @@
 #include "engine/state/pages.h"
 #include "batch_state.h"
 #include "models/common/full_block.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 
 #include <cuda_runtime_api.h>
 

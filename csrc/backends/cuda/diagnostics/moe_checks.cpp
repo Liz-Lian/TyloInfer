@@ -8,7 +8,7 @@
 #include "models/gemma4/ops.h"
 #include "models/glm_dsa/ops.h"
 #include "quant_linear.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "mfq_cuda_moe_ops.h"
 

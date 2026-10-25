@@ -1,6 +1,6 @@
 #include "gated_residual.h"
 #include "qwen4_exp.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 
 namespace {
 std::vector<mfq_tensor_backend::Tensor> residual_pre(

@@ -4,8 +4,8 @@
 #include "engine/requests/inference.h"
 
 #include "mfq_cuda_sampling_ops.h"
-#include "execution/execution.h"
-#include "engine/decode_graph.h"
+#include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/executor/decode_graph.h"
 #include "models/common/full_block.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/qwen4_exp/ops.h"

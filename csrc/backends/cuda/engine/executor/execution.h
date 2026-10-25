@@ -3,6 +3,7 @@
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
+#include "native/branches.h"
 #include "engine/weights/tensor_parallel.h"
 #include "engine/models/common/yarn.h"
 
@@ -399,6 +400,7 @@ struct CudaExecutionContext {
     LayerPlacementConfig layer_placement;
     CudaStores& stores;
     std::shared_ptr<TqExec> tq;
+    mfq::cuda::Branches branches;
     std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
 
     void drain();
@@ -491,96 +493,5 @@ struct DecodeGraphTpProjectionScope {
     }
     ~DecodeGraphTpProjectionScope() {
         setting = previous;
-    }
-};
-
-struct CudaIndependentBranchExecutor {
-    using Stream =
-        decltype(mfq_get_stream_from_pool(false));
-
-    int device = -1;
-    cudaEvent_t ready = nullptr;
-    std::vector<Stream> streams;
-    std::vector<cudaEvent_t> completed;
-
-    ~CudaIndependentBranchExecutor() {
-        for (cudaEvent_t event : completed) {
-            if (event != nullptr) {
-                (void)cudaEventDestroy(event);
-            }
-        }
-        if (ready != nullptr) {
-            (void)cudaEventDestroy(ready);
-        }
-    }
-
-    bool ensure(size_t branches, const Stream & parent) {
-        const int parent_device = parent.device_index();
-        if (device >= 0 && device != parent_device) {
-            return false;
-        }
-        if (streams.size() >= branches) {
-            return true;
-        }
-        cudaStreamCaptureStatus capture_status =
-            cudaStreamCaptureStatusNone;
-        TYLOINFER_CUDA_CHECK(cudaStreamIsCapturing(
-            parent.stream(), &capture_status));
-        if (capture_status != cudaStreamCaptureStatusNone) {
-            return false;
-        }
-        device = parent_device;
-        if (ready == nullptr) {
-            TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
-                &ready, cudaEventDisableTiming));
-        }
-        while (streams.size() < branches) {
-            streams.push_back(
-                mfq_get_stream_from_pool(false, device));
-            cudaEvent_t event = nullptr;
-            TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
-                &event, cudaEventDisableTiming));
-            completed.push_back(event);
-        }
-        return true;
-    }
-
-    template <typename Fn>
-    bool run(
-            size_t branches,
-            Fn && fn,
-            std::vector<mfq_tensor_backend::Tensor> & outputs) {
-        if (branches < 2) {
-            return false;
-        }
-        const Stream parent =
-            mfq_get_current_cuda_stream();
-        if (!ensure(branches, parent)) {
-            return false;
-        }
-
-        outputs.resize(branches);
-        TYLOINFER_CUDA_CHECK(cudaEventRecord(
-            ready, parent.stream()));
-        for (size_t index = 0; index < branches; ++index) {
-            const Stream branch_stream = streams[index];
-            TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                branch_stream.stream(), ready, 0));
-            {
-                MfqCudaStreamGuard guard(
-                    branch_stream);
-                outputs[index] = fn(index);
-            }
-            TYLOINFER_CUDA_CHECK(cudaEventRecord(
-                completed[index], branch_stream.stream()));
-        }
-        for (size_t index = 0; index < branches; ++index) {
-            TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(
-                parent.stream(), completed[index], 0));
-            if (outputs[index].defined()) {
-                mfq_cuda_record_stream(outputs[index], parent);
-            }
-        }
-        return true;
     }
 };

@@ -9,7 +9,7 @@
 #include "tq.h"
 #include "formats/format_features.h"
 
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backend.h"
 
 #include <cuda_runtime_api.h>
@@ -65,12 +65,10 @@ struct NintLinearGroup {
     std::vector<NintWeight> split_w;
     std::vector<std::vector<int64_t>> split_outs;
     std::vector<int64_t> outs;
-    mutable std::shared_ptr<CudaIndependentBranchExecutor>
-        branch_executor =
-            std::make_shared<CudaIndependentBranchExecutor>();
     std::vector<mfq_tensor_backend::Tensor> forward(
             CudaProfiler& profiler,
             KlMmqState& kl_mmq,
+            mfq::cuda::Branches& branches,
             const CudaExecutionConfig& config,
             bool serial_branches,
             mfq_tensor_backend::Tensor x) const;
@@ -191,9 +189,6 @@ struct QuantLinearGroup {
     TqProjectionGroup tq;
     std::vector<QuantLinear> layers;
     std::vector<int64_t> outs;
-    mutable std::shared_ptr<CudaIndependentBranchExecutor>
-        branch_executor =
-            std::make_shared<CudaIndependentBranchExecutor>();
 
     QuantLinearProjectionRefs tensor_parallel_output_projections() const;
 

@@ -1,10 +1,10 @@
 #pragma once
 
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "engine/models/common/grid_vision_model.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/weights/load.h"
 

@@ -1,6 +1,6 @@
 #include "env.h"
 #include "tq.h"
-#include "execution/tq.h"
+#include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/weights/tq/cache.h"
 #include "weight_memory.h"
 #include "quant_linear.h"
@@ -8,8 +8,8 @@
 #include "context.h"
 #include "mfq_cuda_activation_ops.h"
 #include "kernels/moe/pipeline.h"
-#include "execution/decode_window.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/decode_window.h"
+#include "backends/cuda/engine/executor/options.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>

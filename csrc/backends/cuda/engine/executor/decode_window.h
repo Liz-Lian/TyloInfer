@@ -1,5 +1,5 @@
 #pragma once
-#include "execution/graph_registry.h"
+#include "backends/cuda/engine/executor/graph_registry.h"
 #include <cuda_runtime_api.h>
 #include <functional>
 #include <memory>

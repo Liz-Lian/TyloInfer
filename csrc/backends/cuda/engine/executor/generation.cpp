@@ -1,8 +1,8 @@
 #include "env.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
-#include "generation.h"
+#include "backends/cuda/engine/executor/generation.h"
 #include "engine/executor/flow.h"
-#include "token_row_prefetch.h"
+#include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "models/deepseek_v4/ops.h"
 #include "models/deepseek_v41/ops.h"
 #include "models/gemma4/ops.h"
@@ -17,7 +17,7 @@
 #include "storage/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "engine/batch/prefill_budget.h"
 
 #include <algorithm>

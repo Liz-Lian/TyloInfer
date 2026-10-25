@@ -25,9 +25,6 @@ struct FFN {
     QuantLinearGroup gate_up;
     QuantLinear down;
     std::unique_ptr<FFN> important_neurons;
-    mutable std::shared_ptr<CudaIndependentBranchExecutor>
-        important_neuron_executor =
-            std::make_shared<CudaIndependentBranchExecutor>();
     bool geglu = false;
     // Dense FFN and shared/routed experts share the explicit activation label.
     mfq::models::MlpActivation activation = mfq::models::MlpActivation::silu_gated;

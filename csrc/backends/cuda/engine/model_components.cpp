@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/model_components.h"
 #include "backends/cuda/engine/weights/mapped_embedding.h"
@@ -10,7 +10,7 @@
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "kernels/gr_prefill_blas.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"

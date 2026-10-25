@@ -1,7 +1,7 @@
 #pragma once
 #include "env.h"
 
-#include "engine/generation.h"
+#include "backends/cuda/engine/executor/generation.h"
 #include "generation_result.h"
 #include "models/deepseek_v4/ops.h"
 #include "models/qwen4_exp/ops.h"
@@ -13,7 +13,7 @@
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "storage/session/text_cache.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "qwen35/linear_attention.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 #include "nlohmann/json.hpp"

@@ -1,5 +1,5 @@
 #include "env.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "mfe_ffn_runtime.h"
 #include "mfe_e8_narrow_bounds.h"
 #include "mfe_ffn_launch.h"
@@ -9,7 +9,7 @@
 #include "mfe_ffn_shared.h"
 #include "mfe_nvq_dense_bounds.h"
 #include "mfq_cuda_nint_route_hint.h"
-#include "execution/decode_window.h"
+#include "backends/cuda/engine/executor/decode_window.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>

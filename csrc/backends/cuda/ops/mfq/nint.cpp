@@ -4,12 +4,12 @@
 #include "resident_allocations.h"
 #include "nint.h"
 #include "nint_prefill_cache.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "format.h"
 #include "packed_nint.h"
 #include "cpu_projection_rows.h"
-#include "execution/decode_window.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/decode_window.h"
+#include "backends/cuda/engine/executor/options.h"
 
 #include <cstring>
 #include <limits>

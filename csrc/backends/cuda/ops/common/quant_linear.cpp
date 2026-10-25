@@ -1,4 +1,4 @@
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_embedding_ops.h"
 #include "mfq_cuda_quant_ops.h"
@@ -1203,7 +1203,7 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
     }
     if (mfq::mfq_compat_enabled && nint_grouped) {
         return nint.forward(
-            execution.profiler, execution.kl_mmq,
+            execution.profiler, execution.kl_mmq, execution.branches,
             execution.config, execution.decode_graph_serial_branches, x);
     }
     if (mfq::mfq_compat_enabled && default_mmq && nvq_prefix2 && nvq_fusion_enabled(execution.config)) {
@@ -1216,7 +1216,7 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
             decode_branch_parallel_enabled(
                 execution.config, execution.decode_graph_serial_branches, flat.size(0)) &&
             layers.size() > 2 &&
-            branch_executor->run(
+            execution.branches.run(
                 layers.size() - 1,
                 [&](size_t branch) {
                     if (branch == 0) {
@@ -1252,7 +1252,7 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
     if (default_mmq && decode_branch_parallel &&
             decode_branch_parallel_enabled(
                 execution.config, execution.decode_graph_serial_branches, x.numel() / x.size(-1)) &&
-            branch_executor->run(
+            execution.branches.run(
                 layers.size(),
                 [&](size_t index) {
                     return layers[index].forward(execution, x);

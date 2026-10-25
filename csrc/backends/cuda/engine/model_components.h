@@ -25,7 +25,7 @@
 
 
 #include "backends/cuda/engine/weights/load.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/common/grid_vision.h"
 

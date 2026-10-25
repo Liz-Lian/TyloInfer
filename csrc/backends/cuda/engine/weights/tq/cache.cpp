@@ -2,8 +2,8 @@
 
 #include "backends/cuda/engine/weights/tq/image.h"
 #include "formats/tq_table.h"
-#include "execution/tq.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/tq.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "env.h"
 #include "weight_memory.h"
 #include "backends/cpu/native/host_memory.h"

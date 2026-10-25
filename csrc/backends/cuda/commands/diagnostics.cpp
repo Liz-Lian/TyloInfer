@@ -11,9 +11,9 @@
 #include "diagnostics/runtime_checks.h"
 #include "diagnostics/flash_next_mtp.h"
 #include "minicpmo45.h"
-#include "execution/execution.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "execution/options.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>

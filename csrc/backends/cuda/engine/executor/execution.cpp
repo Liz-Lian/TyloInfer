@@ -1,7 +1,7 @@
 #include "env.h"
-#include "execution/options.h"
-#include "execution/execution.h"
-#include "execution/tq.h"
+#include "backends/cuda/engine/executor/options.h"
+#include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "storage/state/kv_offload.h"
 
@@ -877,7 +877,7 @@ void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (native_contexts.empty() && !stores.moe_expert_cache &&
         !stores.tq_expert_cache && !stores.qsa_kv_store &&
-        (!tq || tq->empty())) return;
+        (!tq || tq->empty()) && branches.empty()) return;
 #endif
     CudaScope scope(*this);
     std::exception_ptr failure;
@@ -902,12 +902,14 @@ void CudaExecutionContext::drain() {
     });
 #endif
     if (tq) finish([&] { tq->drain(); });
+    finish([&] { branches.drain(); });
     if (failure) std::rethrow_exception(failure);
 }
 
 void CudaExecutionContext::reset() {
     drain();
     tq = std::make_shared<TqExec>();
+    branches.clear();
     profiler.reset();
     model_parallel_collectives.reset();
     tensor_parallel = {};
