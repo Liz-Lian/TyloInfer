@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/weights/moe/load.h"
-#include "models/common/ffn.h"
+#include "ffn.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/moe.h"
 

@@ -7,7 +7,7 @@
 
 #include "models/common/causal_model_ops.h"
 #include "models/common/block.h"
-#include "models/common/ffn.h"
+#include "ops/ffn/ffn.h"
 #include "engine/models/glm_dsa/config.h"
 
 #include <memory>

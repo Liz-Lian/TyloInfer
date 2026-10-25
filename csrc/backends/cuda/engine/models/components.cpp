@@ -2,8 +2,6 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/models/components.h"
-#include "backends/cuda/engine/weights/mapped_embedding.h"
-#include "weight_memory.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
 #include "models/qwen35/mtp.h"
@@ -24,48 +22,9 @@ namespace {
 template <class Model> struct CudaWeightLoader {
     Model &model;
     const mfq::ModelSource &source;
-    auto embedding(const std::string &name) {
-        const auto mapped=mfq::cuda::runtime_options::embedding_mapped();
-        const bool mapped_control=mapped && *mapped==2;
-        const bool use_mapped=mapped ? *mapped==1 || mapped_control :
-            model.execution->config.moe_pipeline && model.execution->config.moe_ram_pcie;
-        const auto& dtype=require_tensor(source,name).dtype;
-        const bool nint=mfq::mfq_compat_enabled && dtype=="NINT";
-        if(use_mapped && model.has_independent_output_weights(*this) &&
-                !model.execution->tensor_parallel.enabled() && !model.execution->loading_cpu_layer &&
-                (dtype=="BF16" || dtype=="F16" || dtype=="F32" || nint)) {
-            try {
-                const mfq::cuda::WeightAllocationScope weight_memory;
-                if(nint) {
-                    QuantLinear cpu;
-                    {
-                        struct CpuLoadScope {
-                            bool& flag;
-                            explicit CpuLoadScope(bool& value):flag(value){flag=true;}
-                            ~CpuLoadScope(){flag=false;}
-                        } scope(model.execution->loading_cpu_layer);
-                        cpu=load_quant_linear(*model.execution,source,name);
-                    }
-                    auto result=map_nint_embedding(std::move(cpu),active_weight_load_device(*model.execution),mapped_control);
-                    std::cerr<<"mapped_token_embedding rows="<<result.out()<<" width="<<result.neuron_len()
-                             <<" dtype="<<dtype<<" read="<<(mapped_control?"device_control":"mapped_host")<<std::endl;
-                    return result;
-                }
-                auto cpu=load_dense_cpu(*model.execution,source,name);
-                auto result=map_dense_embedding(cpu,active_weight_load_device(*model.execution),mapped_control);
-                std::cerr<<"mapped_token_embedding bytes="<<cpu.numel()*cpu.element_size()
-                         <<" rows="<<cpu.size(0)<<" width="<<cpu.size(1)<<" dtype="<<dtype
-                         <<" read="<<(mapped_control?"device_control":"mapped_host")<<std::endl;
-                return result;
-            } catch(const mfq::cuda::Error& error) {
-                // Strata keeps the original GPU table when mapped pinning is
-                // unavailable. Explicit diagnostic controls must report failure.
-                if(mapped)throw;
-                (void)cudaGetLastError();
-                std::cerr<<"mapped_token_embedding unavailable; using device table: "<<error.what()<<std::endl;
-            }
-        }
-        return load_quant_linear(*model.execution, source, name);
+    auto embedding(const std::string& name) {
+        return load_embedding(*model.execution, source, name,
+                              model.has_independent_output_weights(*this));
     }
     auto output(const std::string &name) {
         return load_quant_linear(*model.execution, source, name, TensorParallelAxis::Output);
@@ -110,27 +69,8 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     model.graph = source.resolved_model_graph();
     model.plan = cuda_model_plan(model.graph);
     auto definition=load_model_config_json(source, config_path);
-    execution.yarn={};
-    if(execution.yarn_context_extension) {
-        if(model.graph.backbone!="qwen3_5" && model.graph.backbone!="qwen4_exp")
-            throw std::invalid_argument("YaRN extension requires a Qwen model");
-        auto config=nlohmann::json::parse(definition);
-        auto& text=config.contains("text_config") ? config["text_config"] : config.contains("language_config") ? config["language_config"] : config;
-        auto rope=text.value("rope_parameters",text.value("rope_scaling",nlohmann::json::object()));
-        if(rope.contains("full_attention"))rope=rope["full_attention"];
-        auto native=text.value("max_position_embeddings",int64_t(0));
-        const auto kind=rope.value("rope_type",rope.value("type",std::string("default")));
-        if(kind=="yarn")native=rope.value("original_max_position_embeddings",native);
-        const auto maximum=rope.value("factor",4.0);
-        if((kind!="default" && kind!="yarn") || native<=0 || !std::isfinite(maximum) || maximum<1 ||
-            context_size_override>std::floor(native*maximum))throw std::invalid_argument("context exceeds Qwen YaRN limit");
-        execution.yarn.original_context=native;
-        execution.yarn.factor=std::max(1.0,double(context_size_override)/native);
-        execution.yarn.beta_fast=rope.value("beta_fast",32.0);
-        execution.yarn.beta_slow=rope.value("beta_slow",1.0);
-        if(execution.yarn.enabled())text["max_position_embeddings"]=context_size_override;
-        definition=config.dump();
-    }
+    definition = configure_yarn(execution, std::move(definition),
+                                model.graph.backbone, context_size_override);
     model.load_definition(definition, model.graph, source,
                           context_size_override);
 

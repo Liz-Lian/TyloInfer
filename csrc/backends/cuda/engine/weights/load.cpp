@@ -1,3 +1,5 @@
+#include "backends/cuda/engine/weights/mapped_embedding.h"
+#include <iostream>
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
@@ -634,7 +636,8 @@ QuantLinearGroup load_quant_group(
     // Mixed-precision Q/K and gate/up pairs remain separate QuantLinear
     // branches and preserve the recipe-selected layouts.
     return make_quant_group(
-        execution, std::move(layers), preserve_projection_boundaries);
+        std::move(layers), execution.config.diagnostic_nint_group,
+        execution.loading_cpu_layer, preserve_projection_boundaries);
 }
 
 static std::vector<mfq::TensorParallelSlice>
@@ -897,7 +900,7 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
         tq_weights.push_back(*weight);tq_indices.push_back(i);
     }
     if(tq_weights.size()>=2) {
-        auto group=std::make_shared<QuantLinearGroup>(make_quant_group(execution,tq_weights));
+        auto group=std::make_shared<QuantLinearGroup>(make_quant_group(tq_weights,execution.config.diagnostic_nint_group,execution.loading_cpu_layer));
         TYLOINFER_RUNTIME_CHECK(group->tq.defined(),"TQ projection group was not constructed");
         bool direct_join=joined_prefix>1 && tq_indices.size()>=joined_prefix;
         for(std::size_t i=0;direct_join && i<joined_prefix;++i)direct_join=tq_indices[i]==i;
@@ -940,7 +943,8 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
         if (!weights.empty() && weight->neuron_len() != weights.front().neuron_len()) return {};
         weights.push_back(*weight);
     }
-    auto group = std::make_shared<QuantLinearGroup>(make_quant_group(execution, weights));
+    auto group = std::make_shared<QuantLinearGroup>(make_quant_group(weights, execution.config.diagnostic_nint_group,
+        execution.loading_cpu_layer));
     if (!group->nint_grouped) return {};
     std::vector<Linear> separate;
     separate.reserve(weights.size());
@@ -1229,4 +1233,50 @@ mfq_tensor_backend::Tensor load_dense_native_gpu(CudaExecutionContext &execution
     const mfq::cuda::WeightAllocationScope weight_memory;
     MfqCudaGuard guard(active_weight_load_device(execution));
     return load_dense_cpu(execution, source, name).to(mfq_tensor_backend::kCUDA).contiguous();
+}
+
+QuantLinear load_embedding(CudaExecutionContext& execution, const mfq::ModelSource& source,
+                           const std::string& name, bool independent_output) {
+    const auto mapped=mfq::cuda::runtime_options::embedding_mapped();
+    const bool mapped_control=mapped && *mapped==2;
+    const bool use_mapped=mapped ? *mapped==1 || mapped_control :
+        execution.config.moe_pipeline && execution.config.moe_ram_pcie;
+    const auto& dtype=require_tensor(source,name).dtype;
+    const bool nint=mfq::mfq_compat_enabled && dtype=="NINT";
+    if(use_mapped && independent_output &&
+            !execution.tensor_parallel.enabled() && !execution.loading_cpu_layer &&
+            (dtype=="BF16" || dtype=="F16" || dtype=="F32" || nint)) {
+        try {
+            const mfq::cuda::WeightAllocationScope weight_memory;
+            if(nint) {
+                QuantLinear cpu;
+                {
+                    struct CpuLoadScope {
+                        bool& flag;
+                        explicit CpuLoadScope(bool& value):flag(value){flag=true;}
+                        ~CpuLoadScope(){flag=false;}
+                    } scope(execution.loading_cpu_layer);
+                    cpu=load_quant_linear(execution,source,name);
+                }
+                auto result=map_nint_embedding(std::move(cpu),active_weight_load_device(execution),mapped_control);
+                std::cerr<<"mapped_token_embedding rows="<<result.out()<<" width="<<result.neuron_len()
+                         <<" dtype="<<dtype<<" read="<<(mapped_control?"device_control":"mapped_host")<<std::endl;
+                return result;
+            }
+            auto cpu=load_dense_cpu(execution,source,name);
+            auto result=map_dense_embedding(cpu,active_weight_load_device(execution),mapped_control);
+            std::cerr<<"mapped_token_embedding bytes="<<cpu.numel()*cpu.element_size()
+                     <<" rows="<<cpu.size(0)<<" width="<<cpu.size(1)<<" dtype="<<dtype
+                     <<" read="<<(mapped_control?"device_control":"mapped_host")<<std::endl;
+            return result;
+        } catch(const mfq::cuda::Error& error) {
+            // Strata keeps the original GPU table when mapped pinning is
+            // unavailable. Explicit diagnostic controls must report failure.
+            if(mapped)throw;
+            (void)cudaGetLastError();
+            std::cerr<<"mapped_token_embedding unavailable; using device table: "<<error.what()<<std::endl;
+        }
+    }
+    return load_quant_linear(execution, source, name);
+
 }

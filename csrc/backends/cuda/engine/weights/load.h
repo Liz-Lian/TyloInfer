@@ -22,6 +22,9 @@ struct MfqDropFileCacheGuard {
 
 bool is_quant_dtype(const std::string& dtype);
 
+QuantLinear load_embedding(CudaExecutionContext& execution, const mfq::ModelSource& source,
+                           const std::string& name, bool independent_output);
+
 std::shared_ptr<mfq::NintRows> load_nint_row_table(
     const mfq::ModelSource& source, const std::string& name, bool prefer_mapping=false);
 

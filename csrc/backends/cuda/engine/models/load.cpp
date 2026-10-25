@@ -2,12 +2,13 @@
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/tq/load.h"
-#include "models/common/full_block.h"
 #include "moe.h"
 #include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 
 #include <cstdio>
+#include <cmath>
+#include <nlohmann/json.hpp>
 #include <fstream>
 #include <iterator>
 
@@ -71,7 +72,7 @@ QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>
     return load_paired_gate_up(execution, source, names, down, shared_gate_up_compatible_prefix,
                               preserve_projection_boundaries);
 }
-void TransformerWeightLoader::qkv(FullBlock& block, const std::vector<std::string>& names) const {
+void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::vector<std::string>& names) const {
     const bool mirror_kv = block.attention_output_gate &&
         execution.config.tensor_parallel_mirror_qwen35_attention_kv &&
         is_quant_dtype(require_tensor(source, names[1]).dtype) &&
@@ -229,6 +230,32 @@ void prepare_moe_ffn(CudaExecutionContext& execution, FFN& f) {
 }
 
 namespace mfq::cuda {
+
+std::string configure_yarn(CudaExecutionContext& execution, std::string definition,
+                           std::string_view backbone, int64_t context) {
+    execution.yarn={};
+    if(execution.yarn_context_extension) {
+        if(backbone!="qwen3_5" && backbone!="qwen4_exp")
+            throw std::invalid_argument("YaRN extension requires a Qwen model");
+        auto config=nlohmann::json::parse(definition);
+        auto& text=config.contains("text_config") ? config["text_config"] : config.contains("language_config") ? config["language_config"] : config;
+        auto rope=text.value("rope_parameters",text.value("rope_scaling",nlohmann::json::object()));
+        if(rope.contains("full_attention"))rope=rope["full_attention"];
+        auto native=text.value("max_position_embeddings",int64_t(0));
+        const auto kind=rope.value("rope_type",rope.value("type",std::string("default")));
+        if(kind=="yarn")native=rope.value("original_max_position_embeddings",native);
+        const auto maximum=rope.value("factor",4.0);
+        if((kind!="default" && kind!="yarn") || native<=0 || !std::isfinite(maximum) || maximum<1 ||
+            context>std::floor(native*maximum))throw std::invalid_argument("context exceeds Qwen YaRN limit");
+        execution.yarn.original_context=native;
+        execution.yarn.factor=std::max(1.0,double(context)/native);
+        execution.yarn.beta_fast=rope.value("beta_fast",32.0);
+        execution.yarn.beta_slow=rope.value("beta_slow",1.0);
+        if(execution.yarn.enabled())text["max_position_embeddings"]=context;
+        definition=config.dump();
+    }
+    return definition;
+}
 
 std::string load_model_config_json(
         const mfq::ModelSource& source,

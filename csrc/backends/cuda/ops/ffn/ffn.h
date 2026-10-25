@@ -1,6 +1,6 @@
 #pragma once
 
-#include "quant_linear.h"
+#include "ops/common/include/quant_linear.h"
 #include "mfe_weight.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 #include "engine/models/common/gated_mlp.h"

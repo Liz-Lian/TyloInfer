@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/block.h"
-#include "models/common/ffn.h"
+#include "ops/ffn/ffn.h"
 #include "ops/attention/full.h"
 #include "backends/cuda/engine/state/kv_cache.h"
 

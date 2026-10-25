@@ -583,8 +583,9 @@ forward_tensor_parallel_output_projections(
 }
 
 QuantLinearGroup make_quant_group(
-        CudaExecutionContext& execution,
         std::vector<QuantLinear> layers,
+        bool group_nint,
+        bool cpu_layer,
         bool preserve_projection_boundaries) {
     const mfq::cuda::WeightAllocationScope weight_memory;
     if (layers.empty()) throw std::runtime_error("empty quantized linear group");
@@ -601,9 +602,6 @@ QuantLinearGroup make_quant_group(
             nint_weights.push_back(layer.nint);
         }
     }
-    const bool diagnostic_keep_nint_separate =
-        !execution.config.diagnostic_nint_group;
-    const bool cpu_layer = execution.loading_cpu_layer;
     const bool any_tensor_parallel = std::any_of(
         layers.begin(), layers.end(),
         [](const QuantLinear & layer) {
@@ -617,7 +615,7 @@ QuantLinearGroup make_quant_group(
         result.tq=TqProjectionGroup(std::move(weights));
     }
     if (mfq::mfq_compat_enabled && all_nint && !preserve_projection_boundaries &&
-        !diagnostic_keep_nint_separate && !cpu_layer &&
+        group_nint && !cpu_layer &&
         !any_tensor_parallel) {
         result.nint_grouped = true;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -692,7 +690,7 @@ DenseLinearGroup make_dense_group(const std::vector<mfq_tensor_backend::Tensor> 
 #endif
 
 static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
-        CudaExecutionContext& execution,
+        ModelParallelCollectiveRuntime& collectives, int primary,
         const QuantLinear& linear) {
     if (!linear.tensor_parallel()) {
         if (linear.is_tq()) {
@@ -751,7 +749,6 @@ static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
         throw std::runtime_error(
             "cannot reconstruct a mirrored tensor-parallel linear");
     }
-    const int primary = model_parallel_primary_device(execution);
     std::vector<mfq_tensor_backend::Tensor> parts;
     parts.reserve(linear.tensor_parallel_shards.size());
     for (const auto & shard : linear.tensor_parallel_shards) {
@@ -785,7 +782,7 @@ static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
             local.kind = shard.kind;
             local.mxfp4_sq = shard.mxfp4_sq;
             local.fp8_sq = shard.fp8_sq;
-            part = dequant_quant_linear_f32(execution, local);
+            part = dequant_quant_linear_f32(collectives, primary, local);
         } else if (shard.kind == QuantLinearKind::Dense) {
             part = shard.dense.to(mfq_tensor_backend::kFloat32).contiguous();
         } else {
@@ -794,7 +791,7 @@ static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
         }
         parts.push_back(
             tensor_to_cuda_device(
-                execution.model_parallel_collectives, part, primary)
+                collectives, part, primary)
                 .to(mfq_tensor_backend::kFloat32).contiguous());
     }
     MfqCudaGuard primary_guard(primary);
@@ -811,7 +808,8 @@ static mfq_tensor_backend::Tensor dequant_quant_linear_f32(
 }
 
 DenseLinearGroup make_fp32_quant_group(
-        CudaExecutionContext& execution,
+        ModelParallelCollectiveRuntime& collectives,
+        int primary,
         QuantLinearGroup group) {
     DenseLinearGroup dense;
     dense.outs = group.outs;
@@ -834,7 +832,7 @@ DenseLinearGroup make_fp32_quant_group(
         parts.reserve(group.layers.size());
         for (const auto & linear : group.layers) {
             parts.push_back(dequant_quant_linear_f32(
-                execution, linear));
+                collectives, primary, linear));
         }
         dense.w = mfq_tensor_backend::cat(parts, 0).contiguous();
     }

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/block.h"
-#include "models/common/ffn.h"
+#include "ops/ffn/ffn.h"
 #include "models/common/full_block.h"
 #include "quant_linear.h"
 #include "backends/cuda/engine/state/recurrent_mixer_state.h"

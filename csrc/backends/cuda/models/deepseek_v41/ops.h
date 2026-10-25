@@ -11,7 +11,7 @@
 #include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/models/deepseek_v41/config.h"
-#include "models/common/ffn.h"
+#include "ops/ffn/ffn.h"
 
 #include <algorithm>
 #include <array>

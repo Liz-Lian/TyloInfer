@@ -3,7 +3,7 @@
 #include "ops/attention/linear.h"
 #include "backends/cuda/engine/state/recurrent_mixer_state.h"
 #include "models/common/block.h"
-#include "models/common/ffn.h"
+#include "ops/ffn/ffn.h"
 #include "engine/models/qwen35/config.h"
 
 namespace mfq::cuda::qwen35 {

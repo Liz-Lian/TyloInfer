@@ -1,7 +1,7 @@
 #pragma once
 
-#include "models/common/block.h"
-#include "models/common/ffn.h"
+#include "ops/attention/full.h"
+#include "ops/ffn/ffn.h"
 #include "engine/models/common/weight_loading.h"
 
 #include <memory>
@@ -10,7 +10,6 @@
 
 namespace mfq { class ModelSource; }
 
-struct FullBlock;
 struct TransformerWeightLoader {
     CudaExecutionContext& execution;
     const mfq::ModelSource& source;
@@ -26,7 +25,7 @@ struct TransformerWeightLoader {
     QuantLinear linear(const std::string& name) const;
     QuantLinearGroup projections(const std::vector<std::string>& names) const;
     QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down) const;
-    void qkv(FullBlock& block, const std::vector<std::string>& names) const;
+    void qkv(mfq::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
     void workspace(FFN& ffn) const;
     void important_neurons(int64_t hidden, int64_t intermediate, FFN& ffn,
         const std::string& down, const std::string& gate, const std::string& up) const;
@@ -64,6 +63,9 @@ void prepare_ffn(CudaExecutionContext& execution, FFN& ffn);
 void prepare_moe_ffn(CudaExecutionContext& execution, FFN& ffn);
 
 namespace mfq::cuda {
+
+std::string configure_yarn(CudaExecutionContext& execution, std::string definition,
+                           std::string_view backbone, int64_t context);
 
 std::string load_model_config_json(
     const mfq::ModelSource& source,

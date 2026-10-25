@@ -438,7 +438,6 @@ endfunction()
 
 set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/common/causal_model_ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/common/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/full_block.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/axial_patch_vision_ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/common/grid_vision.cpp
@@ -464,6 +463,8 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
+    ${TYLOINFER_CUDA_ROOT}/ops/ffn/ffn.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/ffn/residual.cpp
     ${TYLOINFER_CUDA_ROOT}/native/profile.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/attention/attention.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/attention/full.cpp

@@ -2,9 +2,7 @@
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "linear_attention.h"
-#include "ops/norm/rms.h"
-#include "engine/models/common/transformer_layer.h"
-#include "mfq_cuda_norm_ops.h"
+#include "ops/ffn/residual.h"
 
 #include <type_traits>
 
@@ -50,11 +48,10 @@ struct BlockLoader : TransformerWeightLoader {
                             ? std::optional<TensorParallelAxis>(TensorParallelAxis::Mirrored)
                             : std::nullopt;
                     b.ab_nint_proj = make_quant_group(
-                        execution,
                         {
                             load_quant_linear(execution, source, names.alpha, scalar_axis),
                             load_quant_linear(execution, source, names.beta, scalar_axis),
-                        });
+                        }, execution.config.diagnostic_nint_group, execution.loading_cpu_layer);
                 } else {
                     b.ab_proj = make_dense_group({
                         load_dense_gpu(execution, source, names.alpha),
@@ -129,113 +126,10 @@ void LinearAttentionBlock::prepare(const mfq_tensor_backend::Tensor& input) {
 }
 
 mfq_tensor_backend::Tensor LinearAttentionBlock::forward_ffn(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
-        mfq_tensor_backend::Tensor attention_output) {
-    const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
-    if (!residual.is_cuda()) {
-        return mfq::models::residual_ffn(
-            std::move(residual), std::move(attention_output),
-            [&](mfq_tensor_backend::Tensor residual,
-                mfq_tensor_backend::Tensor attention_output) {
-              auto x = (residual.to(mfq_tensor_backend::kFloat32) +
-                        attention_output.to(mfq_tensor_backend::kFloat32))
-                           .to(residual.scalar_type())
-                           .contiguous();
-              residual = x;
-              auto xn =
-                  qwen_rms_norm(
-                      x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
-                      ffn_norm, rms_norm_eps,
-                      norm_weight_offset)
-                      .reshape({B, T, H});
-              return std::array<mfq_tensor_backend::Tensor, 2>{residual, xn};
-            },
-            [&](mfq_tensor_backend::Tensor residual,
-                mfq_tensor_backend::Tensor xn) {
-              return mfq::models::feed_forward(
-                  std::move(residual), std::move(xn),
-                  [](const auto &, const auto &) {
-                    return std::optional<mfq_tensor_backend::Tensor>{};
-                  },
-                  [&](mfq_tensor_backend::Tensor xn) {
-                    return ffn.forward(execution, xn.reshape({B * T, H}))
-                        .reshape({B, T, H});
-                  },
-                  [&](mfq_tensor_backend::Tensor residual,
-                      mfq_tensor_backend::Tensor ff) {
-                    return (residual.to(mfq_tensor_backend::kFloat32) +
-                            ff.to(mfq_tensor_backend::kFloat32))
-                        .to(residual.scalar_type())
-                        .contiguous();
-                  });
-            });
-
-    }
-    auto& profiler = execution.profiler;
-    auto oo = std::move(attention_output);
-
-    auto attn_pair =
-        profiler.measure("linear.attn_residual_ffn_norm", [&]() {
-          auto rr = residual.reshape({-1, H});
-          auto oo2 = oo.reshape({-1, H});
-          if (oo2.scalar_type() != rr.scalar_type()) {
-            oo2 = oo2.to(rr.scalar_type()).contiguous();
-          }
-          if (execution.config.diagnostic_fp32_residual) {
-            return acc_rms_norm_cuda(
-                rr.to(mfq_tensor_backend::kFloat32),
-                oo2.to(mfq_tensor_backend::kFloat32), ffn_norm,
-                rms_norm_eps,
-                norm_weight_offset);
-          }
-          if (rr.scalar_type() == mfq_tensor_backend::kFloat16 &&
-              oo2.scalar_type() == mfq_tensor_backend::kFloat16) {
-            return acc_rms_norm_f16_cuda(
-                rr, oo2, ffn_norm, rms_norm_eps,
-                norm_weight_offset);
-          }
-          return acc_rms_norm_cuda(
-              rr, oo2, ffn_norm, rms_norm_eps,
-              norm_weight_offset);
-        });
-
-    residual = attn_pair[0].reshape({B, T, H});
-    auto xn = attn_pair[1].reshape({B, T, H});
-    return mfq::models::feed_forward(
-        std::move(residual), std::move(xn),
-        [&](mfq_tensor_backend::Tensor xn, mfq_tensor_backend::Tensor residual)
-            -> std::optional<mfq_tensor_backend::Tensor> {
-          auto ffn_input = xn.reshape({B * T, H});
-          auto residual_flat = residual.reshape({B * T, H});
-          if (ffn.can_forward_fused_residual(execution.config, ffn_input,
-                                             residual_flat)) {
-            return profiler.measure("linear.ffn_down_residual", [&]() {
-              return ffn
-                  .forward_fused_residual(profiler, execution.config, ffn_input,
-                                          residual_flat)
-                  .reshape({B, T, H});
-            });
-          }
-          return {};
-        },
-        [&](mfq_tensor_backend::Tensor xn) {
-          return ffn.forward(execution, xn.reshape({B * T, H}))
-              .reshape({B, T, H});
-        },
-        [&](mfq_tensor_backend::Tensor residual,
-            mfq_tensor_backend::Tensor ff) {
-          return profiler.measure("linear.ffn_residual", [&]() {
-            auto rr = residual.reshape({-1, H});
-            auto ff2 = ff.reshape({-1, H});
-            if (execution.config.diagnostic_fp32_residual) {
-              rr = rr.to(mfq_tensor_backend::kFloat32);
-              ff2 = ff2.to(mfq_tensor_backend::kFloat32);
-            } else if (ff2.scalar_type() != rr.scalar_type()) {
-              ff2 = ff2.to(rr.scalar_type()).contiguous();
-            }
-            return acc_cuda(rr, ff2).reshape({B, T, H});
-          });
-        });
+    CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
+    mfq_tensor_backend::Tensor output) {
+    return linear_ffn(
+        execution, ffn, ffn_norm, *this, std::move(residual), std::move(output));
 }
 
 mfq_tensor_backend::Tensor LinearAttentionBlock::forward(
