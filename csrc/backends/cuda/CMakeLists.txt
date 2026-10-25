@@ -503,6 +503,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/experts.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
@@ -563,6 +564,7 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/qwen35_mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp

@@ -25,7 +25,7 @@ using namespace mfq::cuda::internal;
 // Fixed synthetic-ID latency probe through the actual runtime dispatch. Model
 // loading and the independent serial oracle are outside every timed request.
 int run_qwen35_mtp_bench(
-        mfq::cuda::Qwen35CausalLm& model, Qwen35Mtp& mtp,
+        mfq::cuda::Qwen35CausalLm& model, mfq::cuda::qwen35::Mtp& mtp,
         bool enable_mtp, int generated_tokens, int repetitions) {
     using Clock = std::chrono::steady_clock;
     using Tensor = mfq_tensor_backend::Tensor;

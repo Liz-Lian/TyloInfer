@@ -8,7 +8,7 @@
 #include "models/nemotron_h/mtp.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "diagnostics/flash_next_mtp.h"
-#include "qwen35/mtp.h"
+#include "engine/executor/qwen35_mtp.h"
 #include "quant_linear.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -43,7 +43,7 @@ using namespace mfq::cuda::internal;
 
 int run_qwen35_mtp_bench(
     mfq::cuda::Qwen35CausalLm& model,
-    Qwen35Mtp& mtp,
+    mfq::cuda::qwen35::Mtp& mtp,
     bool enable_mtp,
     int generated_tokens,
     int repetitions);
@@ -773,7 +773,7 @@ static int run_dsv4_hc_model_compare(
 // Real-weight correctness gate; does not require a tokenizer or start a runtime transport.
 // It calls the same MTP generator used by the runtime, with synthetic token IDs.
 static int run_qwen35_mtp_check(
-        mfq::cuda::Qwen35CausalLm& model, Qwen35Mtp& mtp) {
+        mfq::cuda::Qwen35CausalLm& model, mfq::cuda::qwen35::Mtp& mtp) {
     using Tensor = mfq_tensor_backend::Tensor;
     auto& execution = *model.execution;
     const MtpTarget target(model);

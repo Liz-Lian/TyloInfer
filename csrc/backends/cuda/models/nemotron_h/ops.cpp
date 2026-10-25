@@ -359,7 +359,7 @@ TextSessionState capture_text_session_state(const std::vector<std::unique_ptr<::
         if (const auto* full = dynamic_cast<const FullBlock*>(block.get())) {
             saved.kind = HybridBlockSessionStateKind::FullAttention;
             saved.full_attention =
-                capture_full_attention_session_state(*full, cache_position, state.bytes);
+                capture_kv(full->cache, cache_position, state.bytes);
         } else if (const auto* mamba = dynamic_cast<const Mamba2MixerBlock*>(block.get())) {
             if (mamba->mixer.speculative_pending || !mamba->mixer.defined()) {
                 throw std::runtime_error("Nemotron-H mamba session state is unavailable");
@@ -395,7 +395,9 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>>& blocks,
             auto* full = dynamic_cast<FullBlock*>(block.get());
             if (full == nullptr)
                 throw CudaSessionStateError("Nemotron-H full-attention layer changed");
-            restore_full_attention_session_state(*full, saved.full_attention);
+            restore_kv(full->cache, saved.full_attention, full->attention_head_dim,
+                full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+                full->kv_quantization);
             continue;
         }
         if (saved.kind == HybridBlockSessionStateKind::Stateless) {

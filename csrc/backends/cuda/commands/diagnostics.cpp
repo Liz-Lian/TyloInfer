@@ -672,7 +672,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         if (check_qwen35_mtp) {
             if constexpr (std::is_same_v<Model, mfq::cuda::Qwen35CausalLm>) {
-                auto* predictor = dynamic_cast<Qwen35Mtp*>(
+                auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
                     runtime_components.mtp.get());
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--check-qwen35-mtp requires a supported model containing MTP weights");
@@ -683,7 +683,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         if (!bench_qwen35_mtp.empty()) {
             if constexpr (std::is_same_v<Model, mfq::cuda::Qwen35CausalLm>) {
-                auto* predictor = dynamic_cast<Qwen35Mtp*>(
+                auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
                     runtime_components.mtp.get());
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--bench-qwen35-mtp requires a supported model containing MTP weights");

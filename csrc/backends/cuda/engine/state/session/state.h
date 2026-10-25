@@ -15,10 +15,11 @@
 #include <vector>
 
 struct Dsv4PoolState;
-struct FullBlock;
+struct KVCache;
+namespace mfq::cuda { struct KvQuantization; }
 namespace mfq::models::deepseek_v41 { struct EngramHashSnapshot; }
 
-struct FullBlockSessionState {
+struct KvSnapshot {
     mfq_tensor_backend::Tensor k;
     mfq_tensor_backend::Tensor v;
     int64_t capacity = 0;
@@ -89,7 +90,7 @@ enum class HybridBlockSessionStateKind {
 struct HybridBlockSessionState {
     HybridBlockSessionStateKind kind =
         HybridBlockSessionStateKind::FullAttention;
-    FullBlockSessionState full_attention;
+    KvSnapshot full_attention;
     mfq_tensor_backend::Tensor convolution_state;
     mfq_tensor_backend::Tensor recurrent_state;
 };
@@ -102,7 +103,7 @@ struct Qwen4BlockSessionState {
 };
 
 struct MtpSessionState {
-    std::vector<FullBlockSessionState> blocks;
+    std::vector<KvSnapshot> blocks;
     mfq_tensor_backend::Tensor last_target_hidden;
     std::vector<Qwen4BlockSessionState> qwen4_blocks;
     std::vector<mfq_tensor_backend::Tensor> qwen4_positions;
@@ -114,7 +115,7 @@ struct MtpSessionState {
 
 using TextSessionPayload = std::variant<
     std::monostate,
-    std::vector<FullBlockSessionState>,
+    std::vector<KvSnapshot>,
     std::vector<HybridBlockSessionState>,
     std::vector<Dsv4BlockSessionState>,
     std::vector<GlmDsaBlockSessionState>,
@@ -260,14 +261,17 @@ void restore_session_prefix_tensor(
     int64_t dimension,
     int64_t capacity);
 
-FullBlockSessionState capture_full_attention_session_state(
-    const FullBlock& block,
+KvSnapshot capture_kv(
+    const KVCache& cache,
     int64_t cache_pos,
     size_t& bytes);
 
-void restore_full_attention_session_state(
-    FullBlock& block,
-    const FullBlockSessionState& state);
+void restore_kv(
+    KVCache& cache,
+    const KvSnapshot& state,
+    int64_t head_dim,
+    mfq_tensor_backend::ScalarType dtype,
+    mfq::cuda::KvQuantization quantization);
 
 Dsv4PoolSessionState capture_dsv4_pool_session_state(
     const Dsv4PoolState& source,

@@ -4,7 +4,7 @@
 #include "backends/cuda/engine/models/components.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
-#include "models/qwen35/mtp.h"
+#include "engine/executor/qwen35_mtp.h"
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 
@@ -219,12 +219,8 @@ RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
             !model_execution.stores.moe_expert_cache;
         if (supported_placement && model.num_experts() == 0 &&
                 model.supports_speculation()) {
-            auto predictor = Qwen35Mtp::load_if_present(
+            result.mtp = mfq::cuda::qwen35::Mtp::load(
                 *model.source, model.config, *model.execution);
-            if (predictor) {
-                result.mtp = std::make_unique<Qwen35Mtp>(
-                    std::move(*predictor));
-            }
             result.mtp_available = static_cast<bool>(result.mtp);
         } else {
             std::cerr << "qwen_mtp unavailable: CUDA adapter requires dense GPU-resident Qwen blocks\n";

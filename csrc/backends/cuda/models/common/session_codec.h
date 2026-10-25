@@ -59,8 +59,8 @@ TextSessionState FullAttentionSessionCodec<Model>::capture(
     TextSessionState state;
     state.tokens = tokens;
     state.cache_pos = model.cache_pos;
-    state.payload = std::vector<FullBlockSessionState>{};
-    auto &layers = std::get<std::vector<FullBlockSessionState>>(state.payload);
+    state.payload = std::vector<KvSnapshot>{};
+    auto &layers = std::get<std::vector<KvSnapshot>>(state.payload);
     layers.reserve(model.blocks.size());
     for (const auto &block : model.blocks) {
         MfqCudaGuard guard(block->cuda_device);
@@ -68,7 +68,7 @@ TextSessionState FullAttentionSessionCodec<Model>::capture(
         if (full == nullptr) {
             throw std::runtime_error("full-attention session layer changed");
         }
-        layers.push_back(capture_full_attention_session_state(*full, model.cache_pos, state.bytes));
+        layers.push_back(capture_kv(full->cache, model.cache_pos, state.bytes));
     }
     return state;
 }
@@ -76,7 +76,7 @@ TextSessionState FullAttentionSessionCodec<Model>::capture(
 template <typename Model>
 void FullAttentionSessionCodec<Model>::restore(
     CausalLm<Model> &model, const TextSessionState &state) {
-    const auto *layers = std::get_if<std::vector<FullBlockSessionState>>(&state.payload);
+    const auto *layers = std::get_if<std::vector<KvSnapshot>>(&state.payload);
     if (kind(model) != TextSessionStateKind::FullAttention ||
         state.kind() != TextSessionStateKind::FullAttention || state.cache_pos <= 0 ||
         static_cast<size_t>(state.cache_pos) != state.tokens.size() || layers == nullptr ||
@@ -90,7 +90,9 @@ void FullAttentionSessionCodec<Model>::restore(
         if (full == nullptr) {
             throw CudaSessionStateError("full-attention session layer changed");
         }
-        restore_full_attention_session_state(*full, (*layers)[index]);
+        restore_kv(full->cache, (*layers)[index], full->attention_head_dim,
+            full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+            full->kv_quantization);
     }
     model.cache_pos = state.cache_pos;
 }

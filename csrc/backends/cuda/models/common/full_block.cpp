@@ -1,8 +1,8 @@
 #include "models/common/full_block.h"
 #include "engine/executor/ffn.h"
+#include "engine/executor/attention.h"
 #include "backends/cuda/engine/executor/options.h"
 
-#include <algorithm>
 #include <utility>
 
 mfq_tensor_backend::Tensor Block::forward_context(CudaExecutionContext &execution,
@@ -57,36 +57,11 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
     const MfqOptional<mfq_tensor_backend::Tensor> &attention_mask, int64_t planned_kv_length,
     int64_t decode_attention_parts) {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    const auto kl_capacity = execution.kl_mmq.kv_cache_capacity;
-    const int64_t capacity = sliding ? attention_window
-        : (kl_capacity > 0 ? std::max<int64_t>(cache_pos + T, kl_capacity)
-                           : max_position_embeddings);
-    if (!cache.defined()) {
-        cache = KVCache(B, kv_heads, capacity, attention_head_dim, sliding, x.device(),
-            official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
-            kv_quantization);
-    }
-    cache.quantization = kv_quantization;
     const mfq::cuda::AttentionStep step{
         std::move(pos), seq_len, cache_positions, attention_mask,
         cache_pos, planned_kv_length, decode_attention_parts};
-    auto attention = FullAttention::forward(
-        execution.projector(), execution.profiler, {
-            .kernels = {
-                .bf16_flash128 = execution.config.minicpm_bf16_flash128,
-                .flash128_casts = execution.config.minicpm_flash128_specialized_casts,
-                .bf16_gqa_decode = execution.config.minicpm_bf16_gqa_decode,
-                .decode_aten = execution.config.attention_decode_aten,
-                .mma_prefill = execution.config.mma_attention,
-                .mma_decode = execution.config.mma_attention_decode,
-                .split_k = execution.config.attention_decode_split_k},
-            .fused_norm = execution.config.minicpm_fused_bf16_rmsnorm,
-            .fused_rope = execution.config.minicpm_fused_bf16_rope,
-            .fused_qk_rope_kv = execution.config.minicpm_fused_qk_norm_rope_kv,
-            .fused_rope_kv = execution.config.minicpm_fused_rope_kv,
-            .write_aten = execution.config.kv_cache_write_aten},
-        std::move(x), step, cache.view(), execution.attention_scratch[this], rope,
-        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+    auto attention = mfq::cuda::run_attention(
+        execution, *this, cache, execution.attention_scratch[this], std::move(x), step, rope);
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
 }
 

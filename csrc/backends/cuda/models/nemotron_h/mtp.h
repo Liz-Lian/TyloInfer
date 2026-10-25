@@ -198,7 +198,7 @@ struct NemotronHMtp final : MtpModule {
                 continue;
             MfqCudaGuard guard(block->cuda_device);
             state.blocks.push_back(
-                capture_full_attention_session_state(*full, predictor_position, state.bytes));
+                capture_kv(full->cache, predictor_position, state.bytes));
         }
         state.last_target_hidden = last_target_hidden.clone();
         state.bytes += session_tensor_bytes(state.last_target_hidden);
@@ -218,7 +218,10 @@ struct NemotronHMtp final : MtpModule {
         }
         for (std::size_t index = 0; index < saved.size(); ++index) {
             MfqCudaGuard guard(saved[index]->cuda_device);
-            restore_full_attention_session_state(*saved[index], state.blocks[index]);
+            const auto& attention = *saved[index];
+            restore_kv(saved[index]->cache, state.blocks[index], attention.attention_head_dim,
+                attention.official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+                attention.kv_quantization);
         }
         lengths.front() = state.cache_pos;
     }
