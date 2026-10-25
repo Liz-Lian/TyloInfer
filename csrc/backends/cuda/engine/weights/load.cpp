@@ -2,6 +2,7 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
+#include "formats/dense_blob.h"
 #include "weight_memory.h"
 #include "mfq_cuda_quant_ops.h"
 #include "float_projection.h"
@@ -1212,26 +1213,14 @@ mfq_tensor_backend::Tensor load_dense_cpu(const CudaExecutionContext &execution,
 
     auto blob = read_tensor(source, name);
     if (execution.drop_file_cache) source.drop_file_cache();
-    TYLOINFER_RUNTIME_CHECK(blob.size() >= sizeof(uint32_t), "truncated dense tensor header: ", name);
-    size_t offset = 0;
-    const auto rank = read_u32_from(blob, offset);
-    TYLOINFER_RUNTIME_CHECK(rank <= (blob.size() - offset) / sizeof(int64_t),
-                      "truncated dense tensor shape: ", name);
-    std::vector<int64_t> shape(rank);
-    int64_t numel = 1;
-    for (auto &extent : shape) {
-        extent = read_i64_from(blob, offset);
-        TYLOINFER_RUNTIME_CHECK(extent >= 0 &&
-                              (extent == 0 || numel <= std::numeric_limits<int64_t>::max() / extent),
-                          "invalid dense tensor shape: ", name);
-        numel *= extent;
+    mfq::dense::Layout layout;
+    try {
+        layout = mfq::dense::parse(blob, item_size, record.shape);
+    } catch (const std::runtime_error& error) {
+        throw std::runtime_error(std::string(error.what()) + ": " + name);
     }
-    TYLOINFER_RUNTIME_CHECK(!record.shape || *record.shape == shape,
-                      "dense tensor metadata shape mismatch: ", name);
-    const auto payload = blob.size() - offset;
-    TYLOINFER_RUNTIME_CHECK(payload % item_size == 0 && uint64_t(numel) == payload / item_size,
-                      "dense tensor payload size mismatch: ", name);
-    return tb::from_blob(blob.data() + offset, shape, tb::TensorOptions().dtype(dtype)).clone();
+    return tb::from_blob(blob.data() + layout.offset, layout.shape,
+                         tb::TensorOptions().dtype(dtype)).clone();
 }
 
 mfq_tensor_backend::Tensor load_dense_native_gpu(CudaExecutionContext &execution,
