@@ -8,6 +8,8 @@ add_library(mfq-quant-readers STATIC
     quant/mfe_quant_expert_store.cpp
     quant/mfe_index.cpp
     quant/mfe_index.h
+    mx_blob.cpp
+    mx_blob.h
     tq_table.cpp
     tq_table.h
 )

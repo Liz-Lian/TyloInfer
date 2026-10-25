@@ -479,7 +479,7 @@ QuantLinear load_quant_linear(
 #endif
     if (dtype == "MXFP4") {
         result.kind = QuantLinearKind::Mxfp4;
-        const auto cpu = unpack_mxfp4(
+        const auto cpu = mfq::mx::unpack4(
             read_tensor(execution.drop_file_cache, mfq, name));
         result.logical_out = cpu.out;
         result.logical_neuron_len = cpu.neuron_len;
@@ -514,7 +514,7 @@ QuantLinear load_quant_linear(
         }
     } else if (dtype == "MXFP8") {
         result.kind = QuantLinearKind::Mxfp8;
-        const auto cpu = unpack_mxfp8(
+        const auto cpu = mfq::mx::unpack8(
             read_tensor(execution.drop_file_cache, mfq, name));
         result.logical_out = cpu.out;
         result.logical_neuron_len = cpu.neuron_len;

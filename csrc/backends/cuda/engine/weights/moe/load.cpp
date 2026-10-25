@@ -62,7 +62,7 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                     "MFE MXFP4-SQ pool weight shape mismatch");
             }
         } else if (pool.dtype == "MXFP4") {
-            pool.mxfp4 = unpack_mxfp4(pool.payload);
+            pool.mxfp4 = mfq::mx::unpack4(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
             if (pool.mxfp4.out != expected_rows ||

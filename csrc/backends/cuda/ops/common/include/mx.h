@@ -2,6 +2,7 @@
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "backend.h"
+#include "formats/mx_blob.h"
 
 #include <cstdint>
 #include <vector>
@@ -67,36 +68,16 @@ struct Mxfp8Linear {
     }
 };
 
-struct Mxfp8Cpu {
-    int64_t out = 0;
-    int64_t neuron_len = 0;
-    std::vector<uint8_t> values;
-    std::vector<uint8_t> scales;
-    int block_rows = 128;
-    int block_columns = 128;
-};
-
-struct Mxfp4Cpu {
-    int64_t out = 0;
-    int64_t neuron_len = 0;
-    std::vector<uint8_t> values;
-    std::vector<uint8_t> scales;
-};
-
-size_t checked_mxfp8_size(
-    uint64_t left, uint64_t right, const char* label);
-Mxfp8Cpu unpack_mxfp8(const std::vector<uint8_t>& blob);
-Mxfp4Cpu unpack_mxfp4(const std::vector<uint8_t>& blob);
-mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const Mxfp4Cpu& source);
-Mxfp4Cpu select_mxfp4_cpu_rows(
-    const Mxfp4Cpu& source, const std::vector<int64_t>& rows);
-Mxfp4Cpu slice_mxfp4_cpu(
-    const Mxfp4Cpu& source, TensorParallelAxis axis, int64_t begin, int64_t end);
-Mxfp8Cpu slice_mxfp8_cpu(
-    const Mxfp8Cpu& source, TensorParallelAxis axis, int64_t begin, int64_t end);
+mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mx::Fp4& source);
+mfq::mx::Fp4 select_mxfp4_cpu_rows(
+    const mfq::mx::Fp4& source, const std::vector<int64_t>& rows);
+mfq::mx::Fp4 slice_mxfp4_cpu(
+    const mfq::mx::Fp4& source, TensorParallelAxis axis, int64_t begin, int64_t end);
+mfq::mx::Fp8 slice_mxfp8_cpu(
+    const mfq::mx::Fp8& source, TensorParallelAxis axis, int64_t begin, int64_t end);
 Mxfp8Weight to_device_mxfp8(
-    const Mxfp8Cpu& source, bool cuda, int device = -1);
-Mxfp8Weight to_cuda_device_mxfp8(const Mxfp8Cpu& source, int device);
+    const mfq::mx::Fp8& source, bool cuda, int device = -1);
+Mxfp8Weight to_cuda_device_mxfp8(const mfq::mx::Fp8& source, int device);
 Mxfp4Weight to_device_mxfp4(
-    const Mxfp4Cpu& source, bool cuda, int device = -1);
+    const mfq::mx::Fp4& source, bool cuda, int device = -1);
 mfq_tensor_backend::Tensor mxfp8_cpu_reference(const Mxfp8Weight& weight);
