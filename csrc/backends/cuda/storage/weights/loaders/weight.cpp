@@ -1,3 +1,4 @@
+#include "storage/weights/moe/load.h"
 #include "env.h"
 #include "execution/options.h"
 #include "storage/weights/loaders/weight.h"

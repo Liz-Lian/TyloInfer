@@ -62,4 +62,3 @@ TqWeight to_device_tq(const std::vector<std::uint8_t>& blob,
     }
     return tq_view(std::move(storage), layout, columns);
 }
-

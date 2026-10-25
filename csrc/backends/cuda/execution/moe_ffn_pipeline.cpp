@@ -1,3 +1,4 @@
+#include "execution/moe_plan.h"
 #include "env.h"
 #include "execution/options.h"
 #include "execution/moe_ffn_pipeline.h"
@@ -574,7 +575,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             // otherwise serializes construction with preceding layer work.
             const std::vector<std::vector<int32_t>> initial_maps(runtime.pools.size(),
                 std::vector<int32_t>(prefill_group_size,-1));
-            initialize_mixed_nvq_dispatch(runtime,execution.config,!mma || *mma!=0,&initial_maps);
+            prepare_moe(runtime,execution.config,!mma || *mma!=0,&initial_maps);
             if(cache_->ssd_experts() && runtime.nvq_dispatch && !(single_up() && p==1)) {
                 const auto bytes=runtime.nvq_dispatch->pool_count*nvq_descriptor_bytes;
                 const auto stride=cache_->pipeline_prefill_metadata_stride_;
@@ -1278,7 +1279,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             }
             const auto compact=mfq::cuda::runtime_options::moe_prefill_compact_mma();
             const auto host_maps_option=mfq::cuda::runtime_options::moe_prefill_host_maps();
-            initialize_mixed_nvq_dispatch(runtime,execution.config,!compact || *compact!=0,
+            prepare_moe(runtime,execution.config,!compact || *compact!=0,
                 !host_maps_option || *host_maps_option?&host_maps:nullptr);
         }
         if(swiglu_limit_<=0 && execution.config.moe_ffn_fused_activation && !cache_->pipeline_sigmoid_table_.defined())
@@ -1763,8 +1764,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             }
             const auto compact_mma=mfq::cuda::runtime_options::moe_prefill_compact_mma();
             const bool dense_prefill=cell.tokens>8 && compact_mma && *compact_mma!=0;
-            initialize_mixed_nvq_dispatch(binding.hot,execution.config,dense_prefill);
-            initialize_mixed_nvq_dispatch(binding.transfer,execution.config,dense_prefill);
+            prepare_moe(binding.hot,execution.config,dense_prefill);
+            prepare_moe(binding.transfer,execution.config,dense_prefill);
             if(!cell.graph_replay) {
                 if(!cache_->pipeline_prefill_activations_)
                     cache_->pipeline_prefill_activations_=std::make_shared<MixedMoeRuntime>();

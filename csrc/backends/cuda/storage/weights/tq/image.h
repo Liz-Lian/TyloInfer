@@ -11,4 +11,3 @@ TqWeight tq_view(mfq_tensor_backend::Tensor image,
                  const mfq::TqLayout& layout, std::int64_t columns);
 TqWeight to_device_tq(const std::vector<std::uint8_t>&,
                       std::int64_t input_columns, int device, bool cuda = true);
-

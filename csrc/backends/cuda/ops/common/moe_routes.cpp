@@ -135,12 +135,3 @@ MoeRoutePlan build_moe_route_plan(mfq_tensor_backend::Tensor ids, int n_experts)
         result.ids_dst.numel() == result.ids.numel();
     return result;
 }
-
-mfq_tensor_backend::Tensor copy_cpu_weight_to_cuda(
-        const mfq_tensor_backend::Tensor & source) {
-    return source.defined()
-        ? source.to(mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA,
-            mfq_current_cuda_device())).contiguous()
-        : mfq_tensor_backend::Tensor();
-}

@@ -1,3 +1,4 @@
+#include "storage/weights/moe/load.h"
 #include "models/common/transformer_loader.h"
 #include "storage/weights/loaders/weight.h"
 #include "storage/weights/tq/load.h"

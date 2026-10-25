@@ -342,4 +342,3 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
     if(uploaded)uploaded->record(stream.stream());
     return result;
 }
-

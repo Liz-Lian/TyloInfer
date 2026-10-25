@@ -492,8 +492,7 @@ endif()
 
 add_library(mfq-cuda-ops OBJECT ${TYLOINFER_CUDA_RUNTIME_OP_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-ops)
-target_link_libraries(mfq-cuda-ops PRIVATE
-    mfq-model-source mfq-quant-readers)
+target_link_libraries(mfq-cuda-ops PRIVATE mfq-quant-readers)
 target_compile_definitions(mfq-cuda-ops PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -506,7 +505,8 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
-        ${TYLOINFER_CUDA_ROOT}/execution/moe_ffn_pipeline.cpp)
+        ${TYLOINFER_CUDA_ROOT}/execution/moe_ffn_pipeline.cpp
+        ${TYLOINFER_CUDA_ROOT}/execution/moe_plan.cpp)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
@@ -527,6 +527,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/expert_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/load.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/quant_range_source.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/host_expert_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/storage/weights/moe/residency.cpp

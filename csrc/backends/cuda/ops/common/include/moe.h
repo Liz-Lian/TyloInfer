@@ -2,25 +2,6 @@
 
 #include "mfe_weight.h"
 
-namespace mfq { class ModelSource; }
-
-struct MfeCpuPool {
-    std::vector<int32_t> expert_ids;
-    std::string dtype;
-    std::vector<uint8_t> payload;
-    std::vector<uint8_t> runtime_payload;
-    NintCpu weight;
-    Nint8ZeroCpu q8_zero;
-    Mxfp4Cpu mxfp4;
-};
-
-struct MfeCpu {
-    int n_experts = 0;
-    int out_per_expert = 0;
-    int neuron_len = 0;
-    std::vector<MfeCpuPool> pools;
-};
-
 enum class MixedMoeFamily {
     Nint,
     Nint8Zero,
@@ -190,30 +171,6 @@ struct MixedMoeRuntime {
             double limit) const;
 };
 
-MfeCpu unpack_mfe(const std::vector<uint8_t>& blob);
-MfeCpu load_mfe_cpu(
-    const mfq::ModelSource& source, const std::string& name);
-MfeWeight to_gpu_mfe(const MfeCpu& source);
-std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
-    const MfeCpu& source,
-    bool cuda,
-    const CudaExecutionConfig& config = {});
-int64_t mixed_moe_storage_bytes(const MixedMoeRuntime& runtime);
-void initialize_mixed_nvq_dispatch(MixedMoeRuntime& runtime,const CudaExecutionConfig& config,bool dense_prefill=false,
-    const std::vector<std::vector<int32_t>>* expert_local_host=nullptr);
-mfq_tensor_backend::Tensor copy_cpu_weight_to_cuda(
-    const mfq_tensor_backend::Tensor& source);
-MfeWeight to_gpu_mixed_moe(
-    const MfeCpu& source,
-    const CudaExecutionConfig& config = {});
-MfeWeight to_cuda_device_moe_expert_slice(
-    const MfeCpu& source,
-    int64_t expert_begin,
-    int64_t expert_end,
-    int device,
-    const CudaExecutionConfig& config = {});
-std::shared_ptr<MixedMoeRuntime> make_mxfp4_range_runtime(
-    const mfq::cuda::MfeMxfp4ExpertStore& store);
 std::vector<mfq::TensorParallelSlice> plan_moe_expert_parallel_slices(
     const ParallelConfig& parallel,
     int64_t extent,

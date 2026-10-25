@@ -2,6 +2,9 @@
 #include "backend.h"
 #include "tyloinfer/kernels/cuda/tq_ops.h"
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 #include <memory>
 
 class TqExec;
