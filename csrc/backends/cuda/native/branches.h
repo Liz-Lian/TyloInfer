@@ -11,6 +11,11 @@
 
 namespace mfq::cuda {
 
+inline bool decode_branches(bool enabled, bool serial, int64_t rows) {
+    // Graph allocations stay on the capture stream until branch lifetime tracking supports them.
+    return rows == 1 && !serial && enabled;
+}
+
 // One serialized execution lane; nested calls borrow different stream sets.
 class Branches {
     struct Branch {

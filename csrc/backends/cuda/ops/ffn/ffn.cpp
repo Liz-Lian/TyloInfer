@@ -107,7 +107,7 @@ void FFN::prefetch_moe(CudaExecutionContext& execution,const mfq_tensor_backend:
         ids=ids.narrow(1,0,std::min(candidates_per_row,ids.size(1))).to(tb::kInt32).contiguous();
     }else {
         auto row=x.reshape({-1,x.size(-1)}).to(tb::kFloat32);
-        auto logits=moe_router_projection?moe_router_projection->forward(execution,row).contiguous():
+        auto logits=moe_router_projection?execution.projector().run(*moe_router_projection, row).contiguous():
             tb::matmul(row,moe_router.transpose(0,1)).contiguous();
         ids=moe_topk_cuda(logits,std::min({int64_t(moe_top_k),logits.size(-1),candidates_per_row}),moe_use_sigmoid,
             moe_use_sqrt_softplus,moe_normalize,moe_delayed_softmax,
@@ -345,9 +345,9 @@ mfq_tensor_backend::Tensor FFN::forward_dense_f32_down_kld(CudaExecutionContext 
                           activation == ActivationKind::silu_gated && !geglu &&
                           swiglu_limit <= 0.0,
                       "FP32-output IN diagnostic requires a local dense SiLU FFN");
-    auto parts = profiler.measure("ffn.gate_up", [&]() { return gate_up.forward(execution, xh); });
+    auto parts = profiler.measure("ffn.gate_up", [&]() { return execution.projector().run(gate_up, xh); });
     return profiler.measure("ffn.down.fp32_output", [&]() {
-        return down.forward_input_mul_f32_kld(execution, parts[1], parts[0], InputGateMode::Silu);
+        return nint_kld(execution.profiler, execution.kl_mmq, down, parts[1], parts[0], InputGateMode::Silu);
     });
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
@@ -382,8 +382,8 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
             },
             [&](auto &run_branch, auto &outputs) {
                 return !use_f32_down &&
-                       decode_branch_parallel_enabled(
-                           execution.config, execution.decode_graph_serial_branches, rows) &&
+                       mfq::cuda::decode_branches(
+                    execution.config.decode_branch_parallel, execution.decode_graph_serial_branches, rows) &&
                        execution.config.important_neuron_branch_parallel &&
                        execution.branches.run(2, run_branch, outputs);
             },
@@ -494,7 +494,7 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
         return mfq::models::mixture_of_experts(
             [&] {
                 return profiler.measure("moe.router", [&]() {
-                    return moe_router_projection?moe_router_projection->forward(execution,xf32):
+                    return moe_router_projection?execution.projector().run(*moe_router_projection, xf32):
                         mfq_tensor_backend::matmul(xf32, moe_router.transpose(0, 1));
                 });
             },
@@ -597,12 +597,12 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                 auto routed_input = xf;
                 if (latent_routed)
                     routed_input = profiler.measure("moe.latent_down", [&] {
-                        return moe_latent_in.forward(execution, xf);
+                        return execution.projector().run(moe_latent_in, xf);
                     });
                 const auto finish_latent = [&](Tensor reduced) {
                     if (latent_routed)
                         return profiler.measure("moe.latent_up", [&] {
-                            return moe_latent_out.forward(execution, reduced);
+                            return execution.projector().run(moe_latent_out, reduced);
                         });
                     return reduced;
                 };
@@ -643,7 +643,7 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                     auto expert_input = xf;
                     if (dense_linear_defined(moe_latent_in))
                         expert_input = profiler.measure("moe.latent_down", [&] {
-                            return moe_latent_in.forward(execution, xf);
+                            return execution.projector().run(moe_latent_in, xf);
                         });
                     auto up = profiler.measure("moe.dense_up", [&] {
                         return dense_routed_projection(moe_dense_up, expert_input,
@@ -670,7 +670,7 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                     });
                     if (dense_linear_defined(moe_latent_out))
                         reduced = profiler.measure("moe.latent_up", [&] {
-                            return moe_latent_out.forward(execution, reduced);
+                            return execution.projector().run(moe_latent_out, reduced);
                         });
                     record_moe_route_stats(execution, moe_layer, selected.at(0), selected.at(1),
                                            down_pair, static_cast<int>(moe_dense_up.size(0)));
@@ -927,14 +927,14 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
     if (activation == ActivationKind::relu_squared) {
         TYLOINFER_RUNTIME_CHECK(!important_neurons && !tensor_parallel_dense_compatible(),
                           "relu-squared FFN does not support important neurons or tensor parallelism");
-        auto parts = profiler.measure("ffn.up", [&]() { return gate_up.forward(execution, xh); });
+        auto parts = profiler.measure("ffn.up", [&]() { return execution.projector().run(gate_up, xh); });
         TYLOINFER_RUNTIME_CHECK(parts.size() == 1,
                           "relu-squared FFN requires exactly one Up projection");
         auto hidden = profiler.measure("ffn.relu_squared", [&]() {
             return relu_squared_cuda(parts[0].contiguous());
         });
         return profiler.measure("ffn.down",
-                                [&]() { return down.forward(execution, hidden); });
+                                [&]() { return execution.projector().run(down, hidden); });
     }
     return mfq::models::gated_mlp(
         xh, geglu, swiglu_limit,
@@ -957,22 +957,22 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
         [&](const Tensor &input, Activation activation, double limit) -> std::optional<Tensor> {
             if(limit<=0.0 && activation==Activation::silu && gate_up.tq.defined() &&
                     gate_up.outs.size()==2 && gate_up.outs[0]==gate_up.outs[1])
-                return profiler.measure("ffn.gate_up_swiglu",[&] {return gate_up.forward_swiglu(execution,input);});
+                return profiler.measure("ffn.gate_up_swiglu",[&] {return execution.projector().swiglu(gate_up, input);});
             if (!mfq::mfq_compat_enabled || limit > 0.0 || !gate_up.nint_grouped || !gate_up.nint.split_w.empty())
                 return {};
             const auto rows = input.numel() / input.size(-1);
             if (activation == Activation::gelu && execution.config.ffn_geglu_fusion && rows == 1)
                 return profiler.measure("ffn.gate_up_geglu",
-                                        [&] { return gate_up.forward_geglu(execution, input); });
+                                        [&] { return execution.projector().geglu(gate_up, input); });
             if (activation == Activation::silu && execution.config.ffn_swiglu_fusion && rows >= 1 &&
                 rows <= 6 && gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1])
                 return profiler.measure("ffn.gate_up_swiglu",
-                                        [&] { return gate_up.forward_swiglu(execution, input); });
+                                        [&] { return execution.projector().swiglu(gate_up, input); });
             return {};
         },
         [&](Tensor input) {
             return profiler.measure("ffn.gate_up",
-                                    [&] { return gate_up.forward(execution, input); });
+                                    [&] { return execution.projector().run(gate_up, input); });
         },
         [&](Tensor gate, Tensor up, Activation activation, double limit) {
             if (activation == Activation::gelu)
@@ -992,14 +992,14 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                 "ffn.swiglu", [&] { return (up * mfq_tensor_backend::silu(gate)).contiguous(); });
         },
         [&](Tensor hidden) {
-            return profiler.measure("ffn.down", [&] { return down.forward(execution, hidden); });
+            return profiler.measure("ffn.down", [&] { return execution.projector().run(down, hidden); });
         },
         [&](const Tensor &gate, const Tensor &up, Activation activation,
             double limit) -> std::optional<Tensor> {
             if (activation != Activation::silu || limit > 0.0 || down.is_dense() || down.is_mxfp8())
                 return {};
             return profiler.measure("ffn.down",
-                                    [&] { return down.forward_input_mul(execution, up, gate, InputGateMode::Silu); });
+                                    [&] { return execution.projector().gated(down, up, gate, InputGateMode::Silu); });
         });
 }
 

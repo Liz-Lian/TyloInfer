@@ -305,7 +305,7 @@ int main(int argc,char** argv)try {
                         }
                         if(parity_read)_putenv_s("TYLOINFER_MFE_PARITY_READ","0");
                         Call reference(*layers[l],shared,tokens);reference.x.copy_(input);reference.ids.copy_(ids);
-                        if(shared)reference.shared_gate.copy_(tb::sigmoid(layers[l]->shared_router.forward(reference.execution,reference.x)));
+                        if(shared)reference.shared_gate.copy_(tb::sigmoid(reference.execution.projector().run(layers[l]->shared_router, reference.x)));
                         compact_runtime(reference);references.push_back(reference.fused->output().cpu());
                     }
                     if(parity_read)_putenv_s("TYLOINFER_MFE_PARITY_READ","1");

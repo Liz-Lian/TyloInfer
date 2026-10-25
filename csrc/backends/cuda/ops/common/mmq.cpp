@@ -1,4 +1,5 @@
 #include "mmq.h"
+#include "quant_linear.h"
 #include "formats/format_features.h"
 #include "mfq_cuda_quant_ops.h"
 
@@ -54,4 +55,24 @@ mfq_tensor_backend::Tensor KlMmqState::prepare_activation(
 
 void KlMmqState::reset() noexcept {
     *this = {};
+}
+
+mfq_tensor_backend::Tensor nint_kld(
+        CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
+        mfq_tensor_backend::Tensor x,
+        mfq_tensor_backend::Tensor gate,
+        InputGateMode mode) {
+    TYLOINFER_RUNTIME_CHECK(
+        !weight.tensor_parallel() && (mfq::mfq_compat_enabled && weight.is_nint()),
+        "FP32-output KLD down projection requires a local NINT tensor");
+    TYLOINFER_RUNTIME_CHECK(
+        mmq.mode == KlMmqMode::Fp16,
+        "FP32-output NINT MMQ is restricted to the FP16 KLD path");
+    auto shape = x.sizes().vec();
+    auto y = nint_matmul_input_mul_f32(
+        profiler, weight.nint, x.reshape({-1, x.size(-1)}),
+        gate.reshape({-1, gate.size(-1)}), static_cast<int>(mode));
+    if (weight.nint.q8_zero) ++mmq.dense_calls;
+    shape.back() = y.size(-1);
+    return y.reshape(shape);
 }

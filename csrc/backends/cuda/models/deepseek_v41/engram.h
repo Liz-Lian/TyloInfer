@@ -381,7 +381,7 @@ class Engram {
                                   hashes.columns, hidden.device());
         });
         auto projected = execution.profiler.measure("deepseek_v41.engram.projection", [&] {
-            return projection_.forward(execution, embeddings);
+            return execution.projector().run(projection_, embeddings);
         });
         return execution.profiler.measure("deepseek_v41.engram.gate_add", [&] {
             return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),

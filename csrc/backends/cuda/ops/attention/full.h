@@ -6,6 +6,8 @@
 
 #include <array>
 
+struct CudaExecutionContext;
+
 namespace mfq::cuda {
 
 struct AttentionStep {

@@ -480,6 +480,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/ops/tq/moe.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/mx.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/quant_linear.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/common/projection.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)

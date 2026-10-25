@@ -139,7 +139,13 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward(
         const MfqOptional<mfq_tensor_backend::Tensor>&,
         const MfqOptional<mfq_tensor_backend::Tensor>&) {
     prepare(input);
-    auto attention = LinearAttention::forward(execution, std::move(input),
+    auto attention = LinearAttention::forward(
+            execution.projector(), execution.profiler,
+            {execution.config.gdn_transposed_state,
+             execution.config.tensor_parallel_grouped_projections &&
+                 execution.config.tensor_parallel_shared_linear_attention_input,
+             execution.config.linear_conv_prefill_fused},
+            std::move(input),
         {mixer.convolution, mixer.recurrent, transposed_gdn_state});
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]));
 }
@@ -175,7 +181,12 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
         // once so projections and FFN stay batched. Rollback replays only the
         // recurrent state prefix from this layer's retained projections.
         auto attention = LinearAttention::forward(
-            execution, std::move(input),
+            execution.projector(), execution.profiler,
+            {execution.config.gdn_transposed_state,
+             execution.config.tensor_parallel_grouped_projections &&
+                 execution.config.tensor_parallel_shared_linear_attention_input,
+             execution.config.linear_conv_prefill_fused},
+            std::move(input),
             {mixer.convolution, mixer.recurrent, transposed_gdn_state}, &speculative_inputs);
         auto result = forward_ffn(execution, std::move(attention[0]), std::move(attention[1]));
         ++speculative_projection_batches;

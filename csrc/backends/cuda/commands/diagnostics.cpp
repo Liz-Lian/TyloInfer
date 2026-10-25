@@ -925,7 +925,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 auto decode_id = ids.index({Slice(), -1}).reshape({1, 1});
                 auto hidden = model.hidden_forward(decode_id, mfq_nullopt, seq_len);
                 auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-                auto logits = model.lm_head.forward(execution, last).to(mfq_tensor_backend::kFloat32);
+                auto logits = execution.projector().run(model.lm_head, last).to(mfq_tensor_backend::kFloat32);
                 mfq_cuda_synchronize();
                 return logits;
             };
@@ -961,7 +961,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 auto seq_len = mfq_tensor_backend::tensor({decode_len}, cuda_i64);
                 auto hidden = model.hidden_forward(input, mfq_nullopt, seq_len);
                 auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-                auto logits = model.lm_head.forward(execution, last).to(mfq_tensor_backend::kFloat32);
+                auto logits = execution.projector().run(model.lm_head, last).to(mfq_tensor_backend::kFloat32);
                 reference_logits.push_back(logits.clone());
                 const int64_t next = logits.argmax(-1).template item<int64_t>();
                 teacher_tokens.push_back(next);
@@ -994,7 +994,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     input, mfq_nullopt, seq_len, nullptr, mfq_nullopt,
                     nullptr, 0, {planned_kv_length, 0});
                 auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-                auto test = model.lm_head.forward(execution, last).to(mfq_tensor_backend::kFloat32);
+                auto test = execution.projector().run(model.lm_head, last).to(mfq_tensor_backend::kFloat32);
                 const auto & ref = reference_logits[(size_t)step];
                 auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
                 auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
@@ -1072,7 +1072,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     model.execution->gemma_trace_layer = -1;
                     auto last = hidden.index({Slice(), -1, Slice()})
                         .to(mfq_tensor_backend::kFloat16).contiguous();
-                    logits = model.lm_head.forward(execution, last);
+                    logits = execution.projector().run(model.lm_head, last);
                 } else {
                     logits = model.last_logits(ids);
                 }

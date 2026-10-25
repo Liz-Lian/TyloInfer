@@ -86,7 +86,7 @@ int main(int argc,char** argv) try {
                 // dense_projection keeps 1..6 rows on the scalar decode path;
                 // rows=8 are also compared individually here.
                 std::vector<tb::Tensor> dots;
-                for(int row=0;row<rows;++row)dots.push_back(weights[layer].forward(execution,x.narrow(0,row,1)));
+                for(int row=0;row<rows;++row)dots.push_back(execution.projector().run(weights[layer], x.narrow(0,row,1)));
                 const auto reference_dot=tb::cat(dots,0);
                 const auto reference_gate=tb::sigmoid(reference_dot);
                 const auto saved_dot=reference_dot.cpu().contiguous();
@@ -118,7 +118,7 @@ int main(int argc,char** argv) try {
         auto body=[&] {
             for(std::size_t layer=0;layer<weights.size();++layer) {
                 if(variant<0) {
-                    outputs[layer].dot=weights[layer].forward(execution,x);
+                    outputs[layer].dot=execution.projector().run(weights[layer], x);
                     outputs[layer].gate=tb::sigmoid(outputs[layer].dot);
                 } else if(variant==4)outputs[layer].gate=*try_shared_gate_sigmoid_cuda(x,weights[layer].dense);
                 else launch(variant,x,weights[layer].dense,outputs[layer]);

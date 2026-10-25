@@ -395,7 +395,7 @@ struct Dsv4Block : Block {
             tokens, cache_pos, seq_len.has_value(), compress_ratio,
             [&] {
                 auto qr =
-                    profiler.measure("dsv4.q_a", [&]() { return q_a.forward(execution, flat); });
+                    profiler.measure("dsv4.q_a", [&]() { return execution.projector().run(q_a, flat); });
                 qr = profiler.measure("dsv4.q_a_norm", [&]() {
                     return rms_norm_cuda(
                                qr.reshape({-1, qr.size(-1)}).to(mfq_tensor_backend::kFloat32),
@@ -404,7 +404,7 @@ struct Dsv4Block : Block {
                         .contiguous();
                 });
                 auto queries = profiler.measure("dsv4.q_b", [&]() {
-                    return q_b.forward(execution, qr)
+                    return execution.projector().run(q_b, qr)
                         .reshape({batch, tokens, heads, head_dim})
                         .transpose(1, 2)
                         .contiguous()
@@ -420,7 +420,7 @@ struct Dsv4Block : Block {
             },
             [&] {
                 auto values = profiler.measure("dsv4.kv", [&]() {
-                    return kv.forward(execution, flat).reshape({batch, tokens, head_dim});
+                    return execution.projector().run(kv, flat).reshape({batch, tokens, head_dim});
                 });
                 values = profiler.measure("dsv4.kv_norm_rope", [&]() {
                     auto normalized =
@@ -487,7 +487,7 @@ struct Dsv4Block : Block {
                             [&] {
                                 auto index_query =
                                     profiler.measure("dsv4.indexer_q_prefill", [&]() {
-                                        return indexer_q.forward(execution, qr)
+                                        return execution.projector().run(indexer_q, qr)
                                             .reshape({batch, tokens, heads, 128})
                                             .transpose(1, 2)
                                             .contiguous();
@@ -627,7 +627,7 @@ struct Dsv4Block : Block {
                                                     .reshape({batch, qr.size(-1)})
                                                     .contiguous();
                                 auto index_query = profiler.measure("dsv4.indexer_q", [&]() {
-                                    return indexer_q.forward(execution, qr_token)
+                                    return execution.projector().run(indexer_q, qr_token)
                                         .reshape({batch, 1, heads, 128})
                                         .transpose(1, 2)
                                         .contiguous();

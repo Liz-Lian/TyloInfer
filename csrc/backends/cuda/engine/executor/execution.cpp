@@ -657,8 +657,6 @@ double PrefillCudaTimer::elapsed_ms() const {
 
 } // namespace mfq::cuda::internal
 
-
-
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());
     if (!enabled()) return;
@@ -678,18 +676,22 @@ int LayerPlacementConfig::device_for_layer(int64_t layer) const {
     return layer_devices.at(static_cast<size_t>(layer));
 }
 
-
-
-
-
-
-
-
-
 CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
     : config(load_cuda_execution_config()), stores(borrowed) {
     profiler.filter = config.profile_filter;
     tq = std::make_shared<TqExec>();
+}
+
+mfq::cuda::Projector CudaExecutionContext::projector() {
+    return {profiler, kl_mmq, *tq, branches, collectives,
+            decode_graph_serial_branches, decode_graph_tp_projection_major,
+            {model_parallel_primary_device(*this),
+             config.model_parallel_peer_first_launch,
+             config.model_parallel_reduce_to_primary, config.model_parallel_fp16_reduce,
+             config.tensor_parallel_grouped_projections, config.decode_branch_parallel,
+             config.nvq_fusion,
+             !decode_graph_serial_branches ||
+                 mfq::cuda::runtime_options::nint_group_quantize().value_or(true)}};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {
@@ -807,8 +809,6 @@ int model_parallel_primary_device(const CudaExecutionContext& execution) {
     return 0;
 }
 
-
-
 bool model_parallel_cuda_graph_enabled(
         const CudaExecutionContext& execution) {
     if(execution.stores.tq_expert_cache && moe_parallel_config(execution).enabled())return false;
@@ -823,39 +823,12 @@ bool model_parallel_cuda_graph_enabled(
     return execution.collectives.enabled() && enabled;
 }
 
-
-
-bool decode_branch_parallel_enabled(
-        const CudaExecutionConfig& config,
-        bool serial_branches,
-        int64_t rows) {
-    // Branch output storage belongs to its allocating stream. Keep graph
-    // warmup/capture on the graph pool's stream until cross-stream allocation
-    // lifetime tracking supports a fully rejoined capture. Eager is unchanged.
-    return rows == 1 &&
-        !serial_branches && config.decode_branch_parallel;
-}
-
-
-
 int active_weight_load_device(const CudaExecutionContext& execution) {
     const auto& placement = execution.layer_placement;
     return placement.load_device >= 0
         ? placement.load_device
         : model_parallel_primary_device(execution);
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 void record_moe_route_stats(
         CudaExecutionContext& execution,

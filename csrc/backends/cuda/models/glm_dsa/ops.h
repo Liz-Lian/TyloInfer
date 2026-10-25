@@ -293,7 +293,7 @@ struct GlmDsaBlock : Block {
                     full_indexer,
                     [&] {
                         return profiler.measure(
-                            "glm.input_proj", [&]() { return input_proj.forward(execution, xn); });
+                            "glm.input_proj", [&]() { return execution.projector().run(input_proj, xn); });
                     },
                     [&](Tensor projected) {
                         return profiler.measure("glm.q_a_norm", [&]() {
@@ -306,7 +306,7 @@ struct GlmDsaBlock : Block {
                     },
                     [&](Tensor qr) {
                         return profiler.measure("glm.q_proj",
-                                                [&]() { return q_proj.forward(execution, qr); });
+                                                [&]() { return execution.projector().run(q_proj, qr); });
                     },
                     [&](Tensor key_value, Tensor query) {
                         auto q_main = query.to(mfq_tensor_backend::kFloat16)
@@ -446,9 +446,7 @@ struct GlmDsaBlock : Block {
                     },
                     [&](Tensor value_heads) {
                         return profiler.measure("glm.o_proj", [&]() {
-                            return o_proj.forward(
-                                execution,
-                                value_heads.reshape({B, T, kHeads * kValue}).contiguous());
+                            return execution.projector().run(o_proj, value_heads.reshape({B, T, kHeads * kValue}).contiguous());
                         });
                     });
             },

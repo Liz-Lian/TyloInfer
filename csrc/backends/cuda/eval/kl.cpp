@@ -1022,7 +1022,7 @@ int run_kl_eval_streamed(
         auto selected =
             y.index({Slice(), Slice(first, first + score_count), Slice()});
         auto logits = model.apply_final_logit_softcap(
-            model.lm_head.forward(*model.execution, selected));
+            model.execution->projector().run(model.lm_head, selected));
         if (logits_output.is_open()) {
             auto saved = logits.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kFloat16)
                              .contiguous();

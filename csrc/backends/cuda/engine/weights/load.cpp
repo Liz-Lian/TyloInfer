@@ -872,7 +872,7 @@ namespace tb = mfq_tensor_backend;
 namespace {
 struct LoadedLinear {
     std::shared_ptr<QuantLinear> weight;
-    Tensor operator()(CudaExecutionContext& execution,const Tensor& x)const{return weight->forward(execution,x);}
+    Tensor operator()(CudaExecutionContext& execution,const Tensor& x)const{return execution.projector().run(*weight, x);}
 };
 }
 
@@ -909,7 +909,7 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
                 CudaExecutionContext& context,const Tensor& input) {
             std::vector<Tensor> outputs(separate.size());
             if(input.is_cuda()) {
-                auto grouped=group->forward(context,input);
+                auto grouped=context.projector().run(*group, input);
                 for(std::size_t i=0,j=0;i<indices.size();++i) {
                     outputs[indices[i]]=std::move(grouped[j++]);
                     if(direct_join && i==0)i+=joined_prefix-1;
@@ -1002,7 +1002,7 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
         };
         if (input.is_cuda() && context.kl_mmq.mode == KlMmqMode::Default &&
             input.numel() / input.size(-1) <= 8) {
-            auto outputs=group->forward(context,input);
+            auto outputs=context.projector().run(*group, input);
             return joined_view?outputs:join(std::move(outputs));
         }
         std::vector<Tensor> outputs;
@@ -1026,7 +1026,7 @@ ResidualLinear residual_linear(CudaExecutionContext& execution, const mfq::Model
             // TQ reconstructs FP16 weights. A BF16/F32 activation therefore
             // promotes residual projection math to FP32, as the dense path.
             return context.profiler.measure("tq.residual",[&] {
-                return weight->forward(context,input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32));
+                return context.projector().run(*weight, input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32));
             });
         };
         return {std::move(forward),{},{},std::move(weight),{}};

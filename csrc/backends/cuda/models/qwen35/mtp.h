@@ -102,7 +102,7 @@ struct Qwen35Mtp final : MtpModule {
                 trace_gemma_stage(*model.execution, 0, stage, x);
             }
             Tensor fuse(Tensor e, Tensor h) {
-                return model.fusion.forward(*model.execution, mfq_tensor_backend::cat({e, h}, -1));
+                return model.execution->projector().run(model.fusion, mfq_tensor_backend::cat({e, h}, -1));
             }
             Tensor positions(Tensor explicit_pos, int64_t start, int64_t tokens) {
                 return explicit_pos.defined()

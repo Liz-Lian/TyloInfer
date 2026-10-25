@@ -71,7 +71,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                 true,
                 [&]() {
                     auto projected = profiler.measure("mamba.in_proj", [&] {
-                        return in_proj.forward(execution, xn).to(mfq_tensor_backend::kFloat32);
+                        return execution.projector().run(in_proj, xn).to(mfq_tensor_backend::kFloat32);
                     });
                     TYLOINFER_RUNTIME_CHECK(projected.size(-1) == projection_width,
                                       "mamba fused projection width disagrees with config");
@@ -134,7 +134,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                 [&](Tensor normalized) {
                     return profiler.measure(
                         "mamba.out_proj",
-                        [&] { return out_proj.forward(execution, normalized); });
+                        [&] { return execution.projector().run(out_proj, normalized); });
                 },
                 [&](const Tensor& final_state) {
                     if (final_state.defined())

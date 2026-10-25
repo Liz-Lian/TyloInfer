@@ -1,4 +1,5 @@
 #include "full.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "kv.h"
 #include "ops/norm/rms.h"
 #include "engine/models/common/attention.h"
@@ -94,13 +95,13 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     trace_qwen_stage("qwen.attn_norm", xn);
                     auto parts = profiler.measure("full.qkv", [&]() {
                         if (!split_q_kv_projections) {
-                            return qkv.forward(execution, xn);
+                            return execution.projector().run(qkv, xn);
                         }
                         std::vector<mfq_tensor_backend::Tensor> result;
                         result.reserve(3);
-                        result.push_back(q_projection.forward(execution, xn));
-                        result.push_back(k_projection.forward(execution, xn));
-                        result.push_back(v_projection.forward(execution, xn));
+                        result.push_back(execution.projector().run(q_projection, xn));
+                        result.push_back(execution.projector().run(k_projection, xn));
+                        result.push_back(execution.projector().run(v_projection, xn));
                         return result;
                     });
                     if (parts.size() != (value_equals_key ? 2u : 3u)) {
@@ -319,7 +320,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                             return q_gate.contiguous().reshape({B, T, attn_width});
                         });
                         oo = profiler.measure("full.o_proj_gate", [&]() {
-                            return o.forward_input_mul(execution, af, gf, InputGateMode::Sigmoid);
+                            return execution.projector().gated(o, af, gf, InputGateMode::Sigmoid);
                         });
                     } else {
                         auto af = profiler.measure("full.attn_out_view", [&]() {
@@ -328,8 +329,8 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                                        : a.transpose(1, 2).contiguous().reshape({B, T, attn_width});
                         });
                         oo = profiler.measure("full.o_proj", [&]() {
-                            return official_bf16 ? o.forward_bf16_output(execution, af)
-                                                 : o.forward(execution, af);
+                            return official_bf16 ? execution.projector().run(o, af).to(mfq_tensor_backend::kBFloat16).contiguous()
+                                                 : execution.projector().run(o, af);
                         });
                     }
                     trace_qwen_stage("qwen.o_projection", oo);

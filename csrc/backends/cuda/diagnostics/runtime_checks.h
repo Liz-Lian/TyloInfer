@@ -529,10 +529,8 @@ static int run_block_trace_compare(
                   << " test_rms=" << test_rms << "\n";
     }
 
-    auto reference_logits = reference.lm_head.forward(
-        execution, reference_hidden).to(mfq_tensor_backend::kFloat32);
-    auto test_logits = test.lm_head.forward(
-        execution, test_hidden).to(mfq_tensor_backend::kFloat32);
+    auto reference_logits = execution.projector().run(reference.lm_head, reference_hidden).to(mfq_tensor_backend::kFloat32);
+    auto test_logits = execution.projector().run(test.lm_head, test_hidden).to(mfq_tensor_backend::kFloat32);
     double kl_sum = 0.0;
     int64_t same_top = 0;
     int64_t rows = 0;
@@ -660,7 +658,7 @@ static int run_block_trace_dump(
     final_hidden = token_slice(final_hidden);
     dump_terminal("final_norm", final_hidden);
     auto logits = model.apply_final_logit_softcap(
-        model.lm_head.forward(*model.execution, final_hidden));
+        model.execution->projector().run(model.lm_head, final_hidden));
     dump_terminal("logits", logits);
     metadata.flush();
     if (!metadata) throw std::runtime_error("failed to write block trace metadata");
@@ -680,24 +678,21 @@ static int run_dsv4_hc_model_compare(
     model.reset(ids.size(0));
     auto reference_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &reference_trace);
-    auto reference_logits = model.lm_head.forward(
-        *model.execution, reference_hidden)
+    auto reference_logits = model.execution->projector().run(model.lm_head, reference_hidden)
         .to(mfq_tensor_backend::kFloat32);
 
     g_dsv4_fused_hc = true;
     model.reset(ids.size(0));
     auto candidate_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &candidate_trace);
-    auto candidate_logits = model.lm_head.forward(
-        *model.execution, candidate_hidden)
+    auto candidate_logits = model.execution->projector().run(model.lm_head, candidate_hidden)
         .to(mfq_tensor_backend::kFloat32);
 
     g_dsv4_fused_hc = false;
     model.reset(ids.size(0));
     auto repeat_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &repeat_trace);
-    auto repeat_logits = model.lm_head.forward(
-        *model.execution, repeat_hidden)
+    auto repeat_logits = model.execution->projector().run(model.lm_head, repeat_hidden)
         .to(mfq_tensor_backend::kFloat32);
     g_dsv4_fused_hc = true;
     mfq_cuda_synchronize();
@@ -802,9 +797,7 @@ static int run_qwen35_mtp_check(
         const double tolerance = dtype == mfq_tensor_backend::kBFloat16 ? .008
             : dtype == mfq_tensor_backend::kFloat16 ? .001 : 2.e-6;
         for (int m = 1; m <= 6; ++m) for (auto mode : {InputGateMode::Sigmoid, InputGateMode::Silu}) {
-            auto actual = linear.forward_input_mul(
-                execution, test_input.narrow(1, 0, m),
-                test_gate.narrow(1, 0, m), mode);
+            auto actual = execution.projector().gated(linear, test_input.narrow(1, 0, m), test_gate.narrow(1, 0, m), mode);
             TYLOINFER_RUNTIME_CHECK(actual.scalar_type() == dtype && actual.size(1) == m,
                 "dense gate output dtype or shape mismatch");
             auto values = actual.to(mfq_tensor_backend::kFloat32).cpu();
@@ -835,10 +828,10 @@ static int run_qwen35_mtp_check(
             .reshape({131, 257}).to(dtype);
         std::vector<Tensor> serial;
         for (int row = 0; row < 6; ++row)
-            serial.push_back(linear.forward(execution, projection.narrow(1, row, 1)));
+            serial.push_back(execution.projector().run(linear, projection.narrow(1, row, 1)));
         auto reference = mfq_tensor_backend::cat(serial, 1);
         for (int rows = 2; rows <= 6; ++rows) {
-            auto actual = linear.forward(execution, projection.narrow(1, 0, rows));
+            auto actual = execution.projector().run(linear, projection.narrow(1, 0, rows));
             TYLOINFER_RUNTIME_CHECK(actual.equal(reference.narrow(1, 0, rows)),
                 "short dense projection differs from per-token decode");
         }

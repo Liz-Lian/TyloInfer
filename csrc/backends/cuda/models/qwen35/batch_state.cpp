@@ -387,7 +387,7 @@ void Qwen35BatchStateAdapter::copy_to_slot(QwenBatchState &slots, const QwenBatc
 
 Tensor Qwen35BatchStateAdapter::logits_from_last_hidden(Tensor hidden) {
     auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-    return model_.apply_final_logit_softcap(model_.lm_head.forward(*model_.execution, last));
+    return model_.apply_final_logit_softcap(model_.execution->projector().run(model_.lm_head, last));
 }
 
 std::vector<const void *> Qwen35BatchStateAdapter::decode_state_addresses() {

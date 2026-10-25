@@ -8,6 +8,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include "native/profile.h"
 #include "ops/common/include/mmq.h"
 #include "ops/common/include/parallel.h"
+#include "ops/common/include/projection.h"
 #include "ops/attention/scratch.h"
 #include "engine/weights/tensor_parallel.h"
 #include "engine/models/common/yarn.h"
@@ -296,6 +297,7 @@ struct CudaExecutionContext {
     std::unordered_map<const void*, mfq::cuda::AttentionScratch> attention_scratch;
     std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
 
+    mfq::cuda::Projector projector();
     void drain();
     void reset();
     void register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

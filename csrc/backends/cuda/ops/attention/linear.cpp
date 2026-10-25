@@ -18,14 +18,15 @@ using mfq_tensor_backend::indexing::Slice;
 namespace mfq::cuda {
 
 std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::forward(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor input,
+        const Projector& project, CudaProfiler& profiler, const Options& options,
+        mfq_tensor_backend::Tensor input,
         LinearView state, LinearInputs* captured) const {
-    return input.is_cuda() ? cuda(execution, std::move(input), state, captured)
-                           : cpu(execution, std::move(input), state);
+    return input.is_cuda() ? cuda(project, profiler, options, std::move(input), state, captured)
+                           : cpu(project, std::move(input), state);
 }
 
 std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor x,
+        const Projector& project, mfq_tensor_backend::Tensor x,
         LinearView state) const {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t nk = key_heads;
@@ -52,7 +53,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                 mfq_tensor_backend::Tensor qkv, qk_part, v_part, z, alpha_raw,
                     beta_raw;
                 if (dense_ab_tail) {
-                  auto parts = in_proj.forward(execution, xn);
+                  auto parts = project.run(in_proj, xn);
                   qkv = parts[0].to(mfq_tensor_backend::kFloat32);
                   z = parts[1];
                   auto ab = ab_proj.forward(xn);
@@ -60,7 +61,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                   beta_raw = ab[1];
                 } else if (split_in_proj) {
                   if (split_dense_zab) {
-                    auto qkv_parts = qkv_proj.forward(execution, xn);
+                    auto qkv_parts = project.run(qkv_proj, xn);
                     qk_part = qkv_parts[0];
                     v_part = qkv_parts[1];
                     auto zab = zab_proj.forward(xn);
@@ -68,11 +69,11 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                     alpha_raw = zab[1];
                     beta_raw = zab[2];
                   } else {
-                    auto qkv_parts = qkv_proj.forward(execution, xn);
+                    auto qkv_parts = project.run(qkv_proj, xn);
                     qk_part = qkv_parts[0];
                     v_part = qkv_parts[1];
-                    z = z_proj.forward(execution, xn);
-                    auto ab = ab_is_nint ? ab_nint_proj.forward(execution, xn)
+                    z = project.run(z_proj, xn);
+                    auto ab = ab_is_nint ? project.run(ab_nint_proj, xn)
                                          : ab_proj.forward(xn);
                     alpha_raw = ab[0];
                     beta_raw = ab[1];
@@ -82,7 +83,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                        v_part.to(mfq_tensor_backend::kFloat32)},
                       -1);
                 } else {
-                  auto parts = in_proj.forward(execution, xn);
+                  auto parts = project.run(in_proj, xn);
                   qkv = parts[0].to(mfq_tensor_backend::kFloat32);
                   z = parts[1];
                   alpha_raw = parts[2];
@@ -241,7 +242,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                           .reshape({B, T, H});
                 } else {
                   attention_output =
-                      out_proj.forward_input_mul(execution, yf, zf, InputGateMode::Silu);
+                      project.gated(out_proj, yf, zf, InputGateMode::Silu);
                 }
                 return attention_output;
               });
@@ -252,10 +253,10 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
 }
 
 std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor x,
+        const Projector& project, CudaProfiler& profiler, const Options& options,
+        mfq_tensor_backend::Tensor x,
         LinearView state, LinearInputs* captured) const {
-    auto &profiler = execution.profiler;
-    state.transposed = execution.config.gdn_transposed_state;
+    state.transposed = options.transposed;
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     int64_t nk = key_heads,
             nv = value_heads;
@@ -283,7 +284,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                     beta_raw;
                 if (dense_ab_tail) {
                   auto parts = profiler.measure("linear.in_proj", [&]() {
-                    return in_proj.forward(execution, xn);
+                    return project.run(in_proj, xn);
                   });
                   qkv = profiler.measure("linear.qkv_cast", [&]() {
                     return parts[0].to(mfq_tensor_backend::kFloat32);
@@ -297,9 +298,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   bool shared_projection_input = false;
                   if (!shared_projection_input && !split_dense_zab &&
                       ab_is_nint &&
-                      execution.config.tensor_parallel_grouped_projections &&
-                      execution.config
-                          .tensor_parallel_shared_linear_attention_input &&
+                      options.shared_input &&
                       qkv_proj.layers.size() == 2) {
                     QuantLinearProjectionRefs projections = {
                         &qkv_proj.layers[0],
@@ -318,8 +317,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                             projections)) {
                       auto parts =
                           profiler.measure("linear.split_projections", [&]() {
-                            return forward_tensor_parallel_output_projections(
-                                execution, xn, projections);
+                            return project.grouped(projections, xn);
                           });
                       qk_part = parts[0];
                       v_part = parts[1];
@@ -329,7 +327,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                         beta_raw = parts[4];
                       } else {
                         auto ab = profiler.measure("linear.ab_proj", [&]() {
-                          return ab_nint_proj.forward(execution, xn);
+                          return project.run(ab_nint_proj, xn);
                         });
                         alpha_raw = ab[0];
                         beta_raw = ab[1];
@@ -341,7 +339,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                     if (split_dense_zab) {
                       auto qkv_parts =
                           profiler.measure("linear.qkv_proj", [&]() {
-                            return qkv_proj.forward(execution, xn);
+                            return project.run(qkv_proj, xn);
                           });
                       qk_part = qkv_parts[0];
                       v_part = qkv_parts[1];
@@ -354,15 +352,15 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                     } else {
                       auto qkv_parts =
                           profiler.measure("linear.qkv_proj", [&]() {
-                            return qkv_proj.forward(execution, xn);
+                            return project.run(qkv_proj, xn);
                           });
                       qk_part = qkv_parts[0];
                       v_part = qkv_parts[1];
                       z = profiler.measure("linear.z_proj", [&]() {
-                        return z_proj.forward(execution, xn);
+                        return project.run(z_proj, xn);
                       });
                       auto ab = profiler.measure("linear.ab_proj", [&]() {
-                        return ab_is_nint ? ab_nint_proj.forward(execution, xn)
+                        return ab_is_nint ? project.run(ab_nint_proj, xn)
                                           : ab_proj.forward(xn);
                       });
                       alpha_raw = ab[0];
@@ -371,7 +369,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   }
                 } else {
                   auto parts = profiler.measure("linear.in_proj", [&]() {
-                    return in_proj.forward(execution, xn);
+                    return project.run(in_proj, xn);
                   });
                   qkv = profiler.measure("linear.qkv_cast", [&]() {
                     return parts[0].to(mfq_tensor_backend::kFloat32);
@@ -422,7 +420,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                                        .dtype(mfq_tensor_backend::kFloat32));
                 mfq_tensor_backend::Tensor q, k, v;
                 bool fused_prefill =
-                    T >= 256 && execution.config.linear_conv_prefill_fused;
+                    T >= 256 && options.fused_conv;
                 if (T > 1 && split_in_proj && fused_prefill) {
                   auto qkv_fast =
                       profiler.measure("linear.conv_qkv_prefill", [&]() {
@@ -581,7 +579,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   });
                 } else {
                   oo = profiler.measure("linear.out_proj_gate", [&]() {
-                    return out_proj.forward_input_mul(execution, yf, zf, InputGateMode::Silu);
+                    return project.gated(out_proj, yf, zf, InputGateMode::Silu);
                   });
                 }
                 return oo;

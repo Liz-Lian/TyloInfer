@@ -28,7 +28,7 @@ mfq_tensor_backend::Tensor output_projection(CudaExecutionContext &execution,
             return output_a.tq.forward_groupwise(&resources->blas(),grouped,groups);
         });
         return measure("dsv4.output_b",[&] {
-            return output_b.forward(execution,low_rank).reshape({batch,tokens,output_b.out()});
+            return execution.projector().run(output_b, low_rank).reshape({batch,tokens,output_b.out()});
         });
     }
     if (groupwise && output_a.is_nint() && output_a.nint.bits == 8 && output_a.nint.gs == 48 &&
@@ -37,19 +37,19 @@ mfq_tensor_backend::Tensor output_projection(CudaExecutionContext &execution,
             return nint_matmul_groupwise_u8(profiler, output_a.nint, grouped, groups);
         });
         return measure("dsv4.output_b", [&]() {
-            return output_b.forward(execution, low_rank).reshape({batch, tokens, output_b.out()});
+            return execution.projector().run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
         });
     }
     if (groupwise && output_a.is_mxfp8() && output_a.out() == groups * rank) {
         auto low_rank = measure("dsv4.output_a", [&]() {
-            return output_a.forward_mxfp8_groupwise(execution, grouped, groups);
+            return execution.projector().groupwise(output_a, grouped, groups);
         });
         return measure("dsv4.output_b", [&]() {
-            return output_b.forward(execution, low_rank).reshape({batch, tokens, output_b.out()});
+            return execution.projector().run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
         });
     }
     auto expanded = measure("dsv4.output_a", [&]() {
-        return output_a.forward(execution, grouped.reshape({rows * groups, grouped.size(-1)}))
+        return execution.projector().run(output_a, grouped.reshape({rows * groups, grouped.size(-1)}))
             .reshape({rows, groups, groups, rank});
     });
     std::vector<mfq_tensor_backend::Tensor> diagonal;
@@ -62,7 +62,7 @@ mfq_tensor_backend::Tensor output_projection(CudaExecutionContext &execution,
                         .to(mfq_tensor_backend::kFloat16)
                         .contiguous();
     return measure("dsv4.output_b", [&]() {
-        return output_b.forward(execution, low_rank).reshape({batch, tokens, output_b.out()});
+        return execution.projector().run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
     });
 }
 

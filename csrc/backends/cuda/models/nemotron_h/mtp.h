@@ -119,7 +119,7 @@ struct NemotronHMtp final : MtpModule {
                                                       .dtype(mfq_tensor_backend::kInt64));
             }
             Tensor fuse(Tensor e, Tensor h) {
-                return model.fusion.forward(*model.execution, mfq_tensor_backend::cat({e, h}, -1));
+                return model.execution->projector().run(model.fusion, mfq_tensor_backend::cat({e, h}, -1));
             }
             static Tensor lengths(int64_t batch, int64_t end, const Tensor &positions) {
                 return mfq_tensor_backend::full({batch}, end, positions.options());

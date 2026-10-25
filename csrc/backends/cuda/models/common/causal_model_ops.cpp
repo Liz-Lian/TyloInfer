@@ -79,14 +79,14 @@ mfq_tensor_backend::Tensor
 CausalResources::adapter_logits(const QuantLinear &lm_head,
                                 mfq_tensor_backend::Tensor hidden) const {
     auto logits = execution->profiler.measure(
-        "model.lm_head", [&]() { return lm_head.forward(*execution, hidden); });
+        "model.lm_head", [&]() { return execution->projector().run(lm_head, hidden); });
     return logits;
 }
 
 mfq_tensor_backend::Tensor
 CausalResources::adapter_last_logits(const QuantLinear &lm_head,
                                      mfq_tensor_backend::Tensor hidden) const {
-    return lm_head.forward(*execution, hidden.to(mfq_tensor_backend::kFloat16).contiguous());
+    return execution->projector().run(lm_head, hidden.to(mfq_tensor_backend::kFloat16).contiguous());
 }
 
 mfq_tensor_backend::Tensor
@@ -94,7 +94,7 @@ CausalResources::adapter_next_token(const QuantLinear &lm_head,
                                     mfq_tensor_backend::Tensor hidden) const {
     auto input = hidden.to(mfq_tensor_backend::kFloat16).contiguous();
     auto logits = execution->profiler.measure("model.lm_head",
-                                              [&]() { return lm_head.forward(*execution, input); });
+                                              [&]() { return execution->projector().run(lm_head, input); });
     return sample_greedy_cuda(logits.contiguous().view({input.size(0), -1}));
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "quant_linear.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "engine/models/common/grid_vision_model.h"
@@ -21,7 +22,7 @@ struct Affine {
     Tensor bias;
 
     Tensor operator()(CudaExecutionContext& execution, Tensor input) const {
-        auto output = linear.forward(execution, std::move(input));
+        auto output = execution.projector().run(linear, std::move(input));
         return bias.defined()
             ? output + bias.to(output.scalar_type())
             : output;

@@ -181,7 +181,7 @@ struct Call {
         route=build_moe_route_plan(ids,experts);table=moe_swiglu_sigmoid_table_cuda();
         std::array<const NintWeight*,3> sw{};
         if(shared) {
-            shared_gate=tb::sigmoid(layer.shared_router.forward(execution,x));
+            shared_gate=tb::sigmoid(execution.projector().run(layer.shared_router, x));
             for(int p=0;p<3;++p)sw[p]=&layer.shared[p].nint;
         }
         fused=std::make_unique<MfeFfnRuntime>(std::array<MixedMoeRuntime*,3>{&layer.projections[0],&layer.projections[1],&layer.projections[2]},
@@ -201,8 +201,8 @@ struct Call {
         auto h=moe_swiglu_rounded_cuda(gate,up,table);
         auto expected=moe_weighted_reduce_cuda(projection(2,h),weights);
         if(shared) {
-            auto g=layer.shared[0].forward(execution,x),u=layer.shared[1].forward(execution,x);
-            expected=expected+shared_gate*layer.shared[2].forward(execution,(g*tb::sigmoid(g))*u);
+            auto g=execution.projector().run(layer.shared[0], x),u=execution.projector().run(layer.shared[1], x);
+            expected=expected+shared_gate*execution.projector().run(layer.shared[2], (g*tb::sigmoid(g))*u);
         }
         fused->run();
         auto a=expected.to(tb::kCPU,tb::kFloat32),b=fused->output().to(tb::kCPU,tb::kFloat32);

@@ -319,13 +319,11 @@ struct DeepseekV41Dspark final : MtpModule {
                 auto floating = target_hidden.to(mfq_tensor_backend::kFloat32);
                 auto scale = (floating.abs().amax(-1, true) / 64.0).clamp_min(1.0);
                 return weighted_rms(
-                    main_projection.forward(
-                        *execution,
-                        (floating / scale).to(mfq_tensor_backend::kFloat16).contiguous()),
+                    execution->projector().run(main_projection, (floating / scale).to(mfq_tensor_backend::kFloat16).contiguous()),
                     main_norm, config.rms_eps);
             },
             [&](size_t index, const Tensor &main_x) {
-                auto key_value = weighted_rms(stages[index]->key_value.forward(*execution, main_x),
+                auto key_value = weighted_rms(execution->projector().run(stages[index]->key_value, main_x),
                                               stages[index]->key_value_norm, config.rms_eps);
                 key_value = rotate_token_major_tail(
                     key_value,
@@ -349,9 +347,9 @@ struct DeepseekV41Dspark final : MtpModule {
         return mfq::models::deepseek_v41::dspark_attention(
             active,
             [&] {
-                auto q_rank = weighted_rms(stage.query_a.forward(*execution, input),
+                auto q_rank = weighted_rms(execution->projector().run(stage.query_a, input),
                                            stage.query_a_norm, config.rms_eps);
-                auto query = stage.query_b.forward(*execution, q_rank)
+                auto query = execution->projector().run(stage.query_b, q_rank)
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -360,7 +358,7 @@ struct DeepseekV41Dspark final : MtpModule {
                 return query;
             },
             [&] {
-                auto current_keys = weighted_rms(stage.key_value.forward(*execution, input),
+                auto current_keys = weighted_rms(execution->projector().run(stage.key_value, input),
                                                  stage.key_value_norm, config.rms_eps);
                 current_keys = rotate_token_major_tail(current_keys, positions, stage.rope);
                 current_keys = deepseek_v41_mxfp8_e4m3_sim_cuda(current_keys.contiguous());
@@ -472,7 +470,7 @@ struct DeepseekV41Dspark final : MtpModule {
         auto markov = quant_embedding_lookup(markov_embedding, previous)
                           .to(mfq_tensor_backend::kFloat16)
                           .contiguous();
-        return logits + markov_output.forward(*execution, markov).to(mfq_tensor_backend::kFloat32);
+        return logits + execution->projector().run(markov_output, markov).to(mfq_tensor_backend::kFloat32);
     }
 };
 

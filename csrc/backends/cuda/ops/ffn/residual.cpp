@@ -110,7 +110,7 @@ mfq_tensor_backend::Tensor full_ffn(
                                  },
                                  [&](Tensor ffn_input) {
                                      return profiler.measure("full.minicpmo45_ffn_gate_up", [&]() {
-                                         return ffn.gate_up.forward(execution, ffn_input);
+                                         return execution.projector().run(ffn.gate_up, ffn_input);
                                      });
                                  },
                                  [&](Tensor gate, Tensor up, Activation, double) {
@@ -125,7 +125,7 @@ mfq_tensor_backend::Tensor full_ffn(
                                  },
                                  [&](Tensor activation) {
                                      return profiler.measure("full.minicpmo45_ffn_down", [&] {
-                                         return ffn.down.forward_bf16_output(execution, activation);
+                                         return execution.projector().run(ffn.down, activation).to(mfq_tensor_backend::kBFloat16).contiguous();
                                      });
                                  },
                                  [](const Tensor &, const Tensor &, Activation, double) {

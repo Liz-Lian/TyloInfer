@@ -65,7 +65,7 @@ struct BiasLinear {
                 .to(output_dtype)
                 .contiguous();
         }
-        auto output = weight.forward(execution, input);
+        auto output = execution.projector().run(weight, input);
         if (bias.defined()) {
             output = output + bias.to(output.scalar_type());
         }

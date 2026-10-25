@@ -310,13 +310,13 @@ static int head_projection(CudaExecutionContext& execution,const mfq::ModelSourc
         std::array<tb::Tensor,2> output;
         context->begin_graph_warmup(mfq_current_cuda_stream());
         for(int candidate=0;candidate<2;++candidate) {
-            set(candidate);output[candidate]=head.forward(execution,x);
+            set(candidate);output[candidate]=execution.projector().run(head, x);
             fb::check(cudaStreamSynchronize(mfq_current_cuda_stream()));
         }
         output={};
         for(int candidate=0;candidate<2;++candidate) {
             set(candidate);graphs[candidate].capture_begin_shared();
-            output[candidate]=head.forward(execution,x);graphs[candidate].capture_end();
+            output[candidate]=execution.projector().run(head, x);graphs[candidate].capture_end();
         }
         for(int step=0;step<3;++step) {
             auto values=fb::input(rows,int(head.neuron_len()));
@@ -501,7 +501,7 @@ static int gs_projection(CudaExecutionContext& execution,const mfq::ModelSource&
             auto x=tb::tensor(fb::input(rows,width)).reshape({1,rows,width}).to(tb::kCUDA,input_dtype);
             auto gate=tb::tensor(fb::input(rows,width)).reshape(x.sizes()).to(tb::kCUDA,input_dtype);
             const auto compute=[&] {
-                return fused?weight->forward_input_mul(execution,x,gate,width==640?InputGateMode::Silu:InputGateMode::Sigmoid):projection(execution,x);
+                return fused?execution.projector().gated(*weight, x, gate, width==640?InputGateMode::Silu:InputGateMode::Sigmoid):projection(execution,x);
             };
             std::array<tb::Tensor,2> outputs;
             std::array<MfqCudaGraph,2> graphs;
@@ -722,13 +722,13 @@ int main(int argc,char** argv)try {
         for(const char* variant:{"0","1","2","0"}) {
             option("TYLOINFER_NINT_Q8_DECODE",variant);
             MfqCudaGraph graph;mfq_prepare_cuda_graph_memory(graph);
-            auto y=head.forward(execution,x);fb::check(cudaStreamSynchronize(mfq_current_cuda_stream()));y={};
-            graph.capture_begin();y=head.forward(execution,x);graph.capture_end();
+            auto y=execution.projector().run(head, x);fb::check(cudaStreamSynchronize(mfq_current_cuda_stream()));y={};
+            graph.capture_begin();y=execution.projector().run(head, x);graph.capture_end();
             for(int step=0;step<3;++step) {
                 auto input=fb::input(rows,int(head.neuron_len()));
                 for(size_t i=0;i<input.size();++i)input[i]=step==0?0.f:input[i]*float(step*step)+std::sin(float(i)*.019f+step)*.21f;
                 x.copy_(tb::tensor(input).reshape(x.sizes()).to(tb::kCUDA,tb::kFloat16));
-                option("TYLOINFER_NINT_Q8_DECODE","0");auto reference=head.forward(execution,x);
+                option("TYLOINFER_NINT_Q8_DECODE","0");auto reference=execution.projector().run(head, x);
                 graph.replay();compare(y,reference,variant[0]!='2');++checks;
             }
             if(!verify_only) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/common/include/quant_linear.h"
+#include "ops/common/include/projection.h"
 
 #include <array>
 #include <cstdint>
@@ -25,6 +25,12 @@ struct LinearView {
 };
 
 struct LinearAttention {
+    struct Options {
+        bool transposed = true;
+        bool shared_input = true;
+        bool fused_conv = true;
+    };
+
     int64_t key_heads = 0, value_heads = 0;
     int64_t key_dim = 0, value_dim = 0;
     int64_t conv_kernel = 0;
@@ -49,16 +55,18 @@ struct LinearAttention {
     mfq_tensor_backend::Tensor out_proj_dense;
 
     std::array<mfq_tensor_backend::Tensor, 2> forward(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor input,
+        const Projector& project, CudaProfiler& profiler, const Options& options,
+        mfq_tensor_backend::Tensor input,
         LinearView state, LinearInputs* captured = nullptr) const;
     void replay(LinearView state, const LinearInputs& inputs, int64_t retained_tokens) const;
 
   private:
     std::array<mfq_tensor_backend::Tensor, 2> cpu(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor input,
+        const Projector& project, mfq_tensor_backend::Tensor input,
         LinearView state) const;
     std::array<mfq_tensor_backend::Tensor, 2> cuda(
-        CudaExecutionContext& execution, mfq_tensor_backend::Tensor input,
+        const Projector& project, CudaProfiler& profiler, const Options& options,
+        mfq_tensor_backend::Tensor input,
         LinearView state, LinearInputs* captured) const;
 };
 

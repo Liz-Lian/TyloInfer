@@ -546,14 +546,14 @@ struct Block final : ::Block {
         return mfq::models::deepseek_v41::compress(
             state, tokens, position, ratio,
             [&] {
-                return weighted_rms(compressor_key_value.forward(execution, input), compressor_norm,
+                return weighted_rms(execution.projector().run(compressor_key_value, input), compressor_norm,
                                     config.rms_eps);
             },
             [&] {
-                projected_kv = compressor_key_value.forward(execution, input)
+                projected_kv = execution.projector().run(compressor_key_value, input)
                                    .to(mfq_tensor_backend::kFloat32)
                                    .contiguous();
-                projected_score = compressor_gate.forward(execution, input)
+                projected_score = execution.projector().run(compressor_gate, input)
                                       .to(mfq_tensor_backend::kFloat32)
                                       .contiguous();
                 if(speculative_pending) {
@@ -604,7 +604,7 @@ struct Block final : ::Block {
                 mfq_tensor_backend::arange(begin * ratio, (begin + count) * ratio, ratio,
                                            latent->options().dtype(mfq_tensor_backend::kInt64));
             auto index_values =
-                weighted_rms(index_key.forward(execution, *latent), index_key_norm, config.rms_eps);
+                weighted_rms(execution.projector().run(index_key, *latent), index_key_norm, config.rms_eps);
             index_values = rotate_token_major_tail(index_values, group_positions, rope);
             index_values = dsv4_fp4_sim_cuda(index_values.contiguous());
             auto compressed = rotate_token_major_tail(*latent, group_positions, rope);
@@ -640,7 +640,7 @@ struct Block final : ::Block {
             },
             [&] {
                 auto query =
-                    index_query.forward(execution, q_rank)
+                    execution.projector().run(index_query, q_rank)
                         .reshape({batch, tokens, config.index_n_heads, config.index_head_dim})
                         .transpose(1, 2)
                         .contiguous();
@@ -648,7 +648,7 @@ struct Block final : ::Block {
                             .transpose(1, 2)
                             .contiguous();
                 query = dsv4_fp4_sim_cuda(query.to(mfq_tensor_backend::kFloat16).contiguous());
-                auto weights = index_score.forward(execution, input)
+                auto weights = execution.projector().run(index_score, input)
                                    .reshape({batch, tokens, config.index_n_heads})
                                    .to(mfq_tensor_backend::kFloat16)
                                    .contiguous();
@@ -691,11 +691,11 @@ struct Block final : ::Block {
         return mfq::models::deepseek_v41::attention(
             kv_source(), ratio,
             [&] {
-                return weighted_rms(query_a.forward(execution, input), query_a_norm,
+                return weighted_rms(execution.projector().run(query_a, input), query_a_norm,
                                     config.rms_eps);
             },
             [&](Tensor q_rank) {
-                auto query = query_b.forward(execution, q_rank)
+                auto query = execution.projector().run(query_b, q_rank)
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -705,7 +705,7 @@ struct Block final : ::Block {
                 return query;
             },
             [&] {
-                auto local = weighted_rms(key_value.forward(execution, input), key_value_norm,
+                auto local = weighted_rms(execution.projector().run(key_value, input), key_value_norm,
                                           config.rms_eps)
                                  .reshape({batch, tokens, config.head_dim});
                 local = rotate_token_major_tail(local, positions, rope);

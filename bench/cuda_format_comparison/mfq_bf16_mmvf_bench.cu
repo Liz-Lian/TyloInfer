@@ -79,7 +79,7 @@ int main(int argc,char** argv) try {
             const float amplitude=std::array<float,8>{0.f,.03125f,.125f,.5f,1.f,2.f,8.f,32.f}[step%8];
             for(auto& v:input)v=normal(random)*amplitude;
             x.copy_(tb::tensor(input).reshape({tokens,width}).to(tb::kCUDA,tb::kBFloat16));
-            const auto expected=weight.forward(execution,x).cpu().contiguous();
+            const auto expected=execution.projector().run(weight, x).cpu().contiguous();
             graph.replay();
             for(std::size_t i=0;i<variants.size();++i)compare(checks[i],y[i],expected);
         }
@@ -97,7 +97,7 @@ int main(int argc,char** argv) try {
         MfqCudaGraph graph;mfq_prepare_cuda_graph_memory(graph);
         auto output=tb::empty({1,outputs},weight.dense.options());
         const auto body=[&] {
-            if(i<0)output=weight.forward(execution,x);
+            if(i<0)output=execution.projector().run(weight, x);
             else variants[i].launch(x,weight.dense,output);
         };
         body();fb::check(cudaStreamSynchronize(mfq_current_cuda_stream()));

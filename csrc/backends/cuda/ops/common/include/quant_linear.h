@@ -9,7 +9,8 @@
 #include "tq.h"
 #include "formats/format_features.h"
 
-#include "backends/cuda/engine/executor/execution.h"
+#include "mmq.h"
+#include "parallel.h"
 #include "backend.h"
 
 #include <cuda_runtime_api.h>
@@ -30,10 +31,8 @@ struct DenseLinearGroup;
 mfq_tensor_backend::Tensor dense_projection(
     mfq_tensor_backend::Tensor input, const mfq_tensor_backend::Tensor& weight);
 
-bool decode_branch_parallel_enabled(
-    const CudaExecutionConfig& config,
-    bool serial_branches,
-    std::int64_t rows);
+class TqExec;
+namespace mfq::cuda { class Collectives; }
 
 mfq_tensor_backend::Tensor run_nint_linear(
     CudaProfiler& profiler, KlMmqState& kl_mmq,
@@ -60,19 +59,6 @@ struct NintLinearGroup {
     std::vector<NintWeight> split_w;
     std::vector<std::vector<int64_t>> split_outs;
     std::vector<int64_t> outs;
-    std::vector<mfq_tensor_backend::Tensor> forward(
-            CudaProfiler& profiler,
-            KlMmqState& kl_mmq,
-            mfq::cuda::Branches& branches,
-            const CudaExecutionConfig& config,
-            bool serial_branches,
-            mfq_tensor_backend::Tensor x) const;
-    mfq_tensor_backend::Tensor forward_swiglu(
-            CudaProfiler& profiler,
-            mfq_tensor_backend::Tensor x) const;
-    mfq_tensor_backend::Tensor forward_geglu(
-            CudaProfiler& profiler,
-            mfq_tensor_backend::Tensor x) const;
 };
 
 enum class QuantLinearKind {
@@ -133,34 +119,6 @@ struct QuantLinear {
     bool is_dense() const { return kind == QuantLinearKind::Dense; }
     bool is_tq() const { return kind == QuantLinearKind::Tq; }
 
-    mfq_tensor_backend::Tensor forward_tensor_parallel_flat(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            MfqOptional<mfq_tensor_backend::Tensor> gate,
-            InputGateMode gate_mode) const;
-
-    mfq_tensor_backend::Tensor forward_dense(mfq_tensor_backend::Tensor x) const;
-
-    mfq_tensor_backend::Tensor forward(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x) const;
-    mfq_tensor_backend::Tensor forward_bf16_output(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x) const;
-    mfq_tensor_backend::Tensor forward_mxfp8_groupwise(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor grouped,
-            int64_t groups) const;
-    mfq_tensor_backend::Tensor forward_input_mul(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            mfq_tensor_backend::Tensor gate,
-            InputGateMode mode) const;
-    mfq_tensor_backend::Tensor forward_input_mul_f32_kld(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x,
-            mfq_tensor_backend::Tensor gate,
-            InputGateMode mode) const;
     int64_t out() const;
     int64_t neuron_len() const;
 };
@@ -169,11 +127,6 @@ using QuantLinearProjectionRefs =
     std::vector<const QuantLinear*>;
 
 bool tensor_parallel_output_projections_compatible(
-    const QuantLinearProjectionRefs& projections);
-std::vector<mfq_tensor_backend::Tensor>
-forward_tensor_parallel_output_projections(
-    CudaExecutionContext& execution,
-    mfq_tensor_backend::Tensor input,
     const QuantLinearProjectionRefs& projections);
 
 struct QuantLinearGroup {
@@ -188,21 +141,6 @@ struct QuantLinearGroup {
     QuantLinearProjectionRefs tensor_parallel_output_projections() const;
 
     bool tensor_parallel_output_compatible() const;
-
-    std::vector<mfq_tensor_backend::Tensor>
-    forward_tensor_parallel_output_group(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x) const;
-
-    std::vector<mfq_tensor_backend::Tensor> forward(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x) const;
-    mfq_tensor_backend::Tensor forward_swiglu(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x) const;
-    mfq_tensor_backend::Tensor forward_geglu(
-            CudaExecutionContext& execution,
-            mfq_tensor_backend::Tensor x) const;
 };
 
 struct DenseLinearGroup {
@@ -211,6 +149,10 @@ struct DenseLinearGroup {
 
     std::vector<mfq_tensor_backend::Tensor> forward(mfq_tensor_backend::Tensor x) const;
 };
+
+mfq_tensor_backend::Tensor nint_kld(
+    CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
+    mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor gate, InputGateMode mode);
 
 mfq_tensor_backend::Tensor quant_embedding_lookup(
     const QuantLinear& weight, mfq_tensor_backend::Tensor token_ids);

@@ -70,7 +70,7 @@ mfq_tensor_backend::Tensor
 MiniCPMO45Model::adapter_logits(const QuantLinear &lm_head,
                                 mfq_tensor_backend::Tensor hidden) const {
     return execution->profiler.measure("model.lm_head", [&]() {
-        return lm_head.forward(*execution, hidden).to(mfq_tensor_backend::kBFloat16).contiguous();
+        return execution->projector().run(lm_head, hidden).to(mfq_tensor_backend::kBFloat16).contiguous();
     });
 }
 

@@ -57,9 +57,8 @@ int run_linear_check(
     }
     auto run = [&]() {
         return gate_mode == InputGateMode::None
-            ? linear.forward(execution, xh)
-            : linear.forward_input_mul(
-                execution, xh, gateh, gate_mode);
+            ? execution.projector().run(linear, xh)
+            : execution.projector().gated(linear, xh, gateh, gate_mode);
     };
     const char * check_bf16_output_env =
         mfq::cuda::env_lookup("TYLOINFER_CHECK_LINEAR_BF16_OUTPUT");
@@ -69,10 +68,9 @@ int run_linear_check(
             gate_mode == InputGateMode::None,
             "direct BF16 linear check does not support input gating");
         auto bf16_input = x.to(mfq_tensor_backend::kBFloat16).contiguous();
-        auto reference = linear.forward(execution, bf16_input)
+        auto reference = execution.projector().run(linear, bf16_input)
             .to(mfq_tensor_backend::kBFloat16).contiguous();
-        auto candidate = linear.forward_bf16_output(
-            execution, bf16_input);
+        auto candidate = execution.projector().run(linear, bf16_input).to(mfq_tensor_backend::kBFloat16).contiguous();
         auto difference =
             (candidate.to(mfq_tensor_backend::kFloat32) -
              reference.to(mfq_tensor_backend::kFloat32)).abs();
@@ -229,9 +227,8 @@ int run_cpu_linear_check(
     }
     auto run_cpu = [&]() {
         return gate_mode == InputGateMode::None
-            ? cpu_linear.forward(execution, x)
-            : cpu_linear.forward_input_mul(
-                execution, x, gate, gate_mode);
+            ? execution.projector().run(cpu_linear, x)
+            : execution.projector().gated(cpu_linear, x, gate, gate_mode);
     };
     mfq_tensor_backend::Tensor actual = run_cpu();
     const auto start = std::chrono::steady_clock::now();
@@ -246,9 +243,8 @@ int run_cpu_linear_check(
     mfq_tensor_backend::Tensor cuda_gate;
     if (gate_mode != InputGateMode::None) cuda_gate = gate.to(mfq_tensor_backend::kCUDA).contiguous();
     auto reference = gate_mode == InputGateMode::None
-        ? cuda_linear.forward(execution, cuda_x)
-        : cuda_linear.forward_input_mul(
-            execution, cuda_x, cuda_gate, gate_mode);
+        ? execution.projector().run(cuda_linear, cuda_x)
+        : execution.projector().gated(cuda_linear, cuda_x, cuda_gate, gate_mode);
     mfq_cuda_synchronize();
     reference = reference.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kFloat32).contiguous();
     actual = actual.to(mfq_tensor_backend::kFloat32).contiguous();
@@ -310,10 +306,8 @@ int run_tensor_parallel_linear_check(
         .reshape({M, width});
     x = ((x.remainder(127) - 63) / 384.0)
         .to(mfq_tensor_backend::kFloat16).contiguous();
-    auto reference = full.forward(
-        execution, x).to(mfq_tensor_backend::kFloat32);
-    auto test = sharded.forward(
-        execution, x).to(mfq_tensor_backend::kFloat32);
+    auto reference = execution.projector().run(full, x).to(mfq_tensor_backend::kFloat32);
+    auto test = execution.projector().run(sharded, x).to(mfq_tensor_backend::kFloat32);
     mfq_cuda_synchronize();
     const auto difference = (test - reference).abs();
     const double denominator =
@@ -410,7 +404,7 @@ int run_linear_group_check(
                      : mfq_tensor_backend::kFloat16)
                  .reshape({M, width})
                  .contiguous();
-    auto actual = group.forward(execution, x);
+    auto actual = execution.projector().run(group, x);
     const char * check_bf16_swiglu_env =
         mfq::cuda::env_lookup("TYLOINFER_CHECK_BF16_SWIGLU");
     if (check_bf16_swiglu_env != nullptr &&
@@ -440,7 +434,7 @@ int run_linear_group_check(
     mfq_cuda_synchronize();
     const auto started = std::chrono::steady_clock::now();
     for (int rep = 0; rep < reps; ++rep) {
-        actual = group.forward(execution, x);
+        actual = execution.projector().run(group, x);
     }
     mfq_cuda_synchronize();
     const double elapsed_ms = std::chrono::duration<double, std::milli>(
@@ -452,8 +446,8 @@ int run_linear_group_check(
               << " mean_ms=" << elapsed_ms / reps << '\n';
     TYLOINFER_RUNTIME_CHECK(actual.size() == names.size(), "linear group output count mismatch");
     std::vector<mfq_tensor_backend::Tensor> graph_actual;
-    if (M == 1 && decode_branch_parallel_enabled(
-                    execution.config, execution.decode_graph_serial_branches, M)) {
+    if (M == 1 && mfq::cuda::decode_branches(
+                    execution.config.decode_branch_parallel, execution.decode_graph_serial_branches, M)) {
         mfq_cuda_synchronize();
         const auto graph_stream =
             mfq_get_stream_from_pool(false);
@@ -461,11 +455,11 @@ int run_linear_group_check(
             graph_stream);
         MfqCudaGraph graph;
         mfq_prepare_cuda_graph_memory(graph);
-        graph_actual = group.forward(execution, x);
+        graph_actual = execution.projector().run(group, x);
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream.stream()));
         graph_actual.clear();
         graph.capture_begin();
-        graph_actual = group.forward(execution, x);
+        graph_actual = execution.projector().run(group, x);
         graph.capture_end();
         graph.replay();
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(
@@ -512,7 +506,7 @@ int run_linear_group_check(
                   weight.row_q_bit_offsets, weight.sub_scale,
                   weight.sub_min, weight.neuron_scale,
                   weight.neuron_min, weight.neuron_len, weight.gs);
-        auto separate = linear.forward(execution, x);
+        auto separate = execution.projector().run(linear, x);
         if (actual[index].scalar_type() == mfq_tensor_backend::kBFloat16) {
             separate = separate.to(mfq_tensor_backend::kBFloat16);
         }
@@ -828,8 +822,7 @@ int run_dsv4_output_a_check(
         .contiguous();
 
     auto legacy = [&]() {
-        auto expanded = linear.forward(
-            execution, grouped.reshape({batch * kGroups, width}))
+        auto expanded = execution.projector().run(linear, grouped.reshape({batch * kGroups, width}))
             .reshape({batch, kGroups, kGroups, rows_per_group});
         std::vector<mfq_tensor_backend::Tensor> diagonal;
         diagonal.reserve(kGroups);
@@ -841,8 +834,7 @@ int run_dsv4_output_a_check(
     };
     auto groupwise = [&]() {
         return linear.is_mxfp8()
-            ? linear.forward_mxfp8_groupwise(
-                execution, grouped, kGroups)
+            ? execution.projector().groupwise(linear, grouped, kGroups)
             : nint_matmul_groupwise_u8(
                 execution.profiler, linear.nint, grouped, kGroups);
     };
@@ -932,21 +924,21 @@ int run_gemma_geglu_check(
               0.125 * mfq_tensor_backend::sin(xf * 0.03125)).to(mfq_tensor_backend::kFloat16).reshape({1, hidden}).contiguous();
 
     auto materialized_activation = [&]() {
-        auto parts = gate_up.forward(execution, x);
+        auto parts = execution.projector().run(gate_up, x);
         return gelu_mul_cuda(parts[0].contiguous(), parts[1].contiguous());
     };
     auto materialized = [&]() {
-        return down.forward(execution, materialized_activation());
+        return execution.projector().run(down, materialized_activation());
     };
     auto fused_activation = [&]() {
-        return gate_up.forward_geglu(execution, x);
+        return execution.projector().geglu(gate_up, x);
     };
     auto fused = [&]() {
-        return down.forward(execution, fused_activation());
+        return execution.projector().run(down, fused_activation());
     };
 
     auto reference_activation = materialized_activation();
-    auto reference_output = down.forward(execution, reference_activation);
+    auto reference_output = execution.projector().run(down, reference_activation);
     std::cout << "gemma_geglu_check layer=" << layer
               << " gate_up_bits=" << gate_up.nint.w.bits
               << " gate_up_gs=" << gate_up.nint.w.gs
