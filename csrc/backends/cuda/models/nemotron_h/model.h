@@ -4,7 +4,7 @@
 #include "models/common/ffn.h"
 #include "models/common/full_block.h"
 #include "quant_linear.h"
-#include "storage/state/recurrent_mixer_state.h"
+#include "backends/cuda/engine/state/recurrent_mixer_state.h"
 
 #include <array>
 #include <cstdint>

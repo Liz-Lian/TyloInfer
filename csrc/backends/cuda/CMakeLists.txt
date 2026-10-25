@@ -450,9 +450,9 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/dspark.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/vision.cpp
     ${TYLOINFER_CUDA_ROOT}/models/qwen4_exp/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_offload.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_memory.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_vmm.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_offload.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_memory.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_vmm.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm5_next/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/gemma4/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm_dsa/ops.cpp
@@ -511,7 +511,7 @@ target_compile_definitions(mfq-cuda-execution PRIVATE
 set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_LOADING_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/storage/state/kv_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/cache.cpp
@@ -542,15 +542,15 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # Concrete Engine/model bindings stay in this source group for both native and
 # optional Torch builds. Extra targets do not reduce their header dependencies.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/engine/load_options.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/model_components.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/models/components.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/cuda_engine.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/session/text_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/storage/session/deepseek_v41_paged.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/cuda_batching.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp

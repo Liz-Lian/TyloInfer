@@ -6,7 +6,7 @@
 #endif
 #include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "storage/state/kv_offload.h"
+#include "backends/cuda/engine/state/kv_offload.h"
 
 #include "mfq_cuda_quant_ops.h"
 #include "mfe_ffn_token_groups.h"

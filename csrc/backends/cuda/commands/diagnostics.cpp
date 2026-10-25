@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/weights/load.h"
 #include "cli.h"
 #include "diagnostics/token_generation.h"
-#include "engine/model_components.h"
+#include "backends/cuda/engine/executor/load.h"
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"
 #include "diagnostics/runtime_checks.h"

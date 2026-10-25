@@ -2,7 +2,7 @@
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "engine/models/common/transformer_layer.h"
-#include "storage/state/recurrent_mixer_state.h"
+#include "backends/cuda/engine/state/recurrent_mixer_state.h"
 
 #include "models/common/block.h"
 #include "models/common/ffn.h"

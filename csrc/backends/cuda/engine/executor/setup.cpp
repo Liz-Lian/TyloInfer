@@ -5,6 +5,8 @@
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
 #include "backend.h"
+#include "mfq_cuda_sampling_ops.h"
+#include "kernels/gr_prefill_blas.h"
 #include "quant_linear.h"
 #include "engine/weights/tensor_parallel.h"
 
@@ -466,6 +468,38 @@ int with_cuda_load(
     CudaScope scope(execution);
     setup_cuda_load(options, execution);
     return run(execution);
+}
+
+} // namespace mfq::cuda::internal
+
+namespace mfq::cuda::internal {
+
+void prepare_sampling_runtime(int64_t vocabulary) {
+    namespace tb=mfq_tensor_backend;
+    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto before=context->local_memory_usage();
+    {
+        const auto gpu=tb::TensorOptions().device(tb::kCUDA);
+        auto random=tb::full({1},.37,gpu.dtype(tb::kFloat32));
+        auto counts=tb::zeros({vocabulary},gpu.dtype(tb::kInt32));
+        for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
+            auto logits=tb::zeros({1,vocabulary},gpu.dtype(dtype));
+            // Lazy CUDA modules and sampler workspaces must be charged before
+            // expert arenas consume the remaining device budget. Exercise both
+            // compact and fallback sampling without touching request RNG/state.
+            for(int k:{20,64,65})if(k<=vocabulary)
+                (void)sample_top_k_top_p_cuda(logits,random,.7,k,.8);
+            (void)sample_softmax_cuda(logits,random,.7);
+            (void)sample_apply_penalties_cuda(logits,counts,.2,.05,1.0);
+            if(vocabulary>=64)(void)sample_top_k_compact_cuda(logits,64);
+        }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+        prepare_gr_prefill_blas_runtime();
+#endif
+    }
+    context->reclaim_idle_memory();
+    std::cerr<<"runtime_sampling_prepare vocab="<<vocabulary<<" local_before="<<before
+        <<" local_after="<<context->local_memory_usage()<<"\n";
 }
 
 } // namespace mfq::cuda::internal

@@ -1,5 +1,5 @@
 #include "mfq_cuda_sampling_ops.h"
-#include "cuda_batching.h"
+#include "backends/cuda/engine/batch/batch.h"
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"

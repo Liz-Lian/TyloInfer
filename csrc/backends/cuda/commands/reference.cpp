@@ -1,5 +1,5 @@
 #include "cli.h"
-#include "engine/model_components.h"
+#include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/executor/execution.h"
 
 #include <algorithm>

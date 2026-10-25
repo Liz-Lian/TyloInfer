@@ -13,11 +13,11 @@
 #include "csrc/backends/cuda/kernels/ple_fused.h"
 #include "backends/cuda/engine/weights/nint_row_pipeline.h"
 #include "backends/cuda/engine/executor/layer_inputs.h"
-#include "storage/state/kv_offload.h"
-#include "storage/state/kv_memory.h"
+#include "backends/cuda/engine/state/kv_offload.h"
+#include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "mfq_cuda_kv_quantization.h"
-#include "storage/session/state.h"
+#include "backends/cuda/engine/state/session/state.h"
 #include <array>
 #include <cstdlib>
 #include <cstring>

@@ -1,4 +1,4 @@
-#include "storage/session/text_cache.h"
+#include "backends/cuda/engine/state/session/text_cache.h"
 #include "models/common/full_block.h"
 #include <array>
 #include <cstring>
@@ -13,7 +13,7 @@
 #include "models/qwen35/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
-#include "storage/session/state.h"
+#include "backends/cuda/engine/state/session/state.h"
 #include "models/common/mtp.h"
 #include "engine/state/prefix_cache.h"
 #include "engine/state/paged.h"

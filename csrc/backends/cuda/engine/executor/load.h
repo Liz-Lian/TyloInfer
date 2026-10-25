@@ -1,123 +1,17 @@
 #pragma once
 
-#include "models/deepseek_v4/ops.h"
-#include "models/deepseek_v41/ops.h"
-#include "models/deepseek_v41/vision.h"
-#include "models/gemma4/ops.h"
-#include "models/glm5_next/ops.h"
-#include "models/glm_dsa/ops.h"
-#include "models/minicpmo45/ops.h"
-#include "models/nemotron_h/ops.h"
-#include "models/qwen35/ops.h"
-#include "models/qwen4_exp/ops.h"
-#include "models/common/mtp.h"
-#include "models/nemotron_h/radio_vision.h"
-#include "cuda_runtime_config.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/models/components.h"
+#include "backends/cuda/engine/executor/options.h"
+#include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "storage/state/kv_memory.h"
+#include "cuda_runtime_config.h"
 
 #include <chrono>
-#include <memory>
-#include <optional>
-#include <stdexcept>
+#include <iostream>
+#include <type_traits>
 #include <utility>
-
-
-#include "backends/cuda/engine/weights/load.h"
-#include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "models/common/grid_vision.h"
-
-#include "models/common/causal_model_ops.h"
-
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <memory>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
-
-template <typename Model>
-struct RuntimeComponents {
-    mfq::ModelGraph graph;
-    mfq::cuda::CudaModelPlan plan;
-    std::optional<
-        mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent>
-        grid_vision;
-    std::optional<mfq::cuda::deepseek_v41_runtime::Vision> deepseek_vision;
-    std::optional<mfq::cuda::nemotron_h::CudaRadioPromptComponent>
-        radio_vision;
-    std::unique_ptr<MtpModule> mtp;
-    Model* language_override = nullptr;
-    std::unique_ptr<mfq::cuda::minicpmo45::Components> composite;
-    bool vision_available = false;
-    bool mtp_available = false;
-
-    Model& language(Model& fallback) {
-        return language_override ? *language_override : fallback;
-    }
-
-    mfq::cuda::CudaComponentState state() const noexcept {
-        return mfq::cuda::cuda_component_state(
-            graph, plan, vision_available, mtp_available);
-    }
-};
-
-template <typename Model>
-RuntimeComponents<Model> load_runtime_components(
-    Model& model,
-    bool load_optional_components);
-
-
-template <>
-RuntimeComponents<mfq::cuda::Qwen35CausalLm>
-load_runtime_components(
-    mfq::cuda::Qwen35CausalLm& model,
-    bool load_optional_components);
-
-template <>
-RuntimeComponents<mfq::cuda::Qwen4CausalLm>
-load_runtime_components(
-    mfq::cuda::Qwen4CausalLm& model,
-    bool load_optional_components);
-
-template <>
-RuntimeComponents<mfq::cuda::Glm5CausalLm>
-load_runtime_components(
-    mfq::cuda::Glm5CausalLm& model,
-    bool load_optional_components);
-
-template <>
-RuntimeComponents<mfq::cuda::DeepseekV41CausalLm>
-load_runtime_components(
-    mfq::cuda::DeepseekV41CausalLm& model,
-    bool load_optional_components);
-
-template <>
-RuntimeComponents<mfq::cuda::NemotronHCausalLm>
-load_runtime_components(
-    mfq::cuda::NemotronHCausalLm& model,
-    bool load_optional_components);
-
-
-template <>
-RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm>
-load_runtime_components(
-    mfq::cuda::MiniCPMO45CausalLm& model,
-    bool load_optional_components);
-
-template <>
-RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm>
-load_runtime_components(
-    mfq::cuda::MiniCPMOTtsCausalLm& model,
-    bool load_optional_components);
 
 namespace mfq::cuda::internal {
-
-void prepare_sampling_runtime(int64_t vocabulary);
 
 template <typename F>
 auto with_loaded_cuda_model(

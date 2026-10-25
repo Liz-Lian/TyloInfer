@@ -498,3 +498,7 @@ struct DecodeGraphTpProjectionScope {
         setting = previous;
     }
 };
+
+namespace mfq::cuda::internal {
+void prepare_sampling_runtime(int64_t vocabulary);
+}

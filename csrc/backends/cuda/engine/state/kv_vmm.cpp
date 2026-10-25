@@ -1,5 +1,5 @@
 // Adapted from Strata (MIT); see LICENSES/Strata-MIT.txt.
-#include "storage/state/kv_vmm.h"
+#include "backends/cuda/engine/state/kv_vmm.h"
 
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <cuda.h>
