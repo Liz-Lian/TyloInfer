@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/tq/load.h"
@@ -13,7 +14,7 @@
 #include <iterator>
 
 void load_important_neuron_branch(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
-                                  int64_t hidden_size, int64_t intermediate_size, FFN &f,
+                                  int64_t hidden_size, int64_t intermediate_size, mfq::cuda::Ffn &f,
                                   const std::string &down_name, const std::string &gate_name,
                                   const std::string &up_name) {
     const std::string down_high = down_name + ".in_high";
@@ -33,7 +34,7 @@ void load_important_neuron_branch(CudaExecutionContext &execution, const mfq::Mo
         throw std::runtime_error("important-neuron records are unsupported on routed MoE FFNs");
     }
 
-    auto high = std::make_unique<FFN>();
+    auto high = std::make_unique<mfq::cuda::Ffn>();
     high->down = load_quant_linear(execution, mfq, down_high, TensorParallelAxis::Input);
     high->gate_up = load_paired_gate_up(execution, mfq, {gate_high, up_high}, high->down);
     high->geglu = f.geglu;
@@ -87,12 +88,12 @@ void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::ve
                                     preserve_projection_boundaries);
     }
 }
-void TransformerWeightLoader::workspace(FFN& ffn) const { prepare_ffn(execution, ffn); }
-void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, FFN& ffn,
+void TransformerWeightLoader::workspace(mfq::cuda::Ffn& ffn) const { prepare_ffn(execution, ffn); }
+void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {
     load_important_neuron_branch(execution, source, hidden, intermediate, ffn, down, gate, up);
 }
-void TransformerWeightLoader::experts(FFN& ffn, mfq::models::ExpertProjection projection,
+void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,
                                      const std::string& name, int layer) const {
     using Role = mfq::models::ExpertProjection;
     const auto& record = require_tensor(source, name);
@@ -162,13 +163,13 @@ MfeWeight TransformerWeightLoader::headwise(const std::string& name) const {
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-FFN load_moe_weights(CudaExecutionContext& execution, const mfq::ModelSource& source,
+mfq::cuda::Ffn load_moe_weights(CudaExecutionContext& execution, const mfq::ModelSource& source,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
     TransformerWeightLoader loader{execution, source};
     loader.keep_quantized_router=true;
     loader.cpu_offloaded = options.cpu_offloaded;
     loader.shared_gate_up_compatible_prefix = options.shared_gate_up_compatible_prefix;
-    auto result=mfq::models::load_moe_weights<FFN>(
+    auto result=mfq::models::load_moe_weights<mfq::cuda::Ffn>(
         loader, std::string(prefix), options.layer, options.router_bias_required,
         options.ungated_experts, options.ungated_shared);
     if(result.moe_tq) {
@@ -185,7 +186,7 @@ FFN load_moe_weights(CudaExecutionContext& execution, const mfq::ModelSource& so
     return result;
 }
 
-void prepare_ffn(CudaExecutionContext &execution, FFN &f) {
+void prepare_ffn(CudaExecutionContext &execution, mfq::cuda::Ffn &f) {
     if (execution.loading_cpu_layer)
         return;
     if (f.down.tensor_parallel())
@@ -205,9 +206,9 @@ void prepare_ffn(CudaExecutionContext &execution, FFN &f) {
     }
 }
 
-void prepare_moe_ffn(CudaExecutionContext& execution, FFN& f) {
+void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& f) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(!f.moe_pipeline.expired() || !f.uses_moe_expert_cache() || f.expert_parallel_moe_compatible() ||
+    if(!f.moe_pipeline.expired() || !mfq::cuda::uses_expert_cache(f) || mfq::cuda::expert_parallel(f) ||
             f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
             !execution.config.moe_route_stats_path.empty())return;
     std::vector<std::shared_ptr<MfeWeight>> gate_up;

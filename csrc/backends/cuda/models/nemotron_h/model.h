@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/block.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 #include "models/common/full_block.h"
 #include "quant_linear.h"
 #include "backends/cuda/engine/state/recurrent_mixer_state.h"
@@ -78,7 +78,7 @@ struct MoeMixerBlock final : Block {
     int layer = -1;
     double rms_norm_eps = 1e-6;
     mfq_tensor_backend::Tensor ffn_norm;
-    FFN ffn;
+    mfq::cuda::Ffn ffn;
 
     bool supports_speculation() const noexcept override { return true; }
     void reset(int64_t) override {}

@@ -3,7 +3,7 @@
 #include "ops/attention/linear.h"
 #include "backends/cuda/engine/state/recurrent_mixer_state.h"
 #include "models/common/block.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 #include "engine/models/qwen35/config.h"
 
 namespace mfq::cuda::qwen35 {
@@ -11,7 +11,7 @@ namespace mfq::cuda::qwen35 {
 struct LinearAttentionBlock final : ::Block, LinearAttention {
     mfq::models::qwen35::Config qwen_config;
     mfq_tensor_backend::Tensor ffn_norm;
-    FFN ffn;
+    mfq::cuda::Ffn ffn;
     RecurrentMixerState mixer;
     bool transposed_gdn_state = true;
     int64_t speculative_ffn_batches = 0;

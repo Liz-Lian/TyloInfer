@@ -1,4 +1,6 @@
 #include "backends/cuda/engine/weights/load.h"
+#include "engine/executor/ffn.h"
+#include "engine/executor/tq_moe.h"
 #include "dspark.h"
 
 #include "models/common/causal_model_ops.h"
@@ -445,8 +447,7 @@ struct DeepseekV41Dspark final : MtpModule {
                     },
                     [&](Tensor value) {
                         const auto rows = value.size(1);
-                        return stage.mlp
-                            .forward(*execution, value.reshape({-1, config.hidden}),
+                        return mfq::cuda::run_ffn(*execution, stage.mlp, value.reshape({-1, config.hidden}),
                                      draft_ids.narrow(1, 0, rows))
                             .reshape({batch, rows, config.hidden});
                     });

@@ -463,7 +463,7 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/ops/ffn/ffn.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/ffn/mlp.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/ffn/residual.cpp
     ${TYLOINFER_CUDA_ROOT}/native/profile.cpp
     ${TYLOINFER_CUDA_ROOT}/native/collectives.cpp
@@ -503,6 +503,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp

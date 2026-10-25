@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/attention/full.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 #include "engine/models/common/weight_loading.h"
 
 #include <memory>
@@ -26,10 +26,10 @@ struct TransformerWeightLoader {
     QuantLinearGroup projections(const std::vector<std::string>& names) const;
     QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down) const;
     void qkv(mfq::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
-    void workspace(FFN& ffn) const;
-    void important_neurons(int64_t hidden, int64_t intermediate, FFN& ffn,
+    void workspace(mfq::cuda::Ffn& ffn) const;
+    void important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
         const std::string& down, const std::string& gate, const std::string& up) const;
-    void experts(FFN& ffn, mfq::models::ExpertProjection projection,
+    void experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
     MfeWeight headwise(const std::string& name) const;
     static auto shape(const mfq_tensor_backend::Tensor& value) { return value.sizes().vec(); }
@@ -44,7 +44,7 @@ struct MoeWeightLoadOptions {
     std::size_t shared_gate_up_compatible_prefix = 2;
 };
 
-FFN load_moe_weights(
+mfq::cuda::Ffn load_moe_weights(
     CudaExecutionContext& execution,
     const mfq::ModelSource& source,
     std::string_view prefix,
@@ -54,13 +54,13 @@ void load_important_neuron_branch(
     const mfq::ModelSource& source,
     int64_t hidden_size,
     int64_t intermediate_size,
-    FFN& ffn,
+    mfq::cuda::Ffn& ffn,
     const std::string& down_name,
     const std::string& gate_name,
     const std::string& up_name);
 
-void prepare_ffn(CudaExecutionContext& execution, FFN& ffn);
-void prepare_moe_ffn(CudaExecutionContext& execution, FFN& ffn);
+void prepare_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& ffn);
+void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& ffn);
 
 namespace mfq::cuda {
 

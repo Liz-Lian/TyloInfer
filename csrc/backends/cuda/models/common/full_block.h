@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/block.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 #include "ops/attention/full.h"
 #include "backends/cuda/engine/state/kv_cache.h"
 
@@ -9,7 +9,7 @@
 
 struct FullBlock : Block, mfq::cuda::FullAttention {
     mfq_tensor_backend::Tensor ffn_norm;
-    FFN ffn;
+    mfq::cuda::Ffn ffn;
     KVCache cache;
 
     bool supports_speculation() const noexcept override { return !sliding; }

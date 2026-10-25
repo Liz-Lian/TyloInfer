@@ -2,7 +2,7 @@
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "linear_attention.h"
-#include "ops/ffn/residual.h"
+#include "engine/executor/ffn.h"
 
 #include <type_traits>
 
@@ -10,7 +10,7 @@
 
 namespace mfq::cuda::qwen35 {
 struct BlockLoader : TransformerWeightLoader {
-    using Ffn = FFN;
+    using Ffn = mfq::cuda::Ffn;
     auto full_block() const {
         auto block=std::make_unique<FullBlock>();block->kv_quantization=cuda_kv_quantization();return block;
     }

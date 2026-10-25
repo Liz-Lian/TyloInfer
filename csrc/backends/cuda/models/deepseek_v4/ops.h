@@ -1,5 +1,6 @@
 #pragma once
 #include "mfq_cuda_attention_ops.h"
+#include "engine/executor/ffn.h"
 #include "mfq_cuda_cache_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "mfq_cuda_quant_ops.h"
@@ -11,7 +12,7 @@
 #include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "models/common/block.h"
 #include "engine/models/deepseek_v4/config.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 
 #include <iomanip>
 #include <iostream>
@@ -297,7 +298,7 @@ struct Dsv4Block : Block {
     Dsv4PoolState indexer_compressor;
     QuantLinear indexer_q;
     mfq_tensor_backend::Tensor indexer_weight;
-    FFN ffn;
+    mfq::cuda::Ffn ffn;
     Dsv4RopeTable attention_rope;
 
     mfq_tensor_backend::Tensor local_cache;
@@ -770,8 +771,7 @@ struct Dsv4Block : Block {
                 return std::make_pair(normalized, pre);
             },
             [&](const auto &mix) {
-                auto feed_forward = ffn.forward(
-                    execution, mix.first.reshape({batch * tokens, hidden_size}), current_ids);
+                auto feed_forward = mfq::cuda::run_ffn(execution, ffn, mix.first.reshape({batch * tokens, hidden_size}), current_ids);
                 feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
                 return feed_forward;
             },

@@ -1,5 +1,5 @@
 #include "models/common/full_block.h"
-#include "ops/ffn/residual.h"
+#include "engine/executor/ffn.h"
 #include "backends/cuda/engine/executor/options.h"
 
 #include <algorithm>

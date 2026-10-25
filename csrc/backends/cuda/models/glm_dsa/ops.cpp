@@ -6,7 +6,7 @@
 namespace mfq::cuda::glm_dsa {
 
 void load_ffn(CudaExecutionContext& execution, const mfq::ModelSource& source,
-              const Config& config, int layer, FFN& ffn) {
+              const Config& config, int layer, mfq::cuda::Ffn& ffn) {
     TransformerWeightLoader loader{execution, source};
     mfq::models::glm_dsa::load_ffn(loader, config, layer, ffn);
 }

@@ -1,4 +1,5 @@
 #include "batch_state.h"
+#include "engine/executor/ffn.h"
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "linear_attention.h"
@@ -213,10 +214,10 @@ bool Qwen35BatchStateAdapter::has_cached_moe() const { return has_cached_moe(mod
 bool Qwen35BatchStateAdapter::has_cached_moe(const Qwen35CausalLm &model) {
     for (const auto &block : model.blocks) {
         if (const auto *full = dynamic_cast<const FullBlock *>(block.get())) {
-            if (full->ffn.uses_moe_expert_cache())
+            if (mfq::cuda::uses_expert_cache(full->ffn))
                 return true;
         } else if (const auto *linear = dynamic_cast<const LinearBlock *>(block.get())) {
-            if (linear->ffn.uses_moe_expert_cache())
+            if (mfq::cuda::uses_expert_cache(linear->ffn))
                 return true;
         }
     }
@@ -238,14 +239,14 @@ std::string Qwen35BatchStateAdapter::incompatibility(const CudaExecutionContext 
             if (full->sliding) {
                 return "continuous batching requires non-sliding Qwen attention";
             }
-            if (full->ffn.uses_moe_expert_cache() &&
+            if (mfq::cuda::uses_expert_cache(full->ffn) &&
                 full->ffn.moe_top_k > execution.moe_cache_registration_min_slots) {
                 return "continuous batching requires one cached slot per routed expert";
             }
             continue;
         }
         if (const auto *linear = dynamic_cast<const LinearBlock *>(block.get())) {
-            if (linear->ffn.uses_moe_expert_cache() &&
+            if (mfq::cuda::uses_expert_cache(linear->ffn) &&
                 linear->ffn.moe_top_k > execution.moe_cache_registration_min_slots) {
                 return "continuous batching requires one cached slot per routed expert";
             }

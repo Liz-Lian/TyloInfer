@@ -1,5 +1,6 @@
 #pragma once
 #include "mfq_cuda_attention_ops.h"
+#include "engine/executor/ffn.h"
 #include "mfq_cuda_cache_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "engine/models/common/transformer_layer.h"
@@ -7,7 +8,7 @@
 
 #include "models/common/causal_model_ops.h"
 #include "models/common/block.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 #include "engine/models/glm_dsa/config.h"
 
 #include <memory>
@@ -109,7 +110,7 @@ struct GlmDsaBlock : Block {
     MfeWeight embed_q;
     MfeWeight unembed_out;
     QuantLinear o_proj;
-    FFN ffn;
+    mfq::cuda::Ffn ffn;
     mfq_tensor_backend::Tensor kv_cache;
     mfq_tensor_backend::Tensor index_cache;
 
@@ -471,7 +472,7 @@ struct GlmDsaBlock : Block {
                                 return std::optional<mfq_tensor_backend::Tensor>{};
                             },
                             [&](mfq_tensor_backend::Tensor ffn_input) {
-                                return ffn.forward(execution, ffn_input).reshape({B * T, H});
+                                return mfq::cuda::run_ffn(execution, ffn, ffn_input).reshape({B * T, H});
                             },
                             [&](mfq_tensor_backend::Tensor hidden,
                                 mfq_tensor_backend::Tensor ffn_out) {
@@ -487,7 +488,7 @@ struct GlmDsaBlock : Block {
 namespace mfq::cuda::glm_dsa {
 
 void load_ffn(CudaExecutionContext &execution, const mfq::ModelSource &source, const Config &config,
-              int layer, ::FFN &ffn);
+              int layer, mfq::cuda::Ffn &ffn);
 std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &source,
                                     const Config &config, int layer, const std::string &type,
                                     const std::shared_ptr<::GlmDsaSharedState> &state);

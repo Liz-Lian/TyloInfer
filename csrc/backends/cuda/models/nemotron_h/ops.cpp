@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
 #include "model.h"
@@ -247,7 +248,7 @@ Tensor MoeMixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tensor,
         },
         [&](Tensor xn) {
             return execution.profiler.measure("moe.ffn", [&] {
-                return ffn.forward(execution, xn.reshape({B * T, H})).reshape({B, T, H});
+                return mfq::cuda::run_ffn(execution, ffn, xn.reshape({B * T, H})).reshape({B, T, H});
             });
         },
         [&](Tensor residual, Tensor mixed) {
@@ -276,7 +277,7 @@ Tensor AttentionMixerBlock::forward_ffn(CudaExecutionContext& execution, Tensor 
 }
 
 struct BlockLoader : TransformerWeightLoader {
-    using Ffn = FFN;
+    using Ffn = mfq::cuda::Ffn;
     auto full_block() const {
         auto block = std::make_unique<AttentionMixerBlock>();
         block->kv_quantization = cuda_kv_quantization();

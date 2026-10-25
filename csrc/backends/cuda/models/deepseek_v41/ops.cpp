@@ -5,7 +5,7 @@
 
 namespace mfq::cuda::deepseek_v41_runtime {
 
-FFN load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
+mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
     auto result = load_moe_weights(execution, model, prefix,

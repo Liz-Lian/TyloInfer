@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "engine/executor/ffn.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -104,7 +105,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
         gemma4_moe, layer_scale.defined(), fused_norms, residual,
         [&] {
             return profiler.measure("gemma.ffn_dense", [&] {
-                return ffn.forward(execution, dense_input).reshape({B * T, H});
+                return mfq::cuda::run_ffn(execution, ffn, dense_input).reshape({B * T, H});
             });
         },
         [&] {
@@ -273,7 +274,7 @@ struct BlockLoader {
     auto gate_up(const std::vector<std::string> &names, const QuantLinear &down) {
         return load_paired_gate_up(execution, source, names, down);
     }
-    void workspace(FFN &ffn) { prepare_ffn(execution, ffn); }
+    void workspace(mfq::cuda::Ffn &ffn) { prepare_ffn(execution, ffn); }
     auto experts(const std::string &name, int layer, const char *projection) {
         return load_mfe_gpu(execution, source, name, true, layer, projection);
     }

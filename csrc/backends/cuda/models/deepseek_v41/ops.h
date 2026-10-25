@@ -1,5 +1,6 @@
 #pragma once
 #include "mfq_cuda_norm_ops.h"
+#include "engine/executor/ffn.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 
@@ -11,7 +12,7 @@
 #include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/models/deepseek_v41/config.h"
-#include "ops/ffn/ffn.h"
+#include "engine/models/ffn.h"
 
 #include <algorithm>
 #include <array>
@@ -41,7 +42,7 @@ struct SharedState {
     std::unique_ptr<EngramHashState> engram_hash;
     EngramHashBatch engram_hashes;
     std::vector<Engram*> engram_prefetch;
-    std::vector<const FFN*> router_prefetch;
+    std::vector<const mfq::cuda::Ffn*> router_prefetch;
     std::vector<Tensor> dspark_target_hiddens;
     bool capture_dspark_targets = false;
     Tensor image_mask, text_rows, routing_mask;
@@ -373,7 +374,7 @@ struct Block final : ::Block {
     QuantLinear index_query;
     QuantLinear index_key;
     QuantLinear index_score;
-    FFN mlp;
+    mfq::cuda::Ffn mlp;
     Tensor vision_router_bias;
     Dsv4RopeTable rope;
     std::unique_ptr<Engram> engram;
@@ -868,20 +869,20 @@ struct Block final : ::Block {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
                         auto bias=mfq_tensor_backend::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
-                        return mlp.forward_with_router_bias(execution,value.reshape({-1,config.hidden}),
+                        return mfq::cuda::run_ffn(execution, mlp,value.reshape({-1,config.hidden}),
                             current_ids,bias).reshape({batch,tokens,config.hidden});
                     }
                     if(layer+1<static_cast<int64_t>(shared->router_prefetch.size()))
                         if(const auto* next=shared->router_prefetch[layer+1])
-                            next->prefetch_moe(execution,value,current_ids);
-                    return mlp.forward(execution, value.reshape({-1, config.hidden}), current_ids)
+                            mfq::cuda::prefetch_ffn(execution, *next,value,current_ids);
+                    return mfq::cuda::run_ffn(execution, mlp, value.reshape({-1, config.hidden}), current_ids)
                         .reshape({batch, tokens, config.hidden});
                 });
             });
     }
 };
 
-FFN load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
+mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 

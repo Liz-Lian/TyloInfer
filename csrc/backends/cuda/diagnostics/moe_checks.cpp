@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "engine/executor/ffn.h"
 #include "env.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "model_checks.h"
@@ -800,7 +801,7 @@ int run_moe_check(
     const auto graph = mfq.resolved_model_graph();
     const auto payload = mfq::cuda::load_model_config_json(
         mfq, config_path);
-    FFN ffn;
+    mfq::cuda::Ffn ffn;
     int64_t hidden_size = 0;
     if (graph.backbone == "gemma4") {
         const auto config = mfq::models::gemma4::Config::from_json(payload);
@@ -875,7 +876,7 @@ int run_moe_check(
         auto x = mfq_tensor_backend::randn(
             {tokens, hidden_size},
             mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat16));
-        for (int warmup = 0; warmup < 10; ++warmup) output = ffn.forward(execution, x);
+        for (int warmup = 0; warmup < 10; ++warmup) output = mfq::cuda::run_ffn(execution, ffn, x);
         mfq_cuda_synchronize();
 
         cudaEvent_t start, stop;
@@ -884,7 +885,7 @@ int run_moe_check(
         auto stream = mfq_get_current_cuda_stream().stream();
         auto wall_start = std::chrono::steady_clock::now();
         cudaEventRecord(start, stream);
-        for (int iteration = 0; iteration < reps; ++iteration) output = ffn.forward(execution, x);
+        for (int iteration = 0; iteration < reps; ++iteration) output = mfq::cuda::run_ffn(execution, ffn, x);
         cudaEventRecord(stop, stream);
         cudaEventSynchronize(stop);
         auto wall_stop = std::chrono::steady_clock::now();
@@ -913,7 +914,7 @@ int run_moe_check(
             execution.force_moe_prefill_mma_off = true;
             mfq_tensor_backend::Tensor baseline;
             try {
-                baseline = ffn.forward(execution, x);
+                baseline = mfq::cuda::run_ffn(execution, ffn, x);
                 mfq_cuda_synchronize();
             } catch (...) {
                 execution.force_moe_prefill_mma_off = false;
@@ -940,7 +941,7 @@ int run_moe_check(
             execution.force_moe_materialized_swiglu = true;
             mfq_tensor_backend::Tensor baseline;
             try {
-                baseline = ffn.forward(execution, x);
+                baseline = mfq::cuda::run_ffn(execution, ffn, x);
                 mfq_cuda_synchronize();
             } catch (...) {
                 execution.force_moe_pool_path = false;
@@ -962,7 +963,7 @@ int run_moe_check(
         execution.profiler.reset();
         execution.profiler.enabled = true;
         const int profile_reps = std::min(reps, 10);
-        for (int iteration = 0; iteration < profile_reps; ++iteration) output = ffn.forward(execution, x);
+        for (int iteration = 0; iteration < profile_reps; ++iteration) output = mfq::cuda::run_ffn(execution, ffn, x);
         mfq_cuda_synchronize();
         execution.profiler.report(
             "moe_layer" + std::to_string(layer) + "_m" +
