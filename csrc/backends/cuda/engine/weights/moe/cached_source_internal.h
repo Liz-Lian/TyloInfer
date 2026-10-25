@@ -603,7 +603,7 @@ private:
         std::lock_guard<std::mutex> guard(fallback_mutex_);
         if (!fallback_cpu_) {
             fallback_cpu_ = make_mixed_moe_runtime(
-                unpack_mfe(range_store_->read_blob()), false);
+                mfq::mfe::unpack(range_store_->read_blob()), false);
         }
         return fallback_cpu_;
     }

@@ -10,6 +10,8 @@ add_library(mfq-quant-readers STATIC
     quant/mfe_quant_expert_store.cpp
     quant/mfe_index.cpp
     quant/mfe_index.h
+    quant/mfe_blob.cpp
+    quant/mfe_blob.h
     mx_blob.cpp
     mx_blob.h
     tq_table.cpp
@@ -19,7 +21,7 @@ target_include_directories(mfq-quant-readers PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(mfq-quant-readers PUBLIC mfq-formats mfq-io
     PRIVATE mfq-host-parallel)
-target_compile_features(mfq-quant-readers PUBLIC cxx_std_17)
+target_compile_features(mfq-quant-readers PUBLIC cxx_std_17 PRIVATE cxx_std_20)
 set_target_properties(mfq-quant-readers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)
     target_compile_options(mfq-quant-readers PRIVATE /EHsc)

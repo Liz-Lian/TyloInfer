@@ -798,7 +798,7 @@ MfeWeight load_mfe_gpu(
     }
     auto cpu = load_mfe_cpu(mfq, name);
     const bool has_matrix_local_sq = std::any_of(
-        cpu.pools.begin(), cpu.pools.end(), [](const MfeCpuPool & pool) {
+        cpu.pools.begin(), cpu.pools.end(), [](const mfq::mfe::Pool & pool) {
             return pool.dtype == "MXFP4-SQ" ||
                 mfq::fp8sq::is_dtype(pool.dtype);
         });
@@ -841,7 +841,7 @@ MfeWeight load_mfe_gpu(
             projection_role);
     }
     const bool all_nint = std::all_of(
-        cpu.pools.begin(), cpu.pools.end(), [](const MfeCpuPool & pool) {
+        cpu.pools.begin(), cpu.pools.end(), [](const mfq::mfe::Pool & pool) {
             return pool.dtype == "NINT";
         });
     return all_nint

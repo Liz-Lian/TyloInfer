@@ -13,7 +13,7 @@ struct Part {
     std::size_t bytes = 0;
 };
 
-struct Pool {
+struct Entry {
     std::vector<std::int32_t> ids;
     std::string dtype;
     Part runtime;
@@ -25,7 +25,7 @@ struct Index {
     int experts = 0;
     int output = 0;
     int width = 0;
-    std::vector<Pool> pools;
+    std::vector<Entry> pools;
 };
 
 // Reads metadata only; payload offsets refer to the caller's immutable source.

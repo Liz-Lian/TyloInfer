@@ -2,8 +2,6 @@
 
 #include "backends/cuda/engine/executor/moe_plan.h"
 #include "backends/cuda/engine/weights/load.h"
-#include "format.h"
-#include "formats/quant/mfe_index.h"
 #include "mfq_cuda_quant_ops.h"
 
 #include <algorithm>
@@ -11,93 +9,6 @@
 #include <limits>
 #include <numeric>
 #include <unordered_set>
-
-using namespace mfq::cuda::quant_format;
-
-MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
-    auto index = mfq::mfe::parse(blob.size(), [&](std::size_t offset, std::uint8_t* data,
-                                                std::size_t size) {
-        std::memcpy(data, blob.data() + offset, size);
-    });
-    MfeCpu result;
-    result.n_experts = index.experts;
-    result.out_per_expert = index.output;
-    result.neuron_len = index.width;
-    result.pools.reserve(index.pools.size());
-    for (auto& entry : index.pools) {
-        const auto expert_count = entry.ids.size();
-        MfeCpuPool pool;
-        pool.expert_ids = std::move(entry.ids);
-        pool.dtype = std::move(entry.dtype);
-        pool.runtime_payload.assign(blob.begin() + entry.runtime.offset,
-                                    blob.begin() + entry.runtime.offset + entry.runtime.bytes);
-        pool.payload.assign(blob.begin() + entry.payload.offset,
-                            blob.begin() + entry.payload.offset + entry.payload.bytes);
-        if (mfq::fp8sq::is_dtype(pool.dtype)) {
-            if (!pool.runtime_payload.empty()) {
-                throw std::runtime_error(
-                    "unexpected MFE FP8-SQ runtime metadata");
-            }
-            const auto layout = mfq::fp8sq::parse(
-                pool.dtype, pool.payload.data(), pool.payload.size());
-            const int expected_rows =
-                static_cast<int>(expert_count) * result.out_per_expert;
-            if (layout.outputs != expected_rows ||
-                    layout.width != result.neuron_len) {
-                throw std::runtime_error(
-                    "MFE FP8-SQ pool weight shape mismatch");
-            }
-        } else if (pool.dtype == "MXFP4-SQ") {
-            if (!pool.runtime_payload.empty()) {
-                throw std::runtime_error(
-                    "unexpected MFE MXFP4-SQ runtime metadata");
-            }
-            const auto layout = mfq::sq::parse(
-                pool.payload.data(), pool.payload.size());
-            const int expected_rows =
-                static_cast<int>(expert_count) * result.out_per_expert;
-            if (layout.outputs != expected_rows ||
-                    layout.width != result.neuron_len) {
-                throw std::runtime_error(
-                    "MFE MXFP4-SQ pool weight shape mismatch");
-            }
-        } else if (pool.dtype == "MXFP4") {
-            pool.mxfp4 = mfq::mx::unpack4(pool.payload);
-            const int expected_rows =
-                static_cast<int>(expert_count) * result.out_per_expert;
-            if (pool.mxfp4.out != expected_rows ||
-                    pool.mxfp4.neuron_len != result.neuron_len) {
-                throw std::runtime_error(
-                    "MFE MXFP4 pool weight shape mismatch");
-            }
-        } else if (pool.dtype == "NINT8-0") {
-            pool.q8_zero = mfq::nint::unpack8(pool.payload);
-            const int expected_rows =
-                static_cast<int>(expert_count) * result.out_per_expert;
-            if (pool.q8_zero.axis != 0 ||
-                pool.q8_zero.out != expected_rows ||
-                pool.q8_zero.neuron_len != result.neuron_len ||
-                pool.q8_zero.shape.size() != 2 ||
-                pool.q8_zero.shape[0] != expected_rows ||
-                pool.q8_zero.shape[1] != result.neuron_len) {
-                throw std::runtime_error(
-                    "MFE NINT8-0 pool weight shape mismatch");
-            }
-        } else if (pool.dtype == "NINT") {
-            pool.weight = mfq::nint::unpack(pool.payload);
-            int expected_rows = (int)expert_count * result.out_per_expert;
-            if (pool.weight.axis != 0 || pool.weight.out != expected_rows ||
-                pool.weight.neuron_len != result.neuron_len ||
-                pool.weight.shape.size() != 2 ||
-                pool.weight.shape[0] != expected_rows ||
-                pool.weight.shape[1] != result.neuron_len) {
-                throw std::runtime_error("MFE pool weight shape mismatch");
-            }
-        }
-        result.pools.push_back(std::move(pool));
-    }
-    return result;
-}
 
 static void initialize_mfe_nint_runtime(MfeWeight & result) {
     if (result.pools.empty()) {
@@ -125,7 +36,7 @@ static void initialize_mfe_nint_runtime(MfeWeight & result) {
     }
 }
 
-MfeWeight to_gpu_mfe(const MfeCpu & cpu) {
+MfeWeight to_gpu_mfe(const mfq::mfe::Data & cpu) {
     MfeWeight result;
     result.unified_nint_projection = true;
     result.n_experts = cpu.n_experts;
@@ -240,7 +151,7 @@ int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
 }
 
 std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
-        const MfeCpu & cpu,
+        const mfq::mfe::Data & cpu,
         bool cuda,
         const CudaExecutionConfig& config) {
     auto runtime = std::make_shared<MixedMoeRuntime>();
@@ -396,14 +307,14 @@ static MfeWeight wrap_mixed_moe_runtime(
 }
 
 MfeWeight to_gpu_mixed_moe(
-        const MfeCpu & cpu,
+        const mfq::mfe::Data & cpu,
         const CudaExecutionConfig& config) {
     return wrap_mixed_moe_runtime(
         make_mixed_moe_runtime(cpu, true, config));
 }
 
 MfeWeight to_cuda_device_moe_expert_slice(
-        const MfeCpu & cpu,
+        const mfq::mfe::Data & cpu,
         int64_t expert_begin,
         int64_t expert_end,
         int device,
@@ -415,15 +326,15 @@ MfeWeight to_cuda_device_moe_expert_slice(
     }
     const bool all_nint = std::all_of(
         cpu.pools.begin(), cpu.pools.end(),
-        [](const MfeCpuPool & pool) {
+        [](const mfq::mfe::Pool & pool) {
             return pool.dtype == "NINT";
         });
     MfqCudaGuard guard(device);
     if (all_nint) {
-        MfeCpu sliced = cpu;
+        mfq::mfe::Data sliced = cpu;
         sliced.pools.clear();
         for (const auto & source : cpu.pools) {
-            MfeCpuPool destination = source;
+            mfq::mfe::Pool destination = source;
             destination.expert_ids.clear();
             std::vector<int64_t> rows;
             for (size_t local = 0;
@@ -672,11 +583,11 @@ MfeWeight cpu_mixed_moe_metadata(
     return result;
 }
 
-MfeCpu load_mfe_cpu(
+mfq::mfe::Data load_mfe_cpu(
         const mfq::ModelSource & mfq, const std::string & name) {
     const auto& dtype = require_tensor(mfq, name).dtype;
     if (dtype == "NINT") {
-        MfeCpuPool pool;
+        mfq::mfe::Pool pool;
         pool.dtype = "NINT";
         pool.payload = read_tensor(mfq, name);
         pool.weight = mfq::nint::unpack(pool.payload);
@@ -686,7 +597,7 @@ MfeCpu load_mfe_cpu(
             shape[1] > 0 && shape[1] <= std::numeric_limits<int>::max() &&
             shape[2] == pool.weight.neuron_len && shape[0] * shape[1] == pool.weight.out,
             "routed NINT tensor must use [experts,out,in]: ", name);
-        MfeCpu result;
+        mfq::mfe::Data result;
         result.n_experts = static_cast<int>(shape[0]);
         result.out_per_expert = static_cast<int>(shape[1]);
         result.neuron_len = pool.weight.neuron_len;
@@ -699,7 +610,7 @@ MfeCpu load_mfe_cpu(
     if (dtype != "MFE") {
         throw std::runtime_error("expert tensor must use MFE: " + name);
     }
-    return unpack_mfe(read_tensor(mfq, name));
+    return mfq::mfe::unpack(read_tensor(mfq, name));
 }
 
 mfq_tensor_backend::Tensor mfe_dense_reference(
@@ -710,7 +621,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
         int tokens,
         int routes,
         bool routed_input) {
-    auto cpu = unpack_mfe(read_tensor(source, name));
+    auto cpu = mfq::mfe::unpack(read_tensor(source, name));
     auto reference = mfq_tensor_backend::empty(
         {tokens * routes, cpu.out_per_expert},
         input.options().dtype(mfq_tensor_backend::kFloat16));
@@ -807,7 +718,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
 mfq_tensor_backend::Tensor materialize_mfe_dense(
         const mfq::ModelSource& source,
         const std::string& name) {
-    auto cpu = unpack_mfe(read_tensor(source, name));
+    auto cpu = mfq::mfe::unpack(read_tensor(source, name));
     auto dense = mfq_tensor_backend::empty(
         {cpu.n_experts, cpu.out_per_expert, cpu.neuron_len},
         mfq_tensor_backend::TensorOptions()

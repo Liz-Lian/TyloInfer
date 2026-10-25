@@ -69,7 +69,7 @@ Index parse(std::size_t bytes,
             count > (std::numeric_limits<std::size_t>::max() - dtype_bytes) / sizeof(std::int32_t))
             throw std::runtime_error("invalid MFE pool dimensions");
         const auto metadata = take(std::size_t(count) * sizeof(std::int32_t) + dtype_bytes);
-        Pool pool;
+        Entry pool;
         pool.ids.resize(count);
         for (std::size_t j = 0; j < count; ++j) {
             const auto expert = value<std::int32_t>(metadata, j * sizeof(std::int32_t));
