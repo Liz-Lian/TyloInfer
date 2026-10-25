@@ -304,7 +304,7 @@ mfq_tensor_backend::Tensor mxfp4_matmul(
     return result;
 }
 
-mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mx::Fp4 & source) {
+mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data & source) {
     auto dense = mfq_tensor_backend::empty(
         {source.out, source.neuron_len},
         mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
@@ -333,10 +333,10 @@ mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mx::Fp4 & source) {
     return dense.to(mfq_tensor_backend::kFloat16);
 }
 
-mfq::mx::Fp4 select_mxfp4_cpu_rows(
-        const mfq::mx::Fp4 & source,
+mfq::mxfp4::Data select_mxfp4_cpu_rows(
+        const mfq::mxfp4::Data & source,
         const std::vector<int64_t> & rows) {
-    mfq::mx::Fp4 result;
+    mfq::mxfp4::Data result;
     result.out = static_cast<int64_t>(rows.size());
     result.neuron_len = source.neuron_len;
     const size_t value_row = static_cast<size_t>(source.neuron_len / 2);
@@ -360,8 +360,8 @@ mfq::mx::Fp4 select_mxfp4_cpu_rows(
     return result;
 }
 
-mfq::mx::Fp4 slice_mxfp4_cpu(
-        const mfq::mx::Fp4 & source,
+mfq::mxfp4::Data slice_mxfp4_cpu(
+        const mfq::mxfp4::Data & source,
         TensorParallelAxis axis,
         int64_t begin,
         int64_t end) {
@@ -378,7 +378,7 @@ mfq::mx::Fp4 slice_mxfp4_cpu(
         throw std::runtime_error(
             "MXFP4 input shards must preserve 32-value scale blocks");
     }
-    mfq::mx::Fp4 result;
+    mfq::mxfp4::Data result;
     result.out = source.out;
     result.neuron_len = end - begin;
     const size_t source_value_row =
@@ -405,8 +405,8 @@ mfq::mx::Fp4 slice_mxfp4_cpu(
     }
     return result;
 }
-mfq::mx::Fp8 slice_mxfp8_cpu(
-        const mfq::mx::Fp8 & source,
+mfq::mxfp8::Data slice_mxfp8_cpu(
+        const mfq::mxfp8::Data & source,
         TensorParallelAxis axis,
         int64_t begin,
         int64_t end) {
@@ -422,7 +422,7 @@ mfq::mx::Fp8 slice_mxfp8_cpu(
         throw std::runtime_error(
             "MXFP8 tensor-parallel shards must preserve scale blocks");
     }
-    mfq::mx::Fp8 result;result.block_rows=source.block_rows;result.block_columns=source.block_columns;
+    mfq::mxfp8::Data result;result.block_rows=source.block_rows;result.block_columns=source.block_columns;
     if (axis == TensorParallelAxis::Output) {
         result.out = end - begin;
         result.neuron_len = source.neuron_len;
@@ -472,7 +472,7 @@ mfq::mx::Fp8 slice_mxfp8_cpu(
     return result;
 }
 Mxfp8Weight to_device_mxfp8(
-        const mfq::mx::Fp8 & source,
+        const mfq::mxfp8::Data & source,
         bool cuda,
         int device) {
     Mxfp8Weight result;
@@ -496,12 +496,12 @@ Mxfp8Weight to_device_mxfp8(
 }
 
 Mxfp8Weight to_cuda_device_mxfp8(
-        const mfq::mx::Fp8 & source,
+        const mfq::mxfp8::Data & source,
         int device) {
     return to_device_mxfp8(source, true, device);
 }
 Mxfp4Weight to_device_mxfp4(
-        const mfq::mx::Fp4 & source, bool cuda, int device) {
+        const mfq::mxfp4::Data & source, bool cuda, int device) {
     Mxfp4Weight result;
     result.out = source.out;
     result.neuron_len = source.neuron_len;

@@ -431,7 +431,7 @@ MixedMoePool MoeQuantRangeSource::decode_expert(int expert,const mfq::MfeQuantEx
         }
     } else if(encoded.dtype=="MXFP4") {
         pool.family=MixedMoeFamily::Mxfp4;
-        pool.mxfp4=to_device_mxfp4(mfq::mx::unpack4(encoded.payload),false);
+        pool.mxfp4=to_device_mxfp4(mfq::mxfp4::unpack(encoded.payload),false);
     } else {
         pool.family=MixedMoeFamily::Nvq;
         pool.nvq=to_cpu_nvq(unpack_nvq(encoded.payload,encoded.dtype));

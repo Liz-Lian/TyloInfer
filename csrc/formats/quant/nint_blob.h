@@ -40,7 +40,14 @@ struct Data {
     double distribution_entropy = 0.0;
 };
 
-struct Q8 {
+Data unpack(const std::vector<uint8_t>& blob);
+void describe(Data& data);
+
+} // namespace nint
+
+namespace nint8 {
+
+struct Data {
     int axis = 0;
     int neuron_len = 0;
     std::vector<int64_t> shape;
@@ -51,9 +58,7 @@ struct Q8 {
 };
 
 Data unpack(const std::vector<uint8_t>& blob);
-Q8 unpack8(const std::vector<uint8_t>& blob);
-void describe(Data& data);
 
-} // namespace nint
+} // namespace nint8
 
 } // namespace mfq

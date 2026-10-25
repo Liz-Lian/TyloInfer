@@ -15,8 +15,8 @@ struct Pool {
     std::vector<uint8_t> payload;
     std::vector<uint8_t> runtime_payload;
     mfq::nint::Data weight;
-    mfq::nint::Q8 q8_zero;
-    mfq::mx::Fp4 mxfp4;
+    mfq::nint8::Data q8_zero;
+    mfq::mxfp4::Data mxfp4;
 };
 
 struct Data {

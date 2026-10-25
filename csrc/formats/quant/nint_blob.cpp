@@ -7,7 +7,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq::nint {
+namespace mfq {
 namespace {
 
 template<class T>
@@ -59,6 +59,8 @@ std::vector<uint8_t> unpack_bits(const std::vector<uint8_t> & blob, size_t & off
 }
 
 } // namespace
+
+namespace nint {
 
 void describe(Data & t) {
     if (t.out <= 0 || t.neuron_len <= 0 || t.ng <= 0 || t.gs <= 0 ||
@@ -309,12 +311,16 @@ Data unpack(const std::vector<uint8_t> & blob) {
     return t;
 }
 
-Q8 unpack8(const std::vector<uint8_t> & blob) {
+} // namespace nint
+
+namespace nint8 {
+
+Data unpack(const std::vector<uint8_t> & blob) {
     constexpr size_t block_bytes = 34;
     if (blob.size() < 24 || std::memcmp(blob.data(), "NI80", 4) != 0) {
         throw std::runtime_error("invalid NINT8-0 header");
     }
-    Q8 t;
+    Data t;
     size_t off = 4;
     t.axis = read<int32_t>(blob, off);
     t.neuron_len = read<int32_t>(blob, off);
@@ -365,4 +371,5 @@ Q8 unpack8(const std::vector<uint8_t> & blob) {
     return t;
 }
 
-} // namespace mfq::nint
+} // namespace nint8
+} // namespace mfq

@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::mx {
+namespace mfq::mxfp8 {
 
-struct Fp8 {
+struct Data {
     std::int64_t out = 0;
     std::int64_t neuron_len = 0;
     std::vector<std::uint8_t> values;
@@ -14,14 +14,19 @@ struct Fp8 {
     int block_columns = 128;
 };
 
-struct Fp4 {
+Data unpack(const std::vector<std::uint8_t>& blob);
+
+} // namespace mfq::mxfp8
+
+namespace mfq::mxfp4 {
+
+struct Data {
     std::int64_t out = 0;
     std::int64_t neuron_len = 0;
     std::vector<std::uint8_t> values;
     std::vector<std::uint8_t> scales;
 };
 
-Fp8 unpack8(const std::vector<std::uint8_t>& blob);
-Fp4 unpack4(const std::vector<std::uint8_t>& blob);
+Data unpack(const std::vector<std::uint8_t>& blob);
 
-} // namespace mfq::mx
+} // namespace mfq::mxfp4

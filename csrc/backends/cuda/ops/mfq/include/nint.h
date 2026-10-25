@@ -118,25 +118,25 @@ mfq::nint::Data slice_nint_cpu_input_groups(
     const mfq::nint::Data& source, int64_t begin, int64_t end);
 mfq::nint::Data select_nint_cpu_rows(
     const mfq::nint::Data& source, const std::vector<int64_t>& rows);
-mfq::nint::Q8 slice_nint8_zero_cpu_output(
-    const mfq::nint::Q8& source, int64_t begin, int64_t end);
-mfq::nint::Q8 slice_nint8_zero_cpu_input_groups(
-    const mfq::nint::Q8& source, int64_t begin, int64_t end);
-mfq::nint::Q8 select_nint8_zero_cpu_rows(
-    const mfq::nint::Q8& source, const std::vector<int64_t>& rows);
+mfq::nint8::Data slice_nint8_zero_cpu_output(
+    const mfq::nint8::Data& source, int64_t begin, int64_t end);
+mfq::nint8::Data slice_nint8_zero_cpu_input_groups(
+    const mfq::nint8::Data& source, int64_t begin, int64_t end);
+mfq::nint8::Data select_nint8_zero_cpu_rows(
+    const mfq::nint8::Data& source, const std::vector<int64_t>& rows);
 NintWeight to_device_nint(const mfq::nint::Data& source, bool cuda);
 NintWeight to_gpu_nint(const mfq::nint::Data& source);
 NintWeight to_cuda_device_nint(const mfq::nint::Data& source, int device);
 NintWeight to_cpu_nint(const mfq::nint::Data& source);
 NintWeight to_device_mfe_nint(
     const mfq::nint::Data& source, int local_experts, int out_per_expert, bool cuda);
-NintWeight to_device_nint8_zero(const mfq::nint::Q8& source, bool cuda);
-NintWeight to_gpu_nint8_zero(const mfq::nint::Q8& source);
+NintWeight to_device_nint8_zero(const mfq::nint8::Data& source, bool cuda);
+NintWeight to_gpu_nint8_zero(const mfq::nint8::Data& source);
 NintWeight to_cuda_device_nint8_zero(
-    const mfq::nint::Q8& source, int device);
-NintWeight to_cpu_nint8_zero(const mfq::nint::Q8& source);
+    const mfq::nint8::Data& source, int device);
+NintWeight to_cpu_nint8_zero(const mfq::nint8::Data& source);
 mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(
-    const mfq::nint::Q8& source);
+    const mfq::nint8::Data& source);
 
 mfq_tensor_backend::Tensor pad_last(
     mfq_tensor_backend::Tensor input, int64_t target);

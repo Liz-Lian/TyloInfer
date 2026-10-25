@@ -57,7 +57,7 @@ Data unpack(const std::vector<uint8_t>& blob) {
                     "MFE MXFP4-SQ pool weight shape mismatch");
             }
         } else if (pool.dtype == "MXFP4") {
-            pool.mxfp4 = mfq::mx::unpack4(pool.payload);
+            pool.mxfp4 = mfq::mxfp4::unpack(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
             if (pool.mxfp4.out != expected_rows ||
@@ -66,7 +66,7 @@ Data unpack(const std::vector<uint8_t>& blob) {
                     "MFE MXFP4 pool weight shape mismatch");
             }
         } else if (pool.dtype == "NINT8-0") {
-            pool.q8_zero = mfq::nint::unpack8(pool.payload);
+            pool.q8_zero = mfq::nint8::unpack(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
             if (pool.q8_zero.axis != 0 ||

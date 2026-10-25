@@ -7,7 +7,8 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq::mx {
+namespace mfq {
+namespace {
 
 static std::uint64_t u64(const std::vector<std::uint8_t>& data, std::size_t& offset) {
     std::uint64_t result;
@@ -27,7 +28,11 @@ static size_t checked_size(
     return static_cast<size_t>(left * right);
 }
 
-Fp8 unpack8(
+} // namespace
+
+namespace mxfp8 {
+
+Data unpack(
         const std::vector<uint8_t> & blob) {
     constexpr size_t kHeaderBytes = 56;
     if (blob.size() < kHeaderBytes ||
@@ -59,7 +64,7 @@ Fp8 unpack8(
             scale_bytes != blob.size() - offset - value_bytes) {
         throw std::runtime_error("invalid MXFP8 payload length");
     }
-    Fp8 result;
+    Data result;
     result.block_columns=block128?128:32;
     result.block_rows=block128?128:row32?1:32;
     result.out = static_cast<int64_t>(rows);
@@ -83,7 +88,11 @@ Fp8 unpack8(
     return result;
 }
 
-Fp4 unpack4(
+} // namespace mxfp8
+
+namespace mxfp4 {
+
+Data unpack(
         const std::vector<uint8_t> & blob) {
     constexpr size_t kHeaderBytes = 56;
     if (blob.size() < kHeaderBytes ||
@@ -114,7 +123,7 @@ Fp4 unpack4(
             scale_bytes != blob.size() - offset - value_bytes) {
         throw std::runtime_error("invalid MXFP4 payload length");
     }
-    Fp4 result;
+    Data result;
     result.out = static_cast<int64_t>(rows);
     result.neuron_len = static_cast<int64_t>(columns);
     result.values.assign(
@@ -130,4 +139,5 @@ Fp4 unpack4(
     return result;
 }
 
-} // namespace mfq::mx
+} // namespace mxfp4
+} // namespace mfq

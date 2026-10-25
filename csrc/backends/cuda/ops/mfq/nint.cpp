@@ -952,15 +952,15 @@ mfq::nint::Data slice_nint_cpu_input_groups(
     return result;
 }
 
-mfq::nint::Q8 slice_nint8_zero_cpu_output(
-        const mfq::nint::Q8 & source, int64_t begin, int64_t end) {
+mfq::nint8::Data slice_nint8_zero_cpu_output(
+        const mfq::nint8::Data & source, int64_t begin, int64_t end) {
     require_tp_row_major_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT8-0");
     if (begin < 0 || begin >= end || end > source.out) {
         throw std::runtime_error("invalid NINT8-0 output shard");
     }
-    mfq::nint::Q8 result = source;
+    mfq::nint8::Data result = source;
     result.out = static_cast<int>(end - begin);
     result.shape[0] = result.out;
     const size_t first_group =
@@ -979,15 +979,15 @@ mfq::nint::Q8 slice_nint8_zero_cpu_output(
     return result;
 }
 
-mfq::nint::Q8 slice_nint8_zero_cpu_input_groups(
-        const mfq::nint::Q8 & source, int64_t begin, int64_t end) {
+mfq::nint8::Data slice_nint8_zero_cpu_input_groups(
+        const mfq::nint8::Data & source, int64_t begin, int64_t end) {
     require_tp_row_major_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT8-0");
     if (begin < 0 || begin >= end || end > source.ng) {
         throw std::runtime_error("invalid NINT8-0 input shard");
     }
-    mfq::nint::Q8 result = source;
+    mfq::nint8::Data result = source;
     result.ng = static_cast<int>(end - begin);
     result.neuron_len = result.ng * 32;
     result.shape[1] = result.neuron_len;
@@ -1146,7 +1146,7 @@ NintWeight to_device_mfe_nint(
 }
 
 NintWeight to_device_nint8_zero(
-        const mfq::nint::Q8 & c, bool cuda) {
+        const mfq::nint8::Data & c, bool cuda) {
     NintWeight w;
     w.out = c.out;
     w.ng = c.ng;
@@ -1166,17 +1166,17 @@ NintWeight to_device_nint8_zero(
     return w;
 }
 
-NintWeight to_gpu_nint8_zero(const mfq::nint::Q8 & c) {
+NintWeight to_gpu_nint8_zero(const mfq::nint8::Data & c) {
     return to_device_nint8_zero(c, true);
 }
 
 NintWeight to_cuda_device_nint8_zero(
-        const mfq::nint::Q8 & c, int device) {
+        const mfq::nint8::Data & c, int device) {
     MfqCudaGuard guard(device);
     return to_device_nint8_zero(c, true);
 }
 
-NintWeight to_cpu_nint8_zero(const mfq::nint::Q8 & c) {
+NintWeight to_cpu_nint8_zero(const mfq::nint8::Data & c) {
     return to_device_nint8_zero(c, false);
 }
 
@@ -1189,8 +1189,8 @@ mfq::nint::Data select_nint_cpu_rows(
     return repack_nint_cpu_rows(source, rows);
 }
 
-mfq::nint::Q8 select_nint8_zero_cpu_rows(
-        const mfq::nint::Q8 & source,
+mfq::nint8::Data select_nint8_zero_cpu_rows(
+        const mfq::nint8::Data & source,
         const std::vector<int64_t> & rows) {
     require_tp_row_major_weight(
         source.shape, source.axis, source.out,
@@ -1199,7 +1199,7 @@ mfq::nint::Q8 select_nint8_zero_cpu_rows(
         throw std::runtime_error(
             "cannot create an empty NINT8-0 MoE shard");
     }
-    mfq::nint::Q8 result = source;
+    mfq::nint8::Data result = source;
     result.out = static_cast<int>(rows.size());
     result.shape[0] = result.out;
     const size_t q_row_bytes =
@@ -1234,7 +1234,7 @@ mfq::nint::Q8 select_nint8_zero_cpu_rows(
     return result;
 }
 
-mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(const mfq::nint::Q8 & source) {
+mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(const mfq::nint8::Data & source) {
     TYLOINFER_RUNTIME_CHECK(source.shape.size() == 2,
         "CPU NINT8-0 dense tensor must be rank 2");
     auto packed = to_device_nint8_zero(source, false);
