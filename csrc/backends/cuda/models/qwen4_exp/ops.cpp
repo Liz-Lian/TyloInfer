@@ -589,7 +589,14 @@ struct BlockLoader : weight_loader::Loader {
         weights.value=std::move(projections[2]);weights.index_query_key=std::move(projections[3]);
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};
-        auto rotary = std::make_shared<RotaryEmbedding>(c.rotary, c.maximum, c.rope_base, c.sections, c.interleaved,std::nullopt,execution.yarn);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        constexpr bool default_rotary_fusion = true;
+#else
+        constexpr bool default_rotary_fusion = false;
+#endif
+        auto rotary = std::make_shared<RotaryEmbedding>(c.rotary, c.maximum, c.rope_base,
+            c.sections, c.interleaved,
+            runtime_options::rotary_fusion().value_or(default_rotary_fusion), execution.yarn);
         return std::make_unique<Qsa>(std::move(weights), geometry, std::move(rotary), true, true, execution.stores.qsa_kv_store, execution.stores.kv_memory);
     }
     auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,

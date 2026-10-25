@@ -255,11 +255,11 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     auto &k = heads.key;
 
                     q = profiler.measure("full.q_rope", [&]() {
-                        return official_bf16 ? active_rope.apply_bf16(execution.config, q, pos)
+                        return official_bf16 ? active_rope.apply_bf16(execution.config.minicpm_fused_bf16_rope, q, pos)
                                              : active_rope.apply(q, pos, grid_mrope_positions);
                     });
                     k = profiler.measure("full.k_rope", [&]() {
-                        return official_bf16 ? active_rope.apply_bf16(execution.config, k, pos)
+                        return official_bf16 ? active_rope.apply_bf16(execution.config.minicpm_fused_bf16_rope, k, pos)
                                              : active_rope.apply(k, pos, grid_mrope_positions);
                     });
                 },

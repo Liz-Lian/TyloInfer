@@ -5,11 +5,8 @@
 
 #include <cstdint>
 #include <mutex>
-#include <optional>
 #include <unordered_map>
 #include <vector>
-
-struct CudaExecutionConfig;
 
 struct RopeCache {
     mfq_tensor_backend::Tensor cos;
@@ -42,7 +39,7 @@ struct RopeCache {
         mfq_tensor_backend::Tensor pos,
         bool grid_mrope_positions = false) const;
     mfq_tensor_backend::Tensor apply_bf16(
-        const CudaExecutionConfig& config,
+        bool fused,
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor pos) const;
 };
@@ -54,8 +51,8 @@ namespace mfq::cuda {
 class RotaryEmbedding {
 public:
     RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
-                    std::vector<int64_t> sections = {}, bool interleaved = false,
-                    std::optional<bool> fused = std::nullopt, mfq::models::YarnScaling yarn = {});
+                    std::vector<int64_t> sections, bool interleaved,
+                    bool fused, mfq::models::YarnScaling yarn = {});
     mfq_tensor_backend::Tensor forward(const mfq_tensor_backend::Tensor& value,
                                        const mfq_tensor_backend::Tensor& positions) const;
     // Switch only after execution and captured graphs using this module finish.

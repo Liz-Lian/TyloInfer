@@ -1,7 +1,5 @@
-#include "backends/cuda/engine/executor/options.h"
 #include "ops/common/include/rope.h"
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "mfq_cuda_attention_ops.h"
 
 #include <algorithm>
@@ -217,14 +215,14 @@ mfq_tensor_backend::Tensor RopeCache::apply(
     }
 
 mfq_tensor_backend::Tensor RopeCache::apply_bf16(
-        const CudaExecutionConfig& config,
+        bool fused,
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor pos) const {
         TYLOINFER_RUNTIME_CHECK(
             sections.numel() == 0,
             "Qwen3 BF16 RoPE does not support multi-axis sections");
         if (x.is_cuda() && pos.dim() == 1 &&
-                config.minicpm_fused_bf16_rope) {
+                fused) {
             return rope_table_bf16_cuda(
                 x.contiguous().to(mfq_tensor_backend::kBFloat16),
                 pos.contiguous().to(cos.device(), mfq_tensor_backend::kInt64),
@@ -270,17 +268,10 @@ using Tensor = tb::Tensor;
 
 RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
                                std::vector<int64_t> sections, bool interleaved,
-                               std::optional<bool> fused,mfq::models::YarnScaling yarn)
+                               bool fused,mfq::models::YarnScaling yarn)
     : dimension_(dimension), maximum_(maximum), base_(base), sections_(std::move(sections)),
       interleaved_(interleaved),yarn_(yarn) {
-    const auto configured = runtime_options::rotary_fusion();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    constexpr bool default_fused = true;
-#else
-    constexpr bool default_fused = false;
-#endif
-    fused_ = fused.value_or(configured.value_or(default_fused));
-    if(yarn_.enabled())fused_=false;
+    fused_ = fused && !yarn_.enabled();
     TYLOINFER_RUNTIME_CHECK(dimension > 0 && dimension % 2 == 0 && maximum > 0 &&
                           std::isfinite(base) && base > 0,
                       "invalid rotary configuration");
