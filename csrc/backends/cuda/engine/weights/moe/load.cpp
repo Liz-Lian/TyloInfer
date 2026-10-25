@@ -3,6 +3,7 @@
 #include "backends/cuda/engine/executor/moe_plan.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "format.h"
+#include "formats/quant/mfe_index.h"
 #include "mfq_cuda_quant_ops.h"
 
 #include <algorithm>
@@ -14,89 +15,25 @@
 using namespace mfq::cuda::quant_format;
 
 MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
-    if (blob.size() < 20) {
-        throw std::runtime_error("invalid MFE header");
-    }
-    const bool version1 = std::memcmp(blob.data(), "NIM1", 4) == 0;
-    const bool delta =
-        std::memcmp(blob.data(), "MFD1", 4) == 0 ||
-        std::memcmp(blob.data(), "NID2", 4) == 0;
-    const bool version2 =
-        std::memcmp(blob.data(), "MFE1", 4) == 0 ||
-        std::memcmp(blob.data(), "NIM2", 4) == 0 || delta;
-    if (!version1 && !version2) throw std::runtime_error("invalid MFE header");
-    if (delta) {
-        throw std::runtime_error("MFE delta cannot be loaded as a full tensor");
-    }
-    size_t off = 4;
+    auto index = mfq::mfe::parse(blob.size(), [&](std::size_t offset, std::uint8_t* data,
+                                                std::size_t size) {
+        std::memcpy(data, blob.data() + offset, size);
+    });
     MfeCpu result;
-    result.n_experts = (int)read_u32_from(blob, off);
-    result.out_per_expert = (int)read_u32_from(blob, off);
-    result.neuron_len = (int)read_u32_from(blob, off);
-    int pool_count = (int)read_u32_from(blob, off);
-    if (result.n_experts <= 0 || result.out_per_expert <= 0 || result.neuron_len <= 0 ||
-        pool_count <= 0 || pool_count > result.n_experts) {
-        throw std::runtime_error("invalid MFE dimensions");
-    }
-    std::vector<int> owners((size_t)result.n_experts, -1);
-    result.pools.reserve((size_t)pool_count);
-    for (int pool_index = 0; pool_index < pool_count; ++pool_index) {
-        const size_t pool_header_bytes = version1 ? 12 : 24;
-        if (off + pool_header_bytes > blob.size()) {
-            throw std::runtime_error("truncated MFE pool header");
-        }
-        uint32_t expert_count = read_u32_from(blob, off);
-        uint32_t dtype_nbytes = version1 ? 0 : read_u32_from(blob, off);
-        uint64_t payload_nbytes = read_u64_from(blob, off);
-        uint64_t runtime_nbytes = version1 ? 0 : read_u64_from(blob, off);
-        if (expert_count == 0 || expert_count > static_cast<uint32_t>(result.n_experts) ||
-                expert_count > static_cast<uint32_t>(
-                    std::numeric_limits<int>::max() / result.out_per_expert) ||
-                dtype_nbytes > 32) {
-            throw std::runtime_error("invalid MFE pool dimensions");
-        }
-        size_t ids_nbytes = (size_t)expert_count * sizeof(int32_t);
-        size_t remaining = blob.size() - off;
-        if (ids_nbytes > remaining) {
-            throw std::runtime_error("truncated MFE pool payload");
-        }
-        remaining -= ids_nbytes;
-        if (dtype_nbytes > remaining) {
-            throw std::runtime_error("truncated MFE pool payload");
-        }
-        remaining -= dtype_nbytes;
-        if (runtime_nbytes > remaining) {
-            throw std::runtime_error("truncated MFE pool payload");
-        }
-        remaining -= static_cast<size_t>(runtime_nbytes);
-        if (payload_nbytes > remaining) {
-            throw std::runtime_error("truncated MFE pool payload");
-        }
+    result.n_experts = index.experts;
+    result.out_per_expert = index.output;
+    result.neuron_len = index.width;
+    result.pools.reserve(index.pools.size());
+    for (auto& entry : index.pools) {
+        const auto expert_count = entry.ids.size();
         MfeCpuPool pool;
-        pool.expert_ids.resize(expert_count);
-        std::memcpy(pool.expert_ids.data(), blob.data() + off, ids_nbytes);
-        off += ids_nbytes;
-        for (int32_t expert : pool.expert_ids) {
-            if (expert < 0 || expert >= result.n_experts || owners[(size_t)expert] >= 0) {
-                throw std::runtime_error("invalid or duplicate MFE expert id");
-            }
-            owners[(size_t)expert] = pool_index;
-        }
-        if (version2) {
-            if (dtype_nbytes == 0) throw std::runtime_error("empty MFE pool dtype");
-            pool.dtype.assign(
-                reinterpret_cast<const char *>(blob.data() + off), dtype_nbytes);
-            off += dtype_nbytes;
-            pool.runtime_payload.assign(
-                blob.begin() + (ptrdiff_t)off,
-                blob.begin() + (ptrdiff_t)(off + (size_t)runtime_nbytes));
-            off += (size_t)runtime_nbytes;
-        }
-        size_t payload_end = off + (size_t)payload_nbytes;
-        pool.payload.assign(
-            blob.begin() + (ptrdiff_t)off, blob.begin() + (ptrdiff_t)payload_end);
-        off = payload_end;
-        if (!version1 && mfq::fp8sq::is_dtype(pool.dtype)) {
+        pool.expert_ids = std::move(entry.ids);
+        pool.dtype = std::move(entry.dtype);
+        pool.runtime_payload.assign(blob.begin() + entry.runtime.offset,
+                                    blob.begin() + entry.runtime.offset + entry.runtime.bytes);
+        pool.payload.assign(blob.begin() + entry.payload.offset,
+                            blob.begin() + entry.payload.offset + entry.payload.bytes);
+        if (mfq::fp8sq::is_dtype(pool.dtype)) {
             if (!pool.runtime_payload.empty()) {
                 throw std::runtime_error(
                     "unexpected MFE FP8-SQ runtime metadata");
@@ -110,7 +47,7 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                 throw std::runtime_error(
                     "MFE FP8-SQ pool weight shape mismatch");
             }
-        } else if (!version1 && pool.dtype == "MXFP4-SQ") {
+        } else if (pool.dtype == "MXFP4-SQ") {
             if (!pool.runtime_payload.empty()) {
                 throw std::runtime_error(
                     "unexpected MFE MXFP4-SQ runtime metadata");
@@ -124,7 +61,7 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                 throw std::runtime_error(
                     "MFE MXFP4-SQ pool weight shape mismatch");
             }
-        } else if (!version1 && pool.dtype == "MXFP4") {
+        } else if (pool.dtype == "MXFP4") {
             pool.mxfp4 = unpack_mxfp4(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
@@ -133,7 +70,7 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                 throw std::runtime_error(
                     "MFE MXFP4 pool weight shape mismatch");
             }
-        } else if (!version1 && pool.dtype == "NINT8-0") {
+        } else if (pool.dtype == "NINT8-0") {
             pool.q8_zero = unpack_nint8_zero(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
@@ -146,9 +83,8 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
                 throw std::runtime_error(
                     "MFE NINT8-0 pool weight shape mismatch");
             }
-        } else if (version1 || pool.dtype == "NINT") {
+        } else if (pool.dtype == "NINT") {
             pool.weight = unpack_nint(pool.payload);
-            if (version1) pool.dtype = "NINT";
             int expected_rows = (int)expert_count * result.out_per_expert;
             if (pool.weight.axis != 0 || pool.weight.out != expected_rows ||
                 pool.weight.neuron_len != result.neuron_len ||
@@ -159,10 +95,6 @@ MfeCpu unpack_mfe(const std::vector<uint8_t>& blob) {
             }
         }
         result.pools.push_back(std::move(pool));
-    }
-    if (off != blob.size() ||
-        std::find(owners.begin(), owners.end(), -1) != owners.end()) {
-        throw std::runtime_error("MFE expert coverage or tail mismatch");
     }
     return result;
 }
