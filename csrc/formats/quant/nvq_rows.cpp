@@ -1,5 +1,6 @@
 #include "nvq_rows.h"
 #include "packed_row_range.h"
+#include "vq_blob.h"
 
 #include <cstring>
 #include <limits>
@@ -121,7 +122,7 @@ NvqRows::NvqRows(std::size_t bytes,Read read,ReadBatch batch)
             if ((group64_ && (format_!=14 || header[52]!=1)) || (!group64_ && header[52]!=0))
                 throw std::runtime_error("invalid JSC row storage layout");
             const int entries=format_==12 ? 512 : (format_==13 || format_==15) ? 1024 : format_==14 ? 4096 : 256;
-            const int vector_size=format_==10 || format_==12 || format_==15 ? 4 : 8;
+            const int vector_size=nvq::vector_size(format_);
             metadata=64+static_cast<std::size_t>(banks)*entries*vector_size;
         } else {
             if (id!=1 && id!=2) throw std::runtime_error("invalid legacy NVQ row profile");
@@ -143,10 +144,8 @@ NvqRows::NvqRows(std::size_t bytes,Read read,ReadBatch batch)
         throw std::runtime_error("invalid NVQ row state width");
     rows_=static_cast<int>(raw_rows);
     groups_=1+(width_-1)/24; signs_=1+(width_-1)/8;
-    const bool d4=format_==3 || format_==10 || format_==12 || format_==15;
-    vectors_=1+(width_-1)/(d4 ? 4 : 8);
-    index_bits_=format_==1 ? 11 : format_==7 ? 7 : (format_==8 || format_==12) ? 9 :
-        format_==9 ? 6 : (format_==13 || format_==15) ? 10 : format_==14 ? 12 : 8;
+    vectors_=1+(width_-1)/nvq::vector_size(format_);
+    index_bits_=nvq::index_bits(format_);
     aux_bits_=(format_==1 || format_==8) ? 1 : (format_==7 || format_==9) ? 0 : 7;
     if (metadata>bytes-40) throw std::runtime_error("truncated NVQ row codebook");
     prefix_.resize(40+metadata);

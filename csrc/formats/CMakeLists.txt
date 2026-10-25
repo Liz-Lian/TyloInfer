@@ -7,6 +7,8 @@ add_library(mfq-quant-readers STATIC
     quant/nint_blob.cpp
     quant/nint_blob.h
     quant/nvq_rows.cpp
+    quant/vq_blob.cpp
+    quant/vq_blob.h
     quant/mfe_quant_expert_store.cpp
     quant/mfe_index.cpp
     quant/mfe_index.h

@@ -2,26 +2,15 @@
 
 #include "backend.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
-#include <istream>
-#include <string>
-#include <string_view>
 #include <vector>
 
-std::int64_t read_i64_from(
-    const std::vector<std::uint8_t>& bytes, std::size_t& offset);
 std::uint32_t read_u32_from(
     const std::vector<std::uint8_t>& bytes, std::size_t& offset);
 
 namespace mfq::cuda::quant_format {
-
-uint32_t read_u32(std::istream& input);
-uint64_t read_u64(std::istream& input);
-int32_t read_i32_from(const std::vector<uint8_t>& bytes, size_t& offset);
-uint16_t read_u16_from(const std::vector<uint8_t>& bytes, size_t& offset);
-uint64_t read_u64_from(const std::vector<uint8_t>& bytes, size_t& offset);
-std::string read_str(std::istream& input);
 
 mfq_tensor_backend::Tensor cpu_u8_tensor(
     const std::vector<uint8_t>& values,

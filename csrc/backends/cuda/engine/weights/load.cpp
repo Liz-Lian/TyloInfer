@@ -357,7 +357,7 @@ QuantLinear load_quant_linear(
         }
     } else if (is_nvq_linear_dtype(dtype)) {
         result.kind = QuantLinearKind::Nvq;
-        const auto cpu = unpack_nvq(
+        const auto cpu = mfq::nvq::unpack(
             read_tensor(execution.drop_file_cache, mfq, name), dtype);
         result.logical_out = cpu.out;
         result.logical_neuron_len = cpu.neuron_len;

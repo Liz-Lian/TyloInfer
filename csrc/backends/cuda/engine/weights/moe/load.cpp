@@ -225,7 +225,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
             }
         } else if (source.dtype == "NEPQ") {
             pool.family = MixedMoeFamily::Nepq;
-            auto parsed = unpack_nepq(
+            auto parsed = mfq::nepq::unpack(
                 source.payload, source.dtype, source.runtime_payload);
             if (parsed.n_experts != pool.local_experts ||
                 parsed.out_per_expert != cpu.out_per_expert ||
@@ -237,7 +237,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
                 : to_cpu_nepq(parsed);
         } else {
             pool.family = MixedMoeFamily::Nvq;
-            auto parsed = unpack_nvq(source.payload, source.dtype);
+            auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
             if (parsed.out != expected_rows || parsed.neuron_len != cpu.neuron_len) {
                 throw std::runtime_error("mixed NVQ/NPQ cohort shape mismatch");
             }
@@ -421,14 +421,14 @@ MfeWeight to_cuda_device_moe_expert_slice(
                 source.dtype, source.payload, true);
         } else if (source.dtype == "NEPQ") {
             pool.family = MixedMoeFamily::Nepq;
-            auto parsed = unpack_nepq(
+            auto parsed = mfq::nepq::unpack(
                 source.payload, source.dtype, source.runtime_payload);
             pool.nepq = to_gpu_nepq(select_nepq_cpu_rows(
                 parsed, rows, cpu.out_per_expert,
                 pool.local_experts));
         } else {
             pool.family = MixedMoeFamily::Nvq;
-            auto parsed = unpack_nvq(source.payload, source.dtype);
+            auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
             pool.nvq = to_gpu_nvq(
                 select_nvq_cpu_rows(parsed, rows), config);
         }
@@ -645,7 +645,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
             dense_flat = dequant_mxfp4_cpu(pool.mxfp4)
                 .to(mfq_tensor_backend::kCUDA).contiguous();
         } else if (pool.dtype == "NEPQ") {
-            auto packed = to_gpu_nepq(unpack_nepq(
+            auto packed = to_gpu_nepq(mfq::nepq::unpack(
                 pool.payload, pool.dtype, pool.runtime_payload));
             dense_flat = nepq_dequant_cuda(
                 packed.indices_packed, packed.aux_packed,
@@ -668,7 +668,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
             rotation_signs = packed.rotation_signs;
         } else {
             dense_flat = nvq_dequant(to_gpu_nvq(
-                unpack_nvq(pool.payload, pool.dtype)));
+                mfq::nvq::unpack(pool.payload, pool.dtype)));
         }
         auto dense = dense_flat.reshape({
             static_cast<int64_t>(pool.expert_ids.size()),

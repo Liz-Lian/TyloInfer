@@ -71,7 +71,7 @@ static void prepare_bench_execution_layout(MixedMoePool& pool) {
     const char* setting=std::getenv("TYLOINFER_BENCH_EXTENDED_RECORDS");
     if(!setting || setting[0]=='0' || pool.family!=MixedMoeFamily::Nvq ||
        (pool.nvq.kernel_format!=14 && pool.nvq.kernel_format!=15))return;
-    auto& w=pool.nvq;NvqCpu c;
+    auto& w=pool.nvq;mfq::nvq::Data c;
     c.format=int(w.format);c.sign_mode=int(w.sign_mode);c.sub_bits=int(w.sub_bits);
     c.gs=int(w.gs);c.neuron_len=int(w.neuron_len);c.out=int(w.out);c.ng=int(w.ng);c.shape=w.shape;
     c.nvec=(c.neuron_len+(c.format==15?3:7))/(c.format==15?4:8);c.nsign=(c.neuron_len+7)/8;
