@@ -11,6 +11,7 @@ add_library(mfq-model-source STATIC
     compat/mfq_legacy_tensor_names.cpp
     compat/mfq_legacy_tensor_names.h
     model_source.h
+    read.h
     mfq_model_source.h
     hf_model_source.h
     hf_safetensors_source.h

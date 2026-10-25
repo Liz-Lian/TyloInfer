@@ -2,7 +2,7 @@
 
 #include "quant_linear.h"
 #include "mfe_weight.h"
-#include "model_source/model_source.h"
+#include "model_source/read.h"
 #include "gated_residual.h"
 
 struct MfqDropFileCacheGuard {
@@ -19,24 +19,10 @@ struct MfqDropFileCacheGuard {
     }
 };
 
-const mfq::TensorMetadata& require_tensor(
-    const mfq::ModelSource& source, std::string_view name);
-std::vector<std::uint8_t> read_tensor(
-    const mfq::ModelSource& source, std::string_view name);
 bool is_quant_dtype(const std::string& dtype);
-
-bool has_tensor(const mfq::ModelSource& source, std::string_view name) noexcept;
 
 std::shared_ptr<mfq::NintRows> load_nint_row_table(
     const mfq::ModelSource& source, const std::string& name, bool prefer_mapping=false);
-
-bool has_tensor_prefix(const mfq::ModelSource& source, std::string_view prefix);
-
-std::vector<std::uint8_t> read_asset(
-    const mfq::ModelSource& source, std::string_view name);
-
-std::string read_asset_text(
-    const mfq::ModelSource& source, std::string_view name);
 
 MfeWeight load_mfe_gpu(
     CudaExecutionContext& execution,
