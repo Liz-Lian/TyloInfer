@@ -10,27 +10,27 @@ namespace mfq::cuda {
 class Branches;
 struct Experts;
 
-// Borrowed for one forward; the owner drains before resetting its resources.
+// Bound resources and options must outlive this object; drain before resetting them.
 class Projector {
 public:
     struct Options {
-        int primary = 0;
         bool peer_first = true;
         bool reduce_to_primary = true;
         bool fp16_reduce = true;
         bool grouped = true;
         bool parallel = true;
         bool nvq_fusion = true;
-        bool nint_group_quantize = true;
         MoeOptions moe;
     };
 
     Projector(CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
-              Branches& branches, Collectives& collectives,
-              const bool& serial, const bool& projection_major, Options options)
+              Branches& branches, Collectives& collectives, const Options& options,
+              int primary, const bool& serial, const bool& projection_major)
         : profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
-          collectives_(collectives), serial_(serial),
-          projection_major_(projection_major), options_(options) {}
+          collectives_(collectives), options_(options), primary_(primary),
+          serial_(serial), projection_major_(projection_major) {}
+
+    int primary_device() const { return primary_; }
 
     mfq_tensor_backend::Tensor run(const QuantLinear& weight, mfq_tensor_backend::Tensor input) const;
     std::vector<mfq_tensor_backend::Tensor> run(
@@ -67,9 +67,10 @@ private:
     TqExec& tq_;
     Branches& branches_;
     Collectives& collectives_;
+    const Options& options_;
+    int primary_;
     const bool& serial_;
     const bool& projection_major_;
-    Options options_;
 
     mfq_tensor_backend::Tensor sharded(const QuantLinear& weight, mfq_tensor_backend::Tensor input,
                                       MfqOptional<mfq_tensor_backend::Tensor> gate, InputGateMode mode) const;

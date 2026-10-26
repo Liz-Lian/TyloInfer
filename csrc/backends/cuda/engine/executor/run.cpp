@@ -3,7 +3,6 @@
 #include "native/branches.h"
 #include "native/collectives.h"
 #include "ops/norm/rms.h"
-#include "engine/executor/options.h"
 
 #include <type_traits>
 
@@ -81,15 +80,11 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 Tensor Executor::run(std::span<const Task> tasks, Inputs inputs) {
     const auto release = releases(tasks, inputs);
     auto options = options_;
-    options.projection.primary = primary_;
-    options.projection.moe = runtime_options::moe(options.projection.moe);
-    options.projection.nint_group_quantize =
-        !serial_ || runtime_options::nint_group_quantize().value_or(true);
     options.dense.mlp.nvq_fusion = options.projection.nvq_fusion;
     options.dense.bf16_norm = options.attention.fused_norm;
     if (scratch_.size() != tasks.size()) scratch_.resize(tasks.size());
     const Projector project(profiler_, mmq_, tq_, branches_, collectives_,
-        serial_, projection_major_, options.projection);
+        options_.projection, primary_, serial_, projection_major_);
     for (size_t index = 0; index < tasks.size(); ++index) {
         const auto& task = tasks[index];
         auto* trace = task.scope >= 0 && task.scope == inputs.trace_scope ? inputs.trace : nullptr;

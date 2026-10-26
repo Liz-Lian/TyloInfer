@@ -20,7 +20,7 @@ static Tensor run_mlp(const Mlp& op, Tensor input, const Projector& project,
         const Projector::Options& parallel, const Dense::Options& options) {
     if (op.parallel())
         return profiler.measure("ffn.tensor_parallel", [&] {
-            return op.sharded(profiler, mmq, tq, collectives, parallel.primary,
+            return op.sharded(profiler, mmq, tq, collectives, project.primary_device(),
                 parallel.peer_first, parallel.reduce_to_primary,
                 parallel.fp16_reduce, input);
         });

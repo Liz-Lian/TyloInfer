@@ -686,13 +686,9 @@ CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
 }
 
 mfq::cuda::Projector CudaExecutionContext::projector() {
-    auto options = config.tasks.projection;
-    options.primary = model_parallel_primary_device(*this);
-    options.nint_group_quantize = !decode_graph_serial_branches ||
-        mfq::cuda::runtime_options::nint_group_quantize().value_or(true);
-    options.moe = mfq::cuda::runtime_options::moe(options.moe);
-    return {profiler, kl_mmq, *tq, branches, collectives,
-            decode_graph_serial_branches, decode_graph_tp_projection_major, options};
+    return {profiler, kl_mmq, *tq, branches, collectives, config.tasks.projection,
+            model_parallel_primary_device(*this), decode_graph_serial_branches,
+            decode_graph_tp_projection_major};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {

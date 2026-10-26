@@ -803,8 +803,7 @@ Tensor full_ffn(
         Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
             attention.official_bf16, attention.attention_output_gate};
         if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
-        auto parallel = execution.config.tasks.projection;
-        parallel.primary = model_parallel_primary_device(execution);
+        const auto& parallel = execution.config.tasks.projection;
         auto options = execution.config.tasks.dense;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
         options.bf16_norm = execution.config.tasks.attention.fused_norm;
@@ -844,8 +843,7 @@ Tensor linear_ffn(
         Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps,
             attention.norm_weight_offset, false, false, true};
         if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
-        auto parallel = execution.config.tasks.projection;
-        parallel.primary = model_parallel_primary_device(execution);
+        const auto& parallel = execution.config.tasks.projection;
         auto options = execution.config.tasks.dense;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
         return op.forward(execution.projector(), execution.profiler, execution.kl_mmq, *execution.tq,

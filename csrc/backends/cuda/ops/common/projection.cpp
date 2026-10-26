@@ -1,4 +1,5 @@
 #include "projection.h"
+#include "engine/executor/options.h"
 #include "native/branches.h"
 #include "native/collectives.h"
 #include "backends/cuda/engine/executor/tq.h"
@@ -102,7 +103,7 @@ Projector::grouped(
             local_inputs[shard] = collectives_.copy(flat, device);
         }
 
-        const int primary = options_.primary;
+        const int primary = primary_;
         std::vector<mfq_tensor_backend::Tensor> result;
         result.reserve(projections.size());
         for (const auto * projection : projections) {
@@ -158,7 +159,7 @@ Projector::grouped(
         }
     }
 
-    const int primary = options_.primary;
+    const int primary = primary_;
     MfqCudaGuard primary_guard(primary);
     std::vector<mfq_tensor_backend::Tensor> result;
     result.reserve(projections.size());
@@ -238,7 +239,7 @@ mfq_tensor_backend::Tensor Projector::sharded(
         }
     }
 
-    const int primary = options_.primary;
+    const int primary = primary_;
     MfqCudaGuard primary_guard(primary);
     if (weight.tensor_parallel_axis == TensorParallelAxis::Output) {
         std::vector<mfq_tensor_backend::Tensor> gathered;
@@ -250,7 +251,7 @@ mfq_tensor_backend::Tensor Projector::sharded(
         return mfq_tensor_backend::cat(gathered, -1).contiguous();
     }
 
-    auto reduced = collectives_.sum(std::move(local_outputs), options_.primary,
+    auto reduced = collectives_.sum(std::move(local_outputs), primary_,
             options_.reduce_to_primary, options_.fp16_reduce);
     return weight.is_mxfp8()
         ? reduced.to(x.scalar_type()).contiguous()
@@ -315,7 +316,7 @@ mfq_tensor_backend::Tensor Projector::groupwise(
         partials.push_back(mxfp8_groupwise_matmul_f32(
             profiler_, shard.mxfp8, local, groups));
     }
-    return collectives_.sum(std::move(partials), options_.primary,
+    return collectives_.sum(std::move(partials), primary_,
             options_.reduce_to_primary, options_.fp16_reduce)
         .to(grouped.scalar_type()).contiguous();
 }
@@ -516,7 +517,7 @@ std::vector<mfq_tensor_backend::Tensor> Projector::run(
     } else if (!group.split_w.empty()) {
         parts.reserve(group.outs.size());
         std::vector<int> shared_groups;
-        if(options_.nint_group_quantize && serial_ &&
+        if(serial_ && runtime_options::nint_group_quantize().value_or(true) &&
                 mmq_.mode==KlMmqMode::Default && xf.is_contiguous() &&
                 xf.size(0)>=1 && xf.size(0)<=6 &&
                 (xf.scalar_type()==mfq_tensor_backend::kFloat16 || xf.scalar_type()==mfq_tensor_backend::kFloat32)) {

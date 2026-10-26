@@ -1025,19 +1025,12 @@ GatedResidual::Projection residual_linear(CudaExecutionContext& execution, const
     TYLOINFER_RUNTIME_CHECK(weight->is_dense() || weight->is_nint() || weight->is_tq(),
         "unsupported floating residual projection: ", name);
     if(weight->is_tq()) {
-        auto executor=std::make_shared<Executor>(execution.profiler, execution.kl_mmq, *execution.tq,
-            execution.branches, execution.collectives, execution.config.tasks,
-            model_parallel_primary_device(execution), execution.decode_graph_serial_branches,
-            execution.decode_graph_tp_projection_major);
-        Projection::Forward forward=[weight,executor=std::move(executor),&profiler=execution.profiler](const Tensor& input) {
+        Projection::Forward forward=[weight,project=execution.projector(),&profiler=execution.profiler](const Tensor& input) {
             // TQ reconstructs FP16 weights. A BF16/F32 activation therefore
             // promotes residual projection math to FP32, as the dense path.
             return profiler.measure("tq.residual",[&] {
-                const Task operation{task::Project{0,1,*weight}};
-                Inputs inputs;
-                inputs.values={input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32),Tensor{}};
-                inputs.output=1;
-                return executor->run(std::span<const Task>(&operation,1),std::move(inputs));
+                return project.run(*weight,
+                    input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32));
             });
         };
         return {std::move(forward),{},{},std::move(weight),{}};
