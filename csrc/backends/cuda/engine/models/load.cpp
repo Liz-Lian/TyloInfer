@@ -221,7 +221,9 @@ void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& f) {
         gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_up),std::make_shared<mfq::cuda::Experts>(f.moe_up)};
     else if(f.moe_split_gate_up)gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_gate),std::make_shared<mfq::cuda::Experts>(f.moe_up)};
     else gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_gate_up)};
-    auto pipeline=make_moe_ffn_pipeline(gate_up,{std::make_shared<mfq::cuda::Experts>(f.moe_down)},
+    auto pipeline=make_moe_ffn_pipeline(
+        execution.profiler,execution.kl_mmq,execution.config.tasks.projection.moe,execution.config.moe_ffn,
+        gate_up,{std::make_shared<mfq::cuda::Experts>(f.moe_down)},
         {},{},{},f.swiglu_limit);
     if(!pipeline)return;
     execution.register_moe_pipeline(pipeline);

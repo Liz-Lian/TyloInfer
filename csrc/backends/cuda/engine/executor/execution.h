@@ -1,6 +1,7 @@
 #pragma once
 #include "formats/format_features.h"
 #include "engine/executor/run.h"
+#include "engine/executor/moe_ffn_pipeline.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
@@ -37,7 +38,6 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #endif
 
 class MoeExpertCache;
-class MoeFfnPipeline;
 class TqCache;
 class TqExec;
 
@@ -151,6 +151,7 @@ struct LayerPlacementConfig {
 
 struct CudaExecutionConfig {
     mfq::cuda::Executor::Options tasks;
+    MoeFfnOptions moe_ffn;
     std::string profile_filter;
     std::string moe_route_stats_path;
     bool moe_route_output_energy = false;
@@ -167,10 +168,6 @@ struct CudaExecutionConfig {
     bool moe_small_heterogeneous = true;
     bool moe_delayed_route_readback = true;
     bool moe_projection_bundle_prefetch = true;
-    bool split_moe_activation_reuse = true;
-    bool moe_gpu_resident_dispatch = false;
-    bool moe_ffn_fused_activation = true;
-    bool moe_two_stage_ffn = false;
     bool moe_swiglu_quant_fusion = true;
     bool moe_reduce_gate_fusion = true;
     bool gemma4_fused_norms = true;
@@ -206,7 +203,6 @@ struct CudaExecutionConfig {
     bool moe_direct_ram = true;
     // Diagnostics may hold primary residency constant across paired passes.
     bool moe_residency_adapt = true;
-    std::optional<bool> moe_ffn_transfer_phases;
     bool moe_residency_warm = true;
     bool moe_residency_projection_heat = true;
     std::size_t moe_host_physical_bytes = 0;

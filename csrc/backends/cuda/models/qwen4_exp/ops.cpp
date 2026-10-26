@@ -311,31 +311,32 @@ static Projection qwen_gdn_profile_projection(Projection project,const char* beg
 static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_up, weight_loader::Routed down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
                        const Config &c, MoeFfnPrefetch* prefetch=nullptr) {
-    std::shared_ptr<TqProjectionGroup> shared_tq;
     const auto shared_g=weight_loader::linear_weight(sg),shared_u=weight_loader::linear_weight(su);
-    if(shared_g && shared_u && shared_g->is_tq() && shared_u->is_tq() &&
+    const auto shared_d=weight_loader::linear_weight(sd),shared_gate_weight=weight_loader::linear_weight(shared_gate);
+    TYLOINFER_RUNTIME_CHECK(shared_g && shared_u && shared_d && shared_gate_weight,
+        "Qwen shared expert requires projection weights");
+    std::shared_ptr<QuantLinearGroup> shared_tq;
+    if(shared_g->is_tq() && shared_u->is_tq() &&
        shared_g->tq.image.is_cuda() && shared_u->tq.image.is_cuda())
-        shared_tq=std::make_shared<TqProjectionGroup>(std::vector<TqWeight>{shared_g->tq,shared_u->tq});
-    auto shared_raw=[sg,su,sd,shared_gate,shared_tq](CudaExecutionContext& execution,const Tensor& source) {
+        shared_tq=std::make_shared<QuantLinearGroup>(make_quant_group({*shared_g,*shared_u},false,false));
+    auto shared_raw=[shared_g,shared_u,shared_d,shared_gate_weight,shared_tq](const mfq::cuda::Projector& project,const Tensor& source) {
         if(shared_tq) {
-            const auto resources=execution.tq->get(source.get_device());
-            auto output=sd(execution,shared_tq->swiglu(&resources->blas(),source));
-            return tb::sigmoid(shared_gate(execution,source))*output;
+            auto output=project.run(*shared_d,project.swiglu(*shared_tq,source));
+            return tb::sigmoid(project.run(*shared_gate_weight,source))*output;
         }
         auto unfused=[](const auto&...){return std::optional<Tensor>{};};
         auto output=mfq::models::gated_mlp(source,false,0.0,unfused,unfused,
-            [&](Tensor input){return std::array<Tensor,2>{sg(execution,input),su(execution,input)};},
+            [&](Tensor input){return std::array<Tensor,2>{project.run(*shared_g,input),project.run(*shared_u,input)};},
             [](Tensor g,Tensor u,mfq::models::GatedActivation,double){return (g*tb::sigmoid(g))*u;},
-            [&](Tensor hidden){return sd(execution,hidden);},unfused);
-        return tb::sigmoid(shared_gate(execution,source))*output;
+            [&](Tensor hidden){return project.run(*shared_d,hidden);},unfused);
+        return tb::sigmoid(project.run(*shared_gate_weight,source))*output;
     };
-    const std::array<Linear,3> shared_projections{sg,su,sd};
+    const std::array<std::shared_ptr<const QuantLinear>,3> shared_projections{shared_g,shared_u,shared_d};
     const bool shared_row_parallel=std::all_of(shared_projections.begin(),shared_projections.end(),
-        [](const auto& projection) {
-            const auto weight=weight_loader::linear_weight(projection);
-            return weight && weight->is_nint() && !weight->tensor_parallel() && !weight->nint.q8_zero;
+        [](const auto& weight) {
+            return weight->is_nint() && !weight->tensor_parallel() && !weight->nint.q8_zero;
         });
-    auto shared=[shared_raw,shared_projections,shared_gate,shared_row_parallel](CudaExecutionContext& execution,const Tensor& source) {
+    auto shared=[shared_raw,shared_projections,shared_gate_weight,shared_row_parallel](const mfq::cuda::Projector& project,const Tensor& source) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const auto rows=qwen_prefill_reference_rows;
         const auto parallel_option=mfq::cuda::runtime_options::moe_prefill_shared_streams();
@@ -347,13 +348,13 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
                 source.size(0)>rows && (tail==0 || tail>8)) {
             // The first original chunk prepares all three cached weight
             // matrices. Worker pipelines then read them after the ready fence.
-            auto first=shared_raw(execution,source.narrow(0,0,rows));
+            auto first=shared_raw(project,source.narrow(0,0,rows));
             auto shape=first.sizes().vec();shape[0]=source.size(0);
             auto output=tb::empty(shape,first.options());
             output.narrow(0,0,rows).copy_(first);
             mfq::cuda::submit_parallel_rows(source.get_device(),rows,source.size(0),rows,chain_streams,
                 [&](int64_t begin,int64_t count) {
-                    auto part=shared_raw(execution,source.narrow(0,begin,count));
+                    auto part=shared_raw(project,source.narrow(0,begin,count));
                     output.narrow(0,begin,count).copy_(part);
                 });
             return output;
@@ -361,34 +362,33 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
         if(streams>0 && shared_row_parallel && rows>8 && source.size(0)>rows && (tail==0 || tail>8)) {
             // Each GEMM retains its original row count. Only its submission
             // stream changes; activations remain in their canonical FP16 form.
-            const auto project=[&](int index,const Tensor& input) {
+            const auto projection=[&](int index,const Tensor& input) {
                 const mfq::cuda::MatmulRowsScope gemm_rows(rows,streams);
-                return shared_projections[index](execution,input);
+                return project.run(*shared_projections[index],input);
             };
-            auto gate=project(0,source),up=project(1,source);
-            auto output=project(2,(gate*tb::sigmoid(gate))*up);
+            auto gate=projection(0,source),up=projection(1,source);
+            auto output=projection(2,(gate*tb::sigmoid(gate))*up);
             auto scale=qwen_prefill_preserve_rows(source,[&](const Tensor& part) {
-                return tb::sigmoid(shared_gate(execution,part));
+                return tb::sigmoid(project.run(*shared_gate_weight,part));
             });
             return scale*output;
         }
 #endif
-        return qwen_prefill_preserve_rows(source,[&](const Tensor& part){return shared_raw(execution,part);});
+        return qwen_prefill_preserve_rows(source,[&](const Tensor& part){return shared_raw(project,part);});
     };
     MoeFfnSharedWeights shared_weights;
-    shared_weights.projections={weight_loader::linear_weight(sg),weight_loader::linear_weight(su),weight_loader::linear_weight(sd)};
-    const auto shared_gate_weight=weight_loader::linear_weight(shared_gate);
+    shared_weights.projections=shared_projections;
     shared_weights.scalar_gate=shared_gate_weight;
-    shared_weights.gate=[shared_gate,shared_gate_weight](CudaExecutionContext& execution,const Tensor& input) {
+    shared_weights.gate=[shared_gate_weight](const mfq::cuda::Projector& project,const Tensor& input) {
         const auto option=mfq::cuda::runtime_options::shared_gate_fused();
         const auto* nint_option=mfq::cuda::env_lookup("TYLOINFER_SHARED_GATE_NINT");
-        if((!option || *option) && (!nint_option || nint_option[0]!='0') && shared_gate_weight &&
+        if((!option || *option) && (!nint_option || nint_option[0]!='0') &&
                 shared_gate_weight->is_nint() && !shared_gate_weight->tensor_parallel())
             if(auto output=try_nint_shared_gate_sigmoid_cuda(input,shared_gate_weight->nint))return *output;
-        if((!option || *option) && shared_gate_weight && shared_gate_weight->is_dense() &&
+        if((!option || *option) && shared_gate_weight->is_dense() &&
             !shared_gate_weight->tensor_parallel())
             if(auto output=try_shared_gate_sigmoid_cuda(input,shared_gate_weight->dense))return *output;
-        return tb::sigmoid(shared_gate(execution,input));
+        return tb::sigmoid(project.run(*shared_gate_weight,input));
     };
     std::shared_ptr<TqMoeBanks> tq;
     if(!gate_up.tq_projections.empty() || !down.tq_projections.empty()) {
@@ -406,7 +406,9 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
     std::shared_ptr<MoeFfnPipeline> owned_pipeline;
     MoeFfnPrefetch prefetch_fn;
     if(!tq) {
-        owned_pipeline=make_moe_ffn_pipeline(gate_up.projections,down.projections,shared,{},std::move(shared_weights));
+        owned_pipeline=make_moe_ffn_pipeline(
+            execution.profiler,execution.kl_mmq,execution.config.tasks.projection.moe,execution.config.moe_ffn,
+            gate_up.projections,down.projections,shared,{},std::move(shared_weights));
         if(owned_pipeline) {
             const std::weak_ptr<MoeFfnPipeline> borrowed=owned_pipeline;
             if(prefetch)prefetch_fn=[borrowed](const Tensor& ids) {
@@ -432,7 +434,7 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
         const bool use_pipeline=borrowed && (gate_up.projections.size()!=1 ||
             combined_prefill ||
             ((source.size(0)<=8 || (source.size(0)<=32 && execution.continuous_batch_cache_serial)) &&
-             execution.config.moe_two_stage_ffn &&
+             execution.config.moe_ffn.two_stage &&
              execution.kl_mmq.mode==KlMmqMode::Default));
 #else
         const bool use_pipeline=false;
@@ -447,12 +449,13 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
                     routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
             },
             [&](const auto &) {
-                return use_pipeline ? Tensor{} : shared(execution,source);
+                return use_pipeline ? Tensor{} : shared(execution.projector(),source);
             },
             [&](const auto &selected) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-                if(use_pipeline)return run_moe_ffn_pipeline(borrowed,execution,source,
-                    selected[0].to(tb::kInt32).contiguous(),selected[1]);
+                if(use_pipeline)return run_moe_ffn_pipeline(borrowed,execution.projector(),source,
+                    selected[0].to(tb::kInt32).contiguous(),selected[1],execution.continuous_batch_cache_serial,
+                    execution.continuous_batch_ffn_tile,execution.continuous_batch_ffn_tiles);
 #endif
                 if(tq)return execution.profiler.measure("tq.moe",[&] {
                     return execution.projector().run(*tq,source,selected[0],selected[1]);
@@ -1165,7 +1168,7 @@ MtpStep Qwen4ExpMtp::step_positioned(const MtpTarget &target, Tensor hidden, Ten
         positions=positions.to(tb::kInt32).contiguous();
     }
     const auto graph=mfq::cuda::runtime_options::mtp_predictor_graph();
-    if((!graph || *graph) && execution->config.moe_pipeline && execution->config.moe_two_stage_ffn &&
+    if((!graph || *graph) && execution->config.moe_pipeline && execution->config.moe_ffn.two_stage &&
         execution->kl_mmq.mode==KlMmqMode::Default && execution->stores.moe_expert_cache &&
         streamed_decode_graphs(*execution) && batch==1 && ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
         hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm.numel() &&
@@ -1189,7 +1192,7 @@ void Qwen4ExpMtp::history_step(const MtpTarget& target,Tensor hidden,Tensor ids,
     }
     const auto graph=mfq::cuda::runtime_options::mtp_predictor_graph();
     if(reuse_decode_graphs && (!graph || *graph) && execution->config.moe_pipeline &&
-            execution->config.moe_two_stage_ffn && execution->kl_mmq.mode==KlMmqMode::Default &&
+            execution->config.moe_ffn.two_stage && execution->kl_mmq.mode==KlMmqMode::Default &&
             execution->stores.moe_expert_cache && streamed_decode_graphs(*execution) && layers.size()==1 && batch==1 &&
             ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
             hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) &&

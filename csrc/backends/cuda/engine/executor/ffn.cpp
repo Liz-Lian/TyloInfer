@@ -581,8 +581,9 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                 }
                 if(use_pipeline) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-                    auto result=run_moe_ffn_pipeline(pipeline,execution,routed_input,selected.at(0),
-                                                     selected.at(1));
+                    auto result=run_moe_ffn_pipeline(pipeline,execution.projector(),routed_input,selected.at(0),
+                        selected.at(1),execution.continuous_batch_cache_serial,
+                        execution.continuous_batch_ffn_tile,execution.continuous_batch_ffn_tiles);
                     if(result.dim()==3)result=moe_weighted_reduce_cuda(result,selected.at(1));
                     return {finish_latent(result),true};
 #endif
@@ -619,7 +620,7 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                     }
                     gate_up_pair = profiler.measure("moe.gate_up_split", [&]() {
                         const bool reuse_gate_activation =
-                            execution.config.split_moe_activation_reuse &&
+                            execution.config.moe_ffn.reuse_input &&
                             execution.kl_mmq.mode == KlMmqMode::Default && xf.size(0) <= 8 &&
                             active_gate->can_reuse_activation_for(*active_up);
                         auto gate = execution.projector().run(*active_gate, xf, route);

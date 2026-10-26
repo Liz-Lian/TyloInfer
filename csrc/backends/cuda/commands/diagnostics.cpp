@@ -261,7 +261,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             TYLOINFER_RUNTIME_CHECK(gen>1 && (!decode_inputs.empty() || free_gpu_comparison) && !profile &&
                 runtime_comparison_modes() == 1 && router_lookahead_audit.empty() &&
                 !execution.config.moe_mapped_gather && execution.config.moe_preload_all &&
-                execution.config.moe_two_stage_ffn && moe_gpu_cache_gb>0,
+                execution.config.moe_ffn.two_stage && moe_gpu_cache_gb>0,
                 "runtime comparison requires fixed inputs or an eligible GPU-only free-decode comparison, complete preload, two-stage FFN and profiling disabled");
             TYLOINFER_RUNTIME_CHECK(!compare_attention_grouping ||
                 execution.config.diagnostic_nint_group,
@@ -777,7 +777,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             ScopedDiagnosticEnvironment dma_graph_batch("TYLOINFER_MOE_DMA_GRAPH_BATCH");
             ScopedDiagnosticEnvironment ram_field_packing("TYLOINFER_MOE_RAM_FIELD_PACKING");
             ScopedDiagnosticEnvironment warp_multi_sum("TYLOINFER_CUDA_WARP_MULTI_SUM");
-            TYLOINFER_RUNTIME_CHECK(!(compare_mfe_e8_narrow || compare_mfe_default_math || compare_mfe_parallel_gu || compare_mfe_gpu_bundle || compare_mfe_shared_first || compare_mfe_early_gu) || execution.config.moe_two_stage_ffn,
+            TYLOINFER_RUNTIME_CHECK(!(compare_mfe_e8_narrow || compare_mfe_default_math || compare_mfe_parallel_gu || compare_mfe_gpu_bundle || compare_mfe_shared_first || compare_mfe_early_gu) || execution.config.moe_ffn.two_stage,
                 "MFE parallel Gate/Up comparison requires two-stage FFN");
             TYLOINFER_RUNTIME_CHECK(!compare_mhc_shared_norm || execution.config.gr_two_stage,
                 "MHC norm comparison requires fused residual projection");
@@ -850,7 +850,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 }
                 // reset destroys the decoder graphs before each branch is captured.
                 model.reset(1);mfq_cuda_synchronize();
-                if(compare_ffn_transfer_phases)execution.config.moe_ffn_transfer_phases=phased;
+                if(compare_ffn_transfer_phases)execution.config.moe_ffn.transfer_phases=phased;
                 if(compare_mhc_fusion) {
                     execution.config.gr_two_stage=phased;
                     execution.config.gr_two_stage_dense_injection=phased && compare_dense_mhc;

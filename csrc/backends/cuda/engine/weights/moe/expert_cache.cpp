@@ -167,7 +167,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
         }
         for(const auto& [key,bytes]:transfers)legacy_transfer_reserve+=bytes;
         transfer_reserve=legacy_transfer_reserve;
-        if(config_.moe_two_stage_ffn && moe_packed_transfer_stages_enabled() &&
+        if(config_.moe_ffn.two_stage && moe_packed_transfer_stages_enabled() &&
                 std::all_of(sources_.begin(),sources_.end(),[](const auto& s){return s->two_stage_compatible();})) {
             std::map<std::pair<bool,int>,std::pair<int64_t,int64_t>> packed;
             for(const auto& bundle:pipeline_bundles_)for(int p=0;p<3;++p) {
@@ -242,7 +242,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
     // These are planning preferences, not rigid minima: prefill can still
     // borrow their storage and context growth can shrink the expert cache.
     const auto* predictor_option=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
-    if(config_.moe_preload_all && config_.moe_two_stage_ffn &&
+    if(config_.moe_preload_all && config_.moe_ffn.two_stage &&
             predictor_option && predictor_option[0]=='1') {
         std::map<MoeGpuArena*,int> predictor_slots;
         for(const auto& source:sources_)if(source->layer_id_<0)
@@ -1436,7 +1436,7 @@ void MoeExpertCache::preload_complete_residency() {
     for(const auto& source:sources_)if(source->layer_id_<0)for(const auto& cohort:source->cohorts_)
         predictor_slots[cohort.arena]+=cohort.cpu->local_experts;
     const auto* predictor_option=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
-    const bool resident_predictor=config_.moe_two_stage_ffn && predictor_option && predictor_option[0]=='1' &&
+    const bool resident_predictor=config_.moe_ffn.two_stage && predictor_option && predictor_option[0]=='1' &&
         std::all_of(predictor_slots.begin(),predictor_slots.end(),[&](const auto& item){return remaining[item.first]>=item.second;});
     if(resident_predictor)for(const auto& source:sources_)if(source->layer_id_<0)
         for(int expert=0;expert<source->n_experts();++expert)if(!source->quant_source_->gpu_resident(expert)) {

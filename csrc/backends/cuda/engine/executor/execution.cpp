@@ -1,9 +1,6 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/executor/execution.h"
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
-#endif
 #include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
@@ -521,13 +518,13 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_MOE_DELAYED_ROUTE_READBACK", true);
     result.moe_projection_bundle_prefetch = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_PROJECTION_BUNDLE_PREFETCH");
-    result.split_moe_activation_reuse = enabled_unless_disabled(
+    result.moe_ffn.reuse_input = enabled_unless_disabled(
         "TYLOINFER_DISABLE_SPLIT_MOE_ACTIVATION_REUSE");
-    result.moe_gpu_resident_dispatch = environment_flag(
+    result.moe_ffn.resident_dispatch = environment_flag(
         "TYLOINFER_MOE_GPU_RESIDENT_DISPATCH", false);
-    result.moe_ffn_fused_activation = environment_flag(
+    result.moe_ffn.fused_activation = environment_flag(
         "TYLOINFER_MOE_FFN_FUSED_ACTIVATION", true);
-    result.moe_two_stage_ffn = environment_flag("TYLOINFER_MOE_TWO_STAGE_FFN", false);
+    result.moe_ffn.two_stage = environment_flag("TYLOINFER_MOE_TWO_STAGE_FFN", false);
     result.moe_swiglu_quant_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SWIGLU_QUANT_FUSION");
     result.moe_reduce_gate_fusion = enabled_unless_disabled(
@@ -712,11 +709,16 @@ CudaExecutionContext::~CudaExecutionContext() {
     attention_scratch.clear();
 }
 
-#if !TYLOINFER_ENABLE_MFQ_COMPAT
-void CudaExecutionContext::register_moe_pipeline(std::shared_ptr<MoeFfnPipeline>) {
+void CudaExecutionContext::register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if(!pipeline)throw std::invalid_argument("cannot register an empty MoE FFN pipeline");
+    moe_pipelines.push_back(pipeline);
+    try { activate_moe_ffn_pipeline(std::move(pipeline)); }
+    catch(...) { moe_pipelines.pop_back(); throw; }
+#else
     throw std::invalid_argument("MoE FFN pipeline support is disabled");
-}
 #endif
+}
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
