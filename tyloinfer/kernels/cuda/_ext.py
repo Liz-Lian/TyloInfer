@@ -23,8 +23,8 @@ _REPOSITORY_ROOT = str(Path(_DIR).resolve().parents[2])
 _CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "csrc" / "backends" / "cuda"
 _KERNEL_DIR = str(_CUDA_BACKEND / "kernels")
 _CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")
-_CUDA_NATIVE_INCLUDE = str(_CUDA_BACKEND / "native")
-_CUDA_NATIVE_TENSOR_INCLUDE = str(_CUDA_BACKEND / "native" / "tensor")
+_CUDA_NATIVE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "csrc" / "native" / "cuda")
+_CUDA_NATIVE_TENSOR_INCLUDE = os.path.join(_CUDA_NATIVE_INCLUDE, "tensor")
 _CSRC_ROOT = str(Path(_REPOSITORY_ROOT) / "csrc")
 _GGML_ROOT = Path(_REPOSITORY_ROOT) / "csrc" / "components" / "ggml"
 _GGML_INCLUDE = str(_GGML_ROOT / "include")
@@ -63,7 +63,7 @@ _SOURCES = [
         "nepq.cu",
         "nepq_residual.cu",
     )
-] + [os.path.join(_DIR, "mfq_cuda.cpp"), str(_CUDA_BACKEND / "native" / "env.cpp")]
+] + [os.path.join(_DIR, "mfq_cuda.cpp"), os.path.join(_CUDA_NATIVE_INCLUDE, "env.cpp")]
 _module = None
 
 

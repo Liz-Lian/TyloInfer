@@ -52,24 +52,24 @@ else()
 endif()
 
 add_library(mfq-cuda-core STATIC
-    ${TYLOINFER_CUDA_ROOT}/native/env.cpp
-    ${TYLOINFER_CUDA_ROOT}/native/context.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/tensor.cpp
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/tensor.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/blas.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/creation.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/indexing.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/ops.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/reduction.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/signal.cu
-    ${TYLOINFER_CUDA_ROOT}/native/tensor/sort.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/env.cpp
+    ${PROJECT_SOURCE_DIR}/native/cuda/context.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/tensor.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/blas.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/creation.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/indexing.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/ops.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/reduction.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/signal.cu
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/sort.cu
 )
 add_library(mfq::cuda-core ALIAS mfq-cuda-core)
 # The native context/tensor units only need their own headers plus the CUDA SDK;
 # the high-level kernel op declarations in include/ stay out of the interface.
 target_include_directories(mfq-cuda-core PUBLIC
-    ${TYLOINFER_CUDA_ROOT}/native
-    ${TYLOINFER_CUDA_ROOT}/native/tensor
+    ${PROJECT_SOURCE_DIR}/native/cuda
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 target_include_directories(mfq-cuda-core PRIVATE
@@ -195,8 +195,8 @@ target_include_directories(mfq-cuda-native-kernels PRIVATE
     ${TYLOINFER_CUDA_ROOT}
     ${TYLOINFER_REPOSITORY_ROOT}
     ${TYLOINFER_CUDA_ROOT}/include
-    ${TYLOINFER_CUDA_ROOT}/native
-    ${TYLOINFER_CUDA_ROOT}/native/tensor
+    ${PROJECT_SOURCE_DIR}/native/cuda
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
     ${TYLOINFER_CUDA_KERNEL_ROOT}
     ${CUDAToolkit_INCLUDE_DIRS}
 )
@@ -299,7 +299,7 @@ if(BUILD_TESTING)
     mfq_add_cuda_test(mfq-cuda-shared-storage-test
         ${TYLOINFER_CUDA_ROOT}/tests/cuda_shared_storage_test.cu)
     target_include_directories(mfq-cuda-shared-storage-test PRIVATE
-        ${TYLOINFER_REPOSITORY_ROOT} ${TYLOINFER_CUDA_ROOT} ${TYLOINFER_CUDA_ROOT}/native/tensor)
+        ${TYLOINFER_REPOSITORY_ROOT} ${TYLOINFER_CUDA_ROOT} ${PROJECT_SOURCE_DIR}/native/cuda/tensor)
     endif()
     mfq_add_cuda_test(mfq-cuda-activation-test
         ${TYLOINFER_CUDA_ROOT}/tests/mfq_cuda_activation_test.cu
@@ -391,8 +391,8 @@ function(mfq_configure_cuda_backend_target target)
         ${TYLOINFER_REPOSITORY_ROOT}
         ${TYLOINFER_CUDA_ROOT}
         ${TYLOINFER_CUDA_ROOT}/include
-        ${TYLOINFER_CUDA_ROOT}/native
-        ${TYLOINFER_CUDA_ROOT}/native/tensor
+        ${PROJECT_SOURCE_DIR}/native/cuda
+        ${PROJECT_SOURCE_DIR}/native/cuda/tensor
         ${TYLOINFER_CUDA_ROOT}/ops/common/include
         ${TYLOINFER_CUDA_ROOT}/ops/tq/include
         ${TYLOINFER_CUDA_ROOT}/ops/mfq/include

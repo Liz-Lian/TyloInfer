@@ -16,20 +16,20 @@ add_executable(mfq-cuda-tensor-view-test
     ${PROJECT_SOURCE_DIR}/backends/cuda/tests/mfq_cuda_tensor_view_test.cpp
 )
 target_include_directories(mfq-cuda-tensor-view-test PRIVATE
-    ${PROJECT_SOURCE_DIR}/backends/cuda/native/tensor
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
 )
 target_compile_features(mfq-cuda-tensor-view-test PRIVATE cxx_std_20)
 add_test(NAME mfq-cuda-tensor-view-test COMMAND mfq-cuda-tensor-view-test)
 
 add_executable(mfq-native-tensor-test
-    ${PROJECT_SOURCE_DIR}/backends/cuda/native/env.cpp
-    ${PROJECT_SOURCE_DIR}/backends/cuda/native/tensor/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/native/cuda/env.cpp
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/tensor.cpp
     ${PROJECT_SOURCE_DIR}/backends/cuda/tests/mfq_native_tensor_cpu_test_stubs.cpp
     ${PROJECT_SOURCE_DIR}/backends/cuda/tests/mfq_native_tensor_test.cpp
 )
 target_include_directories(mfq-native-tensor-test PRIVATE
-    ${PROJECT_SOURCE_DIR}/backends/cuda/native
-    ${PROJECT_SOURCE_DIR}/backends/cuda/native/tensor
+    ${PROJECT_SOURCE_DIR}/native/cuda
+    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
 )
 target_compile_features(mfq-native-tensor-test PRIVATE cxx_std_20)
 add_test(NAME mfq-native-tensor-test COMMAND mfq-native-tensor-test)

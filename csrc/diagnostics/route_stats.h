@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/native/tensor/backend.h"
+#include "native/cuda/tensor/backend.h"
 
 #include <string>
 #include <unordered_map>

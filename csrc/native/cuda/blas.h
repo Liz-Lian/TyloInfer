@@ -1,7 +1,7 @@
 #pragma once
 
-#include "backends/cuda/native/tensor/backend.h"
-#include "backends/cuda/native/context.h"
+#include "native/cuda/tensor/backend.h"
+#include "native/cuda/context.h"
 
 #include <memory>
 #include <mutex>

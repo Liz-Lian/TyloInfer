@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/native/tensor/backend.h"
+#include "native/cuda/tensor/backend.h"
 
 #include <cuda_runtime_api.h>
 #ifdef TYLOINFER_HAVE_NCCL

@@ -1,5 +1,5 @@
 #include "profile.h"
-#include "backends/cuda/native/env.h"
+#include "native/cuda/env.h"
 
 #include <cstdio>
 #include <cstdlib>
