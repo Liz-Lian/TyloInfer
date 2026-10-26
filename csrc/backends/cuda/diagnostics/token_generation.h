@@ -10,7 +10,7 @@
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/qwen4_exp/ops.h"
 #include "backend.h"
-#include "model_source/model_source.h"
+#include "source/model_source.h"
 
 #include <cuda_profiler_api.h>
 #include <cuda_runtime_api.h>

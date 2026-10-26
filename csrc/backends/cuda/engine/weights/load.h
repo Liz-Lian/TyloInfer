@@ -2,7 +2,7 @@
 
 #include "quant_linear.h"
 #include "engine/weights/moe/experts.h"
-#include "model_source/read.h"
+#include "source/read.h"
 #include "gated_residual.h"
 #include "backends/cuda/engine/weights/tq/routed.h"
 

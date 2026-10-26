@@ -1,5 +1,5 @@
 #include "processor.h"
-#include "model_source/model_source.h"
+#include "source/model_source.h"
 
 #include "constraint.h"
 #include "tokenizer.h"

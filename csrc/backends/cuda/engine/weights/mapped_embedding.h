@@ -8,7 +8,7 @@
 
 // Storage strategy adapted from Strata NativeEmbed::load/gather_dev:
 // references/strata/src/core/native_head.cpp, MIT license in
-// csrc/third_party/strata.LICENSE. Preserve MFQ's native floating dtype
+// LICENSES/Strata-MIT.txt. Preserve MFQ's native floating dtype
 // and gather kernel; only the read-only embedding table changes placement.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace mfq::cuda {

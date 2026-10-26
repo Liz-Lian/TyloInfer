@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../common/vision/grid_vision.h"
-#include "model_source/model_source.h"
+#include "source/model_source.h"
 #include "formats/model_graph.h"
 #include "../common/model_config.h"
 #include "../common/moe.h"

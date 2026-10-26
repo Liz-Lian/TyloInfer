@@ -1,7 +1,7 @@
 #include "env.h"
 #include "backends/cuda/engine/weights/nint_row_pipeline.h"
 #include "backends/cpu/storage/nint_row_cache.h"
-#include "model_source/mapped_prefetch_scope.h"
+#include "source/mapped_prefetch_scope.h"
 #include "mfq_cuda_quant_ops.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "context.h"

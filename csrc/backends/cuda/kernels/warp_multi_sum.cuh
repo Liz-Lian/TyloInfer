@@ -1,7 +1,7 @@
 #include "env.h"
 // Adapted from Strata's src/kernels/cuda/s26_tsum.cuh.
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
-// MIT license: csrc/third_party/strata.LICENSE.
+// MIT license: LICENSES/Strata-MIT.txt.
 #pragma once
 #include <cuda_runtime.h>
 #include <cstdlib>

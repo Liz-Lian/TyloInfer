@@ -2,8 +2,7 @@
 #include "cli.h"
 #include "cuda_runtime_config.h"
 #include "minicpmo45.h"
-#include "model_source/model_source.h"
-#include "model_source/model_source.h"
+#include "source/model_source.h"
 #include "transport.h"
 
 #include <cstddef>

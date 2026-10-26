@@ -44,7 +44,7 @@ void check_stream_progress(cudaStream_t stream) {
 }
 // Adapted from Strata's session_run_token (src/core/session.cpp).
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
-// MIT license: ../../../third_party/strata.LICENSE
+// MIT license: LICENSES/Strata-MIT.txt
 // One WDDM flush submits the complete token graph. Layer waits keep their
 // bounded fallback polling; standalone publications still flush immediately.
 void check_route_submission(cudaStream_t stream) {

@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/weights/tq/load.h"
 
-#include "model_source/tq_source.h"
+#include "source/tq_source.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/tq/cache.h"
 #include "backends/cuda/engine/weights/tq/image.h"

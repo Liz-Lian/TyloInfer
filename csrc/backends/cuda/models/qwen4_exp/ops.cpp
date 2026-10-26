@@ -10,7 +10,7 @@
 #include "model.h"
 #include "mtp.h"
 #include "backends/cuda/engine/weights/load.h"
-#include "model_source/tq_source.h"
+#include "source/tq_source.h"
 #include "backends/cuda/engine/weights/tq/rows.h"
 #include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"

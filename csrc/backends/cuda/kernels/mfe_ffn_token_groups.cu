@@ -14,7 +14,7 @@
 namespace mfq::cuda {
 namespace {
 // Expert grouping follows Strata's s2_expert_grouped.cu (MIT; see
-// csrc/third_party/strata.LICENSE). MFQ keeps its own packed formats,
+// LICENSES/Strata-MIT.txt). MFQ keeps its own packed formats,
 // lane reductions, rounded SwiGLU, transfer partitions and route sum order.
 // Decoded chunks live only in registers for this group of routed tokens.
 template<int Format,int Lanes,int Capacity>

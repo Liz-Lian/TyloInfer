@@ -9,9 +9,9 @@
 #include "resident_allocations.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "engine/executor/error.h"
-#include "model_source/mapped_read_profile.h"
-#include "model_source/mapped_prefetch_scope.h"
-#include "model_source/mapped_tensor_pages.h"
+#include "source/mapped_read_profile.h"
+#include "source/mapped_prefetch_scope.h"
+#include "source/mapped_tensor_pages.h"
 #include <thread>
 #include <map>
 #include <condition_variable>
