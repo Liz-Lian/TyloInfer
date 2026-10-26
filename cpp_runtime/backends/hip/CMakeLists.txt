@@ -93,6 +93,7 @@ set(TYLOINFER_HIP_KERNEL_SOURCES
     ${TYLOINFER_HIP_KERNEL_ROOT}/tq_shared.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/tq_moe.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/tq_projection.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_prefill.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/tq_q8.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/tq_input_gate.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/acc.hip
