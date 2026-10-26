@@ -1018,25 +1018,34 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
 #endif
 }
 
-ResidualLinear residual_linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name) {
+GatedResidual::Projection residual_linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name) {
+    using Projection = GatedResidual::Projection;
     const mfq::cuda::WeightAllocationScope weight_memory;
     auto weight = std::make_shared<QuantLinear>(load_quant_linear(execution, file, name));
     TYLOINFER_RUNTIME_CHECK(weight->is_dense() || weight->is_nint() || weight->is_tq(),
         "unsupported floating residual projection: ", name);
     if(weight->is_tq()) {
-        Linear forward=[weight](CudaExecutionContext& context,const Tensor& input) {
+        auto executor=std::make_shared<Executor>(execution.profiler, execution.kl_mmq, *execution.tq,
+            execution.branches, execution.collectives, execution.config.tasks,
+            model_parallel_primary_device(execution), execution.decode_graph_serial_branches,
+            execution.decode_graph_tp_projection_major);
+        Projection::Forward forward=[weight,executor=std::move(executor),&profiler=execution.profiler](const Tensor& input) {
             // TQ reconstructs FP16 weights. A BF16/F32 activation therefore
             // promotes residual projection math to FP32, as the dense path.
-            return context.profiler.measure("tq.residual",[&] {
-                return context.projector().run(*weight, input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32));
+            return profiler.measure("tq.residual",[&] {
+                const Task operation{task::Project{0,1,*weight}};
+                Inputs inputs;
+                inputs.values={input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32),Tensor{}};
+                inputs.output=1;
+                return executor->run(std::span<const Task>(&operation,1),std::move(inputs));
             });
         };
         return {std::move(forward),{},{},std::move(weight),{}};
     }
     if(weight->is_dense()) {
         auto right=weight->dense.transpose(-1,-2);
-        auto promoted=execution.config.gr_prepared_dense_projection?right.to(tb::kFloat32):Tensor{};
-        const bool prepare_injection=execution.config.gr_two_stage_dense_injection &&
+        auto promoted=execution.config.residual.prepared_dense?right.to(tb::kFloat32):Tensor{};
+        const bool prepare_injection=execution.config.residual.dense_injection &&
             weight->dense.scalar_type()==tb::kBFloat16 && weight->dense.is_contiguous() &&
             weight->dense.dim()==2 && weight->dense.size(0)>0 && weight->dense.size(0)<=4;
         auto prepared_right=prepare_injection?(promoted.defined()?promoted:right.to(tb::kFloat32)):Tensor{};
@@ -1044,59 +1053,59 @@ ResidualLinear residual_linear(CudaExecutionContext& execution, const mfq::Model
         if(prepare_injection && (!vector_setting || *vector_setting) &&
                 !promoted.defined() && right.size(0)%4==0)
             prepared_right=prepare_gr_dense_vector_right(prepared_right);
-        Linear forward=[right=std::move(right),promoted=std::move(promoted)](
-                CudaExecutionContext& execution,const Tensor& input) {
+        Projection::Forward forward=[right=std::move(right),promoted=std::move(promoted),
+                &options=execution.config.residual](const Tensor& input) {
             const auto dtype=input.scalar_type()==right.scalar_type()?input.scalar_type():tb::kFloat32;
-            if(execution.config.gr_prepared_dense_projection && promoted.defined() && dtype==tb::kFloat32)
+            if(options.prepared_dense && promoted.defined() && dtype==tb::kFloat32)
                 return tb::matmul(input.to(tb::kFloat32),promoted);
             return mfq_selected_attention::promoted_matmul(input,right);
         };
-        GatedResidualActivationProjection activated;
-        GatedResidualMixProjection mixed;
+        Projection::Activation activated;
+        Projection::Mix mixed;
         if(weight->dense.scalar_type()==tb::kBFloat16 && weight->dense.is_contiguous() &&
                 (name=="model.mhc.pre.down.weight" || name=="predictor.mhc.pre.down.weight"))
-            activated=[weight,forward](CudaExecutionContext& execution,const Tensor& input,int64_t streams,bool injection) {
+            activated=[weight,forward](const Tensor& input,int64_t streams,bool injection) {
                 const auto option=mfq::cuda::runtime_options::gr_dense_bf16_direct();
                 if(!injection && (!option || *option))
                     if(auto output=try_gr_bf16_down_cuda(input,weight->dense,streams);output.defined())return output;
-                auto projected=forward(execution,input);
+                auto projected=forward(input);
                 return injection?mfq_qwen4_exp::gated_residual_injection(projected,streams):
                     mfq_qwen4_exp::gated_residual_bottleneck(projected,streams);
             };
         if(weight->dense.scalar_type()==tb::kBFloat16 && weight->dense.is_contiguous() &&
                 (name=="model.mhc.pre.up.weight" || name=="predictor.mhc.pre.up.weight"))
-            mixed=[weight,forward](CudaExecutionContext& execution,const Tensor& input,const Tensor& normalized,int64_t streams) {
+            mixed=[weight,forward](const Tensor& input,const Tensor& normalized,int64_t streams) {
                 const auto option=mfq::cuda::runtime_options::gr_dense_bf16_direct();
                 if(!option || *option)
                     if(auto output=try_gr_bf16_up_mix_cuda(input,normalized,weight->dense,streams);output.defined())return output;
-                return mfq_qwen4_exp::gated_residual_mix(forward(execution,input),normalized,streams);
+                return mfq_qwen4_exp::gated_residual_mix(forward(input),normalized,streams);
             };
         return {std::move(forward),std::move(mixed),std::move(activated),std::move(weight),std::move(prepared_right)};
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    Linear forward=[weight](CudaExecutionContext& execution, const Tensor& input) {
-        auto output = execution.profiler.measure("nint.float_projection", [&] {
-            return nint_float_projection_cuda(weight->nint, input,true,execution.config.gr_native_projection_input,
-                execution.config.gr_fixed_group_projection);
+    Projection::Forward forward=[weight,&profiler=execution.profiler,&options=execution.config.residual](const Tensor& input) {
+        auto output = profiler.measure("nint.float_projection", [&] {
+            return nint_float_projection_cuda(weight->nint, input,true,options.native_input,
+                options.fixed_group);
         });
         // Match Metal's promotion of NINT's logical F16 weight dtype.
         return input.scalar_type() == tb::kFloat16 ? output.to(tb::kFloat16) : output;
     };
-    GatedResidualMixProjection mixed;
-    if(weight->is_nint())mixed=[weight](CudaExecutionContext& execution,const Tensor& input,
+    Projection::Mix mixed;
+    if(weight->is_nint())mixed=[weight,&profiler=execution.profiler,&options=execution.config.residual](const Tensor& input,
         const Tensor& normalized,int64_t streams) {
-        return execution.profiler.measure("nint.float_projection_mix",[&] {
-            return nint_float_projection_mix_cuda(weight->nint,input,normalized,streams,execution.config.gr_native_projection_input,
-                execution.config.gr_fixed_group_projection,execution.config.gr_compact_mix);
+        return profiler.measure("nint.float_projection_mix",[&] {
+            return nint_float_projection_mix_cuda(weight->nint,input,normalized,streams,options.native_input,
+                options.fixed_group,options.compact_mix);
         });
     };
-    GatedResidualActivationProjection activated;
-    if(weight->is_nint())activated=[weight](CudaExecutionContext& execution,const Tensor& input,
+    Projection::Activation activated;
+    if(weight->is_nint())activated=[weight,&profiler=execution.profiler,&options=execution.config.residual](const Tensor& input,
         int64_t streams,bool injection) {
-        return execution.profiler.measure("nint.float_projection_activation",[&] {
+        return profiler.measure("nint.float_projection_activation",[&] {
             return nint_float_projection_activation_cuda(weight->nint,input,streams,injection,true,
-                execution.config.gr_native_projection_input,execution.config.gr_fixed_group_projection);
+                options.native_input,options.fixed_group);
         });
     };
     Tensor group_coefficients;

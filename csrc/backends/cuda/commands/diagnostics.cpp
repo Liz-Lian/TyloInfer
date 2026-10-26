@@ -266,8 +266,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             TYLOINFER_RUNTIME_CHECK(!compare_attention_grouping ||
                 execution.config.diagnostic_nint_group,
                 "attention-grouping comparison requires grouped NINT enabled");
-            TYLOINFER_RUNTIME_CHECK(!compare_mhc_fusion || (execution.config.gr_fused_projections &&
-                execution.config.gr_native_projection_input),
+            TYLOINFER_RUNTIME_CHECK(!compare_mhc_fusion || (execution.config.residual.fused_projections &&
+                execution.config.residual.native_input),
                 "residual fusion comparison requires native packed projections");
             TYLOINFER_RUNTIME_CHECK(!(compare_gpu_only_cpu_wait || compare_fixed_gpu_timing || compare_graph_optimizations) || (execution.config.moe_ram_pcie_fraction &&
                 *execution.config.moe_ram_pcie_fraction==1.0),
@@ -740,7 +740,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             std::cout<<comparison_name<<"_model_load_sec="
                 <<std::chrono::duration<double>(t1-t0).count()<<"\n";
             const int rounds=warmup_prefill<0?1:warmup_prefill;
-            const bool compare_dense_mhc=execution.config.gr_two_stage_dense_injection;
+            const bool compare_dense_mhc=execution.config.residual.dense_injection;
             ScopedDiagnosticEnvironment topk_cache("TYLOINFER_MOE_TOPK_CACHE");
             ScopedDiagnosticEnvironment shared_norm("TYLOINFER_GR_SHARE_NORM");
             ScopedDiagnosticEnvironment dense_fusion("TYLOINFER_GR_DENSE_FUSION");
@@ -779,11 +779,11 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             ScopedDiagnosticEnvironment warp_multi_sum("TYLOINFER_CUDA_WARP_MULTI_SUM");
             TYLOINFER_RUNTIME_CHECK(!(compare_mfe_e8_narrow || compare_mfe_default_math || compare_mfe_parallel_gu || compare_mfe_gpu_bundle || compare_mfe_shared_first || compare_mfe_early_gu) || execution.config.moe_ffn.two_stage,
                 "MFE parallel Gate/Up comparison requires two-stage FFN");
-            TYLOINFER_RUNTIME_CHECK(!compare_mhc_shared_norm || execution.config.gr_two_stage,
+            TYLOINFER_RUNTIME_CHECK(!compare_mhc_shared_norm || execution.config.residual.two_stage,
                 "MHC norm comparison requires fused residual projection");
-            TYLOINFER_RUNTIME_CHECK(!compare_mhc_dense_fusion || (execution.config.gr_two_stage && execution.config.gr_two_stage_dense_injection),
+            TYLOINFER_RUNTIME_CHECK(!compare_mhc_dense_fusion || (execution.config.residual.two_stage && execution.config.residual.dense_injection),
                 "MHC dense fusion comparison requires fused residual BF16 injection");
-            TYLOINFER_RUNTIME_CHECK(!(compare_mhc_packed_groups || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_graph_optimizations) || execution.config.gr_two_stage,
+            TYLOINFER_RUNTIME_CHECK(!(compare_mhc_packed_groups || compare_mhc_fixed_formats || compare_mhc_async_normalized || compare_graph_optimizations) || execution.config.residual.two_stage,
                 "MHC packed group comparison requires fused residual projection");
             TYLOINFER_RUNTIME_CHECK(!(compare_gdn_fixed_geometry || compare_gdn_inplace_state) ||
                 (execution.config.gdn_fused_core && execution.config.gdn_fused_preparation &&
@@ -852,8 +852,8 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 model.reset(1);mfq_cuda_synchronize();
                 if(compare_ffn_transfer_phases)execution.config.moe_ffn.transfer_phases=phased;
                 if(compare_mhc_fusion) {
-                    execution.config.gr_two_stage=phased;
-                    execution.config.gr_two_stage_dense_injection=phased && compare_dense_mhc;
+                    execution.config.residual.two_stage=phased;
+                    execution.config.residual.dense_injection=phased && compare_dense_mhc;
                 }
                 if constexpr (std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
                     if(compare_router_lookahead)model.router_lookahead=phased;

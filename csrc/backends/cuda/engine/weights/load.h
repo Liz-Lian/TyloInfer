@@ -103,20 +103,6 @@ mfq_tensor_backend::Tensor materialize_mfe_dense(
 namespace mfq::cuda::weight_loader {
 using Tensor = mfq_tensor_backend::Tensor;
 using Linear = std::function<Tensor(CudaExecutionContext&, const Tensor&)>;
-struct ResidualLinear {
-    Linear forward;
-    GatedResidualMixProjection mixed;
-    GatedResidualActivationProjection activated;
-    std::shared_ptr<const QuantLinear> weight;
-    // F32 [column, stream], or same-size vector layout [column/4, stream, 4].
-    Tensor prepared_right;
-    // Optional immutable GR Up metadata: FP32 coefficients or packed row/group records.
-    Tensor up_group_coefficients;
-    Tensor operator()(CudaExecutionContext& execution,const Tensor& input)const {
-        return forward(execution,input);
-    }
-    explicit operator bool()const{return bool(forward);}
-};
 struct Routed {
     using Function=std::function<Tensor(CudaExecutionContext&,const Tensor&,const Tensor&)>;
     Function function;
@@ -140,7 +126,7 @@ LinearGroup grouped_linear(CudaExecutionContext&, std::vector<Linear>& functions
                            std::size_t joined_prefix=1);
 
 // GR projections retain floating activation math for dense and quantized input.
-ResidualLinear residual_linear(CudaExecutionContext&, const mfq::ModelSource&, const std::string& name);
+GatedResidual::Projection residual_linear(CudaExecutionContext&, const mfq::ModelSource&, const std::string& name);
 
 Tensor dense(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name);
 

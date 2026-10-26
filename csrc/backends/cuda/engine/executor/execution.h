@@ -2,6 +2,7 @@
 #include "formats/format_features.h"
 #include "engine/executor/run.h"
 #include "engine/executor/moe_ffn_pipeline.h"
+#include "ops/common/include/gated_residual.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
@@ -172,19 +173,11 @@ struct CudaExecutionConfig {
     bool gemma4_fused_norms = true;
     bool dsv4_groupwise_output_a = true;
     bool diagnostic_nint_group = true;
+    mfq::cuda::GatedResidual::Options residual;
     bool gdn_transposed_state = true;
     bool gdn_fused_output = true;
-    bool gr_fused_projections = true;
-    bool gr_fused_projection_activation = true;
-    bool gr_fused_post_norm = true;
     bool gdn_fused_preparation = true;
     bool gdn_fused_core = true;
-    bool gr_prepared_dense_projection = false;
-    bool gr_native_projection_input = true;
-    bool gr_fixed_group_projection = true;
-    bool gr_compact_mix = true;
-    bool gr_two_stage = true;
-    bool gr_two_stage_dense_injection = true;
     bool linear_conv_prefill_fused = true;
     std::size_t deepseek_v41_engram_cache_rows = 16'384;
     bool moe_mapped_gather = false;

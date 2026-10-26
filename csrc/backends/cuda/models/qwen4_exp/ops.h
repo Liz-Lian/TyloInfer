@@ -11,7 +11,8 @@
 #include <iosfwd>
 #include <vector>
 
-namespace mfq::cuda::qwen4_exp { struct Gr; struct Qwen4Block; }
+namespace mfq::cuda::qwen4_exp { struct Qwen4Block; }
+namespace mfq::cuda { class GatedResidual; }
 struct MtpModule;
 
 namespace mfq::cuda {
@@ -98,7 +99,7 @@ struct Qwen4Model : CausalResources {
     Qwen4Model& operator=(Qwen4Model&&) noexcept;
     template <class Backend> using CausalModel = mfq::models::qwen4_exp::CausalLm<Backend>;
     mfq::models::qwen4_exp::Config config;
-    std::unique_ptr<qwen4_exp::Gr> final_mixer;
+    std::unique_ptr<GatedResidual> final_mixer;
     mfq_tensor_backend::Tensor positions;
     int64_t batch = 0;
     std::optional<bool> router_lookahead;

@@ -4,9 +4,10 @@
 #include "models/common/attention_ops.h"
 #include "engine/models/qwen4_exp/config.h"
 
+namespace mfq::cuda { class GatedResidual; }
+
 namespace mfq::cuda::qwen4_exp {
 using attention_ops::Linear;
-struct Gr;
 struct Qwen4Block;
 struct Qwen4MtpGraph;
 
@@ -16,7 +17,7 @@ struct Qwen4ExpMtp final : MtpModule {
     mfq::models::qwen4_exp::Config config;
     Tensor embedding_norm, hidden_norm;
     Linear embedding_fusion, hidden_fusion;
-    std::unique_ptr<Gr> final_mixer;
+    std::unique_ptr<GatedResidual> final_mixer;
     std::vector<std::unique_ptr<Qwen4Block>> layers;
     std::vector<Tensor> positions;
     std::vector<int64_t> lengths;

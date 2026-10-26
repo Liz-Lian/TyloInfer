@@ -27,8 +27,6 @@
 #include "engine/models/common/transformer_layer.h"
 #include "models/common/session_codec.h"
 #include "gated_residual.h"
-#include "gated_residual_fused.h"
-#include "float_projection.h"
 #include "nint_prefill_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "matmul_rows.h"
@@ -84,124 +82,6 @@ static mfq_tensor_backend::Tensor append_decode_positions(
 
 namespace mfq::cuda::qwen4_exp {
 using Config = mfq::models::qwen4_exp::Config;
-
-struct Gr {
-    Tensor norm;
-    weight_loader::ResidualLinear down, up, injection;
-    int64_t hidden, streams;
-    double eps;
-    int64_t prefill_work_chunk(const Tensor& input)const {
-        if(input.dim()!=3 || input.size(0)!=1)return 0;
-        const auto option=mfq::cuda::runtime_options::gr_prefill_work_chunk();
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const int64_t chunk=option?*option:8192;
-        // Chat framing just beyond 8k needs no large temporary-memory cut.
-        // Avoid extra concatenation there; longer inputs use 8k work tiles.
-        if(!option && input.size(1)<=9216)return 0;
-#else
-        const int64_t chunk=option?*option:0;
-#endif
-        return chunk>=256 && input.size(1)>chunk?chunk:0;
-    }
-    template<class Project>
-    std::vector<Tensor> bounded_pre(const Tensor& input,int64_t chunk,bool reuse_input,Project project)const {
-        const auto tokens=input.size(1);
-        std::vector<Tensor> output(3);
-        if(reuse_input)output[1]=input;
-        for(int64_t begin=0;begin<tokens;) {
-            auto count=std::min(chunk,tokens-begin);
-            const auto tail=tokens-begin-count;
-            // Both pieces must retain the main GR prefill kernels; a tiny
-            // remainder selects different projection arithmetic.
-            if(tail>0 && tail<128)count-=128-tail;
-            auto part=project(begin,count);
-            for(size_t index=0;index<part.size();++index) {
-                if(!part[index].defined() || (reuse_input && index==1))continue;
-                if(!output[index].defined()) {
-                    auto shape=part[index].sizes().vec();shape[1]=tokens;
-                    output[index]=tb::empty(shape,part[index].options());
-                }
-                output[index].narrow(1,begin,count).copy_(part[index]);
-            }
-            begin+=count;
-        }
-        return output;
-    }
-    bool can_fuse(CudaExecutionContext& execution,const Tensor& x)const {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-        if(!execution.config.gr_two_stage || !execution.config.gr_fused_projections ||
-            !execution.config.gr_native_projection_input || !down.weight || !up.weight || !injection.weight ||
-            !down.weight->is_nint() || !up.weight->is_nint() || streams<1 || streams>4 ||
-            x.dim()<1 || x.size(-1)!=hidden*streams || x.numel()<hidden*streams ||
-            x.numel()/(hidden*streams)>32 || !x.is_cuda() || !x.is_contiguous() ||
-            (x.scalar_type()!=tb::kFloat16 && x.scalar_type()!=tb::kFloat32) ||
-            !norm.is_contiguous() || norm.scalar_type()!=tb::kFloat32)return false;
-        if(!injection.weight->is_nint() && !(execution.config.gr_two_stage_dense_injection &&
-            injection.weight->is_dense() && injection.weight->dense.is_contiguous() &&
-            injection.weight->dense.scalar_type()==tb::kBFloat16))return false;
-        const auto& w=up.weight->nint;
-        const auto rows=x.numel()/(hidden*streams);
-        const auto continuous=mfq::cuda::runtime_options::gr_continuous_two_stage();
-        if(rows>8 && (!execution.continuous_batch_cache_serial || (continuous && !*continuous)))
-            return false;
-        const auto batch=mfq::cuda::runtime_options::gr_batch_two_stage();
-        if(rows>1 && batch && !*batch)return false;
-        const bool selected=w.ng==1 || ((w.out+3)/4)*rows>=nint_float_projection_resident_blocks(x.get_device());
-        const auto trace=mfq::cuda::runtime_options::trace_gr_dispatch();
-        if(selected && trace && *trace) {
-            static thread_local uint64_t seen[2]{};
-            const int kind=x.scalar_type()==tb::kFloat16?0:1;
-            if(!(seen[kind]&(uint64_t(1)<<rows))) {
-                seen[kind]|=uint64_t(1)<<rows;
-                std::fprintf(stderr,"gr_two_stage rows=%lld half=%d continuous=%d\n",
-                    static_cast<long long>(rows),kind==0,int(execution.continuous_batch_cache_serial));
-            }
-        }
-        return selected;
-#else
-        return false;
-#endif
-    }
-    std::vector<Tensor> fused(const Tensor& branch,const Tensor& residual,const Tensor& prior,bool after,
-        const GatedResidualMarker& marker={})const {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-        const auto& projection=*injection.weight;
-        return gated_residual_two_stage_cuda(branch,residual,prior,norm,down.weight->nint,up.weight->nint,
-            projection.is_nint()?&projection.nint:nullptr,streams,eps,after,
-            projection.is_dense()?projection.dense:Tensor{},injection.prepared_right,marker,up.up_group_coefficients);
-#else
-        throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
-#endif
-    }
-    std::vector<Tensor> pre(CudaExecutionContext &execution, const Tensor &x,
-        const GatedResidualMarker& marker={}) const {
-        if(const auto chunk=prefill_work_chunk(x))
-            return bounded_pre(x,chunk,true,[&](int64_t begin,int64_t count) {
-                return pre(execution,x.narrow(1,begin,count),marker);
-            });
-        if(can_fuse(execution,x))return fused({},x,{},false,marker);
-        return gated_residual_pre_projected(execution, x, norm, down.forward, up.forward, injection.forward,
-            hidden, streams, eps,up.mixed,marker,down.activated,injection.activated);
-    }
-    Tensor post(const Tensor &branch, const std::vector<Tensor> &inputs) const {
-        return mfq_qwen4_exp::gated_residual_post(branch, inputs[1], inputs[2], streams);
-    }
-    std::vector<Tensor> pre_after(CudaExecutionContext& execution,const Tensor& branch,
-        const std::vector<Tensor>& inputs,const GatedResidualMarker& marker={}) const {
-        if(const auto chunk=prefill_work_chunk(inputs[1]))
-            return bounded_pre(inputs[1],chunk,false,[&](int64_t begin,int64_t count) {
-                const std::vector<Tensor> part{{},inputs[1].narrow(1,begin,count),inputs[2].narrow(1,begin,count)};
-                return pre_after(execution,branch.narrow(1,begin,count),part,marker);
-            });
-        if(can_fuse(execution,inputs[1]) && branch.is_contiguous() && inputs[2].is_contiguous() &&
-            (branch.scalar_type()==tb::kFloat16 || branch.scalar_type()==tb::kFloat32) &&
-            (inputs[2].scalar_type()==tb::kFloat16 || inputs[2].scalar_type()==tb::kFloat32))
-            return fused(branch,inputs[1],inputs[2],true,marker);
-        return gated_residual_pre_after_projected(execution,branch,inputs[1],inputs[2],norm,
-            down.forward,up.forward,injection.forward,hidden,streams,eps,
-            up.mixed,marker,down.activated,injection.activated);
-    }
-};
 
 // Preserve router and shared-expert arithmetic while regrouping routed experts.
 static thread_local int64_t qwen_prefill_reference_rows=0;
@@ -508,12 +388,12 @@ struct BlockLoader : weight_loader::Loader {
     auto residual_linear(const std::string &name) const {
         return weight_loader::residual_linear(execution, source, name);
     }
-    static Gr residual(Tensor norm, weight_loader::ResidualLinear down,
-        weight_loader::ResidualLinear up, weight_loader::ResidualLinear injection, const Config &c) {
+    GatedResidual residual(Tensor norm, GatedResidual::Projection down,
+        GatedResidual::Projection up, GatedResidual::Projection injection, const Config &c) const {
         return {std::move(norm), std::move(down), std::move(up), std::move(injection),
-                c.hidden, c.streams, c.eps};
+                c.hidden, c.streams, c.eps, execution.config.residual, execution.continuous_batch_cache_serial};
     }
-    static auto final_mixer(Gr weights) { return std::make_unique<Gr>(std::move(weights)); }
+    static auto final_mixer(GatedResidual weights) { return std::make_unique<GatedResidual>(std::move(weights)); }
     auto gdn_weights(const std::string &p) const {
         const bool independent = has(p + ".query.weight") || has(p + ".key.weight") || has(p + ".value.weight");
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");
@@ -677,7 +557,7 @@ struct RecurrentGraphCheckpoint {
 struct Qwen4Block final : Block {
     using Tensor = mfq_tensor_backend::Tensor;
     mfq::models::qwen4_exp::Config config;
-    Gr attention_gr, ffn_gr;
+    GatedResidual attention_gr, ffn_gr;
     Linear ffn,router;
     Linear next_router;
     MoeFfnPrefetch prefetch,next_prefetch;
@@ -752,13 +632,13 @@ struct Qwen4Block final : Block {
                 });
             },
             [](Tensor hidden, Tensor positional) { return hidden + positional; },
-            [&](const Tensor &hidden) { return execution.profiler.measure("prefill.gr_attention",[&] {return attention_gr.pre(execution, hidden);}); },
+            [&](const Tensor &hidden) { return execution.profiler.measure("prefill.gr_attention",[&] {return attention_gr.pre(hidden);}); },
             [&](Tensor branch) { return execution.profiler.measure("prefill.gdn",[&] {return gdn->forward(execution, branch, true, confirmed,
                 full_positions.size(-1)-ids.size(1));}); },
             [&](Tensor branch) {
                 return execution.profiler.measure("prefill.qsa",[&] {return qsa->forward(execution, branch, positions, full_positions, true);});
             },
-            [&](Tensor branch, const auto &mix) { return execution.profiler.measure("prefill.gr_ffn_pre",[&] {return ffn_gr.pre_after(execution, branch, mix);}); },
+            [&](Tensor branch, const auto &mix) { return execution.profiler.measure("prefill.gr_ffn_pre",[&] {return ffn_gr.pre_after(branch, mix);}); },
             [&](Tensor branch) { return execution.profiler.measure("prefill.ffn",[&] {return ffn(execution, branch);}); },
             [&](Tensor branch, const auto &mix) { return execution.profiler.measure("prefill.gr_ffn_post",[&] {return ffn_gr.post(branch, mix);}); });
     }
@@ -786,9 +666,9 @@ struct Qwen4Block final : Block {
     }
     std::vector<Tensor> prefill_attention(CudaExecutionContext& execution,Tensor x,const Context& context) {
         x=prefill_ple(execution,std::move(x),context);
-        auto mix=execution.profiler.measure("prefill.gr_attention",[&] {return attention_gr.pre(execution,x);});
+        auto mix=execution.profiler.measure("prefill.gr_attention",[&] {return attention_gr.pre(x);});
         auto branch=prefill_attention_core(execution,mix[0],context);
-        return execution.profiler.measure("prefill.gr_ffn_pre",[&] {return ffn_gr.pre_after(execution,branch,mix);});
+        return execution.profiler.measure("prefill.gr_ffn_pre",[&] {return ffn_gr.pre_after(branch,mix);});
     }
     std::vector<Tensor*> graph_warmup_state() override {
         std::vector<Tensor*> result;
@@ -815,14 +695,14 @@ struct Qwen4Block final : Block {
                 : ple->forward_chunk(execution,hidden,ids,true,{},ple_rows);},
             [](Tensor hidden,Tensor positional){return hidden+positional;},
             [&](const Tensor& hidden){auto result=prior_mix.empty()?
-                attention_gr.pre(execution,hidden,marker("attention_mhc_")):
-                attention_gr.pre_after(execution,hidden,prior_mix,marker("attention_mhc_"));
+                attention_gr.pre(hidden,marker("attention_mhc_")):
+                attention_gr.pre_after(hidden,prior_mix,marker("attention_mhc_"));
                 mark("attention_core_begin");return result;},
             [&](Tensor branch){auto result=confirmed
                 ? gdn->forward_graph(execution,branch,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
                 : gdn->forward_chunk(execution,branch,true);mark("attention_core_end");return result;},
             [&](Tensor branch){auto result=qsa->forward_graph(execution,branch,positions,cache_positions);mark("attention_core_end");return result;},
-            [&](Tensor branch,const auto& mix){auto result=ffn_gr.pre_after(execution,branch,mix,marker("ffn_mhc_"));mark("ffn_pre_end");return result;},
+            [&](Tensor branch,const auto& mix){auto result=ffn_gr.pre_after(branch,mix,marker("ffn_mhc_"));mark("ffn_pre_end");return result;},
             [&](Tensor branch) {
                 DecodeWindow::Task prediction{};
                 if(next_prefetch && branch.numel()==config.hidden && DecodeWindow::recording()->prediction_enabled()) {
@@ -967,19 +847,19 @@ struct Qwen4MtpGraph {
                         // all accepted history rows with one set of submissions.
                         for(int64_t row=0;row<tokens;++row) {
                             auto input=make_input(cell.hidden.narrow(1,row,1),cell.ids.narrow(1,row,1),1);
-                            auto mix=block.attention_gr.pre(execution,input);
+                            auto mix=block.attention_gr.pre(input);
                             block.qsa->forward_graph(execution,mix[0],cell.positions.narrow(-1,row,1).contiguous(),
                                 cell.cache_positions.narrow(0,row,1),{},true,true);
                         }
                     } else if(history_only) {
                         auto input=make_input(cell.hidden,cell.ids,tokens);
-                        auto mix=block.attention_gr.pre(execution,input);
+                        auto mix=block.attention_gr.pre(input);
                         block.qsa->forward_graph(execution,mix[0],cell.positions,cell.cache_positions,{},true,true);
                     } else {
                         auto input=make_input(cell.hidden,cell.ids,tokens);
                         cell.multi=block.execute_graph(execution,std::move(input),cell.ids,cell.positions,cell.cache_positions,{},0);
                         cell.window.mark(-1,"head_begin");
-                        cell.normalized=predictor.final_mixer->pre(execution,cell.multi)[0];
+                        cell.normalized=predictor.final_mixer->pre(cell.multi)[0];
                         cell.logits=target.logits(cell.normalized.narrow(1,tokens-1,1).contiguous());
                         if(cell.logits.size(-1)>=64) {
                             auto compact=sample_top_k_compact_if_cuda(cell.logits.reshape({1,-1}).contiguous(),64,
@@ -1128,14 +1008,14 @@ std::pair<Tensor, Tensor> Qwen4ExpMtp::evaluate(const MtpTarget &target, const T
             // the attention input contributes persistent predictor history;
             // attention readout, FFN and final mixer have no consumer here.
             if(history_only) {
-                auto mix=block.attention_gr.pre(*execution,x);
+                auto mix=block.attention_gr.pre(x);
                 block.qsa->forward(*execution,mix[0],pos[0],pos[1],true,nullptr,{},true,true);
                 return Tensor{};
             }
             return mfq::models::qwen4_exp::decoder_layer(
                 std::move(x), false, false, [](const Tensor &) { return Tensor{}; },
                 [](Tensor value, Tensor) { return value; },
-                [&](const Tensor &value) { return block.attention_gr.pre(*execution, value); },
+                [&](const Tensor &value) { return block.attention_gr.pre(value); },
                 [](Tensor) -> Tensor { throw std::logic_error("Qwen4 MTP requires QSA"); },
                 [&](Tensor branch) {
                     return block.qsa->forward(*execution, branch, pos[0], pos[1], cache);
@@ -1143,11 +1023,11 @@ std::pair<Tensor, Tensor> Qwen4ExpMtp::evaluate(const MtpTarget &target, const T
                 [&](Tensor branch, const auto &mix) {
                     return block.attention_gr.post(branch, mix);
                 },
-                [&](const Tensor &value) { return block.ffn_gr.pre(*execution, value); },
+                [&](const Tensor &value) { return block.ffn_gr.pre(value); },
                 [&](Tensor branch) { return block.ffn(*execution, branch); },
                 [&](Tensor branch, const auto &mix) { return block.ffn_gr.post(branch, mix); });
         },
-        [&](const Tensor &multi) { return history_only?Tensor{}:final_mixer->pre(*execution, multi)[0]; },
+        [&](const Tensor &multi) { return history_only?Tensor{}:final_mixer->pre(multi)[0]; },
         [&](int64_t layer, const auto &pos) { positions[layer] = pos[1]; });
 }
 
@@ -1550,8 +1430,7 @@ struct Qwen4DecodeGraph {
                         bool defer=false;
                         if(chain_post && size_t(layer+1)<model.blocks.size()) {
                             auto& next=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[layer+1]);
-                            defer=!next.ple && next.attention_gr.can_fuse(*model.execution,
-                                prior_mix.empty()?hidden:prior_mix[1]);
+                            defer=!next.ple && next.attention_gr.can_fuse(prior_mix.empty()?hidden:prior_mix[1]);
                         }
                         hidden=b.execute_graph(*model.execution,std::move(hidden),cell.ids,cell.positions,
                             cell.cache_positions,rows,layer,confirmed,confirmed?&cell.checkpoints[layer]:nullptr,
@@ -2323,8 +2202,8 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
                     hidden = join_request_outputs(positional,0);
                     graph.window->mark(static_cast<int>(i),"ple_end");
                 }
-                auto mix = prior_mix.empty()?block.attention_gr.pre(execution,hidden,marker("attention_mhc_")):
-                    block.attention_gr.pre_after(execution,hidden,prior_mix,marker("attention_mhc_"));
+                auto mix = prior_mix.empty()?block.attention_gr.pre(hidden,marker("attention_mhc_")):
+                    block.attention_gr.pre_after(hidden,prior_mix,marker("attention_mhc_"));
                 graph.window->mark(static_cast<int>(i),"attention_core_begin");
                 const bool project_batch=batch>1 && runtime_options::batch_attention_projections();
                 const auto projections=project_batch ? (block.gdn ? block.gdn->project_inputs(execution,mix[0])
@@ -2346,13 +2225,13 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
                 if(project_batch)attention=block.gdn ? block.gdn->project_output(execution,attention)
                     : block.qsa->project_output(execution,attention);
                 graph.window->mark(static_cast<int>(i),"attention_core_end");
-                auto ffn_mix = block.ffn_gr.pre_after(execution,std::move(attention),mix,marker("ffn_mhc_"));
+                auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix,marker("ffn_mhc_"));
                 graph.window->mark(static_cast<int>(i),"ffn_pre_end");
                 auto branch=block.batch_ffn(execution,ffn_mix[0]);
                 bool defer=false;
                 if(chain_post && i+1<model.blocks.size()) {
                     auto& next=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i+1]);
-                    defer=!next.ple && next.attention_gr.can_fuse(execution,ffn_mix[1]);
+                    defer=!next.ple && next.attention_gr.can_fuse(ffn_mix[1]);
                 }
                 if(defer){hidden=std::move(branch);prior_mix=std::move(ffn_mix);}
                 else {hidden=block.ffn_gr.post(branch,ffn_mix);prior_mix.clear();}
@@ -2428,7 +2307,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
             }
             hidden=join_request_outputs(positional,1);
         }
-        auto mix=block.attention_gr.pre(execution,hidden);
+        auto mix=block.attention_gr.pre(hidden);
         const auto projections=block.gdn?block.gdn->project_inputs(execution,mix[0])
                                          :block.qsa->project_inputs(execution,mix[0]);
         std::vector<tb::Tensor> attended;
@@ -2443,7 +2322,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
         }
         auto attention=join_request_outputs(attended,1);
         attention=block.gdn?block.gdn->project_output(execution,attention):block.qsa->project_output(execution,attention);
-        auto ffn_mix=block.ffn_gr.pre_after(execution,std::move(attention),mix);
+        auto ffn_mix=block.ffn_gr.pre_after(std::move(attention),mix);
         // All prompt tokens share each expert transfer and compressed decode.
         hidden=block.ffn_gr.post(block.ffn(execution,ffn_mix[0]),ffn_mix);
     }
@@ -2490,7 +2369,7 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
             }
             hidden = join_request_outputs(positional,0);
         }
-        auto mix = block.attention_gr.pre(execution,hidden);
+        auto mix = block.attention_gr.pre(hidden);
         const bool project_batch=batch>1 && block.gdn && runtime_options::batch_attention_projections();
         const auto projections=project_batch ? block.gdn->project_inputs(execution,mix[0]) : std::vector<tb::Tensor>{};
         std::vector<tb::Tensor> attended;
@@ -2504,7 +2383,7 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
         }
         auto attention=join_request_outputs(attended,0);
         if(project_batch)attention=block.gdn->project_output(execution,attention);
-        auto ffn_mix = block.ffn_gr.pre_after(execution,std::move(attention),mix);
+        auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix);
         // Tiles share the expert transfer cache across all eligible rows.
         hidden = block.ffn_gr.post(block.batch_ffn(execution,ffn_mix[0]),ffn_mix);
     }
@@ -2742,7 +2621,7 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
                 }
             }
             full_mix=profiler.measure("prefill.gr_attention",[&] {
-                return qwen_block.attention_gr.pre(*model.execution,source);
+                return qwen_block.attention_gr.pre(source);
             });
             if(bulk_gdn && qwen_block.gdn) {
                 if(cancelled && cancelled())return {};
@@ -2806,7 +2685,7 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
         if(bulk_gr) {
             auto& qwen_block=static_cast<qwen4_exp::Qwen4Block&>(*block);
             auto mix=profiler.measure("prefill.gr_ffn_pre",[&] {
-                return qwen_block.ffn_gr.pre_after(*model.execution,full_branch,full_mix);
+                return qwen_block.ffn_gr.pre_after(full_branch,full_mix);
             });
             ffn_inputs=mix[0].to(tb::kFloat16);ffn_injection=std::move(mix[2]);
             next_hidden=std::move(mix[1]);
@@ -2956,7 +2835,7 @@ mfq_tensor_backend::Tensor Qwen4Model::adapter_finalize_hidden(mfq_tensor_backen
     if(window && runtime_options::mhc_timings())marker=[window](const char* phase) {
         window->mark(-1,(std::string("final_mhc_")+phase).c_str());
     };
-    return final_mixer->pre(*execution, hidden,marker)[0];
+    return final_mixer->pre(hidden,marker)[0];
 }
 
 mfq_tensor_backend::Tensor
