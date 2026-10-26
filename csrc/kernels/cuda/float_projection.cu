@@ -1,5 +1,5 @@
-#include "../ops/common/include/float_projection.h"
-#include "../ops/mfq/include/nint.h"
+#include "backends/cuda/ops/common/include/float_projection.h"
+#include "backends/cuda/ops/mfq/include/nint.h"
 #include "qwen4_exp.h"
 
 #include <limits>

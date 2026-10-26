@@ -9,7 +9,7 @@
 #include "cpu_projection_rows.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "backends/cuda/engine/executor/graph_registry.h"
-#include "kernels/moe/pipeline.h"
+#include "kernels/cuda/moe/pipeline.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_shared_gate.h"

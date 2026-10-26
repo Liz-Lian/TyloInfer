@@ -1,10 +1,10 @@
 """Hardware-backend kernels.
 
-Mirrors the ggml convention of one file per op. The CUDA kernel sources have one
-home, ``csrc/backends/cuda/kernels``, compiled into a single extension
+Mirrors the ggml convention of one file per op. Shared CUDA kernel implementations
+live in ``csrc/kernels/cuda`` and are compiled into a single extension
 ``mfq_cuda`` (the llama.cpp analog of one libggml-cuda); this package keeps the
 thin Python wrappers and the installed TQ kernel resources. Paths below are
-relative to that kernel directory:
+relative to ``csrc/kernels/``:
 
 - ``cuda/norm.cu``            - rms_norm / l2_norm
 - ``cuda/rope.cu``            - RoPE

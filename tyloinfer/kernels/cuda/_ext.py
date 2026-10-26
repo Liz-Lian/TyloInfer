@@ -21,7 +21,7 @@ _REPOSITORY_ROOT = str(Path(_DIR).resolve().parents[2])
 # targets and by this extension.  TQ kernels stay here as installed wheel
 # resources and are built separately by tq.py.
 _CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "csrc" / "backends" / "cuda"
-_KERNEL_DIR = str(_CUDA_BACKEND / "kernels")
+_KERNEL_DIR = str(Path(_REPOSITORY_ROOT) / "csrc" / "kernels" / "cuda")
 _CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")
 _CUDA_NATIVE_INCLUDE = str(Path(_REPOSITORY_ROOT) / "csrc" / "native" / "cuda")
 _CUDA_NATIVE_TENSOR_INCLUDE = os.path.join(_CUDA_NATIVE_INCLUDE, "tensor")

@@ -17,7 +17,7 @@
 #include "engine/batch/prefill_budget.h"
 #include "backends/cuda/engine/weights/nint_row_pipeline.h"
 #include "backends/cuda/engine/executor/decode_window.h"
-#include "kernels/moe/pipeline.h"
+#include "kernels/cuda/moe/pipeline.h"
 #include "backends/cuda/engine/weights/moe/router_lookahead_audit.h"
 #include <fstream>
 #include <iostream>

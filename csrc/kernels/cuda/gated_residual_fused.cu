@@ -1,7 +1,7 @@
 #include "env.h"
-#include "../ops/common/include/float_projection.h"
+#include "backends/cuda/ops/common/include/float_projection.h"
 #include "qwen4_exp.h"
-#include "../ops/common/include/gated_residual_fused.h"
+#include "backends/cuda/ops/common/include/gated_residual_fused.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdint>

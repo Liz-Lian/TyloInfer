@@ -1,5 +1,5 @@
 #include "env.h"
-#include "kernels/moe/pipeline.h"
+#include "kernels/cuda/moe/pipeline.h"
 #include "shared_storage.cuh"
 #include <cuda_fp16.h>
 #include <cuda/atomic>

@@ -3,7 +3,7 @@
 
 set(TYLOINFER_CUDA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # Single source of the shared CUDA kernels; the Python extension builds the same files.
-set(TYLOINFER_CUDA_KERNEL_ROOT "${TYLOINFER_CUDA_ROOT}/kernels")
+set(TYLOINFER_CUDA_KERNEL_ROOT "${PROJECT_SOURCE_DIR}/kernels/cuda")
 # TQ kernels stay in the Python package because they are installed wheel resources.
 set(TYLOINFER_CUDA_TQ_ROOT "${TYLOINFER_REPOSITORY_ROOT}/tyloinfer/kernels/cuda")
 
@@ -144,18 +144,18 @@ endif()
 
 add_library(mfq-cuda-native-kernels STATIC
     ${TYLOINFER_CUDA_KERNEL_SOURCES}
-    ${TYLOINFER_CUDA_ROOT}/kernels/float_projection.cu
-    ${TYLOINFER_CUDA_ROOT}/kernels/kv_quantization.cu
-    ${TYLOINFER_CUDA_ROOT}/kernels/kv_hot_cache.cu
-    ${TYLOINFER_CUDA_ROOT}/kernels/shared_gate_fused.cu
-    ${TYLOINFER_CUDA_ROOT}/kernels/moe/pipeline.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/float_projection.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_quantization.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_hot_cache.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/shared_gate_fused.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/moe/pipeline.cu
     ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu
 )
 add_library(mfq::cuda-native-kernels ALIAS mfq-cuda-native-kernels)
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     target_sources(mfq-cuda-native-kernels PRIVATE
-        ${TYLOINFER_CUDA_ROOT}/kernels/gr_prefill_blas.cu
-        ${TYLOINFER_CUDA_ROOT}/kernels/gated_residual_fused.cu
+        ${TYLOINFER_CUDA_KERNEL_ROOT}/gr_prefill_blas.cu
+        ${TYLOINFER_CUDA_KERNEL_ROOT}/gated_residual_fused.cu
     )
 endif()
 
@@ -179,12 +179,12 @@ set_property(SOURCE
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mfe_ffn_parity_read.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mfe_ffn_shared.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mfe_ffn_token_groups.cu
-    ${TYLOINFER_CUDA_ROOT}/kernels/moe/pipeline.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/moe/pipeline.cu
     APPEND PROPERTY OBJECT_DEPENDS "${TYLOINFER_CUDA_KERNEL_ROOT}/shared_storage.cuh")
-set_source_files_properties(${TYLOINFER_CUDA_ROOT}/kernels/gated_residual_fused.cu PROPERTIES
+set_source_files_properties(${TYLOINFER_CUDA_KERNEL_ROOT}/gated_residual_fused.cu PROPERTIES
     COMPILE_OPTIONS "--maxrregcount=80")
 if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
-    set_property(SOURCE ${TYLOINFER_CUDA_ROOT}/kernels/gated_residual_fused.cu APPEND
+    set_property(SOURCE ${TYLOINFER_CUDA_KERNEL_ROOT}/gated_residual_fused.cu APPEND
         PROPERTY COMPILE_OPTIONS "--split-compile=0")
 endif()
 target_compile_definitions(mfq-cuda-native-kernels PRIVATE

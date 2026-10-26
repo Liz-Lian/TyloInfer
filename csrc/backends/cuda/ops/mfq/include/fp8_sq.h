@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "csrc/backends/cuda/kernels/fp8_sq.h"
+#include "kernels/cuda/fp8_sq.h"
 
 #include <cstdint>
 #include <string>
