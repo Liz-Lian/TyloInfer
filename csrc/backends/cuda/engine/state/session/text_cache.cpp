@@ -218,7 +218,7 @@ std::map<int, std::size_t> TextSessionCache::device_hot_bytes() const {
                     if constexpr (std::is_same_v<Block, KvSnapshot>) full(block);
                     else if constexpr (std::is_same_v<Block, Qwen4BlockSessionState>) qwen(block);
                     else if constexpr (std::is_same_v<Block, HybridBlockSessionState>) {
-                        full(block.full_attention); tensor(block.convolution_state); tensor(block.recurrent_state);
+                        full(block.full_attention); tensor(block.mixer.convolution); tensor(block.mixer.recurrent);
                     } else if constexpr (std::is_same_v<Block, Dsv4BlockSessionState>) {
                         tensor(block.local_cache); pool(block.compressor); pool(block.indexer_compressor);
                     } else if constexpr (std::is_same_v<Block, DeepseekV41BlockSessionState>) {
@@ -727,13 +727,17 @@ KvSnapshot capture_kv(const KVCache &cache, int64_t cache_pos, size_t &bytes) {
     return state;
 }
 
-void restore_kv(KVCache &cache, const KvSnapshot &state, int64_t head_dim,
-                mfq_tensor_backend::ScalarType dtype, mfq::cuda::KvQuantization quantization) {
+void validate_kv(const KvSnapshot& state) {
     if (!state.k.defined() || !state.v.defined() || state.capacity <= 0 || state.k.dim() != 4 ||
         !session_kv_geometry_matches(state.k,state.v) || state.k.size(0) != 1 ||
         state.k.size(2) > state.capacity) {
         throw CudaSessionStateError("full-attention session KV layout is invalid");
     }
+}
+
+void restore_kv(KVCache &cache, const KvSnapshot &state, int64_t head_dim,
+                mfq_tensor_backend::ScalarType dtype, mfq::cuda::KvQuantization quantization) {
+    validate_kv(state);
     restore_session_prefix_tensor(cache.k, state.k, 2, state.capacity);
     restore_session_prefix_tensor(cache.v, state.v, 2, state.capacity);
     cache.ring = state.ring;

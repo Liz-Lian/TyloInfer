@@ -21,12 +21,11 @@ struct LinearInputs {
 struct LinearView {
     mfq_tensor_backend::Tensor& convolution;
     mfq_tensor_backend::Tensor& recurrent;
-    bool& transposed;
+    bool transposed;
 };
 
 struct LinearAttention {
     struct Options {
-        bool transposed = true;
         bool shared_input = true;
         bool fused_conv = true;
     };

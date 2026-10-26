@@ -256,7 +256,6 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         mfq_tensor_backend::Tensor x,
         LinearView state, LinearInputs* captured) const {
-    state.transposed = options.transposed;
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     int64_t nk = key_heads,
             nv = value_heads;

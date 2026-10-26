@@ -285,11 +285,10 @@ BatchState Batch::take(int64_t batch) {
             state.layers.emplace_back(cache);
         } else if (const auto* linear = dynamic_cast<const LinearBlock*>(block.get())) {
             const auto& mixer = linear->mixer;
-            TYLOINFER_RUNTIME_CHECK(mixer.defined() && !mixer.speculative_pending &&
-                mixer.convolution.size(0) == batch && mixer.recurrent.size(0) == batch,
+            TYLOINFER_RUNTIME_CHECK(mixer.defined() && !mixer.pending() &&
+                mixer.view().convolution.size(0) == batch && mixer.view().recurrent.size(0) == batch,
                 "continuous batching recurrent state is unavailable");
-            state.layers.emplace_back(BatchState::Recurrent{
-                mixer.convolution, mixer.recurrent, linear->transposed_gdn_state});
+            state.layers.emplace_back(mixer.view());
         } else {
             throw std::runtime_error("continuous batching encountered an unsupported block state");
         }
@@ -301,8 +300,7 @@ BatchState Batch::take(int64_t batch) {
             full->cache = KVCache();
         } else {
             auto& linear = *static_cast<LinearBlock*>(block.get());
-            linear.mixer.convolution = {};
-            linear.mixer.recurrent = {};
+            linear.mixer.view() = {};
             linear.clear_speculative();
         }
     }
@@ -326,7 +324,7 @@ void Batch::restore(const BatchState& state, int64_t cache_position) {
                  session_kv_geometry_matches(cache->k, cache->v)),
                 "continuous batching KV cache geometry changed");
         } else if (dynamic_cast<const LinearBlock*>(block.get())) {
-            const auto* recurrent = std::get_if<BatchState::Recurrent>(&saved);
+            const auto* recurrent = std::get_if<Recurrent::State>(&saved);
             TYLOINFER_RUNTIME_CHECK(recurrent && recurrent->convolution.defined() &&
                 recurrent->recurrent.defined() && recurrent->convolution.size(0) == state.batch &&
                 recurrent->recurrent.size(0) == state.batch,
@@ -343,10 +341,8 @@ void Batch::restore(const BatchState& state, int64_t cache_position) {
             full->cache = std::get<KVCache>(saved);
         } else {
             auto& linear = *static_cast<LinearBlock*>(block.get());
-            const auto& recurrent = std::get<BatchState::Recurrent>(saved);
-            linear.mixer.convolution = recurrent.convolution;
-            linear.mixer.recurrent = recurrent.recurrent;
-            linear.transposed_gdn_state = recurrent.transposed;
+            const auto& recurrent = std::get<Recurrent::State>(saved);
+            linear.mixer.view() = recurrent;
             linear.clear_speculative();
         }
     }
@@ -376,8 +372,8 @@ BatchState Batch::make_slot_state(const BatchState& source, int64_t slots) const
             }
             result.layers.emplace_back(std::move(target));
         } else {
-            const auto& recurrent = std::get<BatchState::Recurrent>(saved);
-            result.layers.emplace_back(BatchState::Recurrent{
+            const auto& recurrent = std::get<Recurrent::State>(saved);
+            result.layers.emplace_back(Recurrent::State{
                 expand(recurrent.convolution), expand(recurrent.recurrent), recurrent.transposed});
         }
     }
@@ -402,8 +398,8 @@ void Batch::copy_to_slot(BatchState& slots, const BatchState& source, int64_t sl
                 cache->v.narrow(0, slot, 1).copy_(from.v);
             }
         } else {
-            auto& recurrent = std::get<BatchState::Recurrent>(target);
-            const auto& from = std::get<BatchState::Recurrent>(saved);
+            auto& recurrent = std::get<Recurrent::State>(target);
+            const auto& from = std::get<Recurrent::State>(saved);
             TYLOINFER_RUNTIME_CHECK(recurrent.transposed == from.transposed,
                 "continuous batching recurrent layout changed");
             recurrent.convolution.narrow(0, slot, 1).copy_(from.convolution);
@@ -431,8 +427,8 @@ std::vector<const void *> Batch::decode_state_addresses() {
                 addresses.push_back(full->cache.v.data_ptr());
             }
         } else if (auto *linear = dynamic_cast<LinearBlock *>(block.get())) {
-            addresses.push_back(linear->mixer.convolution.data_ptr());
-            addresses.push_back(linear->mixer.recurrent.data_ptr());
+            addresses.push_back(linear->mixer.view().convolution.data_ptr());
+            addresses.push_back(linear->mixer.view().recurrent.data_ptr());
         }
     }
     return addresses;
@@ -449,12 +445,12 @@ BatchState Batch::capture_recurrent_slots(const std::vector<std::int32_t>& slots
         MfqCudaGuard guard(linear->cuda_device);
         std::vector<Tensor> conv, gdn;
         for (auto slot : slots) {
-            conv.push_back(linear->mixer.convolution.narrow(0, slot, 1));
-            gdn.push_back(linear->mixer.recurrent.narrow(0, slot, 1));
+            conv.push_back(linear->mixer.view().convolution.narrow(0, slot, 1));
+            gdn.push_back(linear->mixer.view().recurrent.narrow(0, slot, 1));
         }
-        state.layers[index] = BatchState::Recurrent{
+        state.layers[index] = Recurrent::State{
             mfq_tensor_backend::cat(conv, 0).clone(), mfq_tensor_backend::cat(gdn, 0).clone(),
-            linear->transposed_gdn_state};
+            linear->mixer.view().transposed};
     }
     return state;
 }
@@ -468,21 +464,21 @@ void Batch::restore_recurrent_slots(const std::vector<std::int32_t>& slots,
     for (size_t index = 0; index < model_.blocks.size(); ++index) {
         auto* linear = dynamic_cast<LinearBlock*>(model_.blocks[index].get());
         if (!linear) continue;
-        const auto* saved = std::get_if<BatchState::Recurrent>(&state.layers[index]);
+        const auto* saved = std::get_if<Recurrent::State>(&state.layers[index]);
         TYLOINFER_RUNTIME_CHECK(saved && saved->convolution.defined() && saved->recurrent.defined() &&
             saved->convolution.size(0) == state.batch && saved->recurrent.size(0) == state.batch &&
-            saved->transposed == linear->transposed_gdn_state,
+            saved->transposed == linear->mixer.view().transposed,
             "continuous batching recurrent snapshot changed");
     }
     for (size_t index = 0; index < model_.blocks.size(); ++index) {
         auto* linear = dynamic_cast<LinearBlock*>(model_.blocks[index].get());
         if (!linear) continue;
         MfqCudaGuard guard(linear->cuda_device);
-        const auto& saved = std::get<BatchState::Recurrent>(state.layers[index]);
+        const auto& saved = std::get<Recurrent::State>(state.layers[index]);
         for (size_t row = 0; row < slots.size(); ++row) {
-            linear->mixer.convolution.narrow(0, slots[row], 1)
+            linear->mixer.view().convolution.narrow(0, slots[row], 1)
                 .copy_(saved.convolution.narrow(0, row, 1));
-            linear->mixer.recurrent.narrow(0, slots[row], 1)
+            linear->mixer.view().recurrent.narrow(0, slots[row], 1)
                 .copy_(saved.recurrent.narrow(0, row, 1));
         }
     }

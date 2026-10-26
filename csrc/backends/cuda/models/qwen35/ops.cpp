@@ -116,13 +116,15 @@ void LinearAttentionBlock::reset(int64_t batch) {
     mixer.reset(batch);
 }
 
-void LinearAttentionBlock::prepare(const mfq_tensor_backend::Tensor& input) {
-    if (mixer.convolution.defined()) return;
+void LinearAttentionBlock::prepare(const mfq_tensor_backend::Tensor& input, bool transposed) {
+    if (mixer.defined()) return;
     const auto batch = input.size(0);
     const auto width = 2 * key_heads * key_dim + value_heads * value_dim;
     auto options = input.options().dtype(mfq_tensor_backend::kFloat32);
-    mixer.convolution = mfq_tensor_backend::zeros({batch, conv_kernel - 1, width}, options);
-    mixer.recurrent = mfq_tensor_backend::zeros({batch, value_heads, value_dim, value_dim}, options);
+    mixer.view() = {
+        mfq_tensor_backend::zeros({batch, conv_kernel - 1, width}, options),
+        mfq_tensor_backend::zeros({batch, value_heads, value_dim, value_dim}, options),
+        input.is_cuda() && transposed};
 }
 
 mfq_tensor_backend::Tensor LinearAttentionBlock::forward_ffn(
@@ -138,24 +140,21 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward(
         const MfqOptional<mfq_tensor_backend::Tensor>&, const RopeCache&,
         const MfqOptional<mfq_tensor_backend::Tensor>&,
         const MfqOptional<mfq_tensor_backend::Tensor>&) {
-    prepare(input);
+    prepare(input, execution.config.gdn_transposed_state);
+    auto& state = mixer.view();
     auto attention = LinearAttention::forward(
             execution.projector(), execution.profiler,
-            {execution.config.gdn_transposed_state,
-             execution.config.tensor_parallel_grouped_projections &&
+            {execution.config.tensor_parallel_grouped_projections &&
                  execution.config.tensor_parallel_shared_linear_attention_input,
              execution.config.linear_conv_prefill_fused},
             std::move(input),
-        {mixer.convolution, mixer.recurrent, transposed_gdn_state});
+        {state.convolution, state.recurrent, state.transposed});
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]));
 }
 
 void LinearAttentionBlock::clear_speculative() noexcept {
     speculative_inputs = LinearInputs();
-    speculative_start = -1;
-    speculative_confirmed = 0;
-    speculative_tokens = 0;
-    mixer.clear_speculative();
+    mixer.commit();
 }
 
 mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionContext &execution,
@@ -165,35 +164,32 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
     if (context.confirmed_prefix == 0) {
         return Block::forward_context(execution, std::move(input), context, rope);
     }
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && !mixer.speculative_pending &&
+    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && !mixer.pending() &&
                           context.confirmed_prefix > 0 &&
                           context.confirmed_prefix < input.size(1) &&
-                          mixer.convolution.defined() && mixer.recurrent.defined(),
+                          mixer.defined(),
                       "invalid Qwen3.5 speculative linear-attention transaction");
 
-    mixer.checkpoint();
-    speculative_start = context.cache_position;
-    speculative_confirmed = context.confirmed_prefix;
-    speculative_tokens = input.size(1);
+    mixer.begin(context.cache_position, context.confirmed_prefix, input.size(1));
 
     try {
+        auto& state = mixer.view();
         // Match Metal: evaluate the complete [confirmed, drafts...] window
         // once so projections and FFN stay batched. Rollback replays only the
         // recurrent state prefix from this layer's retained projections.
         auto attention = LinearAttention::forward(
             execution.projector(), execution.profiler,
-            {execution.config.gdn_transposed_state,
-             execution.config.tensor_parallel_grouped_projections &&
+            {execution.config.tensor_parallel_grouped_projections &&
                  execution.config.tensor_parallel_shared_linear_attention_input,
              execution.config.linear_conv_prefill_fused},
             std::move(input),
-            {mixer.convolution, mixer.recurrent, transposed_gdn_state}, &speculative_inputs);
+            {state.convolution, state.recurrent, state.transposed}, &speculative_inputs);
         auto result = forward_ffn(execution, std::move(attention[0]), std::move(attention[1]));
         ++speculative_projection_batches;
         ++speculative_ffn_batches;
         return result;
     } catch (...) {
-        mixer.restore();
+        mixer.abort();
         clear_speculative();
         throw;
     }
@@ -202,19 +198,16 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
 void LinearAttentionBlock::commit_speculative() noexcept { clear_speculative(); }
 
 void LinearAttentionBlock::rollback_speculative(int64_t keep_position) {
-    TYLOINFER_RUNTIME_CHECK(mixer.speculative_pending &&
-                          keep_position >= speculative_start + speculative_confirmed &&
-                          keep_position < speculative_start + speculative_tokens,
-                      "invalid Qwen3.5 speculative rollback position");
-    const int64_t retained = keep_position - speculative_start;
-    mixer.restore();
     try {
+        const int64_t retained = mixer.rewind(keep_position);
+        auto& state = mixer.view();
         // Restore only convolution/GDN state from the retained projected
         // rows; target projections, output projection and FFN are not rerun.
-        LinearAttention::replay({mixer.convolution, mixer.recurrent, transposed_gdn_state},
+        LinearAttention::replay({state.convolution, state.recurrent, state.transposed},
                                 speculative_inputs, retained);
         clear_speculative();
     } catch (...) {
+        mixer.abort();
         clear_speculative();
         throw;
     }
@@ -249,15 +242,13 @@ TextSessionState capture_text_session_state(const std::vector<std::unique_ptr<::
             saved.full_attention =
                 capture_kv(full->cache, cache_position, state.bytes);
         } else if (const auto *linear = dynamic_cast<const LinearAttentionBlock *>(block.get())) {
-            if (linear->mixer.speculative_pending || !linear->mixer.convolution.defined() ||
-                !linear->mixer.recurrent.defined()) {
+            if (linear->mixer.pending() || !linear->mixer.defined()) {
                 throw std::runtime_error("Qwen recurrent session state is unavailable");
             }
             saved.kind = HybridBlockSessionStateKind::Recurrent;
-            saved.convolution_state = linear->mixer.convolution.clone();
-            saved.recurrent_state = linear->mixer.recurrent.clone();
-            state.bytes += session_tensor_bytes(saved.convolution_state);
-            state.bytes += session_tensor_bytes(saved.recurrent_state);
+            saved.mixer = linear->mixer.snapshot();
+            state.bytes += session_tensor_bytes(saved.mixer.convolution);
+            state.bytes += session_tensor_bytes(saved.mixer.recurrent);
         } else {
             throw std::runtime_error("Qwen hybrid session layer type changed");
         }
@@ -283,9 +274,7 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>> &blocks,
             if (full == nullptr) {
                 throw CudaSessionStateError("Qwen hybrid full-attention layer changed");
             }
-            restore_kv(full->cache, saved.full_attention, full->attention_head_dim,
-                full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
-                full->kv_quantization);
+            validate_kv(saved.full_attention);
             continue;
         }
         auto *linear = dynamic_cast<LinearAttentionBlock *>(block.get());
@@ -294,27 +283,35 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>> &blocks,
                                                          : 0;
         if (saved.kind != HybridBlockSessionStateKind::Recurrent)
             throw CudaSessionStateError("Qwen hybrid recurrent layer kind changed");
-        if (linear == nullptr || !saved.convolution_state.defined() ||
-            !saved.recurrent_state.defined() ||
-            saved.convolution_state.scalar_type() != mfq_tensor_backend::kFloat32 ||
-            saved.recurrent_state.scalar_type() != mfq_tensor_backend::kFloat32 ||
-            saved.convolution_state.dim() != 3 || saved.convolution_state.size(0) != 1 ||
-            saved.convolution_state.size(1) != linear->qwen_config.linear_conv_kernel_dim - 1 ||
-            saved.convolution_state.size(2) != convolution_width ||
-            saved.recurrent_state.dim() != 4 || saved.recurrent_state.size(0) != 1 ||
-            saved.recurrent_state.size(1) != linear->qwen_config.linear_num_value_heads ||
-            saved.recurrent_state.size(2) != linear->qwen_config.linear_value_head_dim ||
-            saved.recurrent_state.size(3) != linear->qwen_config.linear_value_head_dim ||
-            !saved.convolution_state.is_cuda() || !saved.recurrent_state.is_cuda() ||
-            saved.convolution_state.get_device() != block->cuda_device ||
-            saved.recurrent_state.get_device() != block->cuda_device) {
+        if (linear == nullptr || !saved.mixer.convolution.defined() ||
+            !saved.mixer.recurrent.defined() ||
+            saved.mixer.convolution.scalar_type() != mfq_tensor_backend::kFloat32 ||
+            saved.mixer.recurrent.scalar_type() != mfq_tensor_backend::kFloat32 ||
+            saved.mixer.convolution.dim() != 3 || saved.mixer.convolution.size(0) != 1 ||
+            saved.mixer.convolution.size(1) != linear->qwen_config.linear_conv_kernel_dim - 1 ||
+            saved.mixer.convolution.size(2) != convolution_width ||
+            saved.mixer.recurrent.dim() != 4 || saved.mixer.recurrent.size(0) != 1 ||
+            saved.mixer.recurrent.size(1) != linear->qwen_config.linear_num_value_heads ||
+            saved.mixer.recurrent.size(2) != linear->qwen_config.linear_value_head_dim ||
+            saved.mixer.recurrent.size(3) != linear->qwen_config.linear_value_head_dim ||
+            !saved.mixer.convolution.is_cuda() || !saved.mixer.recurrent.is_cuda() ||
+            saved.mixer.convolution.get_device() != block->cuda_device ||
+            saved.mixer.recurrent.get_device() != block->cuda_device) {
             throw CudaSessionStateError("Qwen recurrent session topology changed");
         }
-        restore_session_tensor(linear->mixer.convolution, saved.convolution_state);
-        restore_session_tensor(linear->mixer.recurrent, saved.recurrent_state);
-        linear->mixer.speculative_convolution = mfq_tensor_backend::Tensor();
-        linear->mixer.speculative_recurrent = mfq_tensor_backend::Tensor();
-        linear->clear_speculative();
+    }
+    for (std::size_t index = 0; index < blocks.size(); ++index) {
+        auto& block = blocks[index];
+        const auto& saved = (*layers)[index];
+        MfqCudaGuard guard(block->cuda_device);
+        if (auto* full = dynamic_cast<FullBlock*>(block.get())) {
+            restore_kv(full->cache, saved.full_attention, full->attention_head_dim,
+                full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+                full->kv_quantization);
+        } else if (auto* linear = dynamic_cast<LinearAttentionBlock*>(block.get())) {
+            linear->mixer.restore(saved.mixer);
+            linear->clear_speculative();
+        }
     }
 }
 

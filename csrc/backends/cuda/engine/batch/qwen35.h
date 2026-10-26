@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/state/paged_kv.h"
+#include "engine/state/recurrent.h"
 
 #include <cstdint>
 #include <memory>
@@ -24,13 +25,8 @@ using Qwen35CausalLm = mfq::models::qwen35::CausalLm<CudaCausalOps<Qwen35Model>>
 namespace mfq::cuda::qwen35 {
 
 struct BatchState {
-    struct Recurrent {
-        mfq_tensor_backend::Tensor convolution, recurrent;
-        bool transposed = true;
-    };
-
     std::int64_t batch = 0;
-    std::vector<std::variant<KVCache, Recurrent>> layers;
+    std::vector<std::variant<KVCache, Recurrent::State>> layers;
 };
 
 // A request owns its native cache state; the batch alone binds it to slots.

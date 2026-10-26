@@ -33,6 +33,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                                  const MfqOptional<Tensor>&, const RopeCache&,
                                  const MfqOptional<Tensor>&, const MfqOptional<Tensor>&) {
     auto& profiler = execution.profiler;
+    auto& state = mixer.view();
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t heads = mamba_heads;
     const int64_t head_dim = mamba_head_dim;
@@ -45,15 +46,16 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                          .device(mfq_tensor_backend::kCUDA)
                          .dtype(mfq_tensor_backend::kFloat32);
     if (!mixer.defined()) {
-        mixer.convolution = mfq_tensor_backend::zeros({B, conv_kernel - 1, conv_width}, f32);
-        mixer.recurrent = mfq_tensor_backend::zeros({B, heads, head_dim, state_width}, f32);
+        state = {
+            mfq_tensor_backend::zeros({B, conv_kernel - 1, conv_width}, f32),
+            mfq_tensor_backend::zeros({B, heads, head_dim, state_width}, f32), false};
     }
-    TYLOINFER_RUNTIME_CHECK(mixer.convolution.size(0) == B &&
-                          mixer.convolution.size(1) == conv_kernel - 1 &&
-                          mixer.convolution.size(2) == conv_width &&
-                          mixer.recurrent.size(0) == B && mixer.recurrent.size(1) == heads &&
-                          mixer.recurrent.size(2) == head_dim &&
-                          mixer.recurrent.size(3) == state_width,
+    TYLOINFER_RUNTIME_CHECK(state.convolution.size(0) == B &&
+                          state.convolution.size(1) == conv_kernel - 1 &&
+                          state.convolution.size(2) == conv_width &&
+                          state.recurrent.size(0) == B && state.recurrent.size(1) == heads &&
+                          state.recurrent.size(2) == head_dim &&
+                          state.recurrent.size(3) == state_width,
                       "mamba state geometry changed");
     const auto bias = conv_bias.defined()
                           ? conv_bias
@@ -79,7 +81,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                     auto gate = projected.narrow(2, 0, inner).contiguous();
                     auto xbc = projected.narrow(2, inner, conv_width).contiguous();
                     auto dt = projected.narrow(2, inner + conv_width, heads).contiguous();
-                    if (mixer.speculative_pending) {
+                    if (mixer.pending()) {
                         speculative_xbc = xbc;
                         speculative_dt = dt;
                     }
@@ -89,10 +91,10 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                     const auto& xbc = projected[1];
                     auto convolved = profiler.measure("mamba.conv", [&] {
                         if (T == 1)
-                            return ssm_conv_silu_decode_cuda(mixer.convolution, xbc, conv_weight,
+                            return ssm_conv_silu_decode_cuda(state.convolution, xbc, conv_weight,
                                                              bias);
-                        auto conv_input = mfq_tensor_backend::cat({mixer.convolution, xbc}, 1);
-                        mixer.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
+                        auto conv_input = mfq_tensor_backend::cat({state.convolution, xbc}, 1);
+                        state.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
                         return ssm_conv_silu_cuda(conv_input, conv_weight, bias, T);
                     });
                     auto x = convolved.narrow(2, 0, inner)
@@ -110,7 +112,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                     return profiler.measure("mamba.scan", [&] {
                         if (T == 1) {
                             auto y = selective_state_scan_decode_cuda(
-                                mixer.recurrent, signals[0].select(1, 0).contiguous(),
+                                state.recurrent, signals[0].select(1, 0).contiguous(),
                                 dt.select(1, 0).contiguous(), dt_bias, a_log,
                                 signals[1].select(1, 0).contiguous(),
                                 signals[2].select(1, 0).contiguous(), d, time_step_limit_lo,
@@ -119,7 +121,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                         }
                         auto scanned = selective_state_scan_prefill_cuda(
                             signals[0], dt, dt_bias, a_log, signals[1], signals[2], d,
-                            mixer.recurrent, time_step_limit_lo, time_step_limit_hi);
+                            state.recurrent, time_step_limit_lo, time_step_limit_hi);
                         return std::array<Tensor, 2>{std::move(scanned[0]), std::move(scanned[1])};
                     });
                 },
@@ -139,7 +141,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                 },
                 [&](const Tensor& final_state) {
                     if (final_state.defined())
-                        mixer.recurrent.copy_(final_state);
+                        state.recurrent.copy_(final_state);
                 });
         },
         [&](Tensor residual, Tensor mixed) {
@@ -155,19 +157,16 @@ Tensor Mamba2MixerBlock::forward_context(CudaExecutionContext& execution, Tensor
                                          const Block::Context& context, const RopeCache& rope) {
     if (context.confirmed_prefix == 0)
         return Block::forward_context(execution, std::move(x), context, rope);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && !mixer.speculative_pending && context.confirmed_prefix > 0 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && !mixer.pending() && context.confirmed_prefix > 0 &&
                           context.confirmed_prefix < x.size(1) && mixer.defined(),
                       "invalid Nemotron-H speculative mamba transaction");
-    mixer.checkpoint();
-    speculative_start = context.cache_position;
-    speculative_confirmed = context.confirmed_prefix;
-    speculative_tokens = x.size(1);
+    mixer.begin(context.cache_position, context.confirmed_prefix, x.size(1));
     try {
         return forward(execution, std::move(x), context.full_positions, context.cache_position,
                        context.sequence_lengths, rope, context.cache_positions,
                        context.attention_mask);
     } catch (...) {
-        mixer.restore();
+        mixer.abort();
         clear_speculative();
         throw;
     }
@@ -176,16 +175,16 @@ Tensor Mamba2MixerBlock::forward_context(CudaExecutionContext& execution, Tensor
 void Mamba2MixerBlock::clear_speculative() noexcept {
     speculative_xbc = Tensor();
     speculative_dt = Tensor();
-    speculative_start = -1;
-    speculative_confirmed = 0;
-    speculative_tokens = 0;
-    mixer.clear_speculative();
+    mixer.commit();
 }
 
 void Mamba2MixerBlock::replay_recurrent(int64_t retained_tokens) {
-    TYLOINFER_RUNTIME_CHECK(retained_tokens > 0 && retained_tokens <= speculative_tokens &&
-                          speculative_xbc.defined() && speculative_dt.defined(),
+    TYLOINFER_RUNTIME_CHECK(retained_tokens > 0 &&
+                          speculative_xbc.defined() && speculative_dt.defined() &&
+                          retained_tokens <= speculative_xbc.size(1) &&
+                          retained_tokens <= speculative_dt.size(1),
                       "invalid mamba recurrent replay");
+    auto& state = mixer.view();
     const int64_t B = speculative_xbc.size(0);
     const int64_t inner = mamba_heads * mamba_head_dim;
     const int64_t groups = mamba_groups;
@@ -197,8 +196,8 @@ void Mamba2MixerBlock::replay_recurrent(int64_t retained_tokens) {
                                           {0}, mfq_tensor_backend::TensorOptions()
                                                    .device(mfq_tensor_backend::kCUDA)
                                                    .dtype(mfq_tensor_backend::kFloat32));
-    auto conv_input = mfq_tensor_backend::cat({mixer.convolution, xbc}, 1);
-    mixer.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
+    auto conv_input = mfq_tensor_backend::cat({state.convolution, xbc}, 1);
+    state.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
     auto convolved = ssm_conv_silu_cuda(conv_input, conv_weight, bias, retained_tokens);
     auto x = convolved.narrow(2, 0, inner)
                  .reshape({B, retained_tokens, mamba_heads, mamba_head_dim})
@@ -210,24 +209,20 @@ void Mamba2MixerBlock::replay_recurrent(int64_t retained_tokens) {
                  .reshape({B, retained_tokens, groups, state_width})
                  .contiguous();
     auto scanned = selective_state_scan_prefill_cuda(x, dt, dt_bias, a_log, b, c, d,
-                                                     mixer.recurrent, time_step_limit_lo,
+                                                     state.recurrent, time_step_limit_lo,
                                                      time_step_limit_hi);
-    mixer.recurrent.copy_(scanned[1]);
+    state.recurrent.copy_(scanned[1]);
 }
 
 void Mamba2MixerBlock::rollback_speculative(int64_t keep_position) {
-    TYLOINFER_RUNTIME_CHECK(mixer.speculative_pending &&
-                          keep_position >= speculative_start + speculative_confirmed &&
-                          keep_position < speculative_start + speculative_tokens,
-                      "invalid Nemotron-H speculative rollback position");
-    const int64_t retained = keep_position - speculative_start;
-    mixer.restore();
     try {
+        const int64_t retained = mixer.rewind(keep_position);
         // Only the convolution and scan states are replayed; the normalized
         // output and the projection are not recomputed.
         replay_recurrent(retained);
         clear_speculative();
     } catch (...) {
+        mixer.abort();
         clear_speculative();
         throw;
     }
@@ -361,14 +356,13 @@ TextSessionState capture_text_session_state(const std::vector<std::unique_ptr<::
             saved.full_attention =
                 capture_kv(full->cache, cache_position, state.bytes);
         } else if (const auto* mamba = dynamic_cast<const Mamba2MixerBlock*>(block.get())) {
-            if (mamba->mixer.speculative_pending || !mamba->mixer.defined()) {
+            if (mamba->mixer.pending() || !mamba->mixer.defined()) {
                 throw std::runtime_error("Nemotron-H mamba session state is unavailable");
             }
             saved.kind = HybridBlockSessionStateKind::Recurrent;
-            saved.convolution_state = mamba->mixer.convolution.clone();
-            saved.recurrent_state = mamba->mixer.recurrent.clone();
-            state.bytes += session_tensor_bytes(saved.convolution_state);
-            state.bytes += session_tensor_bytes(saved.recurrent_state);
+            saved.mixer = mamba->mixer.snapshot();
+            state.bytes += session_tensor_bytes(saved.mixer.convolution);
+            state.bytes += session_tensor_bytes(saved.mixer.recurrent);
         } else if (dynamic_cast<const MoeMixerBlock*>(block.get()) != nullptr) {
             saved.kind = HybridBlockSessionStateKind::Stateless;
         } else {
@@ -395,9 +389,7 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>>& blocks,
             auto* full = dynamic_cast<FullBlock*>(block.get());
             if (full == nullptr)
                 throw CudaSessionStateError("Nemotron-H full-attention layer changed");
-            restore_kv(full->cache, saved.full_attention, full->attention_head_dim,
-                full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
-                full->kv_quantization);
+            validate_kv(saved.full_attention);
             continue;
         }
         if (saved.kind == HybridBlockSessionStateKind::Stateless) {
@@ -411,24 +403,34 @@ void restore_text_session_state(std::vector<std::unique_ptr<::Block>>& blocks,
                                    2 * mamba->mamba_groups * mamba->ssm_state_size
                              : 0;
         if (saved.kind != HybridBlockSessionStateKind::Recurrent || mamba == nullptr ||
-            !saved.convolution_state.defined() || !saved.recurrent_state.defined() ||
-            saved.convolution_state.scalar_type() != mfq_tensor_backend::kFloat32 ||
-            saved.recurrent_state.scalar_type() != mfq_tensor_backend::kFloat32 ||
-            saved.convolution_state.dim() != 3 || saved.convolution_state.size(0) != 1 ||
-            saved.convolution_state.size(1) != mamba->conv_kernel - 1 ||
-            saved.convolution_state.size(2) != convolution_width ||
-            saved.recurrent_state.dim() != 4 || saved.recurrent_state.size(0) != 1 ||
-            saved.recurrent_state.size(1) != mamba->mamba_heads ||
-            saved.recurrent_state.size(2) != mamba->mamba_head_dim ||
-            saved.recurrent_state.size(3) != mamba->ssm_state_size ||
-            !saved.convolution_state.is_cuda() || !saved.recurrent_state.is_cuda() ||
-            saved.convolution_state.get_device() != block->cuda_device ||
-            saved.recurrent_state.get_device() != block->cuda_device) {
+            !saved.mixer.convolution.defined() || !saved.mixer.recurrent.defined() ||
+            saved.mixer.convolution.scalar_type() != mfq_tensor_backend::kFloat32 ||
+            saved.mixer.recurrent.scalar_type() != mfq_tensor_backend::kFloat32 ||
+            saved.mixer.convolution.dim() != 3 || saved.mixer.convolution.size(0) != 1 ||
+            saved.mixer.convolution.size(1) != mamba->conv_kernel - 1 ||
+            saved.mixer.convolution.size(2) != convolution_width ||
+            saved.mixer.recurrent.dim() != 4 || saved.mixer.recurrent.size(0) != 1 ||
+            saved.mixer.recurrent.size(1) != mamba->mamba_heads ||
+            saved.mixer.recurrent.size(2) != mamba->mamba_head_dim ||
+            saved.mixer.recurrent.size(3) != mamba->ssm_state_size ||
+            !saved.mixer.convolution.is_cuda() || !saved.mixer.recurrent.is_cuda() ||
+            saved.mixer.convolution.get_device() != block->cuda_device ||
+            saved.mixer.recurrent.get_device() != block->cuda_device) {
             throw CudaSessionStateError("Nemotron-H mamba session topology changed");
         }
-        restore_session_tensor(mamba->mixer.convolution, saved.convolution_state);
-        restore_session_tensor(mamba->mixer.recurrent, saved.recurrent_state);
-        mamba->clear_speculative();
+    }
+    for (std::size_t index = 0; index < blocks.size(); ++index) {
+        auto& block = blocks[index];
+        const auto& saved = (*layers)[index];
+        MfqCudaGuard guard(block->cuda_device);
+        if (auto* full = dynamic_cast<FullBlock*>(block.get())) {
+            restore_kv(full->cache, saved.full_attention, full->attention_head_dim,
+                full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+                full->kv_quantization);
+        } else if (auto* mamba = dynamic_cast<Mamba2MixerBlock*>(block.get())) {
+            mamba->mixer.restore(saved.mixer);
+            mamba->clear_speculative();
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend.h"
+#include "engine/state/recurrent.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -91,8 +92,7 @@ struct HybridBlockSessionState {
     HybridBlockSessionStateKind kind =
         HybridBlockSessionStateKind::FullAttention;
     KvSnapshot full_attention;
-    mfq_tensor_backend::Tensor convolution_state;
-    mfq_tensor_backend::Tensor recurrent_state;
+    mfq::cuda::Recurrent::State mixer;
 };
 
 struct Qwen4BlockSessionState {
@@ -265,6 +265,8 @@ KvSnapshot capture_kv(
     const KVCache& cache,
     int64_t cache_pos,
     size_t& bytes);
+
+void validate_kv(const KvSnapshot& state);
 
 void restore_kv(
     KVCache& cache,

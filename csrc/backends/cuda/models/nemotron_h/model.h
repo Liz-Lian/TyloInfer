@@ -4,7 +4,7 @@
 #include "engine/models/ffn.h"
 #include "models/common/full_block.h"
 #include "quant_linear.h"
-#include "backends/cuda/engine/state/recurrent_mixer_state.h"
+#include "backends/cuda/engine/state/recurrent.h"
 
 #include <array>
 #include <cstdint>
@@ -36,19 +36,16 @@ struct Mamba2MixerBlock final : Block {
     mfq_tensor_backend::Tensor dt_bias;
     mfq_tensor_backend::Tensor scan_norm;
     QuantLinear out_proj;
-    mfq::cuda::RecurrentMixerState mixer;
+    mfq::cuda::Recurrent mixer;
     // Projections of the pending verification window, replayed on rollback.
     mfq_tensor_backend::Tensor speculative_xbc;
     mfq_tensor_backend::Tensor speculative_dt;
-    int64_t speculative_start = -1;
-    int64_t speculative_confirmed = 0;
-    int64_t speculative_tokens = 0;
 
     bool supports_speculation() const noexcept override { return true; }
     std::vector<mfq_tensor_backend::Tensor*> graph_warmup_state() override {
-        TYLOINFER_RUNTIME_CHECK(!mixer.speculative_pending && mixer.defined(),
+        TYLOINFER_RUNTIME_CHECK(!mixer.pending() && mixer.defined(),
                           "decode warmup requires confirmed mamba state");
-        return {&mixer.convolution, &mixer.recurrent};
+        return {&mixer.view().convolution, &mixer.view().recurrent};
     }
     void reset(int64_t batch) override {
         clear_speculative();
