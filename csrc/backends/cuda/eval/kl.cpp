@@ -847,7 +847,7 @@ int run_kl_eval_streamed(
         throw std::runtime_error(
             "streamed KL layer group and chunk batch must be positive");
     }
-    execution.moe_route_stats.clear();
+    execution.routes.clear();
     MfqDropFileCacheGuard drop_cache_guard(
         true, execution.drop_file_cache);
     auto input = load_streamed_kl_input(reference_path, max_chunks);
@@ -1101,7 +1101,7 @@ int run_kl_eval_streamed(
               << " reference_n_batch=" << reference_contract.n_batch
               << " reference_n_ubatch=" << reference_contract.n_ubatch
               << "\n";
-    write_moe_route_stats(execution.config, execution.moe_route_stats);
+    execution.routes.write();
     return 0;
 }
 

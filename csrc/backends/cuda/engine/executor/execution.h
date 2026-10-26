@@ -8,6 +8,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include "native/branches.h"
 #include "native/collectives.h"
 #include "native/profile.h"
+#include "native/route_stats.h"
 #include "ops/common/include/mmq.h"
 #include "ops/common/include/parallel.h"
 #include "ops/common/include/projection.h"
@@ -153,8 +154,6 @@ struct CudaExecutionConfig {
     mfq::cuda::Executor::Options tasks;
     MoeFfnOptions moe_ffn;
     std::string profile_filter;
-    std::string moe_route_stats_path;
-    bool moe_route_output_energy = false;
     bool report_cuda_memory = false;
     bool model_parallel_cuda_graph = true;
     bool tensor_parallel_cuda_graph = true;
@@ -211,14 +210,6 @@ struct CudaExecutionConfig {
 
 CudaExecutionConfig load_cuda_execution_config();
 
-struct MoeRouteLayerStats {
-    mfq_tensor_backend::Tensor counts;
-    mfq_tensor_backend::Tensor weight_sum;
-    mfq_tensor_backend::Tensor weight_sq_sum;
-    mfq_tensor_backend::Tensor output_energy;
-    mfq_tensor_backend::Tensor weighted_output_energy;
-};
-
 struct CudaExecutionContext {
     explicit CudaExecutionContext(CudaStores& stores);
     ~CudaExecutionContext();
@@ -259,7 +250,7 @@ struct CudaExecutionContext {
     mfq::cuda::Branches branches;
     // Layer addresses identify reusable workspace; only execution retires it after drain.
     std::unordered_map<const void*, mfq::cuda::AttentionScratch> attention_scratch;
-    std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
+    mfq::cuda::RouteStats routes;
 
     mfq::cuda::Projector projector();
     void drain();
@@ -289,16 +280,6 @@ const ParallelConfig& moe_parallel_config(
 int model_parallel_primary_device(const CudaExecutionContext& execution);
 bool model_parallel_cuda_graph_enabled(const CudaExecutionContext& execution);
 int active_weight_load_device(const CudaExecutionContext& execution);
-void record_moe_route_stats(
-    CudaExecutionContext& execution,
-    int layer,
-    const mfq_tensor_backend::Tensor& ids,
-    const mfq_tensor_backend::Tensor& weights,
-    const mfq_tensor_backend::Tensor& output,
-    int n_experts);
-void write_moe_route_stats(
-    const CudaExecutionConfig& config,
-    const std::unordered_map<int, MoeRouteLayerStats>& stats);
 void trace_gemma_stage(
     CudaExecutionContext& execution,
     int layer,

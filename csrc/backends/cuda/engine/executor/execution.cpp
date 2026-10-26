@@ -16,9 +16,6 @@
 #include <exception>
 #include <cstdio>
 #include <sstream>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -447,9 +444,6 @@ int moe_prefill_group_size() {
 CudaExecutionConfig load_cuda_execution_config() {
     CudaExecutionConfig result;
     result.profile_filter = environment("TYLOINFER_PROFILE_CUDA_FILTER").value_or("");
-    result.moe_route_stats_path = environment("TYLOINFER_MOE_ROUTE_STATS").value_or("");
-    result.moe_route_output_energy = environment_flag(
-        "TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false);
     result.report_cuda_memory = environment_flag("TYLOINFER_REPORT_CUDA_MEMORY", false);
 
     const auto parallel_graph = environment("TYLOINFER_MODEL_PARALLEL_CUDA_GRAPH");
@@ -684,7 +678,9 @@ int LayerPlacementConfig::device_for_layer(int64_t layer) const {
 }
 
 CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
-    : config(load_cuda_execution_config()), stores(borrowed) {
+    : config(load_cuda_execution_config()), stores(borrowed),
+      routes(environment("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
+             environment_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)) {
     profiler.filter = config.profile_filter;
     tq = std::make_shared<TqExec>();
 }
@@ -779,7 +775,7 @@ void CudaExecutionContext::reset() {
     decode_graph_serial_branches = false;
     decode_graph_tp_projection_major = false;
     continuous_batch_cache_serial = false;
-    moe_route_stats.clear();
+    routes.clear();
     kl_mmq.reset();
     force_moe_unfused_reduce = false;
     force_moe_materialized_swiglu = false;
@@ -836,95 +832,6 @@ int active_weight_load_device(const CudaExecutionContext& execution) {
     return placement.load_device >= 0
         ? placement.load_device
         : model_parallel_primary_device(execution);
-}
-
-void record_moe_route_stats(
-        CudaExecutionContext& execution,
-        int layer,
-        const mfq_tensor_backend::Tensor & ids,
-        const mfq_tensor_backend::Tensor & weights,
-        const mfq_tensor_backend::Tensor & output,
-        int n_experts) {
-    if (layer < 0 || execution.config.moe_route_stats_path.empty()) return;
-    auto& stats = execution.moe_route_stats;
-    auto found = stats.find(layer);
-    if (found == stats.end()) {
-        auto options = mfq_tensor_backend::TensorOptions()
-            .device(ids.device()).dtype(mfq_tensor_backend::kFloat64);
-        MoeRouteLayerStats value{
-            mfq_tensor_backend::zeros({n_experts}, options),
-            mfq_tensor_backend::zeros({n_experts}, options),
-            mfq_tensor_backend::zeros({n_experts}, options),
-            mfq_tensor_backend::zeros({n_experts}, options),
-            mfq_tensor_backend::zeros({n_experts}, options),
-        };
-        found = stats.emplace(layer, std::move(value)).first;
-    }
-    auto flat_ids = ids.reshape({-1}).to(mfq_tensor_backend::kInt64);
-    auto flat_weights = weights.reshape({-1}).to(mfq_tensor_backend::kFloat64);
-    auto ones = mfq_tensor_backend::ones_like(flat_weights);
-    found->second.counts.scatter_add_(0, flat_ids, ones);
-    found->second.weight_sum.scatter_add_(0, flat_ids, flat_weights);
-    found->second.weight_sq_sum.scatter_add_(
-        0, flat_ids, flat_weights.square());
-    if (execution.config.moe_route_output_energy) {
-        auto energy = output.reshape({flat_ids.numel(), output.size(-1)})
-            .to(mfq_tensor_backend::kFloat32).square().sum(1).to(mfq_tensor_backend::kFloat64);
-        found->second.output_energy.scatter_add_(0, flat_ids, energy);
-        found->second.weighted_output_energy.scatter_add_(
-            0, flat_ids, energy * flat_weights.square());
-    }
-}
-
-void write_moe_route_stats(
-        const CudaExecutionConfig& config,
-        const std::unordered_map<int, MoeRouteLayerStats>& stats) {
-    if (config.moe_route_stats_path.empty() || stats.empty()) return;
-    mfq_cuda_synchronize();
-    std::filesystem::path path(config.moe_route_stats_path);
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path());
-    }
-    std::ofstream out(path);
-    if (!out) {
-        throw std::runtime_error(
-            "cannot write MoE route statistics: " + path.string());
-    }
-    out << "layer,expert,count,weight_sum,weight_sq_sum,"
-           "output_energy,weighted_output_energy\n";
-    std::vector<int> layers;
-    layers.reserve(stats.size());
-    for (const auto & item : stats) layers.push_back(item.first);
-    std::sort(layers.begin(), layers.end());
-    out << std::setprecision(17);
-    for (int layer : layers) {
-        const auto & value = stats.at(layer);
-        auto counts = value.counts.to(mfq_tensor_backend::kCPU).contiguous();
-        auto weight_sum = value.weight_sum.to(mfq_tensor_backend::kCPU).contiguous();
-        auto weight_sq_sum = value.weight_sq_sum.to(mfq_tensor_backend::kCPU).contiguous();
-        auto output_energy = value.output_energy.to(mfq_tensor_backend::kCPU).contiguous();
-        auto weighted_output_energy =
-            value.weighted_output_energy.to(mfq_tensor_backend::kCPU).contiguous();
-        const auto n_experts = counts.numel();
-        const double * count_data = counts.data_ptr<double>();
-        const double * weight_data = weight_sum.data_ptr<double>();
-        const double * weight_sq_data = weight_sq_sum.data_ptr<double>();
-        const double * energy_data = output_energy.data_ptr<double>();
-        const double * weighted_energy_data =
-            weighted_output_energy.data_ptr<double>();
-        for (int64_t expert = 0; expert < n_experts; ++expert) {
-            out << layer << ',' << expert << ','
-                << count_data[expert] << ','
-                << weight_data[expert] << ','
-                << weight_sq_data[expert] << ','
-                << energy_data[expert] << ','
-                << weighted_energy_data[expert] << '\n';
-        }
-    }
-    std::cout << "moe_route_stats_path=" << path.string()
-              << " layers=" << layers.size()
-              << " output_energy="
-              << (config.moe_route_output_energy ? 1 : 0) << "\n";
 }
 
 void trace_gemma_stage(

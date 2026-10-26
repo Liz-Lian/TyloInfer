@@ -115,11 +115,11 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
                                  const MoeRoutePlan &route,
                                  mfq_tensor_backend::Tensor route_weights) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+    auto& stats = execution.routes;
     const size_t shard_count = f.moe_gate_up.expert_parallel_shards.size();
     std::vector<mfq_tensor_backend::Tensor> routed_partials(shard_count);
     std::vector<mfq_tensor_backend::Tensor> down_partials;
-    const bool collect_output_energy =
-        !execution.config.moe_route_stats_path.empty() && execution.config.moe_route_output_energy;
+    const bool collect_output_energy = stats.energy();
     if (collect_output_energy) {
         down_partials.resize(shard_count);
     }
@@ -182,14 +182,14 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
         }
         routed_partials[index] = moe_weighted_reduce_cuda(down_pair, local_weights);
     }
-    if (!execution.config.moe_route_stats_path.empty()) {
+    if (stats.enabled()) {
         mfq_tensor_backend::Tensor complete_down;
         if (collect_output_energy) {
             complete_down = execution.collectives.sum(std::move(down_partials), model_parallel_primary_device(execution),
             execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce);
         }
-        record_moe_route_stats(execution, f.moe_layer, route.ids, route_weights, complete_down,
-                               f.moe_gate_up.n_experts);
+        stats.record(f.moe_layer, route.ids, route_weights, complete_down,
+                     f.moe_gate_up.n_experts);
     }
     return execution.collectives.sum(std::move(routed_partials), model_parallel_primary_device(execution),
             execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce);
@@ -204,6 +204,7 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                                              bool allow_important_neurons,
                                              MfqOptional<mfq_tensor_backend::Tensor> router_bias) {
     auto &profiler = execution.profiler;
+    auto& stats = execution.routes;
     mfq_tensor_backend::Tensor xh;
     if (x.scalar_type() == mfq_tensor_backend::kFloat16) {
         xh = x;
@@ -524,8 +525,8 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                         reduced = profiler.measure("moe.latent_up", [&] {
                             return execution.projector().run(f.moe_latent_out, reduced);
                         });
-                    record_moe_route_stats(execution, f.moe_layer, selected.at(0), selected.at(1),
-                                           down_pair, static_cast<int>(f.moe_dense_up.size(0)));
+                    stats.record(f.moe_layer, selected.at(0), selected.at(1),
+                                 down_pair, static_cast<int>(f.moe_dense_up.size(0)));
                     return {reduced, true};
                 }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -569,8 +570,8 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                     auto down_pair = profiler.measure("moe.down", [&] {
                         return execution.projector().run(*active_down, hidden, route);
                     });
-                    record_moe_route_stats(execution, f.moe_layer, selected.at(0),
-                                           selected.at(1), down_pair, f.moe_up.n_experts);
+                    stats.record(f.moe_layer, selected.at(0),
+                                 selected.at(1), down_pair, f.moe_up.n_experts);
                     staged_down.reset();
                     if (latent_routed)
                         return {finish_latent(profiler.measure("moe.reduce", [&] {
@@ -729,8 +730,7 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
                             });
                         return {};
                     });
-                record_moe_route_stats(
-                    execution, f.moe_layer, selected.at(0), selected.at(1), down_pair,
+                stats.record(f.moe_layer, selected.at(0), selected.at(1), down_pair,
                     f.moe_split_gate_up ? f.moe_gate.n_experts : f.moe_gate_up.n_experts);
                 staged_down.reset();
                 return {down_pair, false};

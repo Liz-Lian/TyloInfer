@@ -213,7 +213,7 @@ void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& f) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if(!f.moe_pipeline.expired() || !mfq::cuda::uses_expert_cache(f) || mfq::cuda::expert_parallel(f) ||
             f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
-            !execution.config.moe_route_stats_path.empty())return;
+            execution.routes.enabled())return;
     std::vector<std::shared_ptr<mfq::cuda::Experts>> gate_up;
     // An ungated bank publishes Up in both slots; the pipeline detects the
     // single-image layout from the projection geometry, not the model name.
