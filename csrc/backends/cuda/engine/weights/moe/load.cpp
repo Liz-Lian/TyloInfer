@@ -248,7 +248,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
         runtime->pools.push_back(std::move(pool));
     }
     if (cuda) {
-        prepare_moe(*runtime, config.moe_nvq_heterogeneous);
+        prepare_moe(*runtime, config.tasks.projection.moe.heterogeneous);
     }
     return runtime;
 }
@@ -400,7 +400,7 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
         throw std::runtime_error(
             "expert-parallel MoE shard has no owned experts");
     }
-    prepare_moe(*runtime, config.moe_nvq_heterogeneous);
+    prepare_moe(*runtime, config.tasks.projection.moe.heterogeneous);
     return wrap_mixed_moe_runtime(runtime);
 }
 

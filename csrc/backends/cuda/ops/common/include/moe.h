@@ -120,10 +120,11 @@ struct MoeOptions {
     bool prefill = true;
     int min_tokens = 9;
     bool nvq_decode = true;
-    bool active_decode = true;
+    bool active_decode = false;
     bool nint_decode = true;
     std::optional<bool> row_workspace, direct_pool, group_dot, route_hint;
     std::optional<int> route_warps;
+    bool heterogeneous = true;
 };
 
 struct MixedMoeRuntime {

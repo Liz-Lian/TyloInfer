@@ -173,7 +173,7 @@ mfq::cuda::Ffn load_moe_weights(CudaExecutionContext& execution, const mfq::Mode
         loader, std::string(prefix), options.layer, options.router_bias_required,
         options.ungated_experts, options.ungated_shared);
     if(result.moe_tq) {
-        const auto& banks=*result.moe_tq;
+        auto& banks=*result.moe_tq;
         TYLOINFER_RUNTIME_CHECK(banks.up && banks.down && (options.ungated_experts || banks.gate),
             "TQ expert banks cannot be mixed with legacy routed formats");
         TYLOINFER_RUNTIME_CHECK(banks.up->experts==banks.down->experts &&
@@ -181,6 +181,9 @@ mfq::cuda::Ffn load_moe_weights(CudaExecutionContext& execution, const mfq::Mode
             (!banks.gate || (banks.gate->experts==banks.up->experts &&
                 banks.gate->out==banks.up->out && banks.gate->input==banks.up->input)),
             "TQ Gate/Up/Down expert dimensions disagree");
+        const auto& parallel = moe_parallel_config(execution);
+        if (parallel.enabled())
+            banks.slices = plan_moe_expert_parallel_slices(parallel, banks.up->experts, std::string(prefix));
     }
     result.moe_router_projection=std::move(loader.router_projection);
     return result;

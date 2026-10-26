@@ -96,6 +96,16 @@ bool enabled_unless_disabled(const char* name) {
 } // namespace
 
 namespace mfq::cuda::runtime_options {
+
+MoeOptions moe(MoeOptions options) {
+    options.row_workspace = nint_route_row_workspace();
+    options.direct_pool = nint_direct_pool();
+    options.group_dot = nint_group_dot();
+    options.route_hint = nint_route_hint();
+    options.route_warps = nint_route_warps();
+    return options;
+}
+
 bool kv_vram_preallocated() {
     const auto* value = mfq::cuda::env_lookup("TYLOINFER_KV_VRAM_PREALLOCATED");
     return value && value[0] == '1';
@@ -491,18 +501,18 @@ CudaExecutionConfig load_cuda_execution_config() {
             : enabled_unless_disabled("TYLOINFER_DISABLE_NIQ2_EXEC"));
     result.nvq_extended_group_exec = environment_flag(
         "TYLOINFER_NVQ_EXTENDED_GROUP_EXEC", false);
-    result.moe_nvq_heterogeneous = enabled_unless_disabled(
+    result.tasks.projection.moe.heterogeneous = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_NVQ_HETERO");
-    result.moe_nvq_heterogeneous_decode =
+    result.tasks.projection.moe.nvq_decode =
         enabled_unless_disabled("TYLOINFER_DISABLE_MOE_NVQ_HETERO_DECODE") &&
         !environment_flag("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", false) &&
         !environment("TYLOINFER_NVQ_MOE_ROWS_PER_BLOCK") &&
         !environment("TYLOINFER_NVQ_MOE_WARPS") &&
         !environment("TYLOINFER_NVQ_MOE_SHARE_GROUP_STATE");
-    result.moe_nvq_active_decode = environment_flag("TYLOINFER_MOE_NVQ_ACTIVE_DECODE",false);
-    result.moe_prefill_mma = enabled_unless_disabled(
+    result.tasks.projection.moe.active_decode = environment_flag("TYLOINFER_MOE_NVQ_ACTIVE_DECODE",false);
+    result.tasks.projection.moe.prefill = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_PREFILL_MMA");
-    result.moe_prefill_mma_min_tokens = environment_int(
+    result.tasks.projection.moe.min_tokens = environment_int(
         "TYLOINFER_MOE_PREFILL_MMA_MIN_TOKENS", 9, 9,
         std::numeric_limits<int>::max());
     result.moe_small_heterogeneous = enabled_unless_disabled(
@@ -603,7 +613,7 @@ CudaExecutionConfig load_cuda_execution_config() {
     result.gr_compact_mix = environment_flag("TYLOINFER_GR_COMPACT_MIX",true);
     result.gr_two_stage = environment_flag("TYLOINFER_GR_TWO_STAGE",true);
     result.gr_two_stage_dense_injection = environment_flag("TYLOINFER_GR_TWO_STAGE_DENSE_INJECTION",true);
-    result.moe_nint_heterogeneous_decode = environment_flag("TYLOINFER_MOE_NINT_HETEROGENEOUS_DECODE",true);
+    result.tasks.projection.moe.nint_decode = environment_flag("TYLOINFER_MOE_NINT_HETEROGENEOUS_DECODE",true);
     if (const auto value = environment("TYLOINFER_MOE_RAM_PCIE_FRACTION")) {
         std::size_t end = 0;
         const auto fraction = std::stod(*value,&end);
@@ -683,15 +693,13 @@ CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
 }
 
 mfq::cuda::Projector CudaExecutionContext::projector() {
+    auto options = config.tasks.projection;
+    options.primary = model_parallel_primary_device(*this);
+    options.nint_group_quantize = !decode_graph_serial_branches ||
+        mfq::cuda::runtime_options::nint_group_quantize().value_or(true);
+    options.moe = mfq::cuda::runtime_options::moe(options.moe);
     return {profiler, kl_mmq, *tq, branches, collectives,
-            decode_graph_serial_branches, decode_graph_tp_projection_major,
-            {model_parallel_primary_device(*this),
-             config.tasks.projection.peer_first,
-             config.tasks.projection.reduce_to_primary, config.tasks.projection.fp16_reduce,
-             config.tasks.projection.grouped, config.tasks.projection.parallel,
-             config.tasks.projection.nvq_fusion,
-             !decode_graph_serial_branches ||
-                 mfq::cuda::runtime_options::nint_group_quantize().value_or(true)}};
+            decode_graph_serial_branches, decode_graph_tp_projection_major, options};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {
@@ -771,10 +779,8 @@ void CudaExecutionContext::reset() {
     continuous_batch_cache_serial = false;
     moe_route_stats.clear();
     kl_mmq.reset();
-    force_moe_pool_path = false;
     force_moe_unfused_reduce = false;
     force_moe_materialized_swiglu = false;
-    force_moe_prefill_mma_off = false;
     moe_cache_registration_min_slots = 8;
     gemma_trace_layer = -1;
     gemma_stage_trace = nullptr;

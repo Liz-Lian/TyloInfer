@@ -481,6 +481,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/ops/common/mx.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/quant_linear.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/projection.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/common/expert_projection.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/common/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
@@ -506,7 +507,6 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/ffn.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/experts.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp

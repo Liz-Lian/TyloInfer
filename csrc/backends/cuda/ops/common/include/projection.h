@@ -1,10 +1,14 @@
 #pragma once
 
 #include "quant_linear.h"
+#include "moe.h"
+
+struct TqMoeBanks;
 
 namespace mfq::cuda {
 
 class Branches;
+struct Experts;
 
 // Borrowed for one forward; the owner drains before resetting its resources.
 class Projector {
@@ -18,6 +22,7 @@ public:
         bool parallel = true;
         bool nvq_fusion = true;
         bool nint_group_quantize = true;
+        MoeOptions moe;
     };
 
     Projector(CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
@@ -38,6 +43,23 @@ public:
     mfq_tensor_backend::Tensor geglu(const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
     std::vector<mfq_tensor_backend::Tensor> grouped(
         const QuantLinearProjectionRefs& projections, mfq_tensor_backend::Tensor input) const;
+
+    mfq_tensor_backend::Tensor run(
+        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+        bool prequantized = false, int epilogue = 0) const;
+    mfq_tensor_backend::Tensor glu(
+        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+        bool gelu) const;
+    mfq_tensor_backend::Tensor gated(
+        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+        bool gelu) const;
+    mfq_tensor_backend::Tensor clamped(
+        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+        double limit) const;
+    mfq_tensor_backend::Tensor run(
+        const TqMoeBanks& banks, mfq_tensor_backend::Tensor input,
+        mfq_tensor_backend::Tensor ids, mfq_tensor_backend::Tensor weights,
+        float swiglu_limit = 0) const;
 
 private:
     CudaProfiler& profiler_;

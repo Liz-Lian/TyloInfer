@@ -78,6 +78,8 @@ struct Experts {
     bool supports_clamped_swiglu() const;
 };
 
+void prefetch_experts(const Experts& weight, const MoeRoutePlan& route, bool begin = false);
+
 bool prefetch_cached_moe_projection_bundle(
     const Experts& gate, const Experts& up, const Experts& down, const MoeRoutePlan& route);
 bool prefetch_cached_moe_projection_bundle(

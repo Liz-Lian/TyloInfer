@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
-#include "engine/executor/experts.h"
+#include "engine/weights/moe/experts.h"
 #include "engine/executor/ffn.h"
 #include "env.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -144,10 +144,10 @@ int run_expert_parallel_moe_check(
         build_moe_route_plan(
             ids, full.n_experts);
     auto reference =
-        mfq::cuda::run_experts(execution, full, x, route)
+        execution.projector().run(full, x, route)
             .to(mfq_tensor_backend::kFloat32);
     auto test =
-        mfq::cuda::run_experts(execution, sharded, x, route)
+        execution.projector().run(sharded, x, route)
             .to(mfq_tensor_backend::kFloat32);
     mfq_cuda_synchronize();
     auto difference = test - reference;
@@ -261,7 +261,7 @@ int run_mfe_tensor_check(
     auto route = build_moe_route_plan(ids, weight.n_experts);
     mfq_tensor_backend::Tensor output;
     for (int warmup = 0; warmup < 5; ++warmup) {
-        output = mfq::cuda::run_experts(execution, weight, x, route);
+        output = execution.projector().run(weight, x, route);
         if (warmup == 0) mfq::cuda::prefetch_experts(weight, route);
     }
     mfq_cuda_synchronize();
@@ -270,7 +270,7 @@ int run_mfe_tensor_check(
     TYLOINFER_CUDA_CHECK(cudaEventCreate(&stop));
     auto stream = mfq_get_current_cuda_stream().stream();
     TYLOINFER_CUDA_CHECK(cudaEventRecord(start, stream));
-    for (int index = 0; index < reps; ++index) output = mfq::cuda::run_experts(execution, weight, x, route);
+    for (int index = 0; index < reps; ++index) output = execution.projector().run(weight, x, route);
     TYLOINFER_CUDA_CHECK(cudaEventRecord(stop, stream));
     TYLOINFER_CUDA_CHECK(cudaEventSynchronize(stop));
     float elapsed = 0.0f;
@@ -348,7 +348,7 @@ int run_mfe_tensor_check(
 
     if (split_width > 0) {
         auto run_segment = [&](int width, int row_offset) {
-            return mfq::cuda::run_experts(execution, weight, x, route)
+            return execution.projector().run(weight, x, route)
                 .narrow(2, row_offset, width).contiguous();
         };
         mfq_tensor_backend::Tensor merged;
@@ -423,9 +423,9 @@ int run_mfe_tensor_check(
         };
         set_env("TYLOINFER_NVQ_MOE_WARPS", "0");
         set_env("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", "1");
-        auto candidate = mfq::cuda::run_experts(execution, weight, x, route);
+        auto candidate = execution.projector().run(weight, x, route);
         set_env("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", "0");
-        auto baseline = mfq::cuda::run_experts(execution, weight, x, route);
+        auto baseline = execution.projector().run(weight, x, route);
         mfq_cuda_synchronize();
         restore_env(
             "TYLOINFER_NVQ_MOE_WARPS", had_original_env, original_value);
@@ -468,7 +468,7 @@ int run_mfe_tensor_check(
             .reshape({tokens, routes, 2 * weight.neuron_len})
             .contiguous();
         auto run_candidate = [&]() {
-            return mfq::cuda::clamped_experts(execution, weight, gate_up, route, limit);
+            return execution.projector().clamped(weight, gate_up, route, limit);
         };
         auto run_baseline = [&]() {
             const int64_t width = weight.neuron_len;
@@ -479,7 +479,7 @@ int run_mfe_tensor_check(
                 -limit, limit);
             auto hidden = (mfq_tensor_backend::silu(gate) * up)
                 .to(mfq_tensor_backend::kFloat16).contiguous();
-            return mfq::cuda::run_experts(execution, weight, hidden, route);
+            return execution.projector().run(weight, hidden, route);
         };
         mfq_tensor_backend::Tensor candidate;
         mfq_tensor_backend::Tensor baseline;
@@ -643,10 +643,10 @@ static int run_gemma_moe_check(
             const bool projection_bundle_prefetched =
                 prefetch_cached_moe_projection_bundle(
                     gate_up, down, route);
-            auto gate_pair = mfq::cuda::run_experts(execution, gate_up, x, route);
+            auto gate_pair = execution.projector().run(gate_up, x, route);
             auto hidden = moe_geglu_split_cuda(gate_pair);
             if (!projection_bundle_prefetched) mfq::cuda::prefetch_experts(down, route);
-            auto down_pair = mfq::cuda::run_experts(execution, down, hidden, route);
+            auto down_pair = execution.projector().run(down, hidden, route);
             return moe_weighted_reduce_cuda(down_pair, weights);
         };
         auto forward_gate_glu = [&]() {
@@ -654,9 +654,9 @@ static int run_gemma_moe_check(
             const bool projection_bundle_prefetched =
                 prefetch_cached_moe_projection_bundle(
                     gate_up, down, route);
-            auto hidden = mfq::cuda::glu_experts(execution, gate_up, x, route, true);
+            auto hidden = execution.projector().glu(gate_up, x, route, true);
             if (!projection_bundle_prefetched) mfq::cuda::prefetch_experts(down, route);
-            auto down_pair = mfq::cuda::run_experts(execution, down, hidden, route);
+            auto down_pair = execution.projector().run(down, hidden, route);
             return moe_weighted_reduce_cuda(down_pair, weights);
         };
         const bool gate_glu_supported = tokens <= 4;
@@ -693,13 +693,13 @@ static int run_gemma_moe_check(
 
         if (tokens == 1) {
             auto stage_route = build_moe_route_plan(ids, experts);
-            auto stage_hidden = mfq::cuda::glu_experts(execution, gate_up, x, stage_route, true);
-            auto stage_down = mfq::cuda::run_experts(execution, down, stage_hidden, stage_route);
+            auto stage_hidden = execution.projector().glu(gate_up, x, stage_route, true);
+            auto stage_down = execution.projector().run(down, stage_hidden, stage_route);
             mfq_cuda_synchronize();
             auto gate_stage = time_ms(
-                [&]() { return mfq::cuda::glu_experts(execution, gate_up, x, stage_route, true); }, reps);
+                [&]() { return execution.projector().glu(gate_up, x, stage_route, true); }, reps);
             auto down_stage = time_ms(
-                [&]() { return mfq::cuda::run_experts(execution, down, stage_hidden, stage_route); }, reps);
+                [&]() { return execution.projector().run(down, stage_hidden, stage_route); }, reps);
             auto reduce_stage = time_ms(
                 [&]() { return moe_weighted_reduce_cuda(stage_down, weights); }, reps);
             std::cout << "gemma_moe_stage"
@@ -709,15 +709,22 @@ static int run_gemma_moe_check(
         }
 
         if (tokens != 1) {
-            execution.force_moe_prefill_mma_off = false;
+            auto& options = execution.config.tasks.projection.moe;
+            const bool prefill = options.prefill;
             auto mma = time_ms(forward, reps);
             auto mma_first = mma.second.clone();
             auto mma_repeat = forward().clone();
             mfq_cuda_synchronize();
-            execution.force_moe_prefill_mma_off = true;
-            auto baseline = time_ms(forward, reps);
-            mfq_cuda_synchronize();
-            execution.force_moe_prefill_mma_off = false;
+            options.prefill = false;
+            decltype(mma) baseline;
+            try {
+                baseline = time_ms(forward, reps);
+                mfq_cuda_synchronize();
+            } catch (...) {
+                options.prefill = prefill;
+                throw;
+            }
+            options.prefill = prefill;
             auto repeat_diff = (mma_repeat - mma_first).abs().to(mfq_tensor_backend::kFloat32);
             auto baseline_diff = (mma_first - baseline.second).abs().to(mfq_tensor_backend::kFloat32);
             std::cout << std::setprecision(6)
@@ -911,16 +918,18 @@ int run_moe_check(
         const char * prefill_ab_env = mfq::cuda::env_lookup("TYLOINFER_CHECK_MOE_PREFILL_MMA_AB");
         if (prefill_ab_env != nullptr && std::atoi(prefill_ab_env) != 0 && tokens >= 9) {
             auto candidate = output.clone();
-            execution.force_moe_prefill_mma_off = true;
+            auto& options = execution.config.tasks.projection.moe;
+            const bool prefill = options.prefill;
+            options.prefill = false;
             mfq_tensor_backend::Tensor baseline;
             try {
                 baseline = mfq::cuda::run_ffn(execution, ffn, x);
                 mfq_cuda_synchronize();
             } catch (...) {
-                execution.force_moe_prefill_mma_off = false;
+                options.prefill = prefill;
                 throw;
             }
-            execution.force_moe_prefill_mma_off = false;
+            options.prefill = prefill;
             auto diff = (candidate - baseline).to(mfq_tensor_backend::kFloat32);
             const double baseline_norm = baseline.to(mfq_tensor_backend::kFloat32).norm().item<double>();
             std::cout << "moe_prefill_mma_ab"
@@ -936,7 +945,10 @@ int run_moe_check(
         const char * exact_env = mfq::cuda::env_lookup("TYLOINFER_CHECK_MOE_POOL_EXACT");
         if (exact_env != nullptr && std::atoi(exact_env) != 0 && tokens <= 8) {
             auto candidate = output;
-            execution.force_moe_pool_path = true;
+            auto& options = execution.config.tasks.projection.moe;
+            const auto saved_options = options;
+            options.nvq_decode = false;
+            options.nint_decode = false;
             execution.force_moe_unfused_reduce = true;
             execution.force_moe_materialized_swiglu = true;
             mfq_tensor_backend::Tensor baseline;
@@ -944,12 +956,12 @@ int run_moe_check(
                 baseline = mfq::cuda::run_ffn(execution, ffn, x);
                 mfq_cuda_synchronize();
             } catch (...) {
-                execution.force_moe_pool_path = false;
+                options = saved_options;
                 execution.force_moe_unfused_reduce = false;
                 execution.force_moe_materialized_swiglu = false;
                 throw;
             }
-            execution.force_moe_pool_path = false;
+            options = saved_options;
             execution.force_moe_unfused_reduce = false;
             execution.force_moe_materialized_swiglu = false;
             auto diff = (candidate - baseline).abs().to(mfq_tensor_backend::kFloat32);

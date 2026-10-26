@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/executor/tq_moe.h"
-#include "engine/weights/load.h"
+#include "native/profile.h"
 #include "backends/cuda/engine/executor/tq.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"
@@ -566,26 +566,4 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
     phase("tq.moe.reduce",[&] {tq_detail::status(mfq_tq_weighted_reduce(pairs.data_ptr(),coefficients.data_ptr<float>(),result.data_ptr(),
         static_cast<int>(tokens),static_cast<int>(routes),static_cast<int>(width),type,mfq_current_cuda_stream()));return 0;});
     return result;
-}
-
-tb::Tensor TqMoeBanks::forward_parallel(CudaExecutionContext& execution,tb::Tensor input,
-        tb::Tensor ids,tb::Tensor weights,float limit)const {
-    const auto& parallel=moe_parallel_config(execution);
-    if(!parallel.enabled())return forward(*execution.tq,std::move(input),std::move(ids),std::move(weights),limit,&execution.profiler);
-    if(!gate)throw std::invalid_argument("TQ expert parallelism requires a Gate bank");
-    const auto slices=plan_moe_expert_parallel_slices(parallel,gate->experts,"TQ experts");
-    std::vector<tb::Tensor> partials(slices.size());
-    for(std::size_t launch=0;launch<slices.size();++launch) {
-        const auto index=parallel_index(
-            execution.config.tasks.projection.peer_first, launch,slices.size());
-        const auto& slice=slices[index];
-        const MfqCudaGuard guard(slice.device);
-        auto local_input=execution.collectives.copy(input, slice.device);
-        auto local_ids=execution.collectives.copy(ids, slice.device);
-        auto local_weights=execution.collectives.copy(weights, slice.device);
-        partials[index]=forward(*execution.tq,std::move(local_input),std::move(local_ids),std::move(local_weights),
-            limit,&execution.profiler,slice.begin,slice.end);
-    }
-    return execution.collectives.sum(std::move(partials), model_parallel_primary_device(execution),
-            execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce);
 }

@@ -5,7 +5,10 @@
 #include <optional>
 #include <string>
 
+struct MoeOptions;
+
 namespace mfq::cuda::runtime_options {
+MoeOptions moe(MoeOptions options);
 struct QsaKvOffloadOptions {
     std::size_t gpu_budget_bytes = 0;
     std::size_t ram_budget_bytes = 4ULL << 30;

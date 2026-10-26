@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/weights/mapped_embedding.h"
 #include "engine/executor/execution.h"
-#include "engine/executor/experts.h"
+#include "engine/weights/moe/experts.h"
 #include <iostream>
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "env.h"
@@ -1159,7 +1159,7 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
         "routed tensor shape mismatch: ",name);
     Routed result=[w,experts](CudaExecutionContext& execution, const Tensor& x,const Tensor& ids) {
         auto route=build_moe_route_plan(ids.to(tb::kInt32).contiguous(),int(experts));
-        return mfq::cuda::run_experts(execution, *w, x.contiguous(), route);
+        return execution.projector().run(*w, x.contiguous(), route);
     };
     result.projections.push_back(w);
     return result;

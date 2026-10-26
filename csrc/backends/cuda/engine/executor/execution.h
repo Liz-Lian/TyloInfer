@@ -164,11 +164,6 @@ struct CudaExecutionConfig {
     bool tensor_parallel_shard_native_float = false;
     bool nvq2_exec = false;
     bool nvq_extended_group_exec = false;
-    bool moe_nvq_heterogeneous = true;
-    bool moe_nvq_heterogeneous_decode = true;
-    bool moe_nvq_active_decode = false;
-    bool moe_prefill_mma = true;
-    int moe_prefill_mma_min_tokens = 9;
     bool moe_small_heterogeneous = true;
     bool moe_delayed_route_readback = true;
     bool moe_projection_bundle_prefetch = true;
@@ -194,7 +189,6 @@ struct CudaExecutionConfig {
     bool gr_compact_mix = true;
     bool gr_two_stage = true;
     bool gr_two_stage_dense_injection = true;
-    bool moe_nint_heterogeneous_decode = true;
     bool linear_conv_prefill_fused = true;
     std::size_t deepseek_v41_engram_cache_rows = 16'384;
     bool moe_mapped_gather = false;
@@ -242,10 +236,8 @@ struct CudaExecutionContext {
 
     CudaProfiler profiler;
     CudaExecutionConfig config;
-    bool force_moe_pool_path = false;
     bool force_moe_unfused_reduce = false;
     bool force_moe_materialized_swiglu = false;
-    bool force_moe_prefill_mma_off = false;
     KlMmqState kl_mmq;
     std::unordered_set<int> dsv4_cpu_offload_layers;
     int64_t dsv4_cpu_offload_host_bytes = 0;

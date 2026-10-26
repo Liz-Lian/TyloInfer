@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
-#include "engine/executor/experts.h"
+#include "engine/weights/moe/experts.h"
 #include "engine/executor/ffn.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"
@@ -154,14 +154,14 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                             if (tracing || !gemma_moe_gate_up.supports_projection_glu_epilogue())
                                 return {};
                             auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
-                                return mfq::cuda::glu_experts(execution, gemma_moe_gate_up, input, route, true);
+                                return execution.projector().glu(gemma_moe_gate_up, input, route, true);
                             });
                             prefetch_down();
                             return hidden;
                         },
                         [&](Tensor input) {
                             packed = profiler.measure("gemma.moe_gate_up", [&] {
-                                return mfq::cuda::run_experts(execution, gemma_moe_gate_up, input, route);
+                                return execution.projector().run(gemma_moe_gate_up, input, route);
                             });
                             prefetch_down();
                             trace_gemma_stage(execution, layer, "moe_gate_up", packed);
@@ -178,14 +178,14 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                         },
                         [&](Tensor hidden) {
                             return profiler.measure("gemma.moe_down", [&] {
-                                return mfq::cuda::run_experts(execution, gemma_moe_down, hidden, route);
+                                return execution.projector().run(gemma_moe_down, hidden, route);
                             });
                         },
                         [&](const Tensor &, const Tensor &, auto, double) -> std::optional<Tensor> {
                             if (tracing || packed.size(0) > 4)
                                 return {};
                             return profiler.measure("gemma.moe_geglu_down", [&] {
-                                return mfq::cuda::gated_experts(execution, gemma_moe_down, packed, route, true);
+                                return execution.projector().gated(gemma_moe_down, packed, route, true);
                             });
                         });
                     trace_gemma_stage(execution, layer, "moe_down", down_pair);

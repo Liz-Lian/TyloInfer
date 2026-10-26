@@ -634,7 +634,7 @@ void MoeExpertCache::initialize_ssd_residency() {
     pipeline_prefill_layer_layout_=false;
     for(const auto& source:sources_) {
         source->quant_source_->mark_preload_complete(false);
-        prepare_moe(*source->active_, config_.moe_nvq_heterogeneous);
+        prepare_moe(*source->active_, config_.tasks.projection.moe.heterogeneous);
     }
     ssd_experts_=true;
     host_experts_->enable_reuse_priority();
@@ -1342,7 +1342,7 @@ void MoeExpertCache::resize(std::size_t bytes) {
                 cohort.active.expert_local.copy_(map);
                 cohort.map_dirty=false;
             }
-            prepare_moe(*source->active_, config_.moe_nvq_heterogeneous);
+            prepare_moe(*source->active_, config_.tasks.projection.moe.heterogeneous);
         }
     };
     // Retire all derived views before returning old arenas to the allocator.
@@ -1601,7 +1601,7 @@ void MoeExpertCache::preload_complete_residency() {
             else throw std::logic_error("expert has no RAM or VRAM copy after preload");
         }
         quant.mark_preload_complete(config_.moe_assert_resident);
-        prepare_moe(*source->active_, config_.moe_nvq_heterogeneous);
+        prepare_moe(*source->active_, config_.tasks.projection.moe.heterogeneous);
     }
     measuring_preload_h2d_=false;
     std::int64_t h2d_bytes=0;

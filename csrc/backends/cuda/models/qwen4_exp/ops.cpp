@@ -397,6 +397,9 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
             "TQ MoE requires separate Gate, Up and Down banks");
         tq=std::make_shared<TqMoeBanks>();
         tq->gate=gate_up.tq_projections[0];tq->up=gate_up.tq_projections[1];tq->down=down.tq_projections[0];
+        const auto& parallel = moe_parallel_config(execution);
+        if (parallel.enabled())
+            tq->slices = plan_moe_expert_parallel_slices(parallel, tq->up->experts, "TQ experts");
     }
     std::weak_ptr<MoeFfnPipeline> pipeline;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -452,7 +455,7 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
                     selected[0].to(tb::kInt32).contiguous(),selected[1]);
 #endif
                 if(tq)return execution.profiler.measure("tq.moe",[&] {
-                    return tq->forward_parallel(execution,source,selected[0],selected[1]);
+                    return execution.projector().run(*tq,source,selected[0],selected[1]);
                 });
                 return mfq::models::routed_experts(
                     [&] { return gate_up(execution, source, selected[0]); },

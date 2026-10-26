@@ -1,6 +1,6 @@
 #pragma once
 #include "mfq_cuda_attention_ops.h"
-#include "engine/executor/experts.h"
+#include "engine/weights/moe/experts.h"
 #include "engine/executor/ffn.h"
 #include "mfq_cuda_cache_ops.h"
 #include "mfq_cuda_norm_ops.h"
@@ -136,7 +136,7 @@ struct GlmDsaBlock : Block {
         const int64_t rows = B * T * heads;
         const auto &route = shared_state->head_route(rows, static_cast<int>(heads));
         auto y =
-            mfq::cuda::run_experts(execution, weight, x.contiguous().reshape({rows, weight.neuron_len}), route);
+            execution.projector().run(weight, x.contiguous().reshape({rows, weight.neuron_len}), route);
         return y.reshape({B, T, heads, weight.out_per_expert});
 
 #else

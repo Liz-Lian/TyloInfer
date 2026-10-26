@@ -82,6 +82,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs) {
     const auto release = releases(tasks, inputs);
     auto options = options_;
     options.projection.primary = primary_;
+    options.projection.moe = runtime_options::moe(options.projection.moe);
     options.projection.nint_group_quantize =
         !serial_ || runtime_options::nint_group_quantize().value_or(true);
     options.dense.mlp.nvq_fusion = options.projection.nvq_fusion;
