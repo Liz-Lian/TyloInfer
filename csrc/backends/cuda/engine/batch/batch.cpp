@@ -23,8 +23,7 @@ namespace mfq::cuda {
 
 using internal::PrefillCudaTimer;
 using Tensor = mfq_tensor_backend::Tensor;
-using qwen35::Qwen35BatchStateAdapter;
-using qwen35::QwenBatchRequestState;
+using qwen35::RequestState;
 
 template<class Model>
 static mfq::engine::PrefillChunk budget_batch_prefill(Model& model,
@@ -58,7 +57,7 @@ mfq::engine::PrefillChunk FlashNextBatchOperations::prefill_chunk(
 bool qwen_continuous_batch_cuda_graph_enabled(const Qwen35CausalLm &model,
                                               const CudaContinuousBatchConfig &config) {
     const auto &execution = *model.execution;
-    return config.cuda_graph && !Qwen35BatchStateAdapter::has_cached_moe(model) &&
+    return config.cuda_graph && !qwen35::Batch::has_cached_moe(model) &&
            mfq_cuda_graph_capture_supported() && model_parallel_cuda_graph_enabled(execution);
 }
 
@@ -128,11 +127,11 @@ struct QwenContinuousDecodeGraph {
 
 QwenBatchOperations::QwenBatchOperations(Qwen35CausalLm &model, CudaExecutionContext &execution,
                                          CudaContinuousBatchConfig config)
-    : model_(model), state_adapter_(model, config.max_sequences, config.paged_kv),
+    : model_(model), state_(model, config.max_sequences, config.paged_kv),
       execution_(execution), config_(std::move(config)),
       max_sequences_(static_cast<int32_t>(config_.max_sequences)),
-      moe_enabled_(state_adapter_.has_moe()),
-      cached_moe_enabled_(state_adapter_.has_cached_moe()) {}
+      moe_enabled_(state_.has_moe()),
+      cached_moe_enabled_(state_.has_cached_moe()) {}
 
 QwenBatchOperations::~QwenBatchOperations() = default;
 
@@ -141,14 +140,14 @@ int64_t QwenBatchOperations::vocab_size() const { return model_.vocab_size(); }
 int64_t QwenBatchOperations::max_context() const { return model_.max_position_embeddings(); }
 
 std::vector<std::pair<std::string, double>> QwenBatchOperations::metrics() const {
-    const auto paged = state_adapter_.paged_kv_stats();
+    const auto paged = state_.paged_kv_stats();
     return {
         {"continuous_batching_decode_batches", static_cast<double>(decode_batches_)},
         {"continuous_batching_decode_tokens", static_cast<double>(decode_tokens_)},
 
         {"continuous_batching_compactions", 0.0},
         {"continuous_batching_stable_slot_releases",
-         static_cast<double>(state_adapter_.slot_releases())},
+         static_cast<double>(state_.slot_releases())},
         {"continuous_batching_batched_greedy_batches",
          static_cast<double>(batched_greedy_batches_)},
         {"continuous_batching_packed_metadata_batches",
@@ -157,7 +156,7 @@ std::vector<std::pair<std::string, double>> QwenBatchOperations::metrics() const
         {"continuous_batching_cuda_graph_replays", static_cast<double>(cuda_graph_replays_)},
         {"continuous_batching_moe", moe_enabled_ ? 1.0 : 0.0},
         {"continuous_batching_moe_cached_row_serial", cached_moe_enabled_ ? 1.0 : 0.0},
-        {"continuous_batching_paged_kv", state_adapter_.paged_kv_enabled() ? 1.0 : 0.0},
+        {"continuous_batching_paged_kv", state_.paged_kv_enabled() ? 1.0 : 0.0},
         {"paged_kv_page_size", static_cast<double>(paged.page_size)},
         {"paged_kv_live_pages", static_cast<double>(paged.live_pages)},
         {"paged_kv_peak_live_pages", static_cast<double>(paged.peak_live_pages)},
@@ -179,14 +178,14 @@ void QwenBatchOperations::initialize_sampling(Request &request, const Tensor &pr
 void QwenBatchOperations::suspend_decode() {
     invalidate_decode_graph();
     CudaScope guard(execution_);
-    state_adapter_.suspend_decode();
+    state_.suspend_decode();
 }
 
 QwenBatchOperations::Sample QwenBatchOperations::prefill(
     const std::shared_ptr<Request> &request, mfq::engine::PrefillChunk chunk) {
     const int primary = execution_.layer_placement.primary_device();
     CudaScope guard(execution_);
-    state_adapter_.prepare_prefill(request->cache, chunk.offset, request->prompt.size());
+    state_.prepare_prefill(request->cache, chunk.offset, request->prompt.size());
     if (chunk.offset == 0) {
         request->prefill_ids =
             mfq_tensor_backend::tensor(
@@ -217,10 +216,10 @@ QwenBatchOperations::Sample QwenBatchOperations::prefill(
         final_timer = std::move(chunk_timer);
     }
     if (end < static_cast<int64_t>(request->prompt.size())) {
-        state_adapter_.pause_prefill(request->cache);
+        state_.pause_prefill(request->cache);
         return {};
     }
-    auto logits = state_adapter_.logits_from_last_hidden(std::move(hidden));
+    auto logits = state_.logits_from_last_hidden(std::move(hidden));
     TYLOINFER_RUNTIME_CHECK(final_timer != nullptr, "continuous batching lost the prefill timer");
     TYLOINFER_CUDA_CHECK(
         cudaEventRecord(final_timer->finished_event(), mfq_get_current_cuda_stream()));
@@ -241,16 +240,16 @@ void QwenBatchOperations::activate(const std::shared_ptr<Request> &request, cons
     CudaScope guard(execution_);
     if (request->counts.defined())
         sample_token_counts_add_cuda(request->counts, sample.next.contiguous());
-    state_adapter_.activate(request->cache);
+    state_.activate(request->cache);
 }
 
 void QwenBatchOperations::resume_decode(int64_t cache_position) {
     CudaScope guard(execution_);
-    state_adapter_.resume_decode(cache_position);
+    state_.resume_decode(cache_position);
 }
 
 void QwenBatchOperations::discard_prefill(const std::shared_ptr<Request> &request) {
-    state_adapter_.discard_prefill(request->cache);
+    state_.discard_prefill(request->cache);
     request->prefill_timers.clear();
     request->prefill_ids = Tensor();
 }
@@ -258,10 +257,10 @@ void QwenBatchOperations::discard_prefill(const std::shared_ptr<Request> &reques
 void QwenBatchOperations::retire(const std::vector<std::shared_ptr<Request>> &retired,
                                  int64_t cache_position) {
     for (const auto &request : retired)
-        state_adapter_.release(request->cache);
+        state_.release(request->cache);
     if (cache_position == 0)
         invalidate_decode_graph();
-    state_adapter_.finish_retire(cache_position);
+    state_.finish_retire(cache_position);
 }
 
 void QwenBatchOperations::ensure_decode_metadata_buffers(int primary) {
@@ -290,11 +289,11 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
     const int primary = execution_.layer_placement.primary_device();
     CudaScope primary_guard(execution_);
     for (const auto &request : state.active)
-        state_adapter_.ensure_decode_tokens(request->cache, request->cache_length + 1);
+        state_.ensure_decode_tokens(request->cache, request->cache_length + 1);
     int64_t max_position = 0;
     for (const auto &request : state.active)
         max_position = std::max(max_position, request->cache_length);
-    state_adapter_.prepare_decode(max_position);
+    state_.prepare_decode(max_position);
     const int64_t batch = max_sequences_;
     const bool batch_greedy = std::all_of(
         state.active.begin(), state.active.end(), [](const std::shared_ptr<Request> &request) {
@@ -318,7 +317,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
     bool graph_decode = false;
     if (batch >= 2 && batch_greedy && config_.greedy &&
         qwen_continuous_batch_cuda_graph_enabled(model_, config_)) {
-        graph_state_addresses = state_adapter_.decode_state_addresses();
+        graph_state_addresses = state_.decode_state_addresses();
         const auto found =
             std::find_if(decode_graphs_.begin(), decode_graphs_.end(), [&](const auto &graph) {
                 return graph->matches(batch, planned_len, graph_state_addresses);
@@ -380,7 +379,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
             paused_slots.push_back(request->cache.slot());
     // ponytail: masked slots still occupy GPU rows; restore recurrent state
     // and overwrite the uncommitted KV position when they become eligible.
-    const auto paused_state = state_adapter_.capture_recurrent_slots(paused_slots);
+    const auto paused_state = state_.capture_recurrent_slots(paused_slots);
     Tensor logits;
     Tensor graph_tokens;
     MoeContinuousBatchCacheScope moe_cache_scope(execution_, cached_moe_enabled_ && batch > 1);
@@ -389,7 +388,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
             const auto invoke = [&]() {
                 auto hidden = model_.hidden_forward_static(
                     ids, pos, lengths, {planned_len, graph_attention_parts});
-                auto current_logits = state_adapter_.logits_from_last_hidden(std::move(hidden));
+                auto current_logits = state_.logits_from_last_hidden(std::move(hidden));
                 return sample_greedy_cuda(current_logits.contiguous().view({batch, -1}));
             };
             if (!graph_cache_hit) {
@@ -408,7 +407,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
                     decode_graph->static_next = invoke();
                     decode_graph->graph->capture_end();
                     decode_graph->set_key(batch, planned_len,
-                                          state_adapter_.decode_state_addresses());
+                                          state_.decode_state_addresses());
                     ++cuda_graph_captures_;
                 } catch (...) {
                     decode_graph->invalidate();
@@ -420,14 +419,14 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
             ++cuda_graph_replays_;
         } else {
             auto hidden = model_.hidden_forward(ids, pos, lengths, nullptr, pos);
-            logits = state_adapter_.logits_from_last_hidden(std::move(hidden));
+            logits = state_.logits_from_last_hidden(std::move(hidden));
         }
-        state_adapter_.finish_decode(max_sequence_length);
+        state_.finish_decode(max_sequence_length);
     } catch (...) {
         invalidate_decode_graph();
         throw;
     }
-    state_adapter_.restore_recurrent_slots(paused_slots, paused_state);
+    state_.restore_recurrent_slots(paused_slots, paused_state);
     ++decode_batches_;
     decode_tokens_ += std::count_if(state.active.begin(), state.active.end(),
                                     [](const auto &request) { return request->eligible; });
@@ -470,12 +469,12 @@ void QwenBatchOperations::accept(const std::shared_ptr<Request> &request, const 
 }
 
 void QwenBatchOperations::recover(State &state) {
-    std::vector<QwenBatchRequestState *> caches;
+    std::vector<RequestState *> caches;
     for (const auto &request : state.prefilling)
         caches.push_back(&request->cache);
     for (const auto &request : state.active)
         caches.push_back(&request->cache);
-    state_adapter_.recover(caches);
+    state_.recover(caches);
     invalidate_decode_graph();
 }
 

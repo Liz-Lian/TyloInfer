@@ -4,7 +4,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "cuda_runtime_config.h"
 #include "cuda_sampling.h"
-#include "models/qwen35/batch_state.h"
+#include "backends/cuda/engine/batch/qwen35.h"
 #include "models/qwen4_exp/ops.h"
 #include <type_traits>
 
@@ -20,7 +20,7 @@ struct QwenBatchRequest : mfq::engine::BatchRequest {
     mfq_tensor_backend::Tensor counts;
     mfq_tensor_backend::Tensor prefill_ids;
     std::vector<std::unique_ptr<internal::PrefillCudaTimer>> prefill_timers;
-    qwen35::QwenBatchRequestState cache;
+    qwen35::RequestState cache;
 };
 
 // Native operations consumed directly by engine::ContinuousBatch.
@@ -63,7 +63,7 @@ class QwenBatchOperations {
     void invalidate_decode_graph();
 
     Qwen35CausalLm &model_;
-    qwen35::Qwen35BatchStateAdapter state_adapter_;
+    qwen35::Batch state_;
     CudaExecutionContext &execution_;
     const CudaContinuousBatchConfig config_;
     int32_t max_sequences_ = 0;

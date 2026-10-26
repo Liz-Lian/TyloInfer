@@ -458,7 +458,6 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/nemotron_h/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/qwen35/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/qwen35/batch_state.cpp
 )
 
 
@@ -525,6 +524,7 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/kv_cache.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/paged_kv.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/cache.cpp
@@ -566,6 +566,7 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/qwen35_mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/batch/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp
