@@ -917,7 +917,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         if (compare_decode_splitk) {
             auto run = [&](bool split) {
-                execution.config.attention_decode_split_k = split;
+                execution.config.tasks.attention.kernels.split_k = split;
                 model.reset(1);
                 (void)model.hidden_forward(ids);
                 const int64_t decode_len = model.cache_pos + 1;
@@ -952,7 +952,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             std::vector<int64_t> teacher_tokens;
             reference_logits.reserve(compare_mma_decode_steps);
             teacher_tokens.reserve(compare_mma_decode_steps);
-            execution.config.mma_attention_decode = false;
+            execution.config.tasks.attention.kernels.mma_decode = false;
             model.reset(1);
             auto input = model.next_token(ids).reshape({1, 1});
             const int64_t initial_teacher_token = input.template item<int64_t>();
@@ -967,7 +967,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 teacher_tokens.push_back(next);
                 input = mfq_tensor_backend::tensor({next}, cuda_i64).reshape({1, 1});
             }
-            execution.config.mma_attention_decode = true;
+            execution.config.tasks.attention.kernels.mma_decode = true;
             const int64_t planned_kv_length =
                 compare_mma_decode_planned_len > 0
                 ? compare_mma_decode_planned_len
@@ -1115,13 +1115,13 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             return 0;
         }
         if (compare_mma_attention) {
-            execution.config.mma_attention = false;
-            execution.config.minicpm_bf16_flash128 = false;
+            execution.config.tasks.attention.kernels.mma_prefill = false;
+            execution.config.tasks.attention.kernels.bf16_flash128 = false;
             auto ref = model.last_logits(ids).to(mfq_tensor_backend::kFloat32);
             mfq_cuda_synchronize();
             model.reset(1);
-            execution.config.mma_attention = true;
-            execution.config.minicpm_bf16_flash128 = true;
+            execution.config.tasks.attention.kernels.mma_prefill = true;
+            execution.config.tasks.attention.kernels.bf16_flash128 = true;
             auto test = model.last_logits(ids).to(mfq_tensor_backend::kFloat32);
             mfq_cuda_synchronize();
             auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);

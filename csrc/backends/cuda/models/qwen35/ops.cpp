@@ -144,7 +144,7 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward(
     auto& state = mixer.view();
     auto attention = LinearAttention::forward(
             execution.projector(), execution.profiler,
-            {execution.config.tensor_parallel_grouped_projections &&
+            {execution.config.tasks.projection.grouped &&
                  execution.config.tensor_parallel_shared_linear_attention_input,
              execution.config.linear_conv_prefill_fused},
             std::move(input),
@@ -179,7 +179,7 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
         // recurrent state prefix from this layer's retained projections.
         auto attention = LinearAttention::forward(
             execution.projector(), execution.profiler,
-            {execution.config.tensor_parallel_grouped_projections &&
+            {execution.config.tasks.projection.grouped &&
                  execution.config.tensor_parallel_shared_linear_attention_input,
              execution.config.linear_conv_prefill_fused},
             std::move(input),

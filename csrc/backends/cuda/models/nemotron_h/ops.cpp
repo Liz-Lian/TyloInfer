@@ -260,7 +260,7 @@ Tensor AttentionMixerBlock::forward_ffn(CudaExecutionContext& execution, Tensor 
                                        int64_t hidden) {
     auto rr = residual.reshape({-1, hidden});
     auto aa = attention_output.reshape({-1, hidden});
-    if (execution.config.diagnostic_fp32_residual) {
+    if (execution.config.tasks.dense.fp32_residual) {
         rr = rr.to(mfq_tensor_backend::kFloat32);
         aa = aa.to(mfq_tensor_backend::kFloat32);
     } else if (aa.scalar_type() != rr.scalar_type()) {

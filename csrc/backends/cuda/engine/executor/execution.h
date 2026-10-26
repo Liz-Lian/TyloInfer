@@ -1,5 +1,6 @@
 #pragma once
 #include "formats/format_features.h"
+#include "engine/executor/run.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
@@ -149,6 +150,7 @@ struct LayerPlacementConfig {
 };
 
 struct CudaExecutionConfig {
+    mfq::cuda::Executor::Options tasks;
     std::string profile_filter;
     std::string moe_route_stats_path;
     bool moe_route_output_energy = false;
@@ -156,16 +158,10 @@ struct CudaExecutionConfig {
     bool model_parallel_cuda_graph = true;
     bool tensor_parallel_cuda_graph = true;
     bool expert_parallel_cuda_graph = true;
-    bool tensor_parallel_grouped_projections = true;
     bool tensor_parallel_shared_linear_attention_input = true;
     bool tensor_parallel_mirror_linear_attention_scalars = true;
     bool tensor_parallel_mirror_qwen35_attention_kv = true;
-    bool model_parallel_reduce_to_primary = true;
-    bool model_parallel_fp16_reduce = true;
-    bool model_parallel_peer_first_launch = true;
-    bool decode_branch_parallel = true;
     bool tensor_parallel_shard_native_float = false;
-    bool nvq_fusion = true;
     bool nvq2_exec = false;
     bool nvq_extended_group_exec = false;
     bool moe_nvq_heterogeneous = true;
@@ -182,15 +178,9 @@ struct CudaExecutionConfig {
     bool moe_two_stage_ffn = false;
     bool moe_swiglu_quant_fusion = true;
     bool moe_reduce_gate_fusion = true;
-    bool ffn_geglu_fusion = true;
-    bool ffn_swiglu_fusion = true;
-    bool important_neuron_branch_parallel = true;
     bool gemma4_fused_norms = true;
     bool dsv4_groupwise_output_a = true;
     bool diagnostic_nint_group = true;
-    bool diagnostic_fp32_residual = false;
-    bool diagnostic_in_f32_down = false;
-    bool kv_cache_write_aten = false;
     bool gdn_transposed_state = true;
     bool gdn_fused_output = true;
     bool gr_fused_projections = true;
@@ -206,19 +196,6 @@ struct CudaExecutionConfig {
     bool gr_two_stage_dense_injection = true;
     bool moe_nint_heterogeneous_decode = true;
     bool linear_conv_prefill_fused = true;
-    bool minicpm_fused_bf16_rope = true;
-    bool minicpm_fused_qk_norm_rope_kv = true;
-    bool minicpm_fused_bf16_rmsnorm = true;
-    bool minicpm_fused_rope_kv = true;
-    bool minicpm_bf16_flash128 = true;
-    bool minicpm_flash128_specialized_casts = true;
-    bool minicpm_bf16_gqa_decode = true;
-    bool minicpm_bf16_swiglu_fusion = true;
-    bool minicpm_bf16_residual_acc = true;
-    bool mma_attention = true;
-    bool mma_attention_decode = true;
-    bool attention_decode_aten = false;
-    bool attention_decode_split_k = true;
     std::size_t deepseek_v41_engram_cache_rows = 16'384;
     bool moe_mapped_gather = false;
     int moe_mapped_copy_blocks = 64;

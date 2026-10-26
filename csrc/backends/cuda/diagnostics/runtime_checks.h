@@ -8,7 +8,7 @@
 #include "models/nemotron_h/mtp.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "diagnostics/flash_next_mtp.h"
-#include "engine/executor/qwen35_mtp.h"
+#include "engine/requests/qwen35_mtp.h"
 #include "quant_linear.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"

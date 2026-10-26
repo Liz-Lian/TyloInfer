@@ -4,7 +4,7 @@
 #include "backends/cuda/engine/models/components.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
-#include "engine/executor/qwen35_mtp.h"
+#include "engine/requests/qwen35_mtp.h"
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 
@@ -219,8 +219,21 @@ RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
             !model_execution.stores.moe_expert_cache;
         if (supported_placement && model.num_experts() == 0 &&
                 model.supports_speculation()) {
-            result.mtp = mfq::cuda::qwen35::Mtp::load(
-                *model.source, model.config, *model.execution);
+            auto& execution = *model.execution;
+            TransformerWeightLoader loader{execution, *model.source};
+            auto predictor = mfq::cuda::qwen35::Predictor::load(loader, model.config, cuda_kv_quantization());
+            if (predictor) {
+                auto executor = std::make_unique<mfq::cuda::Executor>(
+                    execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,
+                    execution.collectives, execution.config.tasks,
+                    model_parallel_primary_device(execution), execution.decode_graph_serial_branches,
+                    execution.decode_graph_tp_projection_major);
+                result.mtp = std::make_unique<mfq::cuda::qwen35::Mtp>(
+                    std::move(*predictor), std::move(executor), execution.collectives,
+                    execution.layer_placement.primary_device(), execution.kl_mmq.kv_cache_capacity,
+                    execution.gemma_stage_trace, execution.gemma_trace_layer,
+                    mfq::cuda::runtime_options::kv_vram_preallocated());
+            }
             result.mtp_available = static_cast<bool>(result.mtp);
         } else {
             std::cerr << "qwen_mtp unavailable: CUDA adapter requires dense GPU-resident Qwen blocks\n";

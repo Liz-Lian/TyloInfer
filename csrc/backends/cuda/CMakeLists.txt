@@ -463,6 +463,7 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/ops/ffn/mlp.cpp
+    ${TYLOINFER_CUDA_ROOT}/ops/ffn/dense.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/ffn/residual.cpp
     ${TYLOINFER_CUDA_ROOT}/native/profile.cpp
     ${TYLOINFER_CUDA_ROOT}/native/collectives.cpp
@@ -502,6 +503,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/experts.cpp
@@ -525,6 +527,7 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/kv_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/recurrent.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/state/qwen35_mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/paged_kv.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
@@ -559,13 +562,14 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/components.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/models/qwen35/predictor.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/qwen35_mtp.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/requests/qwen35_mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp

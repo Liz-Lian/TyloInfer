@@ -60,7 +60,7 @@ Tensor sharded(CudaExecutionContext& execution, const Experts& weight, Tensor in
     const auto count = weight.expert_parallel_shards.size();
     std::vector<Tensor> outputs(count);
     for (size_t launch = 0; launch < count; ++launch) {
-        const auto index = parallel_index(execution.config.model_parallel_peer_first_launch, launch, count);
+        const auto index = parallel_index(execution.config.tasks.projection.peer_first, launch, count);
         const auto& shard = weight.expert_parallel_shards[index];
         if (!shard.weight)
             throw std::runtime_error("expert-parallel MoE shard is missing");
@@ -70,8 +70,8 @@ Tensor sharded(CudaExecutionContext& execution, const Experts& weight, Tensor in
         outputs[index] = forward(*shard.weight, std::move(local), local_route);
     }
     return execution.collectives.sum(std::move(outputs), model_parallel_primary_device(execution),
-                                     execution.config.model_parallel_reduce_to_primary,
-                                     execution.config.model_parallel_fp16_reduce);
+                                     execution.config.tasks.projection.reduce_to_primary,
+                                     execution.config.tasks.projection.fp16_reduce);
 }
 
 } // namespace

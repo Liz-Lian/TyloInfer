@@ -457,7 +457,7 @@ CudaExecutionConfig load_cuda_execution_config() {
         result.expert_parallel_cuda_graph = environment_flag(
             "TYLOINFER_EP_CUDA_GRAPH", true);
     }
-    result.tensor_parallel_grouped_projections = environment_flag(
+    result.tasks.projection.grouped = environment_flag(
         "TYLOINFER_TP_GROUPED_PROJECTIONS", true);
     result.tensor_parallel_shared_linear_attention_input = environment_flag(
         "TYLOINFER_TP_SHARED_LINEAR_ATTENTION_INPUT", true);
@@ -465,24 +465,24 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_TP_MIRROR_LINEAR_ATTENTION_SCALARS", true);
     result.tensor_parallel_mirror_qwen35_attention_kv = environment_flag(
         "TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true);
-    result.model_parallel_reduce_to_primary = environment(
+    result.tasks.projection.reduce_to_primary = environment(
         "TYLOINFER_MODEL_PARALLEL_REDUCE_TO_PRIMARY")
         ? environment_flag("TYLOINFER_MODEL_PARALLEL_REDUCE_TO_PRIMARY", true)
         : environment_flag("TYLOINFER_TP_REDUCE_TO_PRIMARY", true);
-    result.model_parallel_fp16_reduce = environment(
+    result.tasks.projection.fp16_reduce = environment(
         "TYLOINFER_MODEL_PARALLEL_FP16_REDUCE")
         ? environment_flag("TYLOINFER_MODEL_PARALLEL_FP16_REDUCE", true)
         : environment_flag("TYLOINFER_TP_FP16_REDUCE", true);
-    result.model_parallel_peer_first_launch = environment(
+    result.tasks.projection.peer_first = environment(
         "TYLOINFER_MODEL_PARALLEL_PEER_FIRST_LAUNCH")
         ? environment_flag("TYLOINFER_MODEL_PARALLEL_PEER_FIRST_LAUNCH", true)
         : environment_flag("TYLOINFER_TP_PEER_FIRST_LAUNCH", true);
 
-    result.decode_branch_parallel = enabled_unless_disabled(
+    result.tasks.projection.parallel = enabled_unless_disabled(
         "TYLOINFER_DISABLE_DECODE_BRANCH_PARALLEL");
     result.tensor_parallel_shard_native_float = environment_flag(
         "TYLOINFER_TP_SHARD_NATIVE_FLOAT", false);
-    result.nvq_fusion = environment("TYLOINFER_DISABLE_NVQ_FUSION")
+    result.tasks.projection.nvq_fusion = environment("TYLOINFER_DISABLE_NVQ_FUSION")
         ? enabled_unless_disabled("TYLOINFER_DISABLE_NVQ_FUSION")
         : enabled_unless_disabled("TYLOINFER_DISABLE_NIQ_FUSION");
     result.nvq2_exec = environment_flag("TYLOINFER_NVQ2_EXEC", false) &&
@@ -522,11 +522,11 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_DISABLE_MOE_SWIGLU_QUANT_FUSION");
     result.moe_reduce_gate_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_REDUCE_GATE_FUSION");
-    result.ffn_geglu_fusion = enabled_unless_disabled(
+    result.tasks.dense.mlp.gelu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_FFN_GEGLU_FUSION");
-    result.ffn_swiglu_fusion = enabled_unless_disabled(
+    result.tasks.dense.mlp.silu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_FFN_SWIGLU_FUSION");
-    result.important_neuron_branch_parallel = enabled_unless_disabled(
+    result.tasks.dense.important_parallel = enabled_unless_disabled(
         "TYLOINFER_DISABLE_IN_BRANCH_PARALLEL");
     result.gemma4_fused_norms = environment_flag(
         "TYLOINFER_GEMMA4_FUSED_NORMS", true);
@@ -534,41 +534,41 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_DSV4_GROUPWISE_OUTPUT_A", true);
     result.diagnostic_nint_group = enabled_unless_disabled(
         "TYLOINFER_DIAGNOSTIC_DISABLE_NINT_GROUP");
-    result.diagnostic_fp32_residual = environment_flag(
+    result.tasks.dense.fp32_residual = environment_flag(
         "TYLOINFER_DIAGNOSTIC_FP32_RESIDUAL", false);
-    result.diagnostic_in_f32_down = environment_flag(
+    result.tasks.dense.important_fp32 = environment_flag(
         "TYLOINFER_DIAGNOSTIC_IN_F32_DOWN", false);
-    result.kv_cache_write_aten = environment_flag(
+    result.tasks.attention.write_aten = environment_flag(
         "TYLOINFER_KV_CACHE_WRITE_ATEN", false);
     result.gdn_transposed_state = environment_flag(
         "TYLOINFER_GDN_TRANSPOSED_STATE", true);
     result.gdn_fused_output = environment_flag("TYLOINFER_GDN_FUSED_OUTPUT",true);
     result.linear_conv_prefill_fused = environment_flag(
         "TYLOINFER_LINEAR_CONV_PREFILL_FUSED", true);
-    result.minicpm_fused_bf16_rope = environment_flag(
+    result.tasks.attention.fused_rope = environment_flag(
         "TYLOINFER_MINICPM_FUSED_BF16_ROPE", true);
-    result.minicpm_fused_qk_norm_rope_kv = environment_flag(
+    result.tasks.attention.fused_qk_rope_kv = environment_flag(
         "TYLOINFER_MINICPM_FUSED_QK_NORM_ROPE_KV", true);
-    result.minicpm_fused_bf16_rmsnorm = environment_flag(
+    result.tasks.attention.fused_norm = environment_flag(
         "TYLOINFER_MINICPM_FUSED_BF16_RMSNORM", true);
-    result.minicpm_fused_rope_kv = environment_flag(
+    result.tasks.attention.fused_rope_kv = environment_flag(
         "TYLOINFER_MINICPM_FUSED_ROPE_KV", true);
-    result.minicpm_bf16_flash128 = enabled_unless_disabled(
+    result.tasks.attention.kernels.bf16_flash128 = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_BF16_FLASH128");
-    result.minicpm_flash128_specialized_casts = enabled_unless_disabled(
+    result.tasks.attention.kernels.flash128_casts = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_FLASH128_SPECIALIZED_CASTS");
-    result.minicpm_bf16_gqa_decode = environment_flag(
+    result.tasks.attention.kernels.bf16_gqa_decode = environment_flag(
         "TYLOINFER_MINICPM_BF16_GQA_DECODE", true);
-    result.minicpm_bf16_swiglu_fusion = enabled_unless_disabled(
+    result.tasks.dense.bf16_swiglu = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_BF16_SWIGLU_FUSION");
-    result.minicpm_bf16_residual_acc = enabled_unless_disabled(
+    result.tasks.dense.bf16_residual = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_BF16_RESIDUAL_ACC");
-    result.mma_attention = environment_flag("TYLOINFER_MMA_ATTENTION", true);
-    result.mma_attention_decode = environment_flag(
+    result.tasks.attention.kernels.mma_prefill = environment_flag("TYLOINFER_MMA_ATTENTION", true);
+    result.tasks.attention.kernels.mma_decode = environment_flag(
         "TYLOINFER_MMA_ATTENTION_DECODE", true);
-    result.attention_decode_aten = environment_flag(
+    result.tasks.attention.kernels.decode_aten = environment_flag(
         "TYLOINFER_ATTENTION_DECODE_ATEN", false);
-    result.attention_decode_split_k = environment_flag(
+    result.tasks.attention.kernels.split_k = environment_flag(
         "TYLOINFER_ATTENTION_DECODE_SPLITK", true);
     result.deepseek_v41_engram_cache_rows = environment_size(
         "TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_ROWS", 16'384);
@@ -686,10 +686,10 @@ mfq::cuda::Projector CudaExecutionContext::projector() {
     return {profiler, kl_mmq, *tq, branches, collectives,
             decode_graph_serial_branches, decode_graph_tp_projection_major,
             {model_parallel_primary_device(*this),
-             config.model_parallel_peer_first_launch,
-             config.model_parallel_reduce_to_primary, config.model_parallel_fp16_reduce,
-             config.tensor_parallel_grouped_projections, config.decode_branch_parallel,
-             config.nvq_fusion,
+             config.tasks.projection.peer_first,
+             config.tasks.projection.reduce_to_primary, config.tasks.projection.fp16_reduce,
+             config.tasks.projection.grouped, config.tasks.projection.parallel,
+             config.tasks.projection.nvq_fusion,
              !decode_graph_serial_branches ||
                  mfq::cuda::runtime_options::nint_group_quantize().value_or(true)}};
 }

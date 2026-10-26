@@ -447,7 +447,7 @@ int run_linear_group_check(
     TYLOINFER_RUNTIME_CHECK(actual.size() == names.size(), "linear group output count mismatch");
     std::vector<mfq_tensor_backend::Tensor> graph_actual;
     if (M == 1 && mfq::cuda::decode_branches(
-                    execution.config.decode_branch_parallel, execution.decode_graph_serial_branches, M)) {
+                    execution.config.tasks.projection.parallel, execution.decode_graph_serial_branches, M)) {
         mfq_cuda_synchronize();
         const auto graph_stream =
             mfq_get_stream_from_pool(false);

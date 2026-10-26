@@ -577,7 +577,7 @@ tb::Tensor TqMoeBanks::forward_parallel(CudaExecutionContext& execution,tb::Tens
     std::vector<tb::Tensor> partials(slices.size());
     for(std::size_t launch=0;launch<slices.size();++launch) {
         const auto index=parallel_index(
-            execution.config.model_parallel_peer_first_launch, launch,slices.size());
+            execution.config.tasks.projection.peer_first, launch,slices.size());
         const auto& slice=slices[index];
         const MfqCudaGuard guard(slice.device);
         auto local_input=execution.collectives.copy(input, slice.device);
@@ -587,5 +587,5 @@ tb::Tensor TqMoeBanks::forward_parallel(CudaExecutionContext& execution,tb::Tens
             limit,&execution.profiler,slice.begin,slice.end);
     }
     return execution.collectives.sum(std::move(partials), model_parallel_primary_device(execution),
-            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
+            execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce);
 }

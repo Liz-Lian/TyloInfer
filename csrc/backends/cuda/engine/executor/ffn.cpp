@@ -6,6 +6,7 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "moe_ffn_pipeline.h"
 #include "ops/ffn/mlp.h"
+#include "ops/ffn/dense.h"
 #include "ops/ffn/residual.h"
 #include "engine/models/common/moe.h"
 #include "mfq_cuda_activation_ops.h"
@@ -125,7 +126,7 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index =
             parallel_index(
-            execution.config.model_parallel_peer_first_launch, launch_position, shard_count);
+            execution.config.tasks.projection.peer_first, launch_position, shard_count);
         const auto &gate_shard = f.moe_gate_up.expert_parallel_shards[index];
         const auto &down_shard = f.moe_down.expert_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
@@ -185,13 +186,13 @@ run_experts(CudaExecutionContext &execution, const Ffn& f, mfq_tensor_backend::T
         mfq_tensor_backend::Tensor complete_down;
         if (collect_output_energy) {
             complete_down = execution.collectives.sum(std::move(down_partials), model_parallel_primary_device(execution),
-            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
+            execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce);
         }
         record_moe_route_stats(execution, f.moe_layer, route.ids, route_weights, complete_down,
                                f.moe_gate_up.n_experts);
     }
     return execution.collectives.sum(std::move(routed_partials), model_parallel_primary_device(execution),
-            execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce);
+            execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce);
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
@@ -216,7 +217,7 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
         }
         const int64_t rows = xh.numel() / xh.size(-1);
         const bool use_f32_down = rows >= 16 && execution.kl_mmq.mode == KlMmqMode::Fp16 &&
-                                  execution.config.diagnostic_in_f32_down;
+                                  execution.config.tasks.dense.important_fp32;
         return mfq::models::additive_branches(
             [&](size_t index) {
                 const auto &branch = index == 0 ? f : *f.important_neurons;
@@ -230,8 +231,8 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
             [&](auto &run_branch, auto &outputs) {
                 return !use_f32_down &&
                        mfq::cuda::decode_branches(
-                    execution.config.decode_branch_parallel, execution.decode_graph_serial_branches, rows) &&
-                       execution.config.important_neuron_branch_parallel &&
+                    execution.config.tasks.projection.parallel, execution.decode_graph_serial_branches, rows) &&
+                       execution.config.tasks.dense.important_parallel &&
                        execution.branches.run(2, run_branch, outputs);
             },
             [&](auto low, auto high) {
@@ -248,8 +249,8 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
         return profiler.measure("ffn.tensor_parallel", [&] {
             return dense(f).sharded(
                 profiler, execution.kl_mmq, *execution.tq, execution.collectives,
-                model_parallel_primary_device(execution), execution.config.model_parallel_peer_first_launch,
-                execution.config.model_parallel_reduce_to_primary, execution.config.model_parallel_fp16_reduce, xh);
+                model_parallel_primary_device(execution), execution.config.tasks.projection.peer_first,
+                execution.config.tasks.projection.reduce_to_primary, execution.config.tasks.projection.fp16_reduce, xh);
         });
     }
     if (f.is_moe) {
@@ -774,9 +775,9 @@ mfq_tensor_backend::Tensor run_ffn_impl(CudaExecutionContext &execution, const F
     }
     TYLOINFER_RUNTIME_CHECK(f.activation != ActivationKind::relu_squared || !f.important_neurons,
                       "relu-squared FFN does not support important neurons");
-    const Mlp::Options options{execution.config.nvq_fusion,
-                               execution.config.ffn_geglu_fusion,
-                               execution.config.ffn_swiglu_fusion};
+    const Mlp::Options options{execution.config.tasks.projection.nvq_fusion,
+                               execution.config.tasks.dense.mlp.gelu_fusion,
+                               execution.config.tasks.dense.mlp.silu_fusion};
     return dense(f).forward(execution.projector(), profiler, options, xh);
 }
 
@@ -797,6 +798,20 @@ Tensor run_ffn(CudaExecutionContext& execution, const Ffn& f, Tensor x,
 Tensor full_ffn(
     CudaExecutionContext& execution, const Ffn& ffn, const Tensor& ffn_norm,
     const FullAttention& attention, Tensor residual, Tensor output) {
+    if (!ffn.is_moe) {
+        Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
+            attention.official_bf16, attention.attention_output_gate};
+        if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
+        auto parallel = execution.config.tasks.projection;
+        parallel.primary = model_parallel_primary_device(execution);
+        auto options = execution.config.tasks.dense;
+        options.mlp.nvq_fusion = parallel.nvq_fusion;
+        options.bf16_norm = execution.config.tasks.attention.fused_norm;
+        return op.forward(execution.projector(), execution.profiler, execution.kl_mmq, *execution.tq,
+            execution.branches, execution.collectives, parallel, options,
+            execution.decode_graph_serial_branches, std::move(residual), std::move(output),
+            attention.layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+    }
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto& profiler = execution.profiler;
     const auto& config = execution.config;
@@ -806,47 +821,45 @@ Tensor full_ffn(
             trace_gemma_stage(execution, attention.layer, name, value.reshape({B, T, -1}));
     };
     auto pair = full_norm(profiler, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
-                          attention.official_bf16, config.minicpm_fused_bf16_rmsnorm,
-                          config.diagnostic_fp32_residual, std::move(residual), std::move(output));
+                          attention.official_bf16, config.tasks.attention.fused_norm,
+                          config.tasks.dense.fp32_residual, std::move(residual), std::move(output));
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
     trace("qwen.ffn_norm", input);
     auto mlp = dense(ffn);
-    if (!attention.official_bf16 && !ffn.is_moe && !ffn.important_neurons &&
-        !config.diagnostic_fp32_residual && config.nvq_fusion &&
-        mlp.can_fuse(input, residual.reshape({B * T, H}))) {
-        return profiler.measure("full.ffn_down_residual", [&] {
-            return mlp.fused(profiler, input, residual.reshape({B * T, H})).reshape({B, T, H});
-        });
-    }
     auto ff = attention.official_bf16
-        ? mlp.bf16(execution.projector(), profiler, config.minicpm_bf16_swiglu_fusion, input)
+        ? mlp.bf16(execution.projector(), profiler, config.tasks.dense.bf16_swiglu, input)
               .reshape({B, T, H}).to(mfq_tensor_backend::kBFloat16).contiguous()
         : run_ffn(execution, ffn, input).reshape({B, T, H});
     trace("qwen.ffn_output", ff);
-    return full_add(profiler, config.diagnostic_fp32_residual, config.minicpm_bf16_residual_acc,
+    return full_add(profiler, config.tasks.dense.fp32_residual, config.tasks.dense.bf16_residual,
                     std::move(residual), std::move(ff));
 }
 
 Tensor linear_ffn(
     CudaExecutionContext& execution, const Ffn& ffn, const Tensor& ffn_norm,
     const LinearAttention& attention, Tensor residual, Tensor output) {
+    if (!ffn.is_moe) {
+        Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps,
+            attention.norm_weight_offset, false, false, true};
+        if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
+        auto parallel = execution.config.tasks.projection;
+        parallel.primary = model_parallel_primary_device(execution);
+        auto options = execution.config.tasks.dense;
+        options.mlp.nvq_fusion = parallel.nvq_fusion;
+        return op.forward(execution.projector(), execution.profiler, execution.kl_mmq, *execution.tq,
+            execution.branches, execution.collectives, parallel, options,
+            execution.decode_graph_serial_branches, std::move(residual), std::move(output));
+    }
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto& profiler = execution.profiler;
     const auto& config = execution.config;
     auto pair = linear_norm(profiler, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
-                            config.diagnostic_fp32_residual, std::move(residual), std::move(output));
+                            config.tasks.dense.fp32_residual, std::move(residual), std::move(output));
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
-    auto mlp = dense(ffn);
-    if (!ffn.is_moe && !ffn.important_neurons && !config.diagnostic_fp32_residual &&
-        config.nvq_fusion && mlp.can_fuse(input, residual.reshape({B * T, H}))) {
-        return profiler.measure("linear.ffn_down_residual", [&] {
-            return mlp.fused(profiler, input, residual.reshape({B * T, H})).reshape({B, T, H});
-        });
-    }
     auto ff = run_ffn(execution, ffn, input).reshape({B, T, H});
-    return linear_add(profiler, config.diagnostic_fp32_residual, std::move(residual), std::move(ff));
+    return linear_add(profiler, config.tasks.dense.fp32_residual, std::move(residual), std::move(ff));
 }
 
 } // namespace mfq::cuda
