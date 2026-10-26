@@ -1,7 +1,7 @@
 #include "env.h"
 #include "context.h"
 #include "resident_allocations.h"
-#include "engine/executor/error.h"
+#include "native/error.h"
 
 #include <algorithm>
 #include <atomic>

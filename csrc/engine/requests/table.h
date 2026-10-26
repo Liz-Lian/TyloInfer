@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../executor/step.h"
-#include "../executor/error.h"
+#include "../../native/error.h"
 
 #include <memory>
 #include <unordered_map>

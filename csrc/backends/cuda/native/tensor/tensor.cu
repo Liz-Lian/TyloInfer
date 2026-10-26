@@ -3,7 +3,7 @@
 #include "weight_memory.h"
 
 #include "context.h"
-#include "engine/executor/error.h"
+#include "native/error.h"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>

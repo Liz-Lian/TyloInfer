@@ -5,7 +5,7 @@
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_shared_gate.h"
 #include "mfq_cuda_sampling_ops.h"
-#include "engine/executor/error.h"
+#include "native/error.h"
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"

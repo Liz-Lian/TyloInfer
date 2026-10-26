@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/weights/moe/native_dma_batch.h"
 #include "backends/cuda/engine/weights/moe/cached_source_internal.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
-#include "engine/executor/error.h"
+#include "native/error.h"
 #include "engine/weights/routes.h"
 #include "host_memory_copy.h"
 #include "resident_allocations.h"

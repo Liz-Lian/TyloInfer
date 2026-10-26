@@ -17,7 +17,7 @@
 #include "backends/cuda/engine/weights/moe/dma_copy_batch.h"
 #include "backends/cuda/engine/weights/moe/native_dma_batch.h"
 #include "context.h"
-#include "engine/executor/error.h"
+#include "native/error.h"
 #include "engine/executor/moe_batch.h"
 #include "ops/common/include/projection.h"
 #include "native/cuda/profile.h"

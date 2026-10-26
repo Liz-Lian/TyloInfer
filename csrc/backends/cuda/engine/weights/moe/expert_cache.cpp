@@ -8,7 +8,7 @@
 #include "backends/cuda/engine/weights/moe/pinned_expert_arena.h"
 #include "resident_allocations.h"
 #include "backends/cpu/native/host_parallel.h"
-#include "engine/executor/error.h"
+#include "native/error.h"
 #include "source/mapped_read_profile.h"
 #include "source/mapped_prefetch_scope.h"
 #include "source/mapped_tensor_pages.h"
