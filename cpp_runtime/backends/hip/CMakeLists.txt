@@ -50,6 +50,7 @@ add_library(mfq-hip-core STATIC
     ${TYLOINFER_HIP_ROOT}/src/mfq_cuda_context.hip
     ${TYLOINFER_HIP_ROOT}/src/mfq_native_tensor.cpp
     ${TYLOINFER_HIP_ROOT}/src/mfq_native_tensor.hip
+    ${TYLOINFER_HIP_ROOT}/src/mfq_f32_matmul_lt.hip
     ${TYLOINFER_HIP_ROOT}/src/mfq_native_tensor_blas.hip
     ${TYLOINFER_HIP_ROOT}/src/mfq_native_tensor_creation.hip
     ${TYLOINFER_HIP_ROOT}/src/mfq_native_tensor_indexing.hip
@@ -64,6 +65,20 @@ target_include_directories(mfq-hip-core PUBLIC
     ${TYLOINFER_HIP_KERNEL_ROOT}
 )
 target_link_libraries(mfq-hip-core PUBLIC hip::host hipblas mfq-host-parallel)
+find_package(hipblaslt QUIET CONFIG HINTS "${ROCM_PATH}" "$ENV{ROCM_PATH}" /opt/rocm)
+if(TARGET roc::hipblaslt)
+    target_link_libraries(mfq-hip-core PRIVATE roc::hipblaslt)
+    target_compile_definitions(mfq-hip-core PRIVATE TYLOINFER_HAVE_HIPBLASLT=1)
+    # ROCm wheels copy development libraries without their kernel data. Load
+    # the runtime copy so hipBLASLt can find its adjacent Tensile kernels.
+    get_filename_component(TYLOINFER_ROCM_WHEEL_BASE "${hipblaslt_DIR}/../../../.." ABSOLUTE)
+    set(TYLOINFER_ROCM_WHEEL_LIB "${TYLOINFER_ROCM_WHEEL_BASE}/_rocm_sdk_libraries/lib")
+    if(EXISTS "${TYLOINFER_ROCM_WHEEL_LIB}/hipblaslt/library")
+        # The wheel's LD_LIBRARY_PATH also contains the incomplete devel copy.
+        target_link_options(mfq-hip-core INTERFACE
+            "LINKER:--disable-new-dtags,-rpath,${TYLOINFER_ROCM_WHEEL_LIB}")
+    endif()
+endif()
 target_compile_features(mfq-hip-core PUBLIC cxx_std_20)
 set_target_properties(mfq-hip-core PROPERTIES
     HIP_STANDARD 20
@@ -73,6 +88,13 @@ set_target_properties(mfq-hip-core PROPERTIES
 )
 
 set(TYLOINFER_HIP_KERNEL_SOURCES
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_gr.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_gr_dense.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_shared.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_moe.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_projection.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_q8.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/tq_input_gate.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/acc.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/activation.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/attention.hip
@@ -82,26 +104,41 @@ set(TYLOINFER_HIP_KERNEL_SOURCES
     ${TYLOINFER_HIP_KERNEL_ROOT}/qwen4_exp.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/glm5_next.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/gated_delta_net.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/gdn_stateful_decode.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/gdn_decode_window.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/kv_cache.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/paged_kv.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/moe.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/moe_route.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/mx_matmul.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/mxfp8_grouped.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/norm.hip
+    # The signed Hadamard transform is also used by the sparse indexer.
+    ${TYLOINFER_HIP_KERNEL_ROOT}/nepq.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/rope.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/sampling.hip
     ${TYLOINFER_HIP_KERNEL_ROOT}/ssm_conv.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/unported_kernels_stub.cpp
+    ${TYLOINFER_HIP_KERNEL_ROOT}/selective_state_scan.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/deepseek_v41.hip
+    ${TYLOINFER_HIP_ROOT}/kernels/kv_quantization.hip
+    ${TYLOINFER_HIP_ROOT}/kernels/kv_hot_cache.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/deepseek_v4_hc.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/deepseek_v4_attention.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/deepseek_v4_fp4.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/deepseek_v41_index.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/deepseek_v41_block_sort.hip
+    ${TYLOINFER_HIP_KERNEL_ROOT}/glm_dsa.hip
 )
+
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_HIP_KERNEL_SOURCES
-    ${TYLOINFER_HIP_KERNEL_ROOT}/mfe_ffn.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/mfe_ffn_launch.cpp
-    ${TYLOINFER_HIP_KERNEL_ROOT}/fp8_sq.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/mxfp4_sq.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/nepq.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/nepq_residual.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/nint_matmul.hip
-    ${TYLOINFER_HIP_KERNEL_ROOT}/nvq_matmul.hip
+        ${TYLOINFER_HIP_KERNEL_ROOT}/mfe_ffn.hip
+        ${TYLOINFER_HIP_KERNEL_ROOT}/mfe_ffn_launch.cpp
+        ${TYLOINFER_HIP_KERNEL_ROOT}/fp8_sq.hip
+        ${TYLOINFER_HIP_KERNEL_ROOT}/mxfp4_sq.hip
+        ${TYLOINFER_HIP_KERNEL_ROOT}/nepq_residual.hip
+        ${TYLOINFER_HIP_KERNEL_ROOT}/nint_matmul.hip
+        ${TYLOINFER_HIP_KERNEL_ROOT}/nvq_matmul.hip
     )
 endif()
 
@@ -182,7 +219,12 @@ endfunction()
 
 set(TYLOINFER_HIP_MODEL_SOURCES
     ${TYLOINFER_HIP_ROOT}/models/deepseek_v4/ops.cpp
+    ${TYLOINFER_HIP_ROOT}/models/nemotron_h/ops.cpp
     ${TYLOINFER_HIP_ROOT}/models/deepseek_v41/ops.cpp
+    ${TYLOINFER_HIP_ROOT}/models/deepseek_v41/engram.cpp
+    ${TYLOINFER_HIP_ROOT}/models/deepseek_v41/prefill.cpp
+    ${TYLOINFER_HIP_ROOT}/models/deepseek_v41/vision.cpp
+    ${TYLOINFER_HIP_ROOT}/models/deepseek_v41/session.cpp
     ${TYLOINFER_HIP_ROOT}/models/deepseek_v41/dspark.cpp
     ${TYLOINFER_HIP_ROOT}/models/qwen4_exp/ops.cpp
     ${TYLOINFER_HIP_ROOT}/models/glm5_next/ops.cpp
@@ -199,6 +241,7 @@ set(TYLOINFER_HIP_TRANSFORMER_SOURCES
     ${TYLOINFER_HIP_ROOT}/core/decode_graph.cpp
     ${TYLOINFER_HIP_ROOT}/core/ffn.cpp
     ${TYLOINFER_HIP_ROOT}/core/full_block.cpp
+    ${TYLOINFER_HIP_ROOT}/core/axial_patch_vision.cpp
     ${TYLOINFER_HIP_ROOT}/core/kv_cache.cpp
     ${TYLOINFER_HIP_ROOT}/core/rope.cpp
 )
@@ -210,6 +253,7 @@ set(TYLOINFER_HIP_RUNTIME_OP_SOURCES
     ${TYLOINFER_HIP_ROOT}/ops/common/gated_residual.cpp
     ${TYLOINFER_HIP_ROOT}/ops/common/mx.cpp
     ${TYLOINFER_HIP_ROOT}/ops/common/quant_linear.cpp
+    ${TYLOINFER_HIP_ROOT}/ops/tq/tq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_HIP_RUNTIME_OP_SOURCES
@@ -257,6 +301,8 @@ set(TYLOINFER_HIP_INSTANTIATION_SOURCES
     ${TYLOINFER_HIP_ROOT}/engine/cuda_engine.cpp
     ${TYLOINFER_HIP_ROOT}/engine/generation.cpp
     ${TYLOINFER_HIP_ROOT}/storage/text_session_cache.cpp
+    ${TYLOINFER_HIP_ROOT}/storage/qwen4_paged_session.cpp
+    ${TYLOINFER_HIP_ROOT}/storage/deepseek_v41_paged_session.cpp
     ${TYLOINFER_HIP_ROOT}/engine/mtp.cpp
     ${TYLOINFER_HIP_ROOT}/engine/cuda_batching.cpp
     ${TYLOINFER_HIP_ROOT}/commands/cli.cpp
@@ -351,6 +397,27 @@ set_target_properties(mfq-eval PROPERTIES
 )
 
 if(BUILD_TESTING)
+    add_executable(mfq-hip-decode-test ${TYLOINFER_HIP_ROOT}/tests/decode_hotspots_test.cpp)
+    mfq_configure_hip_backend_target(mfq-hip-decode-test)
+    target_compile_definitions(mfq-hip-decode-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1)
+    target_compile_features(mfq-hip-decode-test PRIVATE cxx_std_20)
+    target_link_libraries(mfq-hip-decode-test PRIVATE
+        mfq-hip-runtime mfq-hip-native-kernels mfq-hip-core mfq-core)
+    add_test(NAME mfq-hip-decode-test COMMAND mfq-hip-decode-test)
+    set_tests_properties(mfq-hip-decode-test PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(mfq-hip-tq-test ${TYLOINFER_HIP_ROOT}/tests/tq_projection_test.cpp)
+    mfq_configure_hip_backend_target(mfq-hip-tq-test)
+    target_compile_definitions(mfq-hip-tq-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1)
+    target_compile_features(mfq-hip-tq-test PRIVATE cxx_std_20)
+    target_link_libraries(mfq-hip-tq-test PRIVATE
+        mfq-hip-runtime mfq-hip-native-kernels mfq-hip-core mfq-core)
+    add_test(NAME mfq-hip-tq-test COMMAND mfq-hip-tq-test
+        ${TYLOINFER_REPOSITORY_ROOT}/tests/fixtures/hip-tq-native-subgroup.bin
+        ${TYLOINFER_REPOSITORY_ROOT}/tests/fixtures/hip-tq-native-short-groups.bin
+        ${TYLOINFER_REPOSITORY_ROOT}/tests/fixtures/hip-tq-native-columns.bin)
+    set_tests_properties(mfq-hip-tq-test PROPERTIES SKIP_RETURN_CODE 77)
+
     # The CUDA backend's test sources compile directly as HIP translation
     # units: hipcc accepts <<<>>> launches, and tests/cuda_compat maps the
     # cuda_* runtime API names onto hip.
@@ -444,3 +511,31 @@ set(TYLOINFER_SYSTEM_RUNTIME_DIR
     "directory containing the host libstdc++ runtime")
 set_property(TARGET mfq-runtime PROPERTY
     BUILD_RPATH "${TYLOINFER_SYSTEM_RUNTIME_DIR}")
+
+if(BUILD_TESTING)
+    # This bridge contains host code only. Match the runtime's C++ compiler
+    # for the model/template ABI; GPU work is supplied by the linked kernels.
+    set_source_files_properties(${TYLOINFER_HIP_ROOT}/tests/qwen38_flash_next_test.hip
+        PROPERTIES LANGUAGE CXX)
+    add_executable(mfq-hip-flash-next-test ${TYLOINFER_HIP_ROOT}/tests/qwen38_flash_next_test.hip
+        ${TYLOINFER_HIP_ROOT}/tests/quant_kv_check.cpp
+        ${TYLOINFER_HIP_ROOT}/tests/hot_kv_check.cpp
+        ${TYLOINFER_HIP_ROOT}/tests/qwen4_graph_reuse_check.cpp
+        ${TYLOINFER_HIP_ROOT}/tests/qwen4_session_check.cpp
+        ${TYLOINFER_HIP_ROOT}/tests/qwen4_predictor_graph_check.cpp)
+    target_compile_definitions(mfq-hip-flash-next-test PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1)
+    target_include_directories(mfq-hip-flash-next-test PRIVATE ${TYLOINFER_HIP_TEST_INCLUDES}
+        ${TYLOINFER_REPOSITORY_ROOT}/cpp_runtime ${TYLOINFER_HIP_ROOT}/models ${TYLOINFER_HIP_ROOT}/runtime)
+    target_compile_features(mfq-hip-flash-next-test PRIVATE cxx_std_20)
+    set_target_properties(mfq-hip-flash-next-test PROPERTIES HIP_STANDARD 20
+        HIP_ARCHITECTURES "${TYLOINFER_HIP_ARCHITECTURES}" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/hip-tests")
+    target_link_libraries(mfq-hip-flash-next-test PRIVATE mfq-hip-runtime mfq-hip-native-kernels
+        mfq-hip-core mfq-core mfq-json mfq-model-graph mfq-runtime-communication)
+    add_test(NAME mfq-hip-flash-next COMMAND mfq-hip-flash-next-test)
+    set_tests_properties(mfq-hip-flash-next PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+endif()
+
+if(BUILD_TESTING)
+    mfq_add_hip_test(mfq-hip-recurrent-mixer-test ${TYLOINFER_HIP_ROOT}/tests/recurrent_mixer_ops_test.hip)
+    target_link_libraries(mfq-hip-recurrent-mixer-test PRIVATE mfq-hip-core mfq-hip-native-kernels)
+endif()

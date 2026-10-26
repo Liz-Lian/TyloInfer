@@ -270,6 +270,15 @@ static void configure_model_parallel(
             if (status == hipErrorPeerAccessAlreadyEnabled) {
                 (void)hipGetLastError();
             }
+            int pools_supported=0;
+            TYLOINFER_CUDA_CHECK(hipDeviceGetAttribute(&pools_supported,hipDeviceAttributeMemoryPoolsSupported,source));
+            if(pools_supported) {
+                hipMemPool_t pool=nullptr;
+                TYLOINFER_CUDA_CHECK(hipDeviceGetDefaultMemPool(&pool,source));
+                hipMemAccessDesc access{};access.location.type=hipMemLocationTypeDevice;
+                access.location.id=destination;access.flags=hipMemAccessFlagsProtReadWrite;
+                TYLOINFER_CUDA_CHECK(hipMemPoolSetAccess(pool,&access,1));
+            }
         }
     }
     execution.model_parallel_collectives.configure(
