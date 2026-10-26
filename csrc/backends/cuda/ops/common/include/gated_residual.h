@@ -4,7 +4,6 @@
 #include <functional>
 #include <memory>
 #include <utility>
-#include <vector>
 
 struct QuantLinear;
 using GatedResidualMarker = std::function<void(const char*)>;
@@ -14,6 +13,11 @@ namespace mfq::cuda {
 class GatedResidual {
 public:
     using Tensor = mfq_tensor_backend::Tensor;
+    struct Result {
+        Tensor mixed;
+        Tensor residual;
+        Tensor gate;
+    };
     struct Options {
         bool fused_projections = true;
         bool fused_activation = true;
@@ -48,10 +52,10 @@ public:
           injection(std::move(injection)), hidden(hidden), streams(streams), eps(eps),
           options_(&options), cache_serial_(&cache_serial) {}
 
-    std::vector<Tensor> pre(const Tensor& input, const GatedResidualMarker& marker = {}) const;
-    std::vector<Tensor> pre_after(const Tensor& branch, const std::vector<Tensor>& previous,
-                                  const GatedResidualMarker& marker = {}) const;
-    Tensor post(const Tensor& branch, const std::vector<Tensor>& previous) const;
+    Result pre(const Tensor& input, const GatedResidualMarker& marker = {}) const;
+    Result pre_after(const Tensor& input, const Tensor& residual, const Tensor& gate,
+                     const GatedResidualMarker& marker = {}) const;
+    Tensor post(const Tensor& input, const Tensor& residual, const Tensor& gate) const;
     bool can_fuse(const Tensor& input) const;
 
 private:
@@ -65,13 +69,13 @@ private:
 
     int64_t prefill_work_chunk(const Tensor& input) const;
     template<class Project>
-    std::vector<Tensor> bounded_pre(const Tensor& input, int64_t chunk,
-                                   bool reuse_input, Project project) const;
-    std::vector<Tensor> fused(const Tensor& branch, const Tensor& residual,
-                             const Tensor& prior, bool after,
-                             const GatedResidualMarker& marker) const;
-    std::vector<Tensor> prepare(const Tensor& input, const Tensor& prepared_norm,
-                               const GatedResidualMarker& marker) const;
+    Result bounded_pre(const Tensor& input, int64_t chunk,
+                       bool reuse_input, Project project) const;
+    Result fused(const Tensor& input, const Tensor& residual,
+                 const Tensor& gate, bool after,
+                 const GatedResidualMarker& marker) const;
+    Result prepare(const Tensor& input, const Tensor& prepared_norm,
+                   const GatedResidualMarker& marker) const;
 };
 
 } // namespace mfq::cuda
