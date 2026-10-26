@@ -1,5 +1,5 @@
 #include "quant_linear.h"
-#include "native/collectives.h"
+#include "native/cuda/collectives.h"
 #include "mfq_cuda_embedding_ops.h"
 #include "mfq_cuda_quant_ops.h"
 #include "formats/mxfp4_sq_decode.h"

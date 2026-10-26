@@ -465,9 +465,9 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${TYLOINFER_CUDA_ROOT}/ops/ffn/mlp.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/ffn/dense.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/ffn/residual.cpp
-    ${TYLOINFER_CUDA_ROOT}/native/profile.cpp
+    ${PROJECT_SOURCE_DIR}/native/cuda/profile.cpp
     ${TYLOINFER_CUDA_ROOT}/native/route_stats.cpp
-    ${TYLOINFER_CUDA_ROOT}/native/collectives.cpp
+    ${PROJECT_SOURCE_DIR}/native/cuda/collectives.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/attention/attention.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/attention/full.cpp
     ${TYLOINFER_CUDA_ROOT}/ops/attention/kv.cpp

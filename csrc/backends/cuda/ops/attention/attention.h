@@ -2,7 +2,7 @@
 
 #include "backend.h"
 #include "mfq_cuda_kv_quantization.h"
-#include "native/profile.h"
+#include "native/cuda/profile.h"
 #include "ops/attention/scratch.h"
 
 #include <cstdint>

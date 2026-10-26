@@ -1,7 +1,7 @@
 #include "backends/cuda/ops/tq/include/moe.h"
 
 #include "backends/cuda/ops/tq/include/detail.h"
-#include "native/blas.h"
+#include "native/cuda/blas.h"
 #include "mfq_cuda_activation_ops.h"
 
 #include <algorithm>

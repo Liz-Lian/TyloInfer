@@ -1,6 +1,6 @@
 #pragma once
 
-#include "native/profile.h"
+#include "native/cuda/profile.h"
 #include "backend.h"
 
 #include <array>

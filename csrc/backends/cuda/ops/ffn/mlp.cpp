@@ -1,5 +1,5 @@
 #include "mlp.h"
-#include "native/collectives.h"
+#include "native/cuda/collectives.h"
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_moe_ops.h"
 

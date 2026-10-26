@@ -1,7 +1,7 @@
 #include "run.h"
 
-#include "native/branches.h"
-#include "native/collectives.h"
+#include "native/cuda/branches.h"
+#include "native/cuda/collectives.h"
 #include "ops/norm/rms.h"
 
 #include <type_traits>

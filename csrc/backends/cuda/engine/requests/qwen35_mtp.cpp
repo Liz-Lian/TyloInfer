@@ -1,6 +1,6 @@
 #include "engine/requests/qwen35_mtp.h"
 
-#include "native/collectives.h"
+#include "native/cuda/collectives.h"
 
 namespace mfq::cuda::qwen35 {
 

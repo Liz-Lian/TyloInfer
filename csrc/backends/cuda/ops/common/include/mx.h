@@ -1,6 +1,6 @@
 #pragma once
 
-#include "native/profile.h"
+#include "native/cuda/profile.h"
 #include "parallel.h"
 #include "backend.h"
 #include "formats/mx_blob.h"
