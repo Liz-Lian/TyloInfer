@@ -2,7 +2,7 @@
 
 #include "backends/cuda/engine/models/components.h"
 #include "engine/executor/qwen35.h"
-#include "engine/models/qwen35/model.h"
+#include "backends/cuda/engine/models/qwen35/load.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"

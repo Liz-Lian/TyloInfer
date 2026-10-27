@@ -538,7 +538,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp
-    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/model.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/models/qwen35/load.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
@@ -562,12 +562,21 @@ target_compile_definitions(mfq-cuda-loading PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+set(TYLOINFER_CUDA_QWEN_SOURCES
+    ${PROJECT_SOURCE_DIR}/models/qwen35/model.cpp
+    ${PROJECT_SOURCE_DIR}/models/qwen35/predictor.cpp
+)
+add_library(mfq-cuda-models OBJECT ${TYLOINFER_CUDA_QWEN_SOURCES})
+mfq_configure_cuda_backend_target(mfq-cuda-models)
+target_compile_definitions(mfq-cuda-models PRIVATE
+    TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
+set_target_properties(mfq-cuda-models PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Concrete Engine/model bindings stay in this source group for both native and
 # optional Torch builds. Extra targets do not reduce their header dependencies.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/components.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/models/qwen35/predictor.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
@@ -587,6 +596,7 @@ add_library(mfq-cuda-runtime STATIC
     $<TARGET_OBJECTS:mfq-cuda-ops>
     $<TARGET_OBJECTS:mfq-cuda-execution>
     $<TARGET_OBJECTS:mfq-cuda-loading>
+    $<TARGET_OBJECTS:mfq-cuda-models>
     ${TYLOINFER_CUDA_INSTANTIATION_SOURCES}
 )
 add_library(mfq::cuda-runtime ALIAS mfq-cuda-runtime)
@@ -928,7 +938,7 @@ target_compile_definitions(mfq-cuda-runtime PRIVATE
     NOMINMAX
 )
 if(MSVC)
-    foreach(target mfq-cuda-ops mfq-cuda-execution mfq-cuda-loading mfq-cuda-runtime)
+    foreach(target mfq-cuda-ops mfq-cuda-execution mfq-cuda-loading mfq-cuda-models mfq-cuda-runtime)
         target_compile_options(${target} PRIVATE
             "$<$<COMPILE_LANGUAGE:CXX>:/utf-8>"
             "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
@@ -1141,6 +1151,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
         ${TYLOINFER_CUDA_EXECUTION_SOURCES}
         ${TYLOINFER_CUDA_LOADING_SOURCES}
         ${TYLOINFER_CUDA_INSTANTIATION_SOURCES}
+        ${TYLOINFER_CUDA_QWEN_SOURCES}
         ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu
         ${TYLOINFER_CUDA_KERNEL_SOURCES}
     )

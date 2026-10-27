@@ -1,7 +1,7 @@
 #pragma once
 
-#include "config.h"
-#include "../common/causal_metadata.h"
+#include "engine/models/qwen35/config.h"
+#include "engine/models/common/causal_metadata.h"
 #include "backends/cuda/engine/models/ffn.h"
 #include "engine/task.h"
 #include "formats/model_graph.h"
@@ -12,16 +12,12 @@
 #include "ops/common/include/rope.h"
 #include "source/model_source.h"
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <memory>
-#include <string>
-#include <string_view>
 #include <unordered_map>
 #include <variant>
 #include <vector>
-
-struct CudaExecutionContext;
 
 namespace mfq::cuda::qwen35 {
 
@@ -64,15 +60,5 @@ struct Model {
     Tensor output_norm;
     std::vector<Layer> layers;
 };
-
-Model load(CudaExecutionContext&, const std::string& model_path,
-           const std::string& config_path, std::int64_t context_size = 0,
-           bool load_layers = true, bool defer_cache = false,
-           std::shared_ptr<const mfq::ModelSource> source = {},
-           bool load_input_output = true);
-
-Layer load_layer(CudaExecutionContext&, const mfq::ModelSource&, const Config&,
-                 int index, const std::string& type, int device, bool cpu,
-                 std::string_view tensor_root = "model");
 
 } // namespace mfq::cuda::qwen35

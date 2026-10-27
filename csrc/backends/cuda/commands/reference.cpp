@@ -4,7 +4,7 @@
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/qwen35.h"
-#include "engine/models/qwen35/model.h"
+#include "backends/cuda/engine/models/qwen35/load.h"
 #include "models/common/block.h"
 
 #include <algorithm>

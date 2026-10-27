@@ -1,7 +1,7 @@
-#include "model.h"
+#include "load.h"
 
-#include "metadata.h"
-#include "weights.h"
+#include "engine/models/qwen35/metadata.h"
+#include "engine/models/qwen35/weights.h"
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
@@ -171,25 +171,6 @@ Layer load_layer(CudaExecutionContext& execution, const mfq::ModelSource& source
     return result;
 }
 
-std::array<mfq::cuda::Task, 2> Layer::tasks() const {
-    if (const auto* full = std::get_if<Full>(&weights)) {
-        return {{
-            {task::Attention{0, 1, 2, full->attention, 0}, full->attention.layer},
-            {task::FullFfn{1, 2, 0, full->ffn, full->ffn_norm, full->attention},
-             full->attention.layer},
-        }};
-    }
-    const auto& linear = std::get<Linear>(weights);
-    return {{
-        {task::Linear{0, 1, 2, linear.attention, 0}},
-        {task::LinearFfn{1, 2, 0, linear.ffn, linear.ffn_norm, linear.attention}},
-    }};
-}
-
-Task Linear::replay(std::int64_t tokens) const {
-    return {task::Replay{attention, 0, tokens}};
-}
-
 Model load(CudaExecutionContext& execution, const std::string& model_path,
            const std::string& config_path, std::int64_t context_size,
            bool load_layers, bool defer_cache,
@@ -315,6 +296,46 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
     if (moe_expert_cache_has_sources(execution.stores.moe_expert_cache) &&
         !moe_expert_cache_finalized(execution.stores.moe_expert_cache) && !defer_cache)
         finalize_moe_expert_cache(execution.stores.moe_expert_cache);
+    return model;
+}
+
+std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
+                                         const Config& config,
+                                         KvQuantization quantization) {
+    const bool fusion_present = loader.has("predictor.fusion.weight");
+    const bool any = fusion_present || loader.has("predictor.hidden_norm.weight") ||
+        loader.has("predictor.embedding_norm.weight") ||
+        loader.has("predictor.output_norm.weight") ||
+        loader.has("predictor.block.0.attention.query.weight");
+    if (!fusion_present) {
+        TYLOINFER_RUNTIME_CHECK(!any, "Qwen model source contains an incomplete MTP head");
+        return {};
+    }
+    TYLOINFER_RUNTIME_CHECK(config.mtp_num_hidden_layers > 0 && !config.mtp_use_dedicated_embeddings,
+        "Qwen MTP requires declared predictor layers and shared embeddings");
+    Predictor model;
+    model.config = config;
+    model.hidden_norm = loader.dense("predictor.hidden_norm.weight");
+    model.embedding_norm = loader.dense("predictor.embedding_norm.weight");
+    model.output_norm = loader.dense("predictor.output_norm.weight");
+    model.fusion = loader.linear("predictor.fusion.weight");
+    TYLOINFER_RUNTIME_CHECK(model.fusion.neuron_len() == 2 * config.hidden_size &&
+        model.fusion.out() == config.hidden_size &&
+        model.hidden_norm.numel() == config.hidden_size &&
+        model.embedding_norm.numel() == config.hidden_size &&
+        model.output_norm.numel() == config.hidden_size,
+        "Qwen MTP component dimensions disagree with the backbone");
+    model.layers.reserve(config.mtp_num_hidden_layers);
+    for (int index = 0; index < config.mtp_num_hidden_layers; ++index) {
+        const auto prefix = "predictor.block." + std::to_string(index) + ".";
+        Predictor::Layer layer;
+        layer.attention.kv_quantization = quantization;
+        mfq::models::load_attention_mixer(layer.attention, loader, config, index, prefix,
+            config.legacy_tensor_layout.norm_weight_offset, config.attention_output_gate);
+        layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
+        layer.ffn = mfq::models::qwen35::load_ffn<Ffn>(loader, config, index, "predictor");
+        model.layers.push_back(std::move(layer));
+    }
     return model;
 }
 

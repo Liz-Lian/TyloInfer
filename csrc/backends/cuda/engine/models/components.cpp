@@ -2,6 +2,7 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/models/components.h"
+#include "backends/cuda/engine/models/qwen35/load.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
 #include "engine/requests/qwen35_mtp.h"
@@ -220,7 +221,7 @@ RuntimeComponents<mfq::cuda::qwen35::Run> load_runtime_components(
                 model.supports_speculation()) {
             auto& execution = *model.execution;
             TransformerWeightLoader loader{execution, *model.weights->source};
-            auto predictor = mfq::cuda::qwen35::Predictor::load(loader, model.weights->config, cuda_kv_quantization());
+            auto predictor = mfq::cuda::qwen35::load_predictor(loader, model.weights->config, cuda_kv_quantization());
             if (predictor) {
                 auto executor = std::make_unique<mfq::cuda::Executor>(
                     execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,

@@ -1,7 +1,7 @@
 #include "engine/executor/qwen35.h"
 
 #include "backends/cuda/engine/state/session/state.h"
-#include "engine/models/qwen35/model.h"
+#include "models/qwen35/model.h"
 #include "mfq_cuda_kv_quantization.h"
 
 #include <algorithm>

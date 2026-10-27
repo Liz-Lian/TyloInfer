@@ -10,7 +10,7 @@
 #include "models/nemotron_h/ops.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "engine/executor/qwen35.h"
-#include "engine/models/qwen35/model.h"
+#include "models/qwen35/model.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/common/grid_vision.h"
 #include "models/common/mtp.h"
