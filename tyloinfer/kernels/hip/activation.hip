@@ -302,7 +302,7 @@ void silu_mul(
     const int grid = static_cast<int>(std::min<std::size_t>(
         4096, (elements + block - 1) / block));
     if (gate.scalar_type == ScalarType::float32) {
-       hipLaunchKernelGGL(( silu_mul_f32_kernel), dim3(grid), dim3(block), 0, stream, 
+       hipLaunchKernelGGL(( silu_mul_f32_kernel), dim3(grid), dim3(block), 0, stream,
             gate.data_as<float>(), up.data_as<float>(), output.data_as<float>(), elements);
     } else if (gate.scalar_type == ScalarType::float16) {
         // Half2 reduces work for large tensors, but scalar launch geometry is
@@ -317,17 +317,17 @@ void silu_mul(
             const auto pairs = elements / 2;
             const int vector_grid = static_cast<int>(std::min<std::size_t>(
                 4096, (pairs + block - 1) / block));
-           hipLaunchKernelGGL(( silu_mul_f16x2_kernel), dim3(vector_grid), dim3(block), 0, stream, 
+           hipLaunchKernelGGL(( silu_mul_f16x2_kernel), dim3(vector_grid), dim3(block), 0, stream,
                 reinterpret_cast<const half2*>(gate.data_as<half>()),
                 reinterpret_cast<const half2*>(up.data_as<half>()),
                 reinterpret_cast<half2*>(output.data_as<half>()), elements);
         } else {
-           hipLaunchKernelGGL(( silu_mul_f16_kernel), dim3(grid), dim3(block), 0, stream, 
+           hipLaunchKernelGGL(( silu_mul_f16_kernel), dim3(grid), dim3(block), 0, stream,
                 gate.data_as<half>(), up.data_as<half>(),
                 output.data_as<half>(), elements);
         }
     } else if (gate.scalar_type == ScalarType::bfloat16) {
-       hipLaunchKernelGGL(( silu_mul_bf16_kernel), dim3(grid), dim3(block), 0, stream, 
+       hipLaunchKernelGGL(( silu_mul_bf16_kernel), dim3(grid), dim3(block), 0, stream,
             gate.data_as<__hip_bfloat16>(), up.data_as<__hip_bfloat16>(),
             output.data_as<__hip_bfloat16>(), elements);
     } else {
@@ -351,10 +351,10 @@ void gelu_mul(
     const int grid = static_cast<int>(std::min<std::size_t>(
         4096, (elements + block - 1) / block));
     if (gate.scalar_type == ScalarType::float32) {
-       hipLaunchKernelGGL(( gelu_mul_kernel<float>), dim3(grid), dim3(block), 0, stream, 
+       hipLaunchKernelGGL(( gelu_mul_kernel<float>), dim3(grid), dim3(block), 0, stream,
             gate.data_as<float>(), up.data_as<float>(), output.data_as<float>(), elements);
     } else if (gate.scalar_type == ScalarType::float16) {
-       hipLaunchKernelGGL(( gelu_mul_kernel<half>), dim3(grid), dim3(block), 0, stream, 
+       hipLaunchKernelGGL(( gelu_mul_kernel<half>), dim3(grid), dim3(block), 0, stream,
             gate.data_as<half>(), up.data_as<half>(), output.data_as<half>(), elements);
     } else {
         throw std::invalid_argument("native gelu_mul dtype must be f32 or f16");
@@ -388,7 +388,7 @@ void linear_gate_beta(
     const int grid = static_cast<int>(std::min<std::size_t>(
         4096, (elements + block - 1) / block));
     if (alpha.scalar_type == ScalarType::float32) {
-       hipLaunchKernelGGL(( linear_gate_beta_kernel<float>), dim3(grid), dim3(block), 0, stream, 
+       hipLaunchKernelGGL(( linear_gate_beta_kernel<float>), dim3(grid), dim3(block), 0, stream,
             alpha.data_as<float>(), beta.data_as<float>(),
             dt_bias.data_as<float>(), a_log.data_as<float>(),
             gate_t.data_as<float>(), beta_t.data_as<float>(),
@@ -396,7 +396,7 @@ void linear_gate_beta(
             alpha.strides[0], alpha.strides[1], alpha.strides[2],
             beta.strides[0], beta.strides[1], beta.strides[2], stable_softplus);
     } else if (alpha.scalar_type == ScalarType::float16) {
-       hipLaunchKernelGGL(( linear_gate_beta_kernel<half>), dim3(grid), dim3(block), 0, stream, 
+       hipLaunchKernelGGL(( linear_gate_beta_kernel<half>), dim3(grid), dim3(block), 0, stream,
             alpha.data_as<half>(), beta.data_as<half>(),
             dt_bias.data_as<float>(), a_log.data_as<float>(),
             gate_t.data_as<float>(), beta_t.data_as<float>(),
@@ -409,3 +409,78 @@ void linear_gate_beta(
 }
 
 }  // namespace mfq::cuda::kernels
+
+template <typename scalar_t>
+__global__ void relu_squared_kernel(
+    const scalar_t* __restrict__ input,
+    scalar_t* __restrict__ out,
+    size_t n)
+{
+    for (size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < n;
+         i += (size_t)gridDim.x * blockDim.x) {
+        const float value = fmaxf(activation_as_float(input[i]), 0.0f);
+        out[i] = activation_from_float<scalar_t>(value * value);
+    }
+}
+
+mfq_tensor_backend::Tensor relu_squared_cuda(mfq_tensor_backend::Tensor input)
+{
+    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous(),
+        "relu_squared: input must be cuda contiguous");
+    TYLOINFER_RUNTIME_CHECK(
+        input.scalar_type() == mfq_tensor_backend::kFloat32 ||
+        input.scalar_type() == mfq_tensor_backend::kFloat16 ||
+        input.scalar_type() == mfq_tensor_backend::kBFloat16,
+        "relu_squared: dtype must be f32, f16, or bf16");
+    auto out = mfq_tensor_backend::empty_like(input);
+    const size_t elements = (size_t)input.numel();
+    if (elements == 0) return out;
+    constexpr int block = 256;
+    const int grid = (int)std::min<size_t>(4096, (elements + block - 1) / block);
+    hipStream_t stream = mfq_current_cuda_stream();
+    if (input.scalar_type() == mfq_tensor_backend::kFloat32) {
+        relu_squared_kernel<float><<<grid, block, 0, stream>>>(
+            input.data_ptr<float>(), out.data_ptr<float>(), elements);
+    } else if (input.scalar_type() == mfq_tensor_backend::kFloat16) {
+        relu_squared_kernel<__half><<<grid, block, 0, stream>>>(
+            reinterpret_cast<const __half*>(input.data_ptr<mfq_half>()),
+            reinterpret_cast<__half*>(out.data_ptr<mfq_half>()), elements);
+    } else {
+        relu_squared_kernel<__hip_bfloat16><<<grid, block, 0, stream>>>(
+            reinterpret_cast<const __hip_bfloat16*>(input.data_ptr<mfq_bfloat16>()),
+            reinterpret_cast<__hip_bfloat16*>(out.data_ptr<mfq_bfloat16>()), elements);
+    }
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+    return out;
+}
+
+
+__global__ void clipped_silu_mul_kernel(const half* gate,const half* up,half* output,
+        int64_t count,float limit) {
+    const auto i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+    if(i<count) {
+        const float g=fminf(__half2float(gate[i]),limit);
+        const float u=fminf(fmaxf(__half2float(up[i]),-limit),limit);
+        float activated=g/(1.0f+expf(-g));
+        // Preserve the FP32 materialization boundaries before the FP16 cast.
+        asm volatile("" : "+v"(activated));
+        float product=activated*u;
+        asm volatile("" : "+v"(product));
+        output[i]=__float2half_rn(product);
+    }
+}
+
+mfq_tensor_backend::Tensor clipped_silu_mul_cuda(mfq_tensor_backend::Tensor gate,
+        mfq_tensor_backend::Tensor up,double limit) {
+    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && up.device()==gate.device() &&
+        gate.scalar_type()==mfq_tensor_backend::kFloat16 && up.scalar_type()==mfq_tensor_backend::kFloat16 &&
+        gate.sizes()==up.sizes() && gate.is_contiguous() && up.is_contiguous() && limit>0,
+        "clipped SwiGLU requires matching contiguous CUDA FP16 tensors and a positive limit");
+    auto output=mfq_tensor_backend::empty(gate.sizes(),gate.options());
+    if(gate.numel())clipped_silu_mul_kernel<<<unsigned((gate.numel()+255)/256),256,0,mfq_current_cuda_stream()>>>(
+        reinterpret_cast<const half*>(gate.data_ptr<mfq_half>()),reinterpret_cast<const half*>(up.data_ptr<mfq_half>()),
+        reinterpret_cast<half*>(output.data_ptr<mfq_half>()),gate.numel(),float(limit));
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+    return output;
+}

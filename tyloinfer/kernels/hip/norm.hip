@@ -256,15 +256,15 @@ __global__ void minicpm_qk_norm_rope_cache_write_bf16_kernel(
     }
 }
 
-template <int BD>
-__global__ void rms_norm_kernel(const float* __restrict__ x, const float* __restrict__ w,
+template <int BD,typename Input=float>
+__global__ void rms_norm_kernel(const Input* __restrict__ x, const float* __restrict__ w,
                                 float* __restrict__ out, int N, int D, float eps, float weight_offset)
 {
     int row = blockIdx.x;
     if (row >= N) {
         return;
     }
-    const float* xr = x + (size_t)row * D;
+    const Input* xr = x + (size_t)row * D;
     float* or_ = out + (size_t)row * D;
     int tid = threadIdx.x;
 
@@ -277,7 +277,7 @@ __global__ void rms_norm_kernel(const float* __restrict__ x, const float* __rest
 
     float rinv = rsqrtf(ssq / (float)D + eps);
     for (int i = tid; i < D; i += BD) {
-        or_[i] = xr[i] * rinv * (w[i] + weight_offset);
+        or_[i] = static_cast<float>(xr[i]) * rinv * (w[i] + weight_offset);
     }
 }
 
@@ -304,7 +304,9 @@ __global__ void rms_norm_f16_kernel(const mfq_half* __restrict__ x,
 
     float rinv = rsqrtf(ssq / (float)D + eps);
     for (int i = tid; i < D; i += BD) {
-        or_[i] = (mfq_half)((float)xr[i] * rinv * (w[i] + weight_offset));
+        float value=(float)xr[i] * rinv * (w[i] + weight_offset);
+        asm volatile("" : "+v"(value));
+        or_[i] = (mfq_half)value;
     }
 }
 
@@ -414,7 +416,7 @@ mfq_tensor_backend::Tensor rms_norm_cuda(mfq_tensor_backend::Tensor x, mfq_tenso
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
     auto out = mfq_tensor_backend::empty_like(x);
-   hipLaunchKernelGGL(( rms_norm_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(), 
+   hipLaunchKernelGGL(( rms_norm_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(),
         x.data_ptr<float>(), weight.data_ptr<float>(), out.data_ptr<float>(),
         N, D, (float)eps, 0.0f);
     return out;
@@ -422,15 +424,21 @@ mfq_tensor_backend::Tensor rms_norm_cuda(mfq_tensor_backend::Tensor x, mfq_tenso
 
 mfq_tensor_backend::Tensor rms_norm_offset_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps, double weight_offset)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
-                "rms_norm_offset: x must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == mfq_tensor_backend::kFloat32, "weight must be cuda f32");
-    int D = (int)x.size(-1);
-    int N = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
-   hipLaunchKernelGGL(( rms_norm_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(), 
-        x.data_ptr<float>(), weight.data_ptr<float>(), out.data_ptr<float>(),
-        N, D, (float)eps, (float)weight_offset);
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
+        (x.scalar_type()==tb::kFloat32 || x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kBFloat16),
+        "rms_norm_offset: x must be cuda contiguous f16, bf16 or f32");
+    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type()==tb::kFloat32,
+        "weight must be cuda f32");
+    const int D=int(x.size(-1)),N=int(x.numel()/D);
+    auto out=tb::empty(x.sizes(),x.options().dtype(tb::kFloat32));
+    const auto launch=[&]<class Input>() {
+        rms_norm_kernel<NORM_BD,Input><<<N,NORM_BD,0,mfq_current_cuda_stream()>>>(
+            x.data_ptr<Input>(),weight.data_ptr<float>(),out.data_ptr<float>(),N,D,float(eps),float(weight_offset));
+    };
+    if(x.scalar_type()==tb::kFloat16)launch.template operator()<mfq_half>();
+    else if(x.scalar_type()==tb::kBFloat16)launch.template operator()<mfq_bfloat16>();
+    else launch.template operator()<float>();
     return out;
 }
 
@@ -454,15 +462,15 @@ mfq_tensor_backend::Tensor rms_norm_f16_cuda(mfq_tensor_backend::Tensor x, mfq_t
         ((input_address | output_address) & (alignof(half2) - 1)) == 0 &&
         (weight_address & (alignof(float2) - 1)) == 0;
     if (D >= 4096 && (D & 1) == 0 && vector_aligned) {
-       hipLaunchKernelGGL(( rms_norm_f16x2_kernel<NORM_BD>), 
-            dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(), 
+       hipLaunchKernelGGL(( rms_norm_f16x2_kernel<NORM_BD>),
+            dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(),
             reinterpret_cast<const half2*>(x.data_ptr<mfq_half>()),
             reinterpret_cast<const float2*>(weight.data_ptr<float>()),
             reinterpret_cast<half2*>(out.data_ptr<mfq_half>()),
             N, D / 2, (float)eps, (float)weight_offset);
     } else {
-       hipLaunchKernelGGL(( rms_norm_f16_kernel<NORM_BD>), 
-            dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(), 
+       hipLaunchKernelGGL(( rms_norm_f16_kernel<NORM_BD>),
+            dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(),
             x.data_ptr<mfq_half>(), weight.data_ptr<float>(),
             out.data_ptr<mfq_half>(), N, D, (float)eps,
             (float)weight_offset);
@@ -495,7 +503,7 @@ mfq_tensor_backend::Tensor gdn_rms_norm_gate_cuda(mfq_tensor_backend::Tensor att
     const bool double_sigmoid=gate.scalar_type()==tb::kFloat32 &&
         !gate.reshape({batch,tokens,heads,width}).permute({0,2,1,3}).is_contiguous();
     const auto launch=[&]<class Gate,class Output,int Threads>() {
-       hipLaunchKernelGGL(( gdn_rms_norm_gate_kernel<Gate,Output,Threads>), dim3(static_cast<unsigned int>(rows)),dim3(Threads),0,mfq_current_cuda_stream(), 
+       hipLaunchKernelGGL(( gdn_rms_norm_gate_kernel<Gate,Output,Threads>), dim3(static_cast<unsigned int>(rows)),dim3(Threads),0,mfq_current_cuda_stream(),
             attended.data_ptr<float>(),gate.data_ptr<Gate>(),weight.data_ptr<float>(),output.data_ptr<Output>(),
             static_cast<int>(heads),static_cast<int>(tokens),static_cast<int>(width),eps,
             silu_gate,double_sigmoid);
@@ -532,7 +540,7 @@ mfq_tensor_backend::Tensor grouped_rms_norm_cuda(mfq_tensor_backend::Tensor x,
     auto output = tb::empty_like(x);
     if (rows == 0) return output;
     const auto launch=[&]<class Value,int Threads>() {
-       hipLaunchKernelGGL(( grouped_rms_norm_kernel<Value,Threads>), dim3(rows),dim3(Threads),0,mfq_current_cuda_stream(), 
+       hipLaunchKernelGGL(( grouped_rms_norm_kernel<Value,Threads>), dim3(rows),dim3(Threads),0,mfq_current_cuda_stream(),
             x.data_ptr<Value>(),weight.data_ptr<float>(),output.data_ptr<Value>(),width,weight_rows,
             static_cast<float>(eps),static_cast<float>(weight_offset));
     };
@@ -564,7 +572,7 @@ mfq_tensor_backend::Tensor qwen_rms_norm_bf16_cuda(
     const int N = (int)(count / D);
     auto stream = mfq_current_cuda_stream();
     auto output = mfq_tensor_backend::empty_like(input);
-   hipLaunchKernelGGL(( qwen_rms_norm_bf16_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, stream, 
+   hipLaunchKernelGGL(( qwen_rms_norm_bf16_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, stream,
         reinterpret_cast<const __hip_bfloat16*>(input.data_ptr<mfq_bfloat16>()),
         weight.data_ptr<float>(),
         reinterpret_cast<__hip_bfloat16*>(output.data_ptr<mfq_bfloat16>()),
@@ -599,14 +607,14 @@ std::vector<mfq_tensor_backend::Tensor> qwen_rms_norm_pair_bf16_cuda(
     const int blocks = (int)std::min<int64_t>(
         (total_count + NORM_BD - 1) / NORM_BD, 65535);
     auto stream = mfq_current_cuda_stream();
-   hipLaunchKernelGGL(( qwen_rms_norm_pair_bf16_square_kernel), dim3(blocks), dim3(NORM_BD), 0, stream, 
+   hipLaunchKernelGGL(( qwen_rms_norm_pair_bf16_square_kernel), dim3(blocks), dim3(NORM_BD), 0, stream,
         reinterpret_cast<const __hip_bfloat16*>(first.data_ptr<mfq_bfloat16>()),
         reinterpret_cast<const __hip_bfloat16*>(second.data_ptr<mfq_bfloat16>()),
         squared.data_ptr<float>(), first_count, total_count);
     auto mean = squared.mean(-1, true);
     auto first_output = mfq_tensor_backend::empty_like(first);
     auto second_output = mfq_tensor_backend::empty_like(second);
-   hipLaunchKernelGGL(( qwen_rms_norm_pair_bf16_finalize_kernel), dim3(blocks), dim3(NORM_BD), 0, stream, 
+   hipLaunchKernelGGL(( qwen_rms_norm_pair_bf16_finalize_kernel), dim3(blocks), dim3(NORM_BD), 0, stream,
         reinterpret_cast<const __hip_bfloat16*>(first.data_ptr<mfq_bfloat16>()),
         reinterpret_cast<const __hip_bfloat16*>(second.data_ptr<mfq_bfloat16>()),
         mean.data_ptr<float>(), first_weight.data_ptr<float>(),
@@ -667,8 +675,8 @@ mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
     auto stream = mfq_current_cuda_stream();
     auto q_out = mfq_tensor_backend::empty_like(q);
     const int B = (int)q.size(0);
-   hipLaunchKernelGGL(( minicpm_qk_norm_rope_cache_write_bf16_kernel), 
-        dim3(B * 32), dim3(128), 0, stream, 
+   hipLaunchKernelGGL(( minicpm_qk_norm_rope_cache_write_bf16_kernel),
+        dim3(B * 32), dim3(128), 0, stream,
         reinterpret_cast<const __hip_bfloat16*>(q.data_ptr<mfq_bfloat16>()),
         reinterpret_cast<const __hip_bfloat16*>(k.data_ptr<mfq_bfloat16>()),
         reinterpret_cast<const __hip_bfloat16*>(v.data_ptr<mfq_bfloat16>()),
@@ -717,9 +725,9 @@ std::vector<mfq_tensor_backend::Tensor> rms_norm_pair_f16_f32_offset_cuda(
     auto output_options = first.options().dtype(mfq_tensor_backend::kFloat32);
     auto first_out = mfq_tensor_backend::empty(first.sizes(), output_options);
     auto second_out = mfq_tensor_backend::empty(second.sizes(), output_options);
-   hipLaunchKernelGGL(( rms_norm_pair_f16_f32_kernel<NORM_BD>), 
+   hipLaunchKernelGGL(( rms_norm_pair_f16_f32_kernel<NORM_BD>),
         dim3(first_rows + second_rows), dim3(NORM_BD), 0,
-        mfq_current_cuda_stream(), 
+        mfq_current_cuda_stream(),
         first.data_ptr<mfq_half>(), second.data_ptr<mfq_half>(),
         first_weight.data_ptr<float>(), second_weight.data_ptr<float>(),
         first_out.data_ptr<float>(), second_out.data_ptr<float>(),
@@ -734,7 +742,151 @@ mfq_tensor_backend::Tensor l2_norm_cuda(mfq_tensor_backend::Tensor x, double eps
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
     auto out = mfq_tensor_backend::empty_like(x);
-   hipLaunchKernelGGL(( l2_norm_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(), 
+   hipLaunchKernelGGL(( l2_norm_kernel<NORM_BD>), dim3(N), dim3(NORM_BD), 0, mfq_current_cuda_stream(),
         x.data_ptr<float>(), out.data_ptr<float>(), N, D, (float)eps);
     return out;
+}
+
+__global__ void gdn_rms_silu_decode_kernel(const float* x,const float* gate,
+        const float* weight,float* output,int rows,int width,float eps) {
+    const int row=blockIdx.x,base=row*width;
+    float sum=0;
+    for(int c=threadIdx.x;c<width;c+=NORM_BD) {const float v=x[base+c];sum+=v*v;}
+    sum=block_sum<NORM_BD/32>(sum);
+    const float inverse=rsqrtf(sum/float(width)+eps);
+    for(int c=threadIdx.x;c<width;c+=NORM_BD) {
+        const float normalized=x[base+c]*inverse*weight[c];
+        const float z=gate[base+c],activated=z/(1.f+expf(-z));
+        output[base+c]=normalized*activated;
+    }
+}
+mfq_tensor_backend::Tensor gdn_rms_silu_decode_cuda(mfq_tensor_backend::Tensor x,
+        mfq_tensor_backend::Tensor gate,mfq_tensor_backend::Tensor weight,double eps) {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && gate.is_cuda() && x.device()==gate.device() &&
+        x.scalar_type()==tb::kFloat32 && gate.scalar_type()==tb::kFloat32 &&
+        x.is_contiguous() && gate.is_contiguous() && x.numel()==gate.numel() &&
+        x.dim()==4 && x.size(2)==1 && weight.is_cuda() && weight.device()==x.device() &&
+        weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==x.size(-1),
+        "gdn_rms_silu_decode: expected matching FP32 single-token GPU tensors");
+    const int width=int(x.size(-1)),rows=int(x.numel()/width);
+    auto output=tb::empty(gate.sizes(),gate.options());
+    gdn_rms_silu_decode_kernel<<<rows,NORM_BD,0,mfq_current_cuda_stream()>>>(
+        x.data_ptr<float>(),gate.data_ptr<float>(),weight.data_ptr<float>(),output.data_ptr<float>(),rows,width,float(eps));
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+    return output;
+}
+
+#include "l2_norm_pair.h"
+
+template <class Value>
+__device__ __forceinline__ float gated_norm_value_as_float(Value value)
+{
+    if constexpr (std::is_same_v<Value, float>) {
+        return value;
+    } else if constexpr (std::is_same_v<Value, __half>) {
+        return __half2float(value);
+    } else {
+        return __bfloat162float(value);
+    }
+}
+
+template <class Value>
+__device__ __forceinline__ Value gated_norm_value_from_float(float value)
+{
+    if constexpr (std::is_same_v<Value, float>) {
+        return value;
+    } else if constexpr (std::is_same_v<Value, __half>) {
+        return __float2half_rn(value);
+    } else {
+        return __float2bfloat16_rn(value);
+    }
+}
+
+template <class Value, class Gate>
+__device__ __forceinline__ float gated_norm_gated_value(
+    Value input, Gate gate)
+{
+    const float value = gated_norm_value_as_float(input);
+    const float z = gated_norm_value_as_float(gate);
+    return __fmul_rn(value, __fdiv_rn(z, __fadd_rn(1.0f, expf(-z))));
+}
+
+// One block normalizes one (row, group) pair; `width` is group_size and
+// `groups_per_row` locates the weight slice of that group.
+template <class Value, class Gate, int Threads>
+__global__ void grouped_gated_rms_norm_kernel(
+    const Value* __restrict__ input,
+    const Gate* __restrict__ gate,
+    const float* __restrict__ weight,
+    Value* __restrict__ output,
+    int width,
+    int groups_per_row,
+    float eps)
+{
+    const int64_t base = int64_t(blockIdx.x) * width;
+    const float* scale = weight + int64_t(blockIdx.x % groups_per_row) * width;
+    float square_sum = 0.0f;
+    for (int column = threadIdx.x; column < width; column += Threads) {
+        const float value =
+            gated_norm_gated_value(input[base + column], gate[base + column]);
+        square_sum = __fadd_rn(square_sum, __fmul_rn(value, value));
+    }
+    square_sum = block_sum<Threads / 32>(square_sum);
+    const float mean = __fdiv_rn(square_sum, static_cast<float>(width));
+    const float inverse = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(mean, eps)));
+    for (int column = threadIdx.x; column < width; column += Threads) {
+        const float value =
+            gated_norm_gated_value(input[base + column], gate[base + column]);
+        output[base + column] = gated_norm_value_from_float<Value>(
+            __fmul_rn(__fmul_rn(value, inverse), scale[column]));
+    }
+}
+
+mfq_tensor_backend::Tensor grouped_gated_rms_norm_cuda(
+    mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor gate,
+    mfq_tensor_backend::Tensor weight, int64_t group_size, double eps)
+{
+    namespace tb = mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() > 0 &&
+        gate.is_cuda() && gate.is_contiguous() && gate.device() == x.device() &&
+        gate.sizes() == x.sizes(),
+        "grouped_gated_rms_norm: x and gate must be matching contiguous CUDA tensors");
+    TYLOINFER_RUNTIME_CHECK((x.scalar_type() == tb::kFloat32 || x.scalar_type() == tb::kFloat16 ||
+        x.scalar_type() == tb::kBFloat16) &&
+        (gate.scalar_type() == tb::kFloat32 || gate.scalar_type() == tb::kFloat16 ||
+        gate.scalar_type() == tb::kBFloat16),
+        "grouped_gated_rms_norm: x and gate dtypes must be f32, f16 or bf16");
+    const int64_t total_width = x.size(-1);
+    TYLOINFER_RUNTIME_CHECK(group_size > 0 && total_width % group_size == 0,
+        "grouped_gated_rms_norm: group_size must divide the last dimension");
+    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
+        weight.device() == x.device() && weight.scalar_type() == tb::kFloat32 &&
+        weight.dim() == 1 && weight.numel() == total_width,
+        "grouped_gated_rms_norm: weight must be contiguous CUDA f32 of the input width");
+    auto output = tb::empty_like(x);
+    const int64_t blocks = x.numel() / group_size;
+    if (blocks == 0) return output;
+    const auto launch = [&]<class Value, class Gate>() {
+        grouped_gated_rms_norm_kernel<Value, Gate, NORM_BD><<<
+            blocks, NORM_BD, 0, mfq_current_cuda_stream()>>>(
+            static_cast<const Value*>(x.data_ptr()),
+            static_cast<const Gate*>(gate.data_ptr()), weight.data_ptr<float>(),
+            static_cast<Value*>(output.data_ptr()), (int)group_size,
+            (int)(total_width / group_size), (float)eps);
+    };
+    const auto dispatch_gate = [&]<class Value>() {
+        switch (gate.scalar_type()) {
+        case tb::kFloat32: launch.template operator()<Value, float>(); break;
+        case tb::kFloat16: launch.template operator()<Value, __half>(); break;
+        default: launch.template operator()<Value, __hip_bfloat16>(); break;
+        }
+    };
+    switch (x.scalar_type()) {
+    case tb::kFloat32: dispatch_gate.template operator()<float>(); break;
+    case tb::kFloat16: dispatch_gate.template operator()<__half>(); break;
+    default: dispatch_gate.template operator()<__hip_bfloat16>(); break;
+    }
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+    return output;
 }
