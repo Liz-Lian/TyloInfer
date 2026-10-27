@@ -7,7 +7,7 @@
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/ops.h"
-#include "models/qwen35/ops.h"
+#include "engine/executor/qwen35.h"
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "quant_linear.h"
@@ -114,7 +114,7 @@ static int run_kl_eval(
             // chunk's first corpus token with BOS before evaluating it, then
             // serializes the original corpus tokens in this legacy header.
             // Qwen legacy references use the serialized token directly.
-            if (model.metadata.gemma4 &&
+            if (model.model_type() == "gemma4" &&
                     eval_chunks[(size_t)ci].tokens[0] != legacy_bos) {
                 eval_chunks[(size_t)ci].tokens[0] = legacy_bos;
                 ++legacy_bos_replacements;
@@ -123,7 +123,7 @@ static int run_kl_eval(
             eval_chunks[(size_t)ci].score_count = score_count;
         }
         std::cout << "cpp_kl_legacy_chunk_bos="
-                  << (model.metadata.gemma4 ? legacy_bos : -1)
+                  << (model.model_type() == "gemma4" ? legacy_bos : -1)
                   << " replacements=" << legacy_bos_replacements
                   << " model_type=" << model.model_type() << "\n";
     } else if (reference_format == "_logit2_" || reference_format == "_logit3_") {
@@ -696,7 +696,7 @@ int run_kl_eval_batched(
     int bos_replacements = 0;
     int32_t legacy_bos = -1;
     if (input.reference_format == "_logits_" &&
-        model.metadata.gemma4) {
+        model.model_type() == "gemma4") {
         legacy_bos = input.chunks[0].tokens[0];
         for (auto & chunk : input.chunks) {
             if (chunk.tokens[0] != legacy_bos) {
@@ -1113,7 +1113,7 @@ int run_kl_eval_streamed(
         TYPE&, const std::string&, int, KlEvaluator, std::int64_t, int,    \
         const KlReferenceContract&)
 
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Qwen35CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Run);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::Gemma4CausalLm);

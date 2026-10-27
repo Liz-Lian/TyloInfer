@@ -10,7 +10,8 @@
 
 namespace mfq::cuda {
 
-bool qwen_continuous_batch_cuda_graph_enabled(const Qwen35CausalLm &,
+bool qwen_continuous_batch_cuda_graph_enabled(const qwen35::Model &,
+                                              const CudaExecutionContext &,
                                               const CudaContinuousBatchConfig &);
 struct QwenContinuousDecodeGraph;
 
@@ -38,7 +39,8 @@ class QwenBatchOperations {
         Tensor logits, greedy_tokens;
     };
 
-    QwenBatchOperations(Qwen35CausalLm &, CudaExecutionContext &, CudaContinuousBatchConfig);
+    QwenBatchOperations(std::shared_ptr<const qwen35::Model>, CudaExecutionContext &,
+                        CudaContinuousBatchConfig);
     ~QwenBatchOperations();
     QwenBatchOperations(const QwenBatchOperations &) = delete;
     QwenBatchOperations &operator=(const QwenBatchOperations &) = delete;
@@ -62,7 +64,7 @@ class QwenBatchOperations {
     void ensure_decode_metadata_buffers(int primary);
     void invalidate_decode_graph();
 
-    Qwen35CausalLm &model_;
+    std::shared_ptr<const qwen35::Model> model_;
     qwen35::Batch state_;
     CudaExecutionContext &execution_;
     const CudaContinuousBatchConfig config_;

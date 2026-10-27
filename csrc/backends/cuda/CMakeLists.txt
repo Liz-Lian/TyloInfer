@@ -455,7 +455,6 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/glm_dsa/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/nemotron_h/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/qwen35/ops.cpp
 )
 
 
@@ -504,6 +503,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
+    ${PROJECT_SOURCE_DIR}/engine/executor/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
@@ -526,6 +526,7 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/kv_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/recurrent.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/qwen35_mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/paged_kv.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
@@ -537,6 +538,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/model.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES

@@ -25,7 +25,7 @@ using namespace mfq::cuda::internal;
 // Fixed synthetic-ID latency probe through the actual runtime dispatch. Model
 // loading and the independent serial oracle are outside every timed request.
 int run_qwen35_mtp_bench(
-        mfq::cuda::Qwen35CausalLm& model, mfq::cuda::qwen35::Mtp& mtp,
+        mfq::cuda::qwen35::Run& model, mfq::cuda::qwen35::Mtp& mtp,
         bool enable_mtp, int generated_tokens, int repetitions) {
     using Clock = std::chrono::steady_clock;
     using Tensor = mfq_tensor_backend::Tensor;
@@ -275,9 +275,10 @@ int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& ru
             if (key == "continuous_batching_cuda_graph_replays") replays = value;
             if (key == "continuous_batching_packed_prefill_batches") packed_prefills = value;
         }
-        if constexpr (std::is_same_v<Model,Qwen35CausalLm>)
+        if constexpr (std::is_same_v<Model,mfq::cuda::qwen35::Run>)
             if (config.continuous_batch.greedy &&
-                qwen_continuous_batch_cuda_graph_enabled(model, config.continuous_batch))
+                qwen_continuous_batch_cuda_graph_enabled(
+                    *model.weights, *model.execution, config.continuous_batch))
                 TYLOINFER_RUNTIME_CHECK(captures > 0 && replays > captures, "batch graph was not replayed");
         std::cout << "continuous_batching_state_check paged=" << config.continuous_batch.paged_kv
             << " captures=" << captures << " replays=" << replays
@@ -296,7 +297,7 @@ int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& ru
 }
 
 int run_cuda_continuous_batching_check(
-        mfq::cuda::Qwen35CausalLm& model,int requests) {
+        mfq::cuda::qwen35::Run& model,int requests) {
     return run_qwen_continuous_batching_check(
         model, resolve_cuda_runtime_config({}),requests);
 }

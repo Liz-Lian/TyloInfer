@@ -9,11 +9,11 @@
 #include "models/glm5_next/ops.h"
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
-#include "models/qwen35/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/common/full_block.h"
 #include "models/common/block.h"
+#include "engine/executor/qwen35.h"
 #include "engine/executor/sampler.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
@@ -28,6 +28,7 @@
 namespace mfq::cuda::internal {
 using mfq::engine::Generation;
 namespace {
+
 template <typename Model>
 static mfq_tensor_backend::Tensor sample_token(Model &model, mfq_tensor_backend::Tensor ids,
     mfq::cuda::Sampler &sampler, mfq_tensor_backend::Tensor counts,
@@ -73,6 +74,13 @@ template <typename Model> struct CudaGenerationOps {
     bool graph_prepared = false;
     int64_t prefill_compute_chunk=1024;
     mfq::engine::InferenceOutput* output=nullptr;
+
+    const auto& metadata() const {
+        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
+            return model.weights->metadata;
+        else
+            return model.metadata;
+    }
 
     CudaGenerationOps(Model &model, DecodeGraphCache &graph,
         const mfq::engine::InferenceRequest &request, const CudaPreparedPrompt *prepared,
@@ -173,8 +181,13 @@ template <typename Model> struct CudaGenerationOps {
             model.decode_position_delta = prepared->decode_position_delta;
         } else {
             MfqOptional<Tensor> length = mfq_nullopt;
-            if (model.adapter_uses_decode_sequence_length() && chunk.offset > 0 && chunk.count == 1)
-                length = mfq_tensor_backend::full({1}, chunk.offset + 1, full_ids.options());
+            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
+                if (chunk.offset > 0 && chunk.count == 1)
+                    length = mfq_tensor_backend::full({1}, chunk.offset + 1, full_ids.options());
+            } else {
+                if (model.adapter_uses_decode_sequence_length() && chunk.offset > 0 && chunk.count == 1)
+                    length = mfq_tensor_backend::full({1}, chunk.offset + 1, full_ids.options());
+            }
             hidden = model.hidden_forward(ids, mfq_nullopt, length);
         }
         // Match prompt-progress timing: first-token head/sampling and expert
@@ -207,7 +220,7 @@ template <typename Model> struct CudaGenerationOps {
     bool graph_eligible() const {
         const auto &execution = *model.execution;
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
-               !model.metadata.flash_next && mfq_cuda_graph_capture_supported() &&
+               !metadata().flash_next && mfq_cuda_graph_capture_supported() &&
                execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
                !execution.stores.moe_expert_cache && model_parallel_cuda_graph_enabled(execution) &&
                generation_limit >= graph_config.minimum_generation_tokens &&
@@ -296,18 +309,19 @@ template <typename Model> struct CudaGenerationOps {
             graph.graph = std::make_unique<MfqCudaGraph>();
             try {
                 using Tensor = mfq_tensor_backend::Tensor;
+                const bool double_warmup = metadata().decode_graph_double_warmup;
                 std::vector<Tensor*> warmup_states;
-                for (const auto& block : model.blocks) {
-                    for (auto* state : block->graph_warmup_state()) {
-                        warmup_states.push_back(state);
+                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
+                    warmup_states = model.graph_state();
+                } else {
+                    for (const auto& block : model.blocks) {
+                        for (auto* state : block->graph_warmup_state()) {
+                            warmup_states.push_back(state);
+                        }
                     }
                 }
-                prepare_decode_graph_memory(
-                    warmup_states,
-                    model.cache_pos,
-                    model.metadata.decode_graph_double_warmup,
-                    *graph.graph,
-                    sample_static,
+                prepare_decode_graph_memory(warmup_states, model.cache_pos,
+                    double_warmup, *graph.graph, sample_static,
                     graph.graph_participant_streams(execution.collectives));
                 graph.graph->capture_begin();
                 graph.static_next = sample_static();
@@ -431,8 +445,14 @@ template <class Model> struct CudaGenerationContext {
                name=="expert_logical_transfer_bytes")std::cerr << ' ' << name << '=' << value;
         }
         std::cerr << '\n';
-        if(model.source) {
-            const auto io=model.source->file_read_stats();
+        const auto* source = [&]() -> const mfq::ModelSource* {
+            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
+                return model.weights ? model.weights->source.get() : nullptr;
+            else
+                return model.source.get();
+        }();
+        if(source) {
+            const auto io=source->file_read_stats();
             std::cerr<<"runtime_model_io_stats boundary="<<boundary<<" calls="<<io.calls
                 <<" logical_bytes="<<io.logical_bytes<<" physical_bytes="<<io.physical_bytes
                 <<" read_ms="<<double(io.read_nanoseconds)/1e6<<'\n';
@@ -677,7 +697,7 @@ Generation generate(Model &model, DecodeGraphCache &graph, TextSessionCache &cac
         MtpModule *,                                                                               \
         std::optional<CudaPreparedPrompt>,                                                         \
         mfq::engine::ContinuousBatch<CudaBatchOperations<MODEL>>*, std::string);
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen35CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::qwen35::Run)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMOTtsCausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Gemma4CausalLm)

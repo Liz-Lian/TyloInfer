@@ -5,6 +5,7 @@
 #include "engine/executor/speculative_sequence.h"
 
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/qwen35.h"
 #include "engine/executor/sampler.h"
 #include "engine/requests/policy.h"
 #include "engine/requests/inference.h"
@@ -15,7 +16,6 @@
 #include "models/glm5_next/ops.h"
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
-#include "models/qwen35/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/qwen4_exp/mtp.h"
@@ -38,6 +38,9 @@
 
 using mfq::cuda::internal::PrefillCudaTimer;
 
+MtpTarget::MtpTarget(mfq::cuda::qwen35::Run& target)
+    : model(&target), rope(&target.weights->rope) {}
+
 mfq_tensor_backend::Tensor MtpTarget::embed(mfq_tensor_backend::Tensor ids) const {
     return std::visit([&](auto* target) { return target->embed_forward(std::move(ids)); }, model);
 }
@@ -48,6 +51,7 @@ mfq_tensor_backend::Tensor MtpTarget::logits(mfq_tensor_backend::Tensor hidden) 
 
 using mfq::engine::Generation;
 using namespace mfq::engine;
+
 template <class Model> struct CudaMtpOps {
   using Tensor = mfq_tensor_backend::Tensor;
   Model &model;
@@ -95,8 +99,14 @@ template <class Model> struct CudaMtpOps {
       else if(name=="expert_host_copy_ms")result[2]=value;
       else if(name=="ssd_expert_read_wait_ms")result[3]=value;
     }
-    if(model.source) {
-      const auto io=model.source->file_read_stats();
+    const auto* source = [&]() -> const mfq::ModelSource* {
+      if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
+        return model.weights ? model.weights->source.get() : nullptr;
+      else
+        return model.source.get();
+    }();
+    if(source) {
+      const auto io=source->file_read_stats();
       result[4]=double(io.read_nanoseconds)/1e6;
       result[5]=double(io.physical_bytes)/1048576.0;
     }
@@ -325,18 +335,22 @@ template <class Model> struct CudaMtpOps {
     return hidden;
   }
   Tensor target_suffix(Tensor ids, Tensor *raw) {
-    projected_target_hidden = {}; projected_target_logits = {};
-    projected_target_compact={};
-    projected_target_greedy.clear();
-    const auto transfer_before=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache);
-    const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
-    auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
-    target_transfer_bytes+=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache)-transfer_before;
-    if(profile_target()) {
-      const auto costs_after=target_costs();
-      for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];
+    if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
+      throw std::runtime_error("Qwen35 does not support speculative suffix forwarding");
+    } else {
+      projected_target_hidden = {}; projected_target_logits = {};
+      projected_target_compact={};
+      projected_target_greedy.clear();
+      const auto transfer_before=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache);
+      const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
+      auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
+      target_transfer_bytes+=moe_expert_streamed_bytes(model.execution->stores.moe_expert_cache)-transfer_before;
+      if(profile_target()) {
+        const auto costs_after=target_costs();
+        for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];
+      }
+      return hidden;
     }
-    return hidden;
   }
   struct PrefillResult {
     Tensor hidden, raw;
@@ -849,7 +863,7 @@ run_mtp_generation(Model &model, MtpModule &mtp, InferenceRequest &request,
       const CudaPreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t)
 
-TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Qwen35CausalLm);
+TYLOINFER_INSTANTIATE_MTP(mfq::cuda::qwen35::Run);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Gemma4CausalLm);

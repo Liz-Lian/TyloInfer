@@ -3,9 +3,6 @@
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "models/common/block.h"
-#include "models/common/full_block.h"
-#include "models/qwen35/ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/batch/prefill_budget.h"
@@ -45,7 +42,7 @@ static mfq::engine::PrefillChunk budget_batch_prefill(Model& model,
 mfq::engine::PrefillChunk QwenBatchOperations::prefill_chunk(
         const std::shared_ptr<Request>&,mfq::engine::PrefillChunk chunk) {
     CudaScope guard(execution_);
-    return budget_batch_prefill(model_,execution_,chunk);
+    return budget_batch_prefill(state_.run(),execution_,chunk);
 }
 
 mfq::engine::PrefillChunk FlashNextBatchOperations::prefill_chunk(
@@ -55,9 +52,9 @@ mfq::engine::PrefillChunk FlashNextBatchOperations::prefill_chunk(
     return budget_batch_prefill(model_,execution_,chunk,request->cache->prefill_growth_bytes(chunk.count));
 }
 
-bool qwen_continuous_batch_cuda_graph_enabled(const Qwen35CausalLm &model,
+bool qwen_continuous_batch_cuda_graph_enabled(const qwen35::Model &model,
+                                              const CudaExecutionContext &execution,
                                               const CudaContinuousBatchConfig &config) {
-    const auto &execution = *model.execution;
     return config.cuda_graph && !qwen35::Batch::has_cached_moe(model) &&
            mfq_cuda_graph_capture_supported() && model_parallel_cuda_graph_enabled(execution);
 }
@@ -126,9 +123,11 @@ struct QwenContinuousDecodeGraph {
     }
 };
 
-QwenBatchOperations::QwenBatchOperations(Qwen35CausalLm &model, CudaExecutionContext &execution,
+QwenBatchOperations::QwenBatchOperations(std::shared_ptr<const qwen35::Model> model,
+                                         CudaExecutionContext &execution,
                                          CudaContinuousBatchConfig config)
-    : model_(model), state_(model, config.max_sequences, config.paged_kv),
+    : model_(std::move(model)),
+      state_(model_, execution, config.max_sequences, config.paged_kv),
       execution_(execution), config_(std::move(config)),
       max_sequences_(static_cast<int32_t>(config_.max_sequences)),
       moe_enabled_(state_.has_moe()),
@@ -136,9 +135,9 @@ QwenBatchOperations::QwenBatchOperations(Qwen35CausalLm &model, CudaExecutionCon
 
 QwenBatchOperations::~QwenBatchOperations() = default;
 
-int64_t QwenBatchOperations::vocab_size() const { return model_.vocab_size(); }
+int64_t QwenBatchOperations::vocab_size() const { return state_.run().vocab_size(); }
 
-int64_t QwenBatchOperations::max_context() const { return model_.max_position_embeddings(); }
+int64_t QwenBatchOperations::max_context() const { return state_.run().max_position_embeddings(); }
 
 std::vector<std::pair<std::string, double>> QwenBatchOperations::metrics() const {
     const auto paged = state_.paged_kv_stats();
@@ -173,13 +172,11 @@ std::vector<std::pair<std::string, double>> QwenBatchOperations::metrics() const
 void QwenBatchOperations::initialize_sampling(Request &request, const Tensor &prompt_ids) {
     request.sampler.emplace(request.sampling);
     if (request.sampler->has_penalties())
-        request.counts = SamplingOps::token_counts(prompt_ids, model_.vocab_size());
+        request.counts = SamplingOps::token_counts(prompt_ids, state_.run().vocab_size());
 }
 
 void QwenBatchOperations::suspend_decode() {
     invalidate_decode_graph();
-    CudaScope guard(execution_);
-    state_.suspend_decode();
 }
 
 QwenBatchOperations::Sample QwenBatchOperations::prefill(
@@ -205,7 +202,7 @@ QwenBatchOperations::Sample QwenBatchOperations::prefill(
     if (chunk.offset > 0 && chunk.count == 1)
         length =
             mfq_tensor_backend::full({1}, chunk.offset + 1, request->prefill_ids.options());
-    hidden = model_.hidden_forward(
+    hidden = request->cache.run().hidden_forward(
         request->prefill_ids.narrow(1, chunk.offset, chunk.count).contiguous(), mfq_nullopt,
         length);
     const auto end = chunk.offset + chunk.count;
@@ -217,7 +214,6 @@ QwenBatchOperations::Sample QwenBatchOperations::prefill(
         final_timer = std::move(chunk_timer);
     }
     if (end < static_cast<int64_t>(request->prompt.size())) {
-        state_.pause_prefill(request->cache);
         return {};
     }
     auto logits = state_.logits_from_last_hidden(std::move(hidden));
@@ -310,14 +306,14 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
         requested_len = std::max(requested_len, request->cache_length + remaining);
     }
     const int64_t planned_len =
-        decode_graph_bucket(requested_len, model_.max_position_embeddings());
+        decode_graph_bucket(requested_len, state_.run().max_position_embeddings());
     const int64_t graph_attention_parts =
-        decode_graph_attention_parts(planned_len, FullBlock::kDecodeAttentionMaxParts);
+        decode_graph_attention_parts(planned_len, FullAttention::kDecodeAttentionMaxParts);
     std::vector<const void *> graph_state_addresses;
     bool graph_cache_hit = false;
     bool graph_decode = false;
     if (batch >= 2 && batch_greedy && config_.greedy &&
-        qwen_continuous_batch_cuda_graph_enabled(model_, config_)) {
+        qwen_continuous_batch_cuda_graph_enabled(*model_, execution_, config_)) {
         graph_state_addresses = state_.decode_state_addresses();
         const auto found =
             std::find_if(decode_graphs_.begin(), decode_graphs_.end(), [&](const auto &graph) {
@@ -387,7 +383,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
     try {
         if (graph_decode) {
             const auto invoke = [&]() {
-                auto hidden = model_.hidden_forward_static(
+                auto hidden = state_.run().hidden_forward_static(
                     ids, pos, lengths, {planned_len, graph_attention_parts});
                 auto current_logits = state_.logits_from_last_hidden(std::move(hidden));
                 return sample_greedy_cuda(current_logits.contiguous().view({batch, -1}));
@@ -400,14 +396,11 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
                     DecodeGraphTpProjectionScope tp_projection_scope(
                         execution_.decode_graph_tp_projection_major);
                     decode_graph->graph = std::make_unique<MfqCudaGraph>();
-                    std::vector<Tensor *> graph_warmup_states;
-                    for (const auto &block : model_.blocks)
-                        for (auto *state : block->graph_warmup_state())
-                            graph_warmup_states.push_back(state);
+                    auto graph_warmup_states = state_.run().graph_state();
                     prepare_decode_graph_memory(
                         graph_warmup_states,
-                        model_.cache_pos,
-                        model_.metadata.decode_graph_double_warmup,
+                        state_.run().cache_pos,
+                        model_->metadata.decode_graph_double_warmup,
                         *decode_graph->graph, [&]() { (void)invoke(); },
                         decode_graph->participant_streams(
                             execution_.collectives));
@@ -426,7 +419,7 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
             graph_tokens = decode_graph->static_next;
             ++cuda_graph_replays_;
         } else {
-            auto hidden = model_.hidden_forward(ids, pos, lengths, nullptr, pos);
+            auto hidden = state_.run().hidden_forward(ids, pos, lengths, nullptr, pos);
             logits = state_.logits_from_last_hidden(std::move(hidden));
         }
         state_.finish_decode(max_sequence_length);

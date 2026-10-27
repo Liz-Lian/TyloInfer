@@ -10,11 +10,11 @@
 #include "models/glm5_next/ops.h"
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
-#include "models/qwen35/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/state/session/state.h"
 #include "models/common/mtp.h"
+#include "engine/executor/qwen35.h"
 #include "engine/state/prefix_cache.h"
 #include "engine/state/paged.h"
 #include "engine/state/sessions.h"
@@ -259,7 +259,7 @@ uint64_t TextSessionCache::refresh_disk_index() { return impl_->refresh_disk_ind
         size_t,                                                                                    \
         const std::string &);
 
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::Qwen35CausalLm)
+TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::qwen35::Run)
 TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::MiniCPMO45CausalLm)
 TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::MiniCPMOTtsCausalLm)
 TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::Gemma4CausalLm)

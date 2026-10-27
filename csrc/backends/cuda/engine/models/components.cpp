@@ -157,7 +157,6 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
                                                   const std::string &, int64_t, bool, bool,        \
                                                   std::shared_ptr<const mfq::ModelSource>, bool)
 
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen35CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Gemma4CausalLm);
@@ -185,15 +184,15 @@ RuntimeComponents<Model> load_runtime_components(
 }
 
 template <>
-RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
-        mfq::cuda::Qwen35CausalLm& model,
+RuntimeComponents<mfq::cuda::qwen35::Run> load_runtime_components(
+        mfq::cuda::qwen35::Run& model,
         bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::Qwen35CausalLm> result{model.graph, model.plan};
+    RuntimeComponents<mfq::cuda::qwen35::Run> result{model.weights->graph, model.weights->plan};
     if (!load_optional_components) return result;
 
     if (result.plan.vision == mfq::cuda::CudaVisionAdapter::grid_vit) {
         const auto* component = result.graph.component("vision");
-        const auto& config = model.config;
+        const auto& config = model.weights->config;
         if (component == nullptr || !config.grid_vision ||
                 !config.image_token_id || !config.video_token_id) {
             throw std::runtime_error(
@@ -201,7 +200,7 @@ RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
         }
         result.grid_vision.emplace(
             mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                *model.execution, *model.source, *config.grid_vision,
+                *model.execution, *model.weights->source, *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
         result.vision_available = true;
@@ -220,8 +219,8 @@ RuntimeComponents<mfq::cuda::Qwen35CausalLm> load_runtime_components(
         if (supported_placement && model.num_experts() == 0 &&
                 model.supports_speculation()) {
             auto& execution = *model.execution;
-            TransformerWeightLoader loader{execution, *model.source};
-            auto predictor = mfq::cuda::qwen35::Predictor::load(loader, model.config, cuda_kv_quantization());
+            TransformerWeightLoader loader{execution, *model.weights->source};
+            auto predictor = mfq::cuda::qwen35::Predictor::load(loader, model.weights->config, cuda_kv_quantization());
             if (predictor) {
                 auto executor = std::make_unique<mfq::cuda::Executor>(
                     execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,

@@ -6,6 +6,7 @@
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
+#include "engine/executor/qwen35.h"
 #include "models/common/block.h"
 #include "models/common/full_block.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -59,6 +60,18 @@ int generate_diagnostic_tokens(
         const std::vector<int64_t>& decode_inputs = {},
         const std::unordered_set<int64_t>& stop_token_ids = {},
         bool production_prefill = false) {
+        const auto* metadata = [&]() {
+            if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>)
+                return &model.weights->metadata;
+            else
+                return &model.metadata;
+        }();
+        const auto* source = [&]() -> const mfq::ModelSource* {
+            if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>)
+                return model.weights && model.weights->source ? model.weights->source.get() : nullptr;
+            else
+                return model.source.get();
+        }();
         if(!decode_inputs.empty() && (gen<=1 || decode_inputs.size()!=size_t(gen-1)))
             throw std::invalid_argument("diagnostic decode input count differs from gen-1");
         mfq_tensor_backend::Tensor forced_inputs;
@@ -66,7 +79,7 @@ int generate_diagnostic_tokens(
             forced_inputs=mfq_tensor_backend::tensor(decode_inputs).to(mfq_tensor_backend::kCUDA);
         std::cout<<"decode_input_mode="<<(forced_inputs.defined()?"forced":"generated")<<"\n";
         auto& profiler = execution.profiler;
-        report_source_file_io(model.source.get(), "prefill_begin");
+        report_source_file_io(source, "prefill_begin");
         profiler.reset();
         auto next = [&] {
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
@@ -83,7 +96,7 @@ int generate_diagnostic_tokens(
         mfq_cuda_synchronize();
         auto t2 = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config, "prefill");
-        report_source_file_io(model.source.get(), "prefill");
+        report_source_file_io(source, "prefill");
         const char * empty_cache_env = mfq::cuda::env_lookup("TYLOINFER_EMPTY_CACHE_BEFORE_GRAPH");
         if (empty_cache_env != nullptr && std::atoi(empty_cache_env) != 0) {
             mfq_cuda_empty_cache();
@@ -105,7 +118,7 @@ int generate_diagnostic_tokens(
         bool use_cuda_graph =
             !forced_inputs.defined() &&
             (graph_env == nullptr || graph_env[0] != '0') &&
-            !model.metadata.flash_next &&
+            !metadata->flash_next &&
             mfq_cuda_graph_capture_supported() &&
             execution.dsv4_cpu_offload_layers.empty() &&
             execution.dense_cpu_layer_count == 0 &&
@@ -163,13 +176,17 @@ int generate_diagnostic_tokens(
                 DecodeGraphBranchScope branch_scope(
                     execution.decode_graph_serial_branches);
                 std::vector<mfq_tensor_backend::Tensor *> graph_warmup_states;
-                for (const auto &block : model.blocks)
-                    for (auto *state : block->graph_warmup_state())
-                        graph_warmup_states.push_back(state);
+                if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>) {
+                    graph_warmup_states = model.graph_state();
+                } else {
+                    for (const auto &block : model.blocks)
+                        for (auto *state : block->graph_warmup_state())
+                            graph_warmup_states.push_back(state);
+                }
                 prepare_decode_graph_memory(
                     graph_warmup_states,
                     model.cache_pos,
-                    model.metadata.decode_graph_double_warmup, graph, [&]() {
+                    metadata->decode_graph_double_warmup, graph, [&]() {
                         (void)model.next_token_static(
                             static_input, static_pos, static_len,
                             {planned_len, attention_parts});
@@ -225,15 +242,15 @@ int generate_diagnostic_tokens(
                     hit_eos = true;
                     break;
                 }
-                if(i==1 && model.metadata.flash_next && stop_token_ids.empty()) {
+                if(i==1 && metadata->flash_next && stop_token_ids.empty()) {
                     mfq_cuda_synchronize();first_decode_done=std::chrono::steady_clock::now();
                     measured_first_decode=true;
                 }
-                if(gen>=4 && i==gen/2 && model.metadata.flash_next && stop_token_ids.empty()) {
+                if(gen>=4 && i==gen/2 && metadata->flash_next && stop_token_ids.empty()) {
                     mfq_cuda_synchronize();halfway_done=std::chrono::steady_clock::now();
                     measured_halfway=true;
                 }
-                if(gen>256 && i==gen-1-128 && model.metadata.flash_next && stop_token_ids.empty()) {
+                if(gen>256 && i==gen-1-128 && metadata->flash_next && stop_token_ids.empty()) {
                     mfq_cuda_synchronize();last_window_done=std::chrono::steady_clock::now();
                     measured_last_window=true;
                 }
@@ -291,7 +308,7 @@ int generate_diagnostic_tokens(
             std::cout << generated_ptr[i];
         }
         std::cout << "\n";
-        report_source_file_io(model.source.get(), "decode");
+        report_source_file_io(source, "decode");
         if (execution.stores.moe_expert_cache) {
             print_moe_expert_cache_stats(
                 execution.stores.moe_expert_cache, std::cout);

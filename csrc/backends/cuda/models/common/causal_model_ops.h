@@ -19,9 +19,6 @@ namespace mfq { class ModelSource; }
 enum class TextSessionStateKind : int;
 struct TextSessionState;
 
-namespace mfq::models::qwen35 {
-template <class Backend> struct CausalLm;
-}
 namespace mfq::models::qwen4_exp {
 template <class Backend> struct CausalLm;
 }
@@ -103,7 +100,6 @@ struct CausalResources {
     void adapter_rollback_speculative(int64_t keep);
 };
 
-struct Qwen35Model;
 struct MiniCPMO45Model;
 struct MiniCPMOTtsModel;
 struct Gemma4Model;
@@ -345,7 +341,6 @@ template <typename Model> struct CudaCausalOps : Model {
     }
 };
 
-using Qwen35CausalLm = mfq::models::qwen35::CausalLm<CudaCausalOps<Qwen35Model>>;
 using MiniCPMO45CausalLm = mfq::models::minicpmo45::CausalLm<CudaCausalOps<MiniCPMO45Model>>;
 using MiniCPMOTtsCausalLm = mfq::models::minicpmo45::TtsCausalLm<CudaCausalOps<MiniCPMOTtsModel>>;
 using Gemma4CausalLm = mfq::models::gemma4::CausalLm<CudaCausalOps<Gemma4Model>>;
