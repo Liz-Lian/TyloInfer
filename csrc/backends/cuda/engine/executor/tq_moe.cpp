@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/executor/tq_moe.h"
 #include "native/cuda/profile.h"
-#include "backends/cuda/engine/executor/tq.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/tq/cache.h"

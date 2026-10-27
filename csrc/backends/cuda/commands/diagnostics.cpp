@@ -12,6 +12,7 @@
 #include "diagnostics/flash_next_mtp.h"
 #include "minicpmo45.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
@@ -243,8 +244,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 static_cast<const mfq::cuda::CudaLoadOptions&>(*this);
             return run_cuda_engine_isolation_check(std::move(options));
         }
+        auto tq = std::make_shared<TqExec>();
         CudaStores stores;
-        CudaExecutionContext execution(stores);
+        CudaExecutionContext execution(stores, tq);
         CudaScope scope(execution);
         // Operator-only checks do not require loading a model.
         if (check_backend_bf16_add) return run_backend_bf16_add_check(4096, 10000);

@@ -201,7 +201,7 @@ struct CudaExecutionConfig {
 CudaExecutionConfig load_cuda_execution_config();
 
 struct CudaExecutionContext {
-    explicit CudaExecutionContext(CudaStores& stores);
+    CudaExecutionContext(CudaStores& stores, std::shared_ptr<TqExec>& tq);
     ~CudaExecutionContext();
     CudaExecutionContext(const CudaExecutionContext&) = delete;
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
@@ -235,7 +235,7 @@ struct CudaExecutionContext {
     mfq::cuda::Collectives collectives;
     LayerPlacementConfig layer_placement;
     CudaStores& stores;
-    std::shared_ptr<TqExec> tq;
+    const std::shared_ptr<TqExec>& tq;
     std::vector<std::shared_ptr<MoeFfnPipeline>> moe_pipelines;
     mfq::cuda::Branches branches;
     // Layer addresses identify reusable workspace; only execution retires it after drain.

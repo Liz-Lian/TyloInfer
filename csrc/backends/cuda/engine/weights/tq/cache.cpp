@@ -2,7 +2,7 @@
 
 #include "backends/cuda/engine/weights/tq/image.h"
 #include "formats/tq_table.h"
-#include "backends/cuda/engine/executor/tq.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/graph_registry.h"
 #include "env.h"

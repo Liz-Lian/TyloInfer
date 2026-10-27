@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/qwen35.h"
 #include "engine/models/qwen35/model.h"
@@ -296,8 +297,9 @@ int run_reference(int argc, char** argv) {
             usage_error("native reference requires --model, --ctx-size, --reference-input and --reference-output");
         if (!std::filesystem::is_directory(options.model_path))
             usage_error("native reference requires an original HF model directory");
+        auto tq = std::make_shared<TqExec>();
         CudaStores stores;
-        CudaExecutionContext execution(stores);
+        CudaExecutionContext execution(stores, tq);
         CudaScope scope(execution);
         internal::setup_cuda_load(options, execution);
         tb::NoGradGuard guard;

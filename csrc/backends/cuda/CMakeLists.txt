@@ -506,7 +506,7 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/executor/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/ffn.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/graph_registry.cpp

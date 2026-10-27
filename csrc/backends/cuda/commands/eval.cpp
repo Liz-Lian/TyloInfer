@@ -3,6 +3,7 @@
 #include "backends/cuda/engine/executor/load.h"
 #include "eval/kl.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <algorithm>
@@ -43,8 +44,9 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
     explicit EvalCommand(mfq::cuda::EvalCommandOptions options)
         : mfq::cuda::EvalCommandOptions(std::move(options)) {}
     int run() { return with_command_errors([&]() -> int {
+        auto tq = std::make_shared<TqExec>();
         CudaStores stores;
-        CudaExecutionContext execution(stores);
+        CudaExecutionContext execution(stores, tq);
         CudaScope scope(execution);
         setup_cuda_load(*this, execution);
         if (model_path.empty()) {

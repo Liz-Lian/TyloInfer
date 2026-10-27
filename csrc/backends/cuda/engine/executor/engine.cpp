@@ -3,6 +3,7 @@
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/load.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -635,6 +636,7 @@ using State = std::variant<
 struct CudaBackend {
     using Options = CudaEngineOptions;
     Options options;
+    std::shared_ptr<TqExec> tq;
     CudaStores stores;
     std::unique_ptr<CudaExecutionContext> execution;
     State state;
@@ -656,7 +658,8 @@ struct CudaBackend {
         if (dump_env) std::cerr << "cuda knobs at load:\n" << mfq::cuda::env_dump();
         if (!options.context_size) options.context_size = 32768;
         if (execution) throw std::logic_error("CUDA load requires retired resources");
-        execution = std::make_unique<CudaExecutionContext>(stores);
+        tq = std::make_shared<TqExec>();
+        execution = std::make_unique<CudaExecutionContext>(stores, tq);
         CudaScope scope(*execution);
         setup_cuda_load(options, *execution);
         execution->profiler.enabled = false;
@@ -728,6 +731,7 @@ struct CudaBackend {
         }
         stores.reset();
         execution.reset();
+        tq.reset();
         if (failure) std::rethrow_exception(failure);
     }
 };

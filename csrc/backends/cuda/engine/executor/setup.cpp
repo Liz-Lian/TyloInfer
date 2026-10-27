@@ -1,6 +1,7 @@
 #include "env.h"
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
@@ -463,8 +464,9 @@ void setup_cuda_load(
 int with_cuda_load(
         const CudaLoadOptions& options,
         const std::function<int(CudaExecutionContext&)>& run) {
+    auto tq = std::make_shared<TqExec>();
     CudaStores stores;
-    CudaExecutionContext execution(stores);
+    CudaExecutionContext execution(stores, tq);
     CudaScope scope(execution);
     setup_cuda_load(options, execution);
     return run(execution);

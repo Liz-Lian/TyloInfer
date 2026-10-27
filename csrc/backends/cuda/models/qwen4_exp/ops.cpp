@@ -1,6 +1,6 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/executor/tq.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_shared_gate.h"

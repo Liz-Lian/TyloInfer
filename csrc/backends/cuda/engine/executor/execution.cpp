@@ -1,7 +1,7 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/executor/tq.h"
+#include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
 
@@ -677,12 +677,13 @@ int LayerPlacementConfig::device_for_layer(int64_t layer) const {
     return layer_devices.at(static_cast<size_t>(layer));
 }
 
-CudaExecutionContext::CudaExecutionContext(CudaStores& borrowed)
-    : config(load_cuda_execution_config()), stores(borrowed),
+CudaExecutionContext::CudaExecutionContext(
+        CudaStores& borrowed, std::shared_ptr<TqExec>& borrowed_tq)
+    : config(load_cuda_execution_config()), stores(borrowed), tq(borrowed_tq),
       routes(environment("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
              environment_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)) {
+    if (!tq) throw std::invalid_argument("CUDA execution context requires a TQ execution pool");
     profiler.filter = config.profile_filter;
-    tq = std::make_shared<TqExec>();
 }
 
 mfq::cuda::Projector CudaExecutionContext::projector() {
@@ -764,7 +765,6 @@ void CudaExecutionContext::reset() {
     drain();
     moe_pipelines.clear();
     attention_scratch.clear();
-    tq = std::make_shared<TqExec>();
     branches.clear();
     profiler.reset();
     collectives.reset();
