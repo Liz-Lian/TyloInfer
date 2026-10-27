@@ -231,9 +231,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
                 parsed.neuron_len != cpu.neuron_len) {
                 throw std::runtime_error("mixed NEPQ cohort shape mismatch");
             }
-            pool.nepq = cuda
-                ? to_gpu_nepq(parsed)
-                : to_cpu_nepq(parsed);
+            pool.nepq = to_device_nepq(parsed, cuda);
         } else {
             pool.family = MixedMoeFamily::Nvq;
             auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
@@ -241,8 +239,10 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
                 throw std::runtime_error("mixed NVQ/NPQ cohort shape mismatch");
             }
             pool.nvq = cuda
-                ? to_gpu_nvq(parsed, config.nvq2_exec, config.nvq_extended_group_exec)
-                : to_cpu_nvq(parsed);
+                ? to_device_nvq(
+                    parsed, true, config.nvq2_exec,
+                    config.nvq_extended_group_exec)
+                : to_device_nvq(parsed, false, false, false);
         }
         runtime->pools.push_back(std::move(pool));
     }
@@ -384,14 +384,15 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
             pool.family = MixedMoeFamily::Nepq;
             auto parsed = mfq::nepq::unpack(
                 source.payload, source.dtype, source.runtime_payload);
-            pool.nepq = to_gpu_nepq(select_nepq_cpu_rows(
+            pool.nepq = to_device_nepq(select_nepq_cpu_rows(
                 parsed, rows, cpu.out_per_expert,
-                pool.local_experts));
+                pool.local_experts), true);
         } else {
             pool.family = MixedMoeFamily::Nvq;
             auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
-            pool.nvq = to_gpu_nvq(
-                select_nvq_cpu_rows(parsed, rows), config.nvq2_exec, config.nvq_extended_group_exec);
+            pool.nvq = to_device_nvq(
+                select_nvq_cpu_rows(parsed, rows), true,
+                config.nvq2_exec, config.nvq_extended_group_exec);
         }
         runtime->pools.push_back(std::move(pool));
     }
@@ -606,8 +607,8 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
             dense_flat = dequant_mxfp4_cpu(pool.mxfp4)
                 .to(mfq_tensor_backend::kCUDA).contiguous();
         } else if (pool.dtype == "NEPQ") {
-            auto packed = to_gpu_nepq(mfq::nepq::unpack(
-                pool.payload, pool.dtype, pool.runtime_payload));
+            auto packed = to_device_nepq(mfq::nepq::unpack(
+                pool.payload, pool.dtype, pool.runtime_payload), true);
             dense_flat = nepq_dequant_cuda(
                 packed.indices_packed, packed.aux_packed,
                 packed.state_packed, packed.neuron_scale,
@@ -628,8 +629,8 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
             rotation_block = packed.rotation_block;
             rotation_signs = packed.rotation_signs;
         } else {
-            dense_flat = nvq_dequant(to_gpu_nvq(
-                mfq::nvq::unpack(pool.payload, pool.dtype)));
+            dense_flat = nvq_dequant(to_device_nvq(
+                mfq::nvq::unpack(pool.payload, pool.dtype), true));
         }
         auto dense = dense_flat.reshape({
             static_cast<int64_t>(pool.expert_ids.size()),

@@ -298,13 +298,9 @@ QuantLinear load_quant_linear(
                         std::move(shard));
                 }
             } else {
-                if (cpu_layer) {
-                    result.nint = to_device_nint8_zero(cpu, false);
-                } else {
-                    MfqCudaGuard guard(active_weight_load_device(execution));
-                    result.nint =
-                        to_device_nint8_zero(cpu, true);
-                }
+                result.nint = to_device_nint8_zero(
+                    cpu, !cpu_layer,
+                    cpu_layer ? -1 : active_weight_load_device(execution));
             }
         } else {
             const auto cpu = mfq::nint::unpack(blob);
@@ -352,13 +348,9 @@ QuantLinear load_quant_linear(
                         std::move(shard));
                 }
             } else {
-                if (cpu_layer) {
-                    result.nint = to_device_nint(cpu, false);
-                } else {
-                    MfqCudaGuard guard(active_weight_load_device(execution));
-                    result.nint =
-                        to_device_nint(cpu, true);
-                }
+                result.nint = to_device_nint(
+                    cpu, !cpu_layer,
+                    cpu_layer ? -1 : active_weight_load_device(execution));
             }
         }
     } else if (is_nvq_linear_dtype(dtype)) {
@@ -399,18 +391,16 @@ QuantLinear load_quant_linear(
                         slice.end * cpu.gs,
                         cpu.neuron_len)
                     : cpu.neuron_len;
-                shard.nvq = to_cuda_device_nvq(
-                    shard_cpu, slice.device);
+                shard.nvq = to_device_nvq(
+                    shard_cpu, true, false, false, slice.device);
                 result.tensor_parallel_shards.push_back(
                     std::move(shard));
             }
         } else {
-            if (cpu_layer) {
-                result.nvq = to_device_nvq(cpu, false, execution.config.nvq2_exec, execution.config.nvq_extended_group_exec);
-            } else {
-                MfqCudaGuard guard(active_weight_load_device(execution));
-                result.nvq = to_device_nvq(cpu, true, execution.config.nvq2_exec, execution.config.nvq_extended_group_exec);
-            }
+            result.nvq = to_device_nvq(
+                cpu, !cpu_layer, execution.config.nvq2_exec,
+                execution.config.nvq_extended_group_exec,
+                cpu_layer ? -1 : active_weight_load_device(execution));
         }
     } else if (dtype == "MXFP4-SQ") {
         result.kind = QuantLinearKind::Mxfp4Sq;

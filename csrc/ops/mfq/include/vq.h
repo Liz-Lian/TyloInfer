@@ -1,10 +1,12 @@
 #pragma once
 
 #include "native/cuda/profile.h"
-#include "parallel.h"
 #include "backend.h"
-#include "formats/quant/vq_blob.h"
-#include "nint.h"
+
+#include <cstdint>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 struct NvqWorkspace {
     int M = 0;
@@ -55,9 +57,9 @@ struct NvqWeight {
     }
 };
 
-void prepare_nvq_integer_codebook(NvqWeight& weight);
-void prepare_nvq_decode_records(NvqWeight& weight,bool immutable=false);
-bool prepare_nvq_dense_groups(NvqWeight& weight);
+inline constexpr int64_t kNvq2JscXlGroupExecKernelFormat = 16;
+inline constexpr int64_t kNvq3JscLGroupExecKernelFormat = 17;
+
 mfq_tensor_backend::Tensor nvq_matmul_multi2(
     CudaProfiler& profiler,
     const NvqWeight& first,
@@ -103,31 +105,6 @@ struct NepqWeight {
     mfq_tensor_backend::Tensor residual_first;
     mfq_tensor_backend::Tensor residual_second;
 };
-
-mfq::nvq::Data slice_nvq_cpu(
-    const mfq::nvq::Data& source, TensorParallelAxis axis, int64_t begin, int64_t end);
-mfq::nvq::Data select_nvq_cpu_rows(
-    const mfq::nvq::Data& source, const std::vector<int64_t>& rows);
-NvqWeight to_device_nvq(
-    const mfq::nvq::Data& source,
-    bool cuda,
-    bool nvq2 = false, bool extended = false);
-NvqWeight to_gpu_nvq(
-    const mfq::nvq::Data& source,
-    bool nvq2 = false, bool extended = false);
-NvqWeight to_cuda_device_nvq(
-    const mfq::nvq::Data& source,
-    int device,
-    bool nvq2 = false, bool extended = false);
-NvqWeight to_cpu_nvq(const mfq::nvq::Data& source);
-mfq::nepq::Data select_nepq_cpu_rows(
-    const mfq::nepq::Data& source,
-    const std::vector<int64_t>& rows,
-    int output_per_expert,
-    int selected_experts = -1);
-NepqWeight to_device_nepq(const mfq::nepq::Data& source, bool cuda);
-NepqWeight to_gpu_nepq(const mfq::nepq::Data& source);
-NepqWeight to_cpu_nepq(const mfq::nepq::Data& source);
 
 bool nvq_pair_compatible(const NvqWeight& first, const NvqWeight& second);
 mfq_tensor_backend::Tensor nvq_dequant(const NvqWeight& weight);

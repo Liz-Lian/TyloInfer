@@ -2,11 +2,14 @@
 
 #include "formats/format_features.h"
 #include "ops/common/include/mx.h"
+#include "ops/common/include/parallel.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "formats/quant/vq_blob.h"
 #include "ops/mfq/include/fp8_sq.h"
 #include "ops/mfq/include/mxfp4_sq.h"
 #include "ops/mfq/include/nint.h"
+#include "ops/mfq/include/vq.h"
 #endif
 
 #include <cstdint>
@@ -27,6 +30,23 @@ Mxfp4Weight to_device_mxfp4(
     const mfq::mxfp4::Data& source, bool cuda, int device = -1);
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+bool prepare_nvq_dense_groups(NvqWeight& weight);
+void prepare_nvq_integer_codebook(NvqWeight& weight);
+void prepare_nvq_decode_records(NvqWeight& weight);
+mfq::nvq::Data slice_nvq_cpu(
+    const mfq::nvq::Data& source, TensorParallelAxis axis,
+    int64_t begin, int64_t end);
+mfq::nvq::Data select_nvq_cpu_rows(
+    const mfq::nvq::Data& source, const std::vector<int64_t>& rows);
+NvqWeight to_device_nvq(
+    const mfq::nvq::Data& source, bool cuda,
+    bool nvq2 = false, bool extended = false, int device = -1);
+mfq::nepq::Data select_nepq_cpu_rows(
+    const mfq::nepq::Data& source,
+    const std::vector<int64_t>& rows,
+    int output_per_expert,
+    int selected_experts = -1);
+NepqWeight to_device_nepq(const mfq::nepq::Data& source, bool cuda);
 mfq::nint::Data slice_nint_cpu_output(
     const mfq::nint::Data& source, int64_t begin, int64_t end);
 mfq::nint::Data slice_nint_cpu_input_groups(

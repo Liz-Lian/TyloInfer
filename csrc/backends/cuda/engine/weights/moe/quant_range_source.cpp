@@ -435,7 +435,7 @@ MixedMoePool MoeQuantRangeSource::decode_expert(int expert,const mfq::MfeQuantEx
         pool.mxfp4=to_device_mxfp4(mfq::mxfp4::unpack(encoded.payload),false);
     } else {
         pool.family=MixedMoeFamily::Nvq;
-        pool.nvq=to_cpu_nvq(mfq::nvq::unpack(encoded.payload,encoded.dtype));
+        pool.nvq=to_device_nvq(mfq::nvq::unpack(encoded.payload,encoded.dtype), false);
         if(dense_groups_ && prepare_nvq_dense_groups(pool.nvq))++dense_materializations_;
         if (static_cast<std::size_t>(index)<metadata_->pools.size()) {
             pool.nvq.codebook=metadata_->pools[index].nvq.codebook;
