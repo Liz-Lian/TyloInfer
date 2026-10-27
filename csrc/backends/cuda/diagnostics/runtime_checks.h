@@ -80,6 +80,7 @@ int run_cuda_engine_isolation_check(CudaEngineOptions options);
 template <typename Model>
 static int run_prefill_sweep(
     Model& model,
+    const mfq::models::CausalLmMetadata& metadata,
     const std::vector<int64_t> & sizes,
     int repeats,CudaExecutionContext& execution) {
     if (repeats < 1) throw std::runtime_error("--prefill-sweep-reps must be positive");
@@ -387,7 +388,7 @@ static int run_prefill_sweep(
                 request.sampling.top_k=1;request.sampling.top_p=1.;request.sampling.enable_mtp=false;
                 mfq::engine::InferenceOutput output(request,nullptr,"layer-major-check");
                 const auto engine_started=std::chrono::steady_clock::now();
-                auto result=collect_generation(generate(model,graph,cache,config,request,output));
+                auto result=collect_generation(generate(model,model,metadata,graph,cache,config,request,output));
                 mfq_cuda_synchronize();
                 const auto engine_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-engine_started).count();
                 std::cout<<"prefill_ordinary_generation_timing prompt="<<sizes.front()<<" chunk="<<engine_chunk
@@ -1005,7 +1006,7 @@ static int run_qwen35_mtp_check(
             current = next.reshape({1, 1});
         }
         std::vector<int64_t> got;
-        got = check_mtp_steps(model, mtp, input, params);
+        got = check_mtp_steps(model, mtp, model.weights->metadata, input, params);
         const int produced = static_cast<int>(got.size());
         total_cycles += mtp.last_cycles;
         std::cout << "mtp_check greedy_prompt_tokens=" << input.size() << " produced=" << produced
@@ -1016,7 +1017,7 @@ static int run_qwen35_mtp_check(
         // Output limit then a fresh request exercises state reset after an
         // early return, including stopping before a computed bonus is emitted.
         got.clear();
-        got = check_mtp_steps(model, mtp, input, params, 3);
+        got = check_mtp_steps(model, mtp, model.weights->metadata, input, params, 3);
         const int stopped = static_cast<int>(got.size());
         TYLOINFER_RUNTIME_CHECK(stopped == 3 && got == std::vector<int64_t>(expected.begin(), expected.begin() + 3),
             "MTP step emitted extra or incorrect tokens");
@@ -1030,7 +1031,7 @@ static int run_qwen35_mtp_check(
     stochastic.frequency_penalty = .1;
     stochastic.repetition_penalty = 1.05;
     stochastic.seed = 20260907;
-    const int produced = static_cast<int>(check_mtp_steps(model, mtp, prompt, stochastic).size());
+    const int produced = static_cast<int>(check_mtp_steps(model, mtp, model.weights->metadata, prompt, stochastic).size());
     TYLOINFER_RUNTIME_CHECK(produced == 8 && mtp.last_cycles > 0 && total_cycles > 0,
         "MTP runtime gate did not execute speculative cycles");
     int64_t linear_layers = 0, ffn_batches = 0, projection_batches = 0;
@@ -1274,7 +1275,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
             request.sampling.top_k=1;request.sampling.top_p=1.;request.sampling.enable_mtp=enable_mtp;
             request.sampling.mtp_max_draft_tokens=5;
             mfq::engine::InferenceOutput output(request,nullptr,"mtp-operator-variants");
-            auto result=collect_generation(generate(model,graph,cache,config,request,output,enable_mtp?&mtp:nullptr));
+            auto result=collect_generation(generate(model,model,model.metadata,graph,cache,config,request,output,enable_mtp?&mtp:nullptr));
             mfq_cuda_synchronize();
             const auto decode_ms=std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-result.first_token).count();
@@ -1777,7 +1778,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
     }();
     const std::vector<int64_t> prompt{1,2,3,4,5};
     model.reset(1);mtp.reset(1);
-    const auto speculative=check_mtp_steps(model,mtp,prompt,greedy);
+    const auto speculative=check_mtp_steps(model,mtp,model.metadata,prompt,greedy);
     result["greedy_mtp"]=speculative;
     result["cycles"]=mtp.last_stats.cycles;
     result["accepted"]=mtp.last_accepted;
@@ -1791,7 +1792,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
         request.prompt=prompt;request.sampling=greedy;request.sampling.enable_mtp=enable_mtp;
         mfq::engine::InferenceOutput output(request,nullptr,"nemotron-h-mtp");
         model.reset(1);mtp.reset(1);
-        return collect_generation(generate(model,graph,cache,config,request,output,predictor)).tokens;
+        return collect_generation(generate(model,model,model.metadata,graph,cache,config,request,output,predictor)).tokens;
     };
     const auto plain=ordinary(nullptr,false);
     result["greedy_plain"]=plain;

@@ -41,6 +41,7 @@ struct CudaEngineState {
     Model model;
     RuntimeComponents<Model> components;
     Model& language;
+    const mfq::models::CausalLmMetadata& metadata;
     DecodeGraphCache graph;
     TextSessionCache cache;
     std::unique_ptr<ContinuousBatch<CudaBatchOperations<Model>>> batching;
@@ -252,7 +253,14 @@ struct CudaEngineState {
         : weight_memory(std::move(weights)), execution(&borrowed), config(std::move(runtime_config)),
           source(std::move(model_source)),
           model(std::move(loaded)), components(std::move(optional)),
-          language(components.language(model)), graph(language.max_position_embeddings()),
+          language(components.language(model)),
+          metadata([this]() -> const mfq::models::CausalLmMetadata& {
+              if constexpr (std::is_same_v<Model, qwen35::Run>)
+                  return language.weights->metadata;
+              else
+                  return language.metadata;
+          }()),
+          graph(language.max_position_embeddings()),
           cache(config.session_cache, config.prefix_cache,
               make_cuda_paged_prefix_cache(*source, language.max_position_embeddings(),
                   language.supports_paged_text_session_state(), config.prefix_cache),
@@ -353,7 +361,7 @@ struct CudaEngineState {
                 for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.vocab_size());
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
-                auto generation=run_mtp_generation(language,predictor,request,output,16);
+                auto generation=run_mtp_generation(language,language,metadata,predictor,request,output,16);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(execution->stores.moe_expert_cache);
                 predictor.reset(1);
@@ -479,7 +487,7 @@ struct CudaEngineState {
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, std::optional<Prepared> prepared,
                              const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
-        return internal::generate(language, graph, cache, config,
+        return internal::generate(language, language, metadata, graph, cache, config,
                                   input, output, batched ? nullptr : components.mtp.get(), std::move(prepared),
                                   batched ? batching.get() : nullptr, id);
     }

@@ -698,8 +698,14 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         if (!prefill_sweep_sizes.empty()) {
             execution.profiler.enabled=profile;
-            const int status = run_prefill_sweep(
-                model, prefill_sweep_sizes, prefill_sweep_reps,execution);
+            const int status = [&] {
+                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
+                    return run_prefill_sweep(model, model.weights->metadata,
+                        prefill_sweep_sizes, prefill_sweep_reps, execution);
+                else
+                    return run_prefill_sweep(model, model.metadata,
+                        prefill_sweep_sizes, prefill_sweep_reps, execution);
+            }();
             if (execution.stores.moe_expert_cache) {
                 print_moe_expert_cache_stats(
                     execution.stores.moe_expert_cache, std::cout);

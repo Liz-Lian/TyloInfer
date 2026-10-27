@@ -52,7 +52,8 @@ Generation generate_prepared(Ops &ops, InferenceRequest &input, InferenceOutput 
 template <class Ops>
 Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput &output) {
     using Hidden = typename Ops::Hidden;
-    auto &model = ops.model;
+    auto &state = ops.state;
+    const auto &metadata = ops.metadata;
     auto &session_cache = ops.cache;
     auto *mtp = ops.mtp;
     const auto &prepared = ops.prepared;
@@ -68,8 +69,8 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
         static_cast<int64_t>(prompt.size()) +
         (prepared && prepared->transformed() ? prepared->decode_position_delta : 0);
     const auto plan = plan_generation(prompt,
-        model.vocab_size(),
-        model.max_position_embeddings(),
+        metadata.vocab_size,
+        metadata.max_position_embeddings,
         sampling.max_tokens,
         cache_plan.stable_prefix_tokens,
         std::max<int64_t>(prompt.size(), occupied));
@@ -78,7 +79,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
         co_return;
     const std::string input_key = prepared ? prepared->cache_key : std::string{};
     const bool caching =
-        !ops.batched() && model.supports_text_session_state() &&
+        !ops.batched() && state.supports_text_session_state() &&
         (!prepared || !prepared->transformed() || !input_key.empty()) &&
         plan.stable_prefix_tokens > 0 &&
         (!cache_plan.session_id.empty() || session_cache.persistent_prefix_enabled());
@@ -93,7 +94,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     if constexpr(requires { ops.prepare_request(request); })ops.prepare_request(request);
     typename Ops::Restore restored;
     if (caching && (!use_mtp || mtp->supports_session_state()))
-        restored = session_cache.restore_best(model,
+        restored = session_cache.restore_best(state,
             use_mtp ? mtp : nullptr,
             cache_plan.session_id,
             prompt,
@@ -107,7 +108,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     std::size_t last_snapshot = 0;
     bool initial_snapshot_attempted = false;
     const auto snapshot = [&] {
-        const auto position = model.cache_pos;
+        const auto position = state.cache_pos;
         if (!caching || output.result.cancelled || position <= 0 ||
             static_cast<std::size_t>(position) > history.size() ||
             static_cast<std::size_t>(position) == last_snapshot)
@@ -116,15 +117,15 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
             if constexpr(requires { ops.prepare_snapshot(); })
                 if(!ops.prepare_snapshot())return;
             std::vector<int64_t> tokens(history.begin(), history.begin() + position);
-            auto state = model.capture_text_session_state(tokens);
-            state.input_key = input_key;
+            auto saved = state.capture_text_session_state(tokens);
+            saved.input_key = input_key;
             if (use_mtp) {
                 if (!ops.has_hidden(last_target_hidden) || position <= 1)
                     return;
-                state.mtp = mtp->capture_session_state(position, last_target_hidden);
-                state.bytes += state.mtp->bytes;
+                saved.mtp = mtp->capture_session_state(position, last_target_hidden);
+                saved.bytes += saved.mtp->bytes;
             }
-            session_cache.store(cache_plan.session_id, std::move(state));
+            session_cache.store(cache_plan.session_id, std::move(saved));
             last_snapshot = static_cast<std::size_t>(position);
         } catch (const std::exception &error) {
             std::cerr << "runtime_session_cache action=skip error=" << error.what() << '\n';

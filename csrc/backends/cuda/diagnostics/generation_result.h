@@ -23,13 +23,14 @@ inline GenerationResult collect_generation(mfq::engine::Generation generation) {
 }
 template <class Model>
 std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
+        const mfq::models::CausalLmMetadata& metadata,
         const std::vector<int64_t>& prompt, const MfqSamplingParams& sampling, int stop_after = 0) {
     mfq::engine::InferenceRequest request;
     request.prompt = prompt; request.sampling = sampling;
     mfq::engine::InferenceOutput output(request, nullptr, "mtp-check");
     model.reset(1);
     mtp.reset(1);
-    auto generation = run_mtp_generation(model, mtp, request, output);
+    auto generation = run_mtp_generation(model, model, metadata, mtp, request, output);
     std::vector<int64_t> tokens;
     std::size_t largest_delta = 0;
     while (auto step = generation.next()) {

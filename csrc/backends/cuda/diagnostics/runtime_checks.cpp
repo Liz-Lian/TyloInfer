@@ -86,8 +86,8 @@ int run_qwen35_mtp_bench(
             mfq::engine::InferenceRequest request;
             request.prompt = prompt; request.sampling = params;
             mfq::engine::InferenceOutput parsed(request, nullptr, "bench");
-            auto result = collect_generation(generate(model, graph_cache, session_cache,
-                runtime_config, request, parsed, &mtp));
+            auto result = collect_generation(generate(model, model, model.weights->metadata,
+                graph_cache, session_cache, runtime_config, request, parsed, &mtp));
             output = std::move(result.tokens); prefill = result.prefill; first_token = result.first_token;
             const int produced = static_cast<int>(output.size());
             mfq_cuda_synchronize();
@@ -125,7 +125,9 @@ int run_qwen35_mtp_bench(
 }
 
 template<class Model>
-int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& runtime_config, int requests = 2) {
+int run_qwen_continuous_batching_check(Model& model,
+        const mfq::models::CausalLmMetadata& metadata,
+        const CudaRuntimeConfig& runtime_config, int requests = 2) {
     using namespace mfq::engine;
     auto config = runtime_config;
     config.generation.prefill_chunk_size = 64;
@@ -141,7 +143,7 @@ int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& ru
     auto serial = [&](const std::vector<int64_t>& prompt, MfqPromptCachePlan plan = {}) {
         InferenceRequest request; request.prompt = prompt; request.sampling = sampling; request.cache_plan = std::move(plan);
         InferenceOutput output(request, nullptr, "serial");
-        return collect_generation(generate(model, graph, cache, config, request, output)).tokens;
+        return collect_generation(generate(model, model, metadata, graph, cache, config, request, output)).tokens;
     };
     const auto first_reference = serial(first_prompt), second_reference = serial(second_prompt);
     std::vector<int64_t> growth_prompt(253);
@@ -152,13 +154,15 @@ int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& ru
     {
         struct Execution {
             Model& model;
+            const mfq::models::CausalLmMetadata& metadata;
             DecodeGraphCache& graph;
             TextSessionCache& cache;
             const CudaRuntimeConfig& config;
             ContinuousBatch<CudaBatchOperations<Model>> batcher;
-            Execution(Model& model, DecodeGraphCache& graph, TextSessionCache& cache,
+            Execution(Model& model, const mfq::models::CausalLmMetadata& metadata,
+                      DecodeGraphCache& graph, TextSessionCache& cache,
                       const CudaRuntimeConfig& config)
-                : model(model), graph(graph), cache(cache), config(config),
+                : model(model), metadata(metadata), graph(graph), cache(cache), config(config),
                   batcher(64, config.continuous_batch.prefill_token_budget,
                           model, *model.execution, config.continuous_batch) {}
             bool can_batch(const EngineRequest&) const { return true; }
@@ -166,10 +170,10 @@ int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& ru
             bool mtp_available() const { return false; }
             void execute(const std::vector<RequestId>& eligible) { batcher.step(eligible); }
             Generation generate(const RequestId& id, ExecutionRequest& request) {
-                return internal::generate(model, graph, cache, config, request.input,
+                return internal::generate(model, model, metadata, graph, cache, config, request.input,
                                           request.output, nullptr, {}, &batcher, id);
             }
-        } execution(model, graph, cache, config);
+        } execution(model, metadata, graph, cache, config);
         auto& batcher = execution.batcher;
         RequestExecutor executor(config.continuous_batch.max_sequences);
         EngineInfo info;
@@ -299,10 +303,10 @@ int run_qwen_continuous_batching_check(Model& model, const CudaRuntimeConfig& ru
 int run_cuda_continuous_batching_check(
         mfq::cuda::qwen35::Run& model,int requests) {
     return run_qwen_continuous_batching_check(
-        model, resolve_cuda_runtime_config({}),requests);
+        model, model.weights->metadata, resolve_cuda_runtime_config({}),requests);
 }
 int run_cuda_continuous_batching_check(mfq::cuda::Qwen4CausalLm& model,int requests) {
-    return run_qwen_continuous_batching_check(model,resolve_cuda_runtime_config({}),requests);
+    return run_qwen_continuous_batching_check(model,model.metadata,resolve_cuda_runtime_config({}),requests);
 }
 
 int run_cuda_engine_isolation_check(CudaEngineOptions options) {

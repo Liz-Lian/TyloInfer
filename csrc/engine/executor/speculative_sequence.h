@@ -21,7 +21,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     const auto &sampling = request.sampling;
     const auto &token_constraint = request.token_constraint;
     using Tensor = typename Ops::Tensor;
-    auto &model = ops.model;
+    auto &state = ops.state;
+    const auto &metadata = ops.metadata;
     auto &mtp = ops.mtp;
     const auto *prepared = ops.prepared;
     using Clock = std::chrono::steady_clock;
@@ -44,7 +45,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         "prepared MTP prompt is missing embeddings or valid position metadata");
     require_execution(
         reused_tokens == 0 || (mtp.supports_session_state() && ops.defined(restored_last_hidden) &&
-                                  model.cache_pos == static_cast<int64_t>(reused_tokens) &&
+                                  state.cache_pos == static_cast<int64_t>(reused_tokens) &&
                                   mtp.cache_position() == static_cast<int64_t>(reused_tokens) -
                                       (mtp.blockwise_drafting()?0:1)),
         "restored MTP session boundary is incompatible");
@@ -56,13 +57,13 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         static_cast<int64_t>(prompt.size()) +
         (transformed_prompt ? prepared->decode_position_delta : 0);
     require_execution(
-        next_logical_position >= 0 && next_logical_position <= model.max_position_embeddings(),
+        next_logical_position >= 0 && next_logical_position <= metadata.max_position_embeddings,
         "prepared MTP decode position is outside context capacity");
     const int64_t occupied_context =
         std::max<int64_t>(static_cast<int64_t>(prompt.size()), next_logical_position);
     const auto generation_plan = mfq::engine::plan_generation(prompt,
-        model.vocab_size(),
-        model.max_position_embeddings(),
+        metadata.vocab_size,
+        metadata.max_position_embeddings,
         sampling.max_tokens,
         0,
         occupied_context);
@@ -79,7 +80,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     auto accept = [&](const TokenOutput &delta) {
         for (const auto token : delta.token_ids) {
             require_execution(
-                token >= 0 && token < model.vocab_size(), "MTP sampled token outside vocabulary");
+                token >= 0 && token < metadata.vocab_size, "MTP sampled token outside vocabulary");
             if (token_constraint)
                 token_constraint->accept(token);
             ++generated;
@@ -210,7 +211,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         if (output.result.cancelled)
             co_return;
         if (transformed_prompt)
-            model.decode_position_delta = prepared->decode_position_delta;
+            state.decode_position_delta = prepared->decode_position_delta;
         if (!stream_prompt_history)
             raw = raw_chunks.size() == 1 ? std::move(raw_chunks.front()) : ops.concatenate(raw_chunks, 1);
         raw_chunks.clear();
@@ -310,7 +311,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         auto bootstrap = [&](Tensor token_counts,const MfqTokenConstraintPtr& cursor) {
             if(mtp.teacher_forced_prompt_prime()) {
                 (void)ops.predictor_step(initial_hidden,ops.ids_for({pending}),
-                    positioned_prompt ? ops.decode_positions(model.cache_pos,1) : Tensor{});
+                    positioned_prompt ? ops.decode_positions(state.cache_pos,1) : Tensor{});
             }
             auto next_hidden=ops.target_forward(ops.ids_for({pending}),&raw);
             committed_last_hidden=ops.slice(raw,1,ops.size(raw,1)-1,1);
@@ -370,7 +371,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         int64_t predictor_history_position = mtp.cache_position();
         auto bounded_depth = [&](int desired) {
             const auto context_depth =
-                std::max<int64_t>(0, model.max_position_embeddings() - model.cache_pos - 1);
+                std::max<int64_t>(0, metadata.max_position_embeddings - state.cache_pos - 1);
             const auto output_depth =
                 std::max<int64_t>(0, static_cast<int64_t>(limit - generated - 1));
             return static_cast<int>(
@@ -571,8 +572,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     // the suffix, using the same hooks as joint verification.
                     if constexpr(requires { ops.begin_target_routes(int{}); })
                         ops.begin_target_routes(draft_count);
-                    if constexpr (requires { model.begin_speculative_suffix(draft_count); })
-                        model.begin_speculative_suffix(draft_count);
+                    if constexpr (requires { state.begin_speculative_suffix(draft_count); })
+                        state.begin_speculative_suffix(draft_count);
                     else
                         throw std::runtime_error(
                             "target model does not support speculative suffix forwarding");
@@ -593,7 +594,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     ops.ids_for(std::move(verify_ids)), &verified_raw, draft_count > 0 ? 1 : 0);
             }
             auto targets =
-                ops.reshape(ops.logits_for(verified), {draft_count + 1, model.vocab_size()});
+                ops.reshape(ops.logits_for(verified), {draft_count + 1, metadata.vocab_size});
             const auto verify_finished=Clock::now();
 
             ++mtp.last_stats.cycles;
@@ -676,7 +677,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
 
             int accepted = static_cast<int>(result.accepted_drafts);
             require_execution(accepted >= 0 && accepted <= draft_count && result.next_token >= 0 &&
-                                  result.next_token < model.vocab_size(),
+                                  result.next_token < metadata.vocab_size,
                 "MTP verification returned invalid data");
             if (constraint_cursor) {
                 auto constraint_counts = penalties ? ops.clone(counts) : Tensor{};
@@ -728,7 +729,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             const auto resolve_started=Clock::now();
             if (draft_count > 0) {
                 if (emitted_accepted == draft_count) {
-                    model.commit_speculative();
+                    state.commit_speculative();
                     resolve_routes(emitted_accepted+1);
                 } else {
                     const bool retained = [&] {
@@ -736,7 +737,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                             return ops.retains_partial_target_prefix(emitted_accepted);
                         return mtp.retains_partial_target_prefix();
                     }();
-                    model.rollback_speculative(retained ? emitted_accepted : 0);
+                    state.rollback_speculative(retained ? emitted_accepted : 0);
                     // A fallback replay observes the accepted rows itself.
                     // Publish only pending here so those rows count once.
                     resolve_routes(retained?emitted_accepted+1:1);
@@ -754,7 +755,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     // Block predictors retain the committed target rows rather
                     // than shifted input/hidden pairs. EOS can truncate an
                     // accepted draft, so use the target's actual cache boundary.
-                    const auto rows=model.cache_pos-predictor_history_position;
+                    const auto rows=state.cache_pos-predictor_history_position;
                     require_execution(rows>=0 && rows<=ops.size(verified_raw,1),
                         "block predictor final target boundary is incompatible");
                     if(rows>0) {

@@ -133,7 +133,7 @@ static int run_flash_next_mtp_check(Model& model, Predictor& mtp) {
     for (int i=0;i<sampling.max_tokens;++i) {
         auto next=model.next_token(current);expected.push_back(next.template item<int64_t>());current=next.reshape({1,1});
     }
-    generated=mfq::cuda::diagnostics::check_mtp_steps(model,mtp,prompt,sampling);
+    generated=mfq::cuda::diagnostics::check_mtp_steps(model,mtp,model.metadata,prompt,sampling);
     const auto count=generated.size();
     TYLOINFER_RUNTIME_CHECK(count==sampling.max_tokens && generated==expected && mtp.last_cycles>0,
         "Flash-Next MTP greedy tokens disagree with incremental target");
@@ -144,13 +144,13 @@ static int run_flash_next_mtp_check(Model& model, Predictor& mtp) {
     result["depth_cycles"]=mtp.last_stats.depth_cycles;
     if constexpr(requires { mtp.graph_replays; })result["predictor_graph_replays"]=mtp.graph_replays;
     generated.clear();
-    generated=mfq::cuda::diagnostics::check_mtp_steps(model,mtp,prompt,sampling,3);
+    generated=mfq::cuda::diagnostics::check_mtp_steps(model,mtp,model.metadata,prompt,sampling,3);
     const auto stopped=generated.size();
     TYLOINFER_RUNTIME_CHECK(stopped==3 && generated==std::vector<int64_t>(expected.begin(),expected.begin()+3),
         "Flash-Next MTP step emitted extra or incorrect tokens");
     sampling.max_tokens=8;sampling.temperature=.8;sampling.top_k=16;sampling.top_p=.95;
     sampling.presence_penalty=.2;sampling.frequency_penalty=.1;sampling.repetition_penalty=1.05;sampling.seed=20260907;
-    TYLOINFER_RUNTIME_CHECK(mfq::cuda::diagnostics::check_mtp_steps(model,mtp,prompt,sampling).size()==8,
+    TYLOINFER_RUNTIME_CHECK(mfq::cuda::diagnostics::check_mtp_steps(model,mtp,model.metadata,prompt,sampling).size()==8,
         "Flash-Next stochastic MTP failed to generate requested tokens");
     std::cout<<"flash_next_mtp_check "<<result.dump()<<'\n';return 0;
 }

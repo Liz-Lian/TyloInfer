@@ -52,9 +52,11 @@ mfq_tensor_backend::Tensor MtpTarget::logits(mfq_tensor_backend::Tensor hidden) 
 using mfq::engine::Generation;
 using namespace mfq::engine;
 
-template <class Model> struct CudaMtpOps {
+template <class Model, class State> struct CudaMtpOps {
   using Tensor = mfq_tensor_backend::Tensor;
   Model &model;
+  State &state;
+  const mfq::models::CausalLmMetadata &metadata;
   MtpModule &mtp;
   const CudaPreparedPrompt *prepared;
   MtpTarget target;
@@ -243,9 +245,10 @@ template <class Model> struct CudaMtpOps {
       }
   }
 
-  CudaMtpOps(Model &model, MtpModule &mtp, const CudaPreparedPrompt *prepared,
+  CudaMtpOps(Model &model, State &state, const mfq::models::CausalLmMetadata &metadata,
+             MtpModule &mtp, const CudaPreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output)
-      : model(model), mtp(mtp), prepared(prepared), target(model),
+      : model(model), state(state), metadata(metadata), mtp(mtp), prepared(prepared), target(model),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt && prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
@@ -262,7 +265,7 @@ template <class Model> struct CudaMtpOps {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp))
         predictor->compact_graph_sampling=captured_compact_requested();
     if (penalties) {
-      counts = mfq::cuda::SamplingOps::token_counts(input_ids, model.vocab_size());
+      counts = mfq::cuda::SamplingOps::token_counts(input_ids, metadata.vocab_size);
     }
   }
   auto &sampler() { return *sampler_; }
@@ -386,11 +389,11 @@ template <class Model> struct CudaMtpOps {
         // loading without warmed state still uses an eager bootstrap row.
         std::vector<Tensor> hidden_rows,raw_rows;
         for(int64_t offset=0;offset<chunk.count;) {
-          const auto rows=model.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
+          const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
           Tensor part;
           hidden_rows.push_back(target_forward(ids.narrow(1,offset,rows),&part,rows>1?1:0).clone());
           raw_rows.push_back(std::move(part));
-          if(rows>1)model.commit_speculative();
+          if(rows>1)state.commit_speculative();
           offset+=rows;
         }
         auto hidden=hidden_rows.size()==1?std::move(hidden_rows.front()):concatenate(hidden_rows,1);
@@ -457,7 +460,7 @@ template <class Model> struct CudaMtpOps {
         cache_start +
         (transformed_prompt ? prepared->decode_position_delta : 0);
     TYLOINFER_RUNTIME_CHECK(logical_start >= 0 && logical_start + tokens <=
-                                                model.max_position_embeddings(),
+                                                metadata.max_position_embeddings,
                       "CUDA MTP position span exceeds context capacity");
     auto result = mfq_tensor_backend::arange(logical_start,
                                              logical_start + tokens, options);
@@ -830,9 +833,10 @@ template <class Model> struct CudaMtpOps {
             .contiguous());
   }
 };
-template <typename Model>
+template <typename Model, typename State>
 Generation
-run_mtp_generation(Model &model, MtpModule &mtp, InferenceRequest &request,
+run_mtp_generation(Model &model, State &state, const mfq::models::CausalLmMetadata &metadata,
+                   MtpModule &mtp, InferenceRequest &request,
                    InferenceOutput &output, int64_t prefill_chunk_size,
                    const CudaPreparedPrompt *prepared,
                    std::size_t reused_tokens,
@@ -853,13 +857,15 @@ run_mtp_generation(Model &model, MtpModule &mtp, InferenceRequest &request,
     if(!retained_chunks && (!prepared || !prepared->transformed()))logical_chunk=request.prompt.size();
   }
   return mfq::engine::speculative_sequence(
-      CudaMtpOps<Model>{model, mtp, prepared, prefill_chunk_size, &output}, request, output,
+      CudaMtpOps<Model, State>{model, state, metadata, mtp, prepared, prefill_chunk_size, &output},
+      request, output,
       logical_chunk, reused_tokens, std::move(restored_last_hidden),
       session_last_hidden,stable_prefix_tokens);
 }
 #define TYLOINFER_INSTANTIATE_MTP(MODEL)                                             \
-  template Generation run_mtp_generation<MODEL>(                               \
-      MODEL &, MtpModule &, InferenceRequest &, InferenceOutput &, int64_t,    \
+  template Generation run_mtp_generation<MODEL, MODEL>(                         \
+      MODEL &, MODEL &, const mfq::models::CausalLmMetadata &, MtpModule &,     \
+      InferenceRequest &, InferenceOutput &, int64_t,                            \
       const CudaPreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t)
 

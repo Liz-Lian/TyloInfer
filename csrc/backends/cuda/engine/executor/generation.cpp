@@ -58,8 +58,10 @@ static mfq_tensor_backend::Tensor sample_token(Model &model, mfq_tensor_backend:
     }
 }
 
-template <typename Model> struct CudaGenerationOps {
+template <typename Model, typename State> struct CudaGenerationOps {
     Model &model;
+    State &state;
+    const mfq::models::CausalLmMetadata &metadata;
     DecodeGraphCache &graph;
     const MfqTokenConstraintPtr &constraint;
     mfq_tensor_backend::Tensor pending, counts;
@@ -75,18 +77,12 @@ template <typename Model> struct CudaGenerationOps {
     int64_t prefill_compute_chunk=1024;
     mfq::engine::InferenceOutput* output=nullptr;
 
-    const auto& metadata() const {
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
-            return model.weights->metadata;
-        else
-            return model.metadata;
-    }
-
-    CudaGenerationOps(Model &model, DecodeGraphCache &graph,
+    CudaGenerationOps(Model &model, State &state,
+        const mfq::models::CausalLmMetadata &metadata, DecodeGraphCache &graph,
         const mfq::engine::InferenceRequest &request, const CudaPreparedPrompt *prepared,
         const CudaDecodeGraphConfig &graph_config,int64_t compute_chunk=1024,
         mfq::engine::InferenceOutput* inference_output=nullptr)
-        : model(model), graph(graph), constraint(request.token_constraint),
+        : model(model), state(state), metadata(metadata), graph(graph), constraint(request.token_constraint),
           sampler(request.sampling),
           has_penalties(sampler.has_penalties()), prepared(prepared), graph_config(graph_config),
           prefill_compute_chunk(compute_chunk),output(inference_output) {
@@ -96,9 +92,9 @@ template <typename Model> struct CudaGenerationOps {
                 .device(mfq_tensor_backend::kCUDA))
                        .reshape({1, -1})
                        .contiguous();
-        graph.ensure_storage(model.vocab_size());
+        graph.ensure_storage(metadata.vocab_size);
         if (has_penalties) {
-            counts = mfq::cuda::SamplingOps::token_counts(full_ids, model.vocab_size(), graph.counts);
+            counts = mfq::cuda::SamplingOps::token_counts(full_ids, metadata.vocab_size, graph.counts);
         }
         generation_limit = request.sampling.max_tokens;
         graph_active = graph_eligible();
@@ -129,7 +125,7 @@ template <typename Model> struct CudaGenerationOps {
                 short_windows=true;
                 for(int64_t offset=0;offset<chunk.count;) {
                     if(output && output->stopped())break;
-                    const auto rows=model.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
+                    const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
                     auto part=ids.narrow(1,offset,rows);
                     Tensor window_logits;
                     if(auto result=qwen4_decode_graph_hidden(model,part,nullptr,rows>1?1:0,
@@ -137,7 +133,7 @@ template <typename Model> struct CudaGenerationOps {
                         hidden=std::move(*result);
                     else hidden=model.hidden_forward(part,mfq_nullopt,mfq_nullopt,nullptr,
                         mfq_nullopt,nullptr,rows>1?1:0);
-                    if(rows>1)model.commit_speculative();
+                    if(rows>1)state.commit_speculative();
                     offset+=rows;
                 }
             } else if((!prepared || !prepared->transformed()) &&
@@ -178,7 +174,7 @@ template <typename Model> struct CudaGenerationOps {
                 hidden=hidden.narrow(1,hidden.size(1)-1,1).clone();
                 workspace.finish();
             }
-            model.decode_position_delta = prepared->decode_position_delta;
+            state.decode_position_delta = prepared->decode_position_delta;
         } else {
             MfqOptional<Tensor> length = mfq_nullopt;
             if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
@@ -220,7 +216,7 @@ template <typename Model> struct CudaGenerationOps {
     bool graph_eligible() const {
         const auto &execution = *model.execution;
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
-               !metadata().flash_next && mfq_cuda_graph_capture_supported() &&
+               !metadata.flash_next && mfq_cuda_graph_capture_supported() &&
                execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
                !execution.stores.moe_expert_cache && model_parallel_cuda_graph_enabled(execution) &&
                generation_limit >= graph_config.minimum_generation_tokens &&
@@ -239,7 +235,7 @@ template <typename Model> struct CudaGenerationOps {
             sample_token_counts_add_cuda(counts, pending.contiguous());
         }
 
-        std::int64_t position = model.cache_pos;
+        std::int64_t position = state.cache_pos;
         std::int64_t length = position + 1;
         std::int64_t step = 1;
         TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.static_input.template data_ptr<int64_t>(),
@@ -275,9 +271,9 @@ template <typename Model> struct CudaGenerationOps {
             graph_stream));
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream));
 
-        const std::int64_t requested = model.cache_pos + generation_limit;
+        const std::int64_t requested = state.cache_pos + generation_limit;
         const std::int64_t planned =
-            decode_graph_bucket(requested, model.max_position_embeddings());
+            decode_graph_bucket(requested, metadata.max_position_embeddings);
         const std::int64_t parts =
             decode_graph_attention_parts(planned, FullBlock::kDecodeAttentionMaxParts);
         const bool greedy = sampler.greedy();
@@ -315,18 +311,18 @@ template <typename Model> struct CudaGenerationOps {
             DecodeGraphBranchScope branch_scope(execution.decode_graph_serial_branches);
             graph.graph = std::make_unique<MfqCudaGraph>();
             try {
-                const bool double_warmup = metadata().decode_graph_double_warmup;
+                const bool double_warmup = metadata.decode_graph_double_warmup;
                 std::vector<Tensor*> warmup_states;
                 if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
-                    warmup_states = model.graph_state();
+                    warmup_states = state.graph_state();
                 } else {
-                    for (const auto& block : model.blocks) {
+                    for (const auto& block : state.blocks) {
                         for (auto* state : block->graph_warmup_state()) {
                             warmup_states.push_back(state);
                         }
                     }
                 }
-                prepare_decode_graph_memory(warmup_states, model.cache_pos,
+                prepare_decode_graph_memory(warmup_states, state.cache_pos,
                     double_warmup, *graph.graph, sample_static,
                     graph.graph_participant_streams(execution.collectives));
                 graph.graph->capture_begin();
@@ -390,7 +386,7 @@ template <typename Model> struct CudaGenerationOps {
         }
         graph.graph->replay();
         const auto token = graph.static_next.template item<int64_t>();
-        ++model.cache_pos;
+        ++state.cache_pos;
         return token;
     }
     void accept(std::int64_t token) {
@@ -417,10 +413,12 @@ template <typename Model> struct CudaGenerationOps {
 
 } // namespace
 
-template <class Model> struct CudaGenerationContext {
+template <class Model, class State> struct CudaGenerationContext {
     using Hidden = mfq_tensor_backend::Tensor;
     using Restore = TextSessionRestore;
     Model &model;
+    State &state;
+    const mfq::models::CausalLmMetadata &metadata;
     DecodeGraphCache &graph;
     TextSessionCache &cache;
     const CudaRuntimeConfig &config;
@@ -469,11 +467,11 @@ template <class Model> struct CudaGenerationContext {
         trace_expert_cache("begin");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-            model.decode_reserve_until=std::min<int64_t>(model.max_position_embeddings(),
+            model.decode_reserve_until=std::min<int64_t>(metadata.max_position_embeddings,
                 int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
             if(!batching && input.prompt.size()>1024) {
                 finish_moe_expert_exchanges(model.execution->stores.moe_expert_cache);
-                if(model.cache_pos==0 && !model.graph_registry)
+                if(state.cache_pos==0 && !model.graph_registry)
                     release_moe_decode_buffers(model.execution->stores.moe_expert_cache);
                 else release_moe_prefill_buffers(model.execution->stores.moe_expert_cache);
                 mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
@@ -503,7 +501,7 @@ template <class Model> struct CudaGenerationContext {
     bool short_streamed_prefill(std::size_t tokens) const {
         // A short continuation can reuse the bounded MFE path without
         // returning its expert images and captured graphs for a large PP arena.
-        return model.cache_pos>0 && tokens<=128 &&
+        return state.cache_pos>0 && tokens<=128 &&
             moe_expert_cache_ssd_experts(model.execution->stores.moe_expert_cache);
     }
     int64_t prefill_chunk(std::size_t tokens) {
@@ -592,7 +590,7 @@ template <class Model> struct CudaGenerationContext {
                 const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
                     return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
                 };
-                for(const auto& item:model.blocks) {
+                for(const auto& item:state.blocks) {
                     const auto& state=dynamic_cast<const deepseek_v41_runtime::Block&>(*item).state;
                     incoming+=session_tensor_bytes(state.local_kv)+session_tensor_bytes(state.partial_kv)+
                         session_tensor_bytes(state.partial_score)+prefix_bytes(state.compressed_kv,state.compressed_length)+
@@ -631,7 +629,7 @@ template <class Model> struct CudaGenerationContext {
     bool has_hidden(const Hidden &value) const { return value.defined(); }
     void reset() {
         if (batching) return;
-        model.reset(1);
+        state.reset(1);
         if (mtp)
             mtp->reset(1);
     }
@@ -662,14 +660,15 @@ template <class Model> struct CudaGenerationContext {
                     (!prepared || !prepared->transformed()))logical_chunk=input.prompt.size();
         }
         return mfq::engine::generate_sequence(
-            CudaGenerationOps<Model>(model, graph, input, prepared ? &*prepared : nullptr,
+            CudaGenerationOps<Model, State>(model, state, metadata, graph, input,
+                prepared ? &*prepared : nullptr,
                 config.decode_graph,compute_chunk,&output),
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
     Generation speculate(mfq::engine::InferenceRequest &input, mfq::engine::InferenceOutput &output,
         size_t reused, Hidden restored, Hidden *committed) {
         prepare_prefill_workspace(input.prompt.size()-reused);
-        return run_mtp_generation(model,
+        return run_mtp_generation(model, state, metadata,
             *mtp,
             input,
             output,
@@ -681,21 +680,23 @@ template <class Model> struct CudaGenerationContext {
     }
 };
 
-template <typename Model>
-Generation generate(Model &model, DecodeGraphCache &graph, TextSessionCache &cache,
+template <typename Model, typename State>
+Generation generate(Model &model, State &state, const mfq::models::CausalLmMetadata &metadata,
+    DecodeGraphCache &graph, TextSessionCache &cache,
     const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
     mfq::engine::InferenceOutput &output, MtpModule *mtp,
     std::optional<CudaPreparedPrompt> prepared,
     mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching, std::string request_id) {
     return mfq::engine::generate_request(
-        CudaGenerationContext<Model>{model, graph, cache, config, mtp, std::move(prepared), batching,
+        CudaGenerationContext<Model, State>{model, state, metadata, graph, cache, config, mtp,
+                                     std::move(prepared), batching,
                                      std::move(request_id)},
         request,
         output);
 }
 
 #define TYLOINFER_INSTANTIATE_FLOW(MODEL)                                                                \
-    template Generation generate(MODEL &,                                                          \
+    template Generation generate(MODEL &, MODEL &, const mfq::models::CausalLmMetadata &,             \
         DecodeGraphCache &,                                                                        \
         TextSessionCache &,                                                                        \
         const CudaRuntimeConfig &,                                                                 \
