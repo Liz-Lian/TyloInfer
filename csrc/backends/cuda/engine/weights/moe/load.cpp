@@ -1,6 +1,7 @@
 #include "backends/cuda/engine/weights/moe/load.h"
 
 #include "engine/weights/moe/prepare.h"
+#include "engine/weights/quant.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "mfq_cuda_quant_ops.h"
 

@@ -7,6 +7,7 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/weights/group.h"
+#include "engine/weights/quant.h"
 #include "formats/dense_blob.h"
 #include "weight_memory.h"
 #include "mfq_cuda_quant_ops.h"
@@ -541,16 +542,16 @@ QuantLinear load_quant_linear(
                     ? slice.begin : 0;
                 shard.input_end = axis == TensorParallelAxis::Input
                     ? slice.end : cpu.neuron_len;
-                shard.mxfp8 = to_cuda_device_mxfp8(
-                    shard_cpu, slice.device);
+                shard.mxfp8 = to_device_mxfp8(
+                    shard_cpu, true, slice.device);
                 result.tensor_parallel_shards.push_back(
                     std::move(shard));
             }
         } else if (cpu_layer) {
             result.mxfp8.weight = to_device_mxfp8(cpu, false);
         } else {
-            result.mxfp8.weight = to_cuda_device_mxfp8(
-                cpu, active_weight_load_device(execution));
+            result.mxfp8.weight = to_device_mxfp8(
+                cpu, true, active_weight_load_device(execution));
         }
     } else if (dtype == "BF16" || dtype == "F16" || dtype == "F32") {
         result.kind = QuantLinearKind::Dense;

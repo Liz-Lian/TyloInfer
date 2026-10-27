@@ -70,15 +70,4 @@ struct Mxfp8Linear {
 };
 
 mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data& source);
-mfq::mxfp4::Data select_mxfp4_cpu_rows(
-    const mfq::mxfp4::Data& source, const std::vector<int64_t>& rows);
-mfq::mxfp4::Data slice_mxfp4_cpu(
-    const mfq::mxfp4::Data& source, TensorParallelAxis axis, int64_t begin, int64_t end);
-mfq::mxfp8::Data slice_mxfp8_cpu(
-    const mfq::mxfp8::Data& source, TensorParallelAxis axis, int64_t begin, int64_t end);
-Mxfp8Weight to_device_mxfp8(
-    const mfq::mxfp8::Data& source, bool cuda, int device = -1);
-Mxfp8Weight to_cuda_device_mxfp8(const mfq::mxfp8::Data& source, int device);
-Mxfp4Weight to_device_mxfp4(
-    const mfq::mxfp4::Data& source, bool cuda, int device = -1);
 mfq_tensor_backend::Tensor mxfp8_cpu_reference(const Mxfp8Weight& weight);
