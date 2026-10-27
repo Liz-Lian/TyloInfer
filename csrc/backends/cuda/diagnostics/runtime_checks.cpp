@@ -6,7 +6,7 @@
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
-#include "backends/cuda/engine/batch/batch.h"
+#include "models/batch.h"
 
 #include <cuda_profiler_api.h>
 
@@ -316,7 +316,7 @@ int run_qwen_continuous_batching_check(Model& model,
         }
         if constexpr (std::is_same_v<Model,mfq::cuda::qwen35::Model>)
             if (config.continuous_batch.greedy &&
-                qwen_continuous_batch_cuda_graph_enabled(
+                mfq::cuda::qwen35::batch_graph_enabled(
                     model, execution_context, config.continuous_batch))
                 TYLOINFER_RUNTIME_CHECK(captures > 0 && replays > captures, "batch graph was not replayed");
         std::cout << "continuous_batching_state_check paged=" << config.continuous_batch.paged_kv

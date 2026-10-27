@@ -2,7 +2,7 @@
 
 #include "engine/executor/step.h"
 #include "engine/models/common/causal_metadata.h"
-#include "backends/cuda/engine/batch/batch.h"
+#include "models/batch.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "engine/executor/mtp.h"

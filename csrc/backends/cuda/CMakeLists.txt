@@ -504,6 +504,7 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
@@ -517,7 +518,7 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)
-target_link_libraries(mfq-cuda-execution PRIVATE mfq-cpu-execution)
+target_link_libraries(mfq-cuda-execution PRIVATE mfq-cpu-execution mfq-engine)
 target_compile_definitions(mfq-cuda-execution PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -572,7 +573,6 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp
@@ -1138,7 +1138,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
         ${TYLOINFER_CUDA_EXECUTION_SOURCES}
         ${TYLOINFER_CUDA_LOADING_SOURCES}
         ${TYLOINFER_CUDA_INSTANTIATION_SOURCES}
-        ${TYLOINFER_CUDA_QWEN_SOURCES}
+        ${TYLOINFER_MODELS_CUDA_SOURCES}
         ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu
         ${TYLOINFER_CUDA_KERNEL_SOURCES}
     )

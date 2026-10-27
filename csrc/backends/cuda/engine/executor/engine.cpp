@@ -14,7 +14,7 @@
 #include "models/qwen35/state.h"
 #include "resident_allocations.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/batch/batch.h"
+#include "models/batch.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "engine/executor/instance.h"
 #include "engine/executor/mtp_metrics.h"
