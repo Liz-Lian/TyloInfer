@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backends/cuda/engine/executor/run.h"
+#include "engine/executor/input.h"
 #include "models/qwen35/model.h"
 #include "models/qwen35/state.h"
 #include "ops/attention/full.h"
@@ -10,14 +11,20 @@
 
 namespace mfq::cuda::qwen35 {
 
-struct Options {
-    FfnExec::Mode ffn;
-    LinearAttention::Options linear;
-    std::int64_t kv_capacity = 0;
-    bool transposed = true;
-    Trace* trace = nullptr;
-    int trace_layer = -1;
-};
+Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids);
+
+Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
+
+Tensor normalize(const Model&, Executor&, Tensor hidden, std::int64_t batch,
+                 std::int64_t tokens);
+
+Tensor logits(const Model&, Executor&, Tensor hidden, bool capped = true);
+
+Tensor softcap(const Model&, Executor&, Tensor logits);
+
+bool supports_speculation(const Model&) noexcept;
+
+void replay(const Model&, State&, Executor&, std::int64_t accepted = 0);
 
 Tensor forward_layer(
     Collectives& collectives,
@@ -29,6 +36,6 @@ Tensor forward_layer(
     const AttentionStep& step,
     std::int64_t confirmed_prefix,
     const RopeCache& rope,
-    const Options& options);
+    const Executor::Mode& options);
 
 } // namespace mfq::cuda::qwen35

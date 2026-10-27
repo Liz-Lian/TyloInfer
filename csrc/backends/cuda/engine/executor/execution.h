@@ -243,6 +243,8 @@ struct CudaExecutionContext {
 
     mfq::cuda::Projector projector();
     mfq::cuda::FfnExec ffn();
+    std::unique_ptr<mfq::cuda::Executor> make_executor();
+    mfq::cuda::Executor::Mode forward_mode() const;
     void drain();
     void reset();
     void register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

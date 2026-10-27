@@ -31,6 +31,7 @@ struct FullLayout {
     bool sliding = false;
     mfq_tensor_backend::ScalarType dtype = mfq_tensor_backend::kFloat16;
     KvQuantization quantization;
+    std::int64_t capacity = 0;
 };
 
 struct LinearLayout {
@@ -61,12 +62,14 @@ public:
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
 
+    void preallocate();
     void reset(std::int64_t new_batch);
     void commit_speculative();
     std::int64_t rewind(std::int64_t accepted_suffix);
     void abort_speculative() noexcept;
 
     std::vector<mfq_tensor_backend::Tensor*> graph_state();
+    std::vector<mfq_tensor_backend::Tensor> storage() const;
 
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;

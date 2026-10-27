@@ -699,6 +699,28 @@ mfq::cuda::FfnExec CudaExecutionContext::ffn() {
              config.moe_ffn.reuse_input}};
 }
 
+std::unique_ptr<mfq::cuda::Executor> CudaExecutionContext::make_executor() {
+    return std::make_unique<mfq::cuda::Executor>(
+        profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
+        model_parallel_primary_device(*this), decode_graph_serial_branches,
+        decode_graph_tp_projection_major);
+}
+
+mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
+    return {{force_moe_materialized_swiglu, force_moe_unfused_reduce,
+             decode_graph_serial_branches, continuous_batch_cache_serial,
+             continuous_batch_ffn_tile, continuous_batch_ffn_tiles,
+             config.moe_ffn.reuse_input},
+            {config.tasks.projection.grouped &&
+                 config.tensor_parallel_shared_linear_attention_input,
+             config.linear_conv_prefill_fused},
+            kl_mmq.kv_cache_capacity,
+            config.gdn_transposed_state,
+            gemma_stage_trace,
+            gemma_trace_layer,
+            layer_placement.primary_device()};
+}
+
 CudaExecutionContext::~CudaExecutionContext() {
     try { drain(); }
     catch (const std::exception& error) {

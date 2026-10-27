@@ -127,7 +127,10 @@ State::State(const Model& model, const bool& transposed)
                                           full->attention.official_bf16
                                               ? mfq_tensor_backend::kBFloat16
                                               : mfq_tensor_backend::kFloat16,
-                                          full->attention.kv_quantization}});
+                                          full->attention.kv_quantization,
+                                          full->attention.sliding
+                                              ? full->attention.attention_window
+                                              : full->attention.max_position_embeddings}});
         } else {
             const auto* linear = std::get_if<Linear>(&layer.weights);
             require_state(linear != nullptr, "Qwen3.5 layer weight kind mismatch");
@@ -141,6 +144,21 @@ State::State(const Model& model, const bool& transposed)
         }
     }
     initialize_layers(layers, layout_);
+}
+
+void State::preallocate() {
+    for (std::size_t index = 0; index < layout_.size(); ++index) {
+        const auto& layer = layout_[index];
+        const auto* full = std::get_if<FullLayout>(&layer.attention);
+        if (layer.cpu || full == nullptr) continue;
+        auto& cache = std::get<KVCache>(layers[index]);
+        if (cache.defined()) continue;
+        MfqCudaGuard guard(layer.device);
+        cache = KVCache(
+            1, full->kv_heads, full->capacity, full->head_dim, full->sliding,
+            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layer.device), full->dtype,
+            full->quantization);
+    }
 }
 
 void State::reset(std::int64_t new_batch) {
@@ -216,6 +234,30 @@ std::vector<mfq_tensor_backend::Tensor*> State::graph_state() {
                       "decode graph requires confirmed recurrent state");
         result.push_back(&linear->mixer.view().convolution);
         result.push_back(&linear->mixer.view().recurrent);
+    }
+    return result;
+}
+
+std::vector<mfq_tensor_backend::Tensor> State::storage() const {
+    std::vector<mfq_tensor_backend::Tensor> result;
+    const auto append = [&result](const mfq_tensor_backend::Tensor& tensor) {
+        if (tensor.defined()) result.push_back(tensor);
+    };
+    for (const auto& state : layers) {
+        if (const auto* cache = std::get_if<KVCache>(&state)) {
+            if (cache->is_paged()) {
+                append(cache->k_chunk_ptrs);
+                append(cache->v_chunk_ptrs);
+                append(cache->page_table);
+            } else {
+                append(cache->k);
+                append(cache->v);
+            }
+        } else {
+            const auto& linear = std::get<LinearState>(state);
+            append(linear.mixer.view().convolution);
+            append(linear.mixer.view().recurrent);
+        }
     }
     return result;
 }

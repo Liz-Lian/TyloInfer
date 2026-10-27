@@ -24,6 +24,16 @@ struct Norm {
     double eps, offset;
 };
 
+struct Embed {
+    Slot input, output;
+    const QuantLinear& weight;
+};
+
+struct Softcap {
+    Slot input, output;
+    double cap;
+};
+
 struct Concat {
     Slot first, second, output;
     int axis = -1;
@@ -74,10 +84,12 @@ struct LinearFfn {
 } // namespace task
 
 struct Task {
-    std::variant<task::Norm, task::Concat, task::Project, task::Attention, task::Linear,
+    std::variant<task::Norm, task::Embed, task::Softcap, task::Concat, task::Project, task::Attention,
+                 task::Linear,
                  task::Replay, task::Dense, task::FullFfn, task::LinearFfn> op;
     int scope = -1;
     std::string_view trace;
+    std::string_view profile = {};
 };
 
 // State and weights remain owned by the caller until the execution lane drains.

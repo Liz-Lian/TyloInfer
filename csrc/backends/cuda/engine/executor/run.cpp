@@ -129,36 +129,45 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, FfnExec::Mode m
                               std::is_same_v<Op, task::FullFfn> ||
                               std::is_same_v<Op, task::LinearFfn>) second = values[op.residual];
                 for (auto slot : release[index]) values[slot] = {};
-                if constexpr (std::is_same_v<Op, task::Norm>) {
-                    values[op.output] = qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(tb::kFloat32),
-                        op.weight, op.eps, op.offset).reshape(input.sizes());
-                } else if constexpr (std::is_same_v<Op, task::Concat>) {
-                    values[op.output] = tb::cat({input, second}, op.axis);
-                } else if constexpr (std::is_same_v<Op, task::Project>) {
-                    values[op.output] = project.run(op.weight, std::move(input));
-                } else if constexpr (std::is_same_v<Op, task::Attention>) {
-                    auto output = op.weights.forward(project, profiler_, options.attention,
-                        std::move(input), inputs.attention, inputs.kv[op.state],
-                        scratch_[inputs.scratch_offset + index],
-                        *inputs.rope, trace);
-                    values[op.residual] = std::move(output[0]);
-                    values[op.output] = std::move(output[1]);
-                } else if constexpr (std::is_same_v<Op, task::Linear>) {
-                    auto output = op.weights.forward(project, profiler_, inputs.linear_options,
-                        std::move(input), inputs.linear[op.state].state,
-                        inputs.linear[op.state].captured);
-                    values[op.residual] = std::move(output[0]);
-                    values[op.output] = std::move(output[1]);
-                } else if constexpr (std::is_same_v<Op, task::Dense>) {
-                    values[op.output] = op.weights.forward(project, profiler_, mmq_, tq_, branches_, collectives_,
-                        options.projection, options.dense, serial_, std::move(second), std::move(input), trace);
-                } else if constexpr (std::is_same_v<Op, task::FullFfn>) {
-                    values[op.output] = ffn.full(op.weights, op.norm, op.attention,
-                        std::move(second), std::move(input), trace);
-                } else if constexpr (std::is_same_v<Op, task::LinearFfn>) {
-                    values[op.output] = ffn.linear(op.weights, op.norm, op.attention,
-                        std::move(second), std::move(input));
-                }
+                auto compute = [&]() -> Tensor {
+                    if constexpr (std::is_same_v<Op, task::Norm>) {
+                        return qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(tb::kFloat32),
+                            op.weight, op.eps, op.offset).reshape(input.sizes());
+                    } else if constexpr (std::is_same_v<Op, task::Embed>) {
+                        return quant_embedding_lookup(op.weight, std::move(input))
+                            .to(tb::kFloat16).contiguous();
+                    } else if constexpr (std::is_same_v<Op, task::Softcap>) {
+                        return op.cap > 0.0 ? tb::tanh(input / op.cap) * op.cap : std::move(input);
+                    } else if constexpr (std::is_same_v<Op, task::Concat>) {
+                        return tb::cat({input, second}, op.axis);
+                    } else if constexpr (std::is_same_v<Op, task::Project>) {
+                        return project.run(op.weight, std::move(input));
+                    } else if constexpr (std::is_same_v<Op, task::Attention>) {
+                        auto output = op.weights.forward(project, profiler_, options.attention,
+                            std::move(input), inputs.attention, inputs.kv[op.state],
+                            scratch_[inputs.scratch_offset + index],
+                            *inputs.rope, trace);
+                        values[op.residual] = std::move(output[0]);
+                        return std::move(output[1]);
+                    } else if constexpr (std::is_same_v<Op, task::Linear>) {
+                        auto output = op.weights.forward(project, profiler_, inputs.linear_options,
+                            std::move(input), inputs.linear[op.state].state,
+                            inputs.linear[op.state].captured);
+                        values[op.residual] = std::move(output[0]);
+                        return std::move(output[1]);
+                    } else if constexpr (std::is_same_v<Op, task::Dense>) {
+                        return op.weights.forward(project, profiler_, mmq_, tq_, branches_, collectives_,
+                            options.projection, options.dense, serial_, std::move(second), std::move(input), trace);
+                    } else if constexpr (std::is_same_v<Op, task::FullFfn>) {
+                        return ffn.full(op.weights, op.norm, op.attention,
+                            std::move(second), std::move(input), trace);
+                    } else if constexpr (std::is_same_v<Op, task::LinearFfn>) {
+                        return ffn.linear(op.weights, op.norm, op.attention,
+                            std::move(second), std::move(input));
+                    }
+                };
+                values[op.output] = task.profile.empty()
+                    ? compute() : profiler_.measure(std::string(task.profile), compute);
                 record(trace, task.trace, values[op.output]);
             }
         }, task.op);

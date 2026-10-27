@@ -2,6 +2,7 @@
 
 #include "engine/task.h"
 #include "engine/executor/ffn.h"
+#include "engine/executor/input.h"
 
 namespace mfq::cuda {
 
@@ -10,6 +11,16 @@ class Collectives;
 
 class Executor {
 public:
+    struct Mode {
+        FfnExec::Mode ffn;
+        LinearAttention::Options linear;
+        std::int64_t kv_capacity = 0;
+        bool transposed = true;
+        Trace* trace = nullptr;
+        int trace_layer = -1;
+        int primary = 0;
+    };
+
     struct Options {
         Projector::Options projection;
         FullAttention::Options attention{
