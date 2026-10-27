@@ -46,6 +46,12 @@ struct Linear {
     size_t state;
 };
 
+struct Replay {
+    const LinearAttention& weights;
+    size_t state;
+    int64_t tokens;
+};
+
 struct Dense {
     Slot residual, input, output;
     mfq::cuda::Dense weights;
@@ -69,7 +75,7 @@ struct LinearFfn {
 
 struct Task {
     std::variant<task::Norm, task::Concat, task::Project, task::Attention, task::Linear,
-                 task::Dense, task::FullFfn, task::LinearFfn> op;
+                 task::Replay, task::Dense, task::FullFfn, task::LinearFfn> op;
     int scope = -1;
     std::string_view trace;
 };
@@ -82,7 +88,7 @@ struct LinearStateView {
 
 struct Inputs {
     std::vector<mfq_tensor_backend::Tensor> values;
-    size_t output = 0;
+    std::optional<size_t> output = 0;
     std::span<const AttentionKvView> kv;
     AttentionStep attention;
     const RopeCache* rope = nullptr;

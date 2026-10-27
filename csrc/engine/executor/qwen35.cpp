@@ -544,9 +544,13 @@ void Run::rollback_speculative(std::int64_t accepted_suffix) {
             auto& view = linear->mixer.view();
             const auto* layer = std::get_if<Linear>(&weights->layers[index].weights);
             require_run(layer != nullptr, "Qwen3.5 recurrent layer weight kind mismatch");
-            layer->attention.replay(
-                {view.convolution, view.recurrent, view.transposed}, linear->projected,
-                retained);
+            const auto replay = layer->replay(retained);
+            const LinearStateView linear_view{
+                {view.convolution, view.recurrent, view.transposed}, &linear->projected};
+            Inputs inputs;
+            inputs.output = std::nullopt;
+            inputs.linear = {&linear_view, 1};
+            executor->run(std::span<const Task>{&replay, 1}, std::move(inputs));
         }
         for (std::size_t index = 0; index < states.size(); ++index) {
             MfqCudaGuard guard(weights->layers[index].device);

@@ -186,6 +186,10 @@ std::array<mfq::cuda::Task, 2> Layer::tasks() const {
     }};
 }
 
+Task Linear::replay(std::int64_t tokens) const {
+    return {task::Replay{attention, 0, tokens}};
+}
+
 Model load(CudaExecutionContext& execution, const std::string& model_path,
            const std::string& config_path, std::int64_t context_size,
            bool load_layers, bool defer_cache,

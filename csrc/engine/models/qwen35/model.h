@@ -38,6 +38,8 @@ struct Linear {
     LinearAttention attention;
     Tensor ffn_norm;
     Ffn ffn;
+
+    Task replay(std::int64_t tokens) const;
 };
 
 struct Layer {
