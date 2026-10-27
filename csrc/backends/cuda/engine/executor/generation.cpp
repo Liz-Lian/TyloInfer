@@ -227,6 +227,7 @@ template <typename Model> struct CudaGenerationOps {
                generation_limit <= graph.generated_capacity;
     }
     void prepare_graph() {
+        using Tensor = mfq_tensor_backend::Tensor;
         const auto &execution = *model.execution;
         graph.ensure_compute_streams(execution.tensor_parallel.enabled()
                                          ? execution.tensor_parallel
@@ -300,7 +301,13 @@ template <typename Model> struct CudaGenerationOps {
             return sampler.ops().sample_stochastic(
                 std::move(logits), graph.random, sampler.params());
         };
-        const bool hit = graph.matches(planned, sampler.params(), greedy);
+        const auto current_graph_storage = [&]() {
+            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
+                return model.graph_storage();
+            return std::vector<Tensor>{};
+        };
+        auto captured_storage = current_graph_storage();
+        const bool hit = graph.matches(planned, sampler.params(), greedy, captured_storage);
         if (hit) {
             ++graph.reuses;
         } else {
@@ -308,7 +315,6 @@ template <typename Model> struct CudaGenerationOps {
             DecodeGraphBranchScope branch_scope(execution.decode_graph_serial_branches);
             graph.graph = std::make_unique<MfqCudaGraph>();
             try {
-                using Tensor = mfq_tensor_backend::Tensor;
                 const bool double_warmup = metadata().decode_graph_double_warmup;
                 std::vector<Tensor*> warmup_states;
                 if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
@@ -335,7 +341,8 @@ template <typename Model> struct CudaGenerationOps {
                     graph.static_pos,
                     graph.static_len);
                 graph.graph->capture_end();
-                graph.set_key(planned, sampler.params(), greedy);
+                captured_storage = current_graph_storage();
+                graph.set_key(planned, sampler.params(), greedy, captured_storage);
                 ++graph.captures;
             } catch (...) {
                 graph.invalidate();

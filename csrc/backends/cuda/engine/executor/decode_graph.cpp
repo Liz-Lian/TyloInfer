@@ -3,6 +3,35 @@
 
 #include <algorithm>
 
+namespace {
+
+bool same_tensor_layout(const mfq_tensor_backend::Tensor& expected,
+                        const mfq_tensor_backend::Tensor& candidate) {
+    if (expected.defined() != candidate.defined()) return false;
+    if (!expected.defined()) return true;
+    if (expected.data_ptr() != candidate.data_ptr() ||
+        expected.device() != candidate.device() ||
+        expected.scalar_type() != candidate.scalar_type() ||
+        expected.dim() != candidate.dim())
+        return false;
+    for (std::int64_t dimension = 0; dimension < expected.dim(); ++dimension) {
+        if (expected.size(dimension) != candidate.size(dimension) ||
+            expected.stride(dimension) != candidate.stride(dimension))
+            return false;
+    }
+    return true;
+}
+
+bool same_storage(const std::vector<mfq_tensor_backend::Tensor>& expected,
+                  const std::vector<mfq_tensor_backend::Tensor>& candidate) {
+    if (expected.size() != candidate.size()) return false;
+    for (std::size_t index = 0; index < expected.size(); ++index)
+        if (!same_tensor_layout(expected[index], candidate[index])) return false;
+    return true;
+}
+
+} // namespace
+
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
         const MfqCudaStream& primary_stream,
         const ParallelConfig& parallel) {
@@ -57,8 +86,10 @@ std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(
 
 bool DecodeGraphCache::matches(
         int64_t candidate_len, const MfqSamplingParams & sampling,
-        bool candidate_greedy) const {
+        bool candidate_greedy,
+        const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) const {
     return valid && planned_len == candidate_len && greedy == candidate_greedy &&
+           same_storage(storage, candidate_storage) &&
            (candidate_greedy ||
             (temperature == sampling.temperature && top_k == sampling.top_k &&
              top_p == sampling.top_p)) &&
@@ -87,13 +118,15 @@ void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
 void DecodeGraphCache::invalidate() {
     if (graph) graph->reset();
     graph.reset();
+    storage.clear();
     static_next = mfq_tensor_backend::Tensor();
     valid = false;
 }
 
 void DecodeGraphCache::set_key(
         int64_t candidate_len, const MfqSamplingParams & sampling,
-        bool candidate_greedy) {
+        bool candidate_greedy,
+        const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) {
     planned_len = candidate_len;
     greedy = candidate_greedy;
     temperature = sampling.temperature;
@@ -102,6 +135,7 @@ void DecodeGraphCache::set_key(
     presence_penalty = sampling.presence_penalty;
     frequency_penalty = sampling.frequency_penalty;
     repetition_penalty = sampling.repetition_penalty;
+    storage = candidate_storage;
     valid = true;
 }
 

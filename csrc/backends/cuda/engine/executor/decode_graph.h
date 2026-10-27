@@ -24,6 +24,7 @@ activate_cuda_graph_compute_streams(
 struct DecodeGraphCache {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;
+    std::vector<mfq_tensor_backend::Tensor> storage;
     std::unique_ptr<MfqCudaGraph> graph;
     mfq_tensor_backend::Tensor static_input;
     mfq_tensor_backend::Tensor static_pos;
@@ -51,11 +52,13 @@ struct DecodeGraphCache {
     std::vector<MfqCudaStream> graph_participant_streams(
         const mfq::cuda::Collectives& collectives) const;
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
-                 bool candidate_greedy) const;
+                 bool candidate_greedy,
+                 const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) const;
     void ensure_storage(int64_t vocab_size);
     void invalidate();
     void set_key(int64_t candidate_len, const MfqSamplingParams& sampling,
-                 bool candidate_greedy);
+                 bool candidate_greedy,
+                 const std::vector<mfq_tensor_backend::Tensor>& candidate_storage);
 };
 
 template <typename Warmup>

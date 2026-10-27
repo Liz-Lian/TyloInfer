@@ -502,6 +502,37 @@ bool Run::supports_speculation() const noexcept {
            });
 }
 
+std::vector<Tensor> Run::graph_storage() const {
+    std::vector<Tensor> result;
+    const auto append = [&result](const Tensor& tensor) {
+        if (tensor.defined()) result.push_back(tensor);
+    };
+    for (std::size_t index = 0; index < states.size(); ++index) {
+        if (const auto* cache = std::get_if<KVCache>(&states[index])) {
+            if (cache->is_paged()) {
+                append(cache->k_chunk_ptrs);
+                append(cache->v_chunk_ptrs);
+                append(cache->page_table);
+            } else {
+                append(cache->k);
+                append(cache->v);
+            }
+        } else {
+            const auto& linear = std::get<LinearState>(states[index]);
+            append(linear.mixer.view().convolution);
+            append(linear.mixer.view().recurrent);
+        }
+        const auto& attention = scratch[index];
+        append(attention.partial_o);
+        append(attention.partial_m);
+        append(attention.partial_l);
+        append(attention.mask);
+        append(attention.kv_max);
+        append(attention.meta);
+    }
+    return result;
+}
+
 void Run::commit_speculative() {
     require_run(speculative_start >= 0, "no speculative transaction");
     for (std::size_t index = 0; index < states.size(); ++index) {

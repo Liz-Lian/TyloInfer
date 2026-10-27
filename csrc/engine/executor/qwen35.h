@@ -103,6 +103,7 @@ public:
     void restore_text_session_state(const TextSessionState& state);
 
     std::vector<Tensor*> graph_state();
+    std::vector<Tensor> graph_storage() const;
 
     std::shared_ptr<const Model> weights;
     CudaExecutionContext* execution = nullptr;

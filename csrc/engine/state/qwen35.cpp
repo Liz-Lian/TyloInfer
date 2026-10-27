@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 
@@ -200,34 +201,27 @@ void Run::restore_text_session_state(const TextSessionState& state) {
         throw CudaSessionStateError("Qwen text session state is incompatible");
     }
 
+    const std::vector<KvSnapshot>* full_layers = nullptr;
+    const std::vector<HybridBlockSessionState>* hybrid_layers = nullptr;
     if (kind == TextSessionStateKind::FullAttention) {
-        const auto* layers = std::get_if<std::vector<KvSnapshot>>(&state.payload);
-        if (layers == nullptr || layers->size() != weights->layers.size())
+        full_layers = std::get_if<std::vector<KvSnapshot>>(&state.payload);
+        if (full_layers == nullptr || full_layers->size() != weights->layers.size())
             throw CudaSessionStateError("full-attention text session state is incompatible");
         for (std::size_t index = 0; index < weights->layers.size(); ++index) {
             const auto& model_layer = weights->layers[index];
             const auto& full = std::get<Full>(model_layer.weights);
             validate_cache_configuration(full, std::get<KVCache>(states[index]));
-            validate_full_snapshot(model_layer, full, layers->at(index));
-            validate_full_snapshot_length(layers->at(index), state.cache_pos);
-        }
-        for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-            const auto& full = std::get<Full>(weights->layers[index].weights);
-            auto& cache = std::get<KVCache>(states[index]);
-            MfqCudaGuard guard(weights->layers[index].device);
-            restore_kv(cache, layers->at(index), full.attention.attention_head_dim,
-                       full.attention.official_bf16 ? mfq_tensor_backend::kBFloat16
-                                                    : mfq_tensor_backend::kFloat16,
-                       full.attention.kv_quantization);
+            validate_full_snapshot(model_layer, full, full_layers->at(index));
+            validate_full_snapshot_length(full_layers->at(index), state.cache_pos);
         }
     } else {
         require_state(execution != nullptr, "Qwen recurrent execution context is unavailable");
-        const auto* layers = std::get_if<std::vector<HybridBlockSessionState>>(&state.payload);
-        if (layers == nullptr || layers->size() != weights->layers.size())
+        hybrid_layers = std::get_if<std::vector<HybridBlockSessionState>>(&state.payload);
+        if (hybrid_layers == nullptr || hybrid_layers->size() != weights->layers.size())
             throw CudaSessionStateError("Qwen hybrid session state is incompatible");
         for (std::size_t index = 0; index < weights->layers.size(); ++index) {
             const auto& model_layer = weights->layers[index];
-            const auto& saved = layers->at(index);
+            const auto& saved = hybrid_layers->at(index);
             if (const auto* full = std::get_if<Full>(&model_layer.weights)) {
                 if (saved.kind != HybridBlockSessionStateKind::FullAttention)
                     throw CudaSessionStateError("Qwen hybrid full-attention layer changed");
@@ -242,23 +236,40 @@ void Run::restore_text_session_state(const TextSessionState& state) {
                     !model_layer.cpu && execution->config.gdn_transposed_state);
             }
         }
+    }
+
+    std::vector<State> candidates(states.size());
+    try {
+        CudaScope scope(*execution);
         for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-            const auto& saved = layers->at(index);
             MfqCudaGuard guard(weights->layers[index].device);
-            if (saved.kind == HybridBlockSessionStateKind::FullAttention) {
-                auto& cache = std::get<KVCache>(states[index]);
-                const auto& full = std::get<Full>(weights->layers[index].weights);
-                restore_kv(cache, saved.full_attention, full.attention.attention_head_dim,
-                           full.attention.official_bf16 ? mfq_tensor_backend::kBFloat16
-                                                        : mfq_tensor_backend::kFloat16,
-                           full.attention.kv_quantization);
+            if (const auto* full = std::get_if<Full>(&weights->layers[index].weights)) {
+                const auto& saved = full_layers != nullptr
+                                        ? full_layers->at(index)
+                                        : hybrid_layers->at(index).full_attention;
+                auto& cache = std::get<KVCache>(candidates[index]);
+                restore_kv(cache, saved, full->attention.attention_head_dim,
+                           full->attention.official_bf16 ? mfq_tensor_backend::kBFloat16
+                                                         : mfq_tensor_backend::kFloat16,
+                           full->attention.kv_quantization);
             } else {
-                auto& linear = std::get<LinearState>(states[index]);
+                const auto& saved = hybrid_layers->at(index);
+                const auto& current = std::get<LinearState>(states[index]);
+                candidates[index].emplace<LinearState>();
+                auto& linear = std::get<LinearState>(candidates[index]);
+                linear.speculative_ffn_batches = current.speculative_ffn_batches;
+                linear.speculative_projection_batches = current.speculative_projection_batches;
                 linear.mixer.restore(saved.mixer);
-                linear.projected = {};
             }
         }
+        execution->drain();
+    } catch (...) {
+        const auto failure = std::current_exception();
+        try { execution->drain(); } catch (...) {}
+        std::rethrow_exception(failure);
     }
+
+    states.swap(candidates);
     cache_pos = state.cache_pos;
     decode_position_delta = state.decode_position_delta;
     speculative_start = -1;
