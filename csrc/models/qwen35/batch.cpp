@@ -1,7 +1,5 @@
-#include "engine/batch/qwen35.h"
+#include "models/qwen35/batch.h"
 
-#include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/executor/options.h"
 #include "engine/executor/ffn.h"
 #include "native/error.h"
 
@@ -29,22 +27,29 @@ require_weights(std::shared_ptr<const Model> weights) {
     return weights;
 }
 
-Batch::Batch(std::shared_ptr<const Model> weights, CudaExecutionContext &execution,
-             std::size_t slots, bool paged)
-    : weights_(require_weights(std::move(weights))), execution_(&execution),
-      executor_(execution.make_executor()),
-      state_(std::make_unique<State>(*weights_, execution.config.gdn_transposed_state)) {
-    if (slots == 0 || slots > static_cast<std::size_t>(std::numeric_limits<int32_t>::max()))
+static std::unique_ptr<Executor>
+require_executor(std::unique_ptr<Executor> executor) {
+    if (!executor)
+        throw std::invalid_argument("continuous batching requires an executor");
+    return executor;
+}
+
+Batch::Batch(std::shared_ptr<const Model> weights, std::unique_ptr<Executor> executor,
+             const bool &transposed, Options options)
+    : weights_(require_weights(std::move(weights))), transposed_(transposed),
+      executor_(require_executor(std::move(executor))),
+      state_(std::make_unique<State>(*weights_, transposed_)) {
+    if (options.slots == 0 ||
+        options.slots > static_cast<std::size_t>(std::numeric_limits<int32_t>::max()))
         throw std::invalid_argument("continuous batching max sequences must be positive int32");
-    const auto reason = incompatibility(execution);
+    const auto reason = incompatibility(options.cpu_offload, options.cached_slots);
     if (!reason.empty())
         throw std::runtime_error(reason);
-    slots_.resize(slots);
-    state_->reset(static_cast<std::int64_t>(slots));
-    if (paged) {
-        paged_slots_.resize(slots);
+    slots_.resize(options.slots);
+    state_->reset(static_cast<std::int64_t>(options.slots));
+    if (options.paged) {
+        paged_slots_.resize(options.slots);
         std::vector<PagedKv::Layout> layouts;
-        const bool preallocate = runtime_options::kv_vram_preallocated();
         for (const auto &layer : weights_->layers) {
             std::visit(
                 [&](const auto &value) {
@@ -62,7 +67,8 @@ Batch::Batch(std::shared_ptr<const Model> weights, CudaExecutionContext &executi
                 layer.weights);
         }
         paged_kv_ = std::make_unique<PagedKv>(layouts, weights_->metadata.max_position_embeddings,
-                                               static_cast<int32_t>(slots), preallocate);
+                                               static_cast<int32_t>(options.slots),
+                                               options.preallocate);
         detach_paged(*state_);
     }
 }
@@ -78,8 +84,8 @@ void Batch::prepare_prefill(RequestState &request, std::int64_t offset, std::int
                             "continuous batching prefill state is invalid");
     if (!request.state_) {
         TYLOINFER_RUNTIME_CHECK(offset == 0, "continuous batching lost prefill state");
-        auto executor = execution_->make_executor();
-        auto state = std::make_unique<State>(*weights_, execution_->config.gdn_transposed_state);
+        auto executor = executor_->fork();
+        auto state = std::make_unique<State>(*weights_, transposed_);
         state->reset(1);
         if (paged_kv_) {
             detach_paged(*state);
@@ -289,10 +295,10 @@ bool Batch::has_cached_moe(const Model &model) {
     return false;
 }
 
-std::string Batch::incompatibility(const CudaExecutionContext &execution) const {
+std::string Batch::incompatibility(bool cpu_offload, int cached_slots) const {
     if (weights_->layers.empty())
         return "continuous batching requires at least one model block";
-    if (execution.dense_cpu_layer_count != 0 || !execution.dsv4_cpu_offload_layers.empty())
+    if (cpu_offload)
         return "continuous batching requires GPU-resident model blocks";
     for (const auto &layer : weights_->layers) {
         if (layer.cpu)
@@ -304,7 +310,7 @@ std::string Batch::incompatibility(const CudaExecutionContext &execution) const 
                         return "continuous batching requires non-sliding Qwen attention";
                 }
                 if (mfq::cuda::uses_expert_cache(value.ffn) &&
-                    value.ffn.moe_top_k > execution.moe_cache_registration_min_slots)
+                    value.ffn.moe_top_k > cached_slots)
                     return "continuous batching requires one cached slot per routed expert";
                 return {};
             },

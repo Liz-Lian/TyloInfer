@@ -140,7 +140,14 @@ QwenBatchOperations::QwenBatchOperations(std::shared_ptr<const qwen35::Model> mo
                                          CudaExecutionContext &execution,
                                          CudaContinuousBatchConfig config)
     : model_(std::move(model)),
-      state_(model_, execution, config.max_sequences, config.paged_kv),
+      state_(model_, execution.make_executor(), execution.config.gdn_transposed_state,
+             qwen35::Batch::Options{
+                 config.max_sequences,
+                 config.paged_kv,
+                 runtime_options::kv_vram_preallocated(),
+                 execution.dense_cpu_layer_count != 0 ||
+                     !execution.dsv4_cpu_offload_layers.empty(),
+                 execution.moe_cache_registration_min_slots}),
       execution_(execution), config_(std::move(config)),
       max_sequences_(static_cast<int32_t>(config_.max_sequences)),
       moe_enabled_(state_.has_moe()),

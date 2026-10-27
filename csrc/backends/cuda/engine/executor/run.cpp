@@ -97,6 +97,12 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 
 } // namespace
 
+std::unique_ptr<Executor> Executor::fork() const {
+    return std::make_unique<Executor>(profiler_, mmq_, tq_, branches_, collectives_, routes_,
+                                      options_, ffn_options_, primary_, serial_,
+                                      projection_major_);
+}
+
 Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, FfnExec::Mode mode) {
     const auto release = releases(tasks, inputs);
     auto options = options_;

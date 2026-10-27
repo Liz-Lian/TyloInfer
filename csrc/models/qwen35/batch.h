@@ -9,8 +9,6 @@
 #include <variant>
 #include <vector>
 
-struct CudaExecutionContext;
-
 namespace mfq::cuda::qwen35 {
 
 // A copyable snapshot is only needed for paused recurrent decode rows. KV state
@@ -43,8 +41,16 @@ class RequestState {
 
 class Batch {
   public:
-    Batch(std::shared_ptr<const Model> weights, CudaExecutionContext &execution,
-          std::size_t slots, bool paged);
+    struct Options {
+        std::size_t slots = 0;
+        bool paged = false;
+        bool preallocate = false;
+        bool cpu_offload = false;
+        int cached_slots = 0;
+    };
+
+    Batch(std::shared_ptr<const Model> weights, std::unique_ptr<Executor> executor,
+          const bool &transposed, Options options);
     Batch(const Batch &) = delete;
     Batch &operator=(const Batch &) = delete;
     ~Batch();
@@ -52,7 +58,6 @@ class Batch {
     bool has_moe() const;
     bool has_cached_moe() const;
     static bool has_cached_moe(const Model &model);
-    std::string incompatibility(const CudaExecutionContext &execution) const;
     bool paged_kv_enabled() const noexcept;
     PagedKv::Stats paged_kv_stats() const noexcept;
     std::int64_t slot_releases() const noexcept { return slot_releases_; }
@@ -86,9 +91,10 @@ class Batch {
                     const std::vector<const PagedKv::Sequence *> &sequences);
     void bind_paged_slots();
     void detach_paged(qwen35::State &state) noexcept;
+    std::string incompatibility(bool cpu_offload, int cached_slots) const;
 
     std::shared_ptr<const Model> weights_;
-    CudaExecutionContext *execution_ = nullptr;
+    const bool &transposed_;
     std::unique_ptr<Executor> executor_;
     std::unique_ptr<qwen35::State> state_;
     std::vector<RequestState *> slots_;

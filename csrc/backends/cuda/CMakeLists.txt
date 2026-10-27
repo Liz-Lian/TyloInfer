@@ -573,7 +573,6 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/batch/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp

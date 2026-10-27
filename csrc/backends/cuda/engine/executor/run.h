@@ -4,6 +4,8 @@
 #include "engine/executor/ffn.h"
 #include "engine/executor/input.h"
 
+#include <memory>
+
 namespace mfq::cuda {
 
 class Branches;
@@ -39,6 +41,7 @@ public:
           projection_major_(projection_major), ffn_options_(ffn_options) {}
     Executor(const Executor&) = delete;
     Executor& operator=(const Executor&) = delete;
+    std::unique_ptr<Executor> fork() const;
 
     mfq_tensor_backend::Tensor run(std::span<const Task> tasks, Inputs inputs,
                                    FfnExec::Mode mode = {});

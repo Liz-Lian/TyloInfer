@@ -4,6 +4,7 @@ set(TYLOINFER_CUDA_QWEN_SOURCES
     ${PROJECT_SOURCE_DIR}/models/qwen35/forward.cpp
     ${PROJECT_SOURCE_DIR}/models/qwen35/predictor.cpp
     ${PROJECT_SOURCE_DIR}/models/qwen35/state.cpp
+    ${PROJECT_SOURCE_DIR}/models/qwen35/batch.cpp
     ${PROJECT_SOURCE_DIR}/models/qwen35/mtp_state.cpp
     ${PROJECT_SOURCE_DIR}/models/qwen35/mtp.cpp
     ${PROJECT_SOURCE_DIR}/models/mtp.cpp
