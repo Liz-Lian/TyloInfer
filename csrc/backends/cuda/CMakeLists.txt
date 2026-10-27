@@ -526,8 +526,6 @@ set_target_properties(mfq-cuda-execution PROPERTIES POSITION_INDEPENDENT_CODE ON
 set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/state/kv_cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/recurrent.cpp
-    ${PROJECT_SOURCE_DIR}/engine/state/qwen35.cpp
-    ${PROJECT_SOURCE_DIR}/engine/state/qwen35_mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/paged_kv.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
@@ -562,15 +560,7 @@ target_compile_definitions(mfq-cuda-loading PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-set(TYLOINFER_CUDA_QWEN_SOURCES
-    ${PROJECT_SOURCE_DIR}/models/qwen35/model.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/predictor.cpp
-)
-add_library(mfq-cuda-models OBJECT ${TYLOINFER_CUDA_QWEN_SOURCES})
-mfq_configure_cuda_backend_target(mfq-cuda-models)
-target_compile_definitions(mfq-cuda-models PRIVATE
-    TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
-set_target_properties(mfq-cuda-models PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_subdirectory(${PROJECT_SOURCE_DIR}/models ${CMAKE_CURRENT_BINARY_DIR}/models)
 
 # Concrete Engine/model bindings stay in this source group for both native and
 # optional Torch builds. Extra targets do not reduce their header dependencies.
@@ -583,7 +573,6 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/requests/qwen35_mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/qwen35.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp

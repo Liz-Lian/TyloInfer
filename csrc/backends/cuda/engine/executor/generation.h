@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/batch/batch.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "models/common/mtp.h"
+#include "engine/executor/mtp.h"
 #include "cuda_runtime_config.h"
 
 #include <optional>

@@ -13,7 +13,7 @@
 #include "models/qwen35/model.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/common/grid_vision.h"
-#include "models/common/mtp.h"
+#include "engine/executor/mtp.h"
 #include "cuda_model_plan.h"
 
 #include <memory>

@@ -1,33 +1,14 @@
 #pragma once
 
 #include "backends/cuda/engine/state/session/state.h"
-#include "engine/executor/mtp_policy.h"
 #include "backend.h"
-#include "models/common/causal_model_ops.h"
+#include "engine/executor/mtp_policy.h"
 
 #include <cstdint>
-#include <variant>
 #include <stdexcept>
 #include <utility>
 
-struct RopeCache;
-
-namespace mfq::cuda::qwen35 {
-class Run;
-}
-
-struct MtpTarget {
-    std::variant<mfq::cuda::qwen35::Run*, mfq::cuda::MiniCPMO45CausalLm*,
-        mfq::cuda::MiniCPMOTtsCausalLm*, mfq::cuda::Gemma4CausalLm*,
-        mfq::cuda::GlmDsaCausalLm*, mfq::cuda::Glm5CausalLm*, mfq::cuda::Qwen4CausalLm*,
-        mfq::cuda::DeepseekV4CausalLm*, mfq::cuda::DeepseekV41CausalLm*,
-        mfq::cuda::NemotronHCausalLm*> model;
-    const RopeCache* rope = nullptr;
-    template <class Model> explicit MtpTarget(Model& target) : model(&target), rope(&target.rope) {}
-    explicit MtpTarget(mfq::cuda::qwen35::Run& target);
-    mfq_tensor_backend::Tensor embed(mfq_tensor_backend::Tensor ids) const;
-    mfq_tensor_backend::Tensor logits(mfq_tensor_backend::Tensor hidden) const;
-};
+struct MtpTarget;
 
 struct MtpStep {
     mfq_tensor_backend::Tensor sample_hidden;

@@ -5,7 +5,7 @@
 #include "dspark.h"
 
 #include "models/common/causal_model_ops.h"
-#include "models/common/mtp.h"
+#include "models/mtp.h"
 #include "ops.h"
 
 #include <algorithm>

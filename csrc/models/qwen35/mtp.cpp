@@ -1,4 +1,4 @@
-#include "engine/requests/qwen35_mtp.h"
+#include "models/qwen35/mtp.h"
 
 #include "native/cuda/collectives.h"
 

@@ -65,38 +65,6 @@ void clear_linear_speculative(LinearState& state) noexcept {
     state.mixer.commit();
 }
 
-State make_state(const std::shared_ptr<const Model>& weights,
-                 CudaExecutionContext& execution) {
-    require_run(weights != nullptr, "Qwen3.5 Run requires model weights");
-    std::vector<Layout> layout;
-    layout.reserve(weights->layers.size());
-    for (const auto& layer : weights->layers) {
-        if (const auto* full = std::get_if<Full>(&layer.weights)) {
-            layout.push_back({layer.device,
-                              layer.cpu,
-                              FullLayout{full->attention.kv_heads,
-                                         full->attention.attention_head_dim,
-                                         full->attention.sliding,
-                                         full->attention.official_bf16
-                                             ? mfq_tensor_backend::kBFloat16
-                                             : mfq_tensor_backend::kFloat16,
-                                         full->attention.kv_quantization}});
-        } else {
-            const auto* linear = std::get_if<Linear>(&layer.weights);
-            require_run(linear != nullptr, "Qwen3.5 layer weight kind mismatch");
-            layout.push_back({layer.device,
-                              layer.cpu,
-                              LinearLayout{linear->attention.key_heads,
-                                           linear->attention.key_dim,
-                                           linear->attention.value_heads,
-                                           linear->attention.value_dim,
-                                           linear->attention.conv_kernel}});
-        }
-    }
-    return State(std::move(layout), weights->metadata.max_position_embeddings,
-                 execution.config.gdn_transposed_state);
-}
-
 } // namespace
 
 Tensor forward_layer(CudaExecutionContext& execution, const Layer& layer, LayerState& state,
@@ -184,13 +152,17 @@ Tensor forward_layer(CudaExecutionContext& execution, const Layer& layer, LayerS
 }
 
 Run::Run(std::shared_ptr<const Model> model, CudaExecutionContext& context)
-    : weights(std::move(model)), execution(&context),
+    : weights([&model] {
+          require_run(model != nullptr, "Qwen3.5 Run requires model weights");
+          return std::move(model);
+      }()),
+      execution(&context),
       executor(std::make_unique<mfq::cuda::Executor>(
           context.profiler, context.kl_mmq, *context.tq, context.branches,
           context.collectives, context.routes, context.config.tasks, context.config.ffn,
           model_parallel_primary_device(context), context.decode_graph_serial_branches,
           context.decode_graph_tp_projection_major)),
-      state(make_state(weights, context)) {}
+      state(*weights, context.config.gdn_transposed_state) {}
 
 void Run::preallocate() {
     if (!runtime_options::kv_vram_preallocated()) return;

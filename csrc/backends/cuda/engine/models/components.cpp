@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/models/qwen35/load.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
-#include "engine/requests/qwen35_mtp.h"
+#include "models/qwen35/mtp.h"
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 

@@ -2,7 +2,7 @@
 
 #include "backends/cuda/engine/weights/load.h"
 
-#include "models/common/mtp.h"
+#include "models/mtp.h"
 #include "models/common/full_block.h"
 #include "engine/models/nemotron_h/causal_lm.h"
 #include "ops.h"

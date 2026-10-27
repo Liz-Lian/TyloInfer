@@ -12,6 +12,8 @@
 
 namespace mfq::cuda::qwen35 {
 
+struct Model;
+
 // Linear attention keeps the projected rows until a speculative pass has
 // either been committed or replayed from its confirmed prefix.
 struct LinearState {
@@ -53,8 +55,7 @@ public:
         std::int64_t decode_position_delta = 0;
     };
 
-    State(std::vector<Layout> layout, std::int64_t max_position_embeddings,
-          const bool& transposed);
+    State(const Model& model, const bool& transposed);
     State(const State&) = delete;
     State& operator=(const State&) = delete;
     State(State&&) noexcept = default;

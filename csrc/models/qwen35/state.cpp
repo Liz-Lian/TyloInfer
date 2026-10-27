@@ -1,4 +1,6 @@
-#include "engine/state/qwen35.h"
+#include "models/qwen35/state.h"
+
+#include "models/qwen35/model.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -111,10 +113,33 @@ void initialize_layers(std::vector<LayerState>& layers,
 
 } // namespace
 
-State::State(std::vector<Layout> layout, std::int64_t max_position_embeddings,
-             const bool& transposed)
-    : layout_(std::move(layout)), max_position_embeddings_(max_position_embeddings),
+State::State(const Model& model, const bool& transposed)
+    : max_position_embeddings_(model.metadata.max_position_embeddings),
       transposed_(&transposed) {
+    layout_.reserve(model.layers.size());
+    for (const auto& layer : model.layers) {
+        if (const auto* full = std::get_if<Full>(&layer.weights)) {
+            layout_.push_back({layer.device,
+                               layer.cpu,
+                               FullLayout{full->attention.kv_heads,
+                                          full->attention.attention_head_dim,
+                                          full->attention.sliding,
+                                          full->attention.official_bf16
+                                              ? mfq_tensor_backend::kBFloat16
+                                              : mfq_tensor_backend::kFloat16,
+                                          full->attention.kv_quantization}});
+        } else {
+            const auto* linear = std::get_if<Linear>(&layer.weights);
+            require_state(linear != nullptr, "Qwen3.5 layer weight kind mismatch");
+            layout_.push_back({layer.device,
+                               layer.cpu,
+                               LinearLayout{linear->attention.key_heads,
+                                            linear->attention.key_dim,
+                                            linear->attention.value_heads,
+                                            linear->attention.value_dim,
+                                            linear->attention.conv_kernel}});
+        }
+    }
     initialize_layers(layers, layout_);
 }
 

@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/run.h"
 #include "models/qwen35/model.h"
-#include "engine/state/qwen35.h"
+#include "models/qwen35/state.h"
 #include "ops/attention/full.h"
 
 #include <cstdint>

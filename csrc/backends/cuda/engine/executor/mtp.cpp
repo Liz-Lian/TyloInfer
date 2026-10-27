@@ -3,6 +3,7 @@
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/executor/speculative_sequence.h"
+#include "models/mtp.h"
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/qwen35.h"
@@ -37,17 +38,6 @@
 #include <vector>
 
 using mfq::cuda::internal::PrefillCudaTimer;
-
-MtpTarget::MtpTarget(mfq::cuda::qwen35::Run& target)
-    : model(&target), rope(&target.weights->rope) {}
-
-mfq_tensor_backend::Tensor MtpTarget::embed(mfq_tensor_backend::Tensor ids) const {
-    return std::visit([&](auto* target) { return target->embed_forward(std::move(ids)); }, model);
-}
-
-mfq_tensor_backend::Tensor MtpTarget::logits(mfq_tensor_backend::Tensor hidden) const {
-    return std::visit([&](auto* target) { return target->logits_from_hidden(std::move(hidden)); }, model);
-}
 
 using mfq::engine::Generation;
 using namespace mfq::engine;

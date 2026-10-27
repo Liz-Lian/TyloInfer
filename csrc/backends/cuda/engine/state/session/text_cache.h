@@ -1,18 +1,19 @@
 #pragma once
 
 #include "backend.h"
+#include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/state/session/state.h"
+#include "engine/executor/mtp.h"
+#include "engine/state/sessions.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
-
-struct MtpModule;
-struct TextSessionState;
-struct CudaExecutionContext;
 
 namespace mfq {
 class ModelSource;
@@ -33,6 +34,55 @@ bool cuda_has_separate_memory();
 struct TextSessionRestore {
     std::size_t tokens = 0;
     mfq_tensor_backend::Tensor mtp_last_target_hidden;
+};
+
+struct CudaSessionOps {
+    using Snapshot = TextSessionState;
+    using Restore = TextSessionRestore;
+    using Predictor = MtpModule;
+    using StateError = CudaSessionStateError;
+
+    static TextSessionState decode(
+        const std::vector<CudaPagedPayload>& payloads,
+        const std::vector<std::int64_t>& tokens,
+        std::size_t block_size);
+    static CudaPagedPayload encode(
+        const Snapshot& state, std::size_t block_size, std::size_t index);
+    static bool paged_mtp(const Snapshot& state);
+    static bool partial_blocks(const Snapshot& state);
+    static bool paged_media(const Snapshot& state);
+    static bool checkpoint_needs_update(
+        const CudaPagedPayload& payload, const Snapshot& state);
+    static std::size_t decodable_blocks(
+        const std::vector<CudaPagedPayload>& payloads);
+    static std::size_t token_count(const CudaPagedPayload& payload);
+    static void release_host_cache();
+
+    template <class State>
+    static void restore(
+        State& state, const Snapshot& snapshot, CudaExecutionContext& execution) {
+        if constexpr (requires(decltype(state.prepare(snapshot))& candidate) {
+            state.stage(candidate, snapshot);
+            { state.publish(std::move(candidate)) } noexcept;
+        }) {
+            auto candidate = state.prepare(snapshot);
+            try {
+                CudaScope scope(execution);
+                state.stage(candidate, snapshot);
+                execution.drain();
+                state.publish(std::move(candidate));
+            } catch (...) {
+                const auto error = std::current_exception();
+                try {
+                    execution.drain();
+                } catch (...) {
+                }
+                std::rethrow_exception(error);
+            }
+        } else {
+            state.restore_text_session_state(snapshot);
+        }
+    }
 };
 
 std::shared_ptr<mfq::cache::PagedPrefixCache>
@@ -85,8 +135,23 @@ public:
     std::uint64_t refresh_disk_index();
 
 private:
-    struct Impl;
+    struct Impl : mfq::engine::SessionCache<CudaSessionOps> {
+        using SessionCache::SessionCache;
+    };
     std::unique_ptr<Impl> impl_;
 };
+
+template <typename State>
+TextSessionRestore TextSessionCache::restore_best(
+    State& state,
+    CudaExecutionContext& execution,
+    MtpModule* mtp,
+    const std::string& requested_session,
+    const std::vector<std::int64_t>& prompt,
+    std::size_t maximum_prefix_tokens,
+    const std::string& input_key) {
+    return impl_->restore_best(
+        state, execution, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
+}
 
 } // namespace mfq::cuda::internal

@@ -4,21 +4,12 @@
 #include <cstring>
 
 #include "cuda_runtime_config.h"
-#include "models/deepseek_v4/ops.h"
-#include "models/deepseek_v41/ops.h"
-#include "models/gemma4/ops.h"
-#include "models/glm5_next/ops.h"
-#include "models/glm_dsa/ops.h"
-#include "models/minicpmo45/ops.h"
-#include "models/nemotron_h/ops.h"
-#include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/state/session/state.h"
-#include "models/common/mtp.h"
-#include "engine/state/qwen35.h"
 #include "engine/state/prefix_cache.h"
 #include "engine/state/paged.h"
 #include "engine/state/sessions.h"
+#include "source/model_source.h"
 
 #include <algorithm>
 #include <chrono>
@@ -119,64 +110,56 @@ std::shared_ptr<mfq::cache::PagedPrefixCache> make_cuda_paged_prefix_cache(
     return std::make_shared<mfq::cache::PagedPrefixCache>(std::move(cache));
 }
 
-struct CudaSessionOps {
-    using Snapshot = TextSessionState;
-    using Restore = TextSessionRestore;
-    using Predictor = MtpModule;
-    using StateError = CudaSessionStateError;
-    template <class Payloads>
-    static auto decode(
-        const Payloads &payloads, const std::vector<int64_t> &tokens, size_t block_size) {
-        if(payloads.front() && payloads.front()->size()>6 && (*payloads.front())[6]=='2')
-            return decode_cuda_qwen4_paged_session(payloads,tokens,block_size);
-        if(payloads.front() && payloads.front()->size()>6 && (*payloads.front())[6]=='3')
-            return decode_cuda_deepseek_v41_paged_session(payloads,tokens,block_size);
-        return decode_cuda_paged_session(payloads, tokens, block_size);
-    }
-    static auto encode(const Snapshot &state, size_t block_size, size_t index) {
-        if(state.kind()==TextSessionStateKind::Qwen4)return encode_cuda_qwen4_paged_block(state,block_size,index);
-        if(state.kind()==TextSessionStateKind::DeepseekV41)return encode_cuda_deepseek_v41_paged_block(state,block_size,index);
-        return encode_cuda_paged_block(state, block_size, index);
-    }
-    static bool paged_mtp(const Snapshot& state) {
-        return state.kind()==TextSessionStateKind::Qwen4 || state.kind()==TextSessionStateKind::DeepseekV41;
-    }
-    static bool partial_blocks(const Snapshot& state) { return paged_mtp(state); }
-    static bool paged_media(const Snapshot& state) { return state.kind()==TextSessionStateKind::DeepseekV41; }
-    static bool checkpoint_needs_update(const CudaPagedPayload& payload,const Snapshot& state) {
-        return cuda_paged_checkpoint_needs_update(payload,state);
-    }
-    static size_t decodable_blocks(const std::vector<CudaPagedPayload>& payloads) { return cuda_paged_decodable_blocks(payloads); }
-    static size_t token_count(const CudaPagedPayload& payload) { return cuda_paged_payload_tokens(payload); }
-    static void release_host_cache() { mfq_release_host_allocator_cache(); }
-    static void restore(
-        mfq::cuda::qwen35::State& state, const Snapshot& snapshot,
-        CudaExecutionContext& execution) {
-        auto candidate = state.prepare(snapshot);
-        try {
-            CudaScope scope(execution);
-            state.stage(candidate, snapshot);
-            execution.drain();
-            state.publish(std::move(candidate));
-        } catch (...) {
-            const auto error = std::current_exception();
-            try {
-                execution.drain();
-            } catch (...) {
-            }
-            std::rethrow_exception(error);
-        }
-    }
-    template <class State>
-    static void restore(
-        State& state, const Snapshot& snapshot, CudaExecutionContext&) {
-        state.restore_text_session_state(snapshot);
-    }
-};
+TextSessionState CudaSessionOps::decode(
+    const std::vector<CudaPagedPayload>& payloads,
+    const std::vector<std::int64_t>& tokens,
+    std::size_t block_size) {
+    if (payloads.front() && payloads.front()->size() > 6 && (*payloads.front())[6] == '2')
+        return decode_cuda_qwen4_paged_session(payloads, tokens, block_size);
+    if (payloads.front() && payloads.front()->size() > 6 && (*payloads.front())[6] == '3')
+        return decode_cuda_deepseek_v41_paged_session(payloads, tokens, block_size);
+    return decode_cuda_paged_session(payloads, tokens, block_size);
+}
 
-struct TextSessionCache::Impl : mfq::engine::SessionCache<CudaSessionOps> {
-    using SessionCache::SessionCache;
-};
+CudaPagedPayload CudaSessionOps::encode(
+    const Snapshot& state, std::size_t block_size, std::size_t index) {
+    if (state.kind() == TextSessionStateKind::Qwen4)
+        return encode_cuda_qwen4_paged_block(state, block_size, index);
+    if (state.kind() == TextSessionStateKind::DeepseekV41)
+        return encode_cuda_deepseek_v41_paged_block(state, block_size, index);
+    return encode_cuda_paged_block(state, block_size, index);
+}
+
+bool CudaSessionOps::paged_mtp(const Snapshot& state) {
+    return state.kind() == TextSessionStateKind::Qwen4 ||
+        state.kind() == TextSessionStateKind::DeepseekV41;
+}
+
+bool CudaSessionOps::partial_blocks(const Snapshot& state) {
+    return paged_mtp(state);
+}
+
+bool CudaSessionOps::paged_media(const Snapshot& state) {
+    return state.kind() == TextSessionStateKind::DeepseekV41;
+}
+
+bool CudaSessionOps::checkpoint_needs_update(
+    const CudaPagedPayload& payload, const Snapshot& state) {
+    return cuda_paged_checkpoint_needs_update(payload, state);
+}
+
+std::size_t CudaSessionOps::decodable_blocks(
+    const std::vector<CudaPagedPayload>& payloads) {
+    return cuda_paged_decodable_blocks(payloads);
+}
+
+std::size_t CudaSessionOps::token_count(const CudaPagedPayload& payload) {
+    return cuda_paged_payload_tokens(payload);
+}
+
+void CudaSessionOps::release_host_cache() {
+    mfq_release_host_allocator_cache();
+}
 
 TextSessionCache::TextSessionCache(const mfq::engine::SessionCacheConfig &session_config,
     const mfq::engine::PrefixCacheConfig &prefix_config,
@@ -190,15 +173,6 @@ TextSessionCache::~TextSessionCache() = default;
 
 bool TextSessionCache::persistent_prefix_enabled() const noexcept {
     return impl_->persistent_prefix_enabled();
-}
-
-template <typename State>
-TextSessionRestore TextSessionCache::restore_best(State& state, CudaExecutionContext& execution,
-    MtpModule *mtp,
-    const std::string &requested_session, const std::vector<int64_t> &prompt,
-    size_t maximum_prefix_tokens, const std::string &input_key) {
-    return impl_->restore_best(
-        state, execution, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
 }
 
 void TextSessionCache::store(const std::string &session_id, TextSessionState state) {
@@ -276,28 +250,6 @@ uint64_t TextSessionCache::set_ram_limit(uint64_t max_bytes) { return impl_->set
 void TextSessionCache::reserve_ram(uint64_t bytes) { impl_->reserve_ram(bytes); }
 uint64_t TextSessionCache::set_disk_limit(uint64_t max_bytes) { return impl_->set_disk_limit(max_bytes); }
 uint64_t TextSessionCache::refresh_disk_index() { return impl_->refresh_disk_index(); }
-
-#define TYLOINFER_INSTANTIATE_SESSION_CACHE(MODEL)                                                       \
-    template TextSessionRestore TextSessionCache::restore_best(MODEL &,                            \
-        CudaExecutionContext &,                                                                    \
-        MtpModule *,                                                                               \
-        const std::string &,                                                                       \
-        const std::vector<int64_t> &,                                                              \
-        size_t,                                                                                    \
-        const std::string &);
-
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::qwen35::State)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::MiniCPMO45CausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::MiniCPMOTtsCausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::Gemma4CausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::GlmDsaCausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::Glm5CausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::Qwen4CausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::DeepseekV4CausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::DeepseekV41CausalLm)
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::NemotronHCausalLm)
-
-#undef TYLOINFER_INSTANTIATE_SESSION_CACHE
 
 } // namespace mfq::cuda::internal
 
