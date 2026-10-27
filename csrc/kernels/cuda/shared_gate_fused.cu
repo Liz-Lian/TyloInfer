@@ -2,7 +2,7 @@
 #include "mfq_cuda_shared_gate.h"
 #include "context.h"
 #include "shared_gate_fused.cuh"
-#include "backends/cuda/ops/mfq/include/nint.h"
+#include "ops/mfq/include/nint.h"
 #include <cstdlib>
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT

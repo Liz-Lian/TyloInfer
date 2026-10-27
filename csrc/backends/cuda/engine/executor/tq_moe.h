@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backends/cuda/engine/weights/tq/routed.h"
-#include "backends/cuda/ops/tq/include/tq.h"
+#include "ops/tq/include/tq.h"
 #include "backend.h"
 #include "engine/weights/tensor_parallel.h"
 

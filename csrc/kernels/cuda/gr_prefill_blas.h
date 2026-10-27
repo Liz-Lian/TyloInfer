@@ -1,5 +1,5 @@
 #pragma once
-#include "backends/cuda/ops/mfq/include/nint.h"
+#include "ops/mfq/include/nint.h"
 bool gr_prefill_blas_selected(const NintWeight&,const mfq_tensor_backend::Tensor&);
 mfq_tensor_backend::Tensor gr_prefill_blas_fp32(const NintWeight&,const mfq_tensor_backend::Tensor&);
 mfq_tensor_backend::Tensor gr_prefill_blas_mix(const NintWeight&,const mfq_tensor_backend::Tensor&,

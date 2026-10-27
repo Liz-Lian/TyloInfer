@@ -391,9 +391,9 @@ function(mfq_configure_cuda_backend_target target)
         ${TYLOINFER_CUDA_ROOT}/include
         ${PROJECT_SOURCE_DIR}/native/cuda
         ${PROJECT_SOURCE_DIR}/native/cuda/tensor
-        ${TYLOINFER_CUDA_ROOT}/ops/common/include
-        ${TYLOINFER_CUDA_ROOT}/ops/tq/include
-        ${TYLOINFER_CUDA_ROOT}/ops/mfq/include
+        ${PROJECT_SOURCE_DIR}/ops/common/include
+        ${PROJECT_SOURCE_DIR}/ops/tq/include
+        ${PROJECT_SOURCE_DIR}/ops/mfq/include
         ${TYLOINFER_CUDA_KERNEL_ROOT}
         ${CUDAToolkit_INCLUDE_DIRS}
     )
@@ -460,37 +460,37 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/ops/ffn/mlp.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/ffn/dense.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/ffn/residual.cpp
+    ${PROJECT_SOURCE_DIR}/ops/ffn/mlp.cpp
+    ${PROJECT_SOURCE_DIR}/ops/ffn/dense.cpp
+    ${PROJECT_SOURCE_DIR}/ops/ffn/residual.cpp
     ${PROJECT_SOURCE_DIR}/native/cuda/profile.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/route_stats.cpp
     ${PROJECT_SOURCE_DIR}/native/cuda/collectives.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/attention/attention.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/attention/full.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/attention/kv.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/attention/linear.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/norm/rms.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/rope.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/format.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/moe_routes.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/gated_residual.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/tq/tq.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/tq/moe.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/mx.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/quant_linear.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/projection.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/expert_projection.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/common/mmq.cpp
+    ${PROJECT_SOURCE_DIR}/ops/attention/attention.cpp
+    ${PROJECT_SOURCE_DIR}/ops/attention/full.cpp
+    ${PROJECT_SOURCE_DIR}/ops/attention/kv.cpp
+    ${PROJECT_SOURCE_DIR}/ops/attention/linear.cpp
+    ${PROJECT_SOURCE_DIR}/ops/norm/rms.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/rope.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/format.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/moe_routes.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/gated_residual.cpp
+    ${PROJECT_SOURCE_DIR}/ops/tq/tq.cpp
+    ${PROJECT_SOURCE_DIR}/ops/tq/moe.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/mx.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/quant_linear.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/projection.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/expert_projection.cpp
+    ${PROJECT_SOURCE_DIR}/ops/common/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_RUNTIME_OP_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/fp8_sq.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/mxfp4_sq.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/moe.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/mfe.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/nint.cpp
-    ${TYLOINFER_CUDA_ROOT}/ops/mfq/vq.cpp
+    ${PROJECT_SOURCE_DIR}/ops/mfq/fp8_sq.cpp
+    ${PROJECT_SOURCE_DIR}/ops/mfq/mxfp4_sq.cpp
+    ${PROJECT_SOURCE_DIR}/ops/mfq/moe.cpp
+    ${PROJECT_SOURCE_DIR}/ops/mfq/mfe.cpp
+    ${PROJECT_SOURCE_DIR}/ops/mfq/nint.cpp
+    ${PROJECT_SOURCE_DIR}/ops/mfq/vq.cpp
     )
 endif()
 

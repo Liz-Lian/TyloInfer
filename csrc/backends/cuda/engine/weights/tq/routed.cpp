@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/weights/tq/routed.h"
 #include "backends/cuda/engine/weights/tq/cache.h"
-#include "backends/cuda/ops/tq/include/moe.h"
+#include "ops/tq/include/moe.h"
 
 #include "backend.h"
 
