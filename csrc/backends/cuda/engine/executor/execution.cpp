@@ -694,7 +694,7 @@ mfq::cuda::Projector CudaExecutionContext::projector() {
 
 mfq::cuda::FfnExec CudaExecutionContext::ffn() {
     return {projector(), profiler, kl_mmq, *tq, branches, collectives, routes,
-            config.tasks, config.ffn,
+            config.tasks.projection, config.tasks.attention, config.tasks.dense, config.ffn,
             {force_moe_materialized_swiglu, force_moe_unfused_reduce,
              decode_graph_serial_branches, continuous_batch_cache_serial,
              continuous_batch_ffn_tile, continuous_batch_ffn_tiles,

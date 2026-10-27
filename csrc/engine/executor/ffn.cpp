@@ -125,7 +125,7 @@ Tensor FfnExec::run_experts(const Ffn& f, Tensor x, const MoeRoutePlan& route,
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index =
             parallel_index(
-            tasks_.projection.peer_first, launch_position, shard_count);
+            projection_.peer_first, launch_position, shard_count);
         const auto &gate_shard = f.moe_gate_up.expert_parallel_shards[index];
         const auto &down_shard = f.moe_down.expert_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
@@ -184,13 +184,13 @@ Tensor FfnExec::run_experts(const Ffn& f, Tensor x, const MoeRoutePlan& route,
         mfq_tensor_backend::Tensor complete_down;
         if (collect_output_energy) {
             complete_down = collectives_.sum(std::move(down_partials), project_.primary_device(),
-            tasks_.projection.reduce_to_primary, tasks_.projection.fp16_reduce);
+            projection_.reduce_to_primary, projection_.fp16_reduce);
         }
         stats.record(f.moe_layer, route.ids, route_weights, complete_down,
                      f.moe_gate_up.n_experts);
     }
     return collectives_.sum(std::move(routed_partials), project_.primary_device(),
-            tasks_.projection.reduce_to_primary, tasks_.projection.fp16_reduce);
+            projection_.reduce_to_primary, projection_.fp16_reduce);
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
@@ -215,7 +215,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
         }
         const int64_t rows = xh.numel() / xh.size(-1);
         const bool use_f32_down = rows >= 16 && mmq_.mode == KlMmqMode::Fp16 &&
-                                  tasks_.dense.important_fp32;
+                                  dense_.important_fp32;
         return mfq::models::additive_branches(
             [&](size_t index) {
                 const auto &branch = index == 0 ? f : *f.important_neurons;
@@ -229,8 +229,8 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
             [&](auto &run_branch, auto &outputs) {
                 return !use_f32_down &&
                        mfq::cuda::decode_branches(
-                    tasks_.projection.parallel, mode_.serial, rows) &&
-                       tasks_.dense.important_parallel &&
+                       projection_.parallel, mode_.serial, rows) &&
+                       dense_.important_parallel &&
                        branches_.run(2, run_branch, outputs);
             },
             [&](auto low, auto high) {
@@ -246,8 +246,8 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
     if (!f.is_moe && dense(f).parallel()) {
         return profiler.measure("ffn.tensor_parallel", [&] {
             return dense(f).sharded(
-                profiler, mmq_, tq_, collectives_, project_.primary_device(), tasks_.projection.peer_first,
-                tasks_.projection.reduce_to_primary, tasks_.projection.fp16_reduce, xh);
+                profiler, mmq_, tq_, collectives_, project_.primary_device(), projection_.peer_first,
+                projection_.reduce_to_primary, projection_.fp16_reduce, xh);
         });
     }
     if (f.is_moe) {
@@ -544,7 +544,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                     const mfq::cuda::Experts *active_up = &f.moe_up;
                     if (f.cpu_moe_up) {
                         staged_up.emplace(profiler.measure("moe.cpu_offload_up_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_up, tasks_.projection.moe.heterogeneous);
+                            return stage_cpu_mixed_moe(f.cpu_moe_up, projection_.moe.heterogeneous);
                         }));
                         active_up = &staged_up.value();
                     }
@@ -559,7 +559,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                     const mfq::cuda::Experts *active_down = &f.moe_down;
                     if (f.cpu_moe_down) {
                         staged_down.emplace(profiler.measure("moe.cpu_offload_down_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_down, tasks_.projection.moe.heterogeneous);
+                            return stage_cpu_mixed_moe(f.cpu_moe_down, projection_.moe.heterogeneous);
                         }));
                         active_down = &staged_down.value();
                     }
@@ -604,13 +604,13 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                 if (f.moe_split_gate_up) {
                     if (f.cpu_moe_gate) {
                         staged_gate.emplace(profiler.measure("moe.cpu_offload_gate_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_gate, tasks_.projection.moe.heterogeneous);
+                            return stage_cpu_mixed_moe(f.cpu_moe_gate, projection_.moe.heterogeneous);
                         }));
                         active_gate = &staged_gate.value();
                     }
                     if (f.cpu_moe_up) {
                         staged_up.emplace(profiler.measure("moe.cpu_offload_up_h2d", [&]() {
-                            return stage_cpu_mixed_moe(f.cpu_moe_up, tasks_.projection.moe.heterogeneous);
+                            return stage_cpu_mixed_moe(f.cpu_moe_up, projection_.moe.heterogeneous);
                         }));
                         active_up = &staged_up.value();
                     }
@@ -638,7 +638,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                     if (f.cpu_moe_gate_up) {
                         staged_gate_up.emplace(
                             profiler.measure("moe.cpu_offload_gate_up_h2d", [&]() {
-                                return stage_cpu_mixed_moe(f.cpu_moe_gate_up, tasks_.projection.moe.heterogeneous);
+                                return stage_cpu_mixed_moe(f.cpu_moe_gate_up, projection_.moe.heterogeneous);
                             }));
                         active_gate_up = &staged_gate_up.value();
                     }
@@ -665,7 +665,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                 const mfq::cuda::Experts *active_down = &f.moe_down;
                 if (f.cpu_moe_down) {
                     staged_down.emplace(profiler.measure("moe.cpu_offload_down_h2d", [&]() {
-                        return stage_cpu_mixed_moe(f.cpu_moe_down, tasks_.projection.moe.heterogeneous);
+                        return stage_cpu_mixed_moe(f.cpu_moe_down, projection_.moe.heterogeneous);
                     }));
                     active_down = &staged_down.value();
                 }
@@ -768,19 +768,21 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
     }
     TYLOINFER_RUNTIME_CHECK(f.activation != ActivationKind::relu_squared || !f.important_neurons,
                       "relu-squared FFN does not support important neurons");
-    const Mlp::Options options{tasks_.projection.nvq_fusion,
-                               tasks_.dense.mlp.gelu_fusion,
-                               tasks_.dense.mlp.silu_fusion};
+    const Mlp::Options options{projection_.nvq_fusion,
+                               dense_.mlp.gelu_fusion,
+                               dense_.mlp.silu_fusion};
     return dense(f).forward(project_, profiler, options, xh);
 }
 
 FfnExec::FfnExec(Projector project, CudaProfiler& profiler, KlMmqState& mmq,
                  TqExec& tq, Branches& branches, Collectives& collectives,
-                 RouteStats& stats, const Executor::Options& tasks,
+                 RouteStats& stats, const Projector::Options& projection,
+                 const FullAttention::Options& attention, const Dense::Options& dense,
                  const Options& options, Mode mode)
     : project_(std::move(project)), profiler_(profiler), mmq_(mmq), tq_(tq),
       branches_(branches), collectives_(collectives), stats_(stats),
-      tasks_(tasks), options_(options), mode_(mode) {}
+      projection_(projection), attention_(attention), dense_(dense),
+      options_(options), mode_(mode) {}
 
 Tensor FfnExec::run(const Ffn& f, Tensor x,
                     MfqOptional<Tensor> input_ids,
@@ -802,10 +804,10 @@ Tensor FfnExec::full(
         Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
             attention.official_bf16, attention.attention_output_gate};
         if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
-        const auto& parallel = tasks_.projection;
-        auto options = tasks_.dense;
+        const auto& parallel = projection_;
+        auto options = dense_;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
-        options.bf16_norm = tasks_.attention.fused_norm;
+        options.bf16_norm = attention_.fused_norm;
         return op.forward(project_, profiler_, mmq_, tq_, branches_, collectives_, parallel, options,
             mode_.serial, std::move(residual), std::move(output), trace_output);
     }
@@ -817,18 +819,18 @@ Tensor FfnExec::full(
                 .to(mfq_tensor_backend::kFloat32).contiguous().clone());
     };
     auto pair = full_norm(profiler, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
-                          attention.official_bf16, tasks_.attention.fused_norm,
-                          tasks_.dense.fp32_residual, std::move(residual), std::move(output));
+                          attention.official_bf16, attention_.fused_norm,
+                          dense_.fp32_residual, std::move(residual), std::move(output));
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
     record_trace("qwen.ffn_norm", input);
     auto mlp = dense(ffn);
     auto ff = attention.official_bf16
-        ? mlp.bf16(project_, profiler, tasks_.dense.bf16_swiglu, input)
+        ? mlp.bf16(project_, profiler, dense_.bf16_swiglu, input)
               .reshape({B, T, H}).to(mfq_tensor_backend::kBFloat16).contiguous()
         : run(ffn, input).reshape({B, T, H});
     record_trace("qwen.ffn_output", ff);
-    return full_add(profiler, tasks_.dense.fp32_residual, tasks_.dense.bf16_residual,
+    return full_add(profiler, dense_.fp32_residual, dense_.bf16_residual,
                     std::move(residual), std::move(ff));
 }
 
@@ -839,8 +841,8 @@ Tensor FfnExec::linear(
         Dense op{dense(ffn), {}, ffn_norm, attention.rms_norm_eps,
             attention.norm_weight_offset, false, false, true};
         if (ffn.important_neurons) op.important.emplace(dense(*ffn.important_neurons));
-        const auto& parallel = tasks_.projection;
-        auto options = tasks_.dense;
+        const auto& parallel = projection_;
+        auto options = dense_;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
         return op.forward(project_, profiler_, mmq_, tq_, branches_, collectives_, parallel, options,
             mode_.serial, std::move(residual), std::move(output));
@@ -848,11 +850,11 @@ Tensor FfnExec::linear(
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
     auto& profiler = profiler_;
     auto pair = linear_norm(profiler, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
-                            tasks_.dense.fp32_residual, std::move(residual), std::move(output));
+                            dense_.fp32_residual, std::move(residual), std::move(output));
     residual = pair[0];
     auto input = pair[1].reshape({B * T, H});
     auto ff = run(ffn, input).reshape({B, T, H});
-    return linear_add(profiler, tasks_.dense.fp32_residual, std::move(residual), std::move(ff));
+    return linear_add(profiler, dense_.fp32_residual, std::move(residual), std::move(ff));
 }
 
 } // namespace mfq::cuda

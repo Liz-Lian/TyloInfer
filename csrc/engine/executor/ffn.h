@@ -1,7 +1,6 @@
 #pragma once
 
 #include "engine/models/ffn.h"
-#include "engine/executor/run.h"
 #include "native/cuda/branches.h"
 #include "native/cuda/collectives.h"
 #include "native/cuda/profile.h"
@@ -11,6 +10,7 @@
 #include "ops/common/include/mmq.h"
 #include "ops/common/include/moe.h"
 #include "ops/common/include/projection.h"
+#include "ops/ffn/dense.h"
 
 #include <optional>
 
@@ -41,7 +41,8 @@ public:
 
     FfnExec(Projector project, CudaProfiler& profiler, KlMmqState& mmq,
             TqExec& tq, Branches& branches, Collectives& collectives,
-            RouteStats& stats, const Executor::Options& tasks,
+            RouteStats& stats, const Projector::Options& projection,
+            const FullAttention::Options& attention, const Dense::Options& dense,
             const Options& options, Mode mode);
     FfnExec(const FfnExec&) = delete;
     FfnExec& operator=(const FfnExec&) = delete;
@@ -80,7 +81,9 @@ private:
     Branches& branches_;
     Collectives& collectives_;
     RouteStats& stats_;
-    const Executor::Options& tasks_;
+    const Projector::Options& projection_;
+    const FullAttention::Options& attention_;
+    const Dense::Options& dense_;
     const Options& options_;
     Mode mode_;
 };
