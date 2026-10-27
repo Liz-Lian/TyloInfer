@@ -70,9 +70,10 @@ const char * kl_evaluator_name(KlEvaluator evaluator) {
     return evaluator == KlEvaluator::Legacy ? "legacy" : "optimized";
 }
 
-template <typename Model>
+template <typename Model, typename State>
 static int run_kl_eval(
         Model& model,
+        State& state,
         const std::string & path,
         int max_chunks,
         KlEvaluator evaluator,
@@ -243,7 +244,7 @@ static int run_kl_eval(
                 "--kl-score-count exceeds the stored chunk score count");
         }
         const int first = chunk.target_start - 1;
-        model.reset(1);
+        state.reset(1);
         std::vector<int64_t> chunk_tokens(chunk.tokens.size());
         for (size_t j = 0; j < chunk.tokens.size(); ++j) {
             chunk_tokens[j] = chunk.tokens[j];
@@ -642,9 +643,10 @@ static void accumulate_streamed_kl_chunk(
     }
 }
 
-template <typename Model>
+template <typename Model, typename State>
 int run_kl_eval_batched(
     Model& model,
+    State& state,
     const std::string & reference_path,
     int max_chunks,
     int64_t requested_n_batch,
@@ -733,7 +735,7 @@ int run_kl_eval_batched(
             std::min(kl_n_seq, chunks - begin);
         auto ids = streamed_kl_ids(
             input, begin, n_seq_batch, n_ctx);
-        model.reset(n_seq_batch);
+        state.reset(n_seq_batch);
         auto hidden = model.hidden_forward(ids);
         for (int bi = 0; bi < n_seq_batch; ++bi) {
             auto selected_hidden = hidden.index({
@@ -813,9 +815,10 @@ int run_kl_eval_batched(
     return 0;
 }
 
-template <typename Model>
+template <typename Model, typename State>
 int run_selected_kl_eval(
     Model& model,
+    State& state,
     const std::string & reference_path,
     int max_chunks,
     KlEvaluator evaluator,
@@ -824,11 +827,11 @@ int run_selected_kl_eval(
     const KlReferenceContract & reference_contract) {
     return evaluator == KlEvaluator::Optimized
         ? run_kl_eval_batched(
-              model, reference_path, max_chunks,
+              model, state, reference_path, max_chunks,
               requested_n_batch, score_override,
               reference_contract)
         : run_kl_eval(
-              model, reference_path, max_chunks, evaluator,
+              model, state, reference_path, max_chunks, evaluator,
               score_override, reference_contract);
 }
 
@@ -1105,23 +1108,23 @@ int run_kl_eval_streamed(
     return 0;
 }
 
-#define TYLOINFER_INSTANTIATE_KL(TYPE)                                           \
-    template int run_kl_eval_batched<TYPE>(                               \
-        TYPE&, const std::string&, int, std::int64_t, int,                 \
-        const KlReferenceContract&);                                       \
-    template int run_selected_kl_eval<TYPE>(                              \
-        TYPE&, const std::string&, int, KlEvaluator, std::int64_t, int,    \
+#define TYLOINFER_INSTANTIATE_KL(MODEL, STATE)                                  \
+    template int run_kl_eval_batched<MODEL, STATE>(                             \
+        MODEL&, STATE&, const std::string&, int, std::int64_t, int,            \
+        const KlReferenceContract&);                                            \
+    template int run_selected_kl_eval<MODEL, STATE>(                            \
+        MODEL&, STATE&, const std::string&, int, KlEvaluator, std::int64_t, int,\
         const KlReferenceContract&)
 
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Run);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMOTtsCausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Gemma4CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::GlmDsaCausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Glm5CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::Qwen4CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV4CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV41CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::NemotronHCausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMOTtsCausalLm, mfq::cuda::MiniCPMOTtsCausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::Gemma4CausalLm, mfq::cuda::Gemma4CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::GlmDsaCausalLm, mfq::cuda::GlmDsaCausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::Glm5CausalLm, mfq::cuda::Glm5CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV4CausalLm, mfq::cuda::DeepseekV4CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::NemotronHCausalLm, mfq::cuda::NemotronHCausalLm);
 
 #undef TYLOINFER_INSTANTIATE_KL

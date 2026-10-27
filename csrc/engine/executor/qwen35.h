@@ -2,7 +2,6 @@
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/run.h"
-#include "backends/cuda/engine/state/session/state.h"
 #include "models/qwen35/model.h"
 #include "engine/state/qwen35.h"
 #include "ops/attention/full.h"
@@ -51,7 +50,6 @@ public:
     std::string_view model_type() const noexcept;
     std::string_view layer_type(std::int64_t layer) const;
 
-    void reset(std::int64_t batch);
     void preallocate();
     Tensor embed_forward(Tensor ids) const;
     Tensor hidden_forward(
@@ -93,28 +91,15 @@ public:
 
     bool supports_speculation() const noexcept;
     bool supports_suffix_speculation() const noexcept { return false; }
-    void commit_speculative();
     void rollback_speculative(std::int64_t accepted_suffix = 0);
 
-    TextSessionStateKind text_session_state_kind() const;
-    bool supports_text_session_state() const;
-    bool supports_paged_text_session_state() const;
-    TextSessionState capture_text_session_state(const std::vector<std::int64_t>& tokens) const;
-    void restore_text_session_state(const TextSessionState& state);
-
-    std::vector<Tensor*> graph_state();
     std::vector<Tensor> graph_storage() const;
 
     std::shared_ptr<const Model> weights;
     CudaExecutionContext* execution = nullptr;
     std::unique_ptr<mfq::cuda::Executor> executor;
     std::function<void()> restore_decode_workspace;
-    std::vector<State> states;
-    std::int64_t cache_pos = 0;
-    std::int64_t decode_position_delta = 0;
-    std::int64_t speculative_start = -1;
-    std::int64_t speculative_confirmed = 0;
-    std::int64_t batch = 0;
+    State state;
 
 private:
     Tensor normalize_ids(Tensor ids) const;
@@ -125,7 +110,7 @@ private:
 Tensor forward_layer(
     CudaExecutionContext& execution,
     const Layer& layer,
-    State& state,
+    LayerState& state,
     mfq::cuda::Executor& executor,
     std::size_t scratch_offset,
     Tensor input,

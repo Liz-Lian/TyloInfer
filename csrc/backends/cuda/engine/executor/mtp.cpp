@@ -256,6 +256,7 @@ template <class Model, class State> struct CudaMtpOps {
                           : 1), prefill_compute_chunk(compute_chunk), output(output) {
     target_graph_captures=moe_expert_graph_captures(model.execution->stores.moe_expert_cache);
   }
+  void rollback_target(std::int64_t accepted) { model.rollback_speculative(accepted); }
   void initialize(const std::vector<int64_t> &prompt,
                   const MfqSamplingParams &sampling) {
     input_ids = ids_for(prompt);
@@ -869,7 +870,11 @@ run_mtp_generation(Model &model, State &state, const mfq::models::CausalLmMetada
       const CudaPreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t)
 
-TYLOINFER_INSTANTIATE_MTP(mfq::cuda::qwen35::Run);
+template Generation run_mtp_generation<mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State>(
+  mfq::cuda::qwen35::Run &, mfq::cuda::qwen35::State &,
+  const mfq::models::CausalLmMetadata &, MtpModule &, InferenceRequest &,
+  InferenceOutput &, int64_t, const CudaPreparedPrompt *, std::size_t,
+  mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor *, std::size_t);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Gemma4CausalLm);

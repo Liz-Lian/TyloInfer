@@ -48,10 +48,11 @@ inline mfq_tensor_backend::Tensor diagnostic_decode_input(
     return forced.defined()?forced.narrow(0,step,1).view({1,1}):predicted.view({1,1});
 }
 
-template <typename Model>
+template <typename Model, typename State>
 int generate_diagnostic_tokens(
         CudaExecutionContext& execution,
         Model& model,
+        State& state,
         mfq_tensor_backend::Tensor ids,
         int gen,
         bool profile,
@@ -154,7 +155,7 @@ int generate_diagnostic_tokens(
                     graph_compute_streams);
             cudaStream_t graph_raw_stream = graph_stream.stream();
 
-            int64_t pos_h = model.cache_pos;
+            int64_t pos_h = state.cache_pos;
             int64_t len_h = pos_h + 1;
             int64_t step_h = 1;
             TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_input.template data_ptr<int64_t>(), next.template data_ptr<int64_t>(),
@@ -169,7 +170,7 @@ int generate_diagnostic_tokens(
 
             MfqCudaGraph graph;
             mfq_tensor_backend::Tensor static_next;
-            const int64_t planned_len = model.cache_pos + gen;
+            const int64_t planned_len = state.cache_pos + gen;
             const int64_t attention_parts = decode_graph_attention_parts(
                 planned_len, FullBlock::kDecodeAttentionMaxParts);
             {
@@ -177,7 +178,7 @@ int generate_diagnostic_tokens(
                     execution.decode_graph_serial_branches);
                 std::vector<mfq_tensor_backend::Tensor *> graph_warmup_states;
                 if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>) {
-                    graph_warmup_states = model.graph_state();
+                    graph_warmup_states = state.graph_state();
                 } else {
                     for (const auto &block : model.blocks)
                         for (auto *state : block->graph_warmup_state())
@@ -185,7 +186,7 @@ int generate_diagnostic_tokens(
                 }
                 prepare_decode_graph_memory(
                     graph_warmup_states,
-                    model.cache_pos,
+                    state.cache_pos,
                     metadata->decode_graph_double_warmup, graph, [&]() {
                         (void)model.next_token_static(
                             static_input, static_pos, static_len,

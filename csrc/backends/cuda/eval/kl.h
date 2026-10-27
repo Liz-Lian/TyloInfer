@@ -14,18 +14,20 @@ enum class KlEvaluator {
 
 const char* kl_evaluator_name(KlEvaluator evaluator);
 
-template <typename Model>
+template <typename Model, typename State>
 int run_kl_eval_batched(
     Model& model,
+    State& state,
     const std::string& reference_path,
     int max_chunks,
     std::int64_t requested_n_batch,
     int score_override,
     const KlReferenceContract& reference_contract);
 
-template <typename Model>
+template <typename Model, typename State>
 int run_selected_kl_eval(
     Model& model,
+    State& state,
     const std::string& reference_path,
     int max_chunks,
     KlEvaluator evaluator,

@@ -45,7 +45,7 @@ template <typename Model> struct ReferenceLayers {
     std::unique_ptr<::Block> streamed;
     std::vector<mfq::cuda::qwen35::Layer> qwen_layers;
     std::optional<mfq::cuda::qwen35::Layer> qwen_streamed;
-    mfq::cuda::qwen35::State qwen_state;
+    mfq::cuda::qwen35::LayerState qwen_state;
     std::unique_ptr<mfq::cuda::Executor> qwen_executor;
 
     bool load_resident() {

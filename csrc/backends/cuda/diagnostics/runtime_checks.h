@@ -77,9 +77,10 @@ int run_cuda_continuous_batching_check(
 int run_cuda_continuous_batching_check(mfq::cuda::Qwen4CausalLm& model,int requests = 2);
 int run_cuda_engine_isolation_check(CudaEngineOptions options);
 
-template <typename Model>
+template <typename Model, typename State>
 static int run_prefill_sweep(
     Model& model,
+    State& state,
     const mfq::models::CausalLmMetadata& metadata,
     const std::vector<int64_t> & sizes,
     int repeats,CudaExecutionContext& execution) {
@@ -234,7 +235,7 @@ static int run_prefill_sweep(
                     std::cout<<"prefill_transfer_flush_m="<<m<<" chunk="<<chunk<<" repeat="<<repeat
                         <<" flush="<<enabled<<std::endl;
                 }
-                model.reset(1);mfq_cuda_synchronize();
+                state.reset(1);mfq_cuda_synchronize();
                 execution.profiler.reset();
                 const auto started=std::chrono::steady_clock::now();
                 mfq_tensor_backend::Tensor logits;
@@ -303,7 +304,7 @@ static int run_prefill_sweep(
                             std::cout<<"prefill_numerical_validation_m="<<m<<" chunk="<<chunk
                                 <<" repeat="<<repeat<<" accepted="<<int(accepted)<<std::endl;
                         } else TYLOINFER_RUNTIME_CHECK(accepted,"layer-major full-prompt logits differ from chunk-major oracle");
-                        TYLOINFER_RUNTIME_CHECK(model.cache_pos==m,"layer-major logical cache did not advance");
+                        TYLOINFER_RUNTIME_CHECK(state.cache_pos==m,"layer-major logical cache did not advance");
                     }
                 }
                 if(phase_sweep && (repeat&1) && execution.stores.moe_expert_cache) {
@@ -357,7 +358,7 @@ static int run_prefill_sweep(
                     <<" repeat="<<public_repeat<<" mode="<<engine_mode<<std::endl;
                 // End the previous long-prompt case before the public-path
                 // check; unused asynchronous pool blocks are outside timing.
-                model.reset(1);mfq_cuda_synchronize();
+                state.reset(1);mfq_cuda_synchronize();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 cudaMemPool_t verification_pool=nullptr;
                 TYLOINFER_CUDA_CHECK(cudaDeviceGetDefaultMemPool(&verification_pool,mfq_current_cuda_device()));
@@ -388,7 +389,7 @@ static int run_prefill_sweep(
                 request.sampling.top_k=1;request.sampling.top_p=1.;request.sampling.enable_mtp=false;
                 mfq::engine::InferenceOutput output(request,nullptr,"layer-major-check");
                 const auto engine_started=std::chrono::steady_clock::now();
-                auto result=collect_generation(generate(model,model,metadata,graph,cache,config,request,output));
+                auto result=collect_generation(generate(model,state,metadata,graph,cache,config,request,output));
                 mfq_cuda_synchronize();
                 const auto engine_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-engine_started).count();
                 std::cout<<"prefill_ordinary_generation_timing prompt="<<sizes.front()<<" chunk="<<engine_chunk
@@ -422,7 +423,7 @@ static int run_prefill_sweep(
                 if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
                     const auto* tail_profile=mfq::cuda::env_lookup("TYLOINFER_PREFILL_POST_TIMING_PROFILE");
                     if(tail_profile && std::atoi(tail_profile)!=0) {
-                        model.reset(1);execution.profiler.reset();execution.profiler.enabled=true;
+                        state.reset(1);execution.profiler.reset();execution.profiler.enabled=true;
                         auto hidden=qwen4_layer_major_prefill_hidden(model,all_ids.narrow(1,0,sizes.front()),chunks.front(),true);
                         (void)model.apply_final_logit_softcap(model.adapter_last_logits(model.lm_head,model.last_hidden(std::move(hidden))));
                         mfq_cuda_synchronize();
@@ -436,7 +437,7 @@ static int run_prefill_sweep(
                         mfq::cuda::env_set("TYLOINFER_GDN_PREFILL_COLUMNS","0");
                         mfq::cuda::env_set("TYLOINFER_MOE_PREFILL_EXPERT_BATCH","1");
                         mfq::cuda::env_set("TYLOINFER_PREFILL_EXPERT_BATCH_AUDIT","1");
-                        model.reset(1);
+                        state.reset(1);
                         auto hidden=qwen4_layer_major_prefill_hidden(model,all_ids.narrow(1,0,sizes.front()),chunks.front(),true);
                         auto result=model.apply_final_logit_softcap(model.adapter_last_logits(model.lm_head,model.last_hidden(std::move(hidden))))
                             .to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kFloat32).contiguous();
@@ -459,7 +460,7 @@ static int run_prefill_sweep(
     for (int64_t m : sizes) {
         auto ids = all_ids.narrow(1, 0, m);
         for (int warmup = 0; warmup < 2; ++warmup) {
-            model.reset(1);
+            state.reset(1);
             (void)model.last_logits(ids);
             mfq_cuda_synchronize();
         }
@@ -468,7 +469,7 @@ static int run_prefill_sweep(
         elapsed_ms.reserve((size_t)repeats);
         int64_t top = -1;
         for (int repeat = 0; repeat < repeats; ++repeat) {
-            model.reset(1);
+            state.reset(1);
             auto started = std::chrono::steady_clock::now();
             auto logits = model.last_logits(ids);
             mfq_cuda_synchronize();
@@ -488,9 +489,10 @@ static int run_prefill_sweep(
     return 0;
 }
 
-template <typename Model>
+template <typename Model, typename State>
 static int run_block_trace_compare(
     Model& test,
+    State& test_state,
     const std::string & reference_model_path,
     const std::string & config_path,
     int64_t context_size,
@@ -517,12 +519,18 @@ static int run_block_trace_compare(
             throw;
         }
     }();
+    auto& reference_state = [&]() -> auto& {
+        if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>)
+            return reference.state;
+        else
+            return reference;
+    }();
     std::vector<mfq_tensor_backend::Tensor> test_trace;
     std::vector<mfq_tensor_backend::Tensor> reference_trace;
 
-    test.reset(ids.size(0));
+    test_state.reset(ids.size(0));
     auto test_hidden = test.hidden_forward(ids, mfq_nullopt, mfq_nullopt, &test_trace);
-    reference.reset(ids.size(0));
+    reference_state.reset(ids.size(0));
     auto reference_hidden = reference.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &reference_trace);
     mfq_cuda_synchronize();
@@ -585,9 +593,10 @@ static int run_block_trace_compare(
     return 0;
 }
 
-template <typename Model>
+template <typename Model, typename State>
 static int run_block_trace_dump(
     Model& model,
+    State& state,
     const std::string & output_dir,
     mfq_tensor_backend::Tensor ids,
     int64_t token_start,
@@ -608,7 +617,7 @@ static int run_block_trace_dump(
             "block trace output directory must be new: " + output_dir);
     }
 
-    model.reset(ids.size(0));
+    state.reset(ids.size(0));
     std::vector<mfq_tensor_backend::Tensor> trace;
     auto final_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &trace);
@@ -692,9 +701,10 @@ static int run_block_trace_dump(
     return 0;
 }
 
-template <typename Model>
+template <typename Model, typename State>
 static int run_dsv4_hc_model_compare(
     Model& model,
+    State& state,
     mfq_tensor_backend::Tensor ids)
 {
     std::vector<mfq_tensor_backend::Tensor> reference_trace;
@@ -702,21 +712,21 @@ static int run_dsv4_hc_model_compare(
     std::vector<mfq_tensor_backend::Tensor> repeat_trace;
 
     g_dsv4_fused_hc = false;
-    model.reset(ids.size(0));
+    state.reset(ids.size(0));
     auto reference_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &reference_trace);
     auto reference_logits = diagnostic_logits(model, std::move(reference_hidden))
         .to(mfq_tensor_backend::kFloat32);
 
     g_dsv4_fused_hc = true;
-    model.reset(ids.size(0));
+    state.reset(ids.size(0));
     auto candidate_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &candidate_trace);
     auto candidate_logits = diagnostic_logits(model, std::move(candidate_hidden))
         .to(mfq_tensor_backend::kFloat32);
 
     g_dsv4_fused_hc = false;
-    model.reset(ids.size(0));
+    state.reset(ids.size(0));
     auto repeat_hidden = model.hidden_forward(
         ids, mfq_nullopt, mfq_nullopt, &repeat_trace);
     auto repeat_logits = diagnostic_logits(model, std::move(repeat_hidden))
@@ -890,7 +900,7 @@ static int run_qwen35_mtp_check(
     // Explicitly test zero, partial, and full acceptance regardless of the
     // real predictor's acceptance rate.
     for (int accepted_drafts : {0, 1, 2}) {
-        model.reset(1);
+        model.state.reset(1);
         (void)model.hidden_forward(ids(prompt));
         std::vector<Tensor> verify_trace;
         std::vector<std::pair<std::string, Tensor>> verify_stages;
@@ -899,10 +909,10 @@ static int run_qwen35_mtp_check(
         (void)model.hidden_forward(ids({37, 41, 43}), mfq_nullopt, mfq_nullopt,
             &verify_trace, mfq_nullopt, nullptr, 1);
         execution.gemma_stage_trace = nullptr;
-        if (accepted_drafts == 2) model.commit_speculative();
+        if (accepted_drafts == 2) model.state.commit_speculative();
         else model.rollback_speculative(accepted_drafts);
         TYLOINFER_RUNTIME_CHECK(
-            model.cache_pos == static_cast<int64_t>(prompt.size()) +
+            model.state.cache_pos == static_cast<int64_t>(prompt.size()) +
                 1 + accepted_drafts,
             "MTP resolution retained an incorrect logical cache length");
         auto actual = model.last_logits(ids({47})).clone();
@@ -910,12 +920,12 @@ static int run_qwen35_mtp_check(
         for (std::size_t layer = 0; layer < model.weights->layers.size(); ++layer) {
             if (std::holds_alternative<mfq::cuda::qwen35::Linear>(
                     model.weights->layers[layer].weights)) {
-                const auto& linear = std::get<mfq::cuda::qwen35::LinearState>(model.states[layer]);
+                const auto& linear = std::get<mfq::cuda::qwen35::LinearState>(model.state.layers[layer]);
                 states.emplace_back(linear.mixer.view().convolution.clone(),
                                     linear.mixer.view().recurrent.clone());
             }
         }
-        model.reset(1);
+        model.state.reset(1);
         (void)model.hidden_forward(ids(prompt));
         std::vector<Tensor> serial_trace;
         std::vector<std::pair<std::string, Tensor>> serial_stages;
@@ -948,7 +958,7 @@ static int run_qwen35_mtp_check(
         for (std::size_t layer = 0; layer < model.weights->layers.size(); ++layer) {
             if (std::holds_alternative<mfq::cuda::qwen35::Linear>(
                     model.weights->layers[layer].weights)) {
-                const auto& linear = std::get<mfq::cuda::qwen35::LinearState>(model.states[layer]);
+                const auto& linear = std::get<mfq::cuda::qwen35::LinearState>(model.state.layers[layer]);
                 const auto conv_label = "conv_continuation_" + std::to_string(state);
                 const auto gdn_label = "gdn_continuation_" + std::to_string(state);
                 compare(states[state].first, linear.mixer.view().convolution, .002, conv_label.c_str());
@@ -958,7 +968,7 @@ static int run_qwen35_mtp_check(
         }
     }
     TYLOINFER_RUNTIME_CHECK(!numerical_mismatch, "MTP gate numerical mismatch (see per-layer diagnostics)");
-    model.reset(1);
+    model.state.reset(1);
     Tensor raw;
     (void)model.hidden_forward(ids(prompt), mfq_nullopt, mfq_nullopt, nullptr, mfq_nullopt, &raw);
     for (int tokens = 2; tokens <= 6; ++tokens) {
@@ -997,7 +1007,7 @@ static int run_qwen35_mtp_check(
         params.temperature = 0.;
         params.top_k = 1;
         params.seed = 20260907;
-        model.reset(1);
+        model.state.reset(1);
         auto current = ids(input);
         std::vector<int64_t> expected;
         for (int step = 0; step < params.max_tokens; ++step) {
@@ -1006,7 +1016,7 @@ static int run_qwen35_mtp_check(
             current = next.reshape({1, 1});
         }
         std::vector<int64_t> got;
-        got = check_mtp_steps(model, mtp, model.weights->metadata, input, params);
+        got = check_mtp_steps(model, mtp, model.state, model.weights->metadata, input, params);
         const int produced = static_cast<int>(got.size());
         total_cycles += mtp.last_cycles;
         std::cout << "mtp_check greedy_prompt_tokens=" << input.size() << " produced=" << produced
@@ -1017,7 +1027,7 @@ static int run_qwen35_mtp_check(
         // Output limit then a fresh request exercises state reset after an
         // early return, including stopping before a computed bonus is emitted.
         got.clear();
-        got = check_mtp_steps(model, mtp, model.weights->metadata, input, params, 3);
+        got = check_mtp_steps(model, mtp, model.state, model.weights->metadata, input, params, 3);
         const int stopped = static_cast<int>(got.size());
         TYLOINFER_RUNTIME_CHECK(stopped == 3 && got == std::vector<int64_t>(expected.begin(), expected.begin() + 3),
             "MTP step emitted extra or incorrect tokens");
@@ -1031,14 +1041,14 @@ static int run_qwen35_mtp_check(
     stochastic.frequency_penalty = .1;
     stochastic.repetition_penalty = 1.05;
     stochastic.seed = 20260907;
-    const int produced = static_cast<int>(check_mtp_steps(model, mtp, model.weights->metadata, prompt, stochastic).size());
+    const int produced = static_cast<int>(check_mtp_steps(model, mtp, model.state, model.weights->metadata, prompt, stochastic).size());
     TYLOINFER_RUNTIME_CHECK(produced == 8 && mtp.last_cycles > 0 && total_cycles > 0,
         "MTP runtime gate did not execute speculative cycles");
     int64_t linear_layers = 0, ffn_batches = 0, projection_batches = 0;
     for (std::size_t layer = 0; layer < model.weights->layers.size(); ++layer) {
         if (std::holds_alternative<mfq::cuda::qwen35::Linear>(
                 model.weights->layers[layer].weights)) {
-            const auto& linear = std::get<mfq::cuda::qwen35::LinearState>(model.states[layer]);
+            const auto& linear = std::get<mfq::cuda::qwen35::LinearState>(model.state.layers[layer]);
             TYLOINFER_RUNTIME_CHECK(
                 linear.speculative_ffn_batches > 0 &&
                     linear.speculative_projection_batches > 0,
@@ -1778,7 +1788,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
     }();
     const std::vector<int64_t> prompt{1,2,3,4,5};
     model.reset(1);mtp.reset(1);
-    const auto speculative=check_mtp_steps(model,mtp,model.metadata,prompt,greedy);
+    const auto speculative=check_mtp_steps(model,mtp,model,model.metadata,prompt,greedy);
     result["greedy_mtp"]=speculative;
     result["cycles"]=mtp.last_stats.cycles;
     result["accepted"]=mtp.last_accepted;

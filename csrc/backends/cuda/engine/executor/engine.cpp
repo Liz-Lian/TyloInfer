@@ -32,7 +32,7 @@ using namespace mfq::engine;
 using namespace mfq::cuda::internal;
 
 namespace engine_detail {
-template <typename Model>
+template <typename Model, typename State = Model>
 struct CudaEngineState {
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
@@ -41,6 +41,7 @@ struct CudaEngineState {
     Model model;
     RuntimeComponents<Model> components;
     Model& language;
+    State& state;
     const mfq::models::CausalLmMetadata& metadata;
     DecodeGraphCache graph;
     TextSessionCache cache;
@@ -204,7 +205,7 @@ struct CudaEngineState {
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,components.mtp.get());
                 release_moe_decode_buffers(execution->stores.moe_expert_cache);
-                language.reset(1);components.mtp->reset(1);
+                state.reset(1);components.mtp->reset(1);
                 auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
                 context->reclaim_idle_memory();
                 reclaim_prefix_workspace((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth));
@@ -254,6 +255,12 @@ struct CudaEngineState {
           source(std::move(model_source)),
           model(std::move(loaded)), components(std::move(optional)),
           language(components.language(model)),
+          state([this]() -> State& {
+              if constexpr (std::is_same_v<Model, qwen35::Run>)
+                  return language.state;
+              else
+                  return language;
+          }()),
           metadata([this]() -> const mfq::models::CausalLmMetadata& {
               if constexpr (std::is_same_v<Model, qwen35::Run>)
                   return language.weights->metadata;
@@ -263,8 +270,8 @@ struct CudaEngineState {
           graph(language.max_position_embeddings()),
           cache(config.session_cache, config.prefix_cache,
               make_cuda_paged_prefix_cache(*source, language.max_position_embeddings(),
-                  language.supports_paged_text_session_state(), config.prefix_cache),
-                language.supports_text_session_state(), language.supports_text_session_state() ? 0 : 1,
+                  state.supports_paged_text_session_state(), config.prefix_cache),
+                state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
         try {
         initial_expert_budget=routed_expert_cache_budget_bytes(*execution);
@@ -276,8 +283,8 @@ struct CudaEngineState {
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model, qwen35::Run>) {
                 if (runtime_options::kv_vram_preallocated()) {
-                    for (auto& state : model.states)
-                        if (auto* cache = std::get_if<KVCache>(&state)) *cache = KVCache();
+                    for (auto& layer_state : state.layers)
+                        if (auto* cache = std::get_if<KVCache>(&layer_state)) *cache = KVCache();
                 }
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
                     config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,
@@ -361,11 +368,11 @@ struct CudaEngineState {
                 for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.vocab_size());
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
-                auto generation=run_mtp_generation(language,language,metadata,predictor,request,output,16);
+                auto generation=run_mtp_generation(language,state,metadata,predictor,request,output,16);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(execution->stores.moe_expert_cache);
                 predictor.reset(1);
-                language.reset(1);
+                state.reset(1);
                 predictor.policy_state=saved_policy;
                 predictor.last_stats={};
                 predictor.last_cycles=predictor.last_accepted=predictor.last_rejected=0;
@@ -432,7 +439,7 @@ struct CudaEngineState {
             qwen4_release_decode_graphs(language,components.mtp.get());
         if(batching)batching->release_idle_buffers();
         if(components.mtp)components.mtp->reset(1);
-        language.reset(1);
+        state.reset(1);
         release_moe_decode_buffers(execution->stores.moe_expert_cache);
         context->reclaim_idle_memory();
         auto target=requested_weights ? requested_weights-dense : initial_expert_budget;
@@ -487,7 +494,7 @@ struct CudaEngineState {
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, std::optional<Prepared> prepared,
                              const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
-        return internal::generate(language, language, metadata, graph, cache, config,
+        return internal::generate(language, state, metadata, graph, cache, config,
                                   input, output, batched ? nullptr : components.mtp.get(), std::move(prepared),
                                   batched ? batching.get() : nullptr, id);
     }
@@ -630,7 +637,7 @@ struct CudaEngineState {
 
 };
 using State = std::variant<
-    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Run>>,
+    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State>>,
     std::unique_ptr<CudaEngineState<MiniCPMO45CausalLm>>,
     std::unique_ptr<CudaEngineState<MiniCPMOTtsCausalLm>>,
     std::unique_ptr<CudaEngineState<Gemma4CausalLm>>,
@@ -696,9 +703,14 @@ struct CudaBackend {
                     source = model.weights->source;
                 else
                     source = model.source;
-                return std::make_unique<CudaEngineState<Model>>(
-                    *execution, std::move(model), std::move(components), config,
-                    std::move(source), weight_memory);
+                if constexpr (std::is_same_v<Model, qwen35::Run>)
+                    return std::make_unique<CudaEngineState<Model, qwen35::State>>(
+                        *execution, std::move(model), std::move(components), config,
+                        std::move(source), weight_memory);
+                else
+                    return std::make_unique<CudaEngineState<Model>>(
+                        *execution, std::move(model), std::move(components), config,
+                        std::move(source), weight_memory);
             });
         return visit([&](auto& state) {
             EngineInfo info;
@@ -734,7 +746,7 @@ struct CudaBackend {
             try { execution->drain(); } catch (...) { failure = std::current_exception(); }
             {
                 CudaScope scope(*execution);
-                state = std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Run>>{};
+                state = std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State>>{};
             }
         }
         stores.reset();

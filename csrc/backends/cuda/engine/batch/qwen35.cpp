@@ -32,7 +32,7 @@ Batch::Batch(std::shared_ptr<const Model> weights, CudaExecutionContext &executi
     if (!reason.empty())
         throw std::runtime_error(reason);
     slots_.resize(slots);
-    run_->reset(static_cast<std::int64_t>(slots));
+    run_->state.reset(static_cast<std::int64_t>(slots));
     if (paged) {
         paged_slots_.resize(slots);
         std::vector<PagedKv::Layout> layouts;
@@ -71,7 +71,7 @@ void Batch::prepare_prefill(RequestState &request, std::int64_t offset, std::int
     if (!request.run_) {
         TYLOINFER_RUNTIME_CHECK(offset == 0, "continuous batching lost prefill state");
         request.run_ = std::make_unique<Run>(weights_, *execution_);
-        request.run_->reset(1);
+        request.run_->state.reset(1);
         if (paged_kv_) {
             detach_paged(*request.run_);
             paged_kv_->ensure_tokens(request.pages_, tokens);
@@ -87,11 +87,11 @@ void Batch::activate(RequestState &request) {
     const auto free = std::find(slots_.begin(), slots_.end(), nullptr);
     TYLOINFER_RUNTIME_CHECK(free != slots_.end(), "continuous batching has no free stable slot");
     const auto slot = static_cast<int32_t>(free - slots_.begin());
-    if (run_->batch != static_cast<std::int64_t>(slots_.size())) {
+    if (run_->state.batch != static_cast<std::int64_t>(slots_.size())) {
         TYLOINFER_RUNTIME_CHECK(
             std::none_of(slots_.begin(), slots_.end(), [](auto *owner) { return owner != nullptr; }),
             "continuous batching aggregate state has active slots at the wrong batch size");
-        run_->reset(static_cast<std::int64_t>(slots_.size()));
+        run_->state.reset(static_cast<std::int64_t>(slots_.size()));
     }
     if (paged_kv_)
         bind_paged_slots();
@@ -124,19 +124,19 @@ void Batch::activate(RequestState &request) {
 }
 
 void Batch::resume_decode(std::int64_t cache_position) {
-    run_->cache_pos = cache_position;
+    run_->state.cache_pos = cache_position;
     const bool active = std::any_of(slots_.begin(), slots_.end(), [](auto *owner) {
         return owner != nullptr;
     });
     if (paged_kv_ && active)
         bind_paged_slots();
     else if (paged_kv_) {
-        run_->reset(1);
+        run_->state.reset(1);
         detach_paged(*run_);
         for (auto &sequence : paged_slots_)
             paged_kv_->release(sequence);
     } else if (!active) {
-        run_->reset(1);
+        run_->state.reset(1);
     }
     page_table_dirty_ = false;
 }
@@ -168,17 +168,17 @@ void Batch::discard_prefill(RequestState &request) {
 
 void Batch::finish_retire(std::int64_t cache_position) {
     if (std::none_of(slots_.begin(), slots_.end(), [](auto *owner) { return owner != nullptr; })) {
-        run_->reset(1);
+        run_->state.reset(1);
         if (paged_kv_) {
             detach_paged(*run_);
             for (auto &sequence : paged_slots_)
                 paged_kv_->release(sequence);
         }
     } else if (paged_kv_) {
-        run_->cache_pos = cache_position;
+        run_->state.cache_pos = cache_position;
         bind_paged_slots();
     } else {
-        run_->cache_pos = cache_position;
+        run_->state.cache_pos = cache_position;
     }
     page_table_dirty_ = false;
 }
@@ -196,10 +196,10 @@ void Batch::ensure_decode_tokens(const RequestState &request, std::int64_t token
 void Batch::prepare_decode(std::int64_t cache_position) {
     if (page_table_dirty_)
         bind_paged_slots();
-    run_->cache_pos = cache_position;
+    run_->state.cache_pos = cache_position;
 }
 
-void Batch::finish_decode(std::int64_t cache_position) { run_->cache_pos = cache_position; }
+void Batch::finish_decode(std::int64_t cache_position) { run_->state.cache_pos = cache_position; }
 
 void Batch::recover(const std::vector<RequestState *> &requests) {
     try {
@@ -222,7 +222,7 @@ void Batch::bind_paged(Run &run, const std::vector<const PagedKv::Sequence *> &s
                 using T = std::decay_t<decltype(value)>;
                 if constexpr (std::is_same_v<T, Full>) {
                     MfqCudaGuard guard(layer.device);
-                    auto *cache = std::get_if<KVCache>(&run.states[state_index]);
+                    auto *cache = std::get_if<KVCache>(&run.state.layers[state_index]);
                     TYLOINFER_RUNTIME_CHECK(cache, "continuous batching full state layout changed");
                     *cache = paged_kv_->view(paged_layer++, static_cast<int64_t>(sequences.size()));
                 }
@@ -235,7 +235,7 @@ void Batch::bind_paged(Run &run, const std::vector<const PagedKv::Sequence *> &s
 void Batch::detach_paged(Run &run) noexcept {
     if (!paged_kv_)
         return;
-    for (auto &state : run.states)
+    for (auto &state : run.state.layers)
         if (auto *cache = std::get_if<KVCache>(&state))
             *cache = KVCache();
 }
@@ -303,14 +303,15 @@ std::string Batch::incompatibility(const CudaExecutionContext &execution) const 
 }
 
 void Batch::copy_to_slot(Run &target, const Run &source, std::int64_t slot) const {
-    TYLOINFER_RUNTIME_CHECK(source.batch == 1 && slot >= 0 && slot < target.batch &&
-                                target.states.size() == source.states.size() &&
-                                source.speculative_start < 0,
+    TYLOINFER_RUNTIME_CHECK(source.state.batch == 1 && slot >= 0 &&
+                                slot < target.state.batch &&
+                                target.state.layers.size() == source.state.layers.size() &&
+                                source.state.speculative_start < 0,
                             "continuous batching received an invalid stable slot");
-    for (std::size_t index = 0; index < target.states.size(); ++index) {
+    for (std::size_t index = 0; index < target.state.layers.size(); ++index) {
         MfqCudaGuard guard(weights_->layers[index].device);
-        auto &destination = target.states[index];
-        const auto &origin = source.states[index];
+        auto &destination = target.state.layers[index];
+        const auto &origin = source.state.layers[index];
         TYLOINFER_RUNTIME_CHECK(destination.index() == origin.index(),
                                 "continuous batching stable slot layout changed");
         if (auto *cache = std::get_if<KVCache>(&destination)) {
@@ -327,7 +328,7 @@ void Batch::copy_to_slot(Run &target, const Run &source, std::int64_t slot) cons
                                         "continuous batching KV cache geometry changed");
                 if (cache->defined())
                     TYLOINFER_RUNTIME_CHECK(
-                        cache->batch_size() == target.batch && !cache->ring &&
+                        cache->batch_size() == target.state.batch && !cache->ring &&
                             cache->k.dim() == 4 && cache->v.dim() == 4 &&
                             session_kv_geometry_matches(cache->k, cache->v) &&
                             cache->k.size(1) == from.k.size(1) &&
@@ -341,8 +342,8 @@ void Batch::copy_to_slot(Run &target, const Run &source, std::int64_t slot) cons
                     *cache = from;
                     auto key_shape = from.k.sizes().vec();
                     auto value_shape = from.v.sizes().vec();
-                    key_shape[0] = target.batch;
-                    value_shape[0] = target.batch;
+                    key_shape[0] = target.state.batch;
+                    value_shape[0] = target.state.batch;
                     cache->k = mfq_tensor_backend::zeros(key_shape, from.k.options());
                     cache->v = mfq_tensor_backend::zeros(value_shape, from.v.options());
                 }
@@ -362,8 +363,8 @@ void Batch::copy_to_slot(Run &target, const Run &source, std::int64_t slot) cons
             if (!target_view.defined()) {
                 auto convolution_shape = source.convolution.sizes().vec();
                 auto recurrent_shape = source.recurrent.sizes().vec();
-                convolution_shape[0] = target.batch;
-                recurrent_shape[0] = target.batch;
+                convolution_shape[0] = target.state.batch;
+                recurrent_shape[0] = target.state.batch;
                 target_view.convolution = mfq_tensor_backend::zeros(
                     convolution_shape, source.convolution.options());
                 target_view.recurrent = mfq_tensor_backend::zeros(
@@ -388,8 +389,8 @@ Tensor Batch::logits_from_last_hidden(Tensor hidden) {
 
 std::vector<const void *> Batch::decode_state_addresses() {
     std::vector<const void *> addresses;
-    addresses.reserve(2 * run_->states.size());
-    for (auto &state : run_->states) {
+    addresses.reserve(2 * run_->state.layers.size());
+    for (auto &state : run_->state.layers) {
         if (auto *cache = std::get_if<KVCache>(&state)) {
             if (cache->is_paged()) {
                 addresses.push_back(cache->k_chunk_ptrs.data_ptr());
@@ -413,9 +414,9 @@ BatchState Batch::capture_recurrent_slots(const std::vector<std::int32_t> &slots
     state.batch = static_cast<int64_t>(slots.size());
     if (slots.empty())
         return state;
-    state.layers.resize(run_->states.size());
-    for (std::size_t index = 0; index < run_->states.size(); ++index) {
-        const auto *linear = std::get_if<LinearState>(&run_->states[index]);
+    state.layers.resize(run_->state.layers.size());
+    for (std::size_t index = 0; index < run_->state.layers.size(); ++index) {
+        const auto *linear = std::get_if<LinearState>(&run_->state.layers[index]);
         if (!linear)
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);
@@ -437,10 +438,10 @@ void Batch::restore_recurrent_slots(const std::vector<std::int32_t> &slots,
     if (slots.empty())
         return;
     TYLOINFER_RUNTIME_CHECK(state.batch == static_cast<int64_t>(slots.size()) &&
-                                state.layers.size() == run_->states.size(),
+                                state.layers.size() == run_->state.layers.size(),
                             "continuous batching recurrent snapshot layout changed");
-    for (std::size_t index = 0; index < run_->states.size(); ++index) {
-        auto *linear = std::get_if<LinearState>(&run_->states[index]);
+    for (std::size_t index = 0; index < run_->state.layers.size(); ++index) {
+        auto *linear = std::get_if<LinearState>(&run_->state.layers[index]);
         if (!linear)
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);
@@ -451,8 +452,8 @@ void Batch::restore_recurrent_slots(const std::vector<std::int32_t> &slots,
                                     saved->transposed == linear->mixer.view().transposed,
                                 "continuous batching recurrent snapshot changed");
     }
-    for (std::size_t index = 0; index < run_->states.size(); ++index) {
-        auto *linear = std::get_if<LinearState>(&run_->states[index]);
+    for (std::size_t index = 0; index < run_->state.layers.size(); ++index) {
+        auto *linear = std::get_if<LinearState>(&run_->state.layers[index]);
         if (!linear)
             continue;
         MfqCudaGuard guard(weights_->layers[index].device);

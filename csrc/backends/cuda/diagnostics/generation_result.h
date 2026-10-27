@@ -21,23 +21,24 @@ inline GenerationResult collect_generation(mfq::engine::Generation generation) {
     }
     return result;
 }
-template <class Model>
+template <class Model, class State>
 std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
+        State& state,
         const mfq::models::CausalLmMetadata& metadata,
         const std::vector<int64_t>& prompt, const MfqSamplingParams& sampling, int stop_after = 0) {
     mfq::engine::InferenceRequest request;
     request.prompt = prompt; request.sampling = sampling;
     mfq::engine::InferenceOutput output(request, nullptr, "mtp-check");
-    model.reset(1);
+    state.reset(1);
     mtp.reset(1);
-    auto generation = run_mtp_generation(model, model, metadata, mtp, request, output);
+    auto generation = run_mtp_generation(model, state, metadata, mtp, request, output);
     std::vector<int64_t> tokens;
     std::size_t largest_delta = 0;
     while (auto step = generation.next()) {
         auto& event = step.value;
         if (!event) continue;
         if (auto* delta = std::get_if<mfq::engine::OutputDelta>(&*event)) {
-            TYLOINFER_RUNTIME_CHECK(model.speculative_start < 0, "MTP published an uncommitted transaction");
+            TYLOINFER_RUNTIME_CHECK(state.speculative_start < 0, "MTP published an uncommitted transaction");
             largest_delta = std::max(largest_delta, delta->token_ids.size());
             tokens.insert(tokens.end(), delta->token_ids.begin(), delta->token_ids.end());
             if (stop_after) request.sampling.max_tokens = stop_after;

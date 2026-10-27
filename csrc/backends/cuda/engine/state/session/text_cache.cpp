@@ -12,9 +12,10 @@
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/state/session/state.h"
 #include "models/common/mtp.h"
-#include "engine/executor/qwen35.h"
+#include "engine/state/qwen35.h"
 #include "engine/state/prefix_cache.h"
 #include "engine/state/paged.h"
 #include "engine/state/sessions.h"
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <exception>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -147,6 +149,29 @@ struct CudaSessionOps {
     static size_t decodable_blocks(const std::vector<CudaPagedPayload>& payloads) { return cuda_paged_decodable_blocks(payloads); }
     static size_t token_count(const CudaPagedPayload& payload) { return cuda_paged_payload_tokens(payload); }
     static void release_host_cache() { mfq_release_host_allocator_cache(); }
+    static void restore(
+        mfq::cuda::qwen35::State& state, const Snapshot& snapshot,
+        CudaExecutionContext& execution) {
+        auto candidate = state.prepare(snapshot);
+        try {
+            CudaScope scope(execution);
+            state.stage(candidate, snapshot);
+            execution.drain();
+            state.publish(std::move(candidate));
+        } catch (...) {
+            const auto error = std::current_exception();
+            try {
+                execution.drain();
+            } catch (...) {
+            }
+            std::rethrow_exception(error);
+        }
+    }
+    template <class State>
+    static void restore(
+        State& state, const Snapshot& snapshot, CudaExecutionContext&) {
+        state.restore_text_session_state(snapshot);
+    }
 };
 
 struct TextSessionCache::Impl : mfq::engine::SessionCache<CudaSessionOps> {
@@ -167,12 +192,13 @@ bool TextSessionCache::persistent_prefix_enabled() const noexcept {
     return impl_->persistent_prefix_enabled();
 }
 
-template <typename Model>
-TextSessionRestore TextSessionCache::restore_best(Model &model, MtpModule *mtp,
+template <typename State>
+TextSessionRestore TextSessionCache::restore_best(State& state, CudaExecutionContext& execution,
+    MtpModule *mtp,
     const std::string &requested_session, const std::vector<int64_t> &prompt,
     size_t maximum_prefix_tokens, const std::string &input_key) {
     return impl_->restore_best(
-        model, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
+        state, execution, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
 }
 
 void TextSessionCache::store(const std::string &session_id, TextSessionState state) {
@@ -253,13 +279,14 @@ uint64_t TextSessionCache::refresh_disk_index() { return impl_->refresh_disk_ind
 
 #define TYLOINFER_INSTANTIATE_SESSION_CACHE(MODEL)                                                       \
     template TextSessionRestore TextSessionCache::restore_best(MODEL &,                            \
+        CudaExecutionContext &,                                                                    \
         MtpModule *,                                                                               \
         const std::string &,                                                                       \
         const std::vector<int64_t> &,                                                              \
         size_t,                                                                                    \
         const std::string &);
 
-TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::qwen35::Run)
+TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::qwen35::State)
 TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::MiniCPMO45CausalLm)
 TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::MiniCPMOTtsCausalLm)
 TYLOINFER_INSTANTIATE_SESSION_CACHE(mfq::cuda::Gemma4CausalLm)

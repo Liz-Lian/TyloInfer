@@ -396,10 +396,10 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
                     DecodeGraphTpProjectionScope tp_projection_scope(
                         execution_.decode_graph_tp_projection_major);
                     decode_graph->graph = std::make_unique<MfqCudaGraph>();
-                    auto graph_warmup_states = state_.run().graph_state();
+                    auto graph_warmup_states = state_.run().state.graph_state();
                     prepare_decode_graph_memory(
                         graph_warmup_states,
-                        state_.run().cache_pos,
+                        state_.run().state.cache_pos,
                         model_->metadata.decode_graph_double_warmup,
                         *decode_graph->graph, [&]() { (void)invoke(); },
                         decode_graph->participant_streams(

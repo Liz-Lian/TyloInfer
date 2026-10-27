@@ -12,6 +12,7 @@
 
 struct MtpModule;
 struct TextSessionState;
+struct CudaExecutionContext;
 
 namespace mfq {
 class ModelSource;
@@ -57,9 +58,10 @@ public:
 
     bool persistent_prefix_enabled() const noexcept;
 
-    template <typename Model>
+    template <typename State>
     TextSessionRestore restore_best(
-        Model& model,
+        State& state,
+        CudaExecutionContext& execution,
         MtpModule* mtp,
         const std::string& requested_session,
         const std::vector<std::int64_t>& prompt,

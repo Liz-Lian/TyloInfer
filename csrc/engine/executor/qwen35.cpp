@@ -65,14 +65,41 @@ void clear_linear_speculative(LinearState& state) noexcept {
     state.mixer.commit();
 }
 
-void abort_linear_speculative(LinearState& state) {
-    state.mixer.abort();
-    state.projected = {};
+State make_state(const std::shared_ptr<const Model>& weights,
+                 CudaExecutionContext& execution) {
+    require_run(weights != nullptr, "Qwen3.5 Run requires model weights");
+    std::vector<Layout> layout;
+    layout.reserve(weights->layers.size());
+    for (const auto& layer : weights->layers) {
+        if (const auto* full = std::get_if<Full>(&layer.weights)) {
+            layout.push_back({layer.device,
+                              layer.cpu,
+                              FullLayout{full->attention.kv_heads,
+                                         full->attention.attention_head_dim,
+                                         full->attention.sliding,
+                                         full->attention.official_bf16
+                                             ? mfq_tensor_backend::kBFloat16
+                                             : mfq_tensor_backend::kFloat16,
+                                         full->attention.kv_quantization}});
+        } else {
+            const auto* linear = std::get_if<Linear>(&layer.weights);
+            require_run(linear != nullptr, "Qwen3.5 layer weight kind mismatch");
+            layout.push_back({layer.device,
+                              layer.cpu,
+                              LinearLayout{linear->attention.key_heads,
+                                           linear->attention.key_dim,
+                                           linear->attention.value_heads,
+                                           linear->attention.value_dim,
+                                           linear->attention.conv_kernel}});
+        }
+    }
+    return State(std::move(layout), weights->metadata.max_position_embeddings,
+                 execution.config.gdn_transposed_state);
 }
 
 } // namespace
 
-Tensor forward_layer(CudaExecutionContext& execution, const Layer& layer, State& state,
+Tensor forward_layer(CudaExecutionContext& execution, const Layer& layer, LayerState& state,
                      mfq::cuda::Executor& executor, std::size_t scratch_offset, Tensor input,
                      const AttentionStep& step, std::int64_t confirmed_prefix,
                      const RopeCache& rope) {
@@ -163,19 +190,14 @@ Run::Run(std::shared_ptr<const Model> model, CudaExecutionContext& context)
           context.collectives, context.routes, context.config.tasks, context.config.ffn,
           model_parallel_primary_device(context), context.decode_graph_serial_branches,
           context.decode_graph_tp_projection_major)),
-      states(weights ? weights->layers.size() : 0) {
-    require_run(weights != nullptr, "Qwen3.5 Run requires model weights");
-    for (std::size_t index = 0; index < weights->layers.size(); ++index)
-        if (std::holds_alternative<Linear>(weights->layers[index].weights))
-            states[index].emplace<LinearState>();
-}
+      state(make_state(weights, context)) {}
 
 void Run::preallocate() {
     if (!runtime_options::kv_vram_preallocated()) return;
     for (std::size_t index = 0; index < weights->layers.size(); ++index) {
         const auto& layer = weights->layers[index];
         if (layer.cpu || !std::holds_alternative<Full>(layer.weights)) continue;
-        auto& cache = std::get<KVCache>(states[index]);
+        auto& cache = std::get<KVCache>(state.layers[index]);
         if (cache.defined()) continue;
         const auto& attention = std::get<Full>(layer.weights).attention;
         MfqCudaGuard guard(layer.device);
@@ -224,26 +246,6 @@ std::string_view Run::layer_type(std::int64_t layer) const {
     return weights->metadata.layer_types.at(static_cast<std::size_t>(layer));
 }
 
-void Run::reset(std::int64_t new_batch) {
-    require_run(new_batch > 0, "Qwen3.5 batch must be positive");
-    cache_pos = 0;
-    decode_position_delta = 0;
-    speculative_start = -1;
-    speculative_confirmed = 0;
-    batch = new_batch;
-    for (std::size_t index = 0; index < states.size(); ++index) {
-        MfqCudaGuard guard(weights->layers[index].device);
-        auto& state = states[index];
-        if (auto* cache = std::get_if<KVCache>(&state)) {
-            if (cache->defined() && cache->batch_size() != new_batch) *cache = KVCache();
-            continue;
-        }
-        auto& linear = std::get<LinearState>(state);
-        linear.mixer.reset(new_batch);
-        linear.projected = {};
-    }
-}
-
 Tensor Run::normalize_ids(Tensor ids) const {
     require_run(ids.dim() == 1 || ids.dim() == 2,
                 "token IDs must have shape [tokens] or [batch,tokens]");
@@ -265,9 +267,9 @@ Tensor Run::embed_forward(Tensor ids) const {
 }
 
 std::optional<Tensor> Run::decode_lengths(const Tensor& ids) const {
-    if (cache_pos <= 0 || ids.size(1) != 1) return {};
+    if (state.cache_pos <= 0 || ids.size(1) != 1) return {};
     return mfq_tensor_backend::full(
-        {ids.size(0)}, cache_pos + 1,
+        {ids.size(0)}, state.cache_pos + 1,
         mfq_tensor_backend::TensorOptions()
             .dtype(mfq_tensor_backend::kInt64)
             .device(mfq_tensor_backend::Device(
@@ -303,25 +305,25 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
                 "inputs_embeds shape must match [batch,tokens,hidden_size]");
     require_run(confirmed_prefix >= 0 &&
                     (confirmed_prefix == 0 ||
-                     (confirmed_prefix < T && B == 1 && cache_pos > 0 &&
+                     (confirmed_prefix < T && B == 1 && state.cache_pos > 0 &&
                       !positions.has_value() && !cache_positions.has_value() &&
                       !attention_mask.has_value() && supports_speculation())),
                 "unsupported speculative backbone geometry");
-    require_run(speculative_start < 0,
+    require_run(state.speculative_start < 0,
                 "commit or roll back the pending speculative pass before forwarding");
-    require_run(cache_pos + T <= max_position_embeddings(),
+    require_run(state.cache_pos + T <= max_position_embeddings(),
                 "Qwen3.5 history exceeds context capacity");
-    if (cache_pos == 0) {
-        reset(B);
+    if (state.cache_pos == 0) {
+        state.reset(B);
     } else {
-        require_run(batch == B, "Qwen3.5 cache batch does not match input batch");
+        require_run(state.batch == B, "Qwen3.5 cache batch does not match input batch");
     }
     if (lengths.has_value())
         require_run(lengths->dim() == 1 && lengths->size(0) == B,
                     "sequence lengths must have shape [batch]");
     if (attention_mask.has_value())
         require_run(attention_mask->dim() == 2 && attention_mask->size(0) == B &&
-                        attention_mask->size(1) >= cache_pos + T,
+                        attention_mask->size(1) >= state.cache_pos + T,
                     "attention_mask must cover [batch,cached_plus_current_tokens]");
 
     const auto primary = execution->layer_placement.primary_device();
@@ -329,7 +331,7 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
                         ? execution->collectives.copy(
                               cache_positions->to(mfq_tensor_backend::kInt64), primary)
                         : mfq_tensor_backend::arange(
-                              cache_pos, cache_pos + T,
+                              state.cache_pos, state.cache_pos + T,
                               mfq_tensor_backend::TensorOptions()
                                   .device(mfq_tensor_backend::Device(
                                       mfq_tensor_backend::kCUDA, primary))
@@ -341,9 +343,9 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
     auto semantic = positions.has_value()
                         ? execution->collectives.copy(positions->to(mfq_tensor_backend::kInt64),
                                                        primary)
-                        : (decode_position_delta == 0
+                        : (state.decode_position_delta == 0
                                ? physical
-                               : physical + decode_position_delta);
+                               : physical + state.decode_position_delta);
     semantic = semantic.contiguous();
     const auto rank = semantic.dim();
     require_run(
@@ -361,7 +363,7 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
     std::optional<Tensor> physical_for_layers;
     if (weights->rope.sections.numel() > 0 || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
-    AttentionStep step{semantic, lengths, physical_for_layers, {}, cache_pos, plan.kv_length,
+    AttentionStep step{semantic, lengths, physical_for_layers, {}, state.cache_pos, plan.kv_length,
                        plan.attention_parts};
     auto hidden = execution->collectives.copy(std::move(embeddings), primary).contiguous();
     if (trace)
@@ -370,8 +372,8 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
                              .contiguous()
                              .clone());
     if (confirmed_prefix > 0) {
-        speculative_start = cache_pos;
-        speculative_confirmed = confirmed_prefix;
+        state.speculative_start = state.cache_pos;
+        state.speculative_confirmed = confirmed_prefix;
     }
     try {
         for (std::size_t index = 0; index < weights->layers.size(); ++index) {
@@ -381,7 +383,7 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
                 const auto it = weights->device_ropes.find(layer.device);
                 if (it != weights->device_ropes.end()) active_rope = &it->second;
             }
-            hidden = forward_layer(*execution, layer, states[index], *executor, 2 * index,
+            hidden = forward_layer(*execution, layer, state.layers[index], *executor, 2 * index,
                                    std::move(hidden), step, confirmed_prefix, *active_rope);
             if (trace)
                 trace->push_back(execution->collectives.copy(hidden, primary)
@@ -390,20 +392,10 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
                                      .clone());
         }
     } catch (...) {
-        for (std::size_t index = 0; index < states.size(); ++index) {
-            auto* linear = std::get_if<LinearState>(&states[index]);
-            if (linear == nullptr) continue;
-            MfqCudaGuard guard(weights->layers[index].device);
-            if (linear->mixer.pending())
-                abort_linear_speculative(*linear);
-            else
-                linear->projected = {};
-        }
-        speculative_start = -1;
-        speculative_confirmed = 0;
+        state.abort_speculative();
         throw;
     }
-    if (!positions.has_value() || advance_cache_with_position_ids) cache_pos += T;
+    if (!positions.has_value() || advance_cache_with_position_ids) state.cache_pos += T;
     hidden = execution->collectives.copy(std::move(hidden), primary).contiguous();
     auto raw = raw_hidden ? hidden : Tensor{};
     auto finalized = finalize_hidden(std::move(hidden), B, T);
@@ -493,8 +485,8 @@ std::vector<Tensor> Run::graph_storage() const {
     const auto append = [&result](const Tensor& tensor) {
         if (tensor.defined()) result.push_back(tensor);
     };
-    for (std::size_t index = 0; index < states.size(); ++index) {
-        if (const auto* cache = std::get_if<KVCache>(&states[index])) {
+    for (std::size_t index = 0; index < state.layers.size(); ++index) {
+        if (const auto* cache = std::get_if<KVCache>(&state.layers[index])) {
             if (cache->is_paged()) {
                 append(cache->k_chunk_ptrs);
                 append(cache->v_chunk_ptrs);
@@ -504,7 +496,7 @@ std::vector<Tensor> Run::graph_storage() const {
                 append(cache->v);
             }
         } else {
-            const auto& linear = std::get<LinearState>(states[index]);
+            const auto& linear = std::get<LinearState>(state.layers[index]);
             append(linear.mixer.view().convolution);
             append(linear.mixer.view().recurrent);
         }
@@ -520,31 +512,19 @@ std::vector<Tensor> Run::graph_storage() const {
     return result;
 }
 
-void Run::commit_speculative() {
-    require_run(speculative_start >= 0, "no speculative transaction");
-    for (std::size_t index = 0; index < states.size(); ++index) {
-        MfqCudaGuard guard(weights->layers[index].device);
-        if (auto* linear = std::get_if<LinearState>(&states[index]))
-            clear_linear_speculative(*linear);
-    }
-    speculative_start = -1;
-    speculative_confirmed = 0;
-}
-
 void Run::rollback_speculative(std::int64_t accepted_suffix) {
-    require_run(speculative_start >= 0 && accepted_suffix >= 0,
+    require_run(state.speculative_start >= 0 && accepted_suffix >= 0,
                 "no speculative transaction");
-    const auto keep = speculative_start + speculative_confirmed + accepted_suffix;
     try {
-        for (std::size_t index = 0; index < states.size(); ++index) {
-            auto* linear = std::get_if<LinearState>(&states[index]);
+        const auto keep = state.rewind(accepted_suffix);
+        for (std::size_t index = 0; index < state.layers.size(); ++index) {
+            auto* linear = std::get_if<LinearState>(&state.layers[index]);
             if (linear == nullptr) continue;
             MfqCudaGuard guard(weights->layers[index].device);
-            const auto retained = linear->mixer.rewind(keep);
             auto& view = linear->mixer.view();
             const auto* layer = std::get_if<Linear>(&weights->layers[index].weights);
             require_run(layer != nullptr, "Qwen3.5 recurrent layer weight kind mismatch");
-            const auto replay = layer->replay(retained);
+            const auto replay = layer->replay(keep - state.speculative_start);
             const LinearStateView linear_view{
                 {view.convolution, view.recurrent, view.transposed}, &linear->projected};
             Inputs inputs;
@@ -552,30 +532,12 @@ void Run::rollback_speculative(std::int64_t accepted_suffix) {
             inputs.linear = {&linear_view, 1};
             executor->run(std::span<const Task>{&replay, 1}, std::move(inputs));
         }
-        for (std::size_t index = 0; index < states.size(); ++index) {
-            MfqCudaGuard guard(weights->layers[index].device);
-            if (auto* linear = std::get_if<LinearState>(&states[index]))
-                clear_linear_speculative(*linear);
-        }
+        state.commit_speculative();
+        state.cache_pos = keep;
     } catch (...) {
-        for (std::size_t index = 0; index < states.size(); ++index) {
-            auto* linear = std::get_if<LinearState>(&states[index]);
-            if (linear == nullptr) continue;
-            MfqCudaGuard guard(weights->layers[index].device);
-            try {
-                abort_linear_speculative(*linear);
-            } catch (...) {
-                linear->projected = {};
-            }
-        }
-        cache_pos = speculative_start;
-        speculative_start = -1;
-        speculative_confirmed = 0;
+        state.abort_speculative();
         throw;
     }
-    cache_pos = keep;
-    speculative_start = -1;
-    speculative_confirmed = 0;
 }
 
 } // namespace mfq::cuda::qwen35

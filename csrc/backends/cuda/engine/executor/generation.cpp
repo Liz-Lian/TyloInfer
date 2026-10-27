@@ -418,6 +418,7 @@ template <class Model, class State> struct CudaGenerationContext {
     using Restore = TextSessionRestore;
     Model &model;
     State &state;
+    CudaExecutionContext &execution;
     const mfq::models::CausalLmMetadata &metadata;
     DecodeGraphCache &graph;
     TextSessionCache &cache;
@@ -688,7 +689,7 @@ Generation generate(Model &model, State &state, const mfq::models::CausalLmMetad
     std::optional<CudaPreparedPrompt> prepared,
     mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching, std::string request_id) {
     return mfq::engine::generate_request(
-        CudaGenerationContext<Model, State>{model, state, metadata, graph, cache, config, mtp,
+        CudaGenerationContext<Model, State>{model, state, *model.execution, metadata, graph, cache, config, mtp,
                                      std::move(prepared), batching,
                                      std::move(request_id)},
         request,
@@ -705,7 +706,11 @@ Generation generate(Model &model, State &state, const mfq::models::CausalLmMetad
         MtpModule *,                                                                               \
         std::optional<CudaPreparedPrompt>,                                                         \
         mfq::engine::ContinuousBatch<CudaBatchOperations<MODEL>>*, std::string);
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::qwen35::Run)
+template Generation generate(mfq::cuda::qwen35::Run &, mfq::cuda::qwen35::State &,
+    const mfq::models::CausalLmMetadata &, DecodeGraphCache &, TextSessionCache &,
+    const CudaRuntimeConfig &, mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &,
+    MtpModule *, std::optional<CudaPreparedPrompt>,
+    mfq::engine::ContinuousBatch<CudaBatchOperations<mfq::cuda::qwen35::Run>>*, std::string);
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMOTtsCausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Gemma4CausalLm)

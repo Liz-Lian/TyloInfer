@@ -737,7 +737,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                             return ops.retains_partial_target_prefix(emitted_accepted);
                         return mtp.retains_partial_target_prefix();
                     }();
-                    state.rollback_speculative(retained ? emitted_accepted : 0);
+                    ops.rollback_target(retained ? emitted_accepted : 0);
                     // A fallback replay observes the accepted rows itself.
                     // Publish only pending here so those rows count once.
                     resolve_routes(retained?emitted_accepted+1:1);

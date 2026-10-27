@@ -1,18 +1,15 @@
-#include "engine/executor/qwen35.h"
-
-#include "backends/cuda/engine/state/session/state.h"
-#include "models/qwen35/model.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/state/qwen35.h"
 
 #include <algorithm>
 #include <cstddef>
-#include <exception>
 #include <stdexcept>
 #include <utility>
 
 namespace mfq::cuda::qwen35 {
 
 namespace {
+
+using Tensor = mfq_tensor_backend::Tensor;
 
 void require_state(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -24,77 +21,70 @@ bool projected(const LinearInputs& value) {
            value.tokens != 0 || value.split;
 }
 
-bool full_layout(const Run& run) {
-    if (!run.weights || run.weights->layers.empty() ||
-        run.states.size() != run.weights->layers.size()) return false;
-    for (std::size_t index = 0; index < run.weights->layers.size(); ++index) {
-        if (!std::holds_alternative<Full>(run.weights->layers[index].weights) ||
-            !std::holds_alternative<KVCache>(run.states[index])) return false;
+bool on_layer_device(const Tensor& tensor, const Layout& layer) {
+    return layer.cpu ? !tensor.is_cuda()
+                     : tensor.is_cuda() && tensor.get_device() == layer.device;
+}
+
+bool full_layout(const State& state) {
+    if (state.layers.empty() || state.layers.size() != state.layout().size()) return false;
+    for (std::size_t index = 0; index < state.layers.size(); ++index) {
+        if (!std::holds_alternative<FullLayout>(state.layout()[index].attention) ||
+            !std::holds_alternative<KVCache>(state.layers[index]))
+            return false;
     }
     return true;
 }
 
-bool hybrid_layout(const Run& run) {
-    if (!run.weights || run.weights->layers.empty() ||
-        run.states.size() != run.weights->layers.size()) return false;
-    for (std::size_t index = 0; index < run.weights->layers.size(); ++index) {
-        const bool full = std::holds_alternative<Full>(run.weights->layers[index].weights) &&
-                          std::holds_alternative<KVCache>(run.states[index]);
-        const bool linear = std::holds_alternative<Linear>(run.weights->layers[index].weights) &&
-                            std::holds_alternative<LinearState>(run.states[index]);
+bool hybrid_layout(const State& state) {
+    if (state.layers.empty() || state.layers.size() != state.layout().size()) return false;
+    for (std::size_t index = 0; index < state.layers.size(); ++index) {
+        const bool full = std::holds_alternative<FullLayout>(state.layout()[index].attention) &&
+                          std::holds_alternative<KVCache>(state.layers[index]);
+        const bool linear = std::holds_alternative<LinearLayout>(state.layout()[index].attention) &&
+                            std::holds_alternative<LinearState>(state.layers[index]);
         if (!full && !linear) return false;
     }
     return true;
 }
 
-bool on_layer_device(const Tensor& tensor, const Layer& layer) {
-    return layer.cpu ? !tensor.is_cuda()
-                     : tensor.is_cuda() && tensor.get_device() == layer.device;
-}
-
-void validate_linear_snapshot(const Layer& model_layer, const Linear& layer,
-                              const Recurrent::State& mixer, bool transposed) {
-    const auto width = 2 * layer.attention.key_heads * layer.attention.key_dim +
-                       layer.attention.value_heads * layer.attention.value_dim;
+void validate_linear_snapshot(const Layout& model_layer, const LinearLayout& layer,
+                             const Recurrent::State& mixer, bool transposed) {
+    const auto width = 2 * layer.key_heads * layer.key_dim +
+                       layer.value_heads * layer.value_dim;
     if (!(mixer.defined() && mixer.transposed == transposed &&
           mixer.convolution.scalar_type() == mfq_tensor_backend::kFloat32 &&
           mixer.recurrent.scalar_type() == mfq_tensor_backend::kFloat32 &&
           mixer.convolution.dim() == 3 && mixer.convolution.size(0) == 1 &&
-          mixer.convolution.size(1) == layer.attention.conv_kernel - 1 &&
+          mixer.convolution.size(1) == layer.conv_kernel - 1 &&
           mixer.convolution.size(2) == width && mixer.recurrent.dim() == 4 &&
           mixer.recurrent.size(0) == 1 &&
-          mixer.recurrent.size(1) == layer.attention.value_heads &&
-          mixer.recurrent.size(2) == layer.attention.value_dim &&
-          mixer.recurrent.size(3) == layer.attention.value_dim &&
+          mixer.recurrent.size(1) == layer.value_heads &&
+          mixer.recurrent.size(2) == layer.value_dim &&
+          mixer.recurrent.size(3) == layer.value_dim &&
           on_layer_device(mixer.convolution, model_layer) &&
           on_layer_device(mixer.recurrent, model_layer)))
         throw CudaSessionStateError("Qwen recurrent session topology changed");
 }
 
-void validate_full_snapshot(const Layer& model_layer, const Full& layer,
+void validate_full_snapshot(const Layout& model_layer, const FullLayout& layer,
                             const KvSnapshot& state) {
     validate_kv(state);
-    const auto& attention = layer.attention;
-    const bool quantized = attention.kv_quantization.enabled();
-    const auto dtype = quantized
-                           ? mfq_tensor_backend::kInt32
-                           : (attention.official_bf16 ? mfq_tensor_backend::kBFloat16
-                                                       : mfq_tensor_backend::kFloat16);
-    if (!(state.ring == attention.sliding && state.k.scalar_type() == dtype &&
+    const bool quantized = layer.quantization.enabled();
+    const auto dtype = quantized ? mfq_tensor_backend::kInt32 : layer.dtype;
+    if (!(state.ring == layer.sliding && state.k.scalar_type() == dtype &&
           state.v.scalar_type() == dtype && on_layer_device(state.k, model_layer) &&
-          on_layer_device(state.v, model_layer) &&
-          state.k.size(1) == attention.kv_heads && state.v.size(1) == attention.kv_heads))
+          on_layer_device(state.v, model_layer) && state.k.size(1) == layer.kv_heads &&
+          state.v.size(1) == layer.kv_heads))
         throw CudaSessionStateError("Qwen full-attention session topology changed");
     const auto key_width = quantized
-                               ? cuda_kv_packed_width(
-                                     static_cast<int>(attention.attention_head_dim),
-                                     attention.kv_quantization.key_bits())
-                               : attention.attention_head_dim;
+                               ? cuda_kv_packed_width(static_cast<int>(layer.head_dim),
+                                                       layer.quantization.key_bits())
+                               : layer.head_dim;
     const auto value_width = quantized
-                                 ? cuda_kv_packed_width(
-                                       static_cast<int>(attention.attention_head_dim),
-                                       attention.kv_quantization.value_bits())
-                                 : attention.attention_head_dim;
+                                 ? cuda_kv_packed_width(static_cast<int>(layer.head_dim),
+                                                         layer.quantization.value_bits())
+                                 : layer.head_dim;
     if (state.k.size(3) != key_width || state.v.size(3) != value_width)
         throw CudaSessionStateError("Qwen full-attention session quantization changed");
 }
@@ -105,33 +95,124 @@ void validate_full_snapshot_length(const KvSnapshot& state, std::int64_t cache_p
         throw CudaSessionStateError("Qwen full-attention session length changed");
 }
 
-void validate_cache_configuration(const Full& layer, const KVCache& cache) {
+void validate_cache_configuration(const FullLayout& layer, const KVCache& cache) {
     if (!cache.defined()) return;
-    if (cache.quantization.bits != layer.attention.kv_quantization.bits ||
-        cache.ring != layer.attention.sliding)
+    if (cache.quantization.bits != layer.quantization.bits || cache.ring != layer.sliding)
         throw CudaSessionStateError("Qwen full-attention cache configuration changed");
+}
+
+void initialize_layers(std::vector<LayerState>& layers,
+                       const std::vector<Layout>& layout) {
+    layers = std::vector<LayerState>(layout.size());
+    for (std::size_t index = 0; index < layout.size(); ++index)
+        if (std::holds_alternative<LinearLayout>(layout[index].attention))
+            layers[index].emplace<LinearState>();
 }
 
 } // namespace
 
-TextSessionStateKind Run::text_session_state_kind() const {
+State::State(std::vector<Layout> layout, std::int64_t max_position_embeddings,
+             const bool& transposed)
+    : layout_(std::move(layout)), max_position_embeddings_(max_position_embeddings),
+      transposed_(&transposed) {
+    initialize_layers(layers, layout_);
+}
+
+void State::reset(std::int64_t new_batch) {
+    require_state(new_batch > 0, "Qwen3.5 batch must be positive");
+    cache_pos = 0;
+    decode_position_delta = 0;
+    speculative_start = -1;
+    speculative_confirmed = 0;
+    batch = new_batch;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        MfqCudaGuard guard(layout_[index].device);
+        auto& state = layers[index];
+        if (auto* cache = std::get_if<KVCache>(&state)) {
+            if (cache->defined() && cache->batch_size() != new_batch) *cache = KVCache();
+            continue;
+        }
+        auto& linear = std::get<LinearState>(state);
+        linear.mixer.reset(new_batch);
+        linear.projected = {};
+    }
+}
+
+void State::commit_speculative() {
+    require_state(speculative_start >= 0, "no speculative transaction");
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        MfqCudaGuard guard(layout_[index].device);
+        if (auto* linear = std::get_if<LinearState>(&layers[index])) {
+            linear->projected = {};
+            linear->mixer.commit();
+        }
+    }
+    speculative_start = -1;
+    speculative_confirmed = 0;
+}
+
+std::int64_t State::rewind(std::int64_t accepted_suffix) {
+    require_state(speculative_start >= 0 && accepted_suffix >= 0,
+                  "no speculative transaction");
+    const auto keep = speculative_start + speculative_confirmed + accepted_suffix;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        auto* linear = std::get_if<LinearState>(&layers[index]);
+        if (linear == nullptr) continue;
+        MfqCudaGuard guard(layout_[index].device);
+        linear->mixer.rewind(keep);
+    }
+    return keep;
+}
+
+void State::abort_speculative() noexcept {
+    const auto start = speculative_start;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        auto* linear = std::get_if<LinearState>(&layers[index]);
+        if (linear == nullptr) continue;
+        try {
+            MfqCudaGuard guard(layout_[index].device);
+            linear->mixer.abort();
+        } catch (...) {
+        }
+        linear->projected = {};
+    }
+    if (start >= 0) cache_pos = start;
+    speculative_start = -1;
+    speculative_confirmed = 0;
+}
+
+std::vector<mfq_tensor_backend::Tensor*> State::graph_state() {
+    std::vector<mfq_tensor_backend::Tensor*> result;
+    for (auto& state : layers) {
+        auto* linear = std::get_if<LinearState>(&state);
+        if (linear == nullptr) continue;
+        require_state(linear->mixer.defined() && !linear->mixer.pending() &&
+                          !projected(linear->projected),
+                      "decode graph requires confirmed recurrent state");
+        result.push_back(&linear->mixer.view().convolution);
+        result.push_back(&linear->mixer.view().recurrent);
+    }
+    return result;
+}
+
+TextSessionStateKind State::text_session_state_kind() const {
     if (full_layout(*this)) return TextSessionStateKind::FullAttention;
     if (hybrid_layout(*this)) return TextSessionStateKind::HybridAttention;
     return TextSessionStateKind::Unsupported;
 }
 
-bool Run::supports_text_session_state() const {
+bool State::supports_text_session_state() const {
     return text_session_state_kind() != TextSessionStateKind::Unsupported;
 }
 
-bool Run::supports_paged_text_session_state() const {
+bool State::supports_paged_text_session_state() const {
     if (!full_layout(*this)) return false;
-    return std::all_of(weights->layers.begin(), weights->layers.end(), [](const Layer& layer) {
-        return !std::get<Full>(layer.weights).attention.sliding;
+    return std::all_of(layout_.begin(), layout_.end(), [](const Layout& layer) {
+        return !std::get<FullLayout>(layer.attention).sliding;
     });
 }
 
-TextSessionState Run::capture_text_session_state(
+TextSessionState State::capture_text_session_state(
     const std::vector<std::int64_t>& tokens) const {
     const auto kind = text_session_state_kind();
     require_state(kind != TextSessionStateKind::Unsupported && batch == 1 && cache_pos > 0 &&
@@ -145,150 +226,144 @@ TextSessionState Run::capture_text_session_state(
     state.decode_position_delta = decode_position_delta;
     if (kind == TextSessionStateKind::FullAttention) {
         state.payload = std::vector<KvSnapshot>{};
-        auto& layers = std::get<std::vector<KvSnapshot>>(state.payload);
-        layers.reserve(weights->layers.size());
-        for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-            const auto& layer = std::get<Full>(weights->layers[index].weights);
-            const auto& cache = std::get<KVCache>(states[index]);
-            validate_cache_configuration(layer, cache);
-            MfqCudaGuard guard(weights->layers[index].device);
+        auto& saved_layers = std::get<std::vector<KvSnapshot>>(state.payload);
+        saved_layers.reserve(layout_.size());
+        for (std::size_t index = 0; index < layout_.size(); ++index) {
+            const auto& layout = layout_[index];
+            const auto& full = std::get<FullLayout>(layout.attention);
+            const auto& cache = std::get<KVCache>(layers[index]);
+            validate_cache_configuration(full, cache);
+            MfqCudaGuard guard(layout.device);
             auto saved = capture_kv(cache, cache_pos, state.bytes);
-            validate_full_snapshot(weights->layers[index], layer, saved);
+            validate_full_snapshot(layout, full, saved);
             validate_full_snapshot_length(saved, cache_pos);
-            layers.push_back(std::move(saved));
+            saved_layers.push_back(std::move(saved));
         }
         return state;
     }
 
-    require_state(execution != nullptr, "Qwen recurrent execution context is unavailable");
     state.payload = std::vector<HybridBlockSessionState>{};
-    auto& layers = std::get<std::vector<HybridBlockSessionState>>(state.payload);
-    layers.reserve(weights->layers.size());
-    for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-        const auto& model_layer = weights->layers[index];
-        MfqCudaGuard guard(model_layer.device);
+    auto& saved_layers = std::get<std::vector<HybridBlockSessionState>>(state.payload);
+    saved_layers.reserve(layout_.size());
+    for (std::size_t index = 0; index < layout_.size(); ++index) {
+        const auto& layout = layout_[index];
+        MfqCudaGuard guard(layout.device);
         HybridBlockSessionState saved;
-        if (const auto* full = std::get_if<Full>(&model_layer.weights)) {
-            const auto& cache = std::get<KVCache>(states[index]);
+        if (const auto* full = std::get_if<FullLayout>(&layout.attention)) {
+            const auto& cache = std::get<KVCache>(layers[index]);
             validate_cache_configuration(*full, cache);
             saved.kind = HybridBlockSessionStateKind::FullAttention;
             saved.full_attention = capture_kv(cache, cache_pos, state.bytes);
-            validate_full_snapshot(model_layer, *full, saved.full_attention);
+            validate_full_snapshot(layout, *full, saved.full_attention);
             validate_full_snapshot_length(saved.full_attention, cache_pos);
         } else {
-            const auto& linear = std::get<LinearState>(states[index]);
+            const auto& linear = std::get<LinearState>(layers[index]);
             require_state(!linear.mixer.pending() && !projected(linear.projected),
                           "Qwen recurrent session state has a pending speculative pass");
             const auto snapshot = linear.mixer.snapshot();
-            validate_linear_snapshot(model_layer, std::get<Linear>(model_layer.weights), snapshot,
-                                     !model_layer.cpu && execution->config.gdn_transposed_state);
+            validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention), snapshot,
+                                     !layout.cpu && *transposed_);
             saved.kind = HybridBlockSessionStateKind::Recurrent;
             saved.mixer = snapshot;
             state.bytes += session_tensor_bytes(snapshot.convolution);
             state.bytes += session_tensor_bytes(snapshot.recurrent);
         }
-        layers.push_back(std::move(saved));
+        saved_layers.push_back(std::move(saved));
     }
     return state;
 }
 
-void Run::restore_text_session_state(const TextSessionState& state) {
+State::Restore State::prepare(const TextSessionState& state) const {
     const auto kind = text_session_state_kind();
-    if (kind == TextSessionStateKind::Unsupported || state.kind() != kind || state.cache_pos <= 0 ||
-        state.cache_pos > max_position_embeddings() ||
+    if (kind == TextSessionStateKind::Unsupported || state.kind() != kind ||
+        state.cache_pos <= 0 || state.cache_pos > max_position_embeddings_ ||
         state.tokens.size() != static_cast<std::size_t>(state.cache_pos) ||
-        speculative_start >= 0 || speculative_confirmed != 0) {
+        speculative_start >= 0 || speculative_confirmed != 0)
         throw CudaSessionStateError("Qwen text session state is incompatible");
-    }
 
     const std::vector<KvSnapshot>* full_layers = nullptr;
     const std::vector<HybridBlockSessionState>* hybrid_layers = nullptr;
     if (kind == TextSessionStateKind::FullAttention) {
         full_layers = std::get_if<std::vector<KvSnapshot>>(&state.payload);
-        if (full_layers == nullptr || full_layers->size() != weights->layers.size())
+        if (full_layers == nullptr || full_layers->size() != layout_.size())
             throw CudaSessionStateError("full-attention text session state is incompatible");
-        for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-            const auto& model_layer = weights->layers[index];
-            const auto& full = std::get<Full>(model_layer.weights);
-            validate_cache_configuration(full, std::get<KVCache>(states[index]));
-            validate_full_snapshot(model_layer, full, full_layers->at(index));
+        for (std::size_t index = 0; index < layout_.size(); ++index) {
+            const auto& layout = layout_[index];
+            const auto& full = std::get<FullLayout>(layout.attention);
+            validate_cache_configuration(full, std::get<KVCache>(layers[index]));
+            validate_full_snapshot(layout, full, full_layers->at(index));
             validate_full_snapshot_length(full_layers->at(index), state.cache_pos);
         }
     } else {
-        require_state(execution != nullptr, "Qwen recurrent execution context is unavailable");
         hybrid_layers = std::get_if<std::vector<HybridBlockSessionState>>(&state.payload);
-        if (hybrid_layers == nullptr || hybrid_layers->size() != weights->layers.size())
+        if (hybrid_layers == nullptr || hybrid_layers->size() != layout_.size())
             throw CudaSessionStateError("Qwen hybrid session state is incompatible");
-        for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-            const auto& model_layer = weights->layers[index];
+        for (std::size_t index = 0; index < layout_.size(); ++index) {
+            const auto& layout = layout_[index];
             const auto& saved = hybrid_layers->at(index);
-            if (const auto* full = std::get_if<Full>(&model_layer.weights)) {
+            if (const auto* full = std::get_if<FullLayout>(&layout.attention)) {
                 if (saved.kind != HybridBlockSessionStateKind::FullAttention)
                     throw CudaSessionStateError("Qwen hybrid full-attention layer changed");
-                validate_cache_configuration(*full, std::get<KVCache>(states[index]));
-                validate_full_snapshot(model_layer, *full, saved.full_attention);
+                validate_cache_configuration(*full, std::get<KVCache>(layers[index]));
+                validate_full_snapshot(layout, *full, saved.full_attention);
                 validate_full_snapshot_length(saved.full_attention, state.cache_pos);
             } else {
                 if (saved.kind != HybridBlockSessionStateKind::Recurrent)
                     throw CudaSessionStateError("Qwen hybrid recurrent layer changed");
-                validate_linear_snapshot(
-                    model_layer, std::get<Linear>(model_layer.weights), saved.mixer,
-                    !model_layer.cpu && execution->config.gdn_transposed_state);
+                validate_linear_snapshot(layout, std::get<LinearLayout>(layout.attention),
+                                         saved.mixer, !layout.cpu && *transposed_);
             }
         }
     }
 
-    std::vector<State> candidates(states.size());
-    try {
-        CudaScope scope(*execution);
-        for (std::size_t index = 0; index < weights->layers.size(); ++index) {
-            MfqCudaGuard guard(weights->layers[index].device);
-            if (const auto* full = std::get_if<Full>(&weights->layers[index].weights)) {
-                const auto& saved = full_layers != nullptr
-                                        ? full_layers->at(index)
-                                        : hybrid_layers->at(index).full_attention;
-                auto& cache = std::get<KVCache>(candidates[index]);
-                restore_kv(cache, saved, full->attention.attention_head_dim,
-                           full->attention.official_bf16 ? mfq_tensor_backend::kBFloat16
-                                                         : mfq_tensor_backend::kFloat16,
-                           full->attention.kv_quantization);
-            } else {
-                const auto& saved = hybrid_layers->at(index);
-                const auto& current = std::get<LinearState>(states[index]);
-                candidates[index].emplace<LinearState>();
-                auto& linear = std::get<LinearState>(candidates[index]);
-                linear.speculative_ffn_batches = current.speculative_ffn_batches;
-                linear.speculative_projection_batches = current.speculative_projection_batches;
-                linear.mixer.restore(saved.mixer);
-            }
-        }
-        execution->drain();
-    } catch (...) {
-        const auto failure = std::current_exception();
-        try { execution->drain(); } catch (...) {}
-        std::rethrow_exception(failure);
-    }
+    Restore result;
+    initialize_layers(result.layers, layout_);
+    result.cache_pos = state.cache_pos;
+    result.decode_position_delta = state.decode_position_delta;
+    return result;
+}
 
-    states.swap(candidates);
-    cache_pos = state.cache_pos;
-    decode_position_delta = state.decode_position_delta;
+void State::stage(Restore& restore, const TextSessionState& state) const {
+    const auto kind = text_session_state_kind();
+    const auto* full_layers = kind == TextSessionStateKind::FullAttention
+                                  ? std::get_if<std::vector<KvSnapshot>>(&state.payload)
+                                  : nullptr;
+    const auto* hybrid_layers = kind == TextSessionStateKind::HybridAttention
+                                    ? std::get_if<std::vector<HybridBlockSessionState>>(
+                                          &state.payload)
+                                    : nullptr;
+    for (std::size_t index = 0; index < layout_.size(); ++index) {
+        const auto& layout = layout_[index];
+        MfqCudaGuard guard(layout.device);
+        if (const auto* full = std::get_if<FullLayout>(&layout.attention)) {
+            const auto& saved = full_layers != nullptr
+                                    ? full_layers->at(index)
+                                    : hybrid_layers->at(index).full_attention;
+            auto& cache = std::get<KVCache>(restore.layers[index]);
+            restore_kv(cache, saved, full->head_dim, full->dtype, full->quantization);
+        } else {
+            const auto& saved = hybrid_layers->at(index);
+            const auto& current = std::get<LinearState>(layers[index]);
+            auto& linear = std::get<LinearState>(restore.layers[index]);
+            linear.speculative_ffn_batches = current.speculative_ffn_batches;
+            linear.speculative_projection_batches = current.speculative_projection_batches;
+            // Candidate owns copy targets through the caller's asynchronous drain.
+            linear.mixer.view().convolution = mfq_tensor_backend::empty(
+                saved.mixer.convolution.sizes(), saved.mixer.convolution.options());
+            linear.mixer.view().recurrent = mfq_tensor_backend::empty(
+                saved.mixer.recurrent.sizes(), saved.mixer.recurrent.options());
+            linear.mixer.restore(saved.mixer);
+        }
+    }
+}
+
+void State::publish(Restore&& restore) noexcept {
+    layers.swap(restore.layers);
+    cache_pos = restore.cache_pos;
+    decode_position_delta = restore.decode_position_delta;
     speculative_start = -1;
     speculative_confirmed = 0;
     batch = 1;
-}
-
-std::vector<Tensor*> Run::graph_state() {
-    std::vector<Tensor*> result;
-    for (auto& state : states) {
-        auto* linear = std::get_if<LinearState>(&state);
-        if (linear == nullptr) continue;
-        require_state(linear->mixer.defined() && !linear->mixer.pending() &&
-                          !projected(linear->projected),
-                      "decode graph requires confirmed recurrent state");
-        result.push_back(&linear->mixer.view().convolution);
-        result.push_back(&linear->mixer.view().recurrent);
-    }
-    return result;
 }
 
 } // namespace mfq::cuda::qwen35
