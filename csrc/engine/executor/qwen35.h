@@ -107,15 +107,4 @@ private:
     Tensor last_hidden(Tensor hidden) const;
 };
 
-Tensor forward_layer(
-    CudaExecutionContext& execution,
-    const Layer& layer,
-    LayerState& state,
-    mfq::cuda::Executor& executor,
-    std::size_t scratch_offset,
-    Tensor input,
-    const AttentionStep& step,
-    std::int64_t confirmed_prefix,
-    const RopeCache& rope);
-
 } // namespace mfq::cuda::qwen35

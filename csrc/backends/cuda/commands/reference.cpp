@@ -5,6 +5,7 @@
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/qwen35.h"
 #include "backends/cuda/engine/models/qwen35/load.h"
+#include "models/qwen35/forward.h"
 #include "models/common/block.h"
 
 #include <algorithm>
@@ -121,7 +122,22 @@ template <typename Model> struct ReferenceLayers {
             const mfq::cuda::AttentionStep step{positions, mfq_nullopt, mfq_nullopt,
                                                 mfq_nullopt, 0, 0, 0};
             return mfq::cuda::qwen35::forward_layer(
-                execution, layer, state, *qwen_executor, 0, std::move(input), step, 0, *rope);
+                execution.collectives, layer, state, *qwen_executor, 0, std::move(input), step,
+                0, *rope,
+                {{execution.force_moe_materialized_swiglu,
+                  execution.force_moe_unfused_reduce,
+                  execution.decode_graph_serial_branches,
+                  execution.continuous_batch_cache_serial,
+                  execution.continuous_batch_ffn_tile,
+                  execution.continuous_batch_ffn_tiles,
+                  execution.config.moe_ffn.reuse_input},
+                 {execution.config.tasks.projection.grouped &&
+                      execution.config.tensor_parallel_shared_linear_attention_input,
+                  execution.config.linear_conv_prefill_fused},
+                 execution.kl_mmq.kv_cache_capacity,
+                 execution.config.gdn_transposed_state,
+                 execution.gemma_stage_trace,
+                 execution.gemma_trace_layer});
         } else {
             auto* block = resident ? model.blocks.at(static_cast<std::size_t>(index)).get()
                                    : streamed.get();
