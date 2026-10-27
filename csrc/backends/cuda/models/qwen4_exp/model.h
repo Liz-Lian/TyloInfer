@@ -187,15 +187,14 @@ class Gdn {
             x.scalar_type()==tb::kFloat16,true,core_workspace_,true,addresses);
         return result[0];
     }
-    Tensor forward_graph(CudaExecutionContext& execution,const Tensor& x,int64_t confirmed,
+    Tensor forward_graph(const mfq::cuda::Projector& project,CudaProfiler& profiler,const Tensor& x,int64_t confirmed,
                          std::vector<Tensor>& checkpoint_conv,std::vector<Tensor>& checkpoint_state) {
-        if(!confirmed)return forward_chunk(execution,x,true);
+        if(!confirmed)return forward_chunk(project,profiler,x,true);
         const auto batch=mfq::cuda::runtime_options::gdn_batch_projection();
         const bool grouped=grouped_projection_ && w_->input_projection.grouped() && x.size(1)<=8 && (!batch || *batch);
         // Only recurrence is split at the confirmation boundary. Both parts
         // share the input projections and one output projection.
-        auto projector=execution.projector();
-        std::vector<Tensor> projected;if(grouped)projected=project_inputs(projector,x);
+        std::vector<Tensor> projected;if(grouped)projected=project_inputs(project,x);
         const auto* window_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_REGISTER_WINDOW");
         const auto inplace_option=mfq::cuda::runtime_options::gdn_inplace_state();
         const auto* checkpoint_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
@@ -218,7 +217,7 @@ class Gdn {
                 w_->a_log.to(tb::kFloat32).contiguous(),w_->norm.to(tb::kFloat32).contiguous(),int(nk_),int(nv_),int(confirmed),
                 1e-6,eps_,silu_gate_,x.scalar_type()==tb::kFloat16,true,checkpoint_conv,checkpoint_state);
             conv_.copy_(decoded[1]);
-            return project_output(projector,decoded[0]);
+            return project_output(project,decoded[0]);
         }
         const auto slice=[&](int64_t begin,int64_t count) {
             std::vector<Tensor> result;for(const auto& value:projected)result.push_back(value.narrow(1,begin,count));
@@ -232,7 +231,7 @@ class Gdn {
             const auto count=begin==0?confirmed:1;
             const auto end=begin+count,index=end-confirmed;
             bool snapshot_written=false;
-            outputs.push_back(forward_chunk(execution,x.narrow(1,begin,count),true,
+            outputs.push_back(forward_chunk(project,profiler,x.narrow(1,begin,count),true,
                 slice(begin,count),!grouped,
                 end<x.size(1)?checkpoint_conv[index]:Tensor{},
                 end<x.size(1)?checkpoint_state[index]:Tensor{},&snapshot_written));
@@ -242,7 +241,7 @@ class Gdn {
             }
         }
         auto result=tb::cat(outputs,1);
-        return grouped?project_output(projector,result):result;
+        return grouped?project_output(project,result):result;
     }
     void bind_graph_checkpoint(const std::vector<Tensor>& conv,const std::vector<Tensor>& state,
                                int64_t position) {
@@ -255,7 +254,7 @@ class Gdn {
         TYLOINFER_RUNTIME_CHECK(!conv_.defined() && !state_.defined(), "reset GDN before switching projection execution");
         grouped_projection_ = enabled;
     }
-    Tensor forward(CudaExecutionContext &execution, const Tensor &x, bool cache,
+    Tensor forward(const mfq::cuda::Projector& project,CudaProfiler& profiler,const Tensor &x, bool cache,
                    int64_t confirmed = 0, int64_t cache_position = -1) {
         TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.dim() == 3 && x.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
@@ -266,7 +265,7 @@ class Gdn {
             for(int64_t i=confirmed;i<x.size(1);++i) {
                 conv.push_back(tb::empty_like(conv_));state.push_back(tb::empty_like(state_));
             }
-            auto result=forward_graph(execution,x,confirmed,conv,state);
+            auto result=forward_graph(project,profiler,x,confirmed,conv,state);
             bind_graph_checkpoint(conv,state,cache_position+confirmed);
             return result;
         }
@@ -274,12 +273,11 @@ class Gdn {
         const bool grouped=cache && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8 &&
             grouped_projection_ && w_->input_projection.grouped() && (!batch || *batch);
         std::vector<Tensor> projected;
-        auto projector=execution.projector();
-        if(grouped)projected=project_inputs(projector,x);
+        if(grouped)projected=project_inputs(project,x);
         auto result=mfq::models::recurrent_window(
             x.size(1), cache, confirmed, saved_conv_.defined(),
             [&](int64_t start, int64_t count) {
-                if(!grouped)return forward_chunk(execution,x.narrow(1,start,count),cache);
+                if(!grouped)return forward_chunk(project,profiler,x.narrow(1,start,count),cache);
                 // Share both projections across the verification window and
                 // preserve the same per-prefix recurrent order as the graph.
                 std::vector<Tensor> outputs;
@@ -287,7 +285,7 @@ class Gdn {
                     const auto rows=begin==0?count:int64_t(1);
                     std::vector<Tensor> inputs;
                     for(const auto& value:projected)inputs.push_back(value.narrow(1,begin,rows));
-                    outputs.push_back(forward_chunk(execution,x.narrow(1,begin,rows),cache,std::move(inputs),false));
+                    outputs.push_back(forward_chunk(project,profiler,x.narrow(1,begin,rows),cache,std::move(inputs),false));
                     begin+=rows;
                 }
                 return outputs.size()==1?std::move(outputs.front()):tb::cat(outputs,1);
@@ -298,9 +296,9 @@ class Gdn {
             },
             [&] { rollback(); },
             [](Tensor prefix, Tensor suffix) { return tb::cat({prefix, suffix}, 1); });
-        return grouped?project_output(projector,result):result;
+        return grouped?project_output(project,result):result;
     }
-    Tensor forward_chunk(CudaExecutionContext &execution, const Tensor &x, bool cache,
+    Tensor forward_chunk(const mfq::cuda::Projector& project,CudaProfiler& profiler,const Tensor &x, bool cache,
                          std::vector<Tensor> projections = {},bool project_output=true,
                          Tensor checkpoint_conv={},Tensor checkpoint_state={},bool* snapshot_written=nullptr) {
         if(snapshot_written)*snapshot_written=false;
@@ -313,7 +311,6 @@ class Gdn {
         auto previous =
             cache && conv_.defined() ? conv_ : tb::zeros({b, kernel_ - 1, channels}, options);
         std::array<Tensor,2> prepared_gates;
-        auto projector=execution.projector();
         const auto prefill_option=mfq::cuda::runtime_options::gdn_prefill_fused();
         const bool prefill_fused=t>1 && fused_preparation_ && d_<=256 && kernel_<=8 &&
             (!prefill_option || *prefill_option!=0);
@@ -322,7 +319,7 @@ class Gdn {
             (d_==32 || d_==64 || d_==128) &&
             (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32)) {
             if(projections.empty()) {
-                projections=project_inputs(projector,x);
+                projections=project_inputs(project,x);
             }
             TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
             if(projections[0].scalar_type()==tb::kFloat16 &&
@@ -363,7 +360,7 @@ class Gdn {
                             static_cast<long long>(d_),static_cast<long long>(nv_));
                     }
                 }
-                auto output=project_output?this->project_output(projector,decoded[0]):decoded[0];
+                auto output=project_output?this->project_output(project,decoded[0]):decoded[0];
                 if(conv_.data_ptr()!=decoded[1].data_ptr())conv_.copy_(decoded[1]);
                 if(state_.data_ptr()!=decoded[2].data_ptr())state_.copy_(decoded[2]);
                 return output;
@@ -375,17 +372,17 @@ class Gdn {
                 Tensor projected;
                 if(!projections.empty())projected=projections[0];
                 else if(grouped_projection_ && w_->input_projection.grouped()) {
-                    projections=project_inputs(projector,x);
+                    projections=project_inputs(project,x);
                     TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
                     projected=projections[0];
-                } else projected=project_qkv(projector,x);
+                } else projected=project_qkv(project,x);
                 TYLOINFER_RUNTIME_CHECK(projected.sizes().vec() == std::vector<int64_t>({b, t, channels}),
                                   "Qwen4 GDN projection width mismatch");
                 return projected;
             },
             [&](Tensor projected) {
                 if(prefill_fused && projected.scalar_type()==tb::kFloat16) {
-                    return execution.profiler.measure("prefill.gdn_conv_qkv",[&] {
+                    return profiler.measure("prefill.gdn_conv_qkv",[&] {
                         auto weight=w_->conv.to(tb::kFloat32).contiguous();
                         if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                             weight=weight.reshape({channels,1,kernel_});
@@ -417,9 +414,9 @@ class Gdn {
                     std::vector<Tensor> qkv;
                     if(fused_preparation_) {
                         auto alpha=projections.empty()
-                            ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
+                            ?project_weight(project,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
                         auto beta=projections.empty()
-                            ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
+                            ?project_weight(project,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
                         if(alpha.scalar_type()!=beta.scalar_type() ||
                             (alpha.scalar_type()!=tb::kFloat16 && alpha.scalar_type()!=tb::kFloat32)) {
                             alpha=alpha.to(tb::kFloat32);beta=beta.to(tb::kFloat32);
@@ -453,9 +450,9 @@ class Gdn {
             [&] {
                 if(prepared_gates[0].defined())return prepared_gates;
                 auto alpha=projections.empty()
-                    ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
+                    ?project_weight(project,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
                 auto raw_beta=projections.empty()
-                    ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
+                    ?project_weight(project,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
                 if ((fused_decode_ && t == 1) || prefill_fused) {
                     auto gates = linear_gate_beta_cuda(
                         alpha.to(tb::kFloat32).reshape({b, t, nv_}),
@@ -482,7 +479,7 @@ class Gdn {
                 auto initial = cache && state_.defined() ? state_ : Tensor{};
                 Tensor attended, next_state;
                 if (d_ == 32 || d_ == 64 || d_ == 128) {
-                    auto result = execution.profiler.measure("prefill.gdn_recurrence",[&] {
+                    auto result = profiler.measure("prefill.gdn_recurrence",[&] {
                         const auto short_option=mfq::cuda::runtime_options::gdn_short_inplace();
                         const auto inplace=mfq::cuda::runtime_options::gdn_inplace_state();
                         if(cache && initial.defined() && t<=8 && (!short_option || *short_option) && (!inplace || *inplace))
@@ -517,7 +514,7 @@ class Gdn {
                 const auto stride_setting=mfq::cuda::runtime_options::gdn_strided_projections();
                 const bool strided=!stride_setting || *stride_setting;
                 auto projected_gate=projections.empty()
-                    ?project_weight(projector,w_->input_projection.weights[w_->qkv_count],x)
+                    ?project_weight(project,w_->input_projection.weights[w_->qkv_count],x)
                     :strided?projections[1]:projections[1].contiguous();
                 if(fused_decode_ && fused_output_ && attended.is_contiguous() &&
                     attended.scalar_type()==tb::kFloat32 && (projected_gate.is_contiguous() ||
@@ -536,10 +533,10 @@ class Gdn {
                 return rms_norm(attended, w_->norm, eps_) * gate;
             },
             [&](Tensor normalized) {
-                if(normalized.dim()==3)return project_output?this->project_output(projector,normalized):normalized;
+                if(normalized.dim()==3)return project_output?this->project_output(project,normalized):normalized;
                 normalized=normalized.permute({0,2,1,3}).reshape({b,t,vw}).to(x.scalar_type());
                 if(!project_output)return normalized;
-                auto result = this->project_output(projector,normalized);
+                auto result = this->project_output(project,normalized);
                 return result;
             },
             [&](const auto &convolution, const Tensor &next) {
@@ -1173,7 +1170,7 @@ class Qsa {
         graph_keys_=std::move(graph_keys);graph_values_=std::move(graph_values);graph_pooled_=std::move(graph_pooled);
         keys_.release_storage();values_.release_storage();
     }
-    Tensor forward_graph(CudaExecutionContext& execution,const Tensor& hidden,
+    Tensor forward_graph(const mfq::cuda::Projector& projector,const Tensor& hidden,
                          const Tensor& positions,const Tensor& cache_positions,
                          std::vector<Tensor> projections={},bool project_output=true,bool history_only=false) {
         const auto mark=[](const char* phase) {
@@ -1185,15 +1182,15 @@ class Qsa {
         const auto t=hidden.size(1),pools=graph_pooled_.size(1);
         const bool dense_capacity=(streamed?c_.maximum:graph_keys_.size(2))<=c_.budget;
         const bool exclusive=managed_memory() && memory_->hot.exclusive();
-        auto p=history_only?project_history(execution,hidden,positions):
-            project(execution,hidden,positions,!dense_capacity,cache_positions,
+        auto p=history_only?project_history(projector,hidden,positions):
+            project(projector,hidden,positions,!dense_capacity,cache_positions,
                        quantization_.enabled() || exclusive || streamed?Tensor{}:graph_keys_,quantization_.enabled() || exclusive || streamed?Tensor{}:graph_values_,
                        std::move(projections));
         mark("qsa_input_end");
         const auto finish=[&](Tensor output) {
             mark("qsa_attention_end");
             output=output.reshape({1,t,c_.heads*c_.width});
-            return project_output?this->project_output(execution.projector(),output):output;
+            return project_output?this->project_output(projector,output):output;
         };
         bool index_written=false;
         const auto* prepare_option=mfq::cuda::env_lookup("TYLOINFER_KV_PREPARE_FUSED");
@@ -1346,7 +1343,7 @@ class Qsa {
         values_.truncate(keep);
         index_.truncate(keep);
     }
-    Tensor forward(CudaExecutionContext &execution, const Tensor &hidden,
+    Tensor forward(const mfq::cuda::Projector& projector, const Tensor &hidden,
                    const Tensor &current_positions, const Tensor &full_positions, bool use_cache,
                    std::vector<Tensor> *selection_trace = nullptr,
                    std::vector<Tensor> projections = {}, bool project_output = true,
@@ -1371,7 +1368,7 @@ class Qsa {
                     const auto count=std::min(rows,hidden.size(1)-begin);
                     std::vector<Tensor> projected;
                     for(const auto& value:projections)projected.push_back(value.narrow(1,begin,count));
-                    outputs.push_back(forward(execution,hidden.narrow(1,begin,count),
+                    outputs.push_back(forward(projector,hidden.narrow(1,begin,count),
                         current_positions.narrow(-1,begin,count),full_positions.narrow(-1,0,offset+begin+count),
                         true,nullptr,std::move(projected),project_output));
                 }
@@ -1380,7 +1377,7 @@ class Qsa {
         }
         if (offload_ && use_cache) {
             if(managed_memory())memory_->ensure(position()+hidden.size(1));
-            return forward_offloaded(execution, hidden, current_positions, full_positions, selection_trace,
+            return forward_offloaded(projector, hidden, current_positions, full_positions, selection_trace,
                                      std::move(projections),project_output,history_only);
         }
         const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? position() : 0;
@@ -1395,8 +1392,7 @@ class Qsa {
             "Qwen4 QSA cache/position geometry mismatch");
         auto project_inputs = [&] {
                 if(prepared_inputs)
-                    return project(execution,hidden,current_positions,!history_only && offset+t>c_.budget,{},{},{},std::move(projections));
-                auto projector=execution.projector();
+                    return project(projector,hidden,current_positions,!history_only && offset+t>c_.budget,{},{},{},std::move(projections));
                 auto pair = this->project_query(projector,hidden).reshape({b, t, c_.heads, 2 * c_.width});
                 auto gate = pair.narrow(-1, c_.width, c_.width);
                 auto query = rms_norm(pair.narrow(-1, 0, c_.width),
@@ -1445,7 +1441,7 @@ class Qsa {
                 p.raw = index_.append(p.raw);
             };
         if(history_only) {
-            auto p=project_history(execution,hidden,current_positions);
+            auto p=project_history(projector,hidden,current_positions);
             try {append_inputs(p);}catch(...) {truncate(offset);throw;}
             return {};
         }
@@ -1500,7 +1496,7 @@ class Qsa {
                 auto gated = short_gate?std::move(attended):
                     attended.to(tb::kFloat32) * tb::sigmoid(p.gate.to(tb::kFloat32));
                 auto result = gated.reshape({b, t, c_.heads * c_.width}).to(hidden.scalar_type());
-                return project_output ? this->project_output(execution.projector(),result) : result;
+                return project_output ? this->project_output(projector,result) : result;
             },
             [&] { truncate(offset); });
     }
@@ -1588,7 +1584,7 @@ class Qsa {
         auto attended=attend(p.query,keys,values,stage->ids,rows);
         return (attended.to(tb::kFloat32)*tb::sigmoid(p.gate.to(tb::kFloat32))).to(output_type);
     }
-    Tensor forward_offloaded(CudaExecutionContext& execution, const Tensor& hidden,
+    Tensor forward_offloaded(const mfq::cuda::Projector& projector, const Tensor& hidden,
         const Tensor& positions, const Tensor& full_positions, std::vector<Tensor>* trace,
         std::vector<Tensor> projections={},bool project_output=true,bool history_only=false) {
         const auto offset = position(), tokens = hidden.size(1), length = offset + tokens;
@@ -1602,8 +1598,8 @@ class Qsa {
         const auto row_bytes = std::size_t(key_row+value_row) * (quantization_.enabled()?4:2);
         if (std::size_t(max_keys) * row_bytes > offload_->config().buffer_bytes / 4)
             throw std::invalid_argument("QSA I/O buffer cannot hold one selected context; increase the resident KV budget");
-        auto p = history_only?project_history(execution,hidden,positions):
-            project(execution, hidden, positions, length > c_.budget,{},{},{},std::move(projections));
+        auto p = history_only?project_history(projector,hidden,positions):
+            project(projector, hidden, positions, length > c_.budget,{},{},{},std::move(projections));
         try {
             offloaded_kv_->append(tb::cat({encode_key(p.key).reshape({tokens,key_row}), encode_value(p.value).reshape({tokens,value_row})}, 1));
             const auto first_pool = pool_position();
@@ -1639,7 +1635,7 @@ class Qsa {
                 auto attended = attend(p.query, key, value, ids, offset);
                 auto gated = attended.to(tb::kFloat32) * tb::sigmoid(p.gate.to(tb::kFloat32));
                 auto result = gated.reshape({1,tokens,c_.heads*c_.width}).to(hidden.scalar_type());
-                return project_output ? this->project_output(execution.projector(),result) : result;
+                return project_output ? this->project_output(projector,result) : result;
             }
             const auto queries = std::max<int64_t>(1, std::min<int64_t>(32,
                 offload_->config().buffer_bytes / 4 / (std::size_t(max_keys) * row_bytes)));
@@ -1697,7 +1693,7 @@ class Qsa {
             auto attended = tb::cat(outputs, 1);
             auto gated = attended.to(tb::kFloat32) * tb::sigmoid(p.gate.to(tb::kFloat32));
             auto result=gated.reshape({1, tokens, c_.heads * c_.width}).to(hidden.scalar_type());
-            return project_output?this->project_output(execution.projector(),result):result;
+            return project_output?this->project_output(projector,result):result;
         } catch (...) { truncate(offset); throw; }
     }
     Tensor project_norm(const Tensor& value,const Tensor& weight) {
@@ -1705,25 +1701,24 @@ class Qsa {
             return grouped_rms_norm_cuda(value.contiguous(),weight.to(tb::kFloat32).contiguous(),value.size(-1),c_.eps,1.0);
         return rms_norm(value,weight.to(tb::kFloat32)+1,c_.eps);
     }
-    Projection project_history(CudaExecutionContext& execution,const Tensor& hidden,const Tensor& positions) {
+    Projection project_history(const mfq::cuda::Projector& projector,const Tensor& hidden,const Tensor& positions) {
         const auto b=hidden.size(0),t=hidden.size(1);
-        auto source=execution.projector().run(w_->input_projection.weights[1],hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto source=projector.run(w_->input_projection.weights[1],hidden).reshape({b,t,c_.kv_heads,c_.width});
         Tensor key;
         if(fused_projection_ && rotary_->fused() &&
                 (source.scalar_type()==tb::kFloat16 || source.scalar_type()==tb::kFloat32))
             key=rotary_->forward_normalized_grouped({source},{w_->key_norm},positions,c_.eps,1)[0].permute({0,2,1,3});
         else key=rotary_->forward(project_norm(source,w_->key_norm).permute({0,2,1,3}),positions).permute({0,2,1,3});
-        auto value=execution.projector().run(w_->input_projection.weights[2],hidden).reshape({b,t,c_.kv_heads,c_.width});
-        auto raw=execution.projector().run(w_->input_projection.weights[3],hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
+        auto value=projector.run(w_->input_projection.weights[2],hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto raw=projector.run(w_->input_projection.weights[3],hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
         return {{},{},std::move(key),std::move(value),{},std::move(raw)};
     }
-    Projection project(CudaExecutionContext& execution,const Tensor& hidden,const Tensor& positions,
+    Projection project(const mfq::cuda::Projector& projector,const Tensor& hidden,const Tensor& positions,
                        bool index_query_needed=true,const Tensor& cache_positions={},
                        const Tensor& key_cache={},const Tensor& value_cache={},
                        std::vector<Tensor> projections={}) {
         const auto b=hidden.size(0),t=hidden.size(1);
         if(projections.empty()) {
-            auto projector=execution.projector();
             if(grouped_projection_ && w_->input_projection.grouped())
                 projections=project_inputs(projector,hidden);
             else projections={project_query(projector,hidden),
