@@ -35,19 +35,17 @@ using attention_ops::Embedding;
 using attention_ops::rms_norm;
 using attention_ops::SequenceCache;
 using attention_ops::select_pooled_blocks;
-using LinearGroup = std::function<std::vector<Tensor>(CudaExecutionContext&, const Tensor&)>;
-
 
 struct GdnWeights {
-    Linear qkv, gate, alpha, beta, output;
+    mfq::cuda::Projections input_projection;
+    QuantLinear output;
     Tensor conv, dt_bias, a_log, norm;
-    LinearGroup input_projection;
-    std::vector<Linear> split_qkv;
+    std::size_t qkv_count = 1;
 };
 
 class Gdn {
   public:
-    Gdn(GdnWeights weights, int64_t key_heads, int64_t value_heads, int64_t width, int64_t kernel,
+    Gdn(std::shared_ptr<const GdnWeights> weights, int64_t key_heads, int64_t value_heads, int64_t width, int64_t kernel,
         double eps, bool silu_gate, bool fused_decode = true, bool transposed_state = true,
         bool fused_output = true, bool grouped_projection = true, bool fused_preparation = true,
         bool fused_core = true)
@@ -96,7 +94,7 @@ class Gdn {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         ResidentAllocationScope resident;
 #endif
-        auto options=w_.norm.options().dtype(tb::kFloat32);
+        auto options=w_->norm.options().dtype(tb::kFloat32);
         if(allocate_counters && !core_workspace_.defined() && fused_core_ && fused_decode_ &&
             fused_preparation_ && fused_output_ && transposed_state_)
             core_workspace_=tb::zeros({1,nv_,d_+1},options);
@@ -122,13 +120,8 @@ class Gdn {
         return state_.defined() && transposed_state_ ? state_.transpose(-1,-2) : state_;
     }
     std::vector<Tensor*> graph_state() { return {&conv_,&state_}; }
-    std::vector<Tensor> project_inputs(CudaExecutionContext& execution,const Tensor& x) const {
-        if(grouped_projection_ && w_.input_projection)return w_.input_projection(execution,x);
-        return {w_.qkv(execution,x),w_.gate(execution,x),w_.alpha(execution,x),w_.beta(execution,x)};
-    }
-    Tensor project_output(CudaExecutionContext& execution,const Tensor& x) const {
-        return w_.output(execution,x);
-    }
+    std::vector<Tensor> project_inputs(const mfq::cuda::Projector& projector,const Tensor& x) const;
+    Tensor project_output(const mfq::cuda::Projector& projector,const Tensor& x) const;
     static Tensor prepare_independent_batch(const std::vector<Gdn*>& rows) {
         if(rows.size()<2 || rows.size()>32)return {};
         const auto inplace=mfq::cuda::runtime_options::gdn_inplace_state();
@@ -157,8 +150,8 @@ class Gdn {
             row->d_!=first.d_ || row->kernel_!=first.kernel_ || row->eps_!=first.eps_ ||
             row->silu_gate_!=first.silu_gate_ || row->state_.device()!=first.state_.device() ||
             row->conv_.device()!=first.state_.device() || row->core_workspace_.device()!=first.state_.device() ||
-            row->w_.conv.data_ptr()!=first.w_.conv.data_ptr() || row->w_.norm.data_ptr()!=first.w_.norm.data_ptr() ||
-            row->w_.dt_bias.data_ptr()!=first.w_.dt_bias.data_ptr() || row->w_.a_log.data_ptr()!=first.w_.a_log.data_ptr())return {};
+            row->w_->conv.data_ptr()!=first.w_->conv.data_ptr() || row->w_->norm.data_ptr()!=first.w_->norm.data_ptr() ||
+            row->w_->dt_bias.data_ptr()!=first.w_->dt_bias.data_ptr() || row->w_->a_log.data_ptr()!=first.w_->a_log.data_ptr())return {};
         auto addresses=tb::empty({int64_t(rows.size()),3},first.state_.options().device(tb::kCPU).dtype(tb::kInt64));
         auto* values=addresses.data_ptr<int64_t>();
         for(std::size_t i=0;i<rows.size();++i) {
@@ -182,15 +175,15 @@ class Gdn {
             (projections[1].scalar_type()!=tb::kFloat16 && projections[1].scalar_type()!=tb::kFloat32))return {};
         if(mfq::cuda::runtime_options::gdn_independent_batch_trace())
             std::fprintf(stderr,"gdn_batch_core rows=%lld\n",(long long)x.size(0));
-        auto weight=w_.conv.to(tb::kFloat32).contiguous();
+        auto weight=w_->conv.to(tb::kFloat32).contiguous();
         if(weight.dim()==2 && weight.size(0)==(2*nk_+nv_)*d_ && weight.size(1)==kernel_)
             weight=weight.reshape({(2*nk_+nv_)*d_,1,kernel_});
         const auto stride_setting=mfq::cuda::runtime_options::gdn_strided_projections();
         const auto direct=[&](const Tensor& value){return !stride_setting || *stride_setting?value:value.contiguous();};
         auto result=gdn_decode_core_cuda(direct(projections[0]),direct(projections[1]),
             projections[2].reshape({x.size(0),1,nv_}),projections[3].reshape({x.size(0),1,nv_}),
-            conv_,state_,weight,w_.dt_bias.to(tb::kFloat32).contiguous(),w_.a_log.to(tb::kFloat32).contiguous(),
-            w_.norm.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
+            conv_,state_,weight,w_->dt_bias.to(tb::kFloat32).contiguous(),w_->a_log.to(tb::kFloat32).contiguous(),
+            w_->norm.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
             x.scalar_type()==tb::kFloat16,true,core_workspace_,true,addresses);
         return result[0];
     }
@@ -198,10 +191,11 @@ class Gdn {
                          std::vector<Tensor>& checkpoint_conv,std::vector<Tensor>& checkpoint_state) {
         if(!confirmed)return forward_chunk(execution,x,true);
         const auto batch=mfq::cuda::runtime_options::gdn_batch_projection();
-        const bool grouped=grouped_projection_ && w_.input_projection && x.size(1)<=8 && (!batch || *batch);
+        const bool grouped=grouped_projection_ && w_->input_projection.grouped() && x.size(1)<=8 && (!batch || *batch);
         // Only recurrence is split at the confirmation boundary. Both parts
         // share the input projections and one output projection.
-        std::vector<Tensor> projected;if(grouped)projected=w_.input_projection(execution,x);
+        auto projector=execution.projector();
+        std::vector<Tensor> projected;if(grouped)projected=project_inputs(projector,x);
         const auto* window_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_REGISTER_WINDOW");
         const auto inplace_option=mfq::cuda::runtime_options::gdn_inplace_state();
         const auto* checkpoint_option=mfq::cuda::env_lookup("TYLOINFER_MTP_GDN_FUSED_CHECKPOINT");
@@ -215,16 +209,16 @@ class Gdn {
             projected[2].scalar_type()==projected[3].scalar_type() &&
             (projected[1].scalar_type()==tb::kFloat16 || projected[1].scalar_type()==tb::kFloat32) &&
             (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32)) {
-            auto weight=w_.conv.to(tb::kFloat32).contiguous();
+            auto weight=w_->conv.to(tb::kFloat32).contiguous();
             const auto channels=(2*nk_+nv_)*d_;
             if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                 weight=weight.reshape({channels,1,kernel_});
             auto decoded=gdn_decode_window_cuda(projected[0],projected[1],projected[2].reshape({1,x.size(1),nv_}),
-                projected[3].reshape({1,x.size(1),nv_}),conv_,state_,weight,w_.dt_bias.to(tb::kFloat32).contiguous(),
-                w_.a_log.to(tb::kFloat32).contiguous(),w_.norm.to(tb::kFloat32).contiguous(),int(nk_),int(nv_),int(confirmed),
+                projected[3].reshape({1,x.size(1),nv_}),conv_,state_,weight,w_->dt_bias.to(tb::kFloat32).contiguous(),
+                w_->a_log.to(tb::kFloat32).contiguous(),w_->norm.to(tb::kFloat32).contiguous(),int(nk_),int(nv_),int(confirmed),
                 1e-6,eps_,silu_gate_,x.scalar_type()==tb::kFloat16,true,checkpoint_conv,checkpoint_state);
             conv_.copy_(decoded[1]);
-            return w_.output(execution,decoded[0]);
+            return project_output(projector,decoded[0]);
         }
         const auto slice=[&](int64_t begin,int64_t count) {
             std::vector<Tensor> result;for(const auto& value:projected)result.push_back(value.narrow(1,begin,count));
@@ -248,7 +242,7 @@ class Gdn {
             }
         }
         auto result=tb::cat(outputs,1);
-        return grouped?w_.output(execution,result):result;
+        return grouped?project_output(projector,result):result;
     }
     void bind_graph_checkpoint(const std::vector<Tensor>& conv,const std::vector<Tensor>& state,
                                int64_t position) {
@@ -278,9 +272,10 @@ class Gdn {
         }
         const auto batch=mfq::cuda::runtime_options::gdn_batch_projection();
         const bool grouped=cache && confirmed>0 && confirmed<x.size(1) && x.size(1)<=8 &&
-            grouped_projection_ && w_.input_projection && (!batch || *batch);
+            grouped_projection_ && w_->input_projection.grouped() && (!batch || *batch);
         std::vector<Tensor> projected;
-        if(grouped)projected=w_.input_projection(execution,x);
+        auto projector=execution.projector();
+        if(grouped)projected=project_inputs(projector,x);
         auto result=mfq::models::recurrent_window(
             x.size(1), cache, confirmed, saved_conv_.defined(),
             [&](int64_t start, int64_t count) {
@@ -303,7 +298,7 @@ class Gdn {
             },
             [&] { rollback(); },
             [](Tensor prefix, Tensor suffix) { return tb::cat({prefix, suffix}, 1); });
-        return grouped?w_.output(execution,result):result;
+        return grouped?project_output(projector,result):result;
     }
     Tensor forward_chunk(CudaExecutionContext &execution, const Tensor &x, bool cache,
                          std::vector<Tensor> projections = {},bool project_output=true,
@@ -318,6 +313,7 @@ class Gdn {
         auto previous =
             cache && conv_.defined() ? conv_ : tb::zeros({b, kernel_ - 1, channels}, options);
         std::array<Tensor,2> prepared_gates;
+        auto projector=execution.projector();
         const auto prefill_option=mfq::cuda::runtime_options::gdn_prefill_fused();
         const bool prefill_fused=t>1 && fused_preparation_ && d_<=256 && kernel_<=8 &&
             (!prefill_option || *prefill_option!=0);
@@ -326,15 +322,14 @@ class Gdn {
             (d_==32 || d_==64 || d_==128) &&
             (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32)) {
             if(projections.empty()) {
-                if(grouped_projection_ && w_.input_projection)projections=w_.input_projection(execution,x);
-                else projections={w_.qkv(execution,x),w_.gate(execution,x),w_.alpha(execution,x),w_.beta(execution,x)};
+                projections=project_inputs(projector,x);
             }
             TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
             if(projections[0].scalar_type()==tb::kFloat16 &&
                 projections[1].scalar_type()==projections[2].scalar_type() &&
                 projections[2].scalar_type()==projections[3].scalar_type() &&
                 (projections[1].scalar_type()==tb::kFloat16 || projections[1].scalar_type()==tb::kFloat32)) {
-                auto weight=w_.conv.to(tb::kFloat32).contiguous();
+                auto weight=w_->conv.to(tb::kFloat32).contiguous();
                 if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                     weight=weight.reshape({channels,1,kernel_});
                 if(!core_workspace_.defined())core_workspace_=tb::zeros({b,nv_,d_+1},options);
@@ -344,13 +339,13 @@ class Gdn {
                   auto qkv=direct(projections[0]),gate=direct(projections[1]);
                   auto alpha=projections[2].reshape({b,t,nv_}),beta=projections[3].reshape({b,t,nv_});
                   if(checkpoint)return gdn_decode_core_checkpoint_cuda(qkv,gate,alpha,beta,previous,state_,
-                    weight,w_.dt_bias.to(tb::kFloat32).contiguous(),w_.a_log.to(tb::kFloat32).contiguous(),
-                    w_.norm.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
+                    weight,w_->dt_bias.to(tb::kFloat32).contiguous(),w_->a_log.to(tb::kFloat32).contiguous(),
+                    w_->norm.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
                     x.scalar_type()==tb::kFloat16,true,core_workspace_,true,checkpoint_conv,checkpoint_state);
                   return gdn_decode_core_cuda(qkv,gate,
                     projections[2].reshape({b,t,nv_}),projections[3].reshape({b,t,nv_}),previous,state_,
-                    weight,w_.dt_bias.to(tb::kFloat32).contiguous(),w_.a_log.to(tb::kFloat32).contiguous(),
-                    w_.norm.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
+                    weight,w_->dt_bias.to(tb::kFloat32).contiguous(),w_->a_log.to(tb::kFloat32).contiguous(),
+                    w_->norm.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6,eps_,silu_gate_,
                     x.scalar_type()==tb::kFloat16,true,core_workspace_,
                     [] {const auto value=mfq::cuda::runtime_options::gdn_inplace_state();return !value || *value;}());
                 };
@@ -368,7 +363,7 @@ class Gdn {
                             static_cast<long long>(d_),static_cast<long long>(nv_));
                     }
                 }
-                auto output=project_output?w_.output(execution,decoded[0]):decoded[0];
+                auto output=project_output?this->project_output(projector,decoded[0]):decoded[0];
                 if(conv_.data_ptr()!=decoded[1].data_ptr())conv_.copy_(decoded[1]);
                 if(state_.data_ptr()!=decoded[2].data_ptr())state_.copy_(decoded[2]);
                 return output;
@@ -379,11 +374,11 @@ class Gdn {
             [&] {
                 Tensor projected;
                 if(!projections.empty())projected=projections[0];
-                else if(grouped_projection_ && w_.input_projection) {
-                    projections=w_.input_projection(execution,x);
+                else if(grouped_projection_ && w_->input_projection.grouped()) {
+                    projections=project_inputs(projector,x);
                     TYLOINFER_RUNTIME_CHECK(projections.size()==4,"GDN input projection count mismatch");
                     projected=projections[0];
-                } else projected=w_.qkv(execution,x);
+                } else projected=project_qkv(projector,x);
                 TYLOINFER_RUNTIME_CHECK(projected.sizes().vec() == std::vector<int64_t>({b, t, channels}),
                                   "Qwen4 GDN projection width mismatch");
                 return projected;
@@ -391,7 +386,7 @@ class Gdn {
             [&](Tensor projected) {
                 if(prefill_fused && projected.scalar_type()==tb::kFloat16) {
                     return execution.profiler.measure("prefill.gdn_conv_qkv",[&] {
-                        auto weight=w_.conv.to(tb::kFloat32).contiguous();
+                        auto weight=w_->conv.to(tb::kFloat32).contiguous();
                         if(weight.dim()==2 && weight.size(0)==channels && weight.size(1)==kernel_)
                             weight=weight.reshape({channels,1,kernel_});
                         const auto short_option=mfq::cuda::runtime_options::gdn_short_fusion();
@@ -402,7 +397,7 @@ class Gdn {
                             const auto direct=[&](const Tensor& value){return !stride_setting || *stride_setting?value:value.contiguous();};
                             auto qkv=linear_conv_qkv_gate_short_cuda(previous,direct(projected),weight,
                                 direct(projections[2].reshape({b,t,nv_})),direct(projections[3].reshape({b,t,nv_})),
-                                w_.dt_bias.to(tb::kFloat32).contiguous(),w_.a_log.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6);
+                                w_->dt_bias.to(tb::kFloat32).contiguous(),w_->a_log.to(tb::kFloat32).contiguous(),nk_,nv_,d_,1e-6);
                             prepared_gates={qkv[4],qkv[5]};
                             return std::array<Tensor,4>{qkv[0],qkv[1],qkv[2],qkv[3]};
                         }
@@ -414,22 +409,24 @@ class Gdn {
                     });
                 }
                 if (fused_decode_ && t == 1 && d_ <= 256 && projected.scalar_type() == tb::kFloat16) {
-                    auto weight = w_.conv.to(tb::kFloat32).contiguous();
+                    auto weight = w_->conv.to(tb::kFloat32).contiguous();
                     if (weight.dim() == 2 && weight.size(0) == channels && weight.size(1) == kernel_)
                         weight = weight.reshape({channels, 1, kernel_});
                     auto next_conv = previous.clone();
                     auto qk=projected.narrow(-1,0,2*kw).contiguous(),v=projected.narrow(-1,2*kw,vw).contiguous();
                     std::vector<Tensor> qkv;
                     if(fused_preparation_) {
-                        auto alpha=projections.empty()?w_.alpha(execution,x):projections[2];
-                        auto beta=projections.empty()?w_.beta(execution,x):projections[3];
+                        auto alpha=projections.empty()
+                            ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
+                        auto beta=projections.empty()
+                            ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
                         if(alpha.scalar_type()!=beta.scalar_type() ||
                             (alpha.scalar_type()!=tb::kFloat16 && alpha.scalar_type()!=tb::kFloat32)) {
                             alpha=alpha.to(tb::kFloat32);beta=beta.to(tb::kFloat32);
                         }
                         qkv=linear_conv_qkv_gate_decode_cuda(next_conv,qk,v,weight,
                             alpha.reshape({b,t,nv_}),beta.reshape({b,t,nv_}),
-                            w_.dt_bias.to(tb::kFloat32).contiguous(),w_.a_log.to(tb::kFloat32).contiguous(),
+                            w_->dt_bias.to(tb::kFloat32).contiguous(),w_->a_log.to(tb::kFloat32).contiguous(),
                             nk_,nv_,d_,d_,1e-6);
                         prepared_gates={qkv[3],qkv[4]};
                     } else qkv=linear_conv_qkv_decode_cuda(next_conv,qk,v,weight,
@@ -437,7 +434,7 @@ class Gdn {
                     return std::array<Tensor, 4>{qkv[0], qkv[1], qkv[2], next_conv};
                 }
                 auto joined = tb::cat({previous, projected.to(tb::kFloat32)}, 1).contiguous();
-                auto convolved = ssm_conv_silu_cuda(joined, w_.conv.to(tb::kFloat32).contiguous(),
+                auto convolved = ssm_conv_silu_cuda(joined, w_->conv.to(tb::kFloat32).contiguous(),
                                                     tb::empty({0}, options), t);
                 auto next_conv = joined.narrow(1, t, kernel_ - 1).contiguous();
                 const auto normalize = [](const Tensor &v) {
@@ -455,21 +452,23 @@ class Gdn {
             },
             [&] {
                 if(prepared_gates[0].defined())return prepared_gates;
-                auto alpha=projections.empty()?w_.alpha(execution,x):projections[2];
-                auto raw_beta=projections.empty()?w_.beta(execution,x):projections[3];
+                auto alpha=projections.empty()
+                    ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+1],x):projections[2];
+                auto raw_beta=projections.empty()
+                    ?project_weight(projector,w_->input_projection.weights[w_->qkv_count+2],x):projections[3];
                 if ((fused_decode_ && t == 1) || prefill_fused) {
                     auto gates = linear_gate_beta_cuda(
                         alpha.to(tb::kFloat32).reshape({b, t, nv_}),
                         raw_beta.to(tb::kFloat32).reshape({b, t, nv_}),
-                        w_.dt_bias.to(tb::kFloat32).contiguous(),
-                        w_.a_log.to(tb::kFloat32).contiguous(), true);
+                        w_->dt_bias.to(tb::kFloat32).contiguous(),
+                        w_->a_log.to(tb::kFloat32).contiguous(), true);
                     return std::array<Tensor, 2>{gates[0], gates[1]};
                 }
                 auto gate_input = alpha.to(tb::kFloat32).reshape({b, t, nv_}) +
-                                  w_.dt_bias.to(tb::kFloat32).reshape({1, 1, nv_});
+                                  w_->dt_bias.to(tb::kFloat32).reshape({1, 1, nv_});
                 auto softplus =
                     tb::clamp_min(gate_input, 0) + tb::log1p(tb::exp(-gate_input.abs()));
-                auto decay = (-w_.a_log.to(tb::kFloat32).exp().reshape({1, 1, nv_}) * softplus)
+                auto decay = (-w_->a_log.to(tb::kFloat32).exp().reshape({1, 1, nv_}) * softplus)
                                  .transpose(1, 2)
                                  .contiguous();
                 auto beta = tb::sigmoid(raw_beta.to(tb::kFloat32).reshape({b, t, nv_}))
@@ -517,15 +516,16 @@ class Gdn {
             [&](Tensor attended) {
                 const auto stride_setting=mfq::cuda::runtime_options::gdn_strided_projections();
                 const bool strided=!stride_setting || *stride_setting;
-                auto projected_gate=projections.empty()?w_.gate(execution,x):
-                    strided?projections[1]:projections[1].contiguous();
+                auto projected_gate=projections.empty()
+                    ?project_weight(projector,w_->input_projection.weights[w_->qkv_count],x)
+                    :strided?projections[1]:projections[1].contiguous();
                 if(fused_decode_ && fused_output_ && attended.is_contiguous() &&
                     attended.scalar_type()==tb::kFloat32 && (projected_gate.is_contiguous() ||
                         (strided && projected_gate.dim()==3 && projected_gate.stride(2)==1)) &&
                     (projected_gate.scalar_type()==tb::kFloat16 || projected_gate.scalar_type()==tb::kFloat32) &&
                     (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32))
                     return gdn_rms_norm_gate_cuda(attended,projected_gate,
-                        w_.norm.to(tb::kFloat32).contiguous(),eps_,silu_gate_,x.scalar_type()==tb::kFloat16);
+                        w_->norm.to(tb::kFloat32).contiguous(),eps_,silu_gate_,x.scalar_type()==tb::kFloat16);
                 projected_gate=projected_gate.contiguous();
                 auto z = projected_gate.reshape({b, t, nv_, d_})
                              .permute({0, 2, 1, 3})
@@ -533,14 +533,13 @@ class Gdn {
                 auto gate = tb::sigmoid(z);
                 if (silu_gate_)
                     gate = z * gate;
-                return rms_norm(attended, w_.norm, eps_) * gate;
+                return rms_norm(attended, w_->norm, eps_) * gate;
             },
             [&](Tensor normalized) {
-                if(normalized.dim()==3)return project_output?w_.output(execution,normalized):normalized;
+                if(normalized.dim()==3)return project_output?this->project_output(projector,normalized):normalized;
                 normalized=normalized.permute({0,2,1,3}).reshape({b,t,vw}).to(x.scalar_type());
                 if(!project_output)return normalized;
-                auto result = w_.output(
-                    execution,normalized);
+                auto result = this->project_output(projector,normalized);
                 return result;
             },
             [&](const auto &convolution, const Tensor &next) {
@@ -562,7 +561,9 @@ class Gdn {
     }
 
   private:
-    GdnWeights w_;
+    Tensor project_weight(const mfq::cuda::Projector& projector,const QuantLinear& weight,const Tensor& source) const;
+    Tensor project_qkv(const mfq::cuda::Projector& projector,const Tensor& source) const;
+    std::shared_ptr<const GdnWeights> w_;
     int64_t nk_, nv_, d_, kernel_;
     double eps_;
     bool silu_gate_, fused_decode_,transposed_state_,fused_output_,grouped_projection_,fused_preparation_,fused_core_;
@@ -945,10 +946,10 @@ class Ple {
 };
 
 struct QsaWeights {
-    Linear query, key, value, output, index_query_key;
+    mfq::cuda::Projections input_projection;
+    QuantLinear output;
     Tensor query_norm, key_norm, index_query_norm, index_key_norm;
-    LinearGroup input_projection;
-    Linear gate;
+    bool has_gate = false;
 };
 struct QsaConfig {
     int64_t heads, kv_heads, width, index_heads, index_width, pool, budget, maximum;
@@ -957,9 +958,9 @@ struct QsaConfig {
 
 class Qsa {
   public:
-    Qsa(QsaWeights weights, QsaConfig config, std::shared_ptr<RotaryEmbedding> rotary,
-        bool fused_projection = true, bool grouped_projection = true,
-        std::shared_ptr<KvOffloadStore> offload = {}, std::shared_ptr<KvMemoryManager> memory = {})
+    Qsa(std::shared_ptr<const QsaWeights> weights, QsaConfig config, std::shared_ptr<RotaryEmbedding> rotary,
+        bool fused_projection, bool grouped_projection,
+        std::shared_ptr<KvOffloadStore> offload, std::shared_ptr<KvMemoryManager> memory)
         : w_(std::move(weights)), c_(config), rotary_(std::move(rotary)), fused_projection_(fused_projection), grouped_projection_(grouped_projection),
           keys_(config.maximum, config.kv_heads * key_width(), cache_dtype()),
           values_(config.maximum, config.kv_heads * value_width(), cache_dtype()),
@@ -968,14 +969,10 @@ class Qsa {
                               c_.width > 0 && c_.index_heads > 0 && c_.pool > 0 && c_.budget > 0 &&
                               c_.budget % c_.pool == 0 && rotary_,
                           "invalid Qwen4 QSA configuration");
-        // Share immutable FP32 norm coefficients across request states.
-        // BF16 sources otherwise record repeated casts in each row's graph.
-        for(auto* weight:{&w_.query_norm,&w_.key_norm,&w_.index_query_norm,&w_.index_key_norm})
-            if(weight->defined())*weight=weight->to(tb::kFloat32).contiguous();
         memory_manager_=memory;
         offload_ = std::move(offload);
         if(memory && !offload_)memory_=memory->add(c_.maximum,c_.kv_heads,key_width(),value_width(),
-            c_.index_width,c_.pool,w_.query_norm.options().dtype(cache_dtype()),c_.maximum<=c_.budget?c_.maximum:c_.budget+c_.pool-1);
+            c_.index_width,c_.pool,w_->query_norm.options().dtype(cache_dtype()),c_.maximum<=c_.budget?c_.maximum:c_.budget+c_.pool-1);
         if (offload_) {
             offloaded_kv_ = std::make_unique<KvOffloadSequence>(offload_, c_.kv_heads * (key_width()+value_width()), c_.pool, cache_dtype());
             offloaded_index_ = std::make_unique<KvOffloadSequence>(offload_, c_.index_width, c_.pool);
@@ -998,12 +995,36 @@ class Qsa {
     std::unique_ptr<Qsa> fork_empty() const {
         return std::make_unique<Qsa>(w_, c_, rotary_, fused_projection_, grouped_projection_, offload_,memory_manager_);
     }
-    std::vector<Tensor> project_inputs(CudaExecutionContext& execution,const Tensor& x) const {
-        if(grouped_projection_ && w_.input_projection)return w_.input_projection(execution,x);
-        return {w_.query(execution,x),w_.key(execution,x),w_.value(execution,x),w_.index_query_key(execution,x)};
+    std::vector<Tensor> project_inputs(const mfq::cuda::Projector& projector,const Tensor& x) const {
+        std::vector<Tensor> projected;
+        const bool grouped=grouped_projection_ && w_->input_projection.grouped();
+        if(grouped)
+            projected=projector.run(w_->input_projection,x);
+        else
+            projected={project_query(projector,x),
+                projector.run(w_->input_projection.weights[1],x),
+                projector.run(w_->input_projection.weights[2],x),
+                projector.run(w_->input_projection.weights[3],x)};
+        if(grouped && w_->has_gate) {
+            TYLOINFER_RUNTIME_CHECK(projected.size()==5,"QSA input projection count mismatch");
+            const auto b=x.size(0),t=x.size(1);
+            projected[0]=tb::cat({projected[0].reshape({b,t,c_.heads,c_.width}),
+                projected[4].reshape({b,t,c_.heads,c_.width})},-1).reshape({b,t,2*c_.heads*c_.width});
+            projected.erase(projected.begin()+4);
+        }
+        TYLOINFER_RUNTIME_CHECK(projected.size()==4,"QSA input projection count mismatch");
+        return projected;
     }
-    Tensor project_output(CudaExecutionContext& execution,const Tensor& x) const {
-        return w_.output(execution,x);
+    Tensor project_output(const mfq::cuda::Projector& projector,const Tensor& x) const {
+        return projector.run(w_->output,x);
+    }
+    Tensor project_query(const mfq::cuda::Projector& projector,const Tensor& x) const {
+        auto query=projector.run(w_->input_projection.weights[0],x);
+        if(!w_->has_gate)return query;
+        const auto b=x.size(0),t=x.size(1);
+        auto gate=projector.run(w_->input_projection.weights[4],x);
+        return tb::cat({query.reshape({b,t,c_.heads,c_.width}),
+            gate.reshape({b,t,c_.heads,c_.width})},-1).reshape({b,t,2*c_.heads*c_.width});
     }
     std::size_t growth_bytes(int64_t tokens) const {
         if(managed_memory())return memory_->growth_bytes(position()+tokens);
@@ -1122,7 +1143,7 @@ class Qsa {
             memory_->ensure(n);
             if(pools) {
                 auto pooled=index_.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(tb::kFloat32).mean(2).to(index_.storage().scalar_type());
-                pooled=rms_norm(pooled,w_.index_key_norm.to(tb::kFloat32)+1,c_.eps);
+                pooled=rms_norm(pooled,w_->index_key_norm.to(tb::kFloat32)+1,c_.eps);
                 auto starts=tb::arange(pools,full_positions.options().dtype(tb::kInt64))*c_.pool;
                 graph_pooled_.narrow(1,0,pools).copy_(rotary_->forward(pooled.unsqueeze(1),full_positions.index_select(-1,starts)).squeeze(1));
             }
@@ -1142,7 +1163,7 @@ class Qsa {
         const auto pools=n/c_.pool;
         if(pools) {
             auto pooled=index_.storage().narrow(1,0,pools*c_.pool).reshape({1,pools,c_.pool,c_.index_width}).to(tb::kFloat32).mean(2).to(index_.storage().scalar_type());
-            pooled=rms_norm(pooled,w_.index_key_norm.to(tb::kFloat32)+1,c_.eps);
+            pooled=rms_norm(pooled,w_->index_key_norm.to(tb::kFloat32)+1,c_.eps);
             auto starts=tb::arange(pools,full_positions.options().dtype(tb::kInt64))*c_.pool;
             graph_pooled.narrow(1,0,pools).copy_(rotary_->forward(pooled.unsqueeze(1),full_positions.index_select(-1,starts)).squeeze(1));
         }
@@ -1172,7 +1193,7 @@ class Qsa {
         const auto finish=[&](Tensor output) {
             mark("qsa_attention_end");
             output=output.reshape({1,t,c_.heads*c_.width});
-            return project_output?w_.output(execution,output):output;
+            return project_output?this->project_output(execution.projector(),output):output;
         };
         bool index_written=false;
         const auto* prepare_option=mfq::cuda::env_lookup("TYLOINFER_KV_PREPARE_FUSED");
@@ -1234,17 +1255,17 @@ class Qsa {
         const auto* pool_fusion=mfq::cuda::env_lookup("TYLOINFER_QSA_POOL_FUSED");
         const auto* pool_write=mfq::cuda::env_lookup("TYLOINFER_QSA_POOL_WRITE_FUSED");
         const bool pool_written=(!pool_fusion || pool_fusion[0]!='0') && (!pool_write || pool_write[0]!='0') &&
-            index_.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(index_.storage(),w_.index_key_norm,
+            index_.storage().size(1)>=c_.maximum && rotary_->pool_normalized_into(index_.storage(),w_->index_key_norm,
                 positions,cache_positions,graph_pooled_,c_.pool,c_.maximum,c_.eps);
         if(!pool_written && rotary_->fused() && (!pool_fusion || pool_fusion[0]!='0') && index_.storage().size(1)>=c_.maximum) {
             auto prepared=mfq_qwen4_exp::live_index_pool(index_.storage(),positions,cache_positions,c_.pool,c_.maximum);
             block=prepared[1];
-            pooled=rotary_->forward_normalized(prepared[0].unsqueeze(2),w_.index_key_norm,prepared[2],c_.eps).squeeze(1);
+            pooled=rotary_->forward_normalized(prepared[0].unsqueeze(2),w_->index_key_norm,prepared[2],c_.eps).squeeze(1);
         }else if(!pool_written) {
             block=(cache_positions/c_.pool).to(tb::kInt64);
             auto row=(block.unsqueeze(-1)*c_.pool+tb::arange(c_.pool,block.options())).clamp(0,c_.maximum-1);
             pooled=index_.storage().index_select(1,row.reshape({-1})).reshape({1,t,c_.pool,c_.index_width}).to(tb::kFloat32).mean(2).to(index_.storage().scalar_type());
-            pooled=rms_norm(pooled,w_.index_key_norm.to(tb::kFloat32)+1,c_.eps);
+            pooled=rms_norm(pooled,w_->index_key_norm.to(tb::kFloat32)+1,c_.eps);
             auto delta=positions-cache_positions;
             auto block_positions=block*c_.pool+delta;
             pooled=rotary_->forward(pooled.unsqueeze(1),block_positions).squeeze(1);
@@ -1375,22 +1396,23 @@ class Qsa {
         auto project_inputs = [&] {
                 if(prepared_inputs)
                     return project(execution,hidden,current_positions,!history_only && offset+t>c_.budget,{},{},{},std::move(projections));
-                auto pair = w_.query(execution, hidden).reshape({b, t, c_.heads, 2 * c_.width});
+                auto projector=execution.projector();
+                auto pair = this->project_query(projector,hidden).reshape({b, t, c_.heads, 2 * c_.width});
                 auto gate = pair.narrow(-1, c_.width, c_.width);
                 auto query = rms_norm(pair.narrow(-1, 0, c_.width),
-                                      w_.query_norm.to(tb::kFloat32) + 1, c_.eps)
+                                      w_->query_norm.to(tb::kFloat32) + 1, c_.eps)
                                  .permute({0, 2, 1, 3});
                 auto key =
-                    rms_norm(w_.key(execution, hidden).reshape({b, t, c_.kv_heads, c_.width}),
-                             w_.key_norm.to(tb::kFloat32) + 1, c_.eps)
+                    rms_norm(projector.run(w_->input_projection.weights[1],hidden).reshape({b, t, c_.kv_heads, c_.width}),
+                             w_->key_norm.to(tb::kFloat32) + 1, c_.eps)
                         .permute({0, 2, 1, 3});
-                auto value = w_.value(execution, hidden).reshape({b, t, c_.kv_heads, c_.width});
+                auto value = projector.run(w_->input_projection.weights[2],hidden).reshape({b, t, c_.kv_heads, c_.width});
                 query = rotary_->forward(query, current_positions);
                 key = rotary_->forward(key, current_positions).permute({0, 2, 1, 3});
-                auto iqk = w_.index_query_key(execution, hidden);
+                auto iqk = projector.run(w_->input_projection.weights[3],hidden);
                 auto iq = rms_norm(iqk.narrow(-1, 0, c_.index_heads * c_.index_width)
                                        .reshape({b, t, c_.index_heads, c_.index_width}),
-                                   w_.index_query_norm.to(tb::kFloat32) + 1, c_.eps)
+                                   w_->index_query_norm.to(tb::kFloat32) + 1, c_.eps)
                               .permute({0, 2, 1, 3});
                 iq = rotary_->forward(iq, current_positions).permute({0, 2, 1, 3});
                 auto raw = iqk.narrow(-1, c_.index_heads * c_.index_width, c_.index_width);
@@ -1455,7 +1477,7 @@ class Qsa {
                                   .to(tb::kFloat32)
                                   .mean(2)
                                   .to(raw.scalar_type());
-                pooled = rms_norm(pooled, w_.index_key_norm.to(tb::kFloat32) + 1, c_.eps);
+                pooled = rms_norm(pooled, w_->index_key_norm.to(tb::kFloat32) + 1, c_.eps);
                 auto starts = tb::arange(pools, raw.options().dtype(tb::kInt64)) * c_.pool;
                 auto positions = full_positions.index_select(-1, starts);
                 pooled = rotary_->forward(pooled.unsqueeze(1), positions).squeeze(1);
@@ -1478,7 +1500,7 @@ class Qsa {
                 auto gated = short_gate?std::move(attended):
                     attended.to(tb::kFloat32) * tb::sigmoid(p.gate.to(tb::kFloat32));
                 auto result = gated.reshape({b, t, c_.heads * c_.width}).to(hidden.scalar_type());
-                return project_output ? w_.output(execution,result) : result;
+                return project_output ? this->project_output(execution.projector(),result) : result;
             },
             [&] { truncate(offset); });
     }
@@ -1592,7 +1614,7 @@ class Qsa {
                 auto raw = managed_memory()?index_.storage().narrow(1,first_pool*c_.pool,new_pools*c_.pool).reshape({new_pools*c_.pool,c_.index_width})
                     : offloaded_index_->range(first_pool * c_.pool, new_pools * c_.pool);
                 auto pooled = raw.reshape({1, new_pools, c_.pool, c_.index_width}).to(tb::kFloat32).mean(2).to(tb::kFloat16);
-                pooled = rms_norm(pooled, w_.index_key_norm.to(tb::kFloat32) + 1, c_.eps);
+                pooled = rms_norm(pooled, w_->index_key_norm.to(tb::kFloat32) + 1, c_.eps);
                 auto starts = (tb::arange(new_pools, positions.options().dtype(tb::kInt64)) + first_pool) * c_.pool;
                 pooled = rotary_->forward(pooled.unsqueeze(1), full_positions.index_select(-1, starts)).squeeze(1);
                 if(managed_memory())graph_pooled_.narrow(1,first_pool,new_pools).copy_(pooled);
@@ -1617,7 +1639,7 @@ class Qsa {
                 auto attended = attend(p.query, key, value, ids, offset);
                 auto gated = attended.to(tb::kFloat32) * tb::sigmoid(p.gate.to(tb::kFloat32));
                 auto result = gated.reshape({1,tokens,c_.heads*c_.width}).to(hidden.scalar_type());
-                return project_output ? w_.output(execution,result) : result;
+                return project_output ? this->project_output(execution.projector(),result) : result;
             }
             const auto queries = std::max<int64_t>(1, std::min<int64_t>(32,
                 offload_->config().buffer_bytes / 4 / (std::size_t(max_keys) * row_bytes)));
@@ -1675,7 +1697,7 @@ class Qsa {
             auto attended = tb::cat(outputs, 1);
             auto gated = attended.to(tb::kFloat32) * tb::sigmoid(p.gate.to(tb::kFloat32));
             auto result=gated.reshape({1, tokens, c_.heads * c_.width}).to(hidden.scalar_type());
-            return project_output?w_.output(execution,result):result;
+            return project_output?this->project_output(execution.projector(),result):result;
         } catch (...) { truncate(offset); throw; }
     }
     Tensor project_norm(const Tensor& value,const Tensor& weight) {
@@ -1685,14 +1707,14 @@ class Qsa {
     }
     Projection project_history(CudaExecutionContext& execution,const Tensor& hidden,const Tensor& positions) {
         const auto b=hidden.size(0),t=hidden.size(1);
-        auto source=w_.key(execution,hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto source=execution.projector().run(w_->input_projection.weights[1],hidden).reshape({b,t,c_.kv_heads,c_.width});
         Tensor key;
         if(fused_projection_ && rotary_->fused() &&
                 (source.scalar_type()==tb::kFloat16 || source.scalar_type()==tb::kFloat32))
-            key=rotary_->forward_normalized_grouped({source},{w_.key_norm},positions,c_.eps,1)[0].permute({0,2,1,3});
-        else key=rotary_->forward(project_norm(source,w_.key_norm).permute({0,2,1,3}),positions).permute({0,2,1,3});
-        auto value=w_.value(execution,hidden).reshape({b,t,c_.kv_heads,c_.width});
-        auto raw=w_.index_query_key(execution,hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
+            key=rotary_->forward_normalized_grouped({source},{w_->key_norm},positions,c_.eps,1)[0].permute({0,2,1,3});
+        else key=rotary_->forward(project_norm(source,w_->key_norm).permute({0,2,1,3}),positions).permute({0,2,1,3});
+        auto value=execution.projector().run(w_->input_projection.weights[2],hidden).reshape({b,t,c_.kv_heads,c_.width});
+        auto raw=execution.projector().run(w_->input_projection.weights[3],hidden).narrow(-1,c_.index_heads*c_.index_width,c_.index_width);
         return {{},{},std::move(key),std::move(value),{},std::move(raw)};
     }
     Projection project(CudaExecutionContext& execution,const Tensor& hidden,const Tensor& positions,
@@ -1700,25 +1722,31 @@ class Qsa {
                        const Tensor& key_cache={},const Tensor& value_cache={},
                        std::vector<Tensor> projections={}) {
         const auto b=hidden.size(0),t=hidden.size(1);
-        if(projections.empty() && grouped_projection_ && w_.input_projection) {
-            projections=w_.input_projection(execution,hidden);
+        if(projections.empty()) {
+            auto projector=execution.projector();
+            if(grouped_projection_ && w_->input_projection.grouped())
+                projections=project_inputs(projector,hidden);
+            else projections={project_query(projector,hidden),
+                projector.run(w_->input_projection.weights[1],hidden),
+                projector.run(w_->input_projection.weights[2],hidden),
+                projector.run(w_->input_projection.weights[3],hidden)};
         }
         TYLOINFER_RUNTIME_CHECK(projections.empty() || projections.size()==4,"QSA input projection count mismatch");
-        auto pair=(projections.empty()?w_.query(execution,hidden):projections[0]).reshape({b,t,c_.heads,2*c_.width});
+        auto pair=projections[0].reshape({b,t,c_.heads,2*c_.width});
         auto gate=pair.narrow(-1,c_.width,c_.width);
-        auto key_source=(projections.empty()?w_.key(execution,hidden):projections[1]).reshape({b,t,c_.kv_heads,c_.width});
-        auto value=(projections.empty()?w_.value(execution,hidden):projections[2]).reshape({b,t,c_.kv_heads,c_.width});
+        auto key_source=projections[1].reshape({b,t,c_.kv_heads,c_.width});
+        auto value=projections[2].reshape({b,t,c_.kv_heads,c_.width});
         const auto supported=[](const Tensor& x) { return x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32; };
         const bool fused=fused_projection_ && rotary_->fused() && supported(pair) && supported(key_source) && supported(value);
         const bool cache_written=fused && key_cache.defined();
-        auto iqk=projections.empty()?w_.index_query_key(execution,hidden):projections[3];
+        auto iqk=projections[3];
         Tensor query,key,iq;
         if(fused) {
             std::vector<Tensor> inputs{pair.narrow(-1,0,c_.width),key_source};
-            std::vector<Tensor> weights{w_.query_norm,w_.key_norm};
+            std::vector<Tensor> weights{w_->query_norm,w_->key_norm};
             if(index_query_needed) {
                 auto source=iqk.narrow(-1,0,c_.index_heads*c_.index_width).reshape({b,t,c_.index_heads,c_.index_width});
-                if(supported(source)){inputs.push_back(source);weights.push_back(w_.index_query_norm);}
+                if(supported(source)){inputs.push_back(source);weights.push_back(w_->index_query_norm);}
             }
             auto normalized=rotary_->forward_normalized_grouped(inputs,weights,positions,c_.eps,1,
                 cache_written?key_cache:Tensor{},cache_written?cache_positions:Tensor{},
@@ -1727,21 +1755,21 @@ class Qsa {
             if(key.defined())key=key.permute({0,2,1,3});
             if(normalized.size()==3)iq=normalized[2].permute({0,2,1,3});
         } else {
-            query=project_norm(pair.narrow(-1,0,c_.width),w_.query_norm).permute({0,2,1,3});
-            key=project_norm(key_source,w_.key_norm).permute({0,2,1,3});
+            query=project_norm(pair.narrow(-1,0,c_.width),w_->query_norm).permute({0,2,1,3});
+            key=project_norm(key_source,w_->key_norm).permute({0,2,1,3});
             query=rotary_->forward(query,positions);key=rotary_->forward(key,positions).permute({0,2,1,3});
         }
         if(index_query_needed && !iq.defined()) {
             auto source=iqk.narrow(-1,0,c_.index_heads*c_.index_width).reshape({b,t,c_.index_heads,c_.index_width});
-            if(fused && supported(source))iq=rotary_->forward_normalized(source,w_.index_query_norm,positions,c_.eps).permute({0,2,1,3});
+            if(fused && supported(source))iq=rotary_->forward_normalized(source,w_->index_query_norm,positions,c_.eps).permute({0,2,1,3});
             else {
-                iq=project_norm(source,w_.index_query_norm).permute({0,2,1,3});
+                iq=project_norm(source,w_->index_query_norm).permute({0,2,1,3});
                 iq=rotary_->forward(iq,positions).permute({0,2,1,3});
             }
         }
         return {gate,query,key,value,iq,iqk.narrow(-1,c_.index_heads*c_.index_width,c_.index_width),cache_written};
     }
-    QsaWeights w_;
+    std::shared_ptr<const QsaWeights> w_;
     QsaConfig c_;
     KvQuantization quantization_=cuda_kv_quantization();
     std::shared_ptr<RotaryEmbedding> rotary_;

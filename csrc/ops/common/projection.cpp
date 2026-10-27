@@ -288,6 +288,59 @@ mfq_tensor_backend::Tensor Projector::run(
     return weight.mxfp8.forward(profiler_, x);
 }
 
+std::vector<mfq_tensor_backend::Tensor> Projector::run(
+        const Projections& projections,
+        mfq_tensor_backend::Tensor x) const {
+    const auto join = [&projections](std::vector<mfq_tensor_backend::Tensor> outputs) {
+        if (projections.prefix <= 1 || outputs.empty()) return outputs;
+        std::vector<mfq_tensor_backend::Tensor> prefix(
+            outputs.begin(), outputs.begin() + projections.prefix);
+        auto combined = mfq_tensor_backend::cat(prefix, -1);
+        outputs.erase(outputs.begin(), outputs.begin() + projections.prefix);
+        outputs.insert(outputs.begin(), std::move(combined));
+        return outputs;
+    };
+    const auto run_separate = [&] {
+        std::vector<mfq_tensor_backend::Tensor> outputs;
+        outputs.reserve(projections.weights.size());
+        for (const auto & weight : projections.weights) {
+            outputs.push_back(run(weight, x));
+        }
+        return join(std::move(outputs));
+    };
+
+    if (projections.group.tq.defined() && x.is_cuda()) {
+        auto grouped = run(projections.group, x);
+        std::vector<mfq_tensor_backend::Tensor> outputs(
+            projections.weights.size());
+        for (size_t i = 0, j = 0; i < projections.indices.size(); ++i) {
+            outputs[projections.indices[i]] = std::move(grouped[j++]);
+            if (projections.joined && i == 0) i += projections.prefix - 1;
+        }
+        for (size_t i = 0; i < projections.weights.size(); ++i) {
+            if (projections.joined && i > 0 && i < projections.prefix) {
+                continue;
+            }
+            if (!outputs[i].defined()) outputs[i] = run(projections.weights[i], x);
+        }
+        if (projections.joined) {
+            outputs.erase(
+                outputs.begin() + 1,
+                outputs.begin() + projections.prefix);
+            return outputs;
+        }
+        return join(std::move(outputs));
+    }
+
+    if (projections.group.nint_grouped && x.is_cuda() &&
+            mmq_.mode == KlMmqMode::Default &&
+            x.numel() / x.size(-1) <= 8) {
+        auto outputs = run(projections.group, x);
+        return projections.joined ? outputs : join(std::move(outputs));
+    }
+    return run_separate();
+}
+
 mfq_tensor_backend::Tensor Projector::groupwise(
         const QuantLinear& weight,
         mfq_tensor_backend::Tensor grouped,

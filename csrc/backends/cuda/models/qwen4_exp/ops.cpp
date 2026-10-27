@@ -120,52 +120,68 @@ struct QwenGdnPrefillProjectionRowsScope {
     }
     ~QwenGdnPrefillProjectionRowsScope(){qwen_gdn_prefill_projection_rows=previous;}
 };
-static Linear qwen_gdn_preserve_projection_rows(Linear project) {
-    return [project](CudaExecutionContext& execution,const Tensor& source) {
-        const auto rows=qwen_gdn_prefill_projection_rows;
-        if(rows<=0 || source.dim()!=3 || source.size(0)!=1 || source.size(1)<=rows)
-            return project(execution,source);
+template<class Project>
+static Tensor qwen_gdn_project_rows(const Tensor& source,Project project) {
+    const auto rows=qwen_gdn_prefill_projection_rows;
+    if(rows<=0 || source.dim()!=3 || source.size(0)!=1 || source.size(1)<=rows)return project(source);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const auto parallel_option=mfq::cuda::runtime_options::gdn_prefill_projection_streams();
-        const int streams=parallel_option?*parallel_option:2;
-        const auto tail=source.size(1)%rows;
-        if(streams>0 && (tail==0 || tail>8)) {
-            const mfq::cuda::MatmulRowsScope gemm_rows(rows,streams);
-            return project(execution,source);
-        }
+    const auto parallel_option=mfq::cuda::runtime_options::gdn_prefill_projection_streams();
+    const int streams=parallel_option?*parallel_option:2;
+    const auto tail=source.size(1)%rows;
+    if(streams>0 && (tail==0 || tail>8)) {
+        const mfq::cuda::MatmulRowsScope gemm_rows(rows,streams);
+        return project(source);
+    }
 #endif
-        Tensor output;
-        for(int64_t begin=0;begin<source.size(1);begin+=rows) {
-            const auto count=std::min<int64_t>(rows,source.size(1)-begin);
-            auto part=project(execution,source.narrow(1,begin,count));
-            if(!output.defined()) {
-                auto shape=part.sizes().vec();shape[1]=source.size(1);
-                output=tb::empty(shape,part.options());
-            }
-            output.narrow(1,begin,count).copy_(part);
+    Tensor output;
+    for(int64_t begin=0;begin<source.size(1);begin+=rows) {
+        const auto count=std::min<int64_t>(rows,source.size(1)-begin);
+        auto part=project(source.narrow(1,begin,count));
+        if(!output.defined()) {
+            auto shape=part.sizes().vec();shape[1]=source.size(1);
+            output=tb::empty(shape,part.options());
         }
-        return output;
-    };
+        output.narrow(1,begin,count).copy_(part);
+    }
+    return output;
 }
-static LinearGroup qwen_gdn_preserve_projection_rows(LinearGroup project) {
-    if(!project)return {};
-    return [project](CudaExecutionContext& execution,const Tensor& source) {
-        const auto rows=qwen_gdn_prefill_projection_rows;
-        if(rows<=0 || source.dim()!=3 || source.size(0)!=1 || source.size(1)<=rows)
-            return project(execution,source);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        const auto parallel_option=mfq::cuda::runtime_options::gdn_prefill_projection_streams();
-        const int streams=parallel_option?*parallel_option:2;
-        const auto tail=source.size(1)%rows;
-        if(streams>0 && (tail==0 || tail>8)) {
-            const mfq::cuda::MatmulRowsScope gemm_rows(rows,streams);
-            return project(execution,source);
+
+Tensor Gdn::project_weight(const mfq::cuda::Projector& projector,const QuantLinear& weight,const Tensor& source) const {
+    return qwen_gdn_project_rows(source,[&](const Tensor& input){return projector.run(weight,input);});
+}
+
+Tensor Gdn::project_qkv(const mfq::cuda::Projector& projector,const Tensor& source) const {
+    if(w_->qkv_count==1)return project_weight(projector,w_->input_projection.weights[0],source);
+    return qwen_gdn_project_rows(source,[&](const Tensor& input) {
+        return tb::cat({projector.run(w_->input_projection.weights[0],input),
+            projector.run(w_->input_projection.weights[1],input),
+            projector.run(w_->input_projection.weights[2],input)},-1);
+    });
+}
+
+std::vector<Tensor> Gdn::project_inputs(const mfq::cuda::Projector& projector,const Tensor& source) const {
+    if(!(grouped_projection_ && w_->input_projection.grouped()))
+        return {project_qkv(projector,source),
+            project_weight(projector,w_->input_projection.weights[w_->qkv_count],source),
+            project_weight(projector,w_->input_projection.weights[w_->qkv_count+1],source),
+            project_weight(projector,w_->input_projection.weights[w_->qkv_count+2],source)};
+    auto* window=mfq::cuda::DecodeWindow::recording();
+    if(window)window->mark_current("gdn_input_begin");
+    const auto rows=qwen_gdn_prefill_projection_rows;
+    const auto project=[&](const Tensor& input) {
+        auto result=projector.run(w_->input_projection,input);
+        if(w_->qkv_count==3 && w_->input_projection.prefix==1) {
+            TYLOINFER_RUNTIME_CHECK(result.size()==6,"GDN input projection count mismatch");
+            result={tb::cat({result[0],result[1],result[2]},-1),result[3],result[4],result[5]};
         }
-#endif
-        std::vector<Tensor> output;
+        TYLOINFER_RUNTIME_CHECK(result.size()==4,"GDN input projection count mismatch");
+        return result;
+    };
+    std::vector<Tensor> output;
+    const auto slice=[&] {
         for(int64_t begin=0;begin<source.size(1);begin+=rows) {
             const auto count=std::min<int64_t>(rows,source.size(1)-begin);
-            auto part=project(execution,source.narrow(1,begin,count));
+            auto part=project(source.narrow(1,begin,count));
             if(output.empty())for(const auto& value:part) {
                 auto shape=value.sizes().vec();shape[1]=source.size(1);
                 output.push_back(tb::empty(shape,value.options()));
@@ -173,21 +189,36 @@ static LinearGroup qwen_gdn_preserve_projection_rows(LinearGroup project) {
             TYLOINFER_RUNTIME_CHECK(part.size()==output.size(),"GDN projection count changed across chunks");
             for(size_t i=0;i<part.size();++i)output[i].narrow(1,begin,count).copy_(part[i]);
         }
-        return output;
     };
+    if(rows<=0 || source.dim()!=3 || source.size(0)!=1 || source.size(1)<=rows) {
+        output=project(source);
+    } else {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        const auto parallel_option=mfq::cuda::runtime_options::gdn_prefill_projection_streams();
+        const int streams=parallel_option?*parallel_option:2;
+        const auto tail=source.size(1)%rows;
+        if(streams>0 && (tail==0 || tail>8)) {
+            const mfq::cuda::MatmulRowsScope gemm_rows(rows,streams);
+            output=project(source);
+        } else {
+            slice();
+        }
+#else
+        slice();
+#endif
+    }
+    if(window)window->mark_current("gdn_input_end");
+    return output;
 }
 
-template<class Projection>
-static Projection qwen_gdn_profile_projection(Projection project,const char* begin,const char* end) {
-    if(!project)return {};
-    return [project,begin,end](CudaExecutionContext& execution,const Tensor& input) {
-        auto* window=mfq::cuda::DecodeWindow::recording();
-        if(window)window->mark_current(begin);
-        auto output=project(execution,input);
-        if(window)window->mark_current(end);
-        return output;
-    };
+Tensor Gdn::project_output(const mfq::cuda::Projector& projector,const Tensor& source) const {
+    auto* window=mfq::cuda::DecodeWindow::recording();
+    if(window)window->mark_current("gdn_output_begin");
+    auto output=project_weight(projector,w_->output,source);
+    if(window)window->mark_current("gdn_output_end");
+    return output;
 }
+
 
 static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_up, weight_loader::Routed down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
@@ -398,82 +429,47 @@ struct BlockLoader : weight_loader::Loader {
     auto gdn_weights(const std::string &p) const {
         const bool independent = has(p + ".query.weight") || has(p + ".key.weight") || has(p + ".value.weight");
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");
-        GdnWeights w{independent ? Linear{} : linear(p + ".qkv.weight"), linear(p + ".gate.weight"),
-            linear(p + ".alpha.weight"), linear(p + ".beta.weight"), linear(p + ".output.weight"),
-            dense(p + ".conv.weight"), dense(p + ".dt_bias"), dense(p + ".a"), dense(p + ".norm.weight")};
-        if (independent)
-            for (const auto* name : {"query", "key", "value"})
-                w.split_qkv.push_back(linear(p + "." + name + ".weight"));
+        GdnWeights w;
+        if(independent)for(const auto* name:{"query","key","value"})
+            w.input_projection.weights.push_back(load_quant_linear(execution,source,p+"."+name+".weight"));
+        else w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".qkv.weight"));
+        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".gate.weight"));
+        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".alpha.weight"));
+        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".beta.weight"));
+        w.qkv_count=independent?3:1;
+        w.output=load_quant_linear(execution,source,p+".output.weight");
+        w.conv=dense(p+".conv.weight");w.dt_bias=dense(p+".dt_bias");w.a_log=dense(p+".a");w.norm=dense(p+".norm.weight");
         return w;
     }
     auto qsa_weights(const std::string &p) const {
-        QsaWeights w{linear(p + ".query.weight"), linear(p + ".key.weight"), linear(p + ".value.weight"),
-            linear(p + ".output.weight"), linear(p + ".indexer.query_key.weight"), dense(p + ".query_norm.weight"),
-            dense(p + ".key_norm.weight"), dense(p + ".indexer.query_norm.weight"), dense(p + ".indexer.key_norm.weight")};
-        if (has(p + ".gate.weight")) w.gate = linear(p + ".gate.weight");
+        QsaWeights w;
+        for(const auto* name:{"query","key","value"})
+            w.input_projection.weights.push_back(load_quant_linear(execution,source,p+"."+name+".weight"));
+        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".indexer.query_key.weight"));
+        w.output=load_quant_linear(execution,source,p+".output.weight");
+        w.query_norm=dense(p+".query_norm.weight");w.key_norm=dense(p+".key_norm.weight");
+        w.index_query_norm=dense(p+".indexer.query_norm.weight");w.index_key_norm=dense(p+".indexer.key_norm.weight");
+        if(has(p+".gate.weight")) {
+            w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".gate.weight"));
+            w.has_gate=true;
+        }
         return w;
     }
     auto gdn(GdnWeights weights, const Config &c) const {
-        std::vector<Linear> projections = weights.split_qkv.empty()
-            ? std::vector<Linear>{weights.qkv} : weights.split_qkv;
-        const bool independent = !weights.split_qkv.empty();
-        projections.insert(projections.end(), {weights.gate,weights.alpha,weights.beta});
         const auto packed_qkv_option=mfq::cuda::runtime_options::gdn_packed_qkv();
-        const bool packed_qkv=independent && (!packed_qkv_option || *packed_qkv_option);
-        auto group = weight_loader::grouped_linear(execution,projections,packed_qkv?3:1);
-        if (independent) {
-            if(group && packed_qkv)weights.input_projection=std::move(group);
-            else if (group)
-                weights.input_projection = [group](CudaExecutionContext &e, const Tensor &x) {
-                    auto p = group(e,x);
-                    return std::vector<Tensor>{tb::cat({p[0],p[1],p[2]},-1),p[3],p[4],p[5]};
-                };
-            weights.qkv = [q=projections[0],k=projections[1],v=projections[2]](CudaExecutionContext &e, const Tensor &x) {
-                return tb::cat({q(e,x),k(e,x),v(e,x)},-1);
-            };
-        } else {
-            weights.input_projection = std::move(group);
-            weights.qkv = std::move(projections[0]);
-        }
-        const auto start = independent ? 3 : 1;
-        weights.gate=std::move(projections[start]);weights.alpha=std::move(projections[start+1]);
-        weights.beta=std::move(projections[start+2]);
-        weights.input_projection=qwen_gdn_preserve_projection_rows(std::move(weights.input_projection));
-        weights.qkv=qwen_gdn_preserve_projection_rows(std::move(weights.qkv));
-        weights.gate=qwen_gdn_preserve_projection_rows(std::move(weights.gate));
-        weights.alpha=qwen_gdn_preserve_projection_rows(std::move(weights.alpha));
-        weights.beta=qwen_gdn_preserve_projection_rows(std::move(weights.beta));
-        weights.output=qwen_gdn_preserve_projection_rows(std::move(weights.output));
-        weights.input_projection=qwen_gdn_profile_projection(std::move(weights.input_projection),
-            "gdn_input_begin","gdn_input_end");
-        weights.output=qwen_gdn_profile_projection(std::move(weights.output),
-            "gdn_output_begin","gdn_output_end");
-        return std::make_unique<Gdn>(std::move(weights), c.key_heads, c.value_heads, c.linear_width,
+        const bool packed_qkv=weights.qkv_count==3 && (!packed_qkv_option || *packed_qkv_option);
+        weights.input_projection=make_projections(std::move(weights.input_projection.weights),
+            execution.config.diagnostic_nint_group,execution.loading_cpu_layer,packed_qkv?3:1);
+        if(!weights.input_projection.grouped())weights.input_projection.prefix=1;
+        auto shared=std::make_shared<const GdnWeights>(std::move(weights));
+        return std::make_unique<Gdn>(std::move(shared), c.key_heads, c.value_heads, c.linear_width,
                                      c.kernel, c.eps, c.silu_gate,true,execution.config.gdn_transposed_state,
                                      execution.config.gdn_fused_output,true,execution.config.gdn_fused_preparation,
                                      execution.config.gdn_fused_core);
     }
     auto qsa(QsaWeights weights, const Config &c) const {
-        std::vector<Linear> projections{weights.query,weights.key,weights.value,weights.index_query_key};
-        if (weights.gate) projections.push_back(weights.gate);
-        auto group = weight_loader::grouped_linear(execution,projections);
-        if (weights.gate) {
-            const auto heads = c.heads, width = c.width;
-            const auto combine = [heads,width](const Tensor &q,const Tensor &g) {
-                const auto b=q.size(0),t=q.size(1);
-                return tb::cat({q.reshape({b,t,heads,width}),g.reshape({b,t,heads,width})},-1)
-                    .reshape({b,t,2*heads*width});
-            };
-            if (group)
-                weights.input_projection = [group,combine](CudaExecutionContext &e,const Tensor &x) {
-                    auto p=group(e,x);p[0]=combine(p[0],p[4]);p.resize(4);return p;
-                };
-            projections[0] = [q=projections[0],g=projections[4],combine](CudaExecutionContext &e,const Tensor &x) {
-                return combine(q(e,x),g(e,x));
-            };
-        } else weights.input_projection=std::move(group);
-        weights.query=std::move(projections[0]);weights.key=std::move(projections[1]);
-        weights.value=std::move(projections[2]);weights.index_query_key=std::move(projections[3]);
+        weights.input_projection=make_projections(std::move(weights.input_projection.weights),
+            execution.config.diagnostic_nint_group,execution.loading_cpu_layer);
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -484,7 +480,10 @@ struct BlockLoader : weight_loader::Loader {
         auto rotary = std::make_shared<RotaryEmbedding>(c.rotary, c.maximum, c.rope_base,
             c.sections, c.interleaved,
             runtime_options::rotary_fusion().value_or(default_rotary_fusion), execution.yarn);
-        return std::make_unique<Qsa>(std::move(weights), geometry, std::move(rotary), true, true, execution.stores.qsa_kv_store, execution.stores.kv_memory);
+        for(auto* norm:{&weights.query_norm,&weights.key_norm,&weights.index_query_norm,&weights.index_key_norm})
+            if(norm->defined())*norm=norm->to(tb::kFloat32).contiguous();
+        auto shared=std::make_shared<const QsaWeights>(std::move(weights));
+        return std::make_unique<Qsa>(std::move(shared), geometry, std::move(rotary), true, true, execution.stores.qsa_kv_store, execution.stores.kv_memory);
     }
     auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
@@ -2207,8 +2206,8 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
                     : block.attention_gr.pre(hidden,marker("attention_mhc_"));
                 graph.window->mark(static_cast<int>(i),"attention_core_begin");
                 const bool project_batch=batch>1 && runtime_options::batch_attention_projections();
-                const auto projections=project_batch ? (block.gdn ? block.gdn->project_inputs(execution,mix.mixed)
-                    : block.qsa->project_inputs(execution,mix.mixed)) : std::vector<tb::Tensor>{};
+                const auto projections=project_batch ? (block.gdn ? block.gdn->project_inputs(execution.projector(),mix.mixed)
+                    : block.qsa->project_inputs(execution.projector(),mix.mixed)) : std::vector<tb::Tensor>{};
                 std::vector<tb::Tensor> attended;
                 Tensor attention;
                 if(project_batch && block.gdn && graph.gdn_addresses[i].defined())
@@ -2223,8 +2222,8 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
                             std::move(projected),!project_batch));
                 }
                 if(!attention.defined())attention=join_request_outputs(attended,0);
-                if(project_batch)attention=block.gdn ? block.gdn->project_output(execution,attention)
-                    : block.qsa->project_output(execution,attention);
+                if(project_batch)attention=block.gdn ? block.gdn->project_output(execution.projector(),attention)
+                    : block.qsa->project_output(execution.projector(),attention);
                 graph.window->mark(static_cast<int>(i),"attention_core_end");
                 auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate,marker("ffn_mhc_"));
                 graph.window->mark(static_cast<int>(i),"ffn_pre_end");
@@ -2309,8 +2308,8 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
             hidden=join_request_outputs(positional,1);
         }
         auto mix=block.attention_gr.pre(hidden);
-        const auto projections=block.gdn?block.gdn->project_inputs(execution,mix.mixed)
-                                         :block.qsa->project_inputs(execution,mix.mixed);
+        const auto projections=block.gdn?block.gdn->project_inputs(execution.projector(),mix.mixed)
+                                         :block.qsa->project_inputs(execution.projector(),mix.mixed);
         std::vector<tb::Tensor> attended;
         for (std::size_t row=0;row<requests.size();++row) {
             auto& layer=requests[row]->state_->layers[i];
@@ -2322,7 +2321,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
                 :layer.qsa->forward(execution,attention_input,current[row],full[row],true,nullptr,std::move(projected),false));
         }
         auto attention=join_request_outputs(attended,1);
-        attention=block.gdn?block.gdn->project_output(execution,attention):block.qsa->project_output(execution,attention);
+        attention=block.gdn?block.gdn->project_output(execution.projector(),attention):block.qsa->project_output(execution.projector(),attention);
         auto ffn_mix=block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
         // All prompt tokens share each expert transfer and compressed decode.
         hidden=block.ffn_gr.post(block.ffn(execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
@@ -2372,7 +2371,7 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
         }
         auto mix = block.attention_gr.pre(hidden);
         const bool project_batch=batch>1 && block.gdn && runtime_options::batch_attention_projections();
-        const auto projections=project_batch ? block.gdn->project_inputs(execution,mix.mixed) : std::vector<tb::Tensor>{};
+        const auto projections=project_batch ? block.gdn->project_inputs(execution.projector(),mix.mixed) : std::vector<tb::Tensor>{};
         std::vector<tb::Tensor> attended;
         for (int64_t row = 0; row < batch; ++row) {
             auto& layer = requests[row]->state_->layers[i];
@@ -2383,7 +2382,7 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
                 : layer.qsa->forward(execution,attention_input,current[row],full[row],true));
         }
         auto attention=join_request_outputs(attended,0);
-        if(project_batch)attention=block.gdn->project_output(execution,attention);
+        if(project_batch)attention=block.gdn->project_output(execution.projector(),attention);
         auto ffn_mix = block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
         // Tiles share the expert transfer cache across all eligible rows.
         hidden = block.ffn_gr.post(block.batch_ffn(execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);

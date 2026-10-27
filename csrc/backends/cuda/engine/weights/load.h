@@ -119,11 +119,6 @@ struct Routed {
 
 Linear linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name);
 std::shared_ptr<const QuantLinear> linear_weight(const Linear& function);
-using LinearGroup = std::function<std::vector<Tensor>(CudaExecutionContext&, const Tensor&)>;
-// Fuse compatible projections while retaining independent TQ storage and
-// individual boundaries for GEMM. Unquantized auxiliaries keep their outputs.
-LinearGroup grouped_linear(CudaExecutionContext&, std::vector<Linear>& functions,
-                           std::size_t joined_prefix=1);
 
 // GR projections retain floating activation math for dense and quantized input.
 GatedResidual::Projection residual_linear(CudaExecutionContext&, const mfq::ModelSource&, const std::string& name);

@@ -10,6 +10,18 @@ namespace mfq::cuda {
 class Branches;
 struct Experts;
 
+struct Projections {
+    std::vector<QuantLinear> weights;
+    QuantLinearGroup group;
+    std::vector<size_t> indices;
+    size_t prefix = 1;
+    bool joined = false;
+
+    bool grouped() const noexcept {
+        return group.tq.defined() || group.nint_grouped;
+    }
+};
+
 // Bound resources and options must outlive this object; drain before resetting them.
 class Projector {
 public:
@@ -33,6 +45,8 @@ public:
     int primary_device() const { return primary_; }
 
     mfq_tensor_backend::Tensor run(const QuantLinear& weight, mfq_tensor_backend::Tensor input) const;
+    std::vector<mfq_tensor_backend::Tensor> run(
+        const Projections& projections, mfq_tensor_backend::Tensor input) const;
     std::vector<mfq_tensor_backend::Tensor> run(
         const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
     mfq_tensor_backend::Tensor gated(const QuantLinear& weight, mfq_tensor_backend::Tensor input,

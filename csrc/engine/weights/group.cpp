@@ -176,6 +176,143 @@ QuantLinearGroup make_quant_group(
     return result;
 }
 
+namespace mfq::cuda {
+
+Projections make_projections(
+        std::vector<QuantLinear> weights,
+        bool group_nint,
+        bool cpu_layer,
+        size_t prefix) {
+    Projections result;
+    result.weights = std::move(weights);
+    result.prefix = prefix;
+    if (result.weights.empty()) return result;
+    TYLOINFER_RUNTIME_CHECK(
+        prefix >= 1 && prefix <= result.weights.size(),
+        "invalid grouped projection prefix");
+    if (cpu_layer) return result;
+
+    std::vector<QuantLinear> tq_weights;
+    std::vector<size_t> tq_indices;
+    for (size_t i = 0; i < result.weights.size(); ++i) {
+        const auto & weight = result.weights[i];
+        if (!weight.is_tq() || weight.tensor_parallel() ||
+                !weight.tq.image.is_cuda()) {
+            continue;
+        }
+        if (!tq_weights.empty() &&
+                (weight.neuron_len() != tq_weights.front().neuron_len() ||
+                 weight.tq.image.device() !=
+                     tq_weights.front().tq.image.device())) {
+            return result;
+        }
+        tq_weights.push_back(weight);
+        tq_indices.push_back(i);
+    }
+    if (tq_weights.size() >= 2) {
+        result.group = make_quant_group(
+            tq_weights, group_nint, cpu_layer);
+        TYLOINFER_RUNTIME_CHECK(
+            result.group.tq.defined(),
+            "TQ projection group was not constructed");
+        result.indices = std::move(tq_indices);
+        result.joined = prefix > 1 && result.indices.size() >= prefix;
+        for (size_t i = 0; result.joined && i < prefix; ++i) {
+            result.joined = result.indices[i] == i;
+        }
+        if (result.joined) result.group.tq.join_prefix(prefix);
+        return result;
+    }
+
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (!group_nint) return result;
+    for (size_t i = 0; i < result.weights.size(); ++i) {
+        const auto & weight = result.weights[i];
+        if (!weight.is_nint() || weight.tensor_parallel() ||
+                !weight.nint.q_packed.is_cuda()) {
+            return result;
+        }
+        if (i > 0 && weight.neuron_len() != result.weights.front().neuron_len()) {
+            return result;
+        }
+    }
+
+    auto group = make_quant_group(
+        result.weights, group_nint, cpu_layer);
+    if (!group.nint_grouped) return result;
+    result.group = std::move(group);
+
+    std::vector<QuantLinear> aliases;
+    aliases.reserve(result.weights.size());
+    size_t matrix_index = 0;
+    int64_t row = 0;
+    int64_t packed_bytes = 0;
+    for (const auto & original : result.weights) {
+        const auto & matrix = result.group.nint.split_w.empty()
+            ? result.group.nint.w
+            : result.group.nint.split_w.at(matrix_index);
+        TYLOINFER_RUNTIME_CHECK(
+            row + original.out() <= matrix.out &&
+                original.nint.ng == matrix.ng &&
+                original.nint.gs == matrix.gs &&
+                original.nint.q8_zero == matrix.q8_zero,
+            "grouped projection storage geometry mismatch");
+        auto alias = original;
+        auto & view = alias.nint;
+        view.workspaces.clear();
+        view.q_packed = matrix.q_packed;
+        if (view.q8_zero) {
+            view.q_packed = matrix.q_packed.narrow(0, row, view.out);
+            view.q8_zero_scale = matrix.q8_zero_scale.narrow(0, row, view.out);
+        } else {
+            view.row_q_bits = matrix.row_q_bits.narrow(0, row, view.out);
+            view.row_q_bit_offsets =
+                matrix.row_q_bit_offsets.narrow(0, row, view.out);
+            view.sub_scale = matrix.sub_scale.narrow(0, row, view.out);
+            view.sub_min = matrix.sub_min.narrow(0, row, view.out);
+            view.neuron_scale = matrix.neuron_scale.narrow(0, row, view.out);
+            view.neuron_min = matrix.neuron_min.narrow(0, row, view.out);
+            view.aligned_q8 =
+                original.nint.aligned_q8 && (packed_bytes % 4 == 0);
+        }
+        aliases.push_back(std::move(alias));
+        row += original.out();
+        packed_bytes += original.nint.q_packed.numel();
+        if (row == matrix.out) {
+            ++matrix_index;
+            row = 0;
+            packed_bytes = 0;
+        }
+    }
+    TYLOINFER_RUNTIME_CHECK(
+        row == 0 && matrix_index ==
+            (result.group.nint.split_w.empty()
+                ? 1 : result.group.nint.split_w.size()),
+        "grouped projection storage is not fully covered");
+    result.weights = std::move(aliases);
+
+    result.joined = prefix > 1 &&
+        (result.group.nint.split_w.empty() ||
+         result.group.nint.split_outs.front().size() >= prefix);
+    const auto join_sizes = [prefix](auto & sizes) {
+        const auto combined = std::accumulate(
+            sizes.begin(), sizes.begin() + prefix, int64_t(0));
+        sizes.erase(sizes.begin(), sizes.begin() + prefix);
+        sizes.insert(sizes.begin(), combined);
+    };
+    if (result.joined) {
+        if (result.group.nint.split_w.empty()) {
+            join_sizes(result.group.nint.outs);
+        } else {
+            join_sizes(result.group.nint.split_outs.front());
+        }
+    }
+#endif
+    return result;
+}
+
+} // namespace mfq::cuda
+
 DenseLinearGroup make_dense_group(const std::vector<mfq_tensor_backend::Tensor> & ws) {
     if (ws.empty()) throw std::runtime_error("empty dense group");
     DenseLinearGroup g;

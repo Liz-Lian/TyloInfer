@@ -1,6 +1,16 @@
 #pragma once
 
-#include "ops/common/include/quant_linear.h"
+#include "ops/common/include/projection.h"
+
+namespace mfq::cuda {
+
+Projections make_projections(
+    std::vector<QuantLinear> weights,
+    bool group_nint,
+    bool cpu_layer,
+    size_t prefix = 1);
+
+}
 
 DenseLinearGroup make_fp32_quant_group(
     mfq::cuda::Collectives& collectives,
