@@ -181,9 +181,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
         const int expected_rows = pool.local_experts * cpu.out_per_expert;
         if (source.dtype == "NINT8-0") {
             pool.family = MixedMoeFamily::Nint8Zero;
-            pool.q8_zero = cuda
-                ? to_gpu_nint8_zero(source.q8_zero)
-                : to_cpu_nint8_zero(source.q8_zero);
+            pool.q8_zero = to_device_nint8_zero(source.q8_zero, cuda);
             if (pool.q8_zero.out != expected_rows ||
                 pool.q8_zero.neuron_len != cpu.neuron_len) {
                 throw std::runtime_error(
@@ -357,8 +355,8 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
                 mfq_current_cuda_device())).contiguous();
         if (source.dtype == "NINT8-0") {
             pool.family = MixedMoeFamily::Nint8Zero;
-            pool.q8_zero = to_gpu_nint8_zero(
-                select_nint8_zero_cpu_rows(source.q8_zero, rows));
+            pool.q8_zero = to_device_nint8_zero(
+                select_nint8_zero_cpu_rows(source.q8_zero, rows), true);
         } else if (source.dtype == "NINT") {
             pool.family = MixedMoeFamily::Nint;
             const auto selected = select_nint_cpu_rows(source.weight, rows);
@@ -593,12 +591,12 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
         int rotation_block = 0;
         mfq_tensor_backend::Tensor rotation_signs;
         if (pool.dtype == "NINT8-0") {
-            auto packed = to_gpu_nint8_zero(pool.q8_zero);
+            auto packed = to_device_nint8_zero(pool.q8_zero, true);
             dense_flat = nint8_zero_dequant_cuda(
                 packed.q_packed, packed.q8_zero_scale,
                 packed.neuron_len);
         } else if (pool.dtype == "NINT") {
-            auto packed = to_gpu_nint(pool.weight);
+            auto packed = to_device_nint(pool.weight, true);
             dense_flat = nint_decode_cuda(
                 packed.q_packed, packed.row_q_bits,
                 packed.row_q_bit_offsets, packed.sub_scale,
@@ -690,12 +688,12 @@ mfq_tensor_backend::Tensor materialize_mfe_dense(
     for (const auto& pool : cpu.pools) {
         mfq_tensor_backend::Tensor local_flat;
         if (pool.dtype == "NINT8-0") {
-            auto packed = to_gpu_nint8_zero(pool.q8_zero);
+            auto packed = to_device_nint8_zero(pool.q8_zero, true);
             local_flat = nint8_zero_dequant_cuda(
                 packed.q_packed, packed.q8_zero_scale,
                 packed.neuron_len);
         } else if (pool.dtype == "NINT") {
-            auto packed = to_gpu_nint(pool.weight);
+            auto packed = to_device_nint(pool.weight, true);
             local_flat = nint_decode_cuda(
                 packed.q_packed, packed.row_q_bits,
                 packed.row_q_bit_offsets, packed.sub_scale,

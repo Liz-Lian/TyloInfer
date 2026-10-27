@@ -547,6 +547,7 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/host_expert_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/residency.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/weights/nint_row_pipeline.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/nint.cpp
     )
 else()
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES

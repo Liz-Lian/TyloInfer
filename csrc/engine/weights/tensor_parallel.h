@@ -20,6 +20,20 @@ struct TensorParallelSlice {
     }
 };
 
+inline void require_parallel_weight(
+        const std::vector<int64_t> & shape,
+        int axis,
+        int out,
+        int neuron_len,
+        const char * format) {
+    if (shape.size() != 2 || axis != 0 ||
+        shape[0] != out || shape[1] != neuron_len) {
+        throw std::runtime_error(
+            std::string(format) +
+            " tensor parallelism requires a row-major rank-2 weight");
+    }
+}
+
 inline size_t peer_first_parallel_launch_index(
         size_t launch_position,
         size_t rank_count,

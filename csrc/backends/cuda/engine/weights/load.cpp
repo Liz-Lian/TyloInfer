@@ -78,7 +78,7 @@ mfq_tensor_backend::Tensor load_dense_gpu(
         if (cpu_layer) {
             return dequant_nint8_zero_cpu(source);
         }
-        const auto packed = to_gpu_nint8_zero(source);
+        const auto packed = to_device_nint8_zero(source, true);
         auto dense = nint8_zero_dequant_f32_cuda(
             packed.q_packed,
             packed.q8_zero_scale,
@@ -92,7 +92,8 @@ mfq_tensor_backend::Tensor load_dense_gpu(
         }
         return dense;
     }
-    auto dense = dequant_nint_dense_f32(to_gpu_nint(mfq::nint::unpack(blob)));
+    auto dense = dequant_nint_dense_f32(
+        to_device_nint(mfq::nint::unpack(blob), true));
     return cpu_layer
         ? dense.cpu().contiguous()
         : dense;
@@ -291,9 +292,8 @@ QuantLinear load_quant_linear(
                             slice.end * 32,
                             cpu.neuron_len)
                         : cpu.neuron_len;
-                    shard.nint =
-                        to_cuda_device_nint8_zero(
-                            shard_cpu, slice.device);
+                    shard.nint = to_device_nint8_zero(
+                        shard_cpu, true, slice.device);
                     result.tensor_parallel_shards.push_back(
                         std::move(shard));
                 }
@@ -346,8 +346,8 @@ QuantLinear load_quant_linear(
                             slice.end * cpu.gs,
                             cpu.neuron_len)
                         : cpu.neuron_len;
-                    shard.nint = to_cuda_device_nint(
-                        shard_cpu, slice.device);
+                    shard.nint = to_device_nint(
+                        shard_cpu, true, slice.device);
                     result.tensor_parallel_shards.push_back(
                         std::move(shard));
                 }

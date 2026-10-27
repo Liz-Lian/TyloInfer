@@ -818,7 +818,7 @@ mfq::nvq::Data slice_nvq_cpu(
         TensorParallelAxis axis,
         int64_t begin,
         int64_t end) {
-    require_tp_row_major_weight(
+    mfq::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NVQ");
     if (axis != TensorParallelAxis::Output &&
