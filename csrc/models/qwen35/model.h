@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/qwen35/config.h"
+#include "models/qwen35/config.h"
 #include "engine/models/common/causal_metadata.h"
 #include "backends/cuda/engine/models/ffn.h"
 #include "engine/task.h"

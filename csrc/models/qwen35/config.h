@@ -1,10 +1,10 @@
 #pragma once
 
-#include "../common/vision/grid_vision.h"
+#include "engine/models/common/vision/grid_vision.h"
 #include "source/model_source.h"
 #include "formats/model_graph.h"
-#include "../common/model_config.h"
-#include "../common/moe.h"
+#include "engine/models/common/model_config.h"
+#include "engine/models/common/moe.h"
 
 #include <cstdint>
 #include <optional>

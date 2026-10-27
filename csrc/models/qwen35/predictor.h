@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/qwen35/config.h"
+#include "models/qwen35/config.h"
 #include "engine/task.h"
 #include "backends/cuda/engine/models/ffn.h"
 #include "ops/attention/full.h"

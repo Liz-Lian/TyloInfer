@@ -12,7 +12,6 @@ add_library(mfq-engine STATIC
     models/minicpmo45/config.cpp
     models/nemotron_h/config.cpp
     models/nemotron_h/vision.cpp
-    models/qwen35/config.cpp
     models/qwen4_exp/config.cpp
     requests/constraint.cpp
     requests/emitter.cpp
