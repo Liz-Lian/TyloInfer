@@ -157,11 +157,6 @@ mfq_tensor_backend::Tensor nint_kld(
 mfq_tensor_backend::Tensor quant_embedding_lookup(
     const QuantLinear& weight, mfq_tensor_backend::Tensor token_ids);
 
-DenseLinearGroup make_fp32_quant_group(
-    mfq::cuda::Collectives& collectives,
-    int primary,
-    QuantLinearGroup group);
-
 mfq_tensor_backend::Tensor nvq_ffn_swiglu_down(
     CudaProfiler& profiler,
     const NvqWeight& gate,
@@ -179,15 +174,6 @@ mfq_tensor_backend::Tensor nint_matmul_groupwise_u8(
     std::int64_t groups);
 
 mfq_tensor_backend::Tensor dequant_nint_dense_f32(const NintWeight& weight);
-
-QuantLinearGroup make_quant_group(
-    std::vector<QuantLinear> layers,
-    bool group_nint,
-    bool cpu_layer,
-    bool preserve_projection_boundaries = false);
-
-DenseLinearGroup make_dense_group(
-    const std::vector<mfq_tensor_backend::Tensor>& weights);
 
 mfq_tensor_backend::Tensor quant_linear_reference_weight(
     const QuantLinear& linear);

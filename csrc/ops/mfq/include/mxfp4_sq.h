@@ -26,6 +26,9 @@ mfq_tensor_backend::Tensor sq_matmul_cpu(
     const Mxfp4SqWeight& weight,
     mfq_tensor_backend::Tensor input);
 
+mfq_tensor_backend::Tensor dequant_mxfp4_sq_cpu(
+    const Mxfp4SqWeight& weight);
+
 struct Mxfp4SqLinear {
     Mxfp4SqWeight weight;
 

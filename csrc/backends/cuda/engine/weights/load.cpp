@@ -6,6 +6,7 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/group.h"
 #include "formats/dense_blob.h"
 #include "weight_memory.h"
 #include "mfq_cuda_quant_ops.h"

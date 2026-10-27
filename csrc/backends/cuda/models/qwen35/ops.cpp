@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/group.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "linear_attention.h"
