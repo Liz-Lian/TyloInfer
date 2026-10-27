@@ -13,7 +13,7 @@
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/common/full_block.h"
-#include "cuda_sampling.h"
+#include "engine/executor/sampler.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"

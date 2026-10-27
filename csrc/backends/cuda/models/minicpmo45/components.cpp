@@ -2,7 +2,7 @@
 #include "runtime.h"
 
 #include "backends/cuda/engine/executor/execution.h"
-#include "cuda_sampling.h"
+#include "engine/executor/sampler.h"
 #include "backend.h"
 #include "engine/weights/tensor_parallel.h"
 

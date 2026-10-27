@@ -5,7 +5,7 @@
 #include "engine/executor/speculative_sequence.h"
 
 #include "backends/cuda/engine/executor/execution.h"
-#include "cuda_sampling.h"
+#include "engine/executor/sampler.h"
 #include "engine/requests/policy.h"
 #include "engine/requests/inference.h"
 #include "mfq_cuda_sampling_ops.h"

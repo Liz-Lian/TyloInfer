@@ -3,7 +3,7 @@
 #include "engine/batch/batch.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "cuda_runtime_config.h"
-#include "cuda_sampling.h"
+#include "engine/executor/sampler.h"
 #include "backends/cuda/engine/batch/qwen35.h"
 #include "models/qwen4_exp/ops.h"
 #include <type_traits>
