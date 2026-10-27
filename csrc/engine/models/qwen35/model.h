@@ -3,6 +3,7 @@
 #include "config.h"
 #include "../common/causal_metadata.h"
 #include "backends/cuda/engine/models/ffn.h"
+#include "engine/task.h"
 #include "formats/model_graph.h"
 #include "cuda_model_plan.h"
 #include "ops/attention/full.h"
@@ -12,6 +13,7 @@
 #include "source/model_source.h"
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -42,6 +44,8 @@ struct Layer {
     std::variant<Full, Linear> weights;
     int device = 0;
     bool cpu = false;
+
+    std::array<mfq::cuda::Task, 2> tasks() const;
 };
 
 struct Model {

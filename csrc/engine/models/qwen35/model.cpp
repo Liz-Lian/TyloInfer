@@ -171,6 +171,21 @@ Layer load_layer(CudaExecutionContext& execution, const mfq::ModelSource& source
     return result;
 }
 
+std::array<mfq::cuda::Task, 2> Layer::tasks() const {
+    if (const auto* full = std::get_if<Full>(&weights)) {
+        return {{
+            {task::Attention{0, 1, 2, full->attention, 0}, full->attention.layer},
+            {task::FullFfn{1, 2, 0, full->ffn, full->ffn_norm, full->attention},
+             full->attention.layer},
+        }};
+    }
+    const auto& linear = std::get<Linear>(weights);
+    return {{
+        {task::Linear{0, 1, 2, linear.attention, 0}},
+        {task::LinearFfn{1, 2, 0, linear.ffn, linear.ffn_norm, linear.attention}},
+    }};
+}
+
 Model load(CudaExecutionContext& execution, const std::string& model_path,
            const std::string& config_path, std::int64_t context_size,
            bool load_layers, bool defer_cache,

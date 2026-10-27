@@ -43,6 +43,13 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
                     op.residual != op.output, "attention task inputs are incomplete");
                 write(op.residual);
             }
+            if constexpr (std::is_same_v<Op, task::Linear>) {
+                TYLOINFER_RUNTIME_CHECK(op.state < inputs.linear.size() &&
+                    op.residual != op.output, "linear task inputs are incomplete");
+                write(op.residual);
+            }
+            if constexpr (std::is_same_v<Op, task::FullFfn> ||
+                          std::is_same_v<Op, task::LinearFfn>) read(op.residual);
             write(op.output);
         }, task.op);
     }
@@ -62,14 +69,17 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
         std::visit([&](const auto& op) {
             using Op = std::decay_t<decltype(op)>;
             write(op.output);
-            if constexpr (std::is_same_v<Op, task::Attention>) write(op.residual);
+            if constexpr (std::is_same_v<Op, task::Attention> ||
+                          std::is_same_v<Op, task::Linear>) write(op.residual);
             if constexpr (std::is_same_v<Op, task::Concat>) {
                 read(op.first);
                 read(op.second);
             } else {
                 read(op.input);
             }
-            if constexpr (std::is_same_v<Op, task::Dense>) read(op.residual);
+            if constexpr (std::is_same_v<Op, task::Dense> ||
+                          std::is_same_v<Op, task::FullFfn> ||
+                          std::is_same_v<Op, task::LinearFfn>) read(op.residual);
         }, tasks[index].op);
     }
     return result;
@@ -77,14 +87,17 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 
 } // namespace
 
-Tensor Executor::run(std::span<const Task> tasks, Inputs inputs) {
+Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, FfnExec::Mode mode) {
     const auto release = releases(tasks, inputs);
     auto options = options_;
     options.dense.mlp.nvq_fusion = options.projection.nvq_fusion;
     options.dense.bf16_norm = options.attention.fused_norm;
-    if (scratch_.size() != tasks.size()) scratch_.resize(tasks.size());
+    const auto scratch_size = inputs.scratch_offset + tasks.size();
+    if (scratch_.size() < scratch_size) scratch_.resize(scratch_size);
     const Projector project(profiler_, mmq_, tq_, branches_, collectives_,
         options_.projection, primary_, serial_, projection_major_);
+    FfnExec ffn(project, profiler_, mmq_, tq_, branches_, collectives_, routes_,
+        options_.projection, options_.attention, options_.dense, ffn_options_, mode);
     for (size_t index = 0; index < tasks.size(); ++index) {
         const auto& task = tasks[index];
         auto* trace = task.scope >= 0 && task.scope == inputs.trace_scope ? inputs.trace : nullptr;
@@ -98,7 +111,9 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs) {
             } else {
                 input = values[op.input];
             }
-            if constexpr (std::is_same_v<Op, task::Dense>) second = values[op.residual];
+            if constexpr (std::is_same_v<Op, task::Dense> ||
+                          std::is_same_v<Op, task::FullFfn> ||
+                          std::is_same_v<Op, task::LinearFfn>) second = values[op.residual];
             for (auto slot : release[index]) values[slot] = {};
             if constexpr (std::is_same_v<Op, task::Norm>) {
                 values[op.output] = qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(tb::kFloat32),
@@ -109,13 +124,26 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs) {
                 values[op.output] = project.run(op.weight, std::move(input));
             } else if constexpr (std::is_same_v<Op, task::Attention>) {
                 auto output = op.weights.forward(project, profiler_, options.attention,
-                    std::move(input), inputs.attention, inputs.kv[op.state], scratch_[index],
+                    std::move(input), inputs.attention, inputs.kv[op.state],
+                    scratch_[inputs.scratch_offset + index],
                     *inputs.rope, trace);
+                values[op.residual] = std::move(output[0]);
+                values[op.output] = std::move(output[1]);
+            } else if constexpr (std::is_same_v<Op, task::Linear>) {
+                auto output = op.weights.forward(project, profiler_, inputs.linear_options,
+                    std::move(input), inputs.linear[op.state].state,
+                    inputs.linear[op.state].captured);
                 values[op.residual] = std::move(output[0]);
                 values[op.output] = std::move(output[1]);
             } else if constexpr (std::is_same_v<Op, task::Dense>) {
                 values[op.output] = op.weights.forward(project, profiler_, mmq_, tq_, branches_, collectives_,
                     options.projection, options.dense, serial_, std::move(second), std::move(input), trace);
+            } else if constexpr (std::is_same_v<Op, task::FullFfn>) {
+                values[op.output] = ffn.full(op.weights, op.norm, op.attention,
+                    std::move(second), std::move(input), trace);
+            } else if constexpr (std::is_same_v<Op, task::LinearFfn>) {
+                values[op.output] = ffn.linear(op.weights, op.norm, op.attention,
+                    std::move(second), std::move(input));
             }
             record(trace, task.trace, values[op.output]);
         }, task.op);

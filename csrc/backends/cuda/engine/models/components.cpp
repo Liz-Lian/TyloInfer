@@ -224,9 +224,9 @@ RuntimeComponents<mfq::cuda::qwen35::Run> load_runtime_components(
             if (predictor) {
                 auto executor = std::make_unique<mfq::cuda::Executor>(
                     execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,
-                    execution.collectives, execution.config.tasks,
-                    model_parallel_primary_device(execution), execution.decode_graph_serial_branches,
-                    execution.decode_graph_tp_projection_major);
+                    execution.collectives, execution.routes, execution.config.tasks,
+                    execution.config.ffn, model_parallel_primary_device(execution),
+                    execution.decode_graph_serial_branches, execution.decode_graph_tp_projection_major);
                 result.mtp = std::make_unique<mfq::cuda::qwen35::Mtp>(
                     std::move(*predictor), std::move(executor), execution.collectives,
                     execution.layer_placement.primary_device(), execution.kl_mmq.kv_cache_capacity,

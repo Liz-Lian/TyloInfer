@@ -1,11 +1,11 @@
 #pragma once
 
 #include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/executor/run.h"
 #include "backends/cuda/engine/state/session/state.h"
 #include "engine/models/qwen35/model.h"
 #include "engine/state/qwen35.h"
 #include "ops/attention/full.h"
-#include "ops/attention/scratch.h"
 
 #include <cstdint>
 #include <functional>
@@ -107,9 +107,9 @@ public:
 
     std::shared_ptr<const Model> weights;
     CudaExecutionContext* execution = nullptr;
+    std::unique_ptr<mfq::cuda::Executor> executor;
     std::function<void()> restore_decode_workspace;
     std::vector<State> states;
-    std::vector<AttentionScratch> scratch;
     std::int64_t cache_pos = 0;
     std::int64_t decode_position_delta = 0;
     std::int64_t speculative_start = -1;
@@ -126,7 +126,8 @@ Tensor forward_layer(
     CudaExecutionContext& execution,
     const Layer& layer,
     State& state,
-    AttentionScratch& scratch,
+    mfq::cuda::Executor& executor,
+    std::size_t scratch_offset,
     Tensor input,
     const AttentionStep& step,
     std::int64_t confirmed_prefix,

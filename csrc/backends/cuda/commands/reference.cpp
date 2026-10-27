@@ -46,7 +46,7 @@ template <typename Model> struct ReferenceLayers {
     std::vector<mfq::cuda::qwen35::Layer> qwen_layers;
     std::optional<mfq::cuda::qwen35::Layer> qwen_streamed;
     mfq::cuda::qwen35::State qwen_state;
-    mfq::cuda::AttentionScratch qwen_scratch;
+    std::unique_ptr<mfq::cuda::Executor> qwen_executor;
 
     bool load_resident() {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
@@ -95,7 +95,11 @@ template <typename Model> struct ReferenceLayers {
                 qwen_state.emplace<KVCache>();
             else
                 qwen_state.emplace<mfq::cuda::qwen35::LinearState>();
-            qwen_scratch = {};
+            qwen_executor = std::make_unique<mfq::cuda::Executor>(
+                execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,
+                execution.collectives, execution.routes, execution.config.tasks,
+                execution.config.ffn, model_parallel_primary_device(execution),
+                execution.decode_graph_serial_branches, execution.decode_graph_tp_projection_major);
         } else {
             auto* block = resident ? model.blocks.at(static_cast<std::size_t>(index)).get()
                                    : streamed.get();
@@ -117,7 +121,7 @@ template <typename Model> struct ReferenceLayers {
             const mfq::cuda::AttentionStep step{positions, mfq_nullopt, mfq_nullopt,
                                                 mfq_nullopt, 0, 0, 0};
             return mfq::cuda::qwen35::forward_layer(
-                execution, layer, state, qwen_scratch, std::move(input), step, 0, *rope);
+                execution, layer, state, *qwen_executor, 0, std::move(input), step, 0, *rope);
         } else {
             auto* block = resident ? model.blocks.at(static_cast<std::size_t>(index)).get()
                                    : streamed.get();
@@ -128,10 +132,10 @@ template <typename Model> struct ReferenceLayers {
 
     void release() {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
+            qwen_executor.reset();
             qwen_layers.clear();
             qwen_streamed.reset();
             qwen_state.emplace<KVCache>();
-            qwen_scratch = {};
         } else {
             streamed.reset();
             model.blocks.clear();

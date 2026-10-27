@@ -3,7 +3,6 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/include/mfq_cuda_norm_ops.h"
 #include "backends/cuda/include/mfq_cuda_sampling_ops.h"
-#include "engine/executor/ffn.h"
 #include "ops/norm/rms.h"
 
 #include <algorithm>
@@ -19,22 +18,14 @@ void require_run(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-FullAttention::Options attention_options(const CudaExecutionContext& execution) {
-    const auto& configured = execution.config.tasks.attention;
-    FullAttention::Options result;
-    result.kernels.bf16_flash128 = configured.kernels.bf16_flash128;
-    result.kernels.flash128_casts = configured.kernels.flash128_casts;
-    result.kernels.bf16_gqa_decode = configured.kernels.bf16_gqa_decode;
-    result.kernels.decode_aten = configured.kernels.decode_aten;
-    result.kernels.mma_prefill = configured.kernels.mma_prefill;
-    result.kernels.mma_decode = configured.kernels.mma_decode;
-    result.kernels.split_k = configured.kernels.split_k;
-    result.fused_norm = configured.fused_norm;
-    result.fused_rope = configured.fused_rope;
-    result.fused_qk_rope_kv = configured.fused_qk_rope_kv;
-    result.fused_rope_kv = configured.fused_rope_kv;
-    result.write_aten = configured.write_aten;
-    return result;
+FfnExec::Mode ffn_mode(const CudaExecutionContext& execution) {
+    return {execution.force_moe_materialized_swiglu,
+            execution.force_moe_unfused_reduce,
+            execution.decode_graph_serial_branches,
+            execution.continuous_batch_cache_serial,
+            execution.continuous_batch_ffn_tile,
+            execution.continuous_batch_ffn_tiles,
+            execution.config.moe_ffn.reuse_input};
 }
 
 Tensor copy_to_layer(CudaExecutionContext& execution, Tensor value, const Layer& layer) {
@@ -79,105 +70,100 @@ void abort_linear_speculative(LinearState& state) {
     state.projected = {};
 }
 
-Tensor run_full(CudaExecutionContext& execution, const Full& layer, KVCache& cache,
-                AttentionScratch& scratch, Tensor input, const AttentionStep& step,
-                const RopeCache& rope) {
-    const auto& attention = layer.attention;
-    const auto kl_capacity = execution.kl_mmq.kv_cache_capacity;
-    const auto capacity = attention.sliding
-                              ? attention.attention_window
-                              : (kl_capacity > 0
-                                     ? std::max<std::int64_t>(
-                                           step.cache_position + input.size(1), kl_capacity)
-                                     : attention.max_position_embeddings);
-    if (!cache.defined()) {
-        cache = KVCache(
-            input.size(0), attention.kv_heads, capacity, attention.attention_head_dim,
-            attention.sliding, input.device(),
-            attention.official_bf16 ? mfq_tensor_backend::kBFloat16
-                                    : mfq_tensor_backend::kFloat16,
-            attention.kv_quantization);
-    }
-    cache.quantization = attention.kv_quantization;
-    const auto outputs = attention.forward(
-        execution.projector(), execution.profiler, attention_options(execution), std::move(input),
-        step, cache.view(), scratch, rope,
-        attention.layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
-    return execution.ffn().full(
-        layer.ffn, layer.ffn_norm, attention, std::move(outputs[0]), std::move(outputs[1]),
-        attention.layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
-}
-
-Tensor run_linear(CudaExecutionContext& execution, const Linear& layer, LinearState& state,
-                  Tensor input, const AttentionStep& step, std::int64_t confirmed_prefix) {
-    const auto& attention = layer.attention;
-    prepare_linear_state(attention, state, input, execution.config.gdn_transposed_state);
-    if (confirmed_prefix == 0) {
-        require_run(!state.mixer.pending(), "linear attention has a pending speculative pass");
-        const auto outputs = attention.forward(
-            execution.projector(), execution.profiler,
-            {execution.config.tasks.projection.grouped &&
-                 execution.config.tensor_parallel_shared_linear_attention_input,
-             execution.config.linear_conv_prefill_fused},
-            std::move(input),
-            {state.mixer.view().convolution, state.mixer.view().recurrent,
-             state.mixer.view().transposed});
-        return execution.ffn().linear(
-            layer.ffn, layer.ffn_norm, attention, std::move(outputs[0]), std::move(outputs[1]));
-    }
-
-    require_run(input.is_cuda() && !state.mixer.pending() && state.mixer.defined() &&
-                    confirmed_prefix > 0 && confirmed_prefix < input.size(1),
-                "invalid Qwen3.5 speculative linear-attention transaction");
-    state.mixer.begin(step.cache_position, confirmed_prefix, input.size(1));
-    try {
-        const auto outputs = attention.forward(
-            execution.projector(), execution.profiler,
-            {execution.config.tasks.projection.grouped &&
-                 execution.config.tensor_parallel_shared_linear_attention_input,
-             execution.config.linear_conv_prefill_fused},
-            std::move(input),
-            {state.mixer.view().convolution, state.mixer.view().recurrent,
-             state.mixer.view().transposed},
-            &state.projected);
-        auto result = execution.ffn().linear(
-            layer.ffn, layer.ffn_norm, attention, std::move(outputs[0]), std::move(outputs[1]));
-        ++state.speculative_projection_batches;
-        ++state.speculative_ffn_batches;
-        return result;
-    } catch (...) {
-        state.mixer.abort();
-        clear_linear_speculative(state);
-        throw;
-    }
-}
-
 } // namespace
 
 Tensor forward_layer(CudaExecutionContext& execution, const Layer& layer, State& state,
-                     AttentionScratch& scratch, Tensor input, const AttentionStep& step,
-                     std::int64_t confirmed_prefix, const RopeCache& rope) {
+                     mfq::cuda::Executor& executor, std::size_t scratch_offset, Tensor input,
+                     const AttentionStep& step, std::int64_t confirmed_prefix,
+                     const RopeCache& rope) {
     MfqCudaGuard guard(layer.device);
     auto local_step = layer_step(execution, layer, step);
     input = layer.cpu ? input.to(mfq_tensor_backend::kCPU).contiguous()
                       : execution.collectives.copy(input, layer.device).contiguous();
+    const auto tasks = layer.tasks();
+    const auto trace = execution.gemma_trace_layer >= 0 &&
+                               execution.gemma_trace_layer == tasks[0].scope
+                           ? execution.gemma_stage_trace
+                           : nullptr;
+    const auto execute = [&](std::span<const AttentionKvView> kv,
+                             std::span<const LinearStateView> linear,
+                             LinearAttention::Options linear_options) {
+        Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step, &rope, trace,
+                      execution.gemma_trace_layer, linear, linear_options, scratch_offset};
+        return executor.run(tasks, std::move(inputs), ffn_mode(execution));
+    };
     if (const auto* full = std::get_if<Full>(&layer.weights)) {
         auto* cache = std::get_if<KVCache>(&state);
         require_run(cache != nullptr, "Qwen3.5 full layer state kind mismatch");
-        return run_full(execution, *full, *cache, scratch, std::move(input), local_step, rope);
+        const auto& attention = full->attention;
+        const auto kl_capacity = execution.kl_mmq.kv_cache_capacity;
+        const auto capacity = attention.sliding
+                                  ? attention.attention_window
+                                  : (kl_capacity > 0
+                                         ? std::max<std::int64_t>(
+                                               local_step.cache_position + input.size(1),
+                                               kl_capacity)
+                                         : attention.max_position_embeddings);
+        if (!cache->defined()) {
+            *cache = KVCache(
+                input.size(0), attention.kv_heads, capacity, attention.attention_head_dim,
+                attention.sliding, input.device(),
+                attention.official_bf16 ? mfq_tensor_backend::kBFloat16
+                                        : mfq_tensor_backend::kFloat16,
+                attention.kv_quantization);
+        }
+        cache->quantization = attention.kv_quantization;
+        const std::array<AttentionKvView, 1> kv{cache->view()};
+        return execute(kv, std::span<const LinearStateView>{}, {});
     }
     const auto* linear = std::get_if<Linear>(&layer.weights);
     auto* linear_state = std::get_if<LinearState>(&state);
     require_run(linear != nullptr && linear_state != nullptr,
                 "Qwen3.5 linear layer state kind mismatch");
-    return run_linear(execution, *linear, *linear_state, std::move(input), local_step,
-                      confirmed_prefix);
+    const auto& attention = linear->attention;
+    prepare_linear_state(attention, *linear_state, input, execution.config.gdn_transposed_state);
+    if (confirmed_prefix == 0) {
+        require_run(!linear_state->mixer.pending(),
+                    "linear attention has a pending speculative pass");
+    } else {
+        require_run(input.is_cuda() && !linear_state->mixer.pending() &&
+                        linear_state->mixer.defined() && confirmed_prefix > 0 &&
+                        confirmed_prefix < input.size(1),
+                    "invalid Qwen3.5 speculative linear-attention transaction");
+        linear_state->mixer.begin(local_step.cache_position, confirmed_prefix, input.size(1));
+    }
+    auto& state_view = linear_state->mixer.view();
+    const auto captured = confirmed_prefix > 0 ? &linear_state->projected : nullptr;
+    const LinearStateView linear_view{
+        {state_view.convolution, state_view.recurrent, state_view.transposed}, captured};
+    const std::array<LinearStateView, 1> linear_views{linear_view};
+    try {
+        auto result = execute(std::span<const AttentionKvView>{}, linear_views,
+                              {execution.config.tasks.projection.grouped &&
+                                   execution.config.tensor_parallel_shared_linear_attention_input,
+                               execution.config.linear_conv_prefill_fused});
+        if (confirmed_prefix > 0) {
+            ++linear_state->speculative_projection_batches;
+            ++linear_state->speculative_ffn_batches;
+        }
+        return result;
+    } catch (...) {
+        if (confirmed_prefix > 0) {
+            linear_state->mixer.abort();
+            clear_linear_speculative(*linear_state);
+        }
+        throw;
+    }
 }
 
 Run::Run(std::shared_ptr<const Model> model, CudaExecutionContext& context)
     : weights(std::move(model)), execution(&context),
-      states(weights ? weights->layers.size() : 0),
-      scratch(weights ? weights->layers.size() : 0) {
+      executor(std::make_unique<mfq::cuda::Executor>(
+          context.profiler, context.kl_mmq, *context.tq, context.branches,
+          context.collectives, context.routes, context.config.tasks, context.config.ffn,
+          model_parallel_primary_device(context), context.decode_graph_serial_branches,
+          context.decode_graph_tp_projection_major)),
+      states(weights ? weights->layers.size() : 0) {
     require_run(weights != nullptr, "Qwen3.5 Run requires model weights");
     for (std::size_t index = 0; index < weights->layers.size(); ++index)
         if (std::holds_alternative<Linear>(weights->layers[index].weights))
@@ -395,7 +381,7 @@ Tensor Run::hidden_forward_inputs(Tensor ids, Tensor embeddings,
                 const auto it = weights->device_ropes.find(layer.device);
                 if (it != weights->device_ropes.end()) active_rope = &it->second;
             }
-            hidden = forward_layer(*execution, layer, states[index], scratch[index],
+            hidden = forward_layer(*execution, layer, states[index], *executor, 2 * index,
                                    std::move(hidden), step, confirmed_prefix, *active_rope);
             if (trace)
                 trace->push_back(execution->collectives.copy(hidden, primary)
@@ -522,7 +508,8 @@ std::vector<Tensor> Run::graph_storage() const {
             append(linear.mixer.view().convolution);
             append(linear.mixer.view().recurrent);
         }
-        const auto& attention = scratch[index];
+    }
+    for (const auto& attention : executor->scratch()) {
         append(attention.partial_o);
         append(attention.partial_m);
         append(attention.partial_l);
