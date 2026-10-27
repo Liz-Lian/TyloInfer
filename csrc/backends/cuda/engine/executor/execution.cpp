@@ -464,8 +464,6 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_TP_SHARED_LINEAR_ATTENTION_INPUT", true);
     result.tensor_parallel_mirror_linear_attention_scalars = environment_flag(
         "TYLOINFER_TP_MIRROR_LINEAR_ATTENTION_SCALARS", true);
-    result.tensor_parallel_mirror_qwen35_attention_kv = environment_flag(
-        "TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true);
     result.tasks.projection.reduce_to_primary = environment(
         "TYLOINFER_MODEL_PARALLEL_REDUCE_TO_PRIMARY")
         ? environment_flag("TYLOINFER_MODEL_PARALLEL_REDUCE_TO_PRIMARY", true)

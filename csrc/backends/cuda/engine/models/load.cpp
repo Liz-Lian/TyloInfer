@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "native/cuda/env.h"
 #include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -75,7 +76,7 @@ QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>
 }
 void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::vector<std::string>& names) const {
     const bool mirror_kv = block.attention_output_gate &&
-        execution.config.tensor_parallel_mirror_qwen35_attention_kv &&
+        mfq::cuda::env_flag("TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true) &&
         is_quant_dtype(require_tensor(source, names[1]).dtype) &&
         is_quant_dtype(require_tensor(source, names[2]).dtype);
     if (mirror_kv) {

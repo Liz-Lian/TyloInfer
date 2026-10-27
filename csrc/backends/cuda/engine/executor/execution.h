@@ -162,7 +162,6 @@ struct CudaExecutionConfig {
     bool expert_parallel_cuda_graph = true;
     bool tensor_parallel_shared_linear_attention_input = true;
     bool tensor_parallel_mirror_linear_attention_scalars = true;
-    bool tensor_parallel_mirror_qwen35_attention_kv = true;
     bool tensor_parallel_shard_native_float = false;
     bool nvq2_exec = false;
     bool nvq_extended_group_exec = false;
