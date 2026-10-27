@@ -1928,18 +1928,7 @@ struct Qwen4BatchRequestState::Impl {
     std::vector<Layer> layers;
     mfq_tensor_backend::Tensor positions;
     mfq_tensor_backend::Tensor position_storage;
-    int64_t cache_position = 0, batch = 1;
-    void swap(Qwen4CausalLm& model) {
-        for (std::size_t i = 0; i < layers.size(); ++i) {
-            auto& block = static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]);
-            layers[i].gdn.swap(block.gdn);
-            layers[i].qsa.swap(block.qsa);
-            layers[i].ple.swap(block.ple);
-        }
-        std::swap(positions, model.positions);
-        std::swap(cache_position, model.cache_pos);
-        std::swap(batch, model.batch);
-    }
+    int64_t cache_position = 0;
     std::size_t growth_bytes(int64_t tokens) const {
         std::size_t bytes = 0;
         for (const auto& layer : layers) {
@@ -1994,21 +1983,6 @@ std::size_t Qwen4BatchRequestState::resident_bytes() const {
     for (const auto& [address,size] : allocations) bytes += size;
     return bytes;
 }
-mfq_tensor_backend::Tensor Qwen4BatchRequestState::prefill(
-        Qwen4CausalLm& model, mfq_tensor_backend::Tensor ids) {
-    TYLOINFER_RUNTIME_CHECK(ids.size(0) == 1 && ids.size(1) > 0 &&
-        ids.size(1) <= model.max_position_embeddings() - position(), "invalid Flash-Next request prefill");
-    if(ids.size(1)>1024)reserve_moe_workspace(model.execution->stores.moe_expert_cache,runtime_options::workspace_reserve_bytes());
-    if (model.reserve_kv_workspace)
-        model.reserve_kv_workspace(state_->growth_bytes(ids.size(1)) + (std::size_t(256) << 20));
-    state_->swap(model);
-    try {
-        auto hidden = model.hidden_forward(std::move(ids));
-        state_->swap(model);
-        return hidden;
-    } catch (...) { state_->swap(model); throw; }
-}
-
 struct Qwen4BatchDecodeGraph::Impl {
     using Tensor = mfq_tensor_backend::Tensor;
     Qwen4CausalLm& model;
@@ -2277,7 +2251,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
     namespace tb = mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(!requests.empty() && requests.size()==chunks.size(),"invalid packed prefill rows");
     auto& execution = *model.execution;
-    model.adapter_begin_forward(false);
+    const bool packed=requests.size()>1;
     std::vector<int64_t> offsets{0};
     std::vector<tb::Tensor> current,full;
     for (std::size_t row=0;row<requests.size();++row) {
@@ -2294,37 +2268,74 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
     auto host_ids=ids.to(tb::kCPU);
     const auto tokens=offsets.back();
     if(tokens>1024)reserve_moe_workspace(model.execution->stores.moe_expert_cache,runtime_options::workspace_reserve_bytes());
+    if(!packed) {
+        if(model.reserve_kv_workspace)
+            model.reserve_kv_workspace(requests.front()->state_->growth_bytes(tokens)+(std::size_t(256)<<20));
+    }
+    model.adapter_begin_forward(false);
+    if(!packed && execution.config.moe_pipeline) {
+        for(std::size_t row=0;row<requests.size();++row) {
+            const auto row_ids=host_ids.narrow(1,offsets[row],chunks[row].size(1));
+            for(auto& layer:requests[row]->state_->layers)
+                if(layer.ple)layer.ple->prefetch_tokens(row_ids);
+        }
+    }
     auto hidden=model.adapter_prepare_hidden(model.embed_tokens(ids),1,tokens);
     for (std::size_t i=0;i<model.blocks.size();++i) {
-        NintPrefillDecodeCacheScope decode_reuse(true);
+        NintPrefillDecodeCacheScope decode_reuse(packed);
         auto& block=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]);
         if (block.ple) {
             std::vector<tb::Tensor> positional;
             for (std::size_t row=0;row<requests.size();++row) {
                 auto x=hidden.narrow(1,offsets[row],chunks[row].size(1));
-                positional.push_back(x+requests[row]->state_->layers[i].ple->forward(
-                    execution,x,chunks[row],true,0,host_ids.narrow(1,offsets[row],chunks[row].size(1))));
+                auto& layer=requests[row]->state_->layers[i];
+                auto ple=packed ? layer.ple->forward(execution,x,chunks[row],true,0,
+                    host_ids.narrow(1,offsets[row],chunks[row].size(1))) :
+                    execution.profiler.measure("prefill.ple",[&] {
+                        return layer.ple->forward(execution,x,chunks[row],true,0,
+                            host_ids.narrow(1,offsets[row],chunks[row].size(1)));
+                    });
+                positional.push_back(x+ple);
             }
             hidden=join_request_outputs(positional,1);
         }
-        auto mix=block.attention_gr.pre(hidden);
-        const auto projections=block.gdn?block.gdn->project_inputs(execution.projector(),mix.mixed)
-                                         :block.qsa->project_inputs(execution.projector(),mix.mixed);
-        std::vector<tb::Tensor> attended;
-        for (std::size_t row=0;row<requests.size();++row) {
-            auto& layer=requests[row]->state_->layers[i];
-            auto attention_input=mix.mixed.narrow(1,offsets[row],chunks[row].size(1));
-            std::vector<tb::Tensor> projected;
-            for (const auto& value:projections)
-                projected.push_back(value.narrow(1,offsets[row],chunks[row].size(1)));
-            attended.push_back(layer.gdn?layer.gdn->forward_chunk(execution.projector(),execution.profiler,attention_input,true,std::move(projected),false)
-                :layer.qsa->forward(execution.projector(),attention_input,current[row],full[row],true,nullptr,std::move(projected),false));
+        auto mix=packed ? block.attention_gr.pre(hidden) :
+            execution.profiler.measure("prefill.gr_attention",[&] { return block.attention_gr.pre(hidden); });
+        tb::Tensor attention;
+        if(packed) {
+            const auto projections=block.gdn?block.gdn->project_inputs(execution.projector(),mix.mixed)
+                                             :block.qsa->project_inputs(execution.projector(),mix.mixed);
+            std::vector<tb::Tensor> attended;
+            for (std::size_t row=0;row<requests.size();++row) {
+                auto& layer=requests[row]->state_->layers[i];
+                auto attention_input=mix.mixed.narrow(1,offsets[row],chunks[row].size(1));
+                std::vector<tb::Tensor> projected;
+                for (const auto& value:projections)
+                    projected.push_back(value.narrow(1,offsets[row],chunks[row].size(1)));
+                attended.push_back(layer.gdn?layer.gdn->forward_chunk(execution.projector(),execution.profiler,attention_input,true,std::move(projected),false)
+                    :layer.qsa->forward(execution.projector(),attention_input,current[row],full[row],true,nullptr,std::move(projected),false));
+            }
+            attention=join_request_outputs(attended,1);
+            attention=block.gdn?block.gdn->project_output(execution.projector(),attention):block.qsa->project_output(execution.projector(),attention);
+        } else {
+            auto& layer=requests.front()->state_->layers[i];
+            if(layer.gdn)attention=execution.profiler.measure("prefill.gdn",[&] {
+                return layer.gdn->forward(execution.projector(),execution.profiler,mix.mixed,true,0);
+            });
+            else attention=execution.profiler.measure("prefill.qsa",[&] {
+                return layer.qsa->forward(execution.projector(),mix.mixed,current.front(),full.front(),true);
+            });
         }
-        auto attention=join_request_outputs(attended,1);
-        attention=block.gdn?block.gdn->project_output(execution.projector(),attention):block.qsa->project_output(execution.projector(),attention);
-        auto ffn_mix=block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
-        // All prompt tokens share each expert transfer and compressed decode.
-        hidden=block.ffn_gr.post(block.ffn(execution,ffn_mix.mixed),ffn_mix.residual,ffn_mix.gate);
+        auto ffn_mix=packed ? block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate) :
+            execution.profiler.measure("prefill.gr_ffn_pre",[&] {
+                return block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
+            });
+        auto ffn_output=packed ? block.ffn(execution,ffn_mix.mixed) :
+            execution.profiler.measure("prefill.ffn",[&] { return block.ffn(execution,ffn_mix.mixed); });
+        hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate) :
+            execution.profiler.measure("prefill.gr_ffn_post",[&] {
+                return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
+            });
     }
     hidden=model.finalize_hidden(std::move(hidden),1,tokens);
     std::vector<tb::Tensor> result;

@@ -25,7 +25,6 @@ class Qwen4BatchRequestState {
     ~Qwen4BatchRequestState();
     Qwen4BatchRequestState(const Qwen4BatchRequestState&) = delete;
     Qwen4BatchRequestState& operator=(const Qwen4BatchRequestState&) = delete;
-    mfq_tensor_backend::Tensor prefill(Qwen4CausalLm&, mfq_tensor_backend::Tensor);
     int64_t position() const;
     std::size_t resident_bytes() const;
     std::size_t prefill_growth_bytes(int64_t tokens) const;

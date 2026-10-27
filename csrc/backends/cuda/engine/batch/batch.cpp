@@ -566,7 +566,8 @@ FlashNextBatchOperations::Sample FlashNextBatchOperations::prefill(
     CudaScope guard(execution_);
     initialize_prefill(request,chunk);
     auto timer = std::make_unique<PrefillCudaTimer>();
-    auto hidden = request->cache->prefill(model_,request->prefill_ids.narrow(1,chunk.offset,chunk.count).contiguous());
+    auto hidden=qwen4_batch_prefill(model_,{request->cache.get()},
+        {request->prefill_ids.narrow(1,chunk.offset,chunk.count).contiguous()}).front();
     const auto finished = chunk.offset + chunk.count == static_cast<int64_t>(request->prompt.size());
     Tensor next;
     if (finished) next = sample_logits(*request->sampler,
