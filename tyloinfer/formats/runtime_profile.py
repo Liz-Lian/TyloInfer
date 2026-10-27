@@ -247,9 +247,9 @@ def _validate_section(
     ):
         if key in result and result[key] <= 0:
             raise ValueError(f"runtime profile {name}.{key} must be positive")
-    if "mtp_max_draft_tokens" in result and result["mtp_max_draft_tokens"] > 5:
+    if "mtp_max_draft_tokens" in result and result["mtp_max_draft_tokens"] > 7:
         raise ValueError(
-            "runtime profile chat.mtp_max_draft_tokens must be in [1, 5]"
+            "runtime profile chat.mtp_max_draft_tokens must be in [1, 7]"
         )
     for key in ("repetition_penalty", "text_repetition_penalty", "length_penalty"):
         if key in result and result[key] <= 0.0:

@@ -28,6 +28,9 @@ struct MlxDuplexComponent {
     explicit operator bool() const { return bool(start) && bool(step) && bool(stop); }
 };
 struct MlxEngineComponents {
+    std::function<bool(const std::vector<std::int64_t>&, const MfqSamplingParams&,
+        MlxGenerationJob&, const MfqTokenConstraintPtr&, int)> speculative_generate;
+    std::function<void()> prepare_speculative;
     std::function<std::int32_t(const std::vector<std::int64_t>&,
         const MfqMultimodalInput&, const MfqSamplingParams&,
         MlxGenerationJob&, const MfqTokenConstraintPtr&)> multimodal_generate;

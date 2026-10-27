@@ -60,14 +60,6 @@ array pool_prefix(const array& cache, int length) {
     return slice_axis(cache, 1, 0, length);
 }
 
-array weighted_rms(const array& input, const array& weight, float eps) {
-    auto source = mlx::core::astype(input, mlx::core::float32);
-    auto scale = mlx::core::rsqrt(
-        mlx::core::mean(source * source, -1, true) + eps);
-    auto result = source * scale * mlx::core::astype(weight, mlx::core::float32);
-    return mlx::core::astype(result, input.dtype());
-}
-
 array rope_tail(
     const array& input,
     int rotary,
@@ -687,8 +679,7 @@ std::vector<array> MlxDeepseekV41Attention::begin_speculative(
     auto slots = mlx::core::remainder(
         positions(state.position, state.position + total_tokens),
         array(window, mlx::core::int32));
-    auto local_backup = detached_copy(
-        mlx::core::take(state.local_kv, slots, 1));
+    auto local_backup = mlx::core::take(state.local_kv, slots, 1);
     std::optional<array> partial_kv_backup;
     std::optional<array> partial_score_backup;
     if (state.partial_kv) {
@@ -868,7 +859,7 @@ array MlxDeepseekV41Attention::forward(
         compressor_key_value = (*components_.compressor_key_value)(*encoder_source);
     }
 
-    auto q_rank = weighted_rms(
+    auto q_rank = mlx_weighted_rms(
         query_a, components_.query_a_norm, eps);
 
     auto local_kv = mlx_weighted_rms_rope_mxfp8_sim(
@@ -896,7 +887,7 @@ array MlxDeepseekV41Attention::forward(
         }
         std::optional<array> latent;
         if (ratio_ == 1) {
-            latent = packed ? *compressor_key_value : weighted_rms(
+            latent = packed ? *compressor_key_value : mlx_weighted_rms(
                 *compressor_key_value, *components_.compressor_norm, eps);
         } else {
             if (!components_.compressor_gate || !state.partial_kv ||
@@ -959,7 +950,7 @@ array MlxDeepseekV41Attention::forward(
                     (*components_.index_key)(*latent), *components_.index_key_norm,
                     group_cosine, group_sine, begin, rotary, 32, false, eps, true).cache;
             } else {
-                auto index_key = weighted_rms((*components_.index_key)(*latent),
+                auto index_key = mlx_weighted_rms((*components_.index_key)(*latent),
                     *components_.index_key_norm, eps);
                 index_key = mlx_mxfp4_sim(rope_tail(index_key, rotary, group_cosine, group_sine));
                 *state.index_k = mlx_cache_write_inplace(*state.index_k, index_key, cache_rows);
@@ -1140,7 +1131,12 @@ array MlxDeepseekV41Attention::forward(
             Shape{batch, recent});
     }
 
-    auto attended = apply_attention(
+    const bool fused_output_rope = packed && batch == 1 && tokens >= 2 && tokens <= 6 &&
+        query.dtype() == mlx::core::float16;
+    auto attended = fused_output_rope ? mlx_csa2_attention_inverse_rope(
+        query, local_for_attention, ratio_ > 0 ? shared.compressed_kv : std::nullopt,
+        ratio_ > 0 ? shared.compressed_length : 0, topk, components_.sinks,
+        pos0, ratio_ == 0 ? 1 : ratio_, window, cosine, sine, rotary) : apply_attention(
         query,
         local_for_attention,
         ratio_ > 0 ? shared.compressed_kv : std::nullopt,
@@ -1163,7 +1159,9 @@ array MlxDeepseekV41Attention::forward(
             *pending_local_rows);
     }
     const int groups = checked_int(config_.o_groups, "output groups");
-    auto low_rank = components_.output_a.grouped_row_matmul_inverse_rope(
+    auto low_rank = fused_output_rope ? components_.output_a.grouped_row_matmul(
+        mlx::core::reshape(attended, Shape{batch, tokens, groups, components_.output_a.input_size()}),
+        groups) : components_.output_a.grouped_row_matmul_inverse_rope(
         attended,
         groups,
         cosine,
@@ -1178,7 +1176,11 @@ array MlxDeepseekV41Attention::forward(
             groups * checked_int(config_.o_lora_rank, "output rank"),
         });
     state.position = pos0 + tokens;
-    return components_.output_b(low_rank);
+    auto output = components_.output_b(low_rank);
+    if (pending_local_values)
+        output = mlx::core::depends(std::vector<array>{output},
+            std::vector<array>{state.local_kv}).front();
+    return output;
 }
 
 } // namespace mfq::metal

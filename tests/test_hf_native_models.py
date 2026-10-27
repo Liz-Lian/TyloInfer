@@ -34,6 +34,13 @@ from tyloinfer.server.runtime.hf_tokenizer import (
 from tyloinfer.server.runtime.native import native_runtime_environment, native_tokenizer_arguments
 
 
+def test_native_gguf_uses_its_embedded_tokenizer(tmp_path: Path) -> None:
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF" + b"\x00" * 20)
+    for backend in ("metal", "cuda", "hip"):
+        assert native_tokenizer_arguments(model, backend) == ["--tokenizer", str(model.resolve())]
+
+
 def _hf_fixture(
     root: Path,
     *,
@@ -175,6 +182,29 @@ def test_catalog_tracks_native_hf_routed_expert_bytes(tmp_path: Path) -> None:
         ModelCatalog([tmp_path], cache_seconds=0).resolve_path(model)
     )
     assert artifact.routed_expert_bytes == 2
+
+
+@pytest.mark.parametrize("leaf", ["weight", "scales", "biases"])
+@pytest.mark.parametrize("kind", ["expert", "ple"])
+def test_catalog_tracks_mlx_packed_weights_and_auxiliaries(
+    tmp_path: Path, leaf: str, kind: str,
+) -> None:
+    model = tmp_path / "MLX-Qwen"
+    module = (
+        "mlp.switch_mlp.gate_proj" if kind == "expert" else
+        "ple.ple_embedding.ngram_embedding.shards.0"
+    )
+    _hf_fixture(model, model_type="qwen4_exp", tensor_name=(
+        f"language_model.model.layers.0.{module}.{leaf}"
+    ))
+    artifact = asyncio.run(
+        ModelCatalog([tmp_path], cache_seconds=0).resolve_path(model)
+    )
+    assert artifact.resource.loadable
+    assert artifact.routed_expert_bytes == (2 if kind == "expert" else 0)
+    assert artifact.always_streamed_bytes == (2 if kind == "ple" else 0)
+    assert artifact.resource.ssd_ple_bytes == (2 if kind == "ple" else 0)
+    assert artifact.resource.estimated_weight_bytes_by_role["experts"] == (2 if kind == "expert" else 0)
 
 
 def test_catalog_tracks_native_hf_independently_streamed_engram_bytes(

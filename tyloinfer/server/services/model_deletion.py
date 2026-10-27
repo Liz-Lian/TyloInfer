@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from tyloinfer.formats.shards import matching_shard_paths, parse_shard_path
+from tyloinfer.formats.gguf import matching_gguf_shard_paths, parse_gguf_shard_path
 from tyloinfer.server.protocol.models import ModelDeletionPlan
 from tyloinfer.server.state.catalog import DiscoveredModel
 
@@ -17,7 +18,11 @@ class ModelDeletionError(ValueError):
 def model_deletion_plan(artifact: DiscoveredModel) -> ModelDeletionPlan:
     source = artifact.path
     root = source if artifact.resource.format == "hf" else source.parent
-    if artifact.resource.format == "tq":
+    if artifact.resource.format == 'gguf':
+        parsed = parse_gguf_shard_path(source)
+        files = [path for path in matching_gguf_shard_paths(parsed[0])
+            if parse_gguf_shard_path(path)[2] == parsed[2]] if parsed else [source]
+    elif artifact.resource.format == "tq":
         try:
             parsed = parse_shard_path(source)
         except ValueError:

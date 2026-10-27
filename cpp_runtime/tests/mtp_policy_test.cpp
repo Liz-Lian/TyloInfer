@@ -20,6 +20,32 @@ template<class F> void rejects(F&& fn) {
 int main() {
     using namespace mfq::engine::mtp;
     {
+        GenerationStats stats;
+        stats.available = stats.used = true;
+        stats.depth_cycles[7] = 2;
+        stats.position_drafted[6] = 2;
+        stats.position_accepted[6] = 1;
+        std::vector<std::pair<std::string, double>> metrics;
+        append_generation_metrics(metrics, stats);
+        require(std::find(metrics.begin(), metrics.end(), std::pair<std::string, double>{"mtp_depth_7_cycles", 2.0}) != metrics.end());
+        require(std::find(metrics.begin(), metrics.end(), std::pair<std::string, double>{"mtp_position_7_acceptance_rate", .5}) != metrics.end());
+    }
+    {
+        const std::array<int32_t, 2> draft{0, 0};
+        const std::array<double, 2> first{.3, .7};
+        const std::array<std::array<double, 2>, 2> next{{{.8, .2}, {.1, .9}}};
+        std::array<std::array<double, 2>, 2> joint{};
+        for (int a = 0; a < 2; ++a) for (int b = 0; b < 2; ++b) {
+            const std::array<int32_t, 3> target{a, b, 0};
+            const auto selected = verify_greedy(draft, target);
+            const double probability = first[a] * next[0][b];
+            if (selected.accepted_drafts) joint[0][b] += probability;
+            else for (int c = 0; c < 2; ++c) joint[a][c] += probability * next[a][c];
+        }
+        for (int a = 0; a < 2; ++a) for (int b = 0; b < 2; ++b)
+            require(std::abs(joint[a][b] - first[a] * next[a][b]) < 1e-12);
+    }
+    {
         // Keep CUDA on the previously measured policy, including host gaps,
         // excluded maintenance, parking and retry.
         using Clock=BatchDepthPolicy::Clock;

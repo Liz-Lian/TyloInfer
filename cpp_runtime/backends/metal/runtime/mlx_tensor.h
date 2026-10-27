@@ -4,6 +4,8 @@
 #include "mlx_grouped_linear.h"
 #include "mlx_mx.h"
 #include "mlx_tq.h"
+#include "mlx_gguf.h"
+#include "mlx_affine.h"
 
 #include <cstddef>
 #include <memory>
@@ -46,6 +48,8 @@ public:
 
     explicit MlxLinear(MlxMxWeight weight);
     explicit MlxLinear(MlxTqWeight weight);
+    explicit MlxLinear(MlxGgufWeight weight);
+    explicit MlxLinear(MlxAffineWeight weight);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     explicit MlxLinear(MlxNintWeight weight);
     explicit MlxLinear(MlxNint8ZeroWeight weight);
@@ -106,6 +110,9 @@ public:
     const MlxNintWeight* nint_weight_ref() const noexcept;
 #endif
     const MlxTqWeight* tq_weight_ref() const noexcept;
+    const MlxAffineWeight* affine_weight_ref() const noexcept;
+    const MlxGgufWeight* gguf_weight_ref() const noexcept;
+    void prepare_grouped_gguf();
     const mlx::core::array* dense_weight_ref() const noexcept;
 
     void materialize_fp16();
@@ -121,6 +128,8 @@ private:
 #endif
         MlxMxWeight,
         MlxTqWeight,
+        MlxGgufWeight,
+        MlxAffineWeight,
         mlx::core::array> weight_;
     int input_size_ = 0;
     int output_size_ = 0;
@@ -175,6 +184,8 @@ public:
 
     explicit MlxEmbedding(MlxMxWeight weight);
     explicit MlxEmbedding(MlxTqWeight weight);
+    explicit MlxEmbedding(MlxGgufWeight weight);
+    explicit MlxEmbedding(MlxAffineWeight weight);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     explicit MlxEmbedding(MlxNintWeight weight);
     explicit MlxEmbedding(MlxNint8ZeroWeight weight);
@@ -200,6 +211,7 @@ public:
     int hidden_size() const noexcept {
         return hidden_size_;
     }
+    mlx::core::Dtype preferred_activation_dtype() const noexcept;
 
     void materialize_fp16();
 
@@ -214,6 +226,8 @@ private:
 #endif
         MlxMxWeight,
         MlxTqWeight,
+        MlxGgufWeight,
+        MlxAffineWeight,
         mlx::core::array> weight_;
     int vocabulary_size_ = 0;
     int hidden_size_ = 0;

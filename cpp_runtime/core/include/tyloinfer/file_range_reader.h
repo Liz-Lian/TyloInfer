@@ -41,6 +41,7 @@ public:
     FileRangeReader(const FileRangeReader&) = delete;
     FileRangeReader& operator=(const FileRangeReader&) = delete;
     void read(std::uint64_t offset, std::byte* destination, std::size_t size) const;
+    void read_contiguous(const std::vector<ReadSpan>& spans) const;
     // Submit independent ranges together; all requests finish before returning.
     void read_batch(const std::vector<ReadSpan>& spans) const;
     // Coalesce overlapping/adjacent source ranges, then scatter in caller order.

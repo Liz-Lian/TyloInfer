@@ -1,0 +1,5 @@
+#pragma once
+static constexpr const char* kMlxAffineNax = R"AFFINENAX(
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+@TYLOINFER_NAX_FRAGMENT_SOURCE@
+)AFFINENAX";

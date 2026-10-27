@@ -723,15 +723,38 @@ constexpr const char* kMxfp8SmallMExact = R"METAL(
                     (output_base + result)
                         * (uint(K) / uint(SCALE_COLUMNS)) + scale_column]);
             }
-            for (uint row = 0u; row < uint(M); ++row) {
-                float dot_value = 0.0f;
-                for (uint element = 0u;
-                     element < VALUES_PER_THREAD;
-                     ++element) {
-                    dot_value += input_values[row][element]
-                        * mfq_mx_fp8(row_weight[element]);
+            if constexpr (M >= 4 && sizeof(x[0]) == sizeof(half)) {
+                uchar4 codes0 = *(device const uchar4*)row_weight;
+                uchar4 codes1 = *(device const uchar4*)(row_weight + 4u);
+                half4 decoded0 = half4(
+                    mfq_mx_fp8(codes0.x), mfq_mx_fp8(codes0.y),
+                    mfq_mx_fp8(codes0.z), mfq_mx_fp8(codes0.w));
+                half4 decoded1 = half4(
+                    mfq_mx_fp8(codes1.x), mfq_mx_fp8(codes1.y),
+                    mfq_mx_fp8(codes1.z), mfq_mx_fp8(codes1.w));
+                for (uint row = 0u; row < uint(M); ++row) {
+                    float dot_value = 0.0f;
+                    for (uint element = 0u;
+                         element < VALUES_PER_THREAD;
+                         ++element) {
+                        dot_value += input_values[row][element]
+                            * float(element < 4u
+                                ? decoded0[element]
+                                : decoded1[element - 4u]);
+                    }
+                    accum[row][result] += scale * dot_value;
                 }
-                accum[row][result] += scale * dot_value;
+            } else {
+                for (uint row = 0u; row < uint(M); ++row) {
+                    float dot_value = 0.0f;
+                    for (uint element = 0u;
+                         element < VALUES_PER_THREAD;
+                         ++element) {
+                        dot_value += input_values[row][element]
+                            * mfq_mx_fp8(row_weight[element]);
+                    }
+                    accum[row][result] += scale * dot_value;
+                }
             }
         }
         weight_ptr += K_BLOCK;
@@ -749,6 +772,68 @@ constexpr const char* kMxfp8SmallMExact = R"METAL(
         }
     }
 )METAL";
+
+constexpr const char* kMxfp8Block32PairSwiglu = R"METAL(
+    constexpr uint RESULTS = 2u;
+    const uint lane = thread_index_in_simdgroup;
+    const uint group = simdgroup_index_in_threadgroup;
+    const uint base = threadgroup_position_in_grid.x * (RESULTS * 2u) + group * RESULTS;
+    float gate[M][RESULTS] = {{0.0f}};
+    float up[M][RESULTS] = {{0.0f}};
+    for (uint k = 0u; k < uint(K); k += 256u) {
+        const uint column = k + lane * 8u;
+        if (column >= uint(K)) continue;
+        half4 x0[M], x1[M];
+        for (uint row = 0u; row < uint(M); ++row) {
+            x0[row] = *(device const half4*)(x + row * uint(K) + column);
+            x1[row] = *(device const half4*)(x + row * uint(K) + column + 4u);
+        }
+        for (uint result = 0u; result < RESULTS; ++result) {
+            const uint output = base + result;
+            if (output >= uint(OUT)) continue;
+            const uint offset = output * uint(K) + column;
+            uchar4 c0 = *(device const uchar4*)(g_values + offset);
+            uchar4 c1 = *(device const uchar4*)(g_values + offset + 4u);
+            float4 w0 = float4(mfq_mx_fp8(c0.x), mfq_mx_fp8(c0.y), mfq_mx_fp8(c0.z), mfq_mx_fp8(c0.w));
+            float4 w1 = float4(mfq_mx_fp8(c1.x), mfq_mx_fp8(c1.y), mfq_mx_fp8(c1.z), mfq_mx_fp8(c1.w));
+            const float gs = mfq_mx_e8m0(g_scales[(output / uint(GS_ROWS)) * (uint(K) / 32u) + column / 32u]);
+            for (uint row = 0u; row < uint(M); ++row)
+                gate[row][result] = fma(gs, dot(float4(x0[row]), w0) + dot(float4(x1[row]), w1), gate[row][result]);
+            c0 = *(device const uchar4*)(u_values + offset);
+            c1 = *(device const uchar4*)(u_values + offset + 4u);
+            w0 = float4(mfq_mx_fp8(c0.x), mfq_mx_fp8(c0.y), mfq_mx_fp8(c0.z), mfq_mx_fp8(c0.w));
+            w1 = float4(mfq_mx_fp8(c1.x), mfq_mx_fp8(c1.y), mfq_mx_fp8(c1.z), mfq_mx_fp8(c1.w));
+            const float us = mfq_mx_e8m0(u_scales[(output / uint(US_ROWS)) * (uint(K) / 32u) + column / 32u]);
+            for (uint row = 0u; row < uint(M); ++row)
+                up[row][result] = fma(us, dot(float4(x0[row]), w0) + dot(float4(x1[row]), w1), up[row][result]);
+        }
+    }
+    for (uint row = 0u; row < uint(M); ++row) {
+        for (uint result = 0u; result < RESULTS; ++result) {
+            float g = simd_sum(gate[row][result]);
+            float u = simd_sum(up[row][result]);
+            if (lane == 0u && base + result < uint(OUT)) {
+                g = float(T(half(g)));
+                u = float(T(half(u)));
+                if (params[0] > 0.0f) { g = min(g, params[0]); u = clamp(u, -params[0], params[0]); }
+                const float activated = g / (1.0f + exp(-g));
+                y[row * uint(OUT) + base + result] = T(activated * u);
+            }
+        }
+    }
+)METAL";
+
+const mlx::core::fast::CustomKernelFunction& mxfp8_block32_pair_swiglu_kernel() {
+    static const auto kernel = [] {
+        CompileOptions options;
+        options.math_mode = MathMode::Fast;
+        return mlx::core::fast::metal_kernel(
+            "mfq_cpp_mxfp8_block32_pair_swiglu",
+            {"g_values", "g_scales", "u_values", "u_scales", "x", "params"}, {"y"},
+            kMxfp8Block32PairSwiglu, kMxHeader, true, false, options);
+    }();
+    return kernel;
+}
 
 std::vector<std::string> mxfp8_projection_group_input_names(
     std::size_t projections) {
@@ -1017,10 +1102,10 @@ constexpr const char* kMxfp8Block32GroupedInverseRope = R"METAL(
          block_base += K_BLOCK) {
         uint column_base = block_base + lane * VALUES_PER_THREAD;
         uint source_base = input_group * uint(K) + column_base;
-        // The reference graph stores inverse-RoPE to FP32 before QMV. A
+        // The reference graph stores inverse-RoPE to FP16/FP32 before QMV. A
         // volatile thread-local boundary prevents fast-math from reassociating
         // the rotation with the following weight product across that store.
-        thread volatile float activation[VALUES_PER_THREAD];
+        thread volatile T activation[VALUES_PER_THREAD];
         for (uint element = 0u;
              element < VALUES_PER_THREAD;
              element += 2u) {
@@ -1074,20 +1159,35 @@ constexpr const char* kMxfp8Block32GroupedInverseRope = R"METAL(
 )METAL";
 
 constexpr const char* kMxDequantize = R"METAL(
-    uint index = thread_position_in_grid.x;
-    uint count = uint(OUT) * uint(K);
-    if (index < count) {
-        uint output = index / uint(K);
-        uint column = index - output * uint(K);
-        y[index] = T(mfq_mx_weight(
-            values,
-            scales,
-            output,
-            column,
-            uint(MX_BITS),
-            uint(K),
-            uint(SCALE_ROW_BLOCK),
-            uint(SCALE_COLUMN_BLOCK)));
+    if constexpr (MX_BITS == 8) {
+        uint index = thread_position_in_grid.x * 4u;
+        uint count = uint(OUT) * uint(K);
+        if (index < count) {
+            uint output = index / uint(K);
+            uint column = index - output * uint(K);
+            uchar4 code = *(device const uchar4*)(values + index);
+            float4 decoded = float4(mfq_mx_fp8(code.x), mfq_mx_fp8(code.y),
+                mfq_mx_fp8(code.z), mfq_mx_fp8(code.w));
+            float scale = mfq_mx_e8m0(scales[(output / uint(SCALE_ROW_BLOCK))
+                * (uint(K) / uint(SCALE_COLUMN_BLOCK)) + column / uint(SCALE_COLUMN_BLOCK)]);
+            *(device vec<T, 4>*)(y + index) = vec<T, 4>(decoded * scale);
+        }
+    } else {
+        uint index = thread_position_in_grid.x;
+        uint count = uint(OUT) * uint(K);
+        if (index < count) {
+            uint output = index / uint(K);
+            uint column = index - output * uint(K);
+            y[index] = T(mfq_mx_weight(
+                values,
+                scales,
+                output,
+                column,
+                uint(MX_BITS),
+                uint(K),
+                uint(SCALE_ROW_BLOCK),
+                uint(SCALE_COLUMN_BLOCK)));
+        }
     }
 )METAL";
 
@@ -1179,6 +1279,19 @@ mxfp4_e4m3_scale_sim_kernel() {
             false,
             options);
     }();
+    return kernel;
+}
+
+const mlx::core::fast::CustomKernelFunction& weighted_rms_apply_kernel() {
+    static const auto kernel = mlx::core::fast::metal_kernel(
+        "tyloinfer_weighted_rms_apply", {"x", "means", "weight", "params"}, {"y"}, R"METAL(
+uint col = thread_position_in_grid.x, row = thread_position_in_grid.y;
+if (col >= K || row >= uint(means_shape[0])) return;
+ulong at = ulong(row) * K + col;
+float inverse = metal::precise::rsqrt(means[row] + params[0]);
+ulong source = ulong(row) * x_strides[0] + ulong(col) * x_strides[1];
+y[at] = T((float(x[source]) * inverse) * float(weight[col * weight_strides[0]]));
+)METAL", "", false, false);
     return kernel;
 }
 
@@ -1381,6 +1494,26 @@ array mlx_mxfp4_e4m3_scale_sim(const array& input) {
     return std::move(output.front());
 }
 
+array mlx_weighted_rms(const array& input, const array& norm_weight, float eps) {
+    if (!input.ndim() || input.shape(-1) <= 0 || !input.size()
+        || norm_weight.shape() != Shape{input.shape(-1)} || !std::isfinite(eps) || eps <= 0.f
+        || (input.dtype() != mlx::core::float16 && input.dtype() != mlx::core::bfloat16 && input.dtype() != mlx::core::float32)
+        || (norm_weight.dtype() != mlx::core::float16 && norm_weight.dtype() != mlx::core::bfloat16 && norm_weight.dtype() != mlx::core::float32))
+        throw std::invalid_argument("invalid weighted RMS normalization input");
+    const int width = input.shape(-1);
+    const auto rows = input.size() / width;
+    if (rows > std::size_t(std::numeric_limits<int>::max()))
+        throw std::invalid_argument("weighted RMS normalization row count exceeds Metal limits");
+    auto flat = mlx::core::reshape(input, {int(rows), width});
+    auto source = mlx::core::astype(input, mlx::core::float32);
+    auto squares = source * source;
+    auto means = mlx::core::reshape(mlx::core::mean(squares, -1, true), {-1});
+    return weighted_rms_apply_kernel()({flat, means, norm_weight, array({eps}, mlx::core::float32)},
+        {input.shape()}, {input.dtype()}, {input.shape(-1), int(means.size()), 1},
+        {std::min(256, input.shape(-1)), 1, 1}, {{"K", input.shape(-1)}, {"T", input.dtype()}},
+        std::nullopt, false, {}).front();
+}
+
 array mlx_weighted_rms_rope_mxfp8_sim(
     const array& input,
     const array& norm_weight,
@@ -1395,12 +1528,7 @@ array mlx_weighted_rms_rope_mxfp8_sim(
             "invalid weighted RMS/RoPE/MXFP8 preparation input");
     }
     const auto reference = [&] {
-        auto source = mlx::core::astype(input, mlx::core::float32);
-        auto scale = mlx::core::rsqrt(
-            mlx::core::mean(source * source, -1, true) + eps);
-        auto result = source * scale *
-            mlx::core::astype(norm_weight, mlx::core::float32);
-        result = mlx::core::astype(std::move(result), input.dtype());
+        auto result = mlx_weighted_rms(input, norm_weight, eps);
         result = mlx_rope_adjacent(
             result,
             rotary_dimension,
@@ -1713,12 +1841,13 @@ array MlxMxWeight::dequantize(Dtype dtype) const {
     if (elements > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::runtime_error("MX dequantization grid exceeds MLX limits");
     }
+    const auto work_items = bits_ == 8 ? elements / 4 : elements;
     auto outputs = mx_dequantize_kernel()(
         {values_, scales_, values_},
         {Shape{output_size_, input_size_}},
         {dtype},
-        {static_cast<int>(elements), 1, 1},
-        {std::min(256, static_cast<int>(elements)), 1, 1},
+        {static_cast<int>(work_items), 1, 1},
+        {std::min(256, static_cast<int>(work_items)), 1, 1},
         templates(
             dtype,
             bits_,
@@ -1992,6 +2121,46 @@ std::vector<array> MlxMxWeight::projection_group_matmul(
     return outputs;
 }
 
+bool MlxMxWeight::supports_projection_pair_swiglu(
+    std::span<const MlxMxWeight> weights,
+    const array& input) noexcept {
+    if (weights.size() != 2 || input.ndim() == 0 || input.size() == 0 ||
+        (input.dtype() != mlx::core::float16 && input.dtype() != mlx::core::bfloat16)) return false;
+    const auto& gate = weights[0];
+    const auto& up = weights[1];
+    if (gate.bits_ != 8 || up.bits_ != 8 || gate.mxfp8_scale_column_block_size_ != 32 ||
+        up.mxfp8_scale_column_block_size_ != 32 || gate.input_size_ != up.input_size_ ||
+        gate.output_size_ != up.output_size_ || input.shape(-1) != gate.input_size_) return false;
+    const auto rows = input.size() / static_cast<std::size_t>(gate.input_size_);
+    return rows >= 1 && rows <= 6 && rows != 5;
+}
+
+array MlxMxWeight::projection_pair_swiglu(
+    std::span<const MlxMxWeight> weights,
+    const array& input,
+    float limit) {
+    if (!supports_projection_pair_swiglu(weights, input) || !std::isfinite(limit) || limit < 0.f)
+        throw std::invalid_argument("invalid native column-32 MXFP8 SwiGLU pair");
+    const auto& gate = weights[0];
+    const auto& up = weights[1];
+    const int rows = static_cast<int>(input.size() / gate.input_size_);
+    auto source = mlx::core::contiguous(mlx::core::reshape(
+        mlx::core::astype(input, mlx::core::float16), Shape{rows, gate.input_size_}));
+    const int grid = checked_dimension(
+        ((static_cast<std::uint64_t>(gate.output_size_) + 3) / 4) * 64,
+        "MXFP8 SwiGLU pair grid");
+    auto output = mxfp8_block32_pair_swiglu_kernel()(
+        {gate.values_, gate.scales_, up.values_, up.scales_, source, array({limit}, mlx::core::float32)},
+        {Shape{rows, gate.output_size_}}, {input.dtype()},
+        {grid, 1, 1}, {64, 1, 1},
+        {{"M", rows}, {"K", gate.input_size_}, {"OUT", gate.output_size_}, {"T", input.dtype()},
+         {"GS_ROWS", gate.mxfp8_scale_row_block_size_}, {"US_ROWS", up.mxfp8_scale_row_block_size_}},
+        std::nullopt, false, {}).front();
+    auto shape = input.shape();
+    shape.back() = gate.output_size_;
+    return mlx::core::reshape(std::move(output), std::move(shape));
+}
+
 array MlxMxWeight::grouped_row_matmul(
     const array& input,
     int group_count) const {
@@ -2246,13 +2415,14 @@ array MlxMxWeight::grouped_row_matmul_inverse_rope(
             sin_values,
             Shape{static_cast<int>(rows) * rotary_dimension / 2}));
     if (mxfp8_scale_column_block_size_ == 32) {
-        if (rows != 1 || input.dtype() != mlx::core::float32 ||
+        if (rows != 1 ||
+            (input.dtype() != mlx::core::float32 && input.dtype() != mlx::core::float16) ||
             input_size_ % 512 != 0 ||
             out_per_group % 8 != 0 ||
             head_dimension % 8 != 0 ||
             rotary_dimension % 8 != 0) {
             throw std::runtime_error(
-                "block32 MXFP8 fused inverse-RoPE requires float32 M=1 "
+                "block32 MXFP8 fused inverse-RoPE requires FP16/FP32 M=1 "
                 "decode geometry");
         }
         auto source = mlx::core::contiguous(
@@ -2275,10 +2445,11 @@ array MlxMxWeight::grouped_row_matmul_inverse_rope(
                 sin_values,
             },
             {Shape{1, output_size_}},
-            {mlx::core::float32},
+            {input.dtype()},
             {static_cast<int>(grid), 1, 1},
             {64, 1, 1},
             {
+                {"T", input.dtype()},
                 {"GROUP_COUNT", group_count},
                 {"OUT_PER_GROUP", out_per_group},
                 {"OUT", output_size_},

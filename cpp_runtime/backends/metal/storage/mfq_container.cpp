@@ -3,6 +3,7 @@
 #include "mlx_legacy_tensor_compat.h"
 
 #include "tyloinfer/mfq_model_source.h"
+#include "tyloinfer/gguf_model_source.h"
 #include "tyloinfer/tq_rows.h"
 #include "nlohmann/json.hpp"
 
@@ -20,6 +21,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -232,12 +234,31 @@ void MfqContainer::load_hf_directory(
     }
 }
 
-MfqContainer::MfqContainer(std::filesystem::path path, std::string hf_source_prefix)
+MfqContainer::MfqContainer(std::filesystem::path path, std::string hf_source_prefix,
+        std::vector<std::filesystem::path> gguf_companions)
     : random_access_files_(std::make_shared<RandomAccessFiles>()) {
     std::error_code directory_error;
     if (std::filesystem::is_directory(path, directory_error) &&
         !directory_error) {
         load_hf_directory(path, hf_source_prefix);
+        return;
+    }
+    if (mfq::is_gguf_file(path)) {
+        gguf_source_ = std::make_shared<mfq::GgufModelSource>(path, std::move(gguf_companions));
+        header_.version = 2;
+        header_.architecture = std::string(gguf_source_->architecture());
+        header_.extra_json = gguf_source_->metadata();
+        source_paths_ = gguf_source_->source_paths();
+        for (const auto& tensor : gguf_source_->tensors()) {
+            const auto range = gguf_source_->tensor_file_range(tensor.name);
+            records_.emplace(tensor.name, MfqRecord{tensor.name, tensor.dtype,
+                tensor.stored_dtype, range ? range->path : path, range ? range->offset : 0, tensor.nbytes});
+        }
+        for (const auto& name : gguf_source_->assets())
+            records_.emplace(name, MfqRecord{name, "BLOB", "BLOB", path, 0,
+                gguf_source_->read_asset(name).size()});
+        header_.record_count = static_cast<std::uint32_t>(records_.size());
+        legacy_tensor_layout_.qwen_gdn_gguf_layout = header_.architecture == "qwen35" || header_.architecture == "qwen35moe";
         return;
     }
     mfq::MfqModelSource source(std::move(path));
@@ -302,6 +323,17 @@ std::vector<std::int64_t> MfqContainer::tq_shape(const std::string& name) const 
         }, std::move(logical));
 }
 
+std::vector<std::int64_t> MfqContainer::tensor_shape(const std::string& name) const {
+    if (hf_source_) {
+        const auto* tensor = hf_source_->find_tensor(record(name).name);
+        if (tensor && tensor->shape) return *tensor->shape;
+    }
+    if (record(name).dtype == "TQ") return tq_shape(name);
+    const auto found = header_.extra_json.find("tensor_shapes");
+    if (found == header_.extra_json.end()) throw std::runtime_error("missing tensor shape: " + name);
+    return nlohmann::json::parse(found->second).at(record(name).name).get<std::vector<std::int64_t>>();
+}
+
 struct MfqContainer::LoadProgress {
     std::mutex mutex;
     std::unordered_set<std::string> prepared;
@@ -354,13 +386,40 @@ MfqMappedBytes MfqContainer::map_record(
         record_prepared(name);
         return {};
     }
-    if (hf_source_) {
+    if (hf_source_ || (gguf_source_ && !gguf_source_->tensor_file_range(value.name))) {
         auto bytes = std::make_shared<std::vector<std::uint8_t>>(read(name));
         const auto* data = bytes->data();
         const auto size = bytes->size();
         std::shared_ptr<void> owner = bytes;
         return MfqMappedBytes(std::move(owner), data, size);
     }
+    return map_file_range(value, random_access);
+}
+
+MfqMappedBytes MfqContainer::map_record_range(const std::string& name, std::uint64_t offset,
+    std::size_t size, bool random_access) const {
+    auto value = record(name);
+    if (offset > value.nbytes || size > value.nbytes - offset)
+        throw std::out_of_range("mapped tensor range is out of bounds: " + name);
+    if (!size) return {};
+    if (hf_source_ || gguf_source_) {
+        const mfq::ModelSource& source = hf_source_ ? *hf_source_ : *gguf_source_;
+        const auto range = source.tensor_file_range_at(value.name, offset, size);
+        if (!range) {
+            auto bytes = std::make_shared<std::vector<std::uint8_t>>(read_range(name, offset, size));
+            return MfqMappedBytes(bytes, bytes->data(), bytes->size());
+        }
+        value.source_path = range->path; value.offset = range->offset;
+    } else {
+        if (offset > UINT64_MAX - value.offset) throw std::overflow_error("mapped tensor offset overflow");
+        value.offset += offset;
+    }
+    value.nbytes = size;
+    return map_file_range(value, random_access);
+}
+
+MfqMappedBytes MfqContainer::map_file_range(const MfqRecord& value, bool random_access) const {
+    const auto& name = value.name;
     if (
         value.nbytes > static_cast<std::uint64_t>(
             std::numeric_limits<std::size_t>::max())
@@ -395,6 +454,10 @@ MfqMappedBytes MfqContainer::map_record(
             "cannot open MFQ record for mmap: " + name
             + ": " + std::strerror(errno));
     }
+    struct stat status{};
+    const MfqMappedBytes::FileIdentity identity = ::fstat(descriptor, &status) == 0
+        ? MfqMappedBytes::FileIdentity{static_cast<std::uint64_t>(status.st_dev),
+            static_cast<std::uint64_t>(status.st_ino)} : MfqMappedBytes::FileIdentity{};
     void* mapping = ::mmap(
         nullptr,
         mapped_size,
@@ -426,7 +489,7 @@ MfqMappedBytes MfqContainer::map_record(
         std::move(owner),
         static_cast<const std::uint8_t*>(mapping)
             + static_cast<std::size_t>(delta),
-        static_cast<std::size_t>(value.nbytes));
+        static_cast<std::size_t>(value.nbytes), identity);
 }
 
 std::vector<std::uint8_t> MfqContainer::read_range(
@@ -472,15 +535,16 @@ void MfqContainer::read_range_into(
     if (nbytes == 0) {
         return;
     }
-    if (hf_source_) {
-        if (hf_source_->has_asset(value.name)) {
-            const auto bytes = hf_source_->read_asset(value.name);
+    if (hf_source_ || gguf_source_) {
+        const mfq::ModelSource& source = hf_source_ ? *hf_source_ : *gguf_source_;
+        if (source.has_asset(value.name)) {
+            const auto bytes = source.read_asset(value.name);
             std::copy_n(
                 bytes.data() + relative_offset,
                 destination.size(),
                 destination.data());
         } else {
-            hf_source_->read_range_into(
+            source.read_range_into(
                 value.name,
                 relative_offset,
                 destination.data(),
@@ -518,7 +582,14 @@ void MfqContainer::readv_range(const std::string& name, std::uint64_t relative_o
     if (value.offset > maximum || relative_offset > maximum - value.offset
         || total > maximum - value.offset - relative_offset)
         throw std::runtime_error("MFQ record byte range is too large: " + name);
-    if (hf_source_) {
+    if (gguf_source_) {
+        std::vector<mfq::ReadSpan> spans;
+        for (const auto destination : destinations) {
+            spans.push_back({relative_offset, destination.data(), destination.size()});
+            relative_offset += destination.size();
+        }
+        gguf_source_->tensor_batch_reader(value.name)(spans);
+    } else if (hf_source_) {
         for (const auto destination : destinations) {
             read_range_into(name, relative_offset, destination);
             relative_offset += destination.size();
@@ -534,6 +605,7 @@ std::string MfqContainer::read_text(const std::string& name) const {
 
 void MfqContainer::drop_source_file_cache() const noexcept {
     if (hf_source_) hf_source_->drop_file_cache();
+    if (gguf_source_) gguf_source_->drop_file_cache();
 }
 
 std::optional<mfq::MfqModelGraph> MfqContainer::model_graph() const {

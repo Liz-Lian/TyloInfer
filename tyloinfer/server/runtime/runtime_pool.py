@@ -1384,6 +1384,9 @@ class RuntimePool:
     def _prefix_cache_directory(self) -> Path:
         if self.memory_policy.prefix_directory is not None:
             return Path(self.memory_policy.prefix_directory).expanduser().resolve()
+        configured = self.runtime_environment.get('TYLOINFER_RUNTIME_PREFIX_CACHE_DIR') or self.runtime_environment.get('TYLOINFER_SERVER_PREFIX_CACHE_DIR')
+        if configured:
+            return Path(configured).expanduser().resolve()
         if self.store is not None:
             return self.store.path.parent / "prefix-cache"
         return Path.home() / ".cache" / "tq" / "prefix"
@@ -1669,12 +1672,15 @@ class RuntimePool:
             current = list(self._instances.values())
             previous = self.memory_policy
             model_changed = policy.model_limit_bytes != previous.model_limit_bytes
-            weight_online = all(getattr(item, "resident_weight_dynamic_budget", False) and getattr(item, "resident_dynamic_budget", False)
-                and getattr(item, "prefix_dynamic_budget", False) for item in current)
+            prefix_online = all(getattr(item, "prefix_dynamic_budget", False) or
+                ((load_request := self._load_requests.get(item.artifact.resource.name)) is not None
+                    and not load_request.prefix_cache_enabled) for item in current)
+            weight_online = prefix_online and all(getattr(item, "resident_weight_dynamic_budget", False)
+                and getattr(item, "resident_dynamic_budget", False) for item in current)
             if model_changed and policy.prefix_directory == previous.prefix_directory and not weight_online:
                 raise _job_error("resident_budget_unsupported", "this runtime does not support online model weight budgets; models were not reloaded")
             cache_only = policy.prefix_directory == previous.prefix_directory \
-                and all(getattr(item, "prefix_dynamic_budget", False) for item in current) and (not model_changed or weight_online)
+                and prefix_online and (not model_changed or weight_online)
             if any(item.state != RuntimeInstanceState.READY or item.active_requests or item.queued_requests
                 or item.control_leases > (getattr(item, "read_control_leases", 0) if cache_only else 0) for item in current):
                 raise _job_error("runtime_busy", "wait for model requests to finish before applying memory budgets", retryable=True)
@@ -3772,7 +3778,7 @@ class RuntimePool:
         if (
             request.moe_gpu_cache_gb is not None
             or ceiling is None
-            or artifact.resource.format not in {"hf", "tq"}
+            or artifact.resource.format not in {"hf", "tq", "gguf"}
             or artifact.routed_expert_bytes <= 0
         ):
             return request
@@ -4020,6 +4026,13 @@ class RuntimePool:
             task.exception()
 
     async def _stop_and_detach_instance(self, instance: _Runtime) -> None:
+        async with self._lock:
+            pid = getattr(instance.process, "pid", None)
+            observed_release = (self.backend == "metal" and type(pid) is int and pid > 0
+                and getattr(instance.process, "returncode", None) is None
+                and process_physical_footprint(pid) is not None)
+            if observed_release:
+                self._effective_runtime_memory_budget_locked()
         try:
             await self._stop_process(instance)
         except BaseException as error:
@@ -4036,6 +4049,8 @@ class RuntimePool:
         async with self._lock:
             if self._instances.get(instance.id) is instance:
                 self._detach_instance_locked(instance)
+                if observed_release:
+                    self._effective_runtime_memory_budget_locked()
 
     def _schedule_retirement_retry_locked(self, instance: _Runtime) -> None:
         if self._closed:

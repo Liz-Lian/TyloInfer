@@ -63,18 +63,24 @@ std::string graph_json() {
 
 void write_mfq(
     const std::filesystem::path& path,
-    std::string_view tensor_name = "model.token_embedding.weight",std::int64_t elements=1) {
+    std::string_view tensor_name = "model.token_embedding.weight",std::int64_t elements=1,
+    std::string_view asset_name = "__mfq_asset__/model_config.json") {
     const std::string config = R"({"model_type":"qwen3_5"})";
+    const bool tinfer = asset_name.find("__tinfer_asset__/") == 0;
     std::ofstream stream(path, std::ios::binary);
     stream.write("MFQ1", 4);
     write_scalar<std::uint32_t>(stream, 2);
     write_string(stream, "qwen3_5");
-    write_scalar<std::uint32_t>(stream, 0);
+    write_scalar<std::uint32_t>(stream, tinfer ? 1 : 0);
+    if (tinfer) {
+        write_string(stream, "runtime_assets");
+        write_string(stream, R"({"version":1,"assets":{"model_config.json":{"record":"__tinfer_asset__/model_config.json"}}})");
+    }
     write_scalar<std::uint32_t>(stream, 2);
     write_string(stream, tensor_name);
     write_string(stream, "BF16");
     write_scalar<std::uint64_t>(stream, 12+2*elements);
-    write_string(stream, "__mfq_asset__/model_config.json");
+    write_string(stream, asset_name);
     write_string(stream, "BLOB");
     write_scalar<std::uint64_t>(stream, config.size());
     write_scalar<std::uint32_t>(stream, 1);
@@ -177,6 +183,8 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
     const std::string table_name = "model.block.1.associative_memory.embedding.weight";
     const auto shared = root / "Engram" / ("model-EW-Engram-MXFP8-00002-of-00003" + suffix);
     write_shared_fixture(shared, 1, table_name);
+    const auto unrelated = root / "Engram" / ("other-EW-Engram-MXFP8-00002-of-00003" + suffix);
+    write_shared_fixture(unrelated, 1, table_name);
     for (const std::string precision : {"Q2.5", "Q3"}) {
         const auto first = root / precision / ("model-EW-" + precision + "-00001-of-00003" + suffix);
         const auto last = root / precision / ("model-EW-" + precision + "-00003-of-00003" + suffix);
@@ -190,6 +198,21 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
             require(bytes.size() == 14 && std::to_integer<int>(bytes[12]) == 11,
                     "shared table read returned incorrect bytes");
         }
+        const auto entrypoint = root / precision / ("model-EW-" + precision + suffix);
+        std::filesystem::rename(first, entrypoint);
+        for (const auto& entry : {entrypoint, last}) {
+            mfq::MfqModelSource source(entry);
+            require(source.source_paths().size() == 3, "root entrypoint lost shards");
+            require(source.source_paths()[0] == std::filesystem::canonical(entrypoint), "root entrypoint was not resolved");
+            require(source.source_paths()[1] == std::filesystem::canonical(shared), "root entrypoint lost shared table");
+        }
+        write_shared_fixture(first, 0, "model.token_embedding.weight");
+        bool duplicate_rejected = false;
+        try { mfq::MfqModelSource source(entrypoint); }
+        catch (const std::runtime_error&) { duplicate_rejected = true; }
+        require(duplicate_rejected, "ambiguous root entrypoint was accepted");
+        std::filesystem::remove(first);
+        std::filesystem::rename(entrypoint, first);
     }
     const auto first = root / "Q3" / ("model-EW-Q3-00001-of-00003" + suffix);
     auto rejects = [&] {
@@ -217,6 +240,18 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
     write_shared_fixture(shared, 1, "invalid.weight");
     mfq::MfqModelSource legacy(first);
     require(legacy.source_paths()[1].parent_path().filename() == "Q3", "legacy shard was replaced");
+}
+
+void test_tinfer_assets(const std::filesystem::path& root) {
+    const auto file = root / "tinfer-assets.tq";
+    write_mfq(file, "model.token_embedding.weight", 1, "__tinfer_asset__/model_config.json");
+    mfq::MfqModelSource source(file);
+    require(source.has_asset("__mfq_asset__/model_config.json"), "Tinfer config asset was not normalized");
+    require(source.tensors().size() == 1, "Tinfer assets leaked into tensor enumeration");
+    require(source.assets() == std::vector<std::string>{"__mfq_asset__/model_config.json"}, "Tinfer asset list differs");
+    require(source.read_asset("__mfq_asset__/model_config.json").size() > 0, "Tinfer asset read failed");
+    require(source.header().metadata.at("runtime_assets").find("__tinfer_asset__/") == std::string::npos,
+        "Tinfer manifest still references unnormalized asset records");
 }
 
 void test_tq_reserved_descriptor_bits() {
@@ -251,6 +286,7 @@ int main() {
         test_shared_engram_shards(root / "shared-mfq", ".mfq");
         test_shared_engram_shards(root / "shared-tq", ".tq");
         test_shared_engram_shards(root / "shared-tq-upper", ".TQ");
+        test_tinfer_assets(root);
         test_tq_reserved_descriptor_bits();
         const auto mfq_path = root / "model.mfq";
         const auto legacy_mfq_path = root / "legacy-model.mfq";

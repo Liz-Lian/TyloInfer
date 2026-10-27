@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 
 #include <mlx/mlx.h>
 
 namespace mfq::metal {
+
+mlx::core::array mlx_sparse_indexer_dot_scores(
+    const mlx::core::array& query, const mlx::core::array& pooled_keys);
 
 // Exact FP32 top-512 selection adapted from DeepSelect. The operator and its
 // device/shape policy are model-neutral; architecture adapters only provide
@@ -19,6 +23,11 @@ mlx::core::array mlx_sparse_indexer_topk512(
     const mlx::core::array& head_scores,
     int query_offset,
     int block_size);
+
+mlx::core::array mlx_sparse_block_gqa_prefill_tiles(const mlx::core::array& query,
+    const mlx::core::array& key, const mlx::core::array& value,
+    const std::optional<mlx::core::array>& selected, int query_offset, float scale,
+    mlx::core::Dtype output_dtype);
 
 mlx::core::array mlx_qsa_prefill_attention(
     const mlx::core::array& query,

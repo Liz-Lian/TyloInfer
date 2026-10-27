@@ -19,7 +19,10 @@ def checkpoint_cache_profile(artifact: DiscoveredModel, *, cuda: bool = False,
     include_recurrent: bool = False) -> ModelCacheProfile | None:
     if not artifact.resource.complete:
         raise ValueError('checkpoint shards are incomplete')
-    if artifact.resource.format == 'tq':
+    if getattr(artifact, 'source_config', None) is not None:
+        config = artifact.source_config
+        has_predictor = any(name.startswith(('predictor.block.', 'mtp.')) for name in (getattr(artifact, 'source_tensors', None) or {}))
+    elif artifact.resource.format == 'tq':
         with open_mmap(artifact.path) as store:
             record = store.records.get(MODEL_CONFIG_ASSET)
             if record is not None:

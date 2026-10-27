@@ -378,7 +378,7 @@ bool is_dense_float_dtype(const std::string& dtype) {
 }
 
 bool is_supported_linear_dtype(const std::string& dtype) {
-    return is_dense_float_dtype(dtype) || dtype == "TQ" || is_mx_dtype(dtype)
+    return is_dense_float_dtype(dtype) || dtype == "TQ" || is_mx_dtype(dtype) || is_gguf_dtype(dtype)
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         || is_nint_dtype(dtype) || is_nint8_zero_dtype(dtype) || is_vq_dtype(dtype)
 #endif
@@ -730,6 +730,15 @@ Qwen35TensorMetadata inspect_qwen35_tensor_metadata(
     PrefixCursor cursor(prefix);
     Qwen35TensorMetadata metadata;
     metadata.dtype = record.dtype;
+
+    if (is_gguf_dtype(record.dtype)) {
+        metadata.shape = model.tensor_shape(name);
+        metadata.packed = true;
+        metadata.axis = 0;
+        metadata.neuron_len = metadata.shape.back();
+        metadata.output_size = static_cast<std::uint32_t>(metadata.shape.front());
+        return metadata;
+    }
 
     if (record.dtype == "TQ") {
         metadata.shape = model.tq_shape(name);

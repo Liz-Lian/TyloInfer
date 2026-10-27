@@ -27,7 +27,22 @@ constexpr char kShortMerge[] = R"CSA2(
         denominator += partial[pos + D + 1] * correction;
         acc += partial[pos + d] * correction;
     }
+#ifdef CSA2_INVERSE_ROPE
+    half value = half(acc / denominator);
+    const half neighbor = simd_shuffle_xor(value, 1u);
+    if (d >= uint(D - ROTARY)) {
+        const uint pair = (d - uint(D - ROTARY)) / 2u;
+        const uint position = query * uint(ROTARY / 2) + pair;
+        const float cosine = cos_values[position], sine = -sin_values[position];
+        const float first = (d & 1u) ? float(neighbor) : float(value);
+        const float second = (d & 1u) ? float(value) : float(neighbor);
+        value = half((d & 1u) ? first * sine + second * cosine
+            : first * cosine - second * sine);
+    }
+    out[(query * H + head) * D + d] = value;
+#else
     out[(query * H + head) * D + d] = half(acc / denominator);
+#endif
 )CSA2";
 
 bool csa2_nax_supported(Stream stream) {
@@ -43,22 +58,22 @@ bool csa2_nax_supported(Stream stream) {
 
 class Csa2Short final : public Primitive, public MlxPreparableKernel {
 public:
-    Csa2Short(Stream stream, int dim, int position, int window, bool unpacked = false)
-        : Primitive(stream), dim_(dim), position_(position), window_(window), unpacked_(unpacked) {
+    Csa2Short(Stream stream, int dim, int position, int window, bool unpacked = false, int rotary = 0)
+        : Primitive(stream), dim_(dim), position_(position), window_(window), rotary_(rotary), unpacked_(unpacked) {
         nax_ = dim == 512 && csa2_nax_supported(stream);
     }
 
     std::string preparation_key() const override {
-        return "mfq_csa2_short_f16_d" + std::to_string(dim_) + (nax_ ? "_nax_v1" : "_v1")
-            + (unpacked_ ? "_unpacked" : "");
+        return kernel_prefix() + (rotary_ ? "_inverse_r" + std::to_string(rotary_) : "");
     }
 
     void prepare_gpu() override {
         auto& device = kernel_device(stream().device);
         auto* library = prepared_library();
         for (const auto* suffix : {"_shared", "_scalar", "_merge"})
-            (void)device.get_kernel(preparation_key() + suffix, library);
-        if (nax_) (void)device.get_kernel(preparation_key() + "_nax", library);
+            (void)device.get_kernel(kernel_prefix() + suffix, library);
+        if (nax_) (void)device.get_kernel(kernel_prefix() + "_nax", library);
+        if (rotary_) (void)device.get_kernel(preparation_key() + "_merge", inverse_merge_library());
     }
 
     void eval_cpu(const std::vector<array>&, std::vector<array>&) override {
@@ -86,7 +101,7 @@ public:
         const bool shared = heads >= 8 && slots + compressed >= 512;
         const bool nax = nax_ && heads % 16 == 0 && (prefill || slots + compressed >= 512);
         encoder.set_compute_pipeline_state(device.get_kernel(
-            preparation_key() + (nax ? "_nax" : shared ? "_shared" : "_scalar"), library));
+            kernel_prefix() + (nax ? "_nax" : shared ? "_shared" : "_scalar"), library));
         for (int index = 0; index < 4; ++index) encoder.set_input_array(inputs[index], index);
         encoder.set_bytes(params, 4);
         encoder.set_bytes(scale, 5);
@@ -99,11 +114,17 @@ public:
         encoder.dispatch_threadgroups(nax ? MTL::Size(length * splits, heads / 16, 1)
             : MTL::Size((heads + group - 1) / group, length, splits), MTL::Size(128, 1, 1));
         if (prefill) return;
-        encoder.set_compute_pipeline_state(device.get_kernel(preparation_key() + "_merge", library));
+        encoder.set_compute_pipeline_state(rotary_
+            ? device.get_kernel(preparation_key() + "_merge", inverse_merge_library())
+            : device.get_kernel(kernel_prefix() + "_merge", library));
         encoder.set_input_array(partial, 0);
         encoder.set_input_array(inputs[4], 1);
         encoder.set_bytes(params, 2);
         encoder.set_output_array(output, 3);
+        if (rotary_) {
+            encoder.set_input_array(inputs[5], 4);
+            encoder.set_input_array(inputs[6], 5);
+        }
         encoder.dispatch_threadgroups(MTL::Size((heads * (dim_ / 32) + 3) / 4, length, 1), MTL::Size(128, 1, 1));
     }
 
@@ -111,14 +132,37 @@ public:
     bool is_equivalent(const Primitive& other) const override {
         const auto& selected = static_cast<const Csa2Short&>(other);
         return dim_ == selected.dim_ && position_ == selected.position_ && window_ == selected.window_
-            && nax_ == selected.nax_ && unpacked_ == selected.unpacked_;
+            && nax_ == selected.nax_ && unpacked_ == selected.unpacked_ && rotary_ == selected.rotary_;
     }
 
 private:
+    std::string kernel_prefix() const {
+        return "mfq_csa2_short_f16_d" + std::to_string(dim_) + (nax_ ? "_nax_v1" : "_v1")
+            + (unpacked_ ? "_unpacked" : "");
+    }
+
+    MTL::Library* inverse_merge_library() {
+        CompileOptions options;
+        options.math_mode = MathMode::Fast;
+        const auto key = preparation_key() + "_merge";
+        return kernel_device(stream().device).get_library(key, options, [this, key] {
+            return std::string(kCsa2Header) + "\n#define CSA2_INVERSE_ROPE 1\nconstant int D = "
+                + std::to_string(dim_) + ";\nconstant int ROTARY = " + std::to_string(rotary_) + ";\n"
+                "kernel void " + key + "(const device float* partial [[buffer(0)]], "
+                "const device float* sink [[buffer(1)]], constant int* meta [[buffer(2)]], "
+                "device half* out [[buffer(3)]], const device float* cos_values [[buffer(4)]], "
+                "const device float* sin_values [[buffer(5)]], "
+                "uint thread_index_in_simdgroup [[thread_index_in_simdgroup]], "
+                "uint simdgroup_index_in_threadgroup [[simdgroup_index_in_threadgroup]], "
+                "uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]) {\n"
+                + kShortMerge + "\n}\n";
+        });
+    }
+
     MTL::Library* prepared_library() {
         CompileOptions options;
         options.math_mode = MathMode::Fast;
-        return kernel_device(stream().device).get_library(preparation_key(), options, [this] {
+        return kernel_device(stream().device).get_library(kernel_prefix(), options, [this] {
             std::string source = nax_ ? "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n"
                 "#define UNROLL _Pragma(\"clang loop unroll(full)\")\n" : "";
             if (unpacked_) source += "#define CSA2_UNPACKED 1\n";
@@ -132,7 +176,7 @@ private:
                 "uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]) {\n";
             for (const auto& [suffix, body] : {
                      std::pair{"_shared", kCsa2AttentionMma}, std::pair{"_scalar", kCsa2Attention}}) {
-                source += "kernel void " + preparation_key() + suffix + "("
+                source += "kernel void " + kernel_prefix() + suffix + "("
                     "const device half* q [[buffer(0)]], const device uchar* window [[buffer(1)]], "
                     "const device uchar* pooled [[buffer(2)]], const device int* ci [[buffer(3)]], "
                     "constant int* meta [[buffer(4)]], constant float* scalep [[buffer(5)]], "
@@ -145,7 +189,7 @@ private:
                 source += selected + "\n}\n";
             }
             if (nax_) {
-                source += "kernel void " + preparation_key() + "_nax("
+                source += "kernel void " + kernel_prefix() + "_nax("
                     "const device half* q [[buffer(0)]], const device uchar* window [[buffer(1)]], "
                     "const device uchar* pooled [[buffer(2)]], const device int* ci [[buffer(3)]], "
                     "constant int* meta [[buffer(4)]], constant float* scalep [[buffer(5)]], "
@@ -153,7 +197,7 @@ private:
                     "device half* final_output [[buffer(8)]], " + indices;
                 source += std::string(kCsa2Nax) + "\n}\n";
             }
-            source += "kernel void " + preparation_key() + "_merge("
+            source += "kernel void " + kernel_prefix() + "_merge("
                 "const device float* partial [[buffer(0)]], const device float* sink [[buffer(1)]], "
                 "constant int* meta [[buffer(2)]], device half* out [[buffer(3)]], " + indices;
             source += std::string(kShortMerge) + "\n}\n";
@@ -161,7 +205,7 @@ private:
         });
     }
 
-    int dim_, position_, window_;
+    int dim_, position_, window_, rotary_;
     bool nax_ = false;
     bool unpacked_ = false;
 };

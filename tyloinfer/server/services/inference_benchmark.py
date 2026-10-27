@@ -27,7 +27,7 @@ class InferenceBenchmarkPayload(BaseModel):
     top_k: int = Field(default=20, ge=0, le=1024)
     top_p: float = Field(default=0.95, gt=0, le=1)
     seed: int = Field(default=42, ge=0)
-    mtp_max_draft_tokens: int = Field(default=3, ge=1, le=5)
+    mtp_max_draft_tokens: int = Field(default=3, ge=1, le=7)
 
     @model_validator(mode="after")
     def validate_sampling(self) -> InferenceBenchmarkPayload:

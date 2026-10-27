@@ -32,6 +32,8 @@ public:
         std::string_view name) const noexcept override;
     const MfqLegacyTensorAliases& legacy_tensor_compatibility()
         const noexcept override;
+    std::optional<TensorFileRange> tensor_file_range_at(std::string_view name,
+        std::uint64_t offset, std::size_t size) const override;
     void read_range_into(
         std::string_view name,
         std::uint64_t relative_offset,

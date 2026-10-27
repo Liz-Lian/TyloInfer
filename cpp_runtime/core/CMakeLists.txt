@@ -49,6 +49,10 @@ add_library(mfq-model-source STATIC
     include/tyloinfer/nvq_rows.h
     include/tyloinfer/packed_row_range.h
     hf_model_source.cpp
+    mlx/mlx_affine.cpp
+    mlx/mlx_affine_source.cpp
+    gguf/gguf_model_source.cpp
+    include/tyloinfer/gguf_model_source.h
     hf_safetensors_source.cpp
     include/tyloinfer/hf_model_source.h
     include/tyloinfer/hf_safetensors_source.h
@@ -69,7 +73,7 @@ target_include_directories(mfq-model-source PUBLIC
 )
 target_link_libraries(mfq-model-source PUBLIC mfq-model-graph)
 target_link_libraries(mfq-model-source PRIVATE mfq-host-parallel)
-target_link_libraries(mfq-model-source PRIVATE mfq-json)
+target_link_libraries(mfq-model-source PRIVATE mfq-json mfq-ggml)
 target_compile_features(mfq-model-source PUBLIC cxx_std_17)
 if(MSVC)
     target_compile_options(mfq-model-source PRIVATE /EHsc)

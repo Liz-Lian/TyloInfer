@@ -1255,7 +1255,7 @@ int main(int argc, char** argv) {
         test_qsa_canonical_prefill_prefix();
         for (auto dtype : {mlx::core::float16, mlx::core::bfloat16,
                            mlx::core::float32}) {
-            for (int rows = 1; rows <= 6; ++rows) {
+            for (int rows = 1; rows <= 8; ++rows) {
                 test_qsa_decode_prologue_matches_reference(dtype, 17, 1e7f, 1e-6f, rows);
                 test_qsa_decode_prologue_matches_reference(dtype, 4099, 1e5f, 3e-5f, rows);
                 test_qsa_decode_prologue_matches_reference(dtype, 0, 1e7f, 1e-6f, rows);

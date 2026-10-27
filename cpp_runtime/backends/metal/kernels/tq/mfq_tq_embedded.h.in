@@ -2,6 +2,6 @@
 static constexpr const char* kTqDecode = R"TQMETAL(@TYLOINFER_TQ_DECODE_SOURCE@)TQMETAL";
 static constexpr const char* kTqNax = R"TQNAX(
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-@TYLOINFER_TQ_NAX_SOURCE@
+@TYLOINFER_NAX_FRAGMENT_SOURCE@
 @TYLOINFER_TQ_MATMUL_SOURCE@
 )TQNAX";

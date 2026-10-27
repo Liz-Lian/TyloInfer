@@ -72,7 +72,8 @@ def _scan_blocks(directory: Path) -> list[_Block]:
                             continue
                         with os.scandir(bucket.path) as files:
                             for file in files:
-                                if not file.name.endswith(".tqkv") or not file.is_file(follow_symlinks=False):
+                                suffix = Path(file.name).suffix
+                                if suffix not in {'.tqkv', '.mfqkv'} or not file.is_file(follow_symlinks=False):
                                     continue
                                 try:
                                     descriptor = os.open(file.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -84,7 +85,7 @@ def _scan_blocks(directory: Path) -> list[_Block]:
                                     magic, version, compatibility, digest, parent, size, tokens, payload, _ = _HEADER.unpack(raw)
                                     if magic != b"MFQKVB1\0" or version != 1 or compatibility.hex() != namespace.name:
                                         continue
-                                    if file.name != digest.hex() + ".tqkv" or bucket.name != digest.hex()[:2]:
+                                    if file.name != digest.hex() + suffix or bucket.name != digest.hex()[:2]:
                                         continue
                                     if not 0 < tokens <= size <= 65536 or status.st_size != _HEADER.size + payload:
                                         continue

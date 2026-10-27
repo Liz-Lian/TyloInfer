@@ -56,6 +56,8 @@ struct MlxSsdExpertCacheStats {
     std::size_t cache_slots = 0;
     double routed_graph_seconds = 0.0;
     std::optional<std::size_t> cached_payload_bytes, cache_metadata_bytes;
+    std::optional<std::size_t> pinned_cache_bytes;
+    std::uint64_t prefill_read_batches = 0;
 
     double hit_rate() const noexcept {
         return requests == 0

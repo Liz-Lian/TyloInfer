@@ -253,6 +253,8 @@ MlxDsparkDepthController::MlxDsparkDepthController(
     // Without it the controller can never discover that a valid but costly
     // one-token predictor loses to the target model alone.
     warmup_.insert(warmup_.end(), {0, 0, 0});
+    // Refresh speculative cost after the plain baseline has changed residency.
+    warmup_.push_back(current_depth_);
 }
 
 void MlxDsparkDepthController::observe(
@@ -302,6 +304,7 @@ void MlxDsparkDepthController::observe(
     milliseconds_since_explore_ += cycle_ms;
 
     if (!warmup_.empty()) {
+        if (!time_sample || used_depth != warmup_.front()) return;
         warmup_.erase(warmup_.begin());
         if (!warmup_.empty()) {
             current_depth_ = warmup_.front();

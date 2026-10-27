@@ -33,6 +33,12 @@ struct TensorMetadata {
     std::uint64_t nbytes = 0;
 };
 
+struct TensorFileRange {
+    std::filesystem::path path;
+    std::uint64_t offset = 0;
+    std::uint64_t nbytes = 0;
+};
+
 // A capability refusal, distinct from invalid metadata or a failed read.
 class TensorReaderUnsupported : public std::runtime_error {
 public:
@@ -72,6 +78,16 @@ public:
     // True when independent tensor reads can overlap without a shared seek
     // lock. Unknown callbacks must keep their serial access order.
     virtual bool supports_parallel_tensor_reads() const noexcept { return false; }
+    virtual std::optional<TensorFileRange> tensor_file_range(std::string_view) const { return std::nullopt; }
+    virtual std::optional<TensorFileRange> tensor_file_range_at(std::string_view name,
+        std::uint64_t offset, std::size_t size) const {
+        auto range = tensor_file_range(name);
+        if (!range) return std::nullopt;
+        if (offset > range->nbytes || size > range->nbytes - offset)
+            throw std::out_of_range("tensor file range is out of bounds");
+        range->offset += offset; range->nbytes = size;
+        return range;
+    }
 
     // An independently owned, bounded range reader that survives this source.
     // Packed row consumers must not fall back to reading the complete tensor.

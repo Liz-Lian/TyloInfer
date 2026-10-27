@@ -171,7 +171,7 @@ public:
 array qsa_prefill_scores(const array& query, const array& keys, int offset) {
     const int rows = query.shape(1);
     const int count = keys.shape(1);
-    if (rows >= 32) {
+    if (rows >= 32 && query.dtype() != mlx::core::float32) {
         auto q = mlx::core::contiguous(mlx::core::transpose(query, {0, 2, 1, 3}));
         return array(Shape{1, rows, count}, mlx::core::float32,
             std::make_shared<QsaPrefillScoresPrimitive>(
@@ -1208,7 +1208,7 @@ static array sparse_block_gqa_attention_impl(
 
     const char* gather_setting = std::getenv("TYLOINFER_METAL_SPARSE_GQA_DECODE_GATHER");
     if (selected_query.shape(0) > 0 && selected_query.shape(2) > 0 &&
-        selected_query.shape(2) < (prefill ? 24 : 7) &&
+        selected_query.shape(2) < (prefill ? 24 : 9) &&
         (prefill || gather_setting == nullptr || std::string(gather_setting) != "0")) {
         const int queries = selected_query.shape(2);
         const int rows = selected_query.shape(0) * queries;
@@ -1250,6 +1250,10 @@ static array sparse_block_gqa_attention_impl(
     if (params.batch > 0 && params.queries >= (prefill ? 24 : 32) && block_size == 4 &&
         sparse_block_nax_available() &&
         aligned(selected_query) && aligned(selected_key) && aligned(selected_value)) {
+        if (prefill && params.batch == 1 && params.queries >= 256 && params.selected_blocks == 512 &&
+            attention_dtype == mlx::core::float16)
+            return mlx_sparse_block_gqa_prefill_tiles(selected_query, selected_key, selected_value,
+                blocks, query_offset, selected_scale, attention_dtype);
         const int grid = checked_grid_product(
             {params.queries, 64}, "sparse NAX query grid");
         const bool native_prefill = prefill && params.selected_blocks == 512 && query_offset >= 2047;
@@ -1298,6 +1302,42 @@ array mlx_sparse_block_gqa_attention(
         query, key, value, selected_blocks, query_offset, block_size, scale, false);
 }
 
+array mlx_sparse_indexer_dot_scores(const array& query, const array& pooled_keys) {
+    if (query.ndim() != 4 || pooled_keys.ndim() != 3 || query.shape(0) != pooled_keys.shape(0) ||
+        query.shape(3) != pooled_keys.shape(2) || query.shape(1) < 1 || query.shape(1) > 8 ||
+        query.shape(2) < 1 || query.shape(2) > 8 || query.shape(3) < 4 || query.shape(3) % 4 ||
+        query.shape(3) > 1024 || pooled_keys.dtype() != mlx::core::float32 ||
+        (query.dtype() != mlx::core::float16 && query.dtype() != mlx::core::bfloat16 && query.dtype() != mlx::core::float32))
+        throw std::invalid_argument("invalid small-row sparse indexer geometry");
+    const Shape shape{query.shape(0), query.shape(1), query.shape(2), pooled_keys.shape(1)};
+    if (!pooled_keys.shape(1)) return mlx::core::zeros(shape, mlx::core::float32);
+    static const auto kernel = mlx::core::fast::metal_kernel("tinfer_sparse_indexer_dot_scores",
+        {"query", "keys"}, {"scores"}, R"METAL(
+        const uint lane = thread_index_in_simdgroup;
+        const uint key = threadgroup_position_in_grid.x * 4u + simdgroup_index_in_threadgroup;
+        const uint rows = uint(query_shape[1]), count = uint(keys_shape[1]);
+        if (key >= count) return;
+        const uint batch = threadgroup_position_in_grid.y / rows;
+        const uint row = threadgroup_position_in_grid.y % rows;
+        const auto source = keys + (ulong(batch) * count + key) * DIM;
+        float sums[HEADS] = {0.0f};
+        for (uint column = lane * 4u; column < uint(DIM); column += 128u) {
+            const float4 value(source[column], source[column + 1u], source[column + 2u], source[column + 3u]);
+            for (uint head = 0; head < uint(HEADS); ++head) {
+                const auto q = query + ((ulong(batch) * rows + row) * HEADS + head) * DIM + column;
+                sums[head] += dot(value, float4(q[0], q[1], q[2], q[3]));
+            }
+        }
+        for (uint head = 0; head < uint(HEADS); ++head) {
+            const float sum = simd_sum(sums[head]);
+            if (lane == 0u) scores[((ulong(batch) * rows + row) * HEADS + head) * count + key] = sum;
+        }
+        )METAL");
+    return kernel({mlx::core::contiguous(query), mlx::core::contiguous(pooled_keys)}, {shape}, {mlx::core::float32},
+        {((pooled_keys.shape(1) + 3) / 4) * 128, query.shape(0) * query.shape(1), 1}, {128, 1, 1},
+        {{"T", query.dtype()}, {"HEADS", query.shape(2)}, {"DIM", query.shape(3)}}, std::nullopt, false, {}).front();
+}
+
 array mlx_qsa_prefill_attention(
     const array& query,
     const array& key,
@@ -1309,33 +1349,50 @@ array mlx_qsa_prefill_attention(
         value.shape() != key.shape() || query.shape(0) != 1 ||
         query.shape(1) != 24 || query.shape(2) < 32 || query.shape(3) != 256 ||
         key.shape(0) != 1 || key.shape(1) != 2 || key.shape(3) != 256 ||
-        (query.dtype() != mlx::core::float16 && query.dtype() != mlx::core::bfloat16) ||
-        key.dtype() != query.dtype() || value.dtype() != query.dtype() ||
+        (query.dtype() != mlx::core::float16 && query.dtype() != mlx::core::bfloat16 &&
+         query.dtype() != mlx::core::float32) ||
+        (key.dtype() != mlx::core::float16 && key.dtype() != mlx::core::bfloat16 &&
+         key.dtype() != mlx::core::float32) || value.dtype() != key.dtype() ||
         index_query.shape() != Shape{1, query.shape(2), 4, 128} ||
-        index_query.dtype() != query.dtype() ||
+        (index_query.dtype() != mlx::core::float16 &&
+         index_query.dtype() != mlx::core::bfloat16 && index_query.dtype() != mlx::core::float32) ||
         pooled_index_keys.shape() != Shape{1, key.shape(2) / 4, 128} ||
-        (pooled_index_keys.dtype() != query.dtype() &&
-         pooled_index_keys.dtype() != mlx::core::float32) ||
+        (pooled_index_keys.dtype() != mlx::core::float16 &&
+         pooled_index_keys.dtype() != mlx::core::bfloat16 && pooled_index_keys.dtype() != mlx::core::float32) ||
         query_offset < 0 || query.shape(2) > key.shape(2) ||
         query_offset != key.shape(2) - query.shape(2)) {
         throw std::invalid_argument("unsupported QSA prefill geometry or cache position");
     }
     const int tokens = query.shape(2);
     const int keys = key.shape(2);
-    int dense_rows = std::min(tokens, std::max(0, 2051 - query_offset));
+    int dense_rows = std::min(tokens, std::max(0, 2048 - query_offset));
     if (tokens - dense_rows == 1) --dense_rows;
     std::vector<array> outputs;
     if (dense_rows > 0) {
         const int end = query_offset + dense_rows;
-        auto dense = mlx::core::fast::scaled_dot_product_attention(
-            mlx::core::slice(query, Shape{0, 0, 0, 0}, Shape{1, 24, dense_rows, 256}),
-            mlx::core::slice(key, Shape{0, 0, 0, 0}, Shape{1, 2, end, 256}),
-            mlx::core::slice(value, Shape{0, 0, 0, 0}, Shape{1, 2, end, 256}),
-            1.0f / std::sqrt(256.0f), "causal");
-        outputs.push_back(mlx::core::transpose(dense, {0, 2, 1, 3}));
+        auto queries = mlx::core::slice(query, Shape{0, 0, 0, 0}, Shape{1, 24, dense_rows, 256});
+        auto keys = mlx::core::slice(key, Shape{0, 0, 0, 0}, Shape{1, 2, end, 256});
+        auto values = mlx::core::slice(value, Shape{0, 0, 0, 0}, Shape{1, 2, end, 256});
+        const auto aligned = [](const array& x) {
+            return x.strides(3) == 1 && x.offset() % 16 == 0 &&
+                x.strides(1) % 8 == 0 && x.strides(2) % 8 == 0;
+        };
+        if (dense_rows >= 256 && sparse_block_nax_available() &&
+            !(query.dtype() == mlx::core::bfloat16 && key.dtype() == mlx::core::bfloat16) &&
+            aligned(keys) && aligned(values)) {
+            outputs.push_back(mlx_sparse_block_gqa_prefill_tiles(
+                mlx::core::astype(queries, mlx::core::float16),
+                mlx::core::astype(keys, mlx::core::float16), mlx::core::astype(values, mlx::core::float16),
+                std::nullopt, query_offset, 1.0f / std::sqrt(256.0f),
+                mlx::core::promote_types(query.dtype(), key.dtype())));
+        } else {
+            auto dense = mlx::core::fast::scaled_dot_product_attention(
+                queries, keys, values, 1.0f / std::sqrt(256.0f), "causal");
+            outputs.push_back(mlx::core::transpose(dense, {0, 2, 1, 3}));
+        }
         if (dense_rows == tokens) return outputs.front();
     }
-    auto pooled = typed_contiguous(pooled_index_keys, query.dtype());
+    auto pooled = typed_contiguous(pooled_index_keys, index_query.dtype());
     const int chunk = keys <= 32768 ? 4096 : (keys <= 65536 ? 2048 : 1024);
     for (int start = dense_rows; start < tokens; start += chunk) {
         const int stop = std::min(tokens, start + chunk);

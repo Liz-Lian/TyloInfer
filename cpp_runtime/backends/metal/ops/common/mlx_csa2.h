@@ -20,5 +20,10 @@ mlx::core::array mlx_csa2_attention(const mlx::core::array& query,
     const mlx::core::array& local, const std::optional<mlx::core::array>& pooled,
     int pool_length, const mlx::core::array& topk,
     const mlx::core::array& sinks, int position, int ratio, int window);
+mlx::core::array mlx_csa2_attention_inverse_rope(const mlx::core::array& query,
+    const mlx::core::array& local, const std::optional<mlx::core::array>& pooled,
+    int pool_length, const mlx::core::array& topk, const mlx::core::array& sinks,
+    int position, int ratio, int window, const mlx::core::array& cosine,
+    const mlx::core::array& sine, int rotary);
 
 }

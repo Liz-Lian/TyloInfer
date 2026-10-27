@@ -22,6 +22,8 @@ struct MlxQwen4QsaDecodePrologue {
     mlx::core::array index_query;
 };
 
+mlx::core::array qwen4_stream_mean(const mlx::core::array& streams, int hidden, int count);
+
 mlx::core::array qwen4_grouped_rms_norm(
     const mlx::core::array& value,
     const mlx::core::array& weight,

@@ -119,6 +119,7 @@ int main() {
             controller.observe(0, 0, 40.0);
             controller.observe(0, 0, 39.0);
             controller.observe(0, 0, 41.0);
+            controller.observe(1, 0, 70.0);
             if (controller.depth() != 0 ||
                 !controller.measured_cycle_ms(0)) {
                 throw std::runtime_error(
@@ -143,6 +144,7 @@ int main() {
             controller.observe(0, 0, 30.0);
             controller.observe(0, 0, 29.0);
             controller.observe(0, 0, 31.0);
+            controller.observe(2, 0, 60.0);
             if (controller.depth() != 0) {
                 throw std::runtime_error(
                     "adaptive MTP controller did not select plain decode");
@@ -239,6 +241,7 @@ int main() {
             mfq::metal::MlxDsparkDepthController controller(1);
             for (int cycle = 0; cycle < 3; ++cycle) controller.observe(1, 0, 70.0);
             for (int cycle = 0; cycle < 3; ++cycle) controller.observe(0, 0, 40.0);
+            controller.observe(1, 0, 70.0);
             int cycles = 0;
             while (controller.depth() == 0 && cycles++ < 200) controller.observe(0, 0, 40.0);
             if (controller.depth() != 1) throw std::runtime_error("MTP never reprobed a stale depth");
@@ -250,10 +253,33 @@ int main() {
             mfq::metal::MlxDsparkDepthController controller(5);
             for (int cycle = 0; cycle < 3; ++cycle) controller.observe(2, 2, 205.0);
             for (int cycle = 0; cycle < 3; ++cycle) controller.observe(0, 0, 72.0);
+            controller.observe(2, 2, 205.0);
             for (int cycle = 0; cycle < 3; ++cycle) controller.observe(1, 1, 173.0);
             if (controller.depth() <= 2) {
                 throw std::runtime_error("DSpark charged fixed predictor startup to every additional draft");
             }
+        }
+        {
+            mfq::metal::MlxDsparkDepthController controller(5);
+            for (double cost : {453.228, 247.125, 255.910}) controller.observe(2, 2, cost);
+            for (double cost : {98.5095, 87.8225, 82.4464}) controller.observe(0, 0, cost);
+            if (controller.depth() != 2) throw std::runtime_error("DSpark omitted its post-baseline cost refresh");
+            controller.observe(2, 2, 169.965);
+            if (controller.depth() == 0 || !controller.measured_cycle_ms(2)
+                || *controller.measured_cycle_ms(2) >= 225.0)
+                throw std::runtime_error("DSpark kept a cold speculative cost after residency changed");
+        }
+        {
+            mfq::metal::MlxDsparkDepthController controller(3);
+            controller.observe(2, 0, 5000.0, false);
+            if (controller.depth() != 2) throw std::runtime_error("DSpark counted an invalid timing sample as warmup");
+            for (int cycle = 0; cycle < 3; ++cycle) controller.observe(2, 0, 60.0);
+            for (int cycle = 0; cycle < 3; ++cycle) controller.observe(0, 0, 30.0);
+            if (controller.depth() != 2) throw std::runtime_error("DSpark skipped its bounded refresh after rejection");
+            controller.observe(0, 0, 30.0);
+            if (controller.depth() != 2) throw std::runtime_error("DSpark consumed a different width as its refresh");
+            controller.observe(2, 0, 60.0);
+            if (controller.depth() != 0) throw std::runtime_error("DSpark retained an unprofitable refreshed predictor");
         }
         {
             int target_position = 0, verify_calls = 0, decode_calls = 0, resolve_calls = 0;

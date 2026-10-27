@@ -38,7 +38,7 @@ const mlx::core::fast::CustomKernelFunction& projection_kernel() {
                 uint lane = thread_index_in_simdgroup;
                 uint group = simdgroup_index_in_threadgroup;
                 float product = 0.0f, square = 0.0f;
-                for (uint column = tid * 4u; column < uint(WIDTH); column += 1024u) {
+                for (uint column = tid * 4u; column < uint(WIDTH); column += THREADS * 4u) {
                     float4 x = float4(float(residual[row * WIDTH + column]),
                         float(residual[row * WIDTH + column + 1u]),
                         float(residual[row * WIDTH + column + 2u]),
@@ -49,12 +49,12 @@ const mlx::core::fast::CustomKernelFunction& projection_kernel() {
                 }
                 product = simd_sum(product);
                 square = simd_sum(square);
-                threadgroup float products[8], squares[8];
+                threadgroup float products[THREADS / 32u], squares[THREADS / 32u];
                 if (lane == 0u) { products[group] = product; squares[group] = square; }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 if (group == 0u) {
-                    product = simd_sum(lane < 8u ? products[lane] : 0.0f);
-                    square = simd_sum(lane < 8u ? squares[lane] : 0.0f);
+                    product = simd_sum(lane < THREADS / 32u ? products[lane] : 0.0f);
+                    square = simd_sum(lane < THREADS / 32u ? squares[lane] : 0.0f);
                     if (lane == 0u) output[row * 24u + projection] =
                         product * metal::precise::rsqrt(square / float(WIDTH) + params[0]);
                 }
@@ -595,10 +595,11 @@ array deepseek_v41_hc_projection(
         residual.shape(1), "projection row count");
     if (rows <= 6 && width % 1024 == 0 &&
         (residual.dtype() == mlx::core::float16 || residual.dtype() == mlx::core::bfloat16)) {
+        const int threads = width >= 8192 && rows <= 3 ? (rows == 1 ? 1024 : 512) : 256;
         auto outputs = projection_kernel()(
             {mlx::core::contiguous(residual), mlx::core::contiguous(weight), array({eps})},
             {Shape{residual.shape(0), residual.shape(1), 24}}, {mlx::core::float32},
-            {rows * 24 * 256, 1, 1}, {256, 1, 1}, {{"WIDTH", width}},
+            {rows * 24 * threads, 1, 1}, {threads, 1, 1}, {{"WIDTH", width}, {"THREADS", threads}},
             std::nullopt, false, {});
         return std::move(outputs.front());
     }
@@ -802,6 +803,12 @@ MlxDeepseekV41Mhc::MlxDeepseekV41Mhc(
                 preparation->add(tq->rms_matmul(mlx::core::zeros(Shape{rows, function_.input_size()}, mlx::core::float16),
                     static_cast<float>(config_.rms_eps)));
             }
+        });
+    if (const auto* dense = function_.dense_weight_ref(); dense && dense->dtype() == mlx::core::float32)
+        if (auto* preparation = MlxKernelPreparation::current()) preparation->collect([&] {
+            for (const int rows : {1, 2, 4}) for (const auto dtype : {mlx::core::float16, mlx::core::bfloat16})
+                preparation->add(deepseek_v41_hc_projection(mlx::core::zeros(
+                    Shape{1, rows, 4, static_cast<int>(config_.hidden)}, dtype), *dense, static_cast<float>(config_.rms_eps)));
         });
 }
 

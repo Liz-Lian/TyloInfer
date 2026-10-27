@@ -317,7 +317,8 @@ def _run_locked(args: argparse.Namespace, identity: dict[str, str | int]) -> int
         if model_catalog_root not in configured_roots:
             configured_roots.append(model_catalog_root)
     configured_roots[0].mkdir(parents=True, exist_ok=True)
-    catalog = ModelCatalog(configured_roots)
+    from tyloinfer.server.runtime.native_metadata import NativeModelInspector
+    catalog = ModelCatalog(configured_roots, native_inspector=NativeModelInspector(executable, selected_backend))
     voice_component = VoiceOutputComponent(data_dir)
     startup_loads: list[ModelLoadRequest] = []
     if model is not None:

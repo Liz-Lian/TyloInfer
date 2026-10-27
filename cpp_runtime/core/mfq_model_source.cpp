@@ -7,6 +7,7 @@
 
 #include "mfq_format_compat.h"
 #include "mfq_legacy_tensor_names.h"
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -49,6 +50,12 @@ constexpr std::uint64_t kMaxStringBytes = std::uint64_t{64} << 20;
 constexpr std::uint32_t kMaxMetadataEntries = std::uint32_t{1} << 16;
 constexpr std::uint32_t kMaxRecordEntries = std::uint32_t{1} << 20;
 constexpr std::string_view kAssetPrefix = "__mfq_asset__/";
+constexpr std::string_view kTinferAssetPrefix = "__tinfer_asset__/";
+std::string canonical_asset_name(std::string name) {
+    if (name.compare(0, kTinferAssetPrefix.size(), kTinferAssetPrefix) == 0)
+        name.replace(0, kTinferAssetPrefix.size(), kAssetPrefix);
+    return name;
+}
 std::array<std::atomic<std::uint64_t>,5> mapped_read_totals{};
 using MappedClock=std::chrono::steady_clock;
 thread_local bool mapped_prefetch_context=false;
@@ -354,17 +361,20 @@ std::vector<std::filesystem::path> shard_paths(
         R"(^(.*)-([0-9]{5})-of-([0-9]{5})(\.mfq|\.tq)$)", std::regex::icase);
     std::smatch match;
     const auto filename = path.filename().string();
-    if (!std::regex_match(filename, match, pattern)) {
+    const bool root_entry = !std::regex_match(filename, match, pattern);
+    auto suffix = root_entry ? path.extension().string() : match[4].str();
+    std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (root_entry && (split_no != 0 || (suffix != ".tq" && suffix != ".mfq"))) {
         throw std::runtime_error(
             "sharded MFQ path lacks -00001-of-00000 suffix: " + path.string());
     }
-    if (std::stoull(match[2].str()) != split_no + 1 ||
-        std::stoull(match[3].str()) != split_count) {
+    if (!root_entry && (std::stoull(match[2].str()) != split_no + 1 ||
+        std::stoull(match[3].str()) != split_count)) {
         throw std::runtime_error("MFQ shard filename/metadata mismatch: " +
                                  path.string());
     }
-    auto suffix = match[4].str();
-    std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char c) { return std::tolower(c); });
+    const auto stem = root_entry ? path.stem().string() : match[1].str();
+    const auto root = root_entry ? path : path.parent_path() / (stem + path.extension().string());
     const auto same_suffix = [&](const std::ssub_match& candidate) {
         auto value = candidate.str();
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
@@ -373,9 +383,16 @@ std::vector<std::filesystem::path> shard_paths(
     std::vector<std::filesystem::path> result(static_cast<std::size_t>(split_count));
     for (std::uint64_t index = 1; index <= split_count; ++index) {
         std::ostringstream name;
-        name << match[1].str() << '-' << std::setfill('0') << std::setw(5)
+        name << stem << '-' << std::setfill('0') << std::setw(5)
              << index << "-of-" << std::setw(5) << split_count << suffix;
         result[index - 1] = path.parent_path() / name.str();
+    }
+    if (root_entry) {
+        if (std::filesystem::is_regular_file(result[0]) && !std::filesystem::equivalent(result[0], root))
+            throw std::runtime_error("duplicate MFQ shard index 1: " + path.string());
+        result[0] = root;
+    } else if (!std::filesystem::is_regular_file(result[0]) && std::filesystem::is_regular_file(root)) {
+        result[0] = root;
     }
     if (std::all_of(result.begin(), result.end(),
             [](const auto& candidate) { return std::filesystem::is_regular_file(candidate); })) {
@@ -383,17 +400,18 @@ std::vector<std::filesystem::path> shard_paths(
         return result;
     }
     std::vector<bool> found(result.size(), false);
+    found[0] = result[0] == root;
     for (const auto& entry : std::filesystem::directory_iterator(path.parent_path())) {
         std::smatch candidate;
         const auto candidate_name = entry.path().filename().string();
         if (!entry.is_regular_file() || !std::regex_match(candidate_name, candidate, pattern) ||
-            candidate[1].str() != match[1].str() || !same_suffix(candidate[4]) ||
+            candidate[1].str() != stem || !same_suffix(candidate[4]) ||
             std::stoull(candidate[3].str()) != split_count) {
             continue;
         }
         const auto index = std::stoull(candidate[2].str());
         if (index < 1 || index > split_count) continue;
-        if (found[index - 1]) {
+        if (found[index - 1] && !std::filesystem::equivalent(result[index - 1], entry.path())) {
             throw std::runtime_error("duplicate MFQ shard index " + std::to_string(index) + ": " + path.string());
         }
         result[index - 1] = entry.path();
@@ -414,9 +432,9 @@ std::vector<std::filesystem::path> shard_paths(
             std::smatch candidate, family;
             const auto name = entry.path().filename().string();
             if (!entry.is_regular_file() || !std::regex_match(name, candidate, pattern)) continue;
-            const auto stem = candidate[1].str();
-            if (!std::regex_match(stem, family, engram_pattern) ||
-                match[1].str().compare(0, family[1].length() + 1, family[1].str() + "-") != 0 ||
+            const auto shared_stem = candidate[1].str();
+            if (!std::regex_match(shared_stem, family, engram_pattern) ||
+                stem.compare(0, family[1].length() + 1, family[1].str() + "-") != 0 ||
                 std::stoull(candidate[3].str()) != split_count || !same_suffix(candidate[4])) continue;
             const auto index = std::stoull(candidate[2].str());
             if (index < 1 || index > split_count || found[index - 1]) continue;
@@ -468,6 +486,15 @@ ParsedFile parse_file(const std::filesystem::path& requested) {
                 throw std::runtime_error("duplicate MFQ metadata key: " + path.string());
             }
         }
+        const auto assets = result.header.metadata.find("runtime_assets");
+        if (assets != result.header.metadata.end() && assets->second.find(kTinferAssetPrefix) != std::string::npos) {
+            auto manifest = nlohmann::json::parse(assets->second);
+            if (manifest.is_object() && manifest.contains("assets") && manifest["assets"].is_object())
+                for (auto& asset : manifest["assets"].items())
+                    if (asset.value().is_object() && asset.value().contains("record") && asset.value()["record"].is_string())
+                        asset.value()["record"] = canonical_asset_name(asset.value()["record"].get<std::string>());
+            assets->second = manifest.dump();
+        }
     }
 
     result.header.record_count = input.scalar<std::uint32_t>("record count");
@@ -477,7 +504,7 @@ ParsedFile parse_file(const std::filesystem::path& requested) {
     result.records.reserve(result.header.record_count);
     for (std::uint32_t index = 0; index < result.header.record_count; ++index) {
         MfqStoredRecord record;
-        record.tensor.name = input.string("record name");
+        record.tensor.name = canonical_asset_name(input.string("record name"));
         record.tensor.stored_dtype = input.string("record dtype");
         if (!supported_tensor_dtype(record.tensor.stored_dtype)) {
             throw std::runtime_error("TyloInfer does not support tensor format "

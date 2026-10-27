@@ -590,6 +590,8 @@ void test_speculative_cache_transaction() {
                 "speculative checkpoint copied the indexer pool prefix");
         }
         materialize_state(checkpoint);
+        require(checkpoint.local_state().buffer().ptr() != actual.local_state().buffer().ptr(),
+            "speculative gathered checkpoint aliases the live local ring");
         auto speculative_output = actual_operation(
             input_tokens({0.7f, 0.8f, 0.9f}), actual, start);
         auto reference_output = reference_operation(
@@ -835,6 +837,61 @@ void test_v41_fused_window_kv_matches_composition() {
         "V4.1 fused window KV preparation");
 }
 
+void test_weighted_rms() {
+    using namespace mlx::core;
+    for (auto dtype : {float16, bfloat16, float32}) for (auto weight_dtype : {float16, bfloat16, float32})
+        for (int width : {513, 1536, 5120}) for (int rows : {1, 6, 257}) for (bool row_gap : {false, true}) {
+            auto input = row_gap ? slice(astype(reshape(sin(arange(rows * (width + 17), float32) * .7919f),
+                {rows, width + 17}), dtype), {0, 1}, {rows, width + 1})
+                : transpose(astype(reshape(sin(arange(rows * width, float32) * .7919f), {width, rows}), dtype));
+            auto weight = astype(cos(arange(width, float32) * .1791f) + 1.1f, weight_dtype);
+            auto source = astype(input, float32);
+            auto expected = astype(source * rsqrt(mean(source * source, -1, true) + 1e-6f)
+                * astype(weight, float32), dtype);
+            auto actual = mfq::metal::mlx_weighted_rms(input, weight, 1e-6f);
+            require_close(evaluated_float(actual), evaluated_float(expected), 0.f,
+                std::string("weighted RMS strided inputs and native norm precision; dtype=")
+                + (dtype == float16 ? "f16" : dtype == bfloat16 ? "bf16" : "f32")
+                + ", weight=" + (weight_dtype == float16 ? "f16" : weight_dtype == bfloat16 ? "bf16" : "f32")
+                + ", K=" + std::to_string(width)
+                + ", rows=" + std::to_string(rows) + ", row_gap=" + std::to_string(row_gap));
+        }
+    bool rejected = false;
+    try { mfq::metal::mlx_weighted_rms(ones({1, 513}, float16), ones({512}, float32), 1e-6f); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    if (!rejected) throw std::runtime_error("weighted RMS accepts mismatched norm width");
+}
+
+void test_weighted_rms_kv_preparation() {
+    using namespace mlx::core;
+    ::setenv("TYLOINFER_METAL_FUSED_KV_PREP", "0", 1);
+    for (auto dtype : {float16, bfloat16, float32}) for (int tokens : {1, 2, 6, 257})
+        for (int width : {128, 512, 544}) for (float magnitude : {0.f, 1e-4f, 1.f, 100.f}) {
+            const int rotary = width == 544 ? 128 : 64;
+            auto input = astype(reshape(sin(arange(tokens * width, float32) * .7919f), {1, tokens, width})
+                * magnitude, dtype);
+            const auto weight = astype(cos(arange(width, float32) * .1791f) + 1.1f, bfloat16);
+            const auto angle = reshape(arange(tokens * rotary / 2, float32) * .002f, {tokens, rotary / 2});
+            const auto cosine = cos(angle), sine = sin(angle);
+            const auto source = astype(input, float32);
+            const auto normalized = astype(source * rsqrt(mean(source * source, -1, true) + 1e-6f)
+                * astype(weight, float32), dtype);
+            const auto fused_norm = mfq::metal::mlx_weighted_rms(input, weight, 1e-6f);
+            require_close(evaluated_float(fused_norm), evaluated_float(normalized),
+                0.f, "weighted RMS original reduction order");
+            const auto expected = mfq::metal::mlx_mxfp8_sim(mfq::metal::mlx_rope_adjacent(
+                normalized, rotary, cosine, sine));
+            const auto actual = mfq::metal::mlx_weighted_rms_rope_mxfp8_sim(
+                input, weight, 1e-6f, rotary, cosine, sine);
+            const auto delta = astype(actual, float32) - astype(expected, float32);
+            const auto relative_rms = sqrt(mean(delta * delta) /
+                maximum(mean(square(astype(expected, float32))), array(1e-20f))).item<float>();
+            if (relative_rms != 0.f || actual.dtype() != expected.dtype())
+                throw std::runtime_error("weighted RMS KV preparation differs from F32 composition");
+        }
+    ::unsetenv("TYLOINFER_METAL_FUSED_KV_PREP");
+}
+
 void test_v41_ced_encoder_source_and_replay() {
     using namespace mfq::metal;
     DeepseekV41Config config;
@@ -874,17 +931,19 @@ void test_v41_ced_encoder_source_and_replay() {
             values[index] = std::sin(index * 0.017f + salt) * 0.1f;
         return MlxLinear(mlx::core::astype(float_array(values, {output, input}), mlx::core::float16));
     };
-    const auto make_attention = [&]() {
+    const auto make_attention = [&](int layer = 2) {
         MlxDeepseekV41AttentionComponents c{
             linear(1, 4, 1), linear(64 * 512, 1, 2), linear(512, 4, 3),
             linear(64, 512, 4), linear(4, 64, 5),
             mlx::core::ones({1}), mlx::core::ones({512}), mlx::core::zeros({64}),
-            linear(512, 4, 6), std::nullopt, mlx::core::ones({512}),
+            linear(512, 4, 6), layer == 1
+                ? std::optional<MlxLinear>(linear(512, 4, 10)) : std::nullopt,
+            mlx::core::ones({512}),
             linear(32 * 128, 1, 7), linear(128, 512, 8),
             mlx::core::ones({128}), linear(32, 4, 9),
         };
         auto rope = mlx_yarn_tables(64, 64, 10000.0f);
-        return MlxDeepseekV41Attention(config, 2, 64, std::move(c), rope, rope);
+        return MlxDeepseekV41Attention(config, layer, 64, std::move(c), rope, rope);
     };
     for (const int batch : {1, 2}) for (const int prefix : {0, 3}) {
         auto full = make_attention(), replay = make_attention();
@@ -906,9 +965,13 @@ void test_v41_ced_encoder_source_and_replay() {
         auto source = input(count, prefix);
         auto expected = full.forward(source, full_state, full_shared, prefix);
         expected.eval();
+        require(full_state.local_kv.is_available(),
+            "V4.1 prefill output left local KV writeback unevaluated");
         auto actual = replay.forward(token_slice(source, count - 4, count),
             replay_state, replay_shared, prefix + count - 4, true, &source);
         actual.eval();
+        require(replay_state.local_kv.is_available(),
+            "V4.1 CED replay output left local KV writeback unevaluated");
         require(replay_state.position == prefix + count &&
                 replay_state.compressed_length == prefix + count,
             "CED replay failed to advance the full encoder KV pool");
@@ -926,6 +989,50 @@ void test_v41_ced_encoder_source_and_replay() {
         require_invalid([&] {
             (void)replay.forward(next, replay_state, replay_shared, replay_state.position, true);
         }, "CED accepted an incomplete replay window");
+        for (int layer : {1, 2}) for (int accepted : {0, 1, 2}) {
+            auto verify_operation = make_attention(layer), reference_operation = make_attention(layer);
+            MlxDeepseekV41SharedAttentionState verify_shared, reference_shared;
+            auto verified = layer == 2 ? full_state.snapshot()
+                : MlxDeepseekV41AttentionState::allocate(config, layer, batch, 64);
+            if (layer == 1)
+                verify_operation.forward(input(full_state.position, 0), verified, verify_shared, 0).eval();
+            auto reference = verified.snapshot();
+            const int start = verified.position, keep = accepted + 1;
+            auto checkpoints = verify_operation.begin_speculative(verified, 1, 3);
+            mlx::core::eval(checkpoints);
+            require(checkpoints.front().buffer().ptr() != verified.local_kv.buffer().ptr(),
+                "V4.1 gathered checkpoint aliases the live local ring");
+            auto draft = input(3, start);
+            verify_operation.forward(draft, verified, verify_shared, start).eval();
+            if (accepted == 2) verify_operation.commit_speculative(verified);
+            else mlx::core::eval(verify_operation.rollback_speculative(verified, accepted));
+            reference_operation.forward(token_slice(draft, 0, keep),
+                reference, reference_shared, start).eval();
+            require(verified.position == reference.position &&
+                    verified.compressed_length == reference.compressed_length &&
+                    verified.partial_length == reference.partial_length && !verified.speculation,
+                "V4.1 speculative checkpoint cursor mismatch");
+            require_close(evaluated_float(verified.local_kv), evaluated_float(reference.local_kv),
+                0.002f, "V4.1 speculative local ring rollback");
+            require_close(evaluated_float(token_slice(*verified.compressed_kv, 0, verified.compressed_length)),
+                evaluated_float(token_slice(*reference.compressed_kv, 0, reference.compressed_length)),
+                0.002f, "V4.1 speculative compressed prefix rollback");
+            require_close(evaluated_float(token_slice(*verified.index_k, 0, verified.compressed_length)),
+                evaluated_float(token_slice(*reference.index_k, 0, reference.compressed_length)),
+                0.002f, "V4.1 speculative Indexer prefix rollback");
+            if (verified.partial_length) {
+                require_close(evaluated_float(token_slice(*verified.partial_kv, 0, verified.partial_length)),
+                    evaluated_float(token_slice(*reference.partial_kv, 0, reference.partial_length)),
+                    0.002f, "V4.1 speculative compressor remainder KV rollback");
+                require_close(evaluated_float(token_slice(*verified.partial_score, 0, verified.partial_length)),
+                    evaluated_float(token_slice(*reference.partial_score, 0, reference.partial_length)),
+                    0.002f, "V4.1 speculative compressor remainder score rollback");
+            }
+            auto continuation = input(1, start + keep);
+            require_close(evaluated_float(verify_operation.forward(continuation, verified, verify_shared, start + keep)),
+                evaluated_float(reference_operation.forward(continuation, reference, reference_shared, start + keep)),
+                0.002f, "V4.1 speculative rollback subsequent decode");
+        }
     }
 }
 
@@ -1018,7 +1125,7 @@ void test_csa2_packed_execution() {
         require_close(evaluated_float(decoded), evaluated_float(expected), 0,
             "CSA2 packed activation round trip");
     }
-    for (int rows : {1, 2, 6, 128, 256}) {
+    for (int rows : {1, 2, 3, 4, 5, 6, 128, 256}) {
         constexpr int position = 4096, window = 128, pool_size = 4096;
         auto query = values({1, rows, 64, 512});
         auto local = values({1, rows == 1 ? window : window + rows, 512});
@@ -1041,6 +1148,31 @@ void test_csa2_packed_execution() {
             pool_size, indices, sinks, position, 1, window);
         require_close(evaluated_float(actual), evaluated_float(expected),
             0.0002f, "CSA2 packed attention/unpacked reference M=" + std::to_string(rows));
+        if (rows <= 6) {
+            auto angles = reshape(arange(rows * 32, float32) * 0.019f, {rows, 32});
+            auto cosine = cos(angles), sine = sin(angles);
+            require_close(evaluated_float(mlx_csa2_attention_inverse_rope(
+                    query, local_packed, pooled_packed, pool_size, indices, sinks,
+                    position, 1, window, cosine, sine, 64)),
+                evaluated_float(mlx_rope_adjacent(actual, 64, cosine, sine, true)),
+                0.f, "CSA2 fused output inverse-RoPE M=" + std::to_string(rows));
+        }
+    }
+    for (int rows : {1, 2, 3, 4, 5, 6}) for (int position : {0, 4096}) {
+        auto query = values({1, rows, 3, 128});
+        auto local = mlx_csa2_pack(values({1, position == 0 ? rows : 8 + rows, 128}), 8, 32);
+        auto indices = zeros({1, rows, 0}, int32), sinks = sin(arange(3, float32));
+        auto angles = reshape(arange(rows * 8, float32) * 0.071f, {rows, 8});
+        auto cosine = cos(angles), sine = sin(angles);
+        auto expected = mlx_rope_adjacent(mlx_csa2_attention(query, local, std::nullopt,
+            0, indices, sinks, position, 1, 8), 16, cosine, sine, true);
+        require_close(evaluated_float(mlx_csa2_attention_inverse_rope(query, local, std::nullopt,
+                0, indices, sinks, position, 1, 8, cosine, sine, 16)),
+            evaluated_float(expected), 0.f, "CSA2 scalar local-only fused inverse-RoPE");
+        require_invalid([&] {
+            (void)mlx_csa2_attention_inverse_rope(query, local, std::nullopt,
+                0, indices, sinks, position, 1, 8, cosine, sine, 15);
+        }, "CSA2 fused inverse-RoPE accepted an odd rotary width");
     }
     for (int rows : {9, 128, 256}) for (int position : {0, 4096}) {
         auto query = values({1, rows, 64, 512});
@@ -1305,6 +1437,8 @@ void test_prefill_mma_cpu_reference() {
         expected,
         4e-2f,
         "prefill-MMA CPU reference");
+    require(state.local_state().is_available(),
+        "V4 prefill output left local KV writeback unevaluated");
 }
 
 void test_ratio_four_continuity() {
@@ -1730,6 +1864,8 @@ int main() {
         test_image_visibility_starts_at_image_start();
         test_yarn_rope_and_rms();
         test_v41_fused_window_kv_matches_composition();
+        test_weighted_rms();
+        test_weighted_rms_kv_preparation();
         test_v41_ced_encoder_source_and_replay();
         test_v41_attention_snapshot_is_detached();
         test_csa2_packed_execution();

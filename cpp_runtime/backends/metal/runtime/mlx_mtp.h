@@ -75,10 +75,10 @@ struct MlxMtpGenerationStats {
     std::uint64_t cycles = 0;
     std::uint64_t drafted_tokens = 0;
     std::uint64_t accepted_tokens = 0;
-    std::array<std::uint64_t, 6> depth_cycles{};
-    std::array<std::uint64_t, 5> position_drafted{};
-    std::array<std::uint64_t, 5> position_accepted{};
-    std::array<double, 6> measured_depth_ms{};
+    std::array<std::uint64_t, 8> depth_cycles{};
+    std::array<std::uint64_t, 7> position_drafted{};
+    std::array<std::uint64_t, 7> position_accepted{};
+    std::array<double, 8> measured_depth_ms{};
     int selected_depth = 0;
     std::uint64_t standard_tokens = 0;
     std::uint64_t park_count = 0;

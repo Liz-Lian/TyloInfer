@@ -11,7 +11,8 @@ import os
 import re
 import struct
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -24,7 +25,8 @@ from tyloinfer.formats.assets import is_asset_record, MODEL_CONFIG_ASSET, HF_TOK
 from tyloinfer.formats.compat import canonical_dtype
 from tyloinfer.formats.header import TYLOINFER_SUFFIXES
 from tyloinfer.formats.io import open_mmap
-from tyloinfer.formats.shards import matching_shard_paths, parse_shard_path
+from tyloinfer.formats.shards import matching_shard_paths as _matching_tq_shards, parse_shard_path as _parse_tq_shard
+from tyloinfer.formats.gguf import gguf_is_table_component, matching_gguf_shard_paths, parse_gguf_shard_path
 from tyloinfer.server.protocol.models import (
     ModelArtifactList,
     ModelArtifactResource,
@@ -37,14 +39,15 @@ from tyloinfer.server.services.model_context import declared_context_size, yarn_
 from tyloinfer.server.services.desktop import directory_opener
 
 MODEL_FILE_INDEX = ".tq-files.json"
+_MODEL_SUFFIXES = (*TYLOINFER_SUFFIXES, '.gguf')
 _ROUTED_EXPERT_RE = re.compile(
     r"\.mlp\.experts\.(?:\d+\.)?"
     r"(?:gate|up|down|gate_up)(?:_proj)?\."
-    r"(?:weight|weight_scale)$"
+    r"(?:weight|weight_scale|scales|biases)$"
 )
 _ALWAYS_STREAMED_RE = re.compile(
     r"(?:\.associative_memory\.embedding\.weight|\.engram\.embed\.weight"
-    r"|\.position_embedding\.ngram\.shard\.\d+\.weight)$"
+    r"|\.position_embedding\.ngram\.shard\.\d+\.(?:weight|scales|biases))$"
 )
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,6 +74,16 @@ class DiscoveredModel:
     path: Path
     routed_expert_bytes: int = 0
     always_streamed_bytes: int = 0
+    source_config: dict | None = None
+    source_tensors: dict | None = None
+
+
+def parse_shard_path(path: Path):
+    return parse_gguf_shard_path(path) if path.suffix.casefold() == '.gguf' else _parse_tq_shard(path)
+
+
+def matching_shard_paths(path: Path):
+    return matching_gguf_shard_paths(path) if path.suffix.casefold() == '.gguf' else _matching_tq_shards(path)
 
 
 def _is_routed_expert_tensor(name: str) -> bool:
@@ -93,6 +106,13 @@ def _is_always_streamed_tensor(name: str) -> bool:
     return bool(_ALWAYS_STREAMED_RE.search(name))
 
 
+def _native_architecture(metadata: dict, fallback: str = 'unknown') -> str:
+    config = metadata['config']
+    text = config.get('text_config', config)
+    kind = text.get('model_type') if isinstance(text, dict) else None
+    return kind if isinstance(kind, str) and kind else metadata.get('architecture') or fallback
+
+
 class ModelCatalog:
     """Discover complete MFQ containers and native HF checkpoints."""
 
@@ -102,6 +122,7 @@ class ModelCatalog:
         *,
         cache_seconds: float = 5.0,
         browse_roots: list[str | Path] | None = None,
+        native_inspector: Callable[[Path], dict] | None = None,
     ) -> None:
         self.roots = tuple(Path(root).expanduser().resolve() for root in roots)
         self.browse_roots = (
@@ -110,6 +131,8 @@ class ModelCatalog:
             else tuple(Path(root).expanduser().resolve() for root in browse_roots)
         )
         self.cache_seconds = max(0.0, cache_seconds)
+        self._native_inspector = native_inspector
+        self._source_metadata: dict[Path, tuple[tuple, dict]] = {}
         self._models: dict[str, DiscoveredModel] = {}
         self._last_scan = float("-inf")
         self._last_scan_attempt = float("-inf")
@@ -201,10 +224,10 @@ class ModelCatalog:
                     if first is not None:
                         inspect_path = first
             supported_path = (
-                inspect_path.is_file() and inspect_path.suffix.casefold() in TYLOINFER_SUFFIXES
+                inspect_path.is_file() and inspect_path.suffix.casefold() in _MODEL_SUFFIXES
             ) or (inspect_path.is_dir() and self._is_hf_model_directory(inspect_path))
             if supported_path:
-                direct = await asyncio.to_thread(self._inspect, privacy_root, inspect_path)
+                direct = await asyncio.to_thread(self._inspect_source, privacy_root, inspect_path)
                 if self._canonical_model_path(direct.path) == target:
                     return direct
 
@@ -325,8 +348,12 @@ class ModelCatalog:
         try:
             mfq_models: set[Path] = set()
             for item in path.iterdir():
-                if not item.is_file() or item.suffix.casefold() not in TYLOINFER_SUFFIXES:
+                if not item.is_file() or item.suffix.casefold() not in _MODEL_SUFFIXES:
                     continue
+                if item.suffix.casefold() == '.gguf':
+                    with contextlib.suppress(OSError, ValueError):
+                        if gguf_is_table_component(item):
+                            continue
                 try:
                     parsed = parse_shard_path(item)
                 except ValueError:
@@ -376,7 +403,7 @@ class ModelCatalog:
         files = []
         for item in entries:
             with contextlib.suppress(OSError):
-                if item.is_file() and item.suffix.casefold() in TYLOINFER_SUFFIXES:
+                if item.is_file() and item.suffix.casefold() in _MODEL_SUFFIXES:
                     files.append(ModelDirectoryFile(name=item.name, byte_size=item.stat().st_size))
         files.sort(key=lambda item: (item.name.casefold(), item.name))
         parent = current.parent if current.parent != current else None
@@ -396,12 +423,16 @@ class ModelCatalog:
     def _registration_paths(directory: Path) -> list[Path]:
         grouped: dict[Path, list[Path]] = {}
         try:
-            candidates = sorted(path for path in directory.rglob("*") if path.suffix.casefold() in TYLOINFER_SUFFIXES)
+            candidates = sorted(path for path in directory.rglob("*") if path.suffix.casefold() in _MODEL_SUFFIXES)
         except OSError as error:
             raise ModelRegistrationError("cannot scan selected model directory") from error
         for candidate in candidates:
             if not candidate.is_file():
                 continue
+            if candidate.suffix.casefold() == '.gguf':
+                with contextlib.suppress(OSError, ValueError):
+                    if gguf_is_table_component(candidate):
+                        continue
             try:
                 parsed = parse_shard_path(candidate)
             except ValueError as error:
@@ -587,7 +618,7 @@ class ModelCatalog:
             if not root.is_dir():
                 continue
             grouped: dict[Path, list[Path]] = {}
-            paths = {path for path in root.rglob("*") if path.suffix.casefold() in TYLOINFER_SUFFIXES}
+            paths = {path for path in root.rglob("*") if path.suffix.casefold() in _MODEL_SUFFIXES}
             paths.update(self._registered_paths(root))
             paths.update(
                 config.parent
@@ -597,6 +628,12 @@ class ModelCatalog:
             if self._is_hf_model_directory(root):
                 paths.add(root)
             for path in sorted(paths):
+                if path.suffix.casefold() == '.gguf':
+                    try:
+                        if gguf_is_table_component(path):
+                            continue
+                    except (OSError, ValueError):
+                        pass
                 try:
                     parsed = parse_shard_path(path)
                 except ValueError:
@@ -612,7 +649,7 @@ class ModelCatalog:
                     paths[0],
                 )
                 privacy_root = root if path.is_relative_to(root) else path.parent
-                discovered = self._inspect(privacy_root, path)
+                discovered = self._inspect_source(privacy_root, path)
                 canonical_path = self._canonical_model_path(discovered.path)
                 previous_path = model_paths.get(discovered.resource.name)
                 if previous_path is not None and previous_path != canonical_path:
@@ -664,7 +701,7 @@ class ModelCatalog:
             if resolved.is_dir() and ModelCatalog._is_hf_model_directory(resolved):
                 result.add(resolved)
                 continue
-            if resolved.suffix.casefold() not in TYLOINFER_SUFFIXES:
+            if resolved.suffix.casefold() not in _MODEL_SUFFIXES:
                 continue
             if resolved.is_file():
                 try:
@@ -676,6 +713,107 @@ class ModelCatalog:
                 else:
                     result.update(matching_shard_paths(parsed[0]))
         return result
+
+    def _inspect_source(self, root: Path, path: Path) -> DiscoveredModel:
+        if path.suffix.casefold() != '.gguf':
+            artifact = self._inspect(root, path)
+            if artifact.resource.format != 'hf' or not artifact.resource.complete or 'U32' not in artifact.resource.dtypes:
+                return artifact
+            try:
+                sources = [path / 'config.json', *sorted(path.glob('*.safetensors'))]
+                index = path / 'model.safetensors.index.json'
+                if index.is_file():
+                    sources.append(index)
+                signature = tuple((str(source), source.stat().st_size, source.stat().st_mtime_ns) for source in sources)
+                metadata = self._inspect_native_metadata(path, signature)
+                config, tensors = metadata['config'], metadata['tensors']
+                roles = {role: 0 for role in ('dense', 'experts', 'embedding')}
+                streamed = 0
+                for name, record in tensors.items():
+                    size = int(record['nbytes'])
+                    if _is_always_streamed_tensor(name):
+                        streamed += size
+                    else:
+                        roles[weight_role(name)] += size
+                resource = artifact.resource.model_copy(update={
+                    'loadable': True, 'error': None,
+                    'architecture': _native_architecture(metadata, artifact.resource.architecture),
+                    'estimated_resident_weight_bytes': sum(roles.values()),
+                    'estimated_weight_bytes_by_role': roles, 'ssd_ple_bytes': streamed,
+                    'tensor_count': len(tensors), 'record_count': len(tensors),
+                    'dtypes': sorted({item['dtype'] for item in tensors.values()}),
+                })
+                return replace(artifact, resource=resource, routed_expert_bytes=roles['experts'],
+                    always_streamed_bytes=streamed, source_config=config, source_tensors=tensors)
+            except Exception as failure:
+                return replace(artifact, resource=artifact.resource.model_copy(update={
+                    'loadable': False, 'error': str(failure).replace(str(root), '<model-root>'),
+                }))
+        parsed = parse_gguf_shard_path(path)
+        paths = tuple(candidate for candidate in matching_shard_paths(parsed[0])
+            if parse_shard_path(candidate)[2] == parsed[2]) if parsed else (path,)
+        stats = tuple(candidate.stat() for candidate in paths)
+        count = parsed[2] if parsed else 1
+        missing = max(0, count - len(paths))
+        name = (parsed[0] if parsed else path).stem
+        signature = tuple((str(candidate), stat.st_size, stat.st_mtime_ns) for candidate, stat in zip(paths, stats, strict=True))
+        identity = tuple((candidate.name, stat.st_size) for candidate, stat in zip(paths, stats, strict=True))
+        identifier = hashlib.sha256(f'gguf\0{name}\0{identity}'.encode()).hexdigest()[:32]
+        config: dict = {}
+        tensors: dict = {}
+        architecture = 'unknown'
+        error = None
+        loadable = False
+        roles = {role: 0 for role in ('dense', 'experts', 'embedding')}
+        experts = streamed = 0
+        try:
+            if missing:
+                raise ValueError(f'GGUF checkpoint is missing {missing} shard(s)')
+            if gguf_is_table_component(path):
+                raise ValueError('This GGUF is a shared table, not a standalone model')
+            metadata = self._inspect_native_metadata(path, signature)
+            config = metadata['config']
+            tensors = metadata['tensors']
+            architecture = _native_architecture(metadata)
+            supported = {'Q4_0', 'Q4_1', 'Q5_0', 'Q5_1', 'Q8_0', 'Q2_K', 'Q3_K', 'Q4_K', 'Q5_K', 'Q6_K',
+                'Q8_K', 'IQ2_XXS', 'IQ2_XS', 'IQ2_S', 'IQ3_XXS', 'IQ3_S', 'IQ4_NL', 'IQ4_XS', 'Q2_0'}
+            unsupported = set()
+            for tensor, record in tensors.items():
+                dtype, size = record['dtype'], int(record['nbytes'])
+                if dtype.startswith('GGUF_') and dtype[5:] not in supported:
+                    unsupported.add(dtype)
+                if _is_always_streamed_tensor(tensor):
+                    streamed += size
+                    continue
+                role = weight_role(tensor)
+                roles[role] += size
+                if role == 'experts':
+                    experts += size
+            if unsupported:
+                raise ValueError('Unsupported GGUF weight format: ' + ', '.join(sorted(unsupported)))
+            loadable = True
+        except Exception as failure:
+            error = str(failure).replace(str(root), '<model-root>')
+        capacity, yarn_capacity, yarn_factor = yarn_context_limits(config, architecture)
+        resource = ModelArtifactResource(id=identifier, name=name, architecture=architecture, format='gguf',
+            shard_count=count, missing_shards=missing, total_bytes=sum(stat.st_size for stat in stats),
+            estimated_resident_weight_bytes=sum(roles.values()) if tensors else None,
+            estimated_weight_bytes_by_role=roles if tensors else {}, ssd_ple_bytes=streamed if tensors else None,
+            context_capacity=capacity, yarn_context_capacity=yarn_capacity, yarn_max_factor=yarn_factor,
+            tensor_count=len(tensors), record_count=len(tensors), dtypes=sorted({item['dtype'] for item in tensors.values()}),
+            complete=not missing, loadable=loadable, error=error,
+            modified_at=datetime.fromtimestamp(max((stat.st_mtime for stat in stats), default=path.stat().st_mtime), timezone.utc))
+        return DiscoveredModel(resource, path, experts, streamed, config, tensors)
+
+    def _inspect_native_metadata(self, path: Path, signature: tuple) -> dict:
+        if self._native_inspector is None:
+            raise ValueError('Native model metadata inspection is unavailable')
+        cached = self._source_metadata.get(path)
+        if cached is None or cached[0] != signature:
+            metadata = self._native_inspector(path)
+            self._source_metadata[path] = (signature, metadata)
+            return metadata
+        return cached[1]
 
     @staticmethod
     def _inspect(root: Path, path: Path) -> DiscoveredModel:

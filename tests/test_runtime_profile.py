@@ -96,7 +96,11 @@ def test_invalid_profile_fails_closed() -> None:
     with pytest.raises(ValueError, match="boolean"):
         validate_runtime_profile({"chat": {"enable_thinking": 0}})
     with pytest.raises(ValueError, match="mtp_max_draft_tokens"):
-        validate_runtime_profile({"chat": {"mtp_max_draft_tokens": 6}})
+        validate_runtime_profile({"chat": {"mtp_max_draft_tokens": 8}})
+
+
+def test_block_predictor_depth_is_not_limited_to_recurrent_mtp() -> None:
+    assert validate_runtime_profile({"chat": {"mtp_max_draft_tokens": 7}})["chat"]["mtp_max_draft_tokens"] == 7
 
 
 def test_metadata_key_is_versioned() -> None:

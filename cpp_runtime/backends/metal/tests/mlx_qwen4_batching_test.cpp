@@ -55,6 +55,18 @@ static void check_ready_decode(MlxQwen4CausalLm& runtime) {
     first->observe_mtp_depth(0, true);
     require(first->mtp_parks == 2 && first->mtp_reentries == 1 && second->mtp_parks == 0,
         "MTP park/reentry counts crossed requests or duplicated depth observations");
+    first->cache = runtime.make_request_cache();
+    first->mtp_stats.used = true;
+    first->mtp_stats.cycles = 4;
+    first->mtp_stats.drafted_tokens = 12;
+    first->mtp_stats.accepted_tokens = 9;
+    operations.retire({first}, 0);
+    require(runtime.last_mtp_stats().used && runtime.last_mtp_stats().cycles == 4 &&
+        runtime.last_mtp_stats().accepted_tokens == 9, "batched MTP was missing from runtime status");
+    second->cache = runtime.make_request_cache();
+    operations.retire({second}, 0);
+    require(!runtime.last_mtp_stats().used && runtime.last_mtp_stats().cycles == 0,
+        "ordinary batched requests retained the previous MTP status");
 }
 static void check_draft_heads(MlxQwen4CausalLm& runtime) {
     constexpr int batch = 3, depth = 5;
@@ -368,7 +380,7 @@ static void check_scheduler(MlxQwen4CausalLm& runtime, bool prefix_cache, bool m
     }
 }
 static void check_speculative(MlxQwen4CausalLm& runtime, int batch) {
-    for (int depth = 1; depth <= 5; ++depth) {
+    for (int depth = 1; depth < MlxQwen4CausalLm::maximum_verification_rows; ++depth) {
         std::vector<std::shared_ptr<MlxQwen4RequestCache>> caches;
         std::vector<std::vector<std::int64_t>> histories, windows;
         std::vector<MlxQwen4TextSessionState> committed;

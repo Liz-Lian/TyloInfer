@@ -14,7 +14,7 @@ from typing import TypeAlias
 
 import numpy as np
 
-from tyloinfer.formats.assets import ASSET_DTYPE
+from tyloinfer.formats.assets import ASSET_DTYPE, canonical_asset_record_name
 from tyloinfer.formats.companions import is_engram_shard, is_engram_table
 from tyloinfer.formats.compat import LEGACY_DTYPES, canonical_dtype
 from tyloinfer.formats.header import TYLOINFER_MAGIC, FileHeader, TENSOR_DTYPES
@@ -572,11 +572,17 @@ def _open_single_mmap(
                 k, off = _read_str(mm, off)
                 v_json, off = _read_str(mm, off)
                 extra[k] = json.loads(v_json)
+        manifest = extra.get("runtime_assets")
+        if isinstance(manifest, dict) and isinstance(manifest.get("assets"), dict):
+            for asset in manifest["assets"].values():
+                if isinstance(asset, dict) and isinstance(asset.get("record"), str):
+                    asset["record"] = canonical_asset_record_name(asset["record"])
         num_tensors, off = _read_u32(mm, off)
 
         raw_records: list[tuple[str, str, int]] = []
         for _ in range(num_tensors):
             name, off = _read_str(mm, off)
+            name = canonical_asset_record_name(name)
             dtype, off = _read_str(mm, off)
             blob_nbytes = struct.unpack_from("<Q", mm, off)[0]
             off += 8
@@ -641,11 +647,11 @@ def open_mmap(path: str | Path, *, cache: bool = False) -> MMapTensorStore:
                 first_mmap,
                 cache=cache,
             )
-        if parsed is None:
+        if parsed is None and (split_no != 0 or requested.suffix.lower() not in {".tq", ".mfq"}):
             raise ValueError(
                 f"sharded MFQ path lacks -00001-of-00000 suffix: {requested}"
             )
-        if parsed[1] - 1 != split_no:
+        if parsed is not None and parsed[1] - 1 != split_no:
             raise ValueError(
                 f"MFQ shard index mismatch in filename/metadata: "
                 f"{parsed[1] - 1} != {split_no}: {requested}"

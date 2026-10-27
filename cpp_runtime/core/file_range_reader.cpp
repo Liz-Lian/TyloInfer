@@ -27,6 +27,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <linux/aio_abi.h>
@@ -262,6 +263,82 @@ FileRangeReader::FileRangeReader(const std::filesystem::path& path, FileReadMode
 
 FileRangeReader::~FileRangeReader() = default;
 std::size_t FileRangeReader::alignment() const noexcept { return impl_->alignment; }
+
+void FileRangeReader::read_contiguous(const std::vector<ReadSpan>& spans) const {
+    if (spans.empty()) return;
+    const auto offset = spans.front().offset;
+    if (offset > impl_->size) throw std::out_of_range("model-file range is out of bounds");
+    std::uint64_t total = 0;
+    bool aligned = offset % impl_->alignment == 0;
+    for (const auto& span : spans) {
+        if (span.size > impl_->size - offset - total)
+            throw std::out_of_range("model-file range is out of bounds");
+        if (span.offset != offset + total)
+            throw std::invalid_argument("model-file scatter ranges are not adjacent");
+        if (span.size && !span.destination)
+            throw std::invalid_argument("model-file destination is null");
+        total += span.size;
+        aligned &= span.size % impl_->alignment == 0 &&
+            reinterpret_cast<std::uintptr_t>(span.destination) % impl_->alignment == 0;
+    }
+    if (!total) return;
+#if defined(_WIN32)
+    const bool scatter = false;
+#elif defined(__APPLE__)
+    const bool scatter = true;
+#else
+    const bool scatter = impl_->mode == FileReadMode::Buffered || aligned;
+#endif
+    if (!scatter) {
+        read_batch(spans);
+        return;
+    }
+#if !defined(_WIN32)
+    const auto started = std::chrono::steady_clock::now();
+    std::size_t index = 0, consumed = 0;
+    std::uint64_t done = 0;
+    std::vector<iovec> vectors;
+    const auto system_limit = ::sysconf(_SC_IOV_MAX);
+    const auto vector_limit = system_limit > 0 ? std::size_t(system_limit) : std::size_t(16);
+    vectors.reserve(std::min(spans.size(), vector_limit));
+    try {
+        while (done < total) {
+            vectors.clear();
+            std::size_t bytes = 0;
+            constexpr std::size_t maximum_read = std::size_t{32} << 20;
+            for (auto next = index; next < spans.size() && vectors.size() < vector_limit
+                    && bytes < maximum_read; ++next) {
+                const auto start = next == index ? consumed : 0;
+                const auto count = std::min(spans[next].size - start, maximum_read - bytes);
+                if (!count) continue;
+                vectors.push_back({spans[next].destination + start, count});
+                bytes += count;
+            }
+            impl_->calls.fetch_add(1, std::memory_order_relaxed);
+            ssize_t actual;
+            do { actual = ::preadv(impl_->handle, vectors.data(), int(vectors.size()), off_t(offset + done)); }
+            while (actual < 0 && errno == EINTR);
+            if (actual < 0) throw std::system_error(errno, std::generic_category(), "read contiguous model-file range");
+            if (!actual) throw std::runtime_error("model file was truncated during contiguous read");
+            impl_->physical.fetch_add(actual, std::memory_order_relaxed);
+            impl_->logical.fetch_add(actual, std::memory_order_relaxed);
+            done += std::size_t(actual);
+            auto remaining = std::size_t(actual);
+            while (index < spans.size()) {
+                const auto available = spans[index].size - consumed;
+                if (remaining < available) { consumed += remaining; break; }
+                remaining -= available; ++index; consumed = 0;
+                if (!remaining && (index == spans.size() || spans[index].size)) break;
+            }
+        }
+    } catch (...) {
+        impl_->errors.fetch_add(1, std::memory_order_relaxed);
+        throw;
+    }
+    impl_->nanos.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started).count(), std::memory_order_relaxed);
+#endif
+}
 
 void FileRangeReader::read(std::uint64_t offset, std::byte* destination, std::size_t size) const {
     if (offset > impl_->size || size > impl_->size - offset) throw std::out_of_range("model-file range is out of bounds");

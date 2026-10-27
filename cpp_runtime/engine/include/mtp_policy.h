@@ -20,6 +20,7 @@
 namespace mfq::engine::mtp {
 
 inline constexpr int kMaximumDraftDepth = 5;
+inline constexpr int kMaximumReportedDraftDepth = 7;
 
 struct ChainVerification {
     std::size_t accepted_drafts = 0;
@@ -33,10 +34,10 @@ struct GenerationStats {
     uint64_t cycles = 0;
     uint64_t drafted_tokens = 0;
     uint64_t accepted_tokens = 0;
-    std::array<uint64_t, kMaximumDraftDepth + 1> depth_cycles{};
-    std::array<uint64_t, kMaximumDraftDepth> position_drafted{};
-    std::array<uint64_t, kMaximumDraftDepth> position_accepted{};
-    std::array<double, kMaximumDraftDepth + 1> measured_depth_ms{};
+    std::array<uint64_t, kMaximumReportedDraftDepth + 1> depth_cycles{};
+    std::array<uint64_t, kMaximumReportedDraftDepth> position_drafted{};
+    std::array<uint64_t, kMaximumReportedDraftDepth> position_accepted{};
+    std::array<double, kMaximumReportedDraftDepth + 1> measured_depth_ms{};
     int selected_depth = 0;
     uint64_t standard_tokens = 0;
     uint64_t park_count = 0;

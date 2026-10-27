@@ -4,7 +4,7 @@ from tyloinfer.formats.compat import canonical_dtype
 
 
 def weight_role(name: str) -> str:
-    if re.search(r'\.mlp\.experts\.(?:\d+\.)?(?:gate|up|down|gate_up)(?:_proj)?\.(?:weight|weight_scale)$', name) or any(
+    if re.search(r'\.mlp\.experts\.(?:\d+\.)?(?:gate|up|down|gate_up)(?:_proj)?\.(?:weight|weight_scale|scales|biases)$', name) or any(
         marker in name for marker in ('.ffn_gate_exps.', '.ffn_up_exps.', '.ffn_gate_up_exps.', '.ffn_down_exps.')
     ):
         return 'experts'

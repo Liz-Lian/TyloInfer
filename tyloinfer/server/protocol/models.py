@@ -193,7 +193,7 @@ class SamplingParams(ProtocolModel):
     enable_thinking: bool = True
     enable_vision: bool = True
     enable_mtp: bool = True
-    mtp_max_draft_tokens: int = Field(default=3, ge=1, le=5)
+    mtp_max_draft_tokens: int = Field(default=3, ge=1, le=7)
     reasoning_effort: str | None = Field(default=None, min_length=1, max_length=32)
 
 
@@ -919,7 +919,7 @@ class ModelArtifactResource(ProtocolModel):
     id: str = Field(pattern=r"^[0-9a-f]{32}$")
     name: str = Field(min_length=1, max_length=255)
     architecture: str = Field(min_length=1, max_length=128)
-    format: Literal["tq", "hf"] = "tq"
+    format: Literal["tq", "hf", "gguf"] = "tq"
     shard_count: int = Field(ge=1)
     missing_shards: int = Field(default=0, ge=0)
     total_bytes: int = Field(ge=0)

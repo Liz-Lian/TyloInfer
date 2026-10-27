@@ -43,15 +43,10 @@ array limited_swiglu(
     const array& gate,
     const array& up,
     float limit) {
-    auto selected_gate = gate;
-    auto selected_up = up;
-    if (limit > 0.0f) {
-        selected_gate = mlx::core::minimum(selected_gate, array(limit));
-        selected_up = mlx::core::maximum(
-            mlx::core::minimum(selected_up, array(limit)),
-            array(-limit));
-    }
-    return selected_gate * mlx::core::sigmoid(selected_gate) * selected_up;
+    if (limit > 0.0f) return moe_limited_swiglu_pair(gate, up, limit);
+    auto result = moe_swiglu_pair(gate, up);
+    return gate.dtype() == mlx::core::bfloat16
+        ? mlx::core::astype(result, mlx::core::bfloat16) : result;
 }
 
 } // namespace
@@ -692,14 +687,10 @@ MlxDeepseekV41MoeResult MlxDeepseekV41Moe::forward(
     } else
 #endif
     if (tq_expert_cache_) {
-        routed = tq_expert_cache_->apply(expert_cache_layer_, routes.ids, [&](const auto& weights, const array* reuse) {
-            return weights.gate.swiglu(weights.up, source, routes.ids, swiglu_limit_, false, reuse);
-        }, [&](const auto& weights, const array& hidden, const array* reuse) {
-            return weights.down.routed_matmul_reduce(hidden, routes.ids, routes.weights, reuse);
-        }, &shared);
+        routed = tq_expert_cache_->apply_ffn(expert_cache_layer_, source, routes.ids,
+            routes.weights, swiglu_limit_, false, &shared);
     } else if (tq_) {
-        auto hidden = tq_->gate.swiglu(tq_->up, source, routes.ids, swiglu_limit_);
-        routed = tq_->down.routed_matmul_reduce(hidden, routes.ids, routes.weights);
+        routed = tq_->routed_ffn(source, routes.ids, routes.weights, swiglu_limit_);
     } else {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         auto routed_hidden = routed_gate_up_

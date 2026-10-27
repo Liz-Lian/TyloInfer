@@ -193,15 +193,15 @@ void benchmark_gdn_gates() {
     }
 }
 
-void test_linear_conv_prefill(int value_dim = 47, int layout = 0) {
+void test_linear_conv_prefill(int value_dim = 47, int layout = 0, int key_dim = 33) {
     using namespace mlx::core;
-    constexpr int key_heads = 3, value_heads = 6, key_dim = 33, taps = 4;
-    constexpr int qk_width = 2 * key_heads * key_dim;
+    constexpr int key_heads = 3, value_heads = 6, taps = 4;
+    const int qk_width = 2 * key_heads * key_dim;
     const int value_width = value_heads * value_dim;
     const int channels = qk_width + value_width;
     for (int batch : {1, 2}) {
         for (int tokens : {1, 7, 30, 54, 63, 64, 65}) {
-            for (auto dtype : {float16, float32}) {
+            for (auto dtype : {float16, bfloat16, float32}) {
                 auto qk = astype(patterned_bfloat(batch * tokens * qk_width,
                     Shape{batch, tokens, qk_width}, 37, 1.0f / 257.0f), dtype);
                 auto value = astype(patterned_bfloat(batch * tokens * value_width,
@@ -219,6 +219,11 @@ void test_linear_conv_prefill(int value_dim = 47, int layout = 0) {
                 } else if (layout == 3) {
                     qk = broadcast_to(slice(qk, Shape{0, 0, 0}, Shape{1, 1, qk_width}), qk.shape());
                     value = broadcast_to(slice(value, Shape{0, 0, 0}, Shape{1, 1, value_width}), value.shape());
+                } else if (layout == 4) {
+                    qk = slice(qk, Shape{0, 0, qk_width - 1},
+                        Shape{batch, tokens, -qk_width - 1}, Shape{1, 1, -1});
+                    value = slice(value, Shape{0, 0, value_width - 1},
+                        Shape{batch, tokens, -value_width - 1}, Shape{1, 1, -1});
                 }
                 auto state = astype(patterned_bfloat(batch * (taps - 1) * channels,
                     Shape{batch, taps - 1, channels}, 17, 1.0f / 511.0f), float32);
@@ -246,9 +251,12 @@ void test_linear_conv_prefill(int value_dim = 47, int layout = 0) {
                     key_heads, value_heads, key_dim, value_dim, bias, 1e-6f);
                 const auto compare = [&](array actual_value, array expected_value, const char* name) {
                     eval(actual_value, expected_value);
+                    const auto label = std::string(name) + " layout=" + std::to_string(layout) +
+                        " batch=" + std::to_string(batch) + " tokens=" + std::to_string(tokens) +
+                        " dtype=" + std::to_string(static_cast<int>(dtype.val()));
                     require_vector_close(actual_value.data<float>(),
                         std::vector<float>(expected_value.data<float>(),
-                            expected_value.data<float>() + expected_value.size()), 2e-5f, name);
+                            expected_value.data<float>() + expected_value.size()), 2e-5f, label.c_str());
                 };
                 compare(actual.query, expected_query, "prefill convolution query");
                 compare(actual.key, expected_key, "prefill convolution key");
@@ -374,7 +382,7 @@ void test_gdn_decode_step(
     const auto gates = mfq::metal::gated_delta_gates(
         alpha, beta, bias, decay);
 
-    for (const bool silu_gate : {false, true}) {
+    for (const bool tiled_heads : {false, true}) for (const bool silu_gate : {false, true}) {
         auto reference_conv_state = convolution_state;
         auto reference_recurrent_state = recurrent_state;
         auto actual_conv_state = convolution_state;
@@ -388,7 +396,7 @@ void test_gdn_decode_step(
                 std::nullopt, convolution_eps);
             const auto recurrent = mfq::metal::gated_delta_net(
                 convolved.query, convolved.key, convolved.value,
-                gates.gate, gates.beta, reference_recurrent_state, true);
+                gates.gate, gates.beta, reference_recurrent_state, true, tiled_heads);
             auto normalized = fast::rms_norm(
                 recurrent.output,
                 std::optional<array>(norm),
@@ -421,7 +429,7 @@ void test_gdn_decode_step(
                 dimension,
                 convolution_eps,
                 norm_eps,
-                silu_gate);
+                silu_gate, tiled_heads);
             eval(
                 reference_output,
                 convolved.state,
@@ -498,8 +506,8 @@ void test_gdn_decode_step(
         }
     }
 
-    for (const bool silu_gate : {false, true}) {
-        for (int tokens = 2; tokens <= 6; ++tokens) {
+    for (const bool tiled_heads : {false, true}) for (const bool silu_gate : {false, true}) {
+        for (int tokens = 2; tokens <= 8; ++tokens) {
             std::vector<array> qs, vs, zs, as, bs;
             for (int token = 0; token < tokens; ++token) {
                 const auto scaled = [&](const array& value, float amount) {
@@ -518,7 +526,7 @@ void test_gdn_decode_step(
                     concatenate(as, 1), concatenate(bs, 1), convolution_state * array(.3f),
                     recurrent_state * array(.5f)}};
             auto actual = mfq::metal::gated_delta_decode_steps(requests, convolution_weight,
-                bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate);
+                bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads);
             for (std::size_t row = 0; row < requests.size(); ++row) {
                 auto conv = requests[row].convolution_state;
                 auto state = requests[row].recurrent_state;
@@ -526,7 +534,7 @@ void test_gdn_decode_step(
                 for (int token = 0; token < tokens; ++token) {
                     auto step = mfq::metal::gated_delta_decode_step(qs[token], vs[token], zs[token],
                         as[token], bs[token], conv, state, convolution_weight, bias, decay,
-                        norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate);
+                        norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads);
                     output.push_back(std::move(step.output));
                     conv = std::move(step.convolution_state);
                     state = std::move(step.recurrent_state);
@@ -697,6 +705,27 @@ void test_blocked_gdn_prefill(bool tiled_heads, int tokens) {
         tiled_heads ? "blocked tiled GDN state" : "blocked GDN state");
 }
 
+void test_mixed_gdn_projection_types() {
+    using namespace mlx::core;
+    for (int tokens : {7, 64}) {
+        auto qk = full(Shape{1, tokens, 256}, 1e20f, bfloat16);
+        auto value = ones(Shape{1, tokens, 128}, float16);
+        auto state = zeros(Shape{1, 3, 384});
+        auto weight = full(Shape{384, 4}, 1e-20f);
+        auto expected = mfq::metal::linear_conv_qkv(state, astype(qk, float32),
+            astype(value, float32), weight, 1, 1, 128, 128);
+        auto actual = mfq::metal::linear_conv_qkv(state, qk, value, weight, 1, 1, 128, 128);
+        for (const auto& pair : {std::pair{actual.query, expected.query},
+                 std::pair{actual.key, expected.key}, std::pair{actual.value, expected.value},
+                 std::pair{actual.state, expected.state}}) {
+            eval(pair.first, pair.second);
+            require_vector_close(pair.first.data<float>(), std::vector<float>(
+                pair.second.data<float>(), pair.second.data<float>() + pair.second.size()),
+                1e-6f, "mixed BF16/F16 convolution projections");
+        }
+    }
+}
+
 void test_gdn_state_only() {
     using namespace mlx::core;
     const auto input = [](const Shape& shape, int multiplier, float scale) {
@@ -865,10 +894,19 @@ void test_cached_depthwise_dilated_decode() {
 int main(int argc, char** argv) {
     try {
         using namespace mlx::core;
+        if (argc == 2 && std::string(argv[1]) == "--test-prefill-conv") {
+            for (int layout = 0; layout < 5; ++layout) test_linear_conv_prefill(128, layout, 128);
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--test-mixed-projections") {
+            test_mixed_gdn_projection_types();
+            return 0;
+        }
 
         test_gdn_gates();
         test_runtime_token_kernel_reuse();
         test_gdn_output_norm();
+        test_mixed_gdn_projection_types();
         test_linear_conv_prefill();
         test_linear_conv_prefill(48);
         test_linear_conv_prefill(128);
@@ -877,6 +915,7 @@ int main(int argc, char** argv) {
         test_linear_conv_prefill(128, 1);
         test_linear_conv_prefill(47, 2);
         test_linear_conv_prefill(47, 3);
+        test_linear_conv_prefill(128, 4, 128);
         test_gdn_decode_step(1, 2, float16, float16);
         test_gdn_decode_step(16, 48, float16, float32);
         test_gdn_decode_step(16, 48, float16, bfloat16);

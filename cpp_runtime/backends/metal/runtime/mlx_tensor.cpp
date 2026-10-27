@@ -4,6 +4,7 @@
 #include "mlx_reference.h"
 #include "mlx_transformer.h"
 #include "mlx_weight_residency.h"
+#include "mlx_gguf_staged.h"
 
 #include <mlx/allocator.h>
 
@@ -337,6 +338,8 @@ array materialize_weight_fp16(
 
 template <typename Variant>
 std::optional<array> unpack_quantized_weight(const Variant& weight, int output_size) {
+    if (const auto* gguf = std::get_if<MlxGgufWeight>(&weight)) return gguf->dequantize();
+    if (const auto* affine = std::get_if<MlxAffineWeight>(&weight)) return affine->dequantize();
     if (const auto* tq = std::get_if<MlxTqWeight>(&weight))
         return tq->embedding(mlx::core::arange(output_size, mlx::core::int32), mlx::core::float16);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -522,6 +525,8 @@ MlxLinear MlxLinear::load(
     if (is_mxfp4_sq_dtype(record.dtype)) return finish(MlxLinear(MlxMxfp4SqWeight::from_blob(model.map_record(name).view())));
 #endif
     if (record.dtype == "TQ") return finish(MlxLinear(MlxTqWeight::load(model, name)));
+    if (is_gguf_dtype(record.dtype)) return finish(MlxLinear(MlxGgufWeight::load(model, name)));
+    if (record.dtype == "MLX-AFFINE") return finish(MlxLinear(MlxAffineWeight::load(model, name)));
     if (is_mx_dtype(record.dtype)) {
         return finish(MlxLinear(
             MlxMxWeight::from_blob(record.dtype, model.read(name))));
@@ -544,6 +549,10 @@ MlxLinear::MlxLinear(MlxMxfp4SqWeight weight)
 #endif
 
 MlxLinear::MlxLinear(MlxTqWeight weight)
+    : weight_(weight), input_size_(weight.input_size()), output_size_(weight.output_size()) {}
+MlxLinear::MlxLinear(MlxGgufWeight weight)
+    : weight_(weight), input_size_(weight.input_size()), output_size_(weight.output_size()) {}
+MlxLinear::MlxLinear(MlxAffineWeight weight)
     : weight_(weight), input_size_(weight.input_size()), output_size_(weight.output_size()) {}
 
 
@@ -583,6 +592,8 @@ array MlxLinear::operator()(const array& input) const {
     if (const auto* weight = std::get_if<MlxMxfp4SqWeight>(&weight_)) return weight->matmul(input);
 #endif
     if (const auto* tq = std::get_if<MlxTqWeight>(&weight_)) return tq->matmul(input);
+    if (const auto* gguf = std::get_if<MlxGgufWeight>(&weight_)) return gguf->matmul(input);
+    if (const auto* affine = std::get_if<MlxAffineWeight>(&weight_)) return affine->matmul(input);
     if (mlx_reference_enabled()) {
         if (auto dense = unpack_quantized_weight(
                 weight_, output_size_)) {
@@ -794,7 +805,7 @@ array MlxLinear::grouped_row_matmul_inverse_rope(
         const bool block32_eligible =
             packed->scale_column_block_size() == 32 &&
             rows == 1 &&
-            value.dtype() == mlx::core::float32;
+            (value.dtype() == mlx::core::float32 || value.dtype() == mlx::core::float16);
         const bool block128_eligible =
             packed->scale_column_block_size() == 128 &&
             rows >= 1 && rows <= 6;
@@ -873,11 +884,25 @@ const MlxTqWeight* MlxLinear::tq_weight_ref() const noexcept {
     return std::get_if<MlxTqWeight>(&weight_);
 }
 
+const MlxAffineWeight* MlxLinear::affine_weight_ref() const noexcept {
+    return std::get_if<MlxAffineWeight>(&weight_);
+}
+
+const MlxGgufWeight* MlxLinear::gguf_weight_ref() const noexcept {
+    return std::get_if<MlxGgufWeight>(&weight_);
+}
+
+void MlxLinear::prepare_grouped_gguf() {
+    if (auto* weight = std::get_if<MlxGgufWeight>(&weight_)) weight->prepare_grouped();
+}
+
 const array* MlxLinear::dense_weight_ref() const noexcept {
     return std::get_if<array>(&weight_);
 }
 
 void MlxLinear::materialize_fp16() {
+    if (std::holds_alternative<MlxAffineWeight>(weight_)) return;
+    if (std::holds_alternative<MlxGgufWeight>(weight_)) return;
     if (std::holds_alternative<MlxTqWeight>(weight_)) return;
     if (const auto* dense = std::get_if<array>(&weight_);
         dense && (!g_fp16_weight_scopes || dense->dtype() == mlx::core::float16)) return;
@@ -908,6 +933,7 @@ struct MlxProjectionBatch::Impl {
         std::vector<std::size_t> indices;
         std::optional<MlxGroupedLinear> grouped;
         std::vector<MlxTqWeight> tq;
+        std::vector<MlxGgufWeight> gguf;
     };
 
     explicit Impl(std::vector<const MlxLinear*> sources) {
@@ -934,6 +960,21 @@ struct MlxProjectionBatch::Impl {
         std::size_t begin = 0;
         while (begin < references.size()) {
             const std::size_t remaining = references.size() - begin;
+            if (const auto* first = references[begin]->gguf_weight_ref(); first && first->has_staged_planes()) {
+                Segment segment;
+                for (std::size_t offset = 0; offset < std::min(remaining, std::size_t(4)); ++offset) {
+                    const auto* weight = references[begin + offset]->gguf_weight_ref();
+                    if (!weight || !weight->has_staged_planes() || weight->input_size() != first->input_size()) break;
+                    segment.indices.push_back(begin + offset);
+                    segment.gguf.push_back(*weight);
+                }
+                if (segment.gguf.size() >= 2) {
+                    grouped_projection_count += segment.gguf.size();
+                    begin += segment.gguf.size();
+                    segments.push_back(std::move(segment));
+                    continue;
+                }
+            }
             if (const auto* first = references[begin]->tq_weight_ref()) {
                 Segment segment;
                 for (std::size_t offset = 0; offset < std::min(remaining, std::size_t(8)); ++offset) {
@@ -983,9 +1024,9 @@ struct MlxProjectionBatch::Impl {
             begin += count;
         }
         for (std::size_t first = 0; first < segments.size(); ++first) {
-            if (segments[first].grouped || !segments[first].tq.empty()) continue;
+            if (segments[first].grouped || !segments[first].tq.empty() || !segments[first].gguf.empty()) continue;
             for (std::size_t second = first + 1; second < segments.size(); ++second) {
-                if (segments[second].grouped || !segments[second].tq.empty()) continue;
+                if (segments[second].grouped || !segments[second].tq.empty() || !segments[second].gguf.empty()) continue;
                 const std::array<const MlxLinear*, 2> pair{
                     references[segments[first].indices.front()],
                     references[segments[second].indices.front()]};
@@ -1033,6 +1074,12 @@ std::vector<array> MlxProjectionBatch::operator()(
             static_cast<std::size_t>(input.shape(-1));
     std::vector<array> outputs(impl_->linears.size(), input);
     for (const auto& segment : impl_->segments) {
+        if (!segment.gguf.empty() && rows >= 1 && rows <= 8) {
+            auto values = MlxGgufStagedPrefill::project_many(segment.gguf, input);
+            for (std::size_t offset = 0; offset < segment.indices.size(); ++offset)
+                outputs[segment.indices[offset]] = std::move(values[offset]);
+            continue;
+        }
         if (!segment.tq.empty()) {
             auto values = MlxTqWeight::matmul_many(segment.tq, input);
             for (std::size_t offset = 0; offset < segment.indices.size(); ++offset)
@@ -1077,6 +1124,11 @@ array MlxProjectionBatch::swiglu(
             return mlx::core::reshape(result, shape);
         }
     }
+    if (limit == 0.0f) {
+        if (const auto* gate = impl_->linears[0].gguf_weight_ref()) {
+            if (const auto* up = impl_->linears[1].gguf_weight_ref()) return gate->swiglu(*up, input);
+        }
+    }
     if (impl_->segments.size() == 1 &&
         impl_->segments.front().indices.size() == 2 &&
         impl_->segments.front().grouped) {
@@ -1093,18 +1145,19 @@ array MlxProjectionBatch::swiglu(
         return moe_limited_swiglu_pair(
             projected.at(0), projected.at(1), limit);
     }
-    auto gate = std::move(projected.at(0));
-    auto up = std::move(projected.at(1));
-    if (up.dtype() != gate.dtype()) {
-        up = mlx::core::astype(up, gate.dtype());
-    }
-    return gate * mlx::core::sigmoid(gate) * up;
+    auto result = moe_swiglu_pair(projected.at(0), projected.at(1));
+    return projected.at(0).dtype() == mlx::core::bfloat16
+        ? mlx::core::astype(result, mlx::core::bfloat16) : result;
 }
 
 bool MlxProjectionBatch::supports_fused_swiglu(
     const array& input) const noexcept {
     if (impl_->linears.size() == 2 && impl_->linears[0].tq_weight_ref()
         && impl_->linears[1].tq_weight_ref()) return true;
+    if (impl_->linears.size() == 2 && impl_->linears[0].gguf_weight_ref() && impl_->linears[1].gguf_weight_ref()
+        && impl_->linears[0].output_size() == impl_->linears[1].output_size() && input.ndim() > 0
+        && input.shape(-1) == impl_->linears[0].input_size()
+        && input.size() / impl_->linears[0].input_size() <= 6) return true;
     if (impl_->linears.size() != 2 ||
         impl_->segments.size() != 1 ||
         impl_->segments.front().indices.size() != 2 ||
@@ -1171,6 +1224,8 @@ MlxEmbedding MlxEmbedding::load(
     if (is_mxfp4_sq_dtype(record.dtype)) return finish(MlxEmbedding(MlxMxfp4SqWeight::from_blob(model.map_record(name).view())));
 #endif
     if (record.dtype == "TQ") return finish(MlxEmbedding(MlxTqWeight::load(model, name)));
+    if (is_gguf_dtype(record.dtype)) return finish(MlxEmbedding(MlxGgufWeight::load(model, name)));
+    if (record.dtype == "MLX-AFFINE") return finish(MlxEmbedding(MlxAffineWeight::load(model, name)));
     if (is_mx_dtype(record.dtype)) {
         return finish(MlxEmbedding(
             MlxMxWeight::from_blob(record.dtype, model.read(name))));
@@ -1194,6 +1249,10 @@ MlxEmbedding::MlxEmbedding(MlxMxfp4SqWeight weight)
 
 MlxEmbedding::MlxEmbedding(MlxTqWeight weight)
     : weight_(weight), vocabulary_size_(weight.output_size()), hidden_size_(weight.input_size()) {}
+MlxEmbedding::MlxEmbedding(MlxGgufWeight weight)
+    : weight_(weight), vocabulary_size_(weight.output_size()), hidden_size_(weight.input_size()) {}
+MlxEmbedding::MlxEmbedding(MlxAffineWeight weight)
+    : weight_(weight), vocabulary_size_(weight.output_size()), hidden_size_(weight.input_size()) {}
 
 
 MlxEmbedding::MlxEmbedding(MlxMxWeight weight)
@@ -1212,11 +1271,18 @@ MlxEmbedding::MlxEmbedding(array weight)
 }
 
 void MlxEmbedding::materialize_fp16() {
+    if (std::holds_alternative<MlxAffineWeight>(weight_)) return;
+    if (std::holds_alternative<MlxGgufWeight>(weight_)) return;
     if (std::holds_alternative<MlxTqWeight>(weight_)) return;
     if (const auto* dense = std::get_if<array>(&weight_);
         dense && (!g_fp16_weight_scopes || dense->dtype() == mlx::core::float16)) return;
     auto dense = materialize_weight_fp16(weight_, vocabulary_size_);
     weight_ = std::move(dense);
+}
+
+Dtype MlxEmbedding::preferred_activation_dtype() const noexcept {
+    if (const auto* weight = std::get_if<MlxAffineWeight>(&weight_)) return weight->activation_dtype();
+    return mlx::core::float16;
 }
 
 array MlxEmbedding::operator()(
@@ -1230,6 +1296,8 @@ array MlxEmbedding::operator()(
     if (const auto* weight = std::get_if<MlxMxfp4SqWeight>(&weight_)) return weight->embedding(token_ids, dtype);
 #endif
     if (const auto* tq = std::get_if<MlxTqWeight>(&weight_)) return tq->embedding(token_ids, dtype);
+    if (const auto* gguf = std::get_if<MlxGgufWeight>(&weight_)) return gguf->embedding(token_ids, dtype);
+    if (const auto* affine = std::get_if<MlxAffineWeight>(&weight_)) return affine->embedding(token_ids, dtype);
     const bool reference = mlx_reference_enabled();
     const auto finish_quantized = [&](const auto& packed) {
         auto result = reference
@@ -1284,6 +1352,8 @@ array MlxEmbedding::project(const array& input) const {
     if (const auto* weight = std::get_if<MlxMxfp4SqWeight>(&weight_)) return weight->matmul(input);
 #endif
     if (const auto* tq = std::get_if<MlxTqWeight>(&weight_)) return tq->matmul(input);
+    if (const auto* gguf = std::get_if<MlxGgufWeight>(&weight_)) return gguf->matmul(input);
+    if (const auto* affine = std::get_if<MlxAffineWeight>(&weight_)) return affine->matmul(input);
     if (mlx_reference_enabled()) {
         if (auto dense = unpack_quantized_weight(
                 weight_, vocabulary_size_)) {

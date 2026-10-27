@@ -37,6 +37,9 @@ public:
     virtual void prepare_gpu() = 0;
 };
 
+std::string mlx_kernel_preparation_key(const mlx::core::Primitive& primitive);
+void prepare_mlx_kernel_gpu(mlx::core::Primitive& primitive);
+
 class MlxKernelPreparation {
 public:
     MlxKernelPreparation(int context, int chunk_size);
@@ -44,6 +47,7 @@ public:
     MlxKernelPreparation(const MlxKernelPreparation&) = delete;
     MlxKernelPreparation& operator=(const MlxKernelPreparation&) = delete;
     static MlxKernelPreparation* current() noexcept;
+    static bool collecting() noexcept;
     void collect(const std::function<void()>& build);
     void add(const mlx::core::array& output);
     void finish();
@@ -54,7 +58,9 @@ public:
     int context() const noexcept { return context_; }
     void set_routes(int routes) noexcept { routes_ = routes; }
     int routes() const noexcept { return routes_; }
-    std::size_t size() const noexcept { return jobs_.size(); }
+    void set_activation_dtype(mlx::core::Dtype dtype) noexcept { activation_dtype_ = dtype; }
+    mlx::core::Dtype activation_dtype() const noexcept { return activation_dtype_; }
+    std::size_t size() const noexcept { return jobs_.size() + compiled_jobs_.size(); }
     const std::unordered_set<std::string>& unsupported() const noexcept { return unsupported_; }
 
 private:
@@ -64,10 +70,12 @@ private:
     bool model_paths_ = false;
     int routes_ = 0;
     int context_ = 0;
+    mlx::core::Dtype activation_dtype_ = mlx::core::float16;
     std::vector<int> rows_;
     std::unordered_set<std::string> keys_;
     std::unordered_set<std::string> unsupported_;
     std::vector<std::function<void()>> jobs_;
+    std::vector<std::function<void()>> compiled_jobs_;
 };
 
 } // namespace mfq::metal

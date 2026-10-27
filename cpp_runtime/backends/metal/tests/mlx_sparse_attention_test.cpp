@@ -247,7 +247,7 @@ void test_block_gqa_small_m(int block_size, int inner_stride) {
     using namespace mlx::core;
     for (const auto dtype : {float16, bfloat16}) {
         for (const int batch : {1, 2}) {
-            for (int rows = 1; rows <= 6; ++rows) {
+            for (int rows = 1; rows <= 8; ++rows) {
                 for (const int keys : {3, 4, 17, 18, 19, 1024, 1025, 2048, 2051, 4096}) {
                     if (rows > keys) continue;
                     for (const int offset : {0, keys - rows}) {
@@ -416,7 +416,9 @@ void test_indexer_topk_rejects_invalid_geometry() {
     }
 }
 
-void test_qsa_prefill(int tokens, int keys, mlx::core::Dtype dtype, bool tied, int view = 0) {
+void test_qsa_prefill(int tokens, int keys, mlx::core::Dtype dtype, bool tied, int view = 0,
+    std::optional<mlx::core::Dtype> index_dtype = std::nullopt,
+    std::optional<mlx::core::Dtype> key_dtype = std::nullopt) {
     using namespace mlx::core;
     const int offset = keys - tokens;
     auto query = astype(patterned_half(24ULL * tokens * 256,
@@ -432,14 +434,22 @@ void test_qsa_prefill(int tokens, int keys, mlx::core::Dtype dtype, bool tied, i
             Shape{1, 24, tokens, 512}, Shape{1, 1, 1, 2});
     }
     auto key = astype(patterned_half(2ULL * keys * 256,
-        Shape{1, 2, keys, 256}, 53, 1.0f / 487.0f), dtype);
+        Shape{1, 2, keys, 256}, 53, 1.0f / 487.0f), key_dtype.value_or(dtype));
     auto value = astype(patterned_half(2ULL * keys * 256,
-        Shape{1, 2, keys, 256}, 71, 1.0f / 463.0f), dtype);
+        Shape{1, 2, keys, 256}, 71, 1.0f / 463.0f), key_dtype.value_or(dtype));
     auto index = tied ? zeros(Shape{1, tokens, 4, 128}, dtype)
         : astype(patterned_half(4ULL * tokens * 128,
             Shape{1, tokens, 4, 128}, 31, 1.0f / 512.0f), dtype);
     auto pooled = astype(patterned_half((keys / 4ULL) * 128,
         Shape{1, keys / 4, 128}, 29, 1.0f / 512.0f), dtype);
+    if (index_dtype) {
+        index = astype(index, *index_dtype);
+        pooled = astype(pooled, *index_dtype);
+        if (*index_dtype == float32 && !tied) {
+            index = index + reshape(sin(arange(index.size(), float32)) * .00001f, index.shape());
+            pooled = pooled + reshape(cos(arange(pooled.size(), float32)) * .00001f, pooled.shape());
+        }
+    }
     auto actual = mfq::metal::mlx_qsa_prefill_attention(
         query, key, value, index, astype(pooled, float32), offset);
     if (view != 0) {
@@ -451,7 +461,7 @@ void test_qsa_prefill(int tokens, int keys, mlx::core::Dtype dtype, bool tied, i
         if (!matches.item<bool>()) throw std::runtime_error("QSA prefill view/copy differs: view=" +
             std::to_string(view) + " max=" + std::to_string(difference.item<float>()));
     }
-    int dense_rows = std::min(tokens, std::max(0, 2051 - offset));
+    int dense_rows = std::min(tokens, std::max(0, 2048 - offset));
     if (tokens - dense_rows == 1) --dense_rows;
     std::vector<array> parts;
     if (dense_rows > 0) {
@@ -516,9 +526,46 @@ void test_qsa_prefill_rejects_invalid_geometry() {
 
 } // namespace
 
+
+void test_small_indexer_scores() {
+    using namespace mlx::core;
+    for (const auto dtype : {float16, bfloat16, float32}) for (const int rows : {1, 2, 6, 7, 8})
+        for (const int keys : {0, 31, 1024, 1025, 2053}) {
+        const auto query = astype(reshape(sin(arange(2 * rows * 4 * 128, float32) * .017f), {2, rows, 4, 128}), dtype);
+        const auto pool = reshape(cos(arange(2 * keys * 128, float32) * .013f), {2, keys, 128});
+        const auto actual = mfq::metal::mlx_sparse_indexer_dot_scores(query, pool);
+        if (keys) {
+            const auto floating_query = contiguous(astype(query, float32));
+            eval(actual, floating_query, pool);
+            double error = 0;
+            const auto* q = floating_query.data<float>();
+            const auto* k = pool.data<float>();
+            const auto* result = actual.data<float>();
+            for (int batch = 0; batch < 2; ++batch) for (int row = 0; row < rows; ++row)
+                for (int head = 0; head < 4; ++head) for (int key = 0; key < keys; ++key) {
+                double expected = 0;
+                for (int column = 0; column < 128; ++column)
+                    expected += double(q[((batch * rows + row) * 4 + head) * 128 + column])
+                        * double(k[(batch * keys + key) * 128 + column]);
+                error = std::max(error, std::abs(double(result[((batch * rows + row) * 4 + head) * keys + key]) - expected));
+            }
+            if (!std::isfinite(error) || error > .00002) throw std::runtime_error("small sparse indexer scores disagree: error="
+                + std::to_string(error) + " rows=" + std::to_string(rows) + " keys=" + std::to_string(keys)
+                + " dtype=" + std::to_string(int(dtype.val())));
+        } else if (actual.shape() != Shape{2, rows, 4, keys}) throw std::runtime_error("empty indexer scores have wrong shape");
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         mlx::core::set_default_device(mlx::core::Device::gpu);
+        if (argc == 2 && std::string(argv[1]) == "--small-m-only") {
+            test_block_gqa_small_m(4, 1);
+            test_block_gqa_small_m(4, 2);
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--initial-prefill-only") return 0;
+        test_small_indexer_scores();
         for (const auto dtype : {mlx::core::float16, mlx::core::bfloat16}) {
             test_qsa_prefill(64, 64, dtype, false);
             test_qsa_prefill(64, 2051, dtype, false);
@@ -534,6 +581,13 @@ int main(int argc, char** argv) {
         }
         test_qsa_prefill(2049, 32769, mlx::core::float16, false);
         test_qsa_prefill(1025, 65537, mlx::core::float16, false);
+        test_qsa_prefill(65, 3073, mlx::core::float16, false, 0, mlx::core::float32);
+        test_qsa_prefill(65, 3073, mlx::core::float32, false);
+        test_qsa_prefill(65, 3073, mlx::core::float32, true);
+        test_qsa_prefill(65, 3073, mlx::core::float32, false, 0, mlx::core::float32, mlx::core::float16);
+        test_qsa_prefill(4096, 4096, mlx::core::float32, false, 0, mlx::core::float32, mlx::core::float16);
+        test_qsa_prefill(256, 256, mlx::core::float16, false, 2);
+        test_qsa_prefill(257, 513, mlx::core::float16, false, 1);
         test_qsa_prefill_rejects_invalid_geometry();
         if (argc == 2 && std::string(argv[1]) == "--prefill-only") return 0;
         for (int rows = 1; rows <= 6; ++rows) {
