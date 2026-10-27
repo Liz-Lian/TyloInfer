@@ -473,7 +473,7 @@ struct GlmDsaBlock : Block {
                                 return std::optional<mfq_tensor_backend::Tensor>{};
                             },
                             [&](mfq_tensor_backend::Tensor ffn_input) {
-                                return mfq::cuda::run_ffn(execution, ffn, ffn_input).reshape({B * T, H});
+                                return execution.ffn().run(ffn, ffn_input).reshape({B * T, H});
                             },
                             [&](mfq_tensor_backend::Tensor hidden,
                                 mfq_tensor_backend::Tensor ffn_out) {

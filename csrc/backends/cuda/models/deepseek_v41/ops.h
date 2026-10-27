@@ -1,6 +1,7 @@
 #pragma once
 #include "mfq_cuda_norm_ops.h"
 #include "engine/executor/ffn.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 
@@ -869,13 +870,19 @@ struct Block final : ::Block {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
                         auto bias=mfq_tensor_backend::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
-                        return mfq::cuda::run_ffn(execution, mlp,value.reshape({-1,config.hidden}),
-                            current_ids,bias).reshape({batch,tokens,config.hidden});
+                        return execution.ffn().run(
+                            mlp, value.reshape({-1,config.hidden}), current_ids, bias)
+                            .reshape({batch,tokens,config.hidden});
                     }
                     if(layer+1<static_cast<int64_t>(shared->router_prefetch.size()))
                         if(const auto* next=shared->router_prefetch[layer+1])
-                            mfq::cuda::prefetch_ffn(execution, *next,value,current_ids);
-                    return mfq::cuda::run_ffn(execution, mlp, value.reshape({-1, config.hidden}), current_ids)
+                            execution.ffn().prefetch(
+                                *next, value,
+                                moe_expert_cache_ssd_router_prefetch(
+                                    execution.stores.moe_expert_cache),
+                                current_ids);
+                    return execution.ffn().run(
+                            mlp, value.reshape({-1, config.hidden}), current_ids)
                         .reshape({batch, tokens, config.hidden});
                 });
             });

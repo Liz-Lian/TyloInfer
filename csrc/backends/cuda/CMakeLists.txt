@@ -505,7 +505,7 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/ffn.cpp
+    ${PROJECT_SOURCE_DIR}/engine/executor/ffn.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp

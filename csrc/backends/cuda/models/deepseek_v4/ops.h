@@ -771,7 +771,8 @@ struct Dsv4Block : Block {
                 return std::make_pair(normalized, pre);
             },
             [&](const auto &mix) {
-                auto feed_forward = mfq::cuda::run_ffn(execution, ffn, mix.first.reshape({batch * tokens, hidden_size}), current_ids);
+                auto feed_forward = execution.ffn().run(
+                    ffn, mix.first.reshape({batch * tokens, hidden_size}), current_ids);
                 feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
                 return feed_forward;
             },

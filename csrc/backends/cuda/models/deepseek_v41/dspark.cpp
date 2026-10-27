@@ -447,7 +447,7 @@ struct DeepseekV41Dspark final : MtpModule {
                     },
                     [&](Tensor value) {
                         const auto rows = value.size(1);
-                        return mfq::cuda::run_ffn(*execution, stage.mlp, value.reshape({-1, config.hidden}),
+                        return execution->ffn().run(stage.mlp, value.reshape({-1, config.hidden}),
                                      draft_ids.narrow(1, 0, rows))
                             .reshape({batch, rows, config.hidden});
                     });

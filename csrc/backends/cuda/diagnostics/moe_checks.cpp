@@ -883,7 +883,7 @@ int run_moe_check(
         auto x = mfq_tensor_backend::randn(
             {tokens, hidden_size},
             mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA).dtype(mfq_tensor_backend::kFloat16));
-        for (int warmup = 0; warmup < 10; ++warmup) output = mfq::cuda::run_ffn(execution, ffn, x);
+        for (int warmup = 0; warmup < 10; ++warmup) output = execution.ffn().run(ffn, x);
         mfq_cuda_synchronize();
 
         cudaEvent_t start, stop;
@@ -892,7 +892,7 @@ int run_moe_check(
         auto stream = mfq_get_current_cuda_stream().stream();
         auto wall_start = std::chrono::steady_clock::now();
         cudaEventRecord(start, stream);
-        for (int iteration = 0; iteration < reps; ++iteration) output = mfq::cuda::run_ffn(execution, ffn, x);
+        for (int iteration = 0; iteration < reps; ++iteration) output = execution.ffn().run(ffn, x);
         cudaEventRecord(stop, stream);
         cudaEventSynchronize(stop);
         auto wall_stop = std::chrono::steady_clock::now();
@@ -923,7 +923,7 @@ int run_moe_check(
             options.prefill = false;
             mfq_tensor_backend::Tensor baseline;
             try {
-                baseline = mfq::cuda::run_ffn(execution, ffn, x);
+                baseline = execution.ffn().run(ffn, x);
                 mfq_cuda_synchronize();
             } catch (...) {
                 options.prefill = prefill;
@@ -953,7 +953,7 @@ int run_moe_check(
             execution.force_moe_materialized_swiglu = true;
             mfq_tensor_backend::Tensor baseline;
             try {
-                baseline = mfq::cuda::run_ffn(execution, ffn, x);
+                baseline = execution.ffn().run(ffn, x);
                 mfq_cuda_synchronize();
             } catch (...) {
                 options = saved_options;
@@ -975,7 +975,7 @@ int run_moe_check(
         execution.profiler.reset();
         execution.profiler.enabled = true;
         const int profile_reps = std::min(reps, 10);
-        for (int iteration = 0; iteration < profile_reps; ++iteration) output = mfq::cuda::run_ffn(execution, ffn, x);
+        for (int iteration = 0; iteration < profile_reps; ++iteration) output = execution.ffn().run(ffn, x);
         mfq_cuda_synchronize();
         execution.profiler.report(
             "moe_layer" + std::to_string(layer) + "_m" +

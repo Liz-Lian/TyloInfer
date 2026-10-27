@@ -131,8 +131,8 @@ void LinearAttentionBlock::prepare(const mfq_tensor_backend::Tensor& input, bool
 mfq_tensor_backend::Tensor LinearAttentionBlock::forward_ffn(
     CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
     mfq_tensor_backend::Tensor output) {
-    return linear_ffn(
-        execution, ffn, ffn_norm, *this, std::move(residual), std::move(output));
+    return execution.ffn().linear(
+        ffn, ffn_norm, *this, std::move(residual), std::move(output));
 }
 
 mfq_tensor_backend::Tensor LinearAttentionBlock::forward(

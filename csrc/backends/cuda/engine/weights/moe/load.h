@@ -28,7 +28,3 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
     const CudaExecutionConfig& config = {});
 mfq::cuda::Experts cpu_mixed_moe_metadata(
     const std::shared_ptr<MixedMoeRuntime>& runtime);
-
-mfq::cuda::Experts stage_cpu_mixed_moe(
-    const std::shared_ptr<MixedMoeRuntime>& runtime,
-    bool heterogeneous);

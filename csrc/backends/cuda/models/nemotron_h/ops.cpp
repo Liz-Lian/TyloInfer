@@ -243,7 +243,7 @@ Tensor MoeMixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tensor,
         },
         [&](Tensor xn) {
             return execution.profiler.measure("moe.ffn", [&] {
-                return mfq::cuda::run_ffn(execution, ffn, xn.reshape({B * T, H})).reshape({B, T, H});
+                return execution.ffn().run(ffn, xn.reshape({B * T, H})).reshape({B, T, H});
             });
         },
         [&](Tensor residual, Tensor mixed) {

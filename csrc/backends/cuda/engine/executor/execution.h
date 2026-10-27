@@ -1,6 +1,7 @@
 #pragma once
 #include "formats/format_features.h"
 #include "engine/executor/run.h"
+#include "engine/executor/ffn.h"
 #include "engine/executor/moe_ffn_pipeline.h"
 #include "ops/common/include/gated_residual.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
@@ -165,11 +166,7 @@ struct CudaExecutionConfig {
     bool tensor_parallel_shard_native_float = false;
     bool nvq2_exec = false;
     bool nvq_extended_group_exec = false;
-    bool moe_small_heterogeneous = true;
-    bool moe_delayed_route_readback = true;
-    bool moe_projection_bundle_prefetch = true;
-    bool moe_swiglu_quant_fusion = true;
-    bool moe_reduce_gate_fusion = true;
+    mfq::cuda::FfnExec::Options ffn;
     bool gemma4_fused_norms = true;
     bool dsv4_groupwise_output_a = true;
     bool diagnostic_nint_group = true;
@@ -246,6 +243,7 @@ struct CudaExecutionContext {
     mfq::cuda::RouteStats routes;
 
     mfq::cuda::Projector projector();
+    mfq::cuda::FfnExec ffn();
     void drain();
     void reset();
     void register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

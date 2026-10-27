@@ -106,7 +106,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
         gemma4_moe, layer_scale.defined(), fused_norms, residual,
         [&] {
             return profiler.measure("gemma.ffn_dense", [&] {
-                return mfq::cuda::run_ffn(execution, ffn, dense_input).reshape({B * T, H});
+                return execution.ffn().run(ffn, dense_input).reshape({B * T, H});
             });
         },
         [&] {

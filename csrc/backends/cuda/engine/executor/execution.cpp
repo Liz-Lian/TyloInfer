@@ -506,11 +506,11 @@ CudaExecutionConfig load_cuda_execution_config() {
     result.tasks.projection.moe.min_tokens = environment_int(
         "TYLOINFER_MOE_PREFILL_MMA_MIN_TOKENS", 9, 9,
         std::numeric_limits<int>::max());
-    result.moe_small_heterogeneous = enabled_unless_disabled(
+    result.ffn.small_heterogeneous = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SMALL_HETERO");
-    result.moe_delayed_route_readback = environment_flag(
+    result.ffn.delayed_readback = environment_flag(
         "TYLOINFER_MOE_DELAYED_ROUTE_READBACK", true);
-    result.moe_projection_bundle_prefetch = enabled_unless_disabled(
+    result.ffn.bundle_prefetch = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_PROJECTION_BUNDLE_PREFETCH");
     result.moe_ffn.reuse_input = enabled_unless_disabled(
         "TYLOINFER_DISABLE_SPLIT_MOE_ACTIVATION_REUSE");
@@ -519,9 +519,9 @@ CudaExecutionConfig load_cuda_execution_config() {
     result.moe_ffn.fused_activation = environment_flag(
         "TYLOINFER_MOE_FFN_FUSED_ACTIVATION", true);
     result.moe_ffn.two_stage = environment_flag("TYLOINFER_MOE_TWO_STAGE_FFN", false);
-    result.moe_swiglu_quant_fusion = enabled_unless_disabled(
+    result.ffn.swiglu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SWIGLU_QUANT_FUSION");
-    result.moe_reduce_gate_fusion = enabled_unless_disabled(
+    result.ffn.reduce_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_REDUCE_GATE_FUSION");
     result.tasks.dense.mlp.gelu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_FFN_GEGLU_FUSION");
@@ -689,6 +689,15 @@ mfq::cuda::Projector CudaExecutionContext::projector() {
     return {profiler, kl_mmq, *tq, branches, collectives, config.tasks.projection,
             model_parallel_primary_device(*this), decode_graph_serial_branches,
             decode_graph_tp_projection_major};
+}
+
+mfq::cuda::FfnExec CudaExecutionContext::ffn() {
+    return {projector(), profiler, kl_mmq, *tq, branches, collectives, routes,
+            config.tasks, config.ffn,
+            {force_moe_materialized_swiglu, force_moe_unfused_reduce,
+             decode_graph_serial_branches, continuous_batch_cache_serial,
+             continuous_batch_ffn_tile, continuous_batch_ffn_tiles,
+             config.moe_ffn.reuse_input}};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {

@@ -86,3 +86,7 @@ bool prefetch_cached_moe_projection_bundle(
     const Experts& gate_up, const Experts& down, const MoeRoutePlan& route);
 
 } // namespace mfq::cuda
+
+mfq::cuda::Experts stage_cpu_mixed_moe(
+    const std::shared_ptr<MixedMoeRuntime>& runtime,
+    bool heterogeneous);
