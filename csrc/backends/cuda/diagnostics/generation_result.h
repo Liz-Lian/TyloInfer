@@ -31,7 +31,7 @@ std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
     mfq::engine::InferenceOutput output(request, nullptr, "mtp-check");
     state.reset(1);
     mtp.reset(1);
-    auto generation = run_mtp_generation(model, state, metadata, mtp, request, output);
+    auto generation = run_mtp_generation(model, state, *model.execution, metadata, mtp, request, output);
     std::vector<int64_t> tokens;
     std::size_t largest_delta = 0;
     while (auto step = generation.next()) {

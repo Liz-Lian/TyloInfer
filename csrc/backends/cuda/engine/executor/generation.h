@@ -16,7 +16,8 @@ class TextSessionCache;
 
 template <typename Model, typename State>
 mfq::engine::Generation generate(
-    Model& model, State& state, const mfq::models::CausalLmMetadata& metadata,
+    Model& model, State& state, CudaExecutionContext& execution,
+    const mfq::models::CausalLmMetadata& metadata,
     DecodeGraphCache& graph, TextSessionCache& cache,
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, MtpModule* mtp = nullptr,
@@ -27,7 +28,8 @@ mfq::engine::Generation generate(
 
 template <typename Model, typename State>
 mfq::engine::Generation run_mtp_generation(
-    Model& model, State& state, const mfq::models::CausalLmMetadata& metadata,
+    Model& model, State& state, CudaExecutionContext& execution,
+    const mfq::models::CausalLmMetadata& metadata,
     MtpModule& mtp, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
     const CudaPreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,

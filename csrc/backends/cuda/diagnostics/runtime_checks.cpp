@@ -86,7 +86,7 @@ int run_qwen35_mtp_bench(
             mfq::engine::InferenceRequest request;
             request.prompt = prompt; request.sampling = params;
             mfq::engine::InferenceOutput parsed(request, nullptr, "bench");
-            auto result = collect_generation(generate(model, model.state, model.weights->metadata,
+            auto result = collect_generation(generate(model, model.state, *model.execution, model.weights->metadata,
                 graph_cache, session_cache, runtime_config, request, parsed, &mtp));
             output = std::move(result.tokens); prefill = result.prefill; first_token = result.first_token;
             const int produced = static_cast<int>(output.size());
@@ -144,7 +144,7 @@ int run_qwen_continuous_batching_check(Model& model,
     auto serial = [&](const std::vector<int64_t>& prompt, MfqPromptCachePlan plan = {}) {
         InferenceRequest request; request.prompt = prompt; request.sampling = sampling; request.cache_plan = std::move(plan);
         InferenceOutput output(request, nullptr, "serial");
-        return collect_generation(generate(model, state, metadata, graph, cache, config, request, output)).tokens;
+        return collect_generation(generate(model, state, *model.execution, metadata, graph, cache, config, request, output)).tokens;
     };
     const auto first_reference = serial(first_prompt), second_reference = serial(second_prompt);
     std::vector<int64_t> growth_prompt(253);
@@ -172,7 +172,7 @@ int run_qwen_continuous_batching_check(Model& model,
             bool mtp_available() const { return false; }
             void execute(const std::vector<RequestId>& eligible) { batcher.step(eligible); }
             Generation generate(const RequestId& id, ExecutionRequest& request) {
-                return internal::generate(model, state, metadata, graph, cache, config, request.input,
+                return internal::generate(model, state, *model.execution, metadata, graph, cache, config, request.input,
                                           request.output, nullptr, {}, &batcher, id);
             }
         } execution(model, metadata, graph, cache, config, state);

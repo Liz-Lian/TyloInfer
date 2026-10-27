@@ -390,7 +390,7 @@ static int run_prefill_sweep(
                 request.sampling.top_k=1;request.sampling.top_p=1.;request.sampling.enable_mtp=false;
                 mfq::engine::InferenceOutput output(request,nullptr,"layer-major-check");
                 const auto engine_started=std::chrono::steady_clock::now();
-                auto result=collect_generation(generate(model,state,metadata,graph,cache,config,request,output));
+                auto result=collect_generation(generate(model,state,execution,metadata,graph,cache,config,request,output));
                 mfq_cuda_synchronize();
                 const auto engine_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-engine_started).count();
                 std::cout<<"prefill_ordinary_generation_timing prompt="<<sizes.front()<<" chunk="<<engine_chunk
@@ -1286,7 +1286,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
             request.sampling.top_k=1;request.sampling.top_p=1.;request.sampling.enable_mtp=enable_mtp;
             request.sampling.mtp_max_draft_tokens=5;
             mfq::engine::InferenceOutput output(request,nullptr,"mtp-operator-variants");
-            auto result=collect_generation(generate(model,model,model.metadata,graph,cache,config,request,output,enable_mtp?&mtp:nullptr));
+            auto result=collect_generation(generate(model,model,*model.execution,model.metadata,graph,cache,config,request,output,enable_mtp?&mtp:nullptr));
             mfq_cuda_synchronize();
             const auto decode_ms=std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-result.first_token).count();
@@ -1803,7 +1803,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
         request.prompt=prompt;request.sampling=greedy;request.sampling.enable_mtp=enable_mtp;
         mfq::engine::InferenceOutput output(request,nullptr,"nemotron-h-mtp");
         model.reset(1);mtp.reset(1);
-        return collect_generation(generate(model,model,model.metadata,graph,cache,config,request,output,predictor)).tokens;
+        return collect_generation(generate(model,model,*model.execution,model.metadata,graph,cache,config,request,output,predictor)).tokens;
     };
     const auto plain=ordinary(nullptr,false);
     result["greedy_plain"]=plain;
