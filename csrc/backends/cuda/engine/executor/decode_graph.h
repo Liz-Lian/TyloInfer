@@ -1,14 +1,15 @@
 #pragma once
 
 #include "backend.h"
-#include "cuda_model_plan.h"
 #include "engine/requests/sampling.h"
-#include "models/common/block.h"
-#include "backends/cuda/engine/executor/execution.h"
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
+
+struct ParallelConfig;
+namespace mfq::cuda { class Collectives; }
 
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
     const MfqCudaStream& primary_stream,
@@ -55,19 +56,14 @@ struct DecodeGraphCache {
     void invalidate();
     void set_key(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy);
-
-    template <typename Model, typename Sample, typename Commit>
-    bool ensure_captured(
-        Model& model,
-        int64_t candidate_len,
-        const MfqSamplingParams& sampling,
-        bool candidate_greedy,
-        Sample&& sample,
-        Commit&& commit);
 };
 
-template <typename Model, typename Warmup>
-void prepare_decode_graph_memory(Model& model, MfqCudaGraph& graph,
+template <typename Warmup>
+void prepare_decode_graph_memory(
+        std::span<mfq_tensor_backend::Tensor* const> states,
+        const int64_t& position,
+        bool double_warmup,
+        MfqCudaGraph& graph,
         Warmup&& warmup,
         const std::vector<MfqCudaStream>& participant_streams = {}) {
     using Tensor = mfq_tensor_backend::Tensor;
@@ -79,19 +75,19 @@ void prepare_decode_graph_memory(Model& model, MfqCudaGraph& graph,
     // Snapshot before entering the private graph allocator. These copies are
     // temporary and must not become retained allocations in the captured pool.
     std::vector<SavedRecurrentState> saved;
-    for (const auto& block : model.blocks) {
-        for (auto* state : block->graph_warmup_state()) {
-            saved.push_back({state, state->clone(), state->data_ptr()});
-        }
+    saved.reserve(states.size());
+    for (auto* state : states) {
+        saved.push_back({state, state->clone(), state->data_ptr()});
     }
-    const int64_t saved_position = model.cache_pos;
+    const int64_t saved_position = position;
     auto restore = [&]() {
         for (const auto& state : saved) {
             TYLOINFER_RUNTIME_CHECK(state.target->data_ptr() == state.address,
                 "decode warmup changed recurrent storage addresses");
             state.target->copy_(state.value);
         }
-        TYLOINFER_RUNTIME_CHECK(model.cache_pos == saved_position, "static decode warmup changed cache position");
+        TYLOINFER_RUNTIME_CHECK(position == saved_position,
+            "static decode warmup changed cache position");
         if (participant_streams.empty()) {
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(
                 mfq_get_current_cuda_stream().stream()));
@@ -104,7 +100,7 @@ void prepare_decode_graph_memory(Model& model, MfqCudaGraph& graph,
         }
     };
     mfq_prepare_cuda_graph_memory(graph, participant_streams);
-    if (!saved.empty() || model.metadata.decode_graph_double_warmup) {
+    if (!saved.empty() || double_warmup) {
         // The first pass may initialize persistent CUDA/NCCL workspace state.
         // A second pass then records the complete set of reusable temporaries
         // needed by capture after those persistent allocations exist.
@@ -119,40 +115,6 @@ void prepare_decode_graph_memory(Model& model, MfqCudaGraph& graph,
             }
         }
     }
-}
-
-template <typename Model, typename Sample, typename Commit>
-bool DecodeGraphCache::ensure_captured(
-        Model& model,
-        int64_t candidate_len,
-        const MfqSamplingParams& sampling,
-        bool candidate_greedy,
-        Sample&& sample,
-        Commit&& commit) {
-    if (matches(candidate_len, sampling, candidate_greedy)) {
-        ++reuses;
-        return true;
-    }
-
-    invalidate();
-    DecodeGraphBranchScope branch_scope(
-        model.execution->decode_graph_serial_branches);
-    graph = std::make_unique<MfqCudaGraph>();
-    try {
-        prepare_decode_graph_memory(
-            model, *graph, sample, graph_participant_streams(
-                model.execution->collectives));
-        graph->capture_begin();
-        static_next = sample();
-        commit(static_next);
-        graph->capture_end();
-        set_key(candidate_len, sampling, candidate_greedy);
-        ++captures;
-    } catch (...) {
-        invalidate();
-        throw;
-    }
-    return false;
 }
 
 int64_t decode_graph_bucket(int64_t planned_len, int64_t context_capacity);

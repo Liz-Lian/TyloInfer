@@ -13,6 +13,7 @@
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/common/full_block.h"
+#include "models/common/block.h"
 #include "engine/executor/sampler.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
@@ -286,19 +287,47 @@ template <typename Model> struct CudaGenerationOps {
             return sampler.ops().sample_stochastic(
                 std::move(logits), graph.random, sampler.params());
         };
-        const bool hit = graph.ensure_captured(model, planned, sampler.params(), greedy, [&]() {
-            return sample_static();
-        }, [&](const mfq_tensor_backend::Tensor &next) {
-            if (has_penalties) {
-                sample_token_counts_add_cuda(counts, next.contiguous());
+        const bool hit = graph.matches(planned, sampler.params(), greedy);
+        if (hit) {
+            ++graph.reuses;
+        } else {
+            graph.invalidate();
+            DecodeGraphBranchScope branch_scope(execution.decode_graph_serial_branches);
+            graph.graph = std::make_unique<MfqCudaGraph>();
+            try {
+                using Tensor = mfq_tensor_backend::Tensor;
+                std::vector<Tensor*> warmup_states;
+                for (const auto& block : model.blocks) {
+                    for (auto* state : block->graph_warmup_state()) {
+                        warmup_states.push_back(state);
+                    }
+                }
+                prepare_decode_graph_memory(
+                    warmup_states,
+                    model.cache_pos,
+                    model.metadata.decode_graph_double_warmup,
+                    *graph.graph,
+                    sample_static,
+                    graph.graph_participant_streams(execution.collectives));
+                graph.graph->capture_begin();
+                graph.static_next = sample_static();
+                if (has_penalties) {
+                    sample_token_counts_add_cuda(counts, graph.static_next.contiguous());
+                }
+                decode_graph_commit_cuda(graph.static_next,
+                    graph.generated,
+                    graph.static_step,
+                    graph.static_input,
+                    graph.static_pos,
+                    graph.static_len);
+                graph.graph->capture_end();
+                graph.set_key(planned, sampler.params(), greedy);
+                ++graph.captures;
+            } catch (...) {
+                graph.invalidate();
+                throw;
             }
-            decode_graph_commit_cuda(next,
-                graph.generated,
-                graph.static_step,
-                graph.static_input,
-                graph.static_pos,
-                graph.static_len);
-        });
+        }
         if (!hit)
             report_cuda_memory(execution.config, "runtime_graph_capture");
         if (graph_config.trace) {

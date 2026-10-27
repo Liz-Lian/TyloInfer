@@ -3,6 +3,7 @@
 
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
+#include "models/common/block.h"
 #include "models/common/full_block.h"
 #include "models/qwen35/ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -399,8 +400,15 @@ QwenBatchOperations::Decoded QwenBatchOperations::decode(State &state) {
                     DecodeGraphTpProjectionScope tp_projection_scope(
                         execution_.decode_graph_tp_projection_major);
                     decode_graph->graph = std::make_unique<MfqCudaGraph>();
+                    std::vector<Tensor *> graph_warmup_states;
+                    for (const auto &block : model_.blocks)
+                        for (auto *state : block->graph_warmup_state())
+                            graph_warmup_states.push_back(state);
                     prepare_decode_graph_memory(
-                        model_, *decode_graph->graph, [&]() { (void)invoke(); },
+                        graph_warmup_states,
+                        model_.cache_pos,
+                        model_.metadata.decode_graph_double_warmup,
+                        *decode_graph->graph, [&]() { (void)invoke(); },
                         decode_graph->participant_streams(
                             execution_.collectives));
                     decode_graph->graph->capture_begin();

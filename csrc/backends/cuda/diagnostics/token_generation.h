@@ -6,6 +6,7 @@
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
+#include "models/common/block.h"
 #include "models/common/full_block.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/qwen4_exp/ops.h"
@@ -161,13 +162,20 @@ int generate_diagnostic_tokens(
             {
                 DecodeGraphBranchScope branch_scope(
                     execution.decode_graph_serial_branches);
-                prepare_decode_graph_memory(model, graph, [&]() {
-                    (void)model.next_token_static(
-                        static_input, static_pos, static_len,
-                        {planned_len, attention_parts});
-                }, cuda_graph_participant_streams(
-                    graph_compute_streams,
-                    execution.collectives));
+                std::vector<mfq_tensor_backend::Tensor *> graph_warmup_states;
+                for (const auto &block : model.blocks)
+                    for (auto *state : block->graph_warmup_state())
+                        graph_warmup_states.push_back(state);
+                prepare_decode_graph_memory(
+                    graph_warmup_states,
+                    model.cache_pos,
+                    model.metadata.decode_graph_double_warmup, graph, [&]() {
+                        (void)model.next_token_static(
+                            static_input, static_pos, static_len,
+                            {planned_len, attention_parts});
+                    }, cuda_graph_participant_streams(
+                        graph_compute_streams,
+                        execution.collectives));
                 profiler.reset();
                 profiler.graph_events = profile_cuda_graph;
                 graph.capture_begin();
