@@ -3,7 +3,7 @@
 #include "models/common/block.h"
 #include "engine/models/ffn.h"
 #include "ops/attention/full.h"
-#include "backends/cuda/engine/state/kv_cache.h"
+#include "engine/state/kv_cache.h"
 
 #include <cstdint>
 

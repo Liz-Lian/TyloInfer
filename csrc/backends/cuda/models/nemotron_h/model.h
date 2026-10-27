@@ -4,7 +4,7 @@
 #include "engine/models/ffn.h"
 #include "models/common/full_block.h"
 #include "quant_linear.h"
-#include "backends/cuda/engine/state/recurrent.h"
+#include "engine/state/recurrent.h"
 
 #include <array>
 #include <cstdint>

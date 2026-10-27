@@ -1,7 +1,7 @@
 #pragma once
 
-#include "backends/cuda/engine/state/kv_cache.h"
-#include "backends/cuda/engine/state/recurrent.h"
+#include "engine/state/kv_cache.h"
+#include "engine/state/recurrent.h"
 #include "ops/attention/linear.h"
 
 #include <cstdint>
