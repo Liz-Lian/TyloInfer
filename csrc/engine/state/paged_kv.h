@@ -4,12 +4,16 @@
 #include "engine/state/kv_cache.h"
 
 #include <atomic>
+#include <cstdint>
 #include <map>
+#include <memory>
 #include <vector>
 
 namespace mfq::cuda {
 
 class PagedKv {
+    struct Identity {};
+
 public:
     struct Layout {
         int device = 0;
@@ -18,7 +22,11 @@ public:
         KvQuantization quantization;
     };
     struct Sequence {
-        std::vector<std::int32_t> physical_pages;
+    private:
+        friend class PagedKv;
+        std::vector<std::int32_t> physical_pages_;
+        std::vector<std::uint64_t> page_generations_;
+        std::shared_ptr<const Identity> owner_;
     };
     struct Stats {
         int64_t page_size = 0;
@@ -60,6 +68,7 @@ private:
     };
 
     static size_t checked_maximum_pages(int32_t sequences, int64_t pages_per_sequence);
+    bool validate(const Sequence& sequence) const noexcept;
     void publish_allocator_metrics() noexcept;
     void ensure_storage(size_t required_pages);
 
@@ -67,6 +76,9 @@ private:
     int64_t logical_pages_per_sequence_ = 0;
     size_t maximum_physical_pages_ = 0;
     mfq::engine::PagedKvPageAllocator allocator_;
+    std::shared_ptr<const Identity> identity_ = std::make_shared<Identity>();
+    std::vector<std::uint64_t> page_generations_;
+    std::uint64_t generation_ = 1;
     std::vector<std::int32_t> host_page_table_;
     std::map<int, mfq_tensor_backend::Tensor> device_page_tables_;
     std::vector<Pool> layers_;

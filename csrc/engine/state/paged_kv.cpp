@@ -68,30 +68,53 @@ bool PagedKv::ensure_tokens(Sequence& sequence, int64_t token_count) {
     TYLOINFER_RUNTIME_CHECK(token_count >= 0 &&
         token_count <= logical_pages_per_sequence_ * kPageSize,
         "Paged KV sequence length exceeds the configured context");
+    TYLOINFER_RUNTIME_CHECK(validate(sequence),
+        "Paged KV sequence handle is invalid");
     const size_t required_pages = static_cast<size_t>(
         (token_count + kPageSize - 1) / kPageSize);
-    if (required_pages <= sequence.physical_pages.size()) return false;
-    const size_t previous_size = sequence.physical_pages.size();
-    sequence.physical_pages.reserve(required_pages);
-    auto pages = allocator_.allocate(required_pages - previous_size);
-    sequence.physical_pages.insert(
-        sequence.physical_pages.end(), pages.begin(), pages.end());
+    if (required_pages <= sequence.physical_pages_.size()) return false;
+    const size_t previous_size = sequence.physical_pages_.size();
+    const size_t additional_pages = required_pages - previous_size;
+    TYLOINFER_RUNTIME_CHECK(generation_ !=
+        std::numeric_limits<std::uint64_t>::max(),
+        "Paged KV allocation generation exhausted");
+    const size_t live_pages = allocator_.live_pages();
+    TYLOINFER_RUNTIME_CHECK(additional_pages <= maximum_physical_pages_ - live_pages,
+        "Paged KV physical storage exhausted");
+    const size_t required_highwatermark = std::max(
+        allocator_.high_watermark(), live_pages + additional_pages);
+    sequence.physical_pages_.reserve(required_pages);
+    sequence.page_generations_.reserve(required_pages);
+    page_generations_.resize(required_highwatermark);
+
+    auto pages = allocator_.allocate(additional_pages);
     try {
         ensure_storage(allocator_.high_watermark());
     } catch (...) {
-        sequence.physical_pages.resize(previous_size);
         allocator_.release(pages);
         publish_allocator_metrics();
         throw;
     }
+    const auto generation = generation_++;
+    for (const auto page : pages)
+        page_generations_[static_cast<size_t>(page)] = generation;
+    sequence.physical_pages_.insert(
+        sequence.physical_pages_.end(), pages.begin(), pages.end());
+    sequence.page_generations_.insert(
+        sequence.page_generations_.end(), additional_pages, generation);
+    sequence.owner_ = identity_;
     publish_allocator_metrics();
     return true;
 }
 
 void PagedKv::release(Sequence& sequence) {
-    if (sequence.physical_pages.empty()) return;
-    allocator_.release(sequence.physical_pages);
-    sequence.physical_pages.clear();
+    TYLOINFER_RUNTIME_CHECK(validate(sequence),
+        "Paged KV sequence handle is invalid");
+    if (sequence.physical_pages_.empty()) return;
+    allocator_.release(sequence.physical_pages_);
+    sequence.physical_pages_.clear();
+    sequence.page_generations_.clear();
+    sequence.owner_.reset();
     publish_allocator_metrics();
 }
 
@@ -102,21 +125,22 @@ void PagedKv::update(const std::vector<const Sequence*>& sequences) {
     const size_t rows = sequences.size();
     const size_t row_width =
         static_cast<size_t>(logical_pages_per_sequence_);
+    for (const auto * sequence : sequences) {
+        TYLOINFER_RUNTIME_CHECK(sequence != nullptr &&
+            sequence->physical_pages_.size() <= row_width &&
+            validate(*sequence),
+            "Paged KV received an invalid sequence handle");
+    }
     std::fill(
         host_page_table_.begin(),
         host_page_table_.begin() + rows * row_width, -1);
     for (size_t row = 0; row < rows; ++row) {
         const auto * sequence = sequences[row];
-        TYLOINFER_RUNTIME_CHECK(sequence != nullptr &&
-            sequence->physical_pages.size() <= row_width,
-            "Paged KV received an invalid sequence page list");
         for (size_t logical_page = 0;
-                logical_page < sequence->physical_pages.size();
+                logical_page < sequence->physical_pages_.size();
                 ++logical_page) {
             const auto physical =
-                sequence->physical_pages[logical_page];
-            TYLOINFER_RUNTIME_CHECK(allocator_.owns(physical),
-                "Paged KV page table references an unowned page");
+                sequence->physical_pages_[logical_page];
             host_page_table_[row * row_width + logical_page] = physical;
         }
     }
@@ -168,6 +192,23 @@ size_t PagedKv::checked_maximum_pages(int32_t maximum_sequences, int64_t pages_p
     }
     return static_cast<size_t>(maximum_sequences) *
         static_cast<size_t>(pages_per_sequence);
+}
+
+bool PagedKv::validate(const Sequence& sequence) const noexcept {
+    if (sequence.physical_pages_.empty())
+        return sequence.page_generations_.empty() && !sequence.owner_;
+    if (sequence.owner_.get() != identity_.get() ||
+            sequence.page_generations_.size() != sequence.physical_pages_.size())
+        return false;
+    for (size_t index = 0; index < sequence.physical_pages_.size(); ++index) {
+        const auto page = sequence.physical_pages_[index];
+        if (page < 0 || static_cast<size_t>(page) >= page_generations_.size() ||
+                !allocator_.owns(page) ||
+                page_generations_[static_cast<size_t>(page)] !=
+                    sequence.page_generations_[index])
+            return false;
+    }
+    return true;
 }
 
 void PagedKv::publish_allocator_metrics() noexcept {
