@@ -10,6 +10,8 @@
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
+#include "models/qwen35/forward.h"
+#include "models/qwen35/state.h"
 #include "resident_allocations.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/batch/batch.h"
@@ -23,6 +25,7 @@
 #include <cuda_runtime_api.h>
 #include "mfq_cuda_kv_quantization.h"
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <variant>
 #include <set>
@@ -38,11 +41,14 @@ struct CudaEngineState {
     CudaExecutionContext* execution;
     CudaRuntimeConfig config;
     std::shared_ptr<const mfq::ModelSource> source;
-    Model model;
+    std::shared_ptr<Model> model;
     RuntimeComponents<Model> components;
+    std::unique_ptr<State> owned_state;
+    std::unique_ptr<Executor> executor;
     Model& language;
     State& state;
     const mfq::models::CausalLmMetadata& metadata;
+    std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     TextSessionCache cache;
     std::unique_ptr<ContinuousBatch<CudaBatchOperations<Model>>> batching;
@@ -250,26 +256,24 @@ struct CudaEngineState {
     CudaEngineState(CudaExecutionContext& borrowed, Model loaded,
             RuntimeComponents<Model> optional, CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
-            std::shared_ptr<WeightMemoryLedger> weights)
+            std::shared_ptr<WeightMemoryLedger> weights,
+            std::unique_ptr<State> loaded_state,
+            std::unique_ptr<Executor> loaded_executor)
         : weight_memory(std::move(weights)), execution(&borrowed), config(std::move(runtime_config)),
           source(std::move(model_source)),
-          model(std::move(loaded)), components(std::move(optional)),
-          language(components.language(model)),
+          model(std::make_shared<Model>(std::move(loaded))), components(std::move(optional)),
+          owned_state(std::move(loaded_state)), executor(std::move(loaded_executor)),
+          language(components.language(*model)),
           state([this]() -> State& {
-              if constexpr (std::is_same_v<Model, qwen35::Run>)
-                  return language.state;
-              else
+              if constexpr (std::is_same_v<Model, State>)
                   return language;
-          }()),
-          metadata([this]() -> const mfq::models::CausalLmMetadata& {
-              if constexpr (std::is_same_v<Model, qwen35::Run>)
-                  return language.weights->metadata;
               else
-                  return language.metadata;
+                  return *owned_state;
           }()),
-          graph(language.max_position_embeddings()),
+          metadata(language.metadata),
+          graph(language.metadata.max_position_embeddings),
           cache(config.session_cache, config.prefix_cache,
-              make_cuda_paged_prefix_cache(*source, language.max_position_embeddings(),
+              make_cuda_paged_prefix_cache(*source, language.metadata.max_position_embeddings,
                   state.supports_paged_text_session_state(), config.prefix_cache),
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
@@ -281,14 +285,14 @@ struct CudaEngineState {
             });
         allocation_ceiling=mfq::cuda::default_context(execution->layer_placement.primary_device())->memory_stats().limit;
         if (config.continuous_batch.max_sequences) {
-            if constexpr (std::is_same_v<Model, qwen35::Run>) {
+            if constexpr (std::is_same_v<Model, qwen35::Model>) {
                 if (runtime_options::kv_vram_preallocated()) {
                     for (auto& layer_state : state.layers)
                         if (auto* cache = std::get_if<KVCache>(&layer_state)) *cache = KVCache();
                 }
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
                     config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,
-                    model.weights, *execution, config.continuous_batch);
+                    model, *execution, config.continuous_batch);
             } else if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
                     config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,
@@ -302,7 +306,11 @@ struct CudaEngineState {
                 graph_expert_loan=std::make_shared<KvExpertLoan>();
                 set_moe_kv_expert_loan(execution->stores.moe_expert_cache,graph_expert_loan);
             }
-            language.restore_decode_workspace=[this]{restore_graph_expert_space();};
+            restore_decode_workspace=[this]{restore_graph_expert_space();};
+            if constexpr (requires(Model& value) {
+                              value.restore_decode_workspace = std::function<void()>();
+                          })
+                language.restore_decode_workspace = restore_decode_workspace;
             set_moe_workspace_reservation(execution->stores.moe_expert_cache,
                 [this](std::size_t bytes) {reclaim_prefix_workspace(bytes);},
                 [this](std::size_t bytes) {
@@ -368,7 +376,8 @@ struct CudaEngineState {
                 for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.vocab_size());
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
-                auto generation=run_mtp_generation(language,state,*execution,metadata,predictor,request,output,16);
+                auto generation=run_mtp_generation(language,state,executor.get(),*execution,metadata,predictor,request,output,16,
+                                                   nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(execution->stores.moe_expert_cache);
                 predictor.reset(1);
@@ -401,7 +410,11 @@ struct CudaEngineState {
         return batching && batch_compatible(request, cache.persistent_prefix_enabled(), bool(components.mtp));
     }
     void clear_bindings() noexcept {
-        language.restore_decode_workspace={};
+        restore_decode_workspace={};
+        if constexpr (requires(Model& value) {
+                          value.restore_decode_workspace = std::function<void()>();
+                      })
+            language.restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) language.reserve_kv_workspace={};
         if(execution->stores.kv_memory)execution->stores.kv_memory->set_reservation({});
         set_moe_workspace_reservation(execution->stores.moe_expert_cache,{});
@@ -479,10 +492,13 @@ struct CudaEngineState {
     using Prepared = CudaPreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
         if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
-        if (components.grid_vision) return components.grid_vision->prepare(language, input.prompt, *input.vision);
+        if (components.grid_vision)
+            return components.grid_vision->prepare(language, *execution, executor.get(),
+                                                   input.prompt, *input.vision);
         if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
             if(components.deepseek_vision)return components.deepseek_vision->prepare(language,input.prompt,*input.vision);
-        if (components.radio_vision) return components.radio_vision->prepare(language, input.prompt, *input.vision);
+        if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
+            if (components.radio_vision) return components.radio_vision->prepare(language, input.prompt, *input.vision);
         throw std::invalid_argument("model has no multimodal component");
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
@@ -494,9 +510,9 @@ struct CudaEngineState {
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, std::optional<Prepared> prepared,
                              const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
-        return internal::generate(language, state, *execution, metadata, graph, cache, config,
+        return internal::generate(language, state, executor.get(), *execution, metadata, graph, cache, config,
                                   input, output, batched ? nullptr : components.mtp.get(), std::move(prepared),
-                                  batched ? batching.get() : nullptr, id);
+                                  batched ? batching.get() : nullptr, id, restore_decode_workspace);
     }
     Generation generate(const RequestId& id, ExecutionRequest& request) {
         if (request.batched) {
@@ -523,8 +539,8 @@ struct CudaEngineState {
                 {"prefill_workspace_expert_used_bytes",double(workspace_expert_used())},
                 {"prefill_workspace_expert_reclaimed_used_bytes",double(workspace_expert_reclaimed_used_bytes)},
                 {"kv_memory_supported",std::is_same_v<Model,Qwen4CausalLm>?1.0:0.0},
-                {"kv_quantization_supported",(std::is_same_v<Model,Qwen4CausalLm>||std::is_same_v<Model,qwen35::Run>)?1.0:0.0},
-                {"kv_quantization_bits",(std::is_same_v<Model,Qwen4CausalLm>||std::is_same_v<Model,qwen35::Run>)?cuda_kv_quantization().bits:0.0},
+                {"kv_quantization_supported",(std::is_same_v<Model,Qwen4CausalLm>||std::is_same_v<Model,qwen35::Model>)?1.0:0.0},
+                {"kv_quantization_bits",(std::is_same_v<Model,Qwen4CausalLm>||std::is_same_v<Model,qwen35::Model>)?cuda_kv_quantization().bits:0.0},
                 {"vision_declared", double(capabilities.vision_declared)}, {"vision_supported", double(capabilities.vision_supported)},
                 {"vision_available", double(capabilities.vision_available)}, {"mtp_declared", double(capabilities.mtp_declared)},
                 {"mtp_supported", double(capabilities.mtp_supported)}, {"mtp_available", double(capabilities.mtp_available)}};
@@ -637,7 +653,7 @@ struct CudaEngineState {
 
 };
 using State = std::variant<
-    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State>>,
+    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>>,
     std::unique_ptr<CudaEngineState<MiniCPMO45CausalLm>>,
     std::unique_ptr<CudaEngineState<MiniCPMOTtsCausalLm>>,
     std::unique_ptr<CudaEngineState<Gemma4CausalLm>>,
@@ -694,30 +710,36 @@ struct CudaBackend {
             execution->stores.qsa_kv_store = std::make_shared<KvOffloadStore>(std::move(kv));
         }
         state = with_loaded_cuda_model(*execution, options, true,
-            [&](auto& model, auto& components, auto, auto) -> State {
+            [&](auto& model, auto& model_state, auto& executor, auto& components,
+                auto, auto) -> State {
                 using Model = std::decay_t<decltype(model)>;
                 if constexpr (!std::is_same_v<Model, Qwen4CausalLm>)
                     if (execution->stores.qsa_kv_store) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 std::shared_ptr<const mfq::ModelSource> source;
-                if constexpr (std::is_same_v<Model, qwen35::Run>)
-                    source = model.weights->source;
-                else
-                    source = model.source;
-                if constexpr (std::is_same_v<Model, qwen35::Run>)
+                source = model.source;
+                if constexpr (std::is_same_v<Model, qwen35::Model>)
                     return std::make_unique<CudaEngineState<Model, qwen35::State>>(
                         *execution, std::move(model), std::move(components), config,
-                        std::move(source), weight_memory);
+                        std::move(source), weight_memory,
+                        std::make_unique<qwen35::State>(std::move(model_state)),
+                        std::move(executor));
                 else
                     return std::make_unique<CudaEngineState<Model>>(
                         *execution, std::move(model), std::move(components), config,
-                        std::move(source), weight_memory);
+                        std::move(source), weight_memory, nullptr, std::move(executor));
             });
         return visit([&](auto& state) {
             EngineInfo info;
             info.max_requests = std::max<std::size_t>(1, config.continuous_batch.max_sequences);
-            info.max_context = state.language.max_position_embeddings();
-            info.vocab_size = static_cast<int32_t>(state.language.vocab_size());
-            info.model_type = state.language.model_type();
+            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(state.language)>, qwen35::Model>) {
+                info.max_context = state.language.metadata.max_position_embeddings;
+                info.vocab_size = static_cast<int32_t>(state.language.metadata.vocab_size);
+                info.model_type = state.language.metadata.model_type;
+            } else {
+                info.max_context = state.language.max_position_embeddings();
+                info.vocab_size = static_cast<int32_t>(state.language.vocab_size());
+                info.model_type = state.language.model_type();
+            }
             info.multimodal = state.components.grid_vision.has_value() ||
                 state.components.deepseek_vision.has_value() ||
                 state.components.radio_vision.has_value() || bool(state.components.composite);
@@ -746,7 +768,7 @@ struct CudaBackend {
             try { execution->drain(); } catch (...) { failure = std::current_exception(); }
             {
                 CudaScope scope(*execution);
-                state = std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State>>{};
+                state = std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>>{};
             }
         }
         stores.reset();

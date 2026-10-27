@@ -595,19 +595,19 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
                 check_nemotron_h_vision ||
                 !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),
-            [&](auto& model, auto& runtime_components,
-                    auto t0, auto t1) -> int {
+            [&](auto& model, auto& state, auto& executor,
+                    auto& runtime_components, auto t0, auto t1) -> int {
         using Model = std::remove_cvref_t<decltype(model)>;
-        auto& state = [&]() -> auto& {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
-                return model.state;
-            else
-                return model;
-        }();
         if (check_continuous_batching) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run> ||
+            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model> ||
                           std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-                return run_cuda_continuous_batching_check(model,check_continuous_batching_requests);
+                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+                    return run_cuda_continuous_batching_check(
+                        model, state, executor.get(), execution,
+                        check_continuous_batching_requests);
+                else
+                    return run_cuda_continuous_batching_check(
+                        model,check_continuous_batching_requests);
             }
             throw std::runtime_error(
                 "continuous batching requires Qwen3.5 or Flash-Next");
@@ -679,23 +679,25 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 "Flash-Next MTP diagnostic requires a Flash-Next causal LM");
         }
         if (check_qwen35_mtp) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
+            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
                 auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
                     runtime_components.mtp.get());
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--check-qwen35-mtp requires a supported model containing MTP weights");
-                return run_qwen35_mtp_check(model, *predictor);
+                return run_qwen35_mtp_check(
+                    model, state, executor.get(), execution, *predictor);
             }
             throw std::runtime_error(
                 "--check-qwen35-mtp requires Qwen3.5");
         }
         if (!bench_qwen35_mtp.empty()) {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>) {
+            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
                 auto* predictor = dynamic_cast<mfq::cuda::qwen35::Mtp*>(
                     runtime_components.mtp.get());
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,
                     "--bench-qwen35-mtp requires a supported model containing MTP weights");
-                return run_qwen35_mtp_bench(model, *predictor,
+                return run_qwen35_mtp_bench(
+                    model, state, executor.get(), execution, *predictor,
                     bench_qwen35_mtp == "mtp", gen,
                     bench_qwen35_mtp_reps);
             }
@@ -705,11 +707,11 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (!prefill_sweep_sizes.empty()) {
             execution.profiler.enabled=profile;
             const int status = [&] {
-                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
-                    return run_prefill_sweep(model, state, model.weights->metadata,
+                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+                    return run_prefill_sweep(model, state, executor.get(), model.metadata,
                         prefill_sweep_sizes, prefill_sweep_reps, execution);
                 else
-                    return run_prefill_sweep(model, state, model.metadata,
+                    return run_prefill_sweep(model, state, executor.get(), model.metadata,
                         prefill_sweep_sizes, prefill_sweep_reps, execution);
             }();
             if (execution.stores.moe_expert_cache) {
@@ -731,20 +733,22 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             g_dsv4_compare_hc_ops = true;
             g_dsv4_fused_hc = false;
             state.reset(1);
-            (void)model.forward(ids);
+            (void)diagnostic_forward(model, state, executor.get(), execution, ids);
             mfq_cuda_synchronize();
             return 0;
         }
         if (compare_dsv4_hc_model) {
-            return run_dsv4_hc_model_compare(model, state, ids);
+            return run_dsv4_hc_model_compare(
+                model, state, executor.get(), execution, ids);
         }
         if (!block_trace_reference.empty()) {
             return run_block_trace_compare(
-                model, state, block_trace_reference, config_path, context_size, ids);
+                model, state, executor.get(), execution, block_trace_reference,
+                config_path, context_size, ids);
         }
         if (!block_trace_output.empty()) {
             return run_block_trace_dump(
-                model, state, block_trace_output, ids,
+                model, state, executor.get(), execution, block_trace_output, ids,
                 block_trace_start, block_trace_count);
         }
         if(runtime_comparison_modes()) {
@@ -891,7 +895,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 std::cout<<'\n';
                 const auto warm_start=std::chrono::steady_clock::now();
                 for(int round=0;round<rounds;++round) {
-                    state.reset(1);(void)model.next_token(ids);mfq_cuda_synchronize();
+                    diagnostic_reset(model, state, 1);
+                    (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
+                    mfq_cuda_synchronize();
                 }
                 state.reset(1);mfq_cuda_synchronize();execution.profiler.reset();
                 std::cout<<"warmup_prefill_rounds="<<rounds<<"\n"
@@ -899,7 +905,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     <<"warmup_prefill_sec="<<std::chrono::duration<double>(
                         std::chrono::steady_clock::now()-warm_start).count()<<"\n";
                 const auto pass_start=std::chrono::steady_clock::now();
-                const int status=generate_diagnostic_tokens(execution,model,state,ids,gen,false,
+                const int status=generate_diagnostic_tokens(execution,model,state,executor.get(),ids,gen,false,
                     pass_start,pass_start,decode_inputs);
                 if(status)return status;
                 const auto records=finish_moe_pipeline_comparison(execution.stores.moe_expert_cache);
@@ -914,7 +920,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         const auto warmup_start = std::chrono::steady_clock::now();
         for (int round = 0; round < warmup_rounds; ++round) {
             state.reset(1);
-            (void)model.next_token(ids);
+            (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
             mfq_cuda_synchronize();
         }
         if (warmup_rounds) {
@@ -933,13 +939,15 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             auto run = [&](bool split) {
                 execution.config.tasks.attention.kernels.split_k = split;
                 state.reset(1);
-                (void)model.hidden_forward(ids);
+                (void)diagnostic_hidden(model, state, executor.get(), execution, ids);
                 const int64_t decode_len = state.cache_pos + 1;
                 auto seq_len = mfq_tensor_backend::tensor({decode_len}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA));
                 auto decode_id = ids.index({Slice(), -1}).reshape({1, 1});
-                auto hidden = model.hidden_forward(decode_id, mfq_nullopt, seq_len);
-                auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-                auto logits = diagnostic_logits(model, std::move(last)).to(mfq_tensor_backend::kFloat32);
+                auto hidden = diagnostic_hidden(model, state, executor.get(), execution,
+                                                decode_id, mfq_nullopt, seq_len);
+                auto last = diagnostic_last_hidden(std::move(hidden));
+                auto logits = diagnostic_logits(model, executor.get(), execution,
+                                                std::move(last), false).to(mfq_tensor_backend::kFloat32);
                 mfq_cuda_synchronize();
                 return logits;
             };
@@ -968,14 +976,17 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             teacher_tokens.reserve(compare_mma_decode_steps);
             execution.config.tasks.attention.kernels.mma_decode = false;
             state.reset(1);
-            auto input = model.next_token(ids).reshape({1, 1});
+            auto input = diagnostic_next_token(model, state, executor.get(), execution, ids)
+                .reshape({1, 1});
             const int64_t initial_teacher_token = input.template item<int64_t>();
             for (int step = 0; step < compare_mma_decode_steps; ++step) {
                 const int64_t decode_len = state.cache_pos + 1;
                 auto seq_len = mfq_tensor_backend::tensor({decode_len}, cuda_i64);
-                auto hidden = model.hidden_forward(input, mfq_nullopt, seq_len);
-                auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-                auto logits = diagnostic_logits(model, std::move(last)).to(mfq_tensor_backend::kFloat32);
+                auto hidden = diagnostic_hidden(model, state, executor.get(), execution,
+                                                input, mfq_nullopt, seq_len);
+                auto last = diagnostic_last_hidden(std::move(hidden));
+                auto logits = diagnostic_logits(model, executor.get(), execution,
+                                                std::move(last), false).to(mfq_tensor_backend::kFloat32);
                 reference_logits.push_back(logits.clone());
                 const int64_t next = logits.argmax(-1).template item<int64_t>();
                 teacher_tokens.push_back(next);
@@ -986,11 +997,11 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 compare_mma_decode_planned_len > 0
                 ? compare_mma_decode_planned_len
                 : ids.size(1) + compare_mma_decode_steps;
-            if (planned_kv_length > model.max_position_embeddings()) {
+            if (planned_kv_length > diagnostic_max_position_embeddings(model)) {
                 throw std::runtime_error("decode comparison planned length exceeds context capacity");
             }
             state.reset(1);
-            (void)model.next_token(ids);
+            (void)diagnostic_next_token(model, state, executor.get(), execution, ids);
             input = mfq_tensor_backend::tensor({initial_teacher_token}, cuda_i64).reshape({1, 1});
             double kl_sum = 0.0;
             double kl_max = 0.0;
@@ -1004,11 +1015,13 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             for (int step = 0; step < compare_mma_decode_steps; ++step) {
                 const int64_t decode_len = state.cache_pos + 1;
                 auto seq_len = mfq_tensor_backend::tensor({decode_len}, cuda_i64);
-                auto hidden = model.hidden_forward(
-                    input, mfq_nullopt, seq_len, nullptr, mfq_nullopt,
-                    nullptr, 0, {planned_kv_length, 0});
-                auto last = hidden.index({Slice(), -1, Slice()}).to(mfq_tensor_backend::kFloat16).contiguous();
-                auto test = diagnostic_logits(model, std::move(last)).to(mfq_tensor_backend::kFloat32);
+                auto hidden = diagnostic_hidden(
+                    model, state, executor.get(), execution, input,
+                    mfq_nullopt, seq_len, nullptr, mfq_nullopt, nullptr, 0,
+                    planned_kv_length, 0);
+                auto last = diagnostic_last_hidden(std::move(hidden));
+                auto test = diagnostic_logits(model, executor.get(), execution,
+                                              std::move(last), false).to(mfq_tensor_backend::kFloat32);
                 const auto & ref = reference_logits[(size_t)step];
                 auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
                 auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
@@ -1041,7 +1054,9 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (compare_nvq_vec4) {
             auto run = [&](bool) {
                 state.reset(1);
-                auto logits = model.last_logits(ids).to(mfq_tensor_backend::kFloat32);
+                auto logits = diagnostic_last_logits(
+                    model, state, executor.get(), execution, ids)
+                    .to(mfq_tensor_backend::kFloat32);
                 mfq_cuda_synchronize();
                 return logits;
             };
@@ -1078,17 +1093,20 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>> gemma_trace;
                 mfq_tensor_backend::Tensor logits;
                 if (trace_repeat) {
-                    model.execution->gemma_trace_layer = 0;
-                    model.execution->gemma_stage_trace = &gemma_trace;
-                    auto hidden = model.hidden_forward(
-                        ids, mfq_nullopt, mfq_nullopt, &trace);
-                    model.execution->gemma_stage_trace = nullptr;
-                    model.execution->gemma_trace_layer = -1;
-                    auto last = hidden.index({Slice(), -1, Slice()})
-                        .to(mfq_tensor_backend::kFloat16).contiguous();
-                    logits = diagnostic_logits(model, std::move(last));
+                    execution.gemma_trace_layer = 0;
+                    execution.gemma_stage_trace = &gemma_trace;
+                    auto hidden = diagnostic_hidden(
+                        model, state, executor.get(), execution, ids,
+                        mfq_nullopt, mfq_nullopt, &trace);
+                    execution.gemma_stage_trace = nullptr;
+                    execution.gemma_trace_layer = -1;
+                    auto last = diagnostic_last_hidden(
+                        std::move(hidden));
+                    logits = diagnostic_logits(
+                        model, executor.get(), execution, std::move(last), false);
                 } else {
-                    logits = model.last_logits(ids);
+                    logits = diagnostic_last_logits(
+                        model, state, executor.get(), execution, ids);
                 }
                 mfq_cuda_synchronize();
                 auto run_t1 = std::chrono::steady_clock::now();
@@ -1131,12 +1149,16 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (compare_mma_attention) {
             execution.config.tasks.attention.kernels.mma_prefill = false;
             execution.config.tasks.attention.kernels.bf16_flash128 = false;
-            auto ref = model.last_logits(ids).to(mfq_tensor_backend::kFloat32);
+            auto ref = diagnostic_last_logits(
+                model, state, executor.get(), execution, ids)
+                .to(mfq_tensor_backend::kFloat32);
             mfq_cuda_synchronize();
             state.reset(1);
             execution.config.tasks.attention.kernels.mma_prefill = true;
             execution.config.tasks.attention.kernels.bf16_flash128 = true;
-            auto test = model.last_logits(ids).to(mfq_tensor_backend::kFloat32);
+            auto test = diagnostic_last_logits(
+                model, state, executor.get(), execution, ids)
+                .to(mfq_tensor_backend::kFloat32);
             mfq_cuda_synchronize();
             auto ref_logp = mfq_tensor_backend::log_softmax(ref, -1);
             auto test_logp = mfq_tensor_backend::log_softmax(test, -1);
@@ -1151,19 +1173,16 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         std::unordered_set<int64_t> stop_ids;
         if (!ignore_eos && tokenizer_model.empty() && decode_inputs.empty()) {
-            const auto* source = [&]() -> const mfq::ModelSource* {
-                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
-                    return model.weights && model.weights->source ? model.weights->source.get() : nullptr;
-                else
-                    return model.source.get();
-            }();
+            const auto* source = diagnostic_source(model);
             if (!source) throw std::runtime_error("diagnostics model source is unavailable");
             stop_ids = mfq::engine::model_stop_token_ids(
-                mfq::cuda::load_model_config_json(*source, config_path), model.vocab_size());
+                mfq::cuda::load_model_config_json(*source, config_path),
+                diagnostic_vocab_size(model));
             if (stop_ids.empty()) std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
         }
         const auto status=generate_diagnostic_tokens(
-            execution, model, state, ids, gen, profile, t0, t1,decode_inputs,stop_ids,!router_lookahead_audit.empty());
+            execution, model, state, executor.get(), ids, gen, profile, t0, t1,
+            decode_inputs,stop_ids,!router_lookahead_audit.empty());
         if(!status && !router_lookahead_audit.empty()) {
             if constexpr (std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
                 qwen4_finish_router_lookahead_audit(model,router_lookahead_audit);

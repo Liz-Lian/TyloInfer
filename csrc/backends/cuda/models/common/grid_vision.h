@@ -1,7 +1,9 @@
 #pragma once
 
 #include "backends/cuda/engine/executor/vision.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/vision.h"
+#include "models/qwen35/forward.h"
 #include "ops/vision/vision.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"
@@ -52,7 +54,9 @@ class CudaGridVisionPromptComponent {
          std::string input_contract, std::string position_policy);
 
     template <typename Model>
-    mfq::StepSequence<CudaPreparedPrompt> prepare(Model &language,
+    mfq::StepSequence<CudaPreparedPrompt> prepare(const Model &language,
+                                                   CudaExecutionContext &execution,
+                                                   mfq::cuda::Executor *executor,
                                                    const std::vector<int64_t> &token_ids,
                                                    const MfqMultimodalInput &media) const {
         if (media.processor != MfqMultimodalProcessor::grid_vision ||
@@ -99,7 +103,7 @@ class CudaGridVisionPromptComponent {
                               .clone()
                               .to(mfq_tensor_backend::kCUDA);
             co_yield mfq::StepState::advanced;
-            auto encoding = encoder_.encode(*language.execution, std::move(pixels), {grid});
+            auto encoding = encoder_.encode(execution, std::move(pixels), {grid});
             Tensor patches;
             while (auto step = encoding.next()) {
                 if (step.value)
@@ -114,16 +118,16 @@ class CudaGridVisionPromptComponent {
                     [](Tensor value, int64_t rows, int64_t width) {
                         return value.reshape({rows, width});
                     },
-                    [&](Tensor value) { return up(language.execution->projector(), std::move(value)); },
+                    [&](Tensor value) { return up(execution.projector(), std::move(value)); },
                     [](Tensor value) { return mfq_tensor_backend::gelu(value, "none"); },
-                    [&](Tensor value) { return down(language.execution->projector(), std::move(value)); });
+                    [&](Tensor value) { return down(execution.projector(), std::move(value)); });
             };
             if (encoder_.host_weights()) {
                 const auto bytes = vision::weight_bytes(merger_norm_) +
                                    vision::weight_bytes(merger_up_) +
                                    vision::weight_bytes(merger_down_);
                 merged = vision::vision_workspace(
-                    *language.execution, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20),
+                    execution, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20),
                     [&] {
                         auto norm = vision::to_cuda(merger_norm_);
                         auto up = vision::to_cuda(merger_up_);
@@ -149,7 +153,21 @@ class CudaGridVisionPromptComponent {
                                                            .dtype(mfq_tensor_backend::kInt64)
                                                            .device(mfq_tensor_backend::kCUDA))
                         .reshape({1, -1});
-                return language.embed_forward(ids).contiguous();
+                if constexpr (requires(const Model &value, mfq::cuda::Executor &value_executor,
+                                       mfq::cuda::Collectives &collectives, int primary,
+                                       Tensor value_ids) {
+                                  embed(value, value_executor, collectives, primary,
+                                        std::move(value_ids));
+                              }) {
+                    if (!executor)
+                        throw std::invalid_argument(
+                            "CUDA grid-Vision Qwen embedding requires an executor");
+                    return embed(language, *executor, execution.collectives,
+                                 execution.layer_placement.primary_device(), std::move(ids))
+                        .contiguous();
+                } else {
+                    return language.embed_forward(ids).contiguous();
+                }
             },
             [](Tensor &embeddings, const Tensor &vision, const std::vector<int64_t> &indices) {
                 auto index =

@@ -11,7 +11,6 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
-#include <type_traits>
 #include <vector>
 
 namespace mfq::cuda {
@@ -184,15 +183,8 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 kl_score_count, kl_reference_contract);
         }
         return with_loaded_cuda_model(execution, *this, false,
-            [&](auto& model, auto& runtime_components,
-                    auto t0, auto t1) -> int {
-        using Model = std::remove_cvref_t<decltype(model)>;
-        auto& state = [&]() -> auto& {
-            if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Run>)
-                return model.state;
-            else
-                return model;
-        }();
+            [&](auto& model, auto& state, auto& executor,
+                    auto&, auto, auto) -> int {
         if (!kl_base.empty()) {
             if (!kl_mmq_sequence.empty()) {
                 if (!kl_chunks_sequence.empty()) {
@@ -209,7 +201,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                     KlMmqScope run_scope(
                         kl_mmq_sequence[index], execution.kl_mmq);
                     const int status = run_kl_eval_batched(
-                        model, state, kl_base, kl_chunks,
+                        execution, model, state, executor.get(), kl_base, kl_chunks,
                         kl_n_batch, kl_score_count,
                         kl_reference_contract);
                     if (status != 0) return status;
@@ -222,7 +214,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
             }
             if (kl_chunks_sequence.empty()) {
                 const int status = run_selected_kl_eval(
-                    model, state, kl_base, kl_chunks,
+                    execution, model, state, executor.get(), kl_base, kl_chunks,
                     kl_evaluator,
                     kl_n_batch, kl_score_count,
                     kl_reference_contract);
@@ -237,7 +229,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 std::cout << "cpp_kl_sequence_begin index=" << index
                           << " chunks=" << chunks << "\n";
                 const int status = run_selected_kl_eval(
-                    model, state, kl_base, chunks,
+                    execution, model, state, executor.get(), kl_base, chunks,
                     kl_evaluator,
                     kl_n_batch, kl_score_count,
                     kl_reference_contract);

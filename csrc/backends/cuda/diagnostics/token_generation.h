@@ -6,7 +6,7 @@
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "engine/executor/qwen35.h"
+#include "models/qwen35/forward.h"
 #include "models/common/block.h"
 #include "models/common/full_block.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -19,12 +19,177 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <type_traits>
 #include <vector>
 
 namespace mfq::cuda::internal {
+
+template <typename Model>
+inline constexpr bool is_qwen35_v =
+    std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Model>;
+
+template <typename Model>
+const mfq::models::CausalLmMetadata* diagnostic_metadata(const Model& model) {
+    return &model.metadata;
+}
+
+template <typename Model>
+const mfq::ModelSource* diagnostic_source(const Model& model) {
+    return model.source.get();
+}
+
+template <typename Model>
+std::int64_t diagnostic_vocab_size(const Model& model) {
+    if constexpr (is_qwen35_v<Model>) return model.metadata.vocab_size;
+    else return model.vocab_size();
+}
+
+template <typename Model>
+std::int64_t diagnostic_max_position_embeddings(const Model& model) {
+    if constexpr (is_qwen35_v<Model>) return model.metadata.max_position_embeddings;
+    else return model.max_position_embeddings();
+}
+
+template <typename Model, typename State>
+void diagnostic_reset(Model& model, State& state, std::int64_t batch) {
+    if constexpr (is_qwen35_v<Model>) state.reset(batch);
+    else model.reset(batch);
+}
+
+template <typename Model, typename State>
+mfq_tensor_backend::Tensor diagnostic_hidden(
+        Model& model, State& state, mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor ids,
+        std::optional<mfq_tensor_backend::Tensor> positions = {},
+        std::optional<mfq_tensor_backend::Tensor> lengths = {},
+        std::vector<mfq_tensor_backend::Tensor>* trace = nullptr,
+        std::optional<mfq_tensor_backend::Tensor> cache_positions = {},
+        mfq_tensor_backend::Tensor* raw_hidden = nullptr,
+        std::int64_t confirmed = 0, std::int64_t kv_length = 0,
+        std::int64_t attention_parts = 0) {
+    if constexpr (is_qwen35_v<Model>) {
+        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                                "Qwen3.5 diagnostics require an executor");
+        CudaScope scope(execution);
+        mfq::cuda::Input input;
+        input.ids = std::move(ids);
+        input.positions = std::move(positions);
+        input.lengths = std::move(lengths);
+        input.cache_positions = std::move(cache_positions);
+        input.trace = trace;
+        input.raw_hidden = raw_hidden;
+        input.confirmed = confirmed;
+        input.kv_length = kv_length;
+        input.attention_parts = attention_parts;
+        return mfq::cuda::qwen35::forward(
+            model, state, *executor, execution.collectives,
+            execution.forward_mode(), std::move(input));
+    } else {
+        return model.hidden_forward(
+            std::move(ids), std::move(positions), std::move(lengths), trace,
+            std::move(cache_positions), raw_hidden, confirmed,
+            {kv_length, attention_parts});
+    }
+}
+
+inline mfq_tensor_backend::Tensor diagnostic_last_hidden(
+        mfq_tensor_backend::Tensor hidden) {
+    return hidden.index({Slice(), -1, Slice()})
+        .to(mfq_tensor_backend::kFloat16).contiguous();
+}
+
+template <typename Model>
+mfq_tensor_backend::Tensor diagnostic_logits(
+        Model& model, mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor hidden,
+        bool capped = false) {
+    if constexpr (is_qwen35_v<Model>) {
+        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                                "Qwen3.5 diagnostics require an executor");
+        CudaScope scope(execution);
+        return mfq::cuda::qwen35::logits(
+            model, *executor, std::move(hidden), capped);
+    } else {
+        auto logits = execution.projector().run(model.lm_head, std::move(hidden));
+        return capped ? model.apply_final_logit_softcap(std::move(logits))
+                      : std::move(logits);
+    }
+}
+
+template <typename Model, typename State>
+mfq_tensor_backend::Tensor diagnostic_next_token(
+        Model& model, State& state, mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor ids) {
+    if constexpr (is_qwen35_v<Model>) {
+        auto hidden = diagnostic_hidden(model, state, executor, execution,
+                                        std::move(ids));
+        auto logits = diagnostic_logits(
+            model, executor, execution,
+            diagnostic_last_hidden(std::move(hidden)),
+            false);
+        return sample_greedy_cuda(
+            logits.contiguous().view({logits.size(0), -1}));
+    } else {
+        return model.next_token(std::move(ids));
+    }
+}
+
+template <typename Model, typename State>
+mfq_tensor_backend::Tensor diagnostic_last_logits(
+        Model& model, State& state, mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor ids) {
+    if constexpr (is_qwen35_v<Model>) {
+        auto hidden = diagnostic_hidden(model, state, executor, execution,
+                                        std::move(ids));
+        return diagnostic_logits(model, executor, execution,
+                                 diagnostic_last_hidden(std::move(hidden)), true);
+    } else {
+        return model.last_logits(std::move(ids));
+    }
+}
+
+template <typename Model, typename State>
+mfq_tensor_backend::Tensor diagnostic_forward(
+        Model& model, State& state, mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor ids) {
+    if constexpr (is_qwen35_v<Model>) {
+        return diagnostic_logits(
+            model, executor, execution,
+            diagnostic_hidden(model, state, executor, execution, std::move(ids)),
+            true);
+    } else {
+        return model.forward(std::move(ids));
+    }
+}
+
+template <typename Model, typename State>
+mfq_tensor_backend::Tensor diagnostic_next_token_static(
+        Model& model, State& state, mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution, mfq_tensor_backend::Tensor ids,
+        mfq_tensor_backend::Tensor positions,
+        mfq_tensor_backend::Tensor lengths, std::int64_t kv_length,
+        std::int64_t attention_parts) {
+    if constexpr (is_qwen35_v<Model>) {
+        auto hidden = diagnostic_hidden(
+            model, state, executor, execution, std::move(ids), positions,
+            lengths, nullptr, positions, nullptr, 0, kv_length,
+            attention_parts);
+        auto logits = diagnostic_logits(
+            model, executor, execution,
+            diagnostic_last_hidden(std::move(hidden)),
+            false);
+        return sample_greedy_cuda(
+            logits.contiguous().view({logits.size(0), -1}));
+    } else {
+        return model.next_token_static(
+            std::move(ids), std::move(positions), std::move(lengths),
+            {kv_length, attention_parts});
+    }
+}
 
 inline void report_source_file_io(const mfq::ModelSource* source, const char* phase) noexcept {
     const char* report = mfq::cuda::env_lookup("TYLOINFER_REPORT_FILE_IO");
@@ -53,6 +218,7 @@ int generate_diagnostic_tokens(
         CudaExecutionContext& execution,
         Model& model,
         State& state,
+        mfq::cuda::Executor* executor,
         mfq_tensor_backend::Tensor ids,
         int gen,
         bool profile,
@@ -61,18 +227,8 @@ int generate_diagnostic_tokens(
         const std::vector<int64_t>& decode_inputs = {},
         const std::unordered_set<int64_t>& stop_token_ids = {},
         bool production_prefill = false) {
-        const auto* metadata = [&]() {
-            if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>)
-                return &model.weights->metadata;
-            else
-                return &model.metadata;
-        }();
-        const auto* source = [&]() -> const mfq::ModelSource* {
-            if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>)
-                return model.weights && model.weights->source ? model.weights->source.get() : nullptr;
-            else
-                return model.source.get();
-        }();
+        const auto* metadata = diagnostic_metadata(model);
+        const auto* source = diagnostic_source(model);
         if(!decode_inputs.empty() && (gen<=1 || decode_inputs.size()!=size_t(gen-1)))
             throw std::invalid_argument("diagnostic decode input count differs from gen-1");
         mfq_tensor_backend::Tensor forced_inputs;
@@ -92,7 +248,7 @@ int generate_diagnostic_tokens(
                     return model.adapter_next_token(model.lm_head,model.last_hidden(std::move(hidden)));
                 }
             }
-            return model.next_token(ids);
+            return diagnostic_next_token(model, state, executor, execution, ids);
         }();
         mfq_cuda_synchronize();
         auto t2 = std::chrono::steady_clock::now();
@@ -118,6 +274,7 @@ int generate_diagnostic_tokens(
             std::atoi(profile_graph_env) != 0;
         bool use_cuda_graph =
             !forced_inputs.defined() &&
+            !is_qwen35_v<Model> &&
             (graph_env == nullptr || graph_env[0] != '0') &&
             !metadata->flash_next &&
             mfq_cuda_graph_capture_supported() &&
@@ -177,7 +334,7 @@ int generate_diagnostic_tokens(
                 DecodeGraphBranchScope branch_scope(
                     execution.decode_graph_serial_branches);
                 std::vector<mfq_tensor_backend::Tensor *> graph_warmup_states;
-                if constexpr (std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Run>) {
+                if constexpr (is_qwen35_v<Model>) {
                     graph_warmup_states = state.graph_state();
                 } else {
                     for (const auto &block : model.blocks)
@@ -188,9 +345,10 @@ int generate_diagnostic_tokens(
                     graph_warmup_states,
                     state.cache_pos,
                     metadata->decode_graph_double_warmup, graph, [&]() {
-                        (void)model.next_token_static(
-                            static_input, static_pos, static_len,
-                            {planned_len, attention_parts});
+                        (void)diagnostic_next_token_static(
+                            model, state, executor, execution, static_input,
+                            static_pos, static_len, planned_len,
+                            attention_parts);
                     }, cuda_graph_participant_streams(
                         graph_compute_streams,
                         execution.collectives));
@@ -198,9 +356,9 @@ int generate_diagnostic_tokens(
                 profiler.graph_events = profile_cuda_graph;
                 graph.capture_begin();
                 static_next = profiler.measure("decode.model_total", [&]() {
-                    return model.next_token_static(
-                        static_input, static_pos, static_len,
-                        {planned_len, attention_parts});
+                    return diagnostic_next_token_static(
+                        model, state, executor, execution, static_input,
+                        static_pos, static_len, planned_len, attention_parts);
                 });
                 profiler.measure("decode.commit", [&]() {
                     decode_graph_commit_cuda(
@@ -229,7 +387,9 @@ int generate_diagnostic_tokens(
         } else if (!hit_eos) {
             for (int i = 1; i < gen; ++i) {
                 next = profiler.measure("decode.eager_model", [&]() {
-                    return model.next_token(diagnostic_decode_input(next,forced_inputs,i-1));
+                    return diagnostic_next_token(
+                        model, state, executor, execution,
+                        diagnostic_decode_input(next,forced_inputs,i-1));
                 });
                 profiler.measure("decode.eager_commit", [&]() {
                     TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(

@@ -6,6 +6,7 @@
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
 #include "models/qwen35/mtp.h"
+#include "models/qwen35/forward.h"
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 
@@ -184,16 +185,16 @@ RuntimeComponents<Model> load_runtime_components(
     return result;
 }
 
-template <>
-RuntimeComponents<mfq::cuda::qwen35::Run> load_runtime_components(
-        mfq::cuda::qwen35::Run& model,
+RuntimeComponents<mfq::cuda::qwen35::Model> load_runtime_components(
+        mfq::cuda::qwen35::Model& model,
+        CudaExecutionContext& execution,
         bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::qwen35::Run> result{model.weights->graph, model.weights->plan};
+    RuntimeComponents<mfq::cuda::qwen35::Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
 
     if (result.plan.vision == mfq::cuda::CudaVisionAdapter::grid_vit) {
         const auto* component = result.graph.component("vision");
-        const auto& config = model.weights->config;
+        const auto& config = model.config;
         if (component == nullptr || !config.grid_vision ||
                 !config.image_token_id || !config.video_token_id) {
             throw std::runtime_error(
@@ -201,7 +202,7 @@ RuntimeComponents<mfq::cuda::qwen35::Run> load_runtime_components(
         }
         result.grid_vision.emplace(
             mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                *model.execution, *model.weights->source, *config.grid_vision,
+                execution, *model.source, *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
         result.vision_available = true;
@@ -211,17 +212,16 @@ RuntimeComponents<mfq::cuda::qwen35::Run> load_runtime_components(
     }
 
     if (result.plan.predictor == mfq::cuda::CudaPredictorAdapter::qwen35) {
-        const auto& model_execution = *model.execution;
+        const auto& model_execution = execution;
         const bool supported_placement =
             !model_execution.layer_placement.enabled() &&
             model_execution.dense_cpu_layer_count == 0 &&
             model_execution.dsv4_cpu_offload_layers.empty() &&
             !model_execution.stores.moe_expert_cache;
-        if (supported_placement && model.num_experts() == 0 &&
-                model.supports_speculation()) {
-            auto& execution = *model.execution;
-            TransformerWeightLoader loader{execution, *model.weights->source};
-            auto predictor = mfq::cuda::qwen35::load_predictor(loader, model.weights->config, cuda_kv_quantization());
+        if (supported_placement && model.metadata.num_experts == 0 &&
+                mfq::cuda::qwen35::supports_speculation(model)) {
+            TransformerWeightLoader loader{execution, *model.source};
+            auto predictor = mfq::cuda::qwen35::load_predictor(loader, model.config, cuda_kv_quantization());
             if (predictor) {
                 auto executor = std::make_unique<mfq::cuda::Executor>(
                     execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,

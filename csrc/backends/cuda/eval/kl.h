@@ -6,6 +6,7 @@
 #include <string>
 
 struct CudaExecutionContext;
+namespace mfq::cuda { class Executor; }
 
 enum class KlEvaluator {
     Legacy,
@@ -16,8 +17,10 @@ const char* kl_evaluator_name(KlEvaluator evaluator);
 
 template <typename Model, typename State>
 int run_kl_eval_batched(
+    CudaExecutionContext& execution,
     Model& model,
     State& state,
+    mfq::cuda::Executor* executor,
     const std::string& reference_path,
     int max_chunks,
     std::int64_t requested_n_batch,
@@ -26,8 +29,10 @@ int run_kl_eval_batched(
 
 template <typename Model, typename State>
 int run_selected_kl_eval(
+    CudaExecutionContext& execution,
     Model& model,
     State& state,
+    mfq::cuda::Executor* executor,
     const std::string& reference_path,
     int max_chunks,
     KlEvaluator evaluator,

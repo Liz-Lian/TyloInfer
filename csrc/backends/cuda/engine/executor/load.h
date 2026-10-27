@@ -1,11 +1,12 @@
 #pragma once
 
 #include "backends/cuda/engine/models/components.h"
-#include "engine/executor/qwen35.h"
 #include "backends/cuda/engine/models/qwen35/load.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "models/qwen35/state.h"
 #include "cuda_runtime_config.h"
 
 #include <chrono>
@@ -23,8 +24,8 @@ auto with_loaded_cuda_model(
         F&& run) {
     CudaScope scope(execution);
     auto source = mfq::open_model_source(options.model_path);
-    auto finish = [&](auto& model, auto& runtime_components,
-                      auto started) {
+    auto finish = [&](auto& model, auto& state, auto& executor,
+                      auto& runtime_components, auto started) {
         using Model = std::decay_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             prepare_sampling_runtime(model.vocab_size());
@@ -49,7 +50,7 @@ auto with_loaded_cuda_model(
         mfq_cuda_synchronize();
         const auto loaded = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config, "loaded");
-        return run(model, runtime_components, started, loaded);
+        return run(model, state, executor, runtime_components, started, loaded);
     };
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();
@@ -63,20 +64,24 @@ auto with_loaded_cuda_model(
             source);
         auto runtime_components =
             load_runtime_components(model, load_optional_components);
-        return finish(model, runtime_components, started);
+        std::unique_ptr<mfq::cuda::Executor> executor;
+        return finish(model, runtime_components.language(model), executor,
+                      runtime_components, started);
     };
     auto load_qwen = [&] {
         auto started = std::chrono::steady_clock::now();
         auto loaded_model = mfq::cuda::qwen35::load(
             execution, options.model_path, options.config_path, options.context_size,
             true, true, source);
-        auto weights = std::make_shared<const mfq::cuda::qwen35::Model>(
-            std::move(loaded_model));
-        mfq::cuda::qwen35::Run model(std::move(weights), execution);
-        model.preallocate();
+        mfq::cuda::qwen35::Model model = std::move(loaded_model);
+        mfq::cuda::qwen35::State state(
+            model, execution.config.gdn_transposed_state);
+        if (mfq::cuda::runtime_options::kv_vram_preallocated())
+            state.preallocate();
+        auto executor = execution.make_executor();
         auto runtime_components =
-            load_runtime_components(model, load_optional_components);
-        return finish(model, runtime_components, started);
+            load_runtime_components(model, execution, load_optional_components);
+        return finish(model, state, executor, runtime_components, started);
     };
 
     switch (cuda_backbone(source->resolved_model_graph().backbone)) {

@@ -5,8 +5,8 @@
 
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/generation.h"
-#include "storage/session/text_cache.h"
-#include "engine/cuda_batching.h"
+#include "backends/cuda/engine/state/session/text_cache.h"
+#include "backends/cuda/engine/batch/batch.h"
 
 #include <cuda_profiler_api.h>
 
@@ -25,15 +25,17 @@ using namespace mfq::cuda::internal;
 // Fixed synthetic-ID latency probe through the actual runtime dispatch. Model
 // loading and the independent serial oracle are outside every timed request.
 int run_qwen35_mtp_bench(
-        mfq::cuda::qwen35::Run& model, mfq::cuda::qwen35::Mtp& mtp,
+        mfq::cuda::qwen35::Model& model, mfq::cuda::qwen35::State& state,
+        mfq::cuda::Executor* executor, CudaExecutionContext& execution,
+        mfq::cuda::qwen35::Mtp& mtp,
         bool enable_mtp, int generated_tokens, int repetitions) {
     using Clock = std::chrono::steady_clock;
     using Tensor = mfq_tensor_backend::Tensor;
     TYLOINFER_RUNTIME_CHECK(
         generated_tokens >= 2 && repetitions > 0 && repetitions <= 100 &&
-            model.max_position_embeddings() >= generated_tokens + 17,
+            diagnostic_max_position_embeddings(model) >= generated_tokens + 17,
         "MTP benchmark requires gen>=2, reps1-100 and context>=gen+17");
-    DecodeGraphCache graph_cache(model.max_position_embeddings());
+    DecodeGraphCache graph_cache(diagnostic_max_position_embeddings(model));
     const auto runtime_config = resolve_cuda_runtime_config({});
     TextSessionCache session_cache(
         runtime_config.session_cache, runtime_config.prefix_cache);
@@ -58,12 +60,13 @@ int run_qwen35_mtp_bench(
     };
     for (const auto& prompt : std::vector<std::vector<int64_t>>{
             {1, 2, 3}, {100, 200, 300, 400, 500, 600, 700}, std::vector<int64_t>(17, 10)}) {
-        model.state.reset(1);
+        state.reset(1);
         Tensor input = mfq_tensor_backend::tensor(prompt, options).reshape({1, -1}).contiguous();
         std::vector<int64_t> reference;
         reference.reserve(generated_tokens);
         for (int step = 0; step < generated_tokens; ++step) {
-            auto next = model.next_token(input);
+            auto next = diagnostic_next_token(
+                model, state, executor, execution, input);
             reference.push_back(next.template item<int64_t>());
             input = next.reshape({1, 1});
         }
@@ -86,8 +89,9 @@ int run_qwen35_mtp_bench(
             mfq::engine::InferenceRequest request;
             request.prompt = prompt; request.sampling = params;
             mfq::engine::InferenceOutput parsed(request, nullptr, "bench");
-            auto result = collect_generation(generate(model, model.state, *model.execution, model.weights->metadata,
-                graph_cache, session_cache, runtime_config, request, parsed, &mtp));
+            auto result = collect_generation(generate(
+                model, state, executor, execution, model.metadata, graph_cache,
+                session_cache, runtime_config, request, parsed, &mtp));
             output = std::move(result.tokens); prefill = result.prefill; first_token = result.first_token;
             const int produced = static_cast<int>(output.size());
             mfq_cuda_synchronize();
@@ -127,8 +131,11 @@ int run_qwen35_mtp_bench(
 template<class Model, class State>
 int run_qwen_continuous_batching_check(Model& model,
         State& state,
+        mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution_context,
         const mfq::models::CausalLmMetadata& metadata,
-        const CudaRuntimeConfig& runtime_config, int requests = 2) {
+        const CudaRuntimeConfig& runtime_config, int requests = 2,
+        std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner = {}) {
     using namespace mfq::engine;
     auto config = runtime_config;
     config.generation.prefill_chunk_size = 64;
@@ -137,19 +144,21 @@ int run_qwen_continuous_batching_check(Model& model,
     MfqSamplingParams sampling;
     sampling.max_tokens = 20; sampling.temperature = 0; sampling.top_k = 1; sampling.enable_mtp = false;
     std::vector<int64_t> first_prompt(193), second_prompt(17);
-    for (size_t i = 0; i < first_prompt.size(); ++i) first_prompt[i] = (101 + (i * 37) % 900) % model.vocab_size();
-    for (size_t i = 0; i < second_prompt.size(); ++i) second_prompt[i] = (113 + (i * 53) % 880) % model.vocab_size();
-    DecodeGraphCache graph(model.max_position_embeddings());
+    for (size_t i = 0; i < first_prompt.size(); ++i) first_prompt[i] = (101 + (i * 37) % 900) % diagnostic_vocab_size(model);
+    for (size_t i = 0; i < second_prompt.size(); ++i) second_prompt[i] = (113 + (i * 53) % 880) % diagnostic_vocab_size(model);
+    DecodeGraphCache graph(diagnostic_max_position_embeddings(model));
     TextSessionCache cache(config.session_cache, config.prefix_cache);
     auto serial = [&](const std::vector<int64_t>& prompt, MfqPromptCachePlan plan = {}) {
         InferenceRequest request; request.prompt = prompt; request.sampling = sampling; request.cache_plan = std::move(plan);
         InferenceOutput output(request, nullptr, "serial");
-        return collect_generation(generate(model, state, *model.execution, metadata, graph, cache, config, request, output)).tokens;
+        return collect_generation(generate(
+            model, state, executor, execution_context, metadata, graph, cache,
+            config, request, output)).tokens;
     };
     const auto first_reference = serial(first_prompt), second_reference = serial(second_prompt);
     std::vector<int64_t> growth_prompt(253);
     for (std::size_t i = 0; i < growth_prompt.size(); ++i)
-        growth_prompt[i] = (137 + i*41) % model.vocab_size();
+        growth_prompt[i] = (137 + i*41) % diagnostic_vocab_size(model);
     const auto growth_reference = requests > 2 ? serial(growth_prompt) : std::vector<int64_t>{};
     graph.invalidate(); // Physical batch slots replace the serial graph's storage.
     {
@@ -160,28 +169,52 @@ int run_qwen_continuous_batching_check(Model& model,
             TextSessionCache& cache;
             const CudaRuntimeConfig& config;
             State& state;
+            mfq::cuda::Executor* executor;
+            CudaExecutionContext& execution_context;
+            std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner;
             ContinuousBatch<CudaBatchOperations<Model>> batcher;
             Execution(Model& model, const mfq::models::CausalLmMetadata& metadata,
                       DecodeGraphCache& graph, TextSessionCache& cache,
-                      const CudaRuntimeConfig& config, State& state)
-                : model(model), metadata(metadata), graph(graph), cache(cache), config(config), state(state),
-                  batcher(64, config.continuous_batch.prefill_token_budget,
-                          model, *model.execution, config.continuous_batch) {}
+                      const CudaRuntimeConfig& config, State& state,
+                      mfq::cuda::Executor* executor,
+                      CudaExecutionContext& execution_context,
+                      std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner)
+                : model(model), metadata(metadata), graph(graph), cache(cache),
+                  config(config), state(state), executor(executor),
+                  execution_context(execution_context), model_owner(std::move(model_owner)),
+                  batcher(make_batcher(model, execution_context,
+                                       config.continuous_batch,
+                                       this->model_owner)) {}
+            static ContinuousBatch<CudaBatchOperations<Model>> make_batcher(
+                    Model& model, CudaExecutionContext& execution,
+                    const CudaContinuousBatchConfig& config,
+                    const std::shared_ptr<const mfq::cuda::qwen35::Model>& owner) {
+                if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
+                    return ContinuousBatch<CudaBatchOperations<Model>>(
+                        64, config.prefill_token_budget, owner, execution, config);
+                } else {
+                    return ContinuousBatch<CudaBatchOperations<Model>>(
+                        64, config.prefill_token_budget, model, execution, config);
+                }
+            }
             bool can_batch(const EngineRequest&) const { return true; }
             bool exclusive() const { return false; }
             bool mtp_available() const { return false; }
             void execute(const std::vector<RequestId>& eligible) { batcher.step(eligible); }
             Generation generate(const RequestId& id, ExecutionRequest& request) {
-                return internal::generate(model, state, *model.execution, metadata, graph, cache, config, request.input,
-                                          request.output, nullptr, {}, &batcher, id);
+                return internal::generate(
+                    model, state, executor, execution_context, metadata, graph,
+                    cache, config, request.input, request.output, nullptr, {},
+                    &batcher, id);
             }
-        } execution(model, metadata, graph, cache, config, state);
+        } execution(model, metadata, graph, cache, config, state, executor,
+                    execution_context, std::move(model_owner));
         auto& batcher = execution.batcher;
         RequestExecutor executor(config.continuous_batch.max_sequences);
         EngineInfo info;
         info.max_requests = config.continuous_batch.max_sequences;
-        info.vocab_size = model.vocab_size();
-        info.max_context = model.max_position_embeddings();
+        info.vocab_size = diagnostic_vocab_size(model);
+        info.max_context = diagnostic_max_position_embeddings(model);
         std::map<std::string, std::vector<int64_t>> tokens;
         std::map<std::string, int> terminals, cancellations, prefills;
         const auto admit = [&](const std::string& id, const std::vector<int64_t>& prompt) {
@@ -281,10 +314,10 @@ int run_qwen_continuous_batching_check(Model& model,
             if (key == "continuous_batching_cuda_graph_replays") replays = value;
             if (key == "continuous_batching_packed_prefill_batches") packed_prefills = value;
         }
-        if constexpr (std::is_same_v<Model,mfq::cuda::qwen35::Run>)
+        if constexpr (std::is_same_v<Model,mfq::cuda::qwen35::Model>)
             if (config.continuous_batch.greedy &&
                 qwen_continuous_batch_cuda_graph_enabled(
-                    *model.weights, *model.execution, config.continuous_batch))
+                    model, execution_context, config.continuous_batch))
                 TYLOINFER_RUNTIME_CHECK(captures > 0 && replays > captures, "batch graph was not replayed");
         std::cout << "continuous_batching_state_check paged=" << config.continuous_batch.paged_kv
             << " captures=" << captures << " replays=" << replays
@@ -303,13 +336,20 @@ int run_qwen_continuous_batching_check(Model& model,
 }
 
 int run_cuda_continuous_batching_check(
-        mfq::cuda::qwen35::Run& model,int requests) {
+        mfq::cuda::qwen35::Model& model,
+        mfq::cuda::qwen35::State& state,
+        mfq::cuda::Executor* executor,
+        CudaExecutionContext& execution,
+        int requests) {
+    auto owner = std::make_shared<mfq::cuda::qwen35::Model>(std::move(model));
     return run_qwen_continuous_batching_check(
-        model, model.state, model.weights->metadata, resolve_cuda_runtime_config({}),requests);
+        *owner, state, executor, execution, owner->metadata,
+        resolve_cuda_runtime_config({}), requests, owner);
 }
 int run_cuda_continuous_batching_check(mfq::cuda::Qwen4CausalLm& model,int requests) {
     return run_qwen_continuous_batching_check(
-        model, model, model.metadata, resolve_cuda_runtime_config({}),requests);
+        model, model, nullptr, *model.execution, model.metadata,
+        resolve_cuda_runtime_config({}),requests);
 }
 
 int run_cuda_engine_isolation_check(CudaEngineOptions options) {

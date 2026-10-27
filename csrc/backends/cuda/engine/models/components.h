@@ -9,7 +9,6 @@
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/nemotron_h/radio_vision.h"
-#include "engine/executor/qwen35.h"
 #include "models/qwen35/model.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/common/grid_vision.h"
@@ -51,10 +50,10 @@ RuntimeComponents<Model> load_runtime_components(
     bool load_optional_components);
 
 
-template <>
-RuntimeComponents<mfq::cuda::qwen35::Run>
+RuntimeComponents<mfq::cuda::qwen35::Model>
 load_runtime_components(
-    mfq::cuda::qwen35::Run& model,
+    mfq::cuda::qwen35::Model& model,
+    CudaExecutionContext& execution,
     bool load_optional_components);
 
 template <>

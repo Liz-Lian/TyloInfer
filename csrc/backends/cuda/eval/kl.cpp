@@ -7,7 +7,7 @@
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/ops.h"
-#include "engine/executor/qwen35.h"
+#include "models/qwen35/forward.h"
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "quant_linear.h"
@@ -36,6 +36,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -70,10 +72,67 @@ const char * kl_evaluator_name(KlEvaluator evaluator) {
     return evaluator == KlEvaluator::Legacy ? "legacy" : "optimized";
 }
 
+template <typename Model>
+constexpr bool is_qwen35_model =
+    std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Model>;
+
+template <typename Model>
+std::string_view kl_model_type(const Model& model) {
+    return model.metadata.model_type;
+}
+
+template <typename Model>
+mfq_tensor_backend::Tensor kl_hidden_forward(
+    CudaExecutionContext& execution,
+    Model& model,
+    auto& state,
+    mfq::cuda::Executor* executor,
+    mfq_tensor_backend::Tensor ids) {
+    if constexpr (is_qwen35_model<Model>) {
+        if (!executor) throw std::runtime_error("Qwen KL evaluation requires an executor");
+        return mfq::cuda::qwen35::forward(
+            model, state, *executor, execution.collectives,
+            execution.forward_mode(), mfq::cuda::Input{std::move(ids)});
+    } else {
+        return model.hidden_forward(std::move(ids));
+    }
+}
+
+template <typename Model>
+mfq_tensor_backend::Tensor kl_logits_from_hidden(
+    Model& model,
+    mfq::cuda::Executor* executor,
+    mfq_tensor_backend::Tensor hidden) {
+    if constexpr (is_qwen35_model<Model>) {
+        if (!executor) throw std::runtime_error("Qwen KL evaluation requires an executor");
+        return mfq::cuda::qwen35::logits(model, *executor, std::move(hidden));
+    } else {
+        return model.logits_from_hidden(std::move(hidden));
+    }
+}
+
+template <typename Model>
+mfq_tensor_backend::Tensor kl_forward_logits(
+    CudaExecutionContext& execution,
+    Model& model,
+    auto& state,
+    mfq::cuda::Executor* executor,
+    mfq_tensor_backend::Tensor ids) {
+    if constexpr (is_qwen35_model<Model>) {
+        return kl_logits_from_hidden(
+            model, executor, kl_hidden_forward(
+                execution, model, state, executor, std::move(ids)));
+    } else {
+        return model.forward(std::move(ids));
+    }
+}
+
 template <typename Model, typename State>
 static int run_kl_eval(
+        CudaExecutionContext& execution,
         Model& model,
         State& state,
+        mfq::cuda::Executor* executor,
         const std::string & path,
         int max_chunks,
         KlEvaluator evaluator,
@@ -115,7 +174,7 @@ static int run_kl_eval(
             // chunk's first corpus token with BOS before evaluating it, then
             // serializes the original corpus tokens in this legacy header.
             // Qwen legacy references use the serialized token directly.
-            if (model.model_type() == "gemma4" &&
+            if (kl_model_type(model) == "gemma4" &&
                     eval_chunks[(size_t)ci].tokens[0] != legacy_bos) {
                 eval_chunks[(size_t)ci].tokens[0] = legacy_bos;
                 ++legacy_bos_replacements;
@@ -124,9 +183,9 @@ static int run_kl_eval(
             eval_chunks[(size_t)ci].score_count = score_count;
         }
         std::cout << "cpp_kl_legacy_chunk_bos="
-                  << (model.model_type() == "gemma4" ? legacy_bos : -1)
+                  << (kl_model_type(model) == "gemma4" ? legacy_bos : -1)
                   << " replacements=" << legacy_bos_replacements
-                  << " model_type=" << model.model_type() << "\n";
+                  << " model_type=" << kl_model_type(model) << "\n";
     } else if (reference_format == "_logit2_" || reference_format == "_logit3_") {
         const bool has_exact_target_log_probs = reference_format == "_logit3_";
         uint32_t vocab = 0;
@@ -197,7 +256,7 @@ static int run_kl_eval(
     if (chunks <= 0) throw std::runtime_error("KL evaluation requires at least one chunk");
     for (int ci = 0; ci < chunks; ++ci) {
         if ((int64_t)eval_chunks[(size_t)ci].tokens.size() >
-                model.max_position_embeddings()) {
+                model.metadata.max_position_embeddings) {
             throw std::runtime_error(
                 "KL reference exceeds model context capacity");
         }
@@ -253,17 +312,23 @@ static int run_kl_eval(
                                     mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64)).clone().to(mfq_tensor_backend::kCUDA);
         mfq_tensor_backend::Tensor pred;
         if (optimized) {
-            auto hidden = model.hidden_forward(ids);
+            auto hidden = kl_hidden_forward(
+                execution, model, state, executor, ids);
             auto selected_hidden = hidden.index({
                 0, Slice(first, first + score_count), Slice()
             }).contiguous();
-            pred = model.logits_from_hidden(selected_hidden);
+            pred = kl_logits_from_hidden(model, executor, std::move(selected_hidden));
         } else if (score_count < stored_score_count) {
-            (void)model.hidden_forward(ids.index({Slice(), Slice(0, first)}));
-            auto logits = model.forward(ids.index({Slice(), Slice(first, first + score_count)}));
+            (void)kl_hidden_forward(
+                execution, model, state, executor,
+                ids.index({Slice(), Slice(0, first)}));
+            auto logits = kl_forward_logits(
+                execution, model, state, executor,
+                ids.index({Slice(), Slice(first, first + score_count)}));
             pred = logits.index({0, Slice(), Slice()});
         } else {
-            auto logits = model.forward(ids);
+            auto logits = kl_forward_logits(
+                execution, model, state, executor, ids);
             pred = logits.index({0, Slice(first, first + score_count), Slice()});
         }
         if (pred.size(1) != n_vocab) throw std::runtime_error("KL vocab size mismatch");
@@ -645,8 +710,10 @@ static void accumulate_streamed_kl_chunk(
 
 template <typename Model, typename State>
 int run_kl_eval_batched(
+    CudaExecutionContext& execution,
     Model& model,
     State& state,
+    mfq::cuda::Executor* executor,
     const std::string & reference_path,
     int max_chunks,
     int64_t requested_n_batch,
@@ -659,7 +726,7 @@ int run_kl_eval_batched(
         ? (reference_contract.n_batch == 0
               ? n_ctx : reference_contract.n_batch)
         : requested_n_batch;
-    if (n_ctx > model.max_position_embeddings()) {
+    if (n_ctx > model.metadata.max_position_embeddings) {
         throw std::runtime_error(
             "KL reference exceeds model context capacity");
     }
@@ -673,7 +740,7 @@ int run_kl_eval_batched(
     validate_kl_execution_geometry(
         n_batch, n_batch, reference_contract, "optimized");
     KlKvCacheCapacityScope kv_cache_capacity_scope(
-        n_ctx, model.execution->kl_mmq);
+        n_ctx, execution.kl_mmq);
     const int target_start = input.chunks[0].target_start;
     int score_count = input.chunks[0].score_count;
     for (const auto & chunk : input.chunks) {
@@ -692,13 +759,13 @@ int run_kl_eval_batched(
                 "--kl-score-count exceeds the stored chunk score count");
         }
     }
-    if (input.n_vocab != model.vocab_size()) {
+    if (input.n_vocab != model.metadata.vocab_size) {
         throw std::runtime_error("KL vocab size mismatch");
     }
     int bos_replacements = 0;
     int32_t legacy_bos = -1;
     if (input.reference_format == "_logits_" &&
-        model.model_type() == "gemma4") {
+        kl_model_type(model) == "gemma4") {
         legacy_bos = input.chunks[0].tokens[0];
         for (auto & chunk : input.chunks) {
             if (chunk.tokens[0] != legacy_bos) {
@@ -736,13 +803,14 @@ int run_kl_eval_batched(
         auto ids = streamed_kl_ids(
             input, begin, n_seq_batch, n_ctx);
         state.reset(n_seq_batch);
-        auto hidden = model.hidden_forward(ids);
+        auto hidden = kl_hidden_forward(
+            execution, model, state, executor, ids);
         for (int bi = 0; bi < n_seq_batch; ++bi) {
             auto selected_hidden = hidden.index({
                 bi, Slice(first, first + score_count), Slice()
             }).contiguous();
-            auto pred =
-                model.logits_from_hidden(selected_hidden);
+            auto pred = kl_logits_from_hidden(
+                model, executor, std::move(selected_hidden));
             accumulate_streamed_kl_chunk(
                 reference, input, begin + bi, pred,
                 score_count, metrics);
@@ -803,7 +871,6 @@ int run_kl_eval_batched(
                << " reference_n_batch=" << reference_contract.n_batch
                << " reference_n_ubatch=" << reference_contract.n_ubatch
                << "\n";
-    const auto& execution = *model.execution;
     std::cout << "cpp_kl_mmq"
               << " mmq=" << kl_mmq_mode_name(execution.kl_mmq.mode)
               << " activation_quantize_calls="
@@ -817,8 +884,10 @@ int run_kl_eval_batched(
 
 template <typename Model, typename State>
 int run_selected_kl_eval(
+    CudaExecutionContext& execution,
     Model& model,
     State& state,
+    mfq::cuda::Executor* executor,
     const std::string & reference_path,
     int max_chunks,
     KlEvaluator evaluator,
@@ -827,11 +896,11 @@ int run_selected_kl_eval(
     const KlReferenceContract & reference_contract) {
     return evaluator == KlEvaluator::Optimized
         ? run_kl_eval_batched(
-              model, state, reference_path, max_chunks,
+              execution, model, state, executor, reference_path, max_chunks,
               requested_n_batch, score_override,
               reference_contract)
         : run_kl_eval(
-              model, state, reference_path, max_chunks, evaluator,
+              execution, model, state, executor, reference_path, max_chunks, evaluator,
               score_override, reference_contract);
 }
 
@@ -1110,13 +1179,15 @@ int run_kl_eval_streamed(
 
 #define TYLOINFER_INSTANTIATE_KL(MODEL, STATE)                                  \
     template int run_kl_eval_batched<MODEL, STATE>(                             \
-        MODEL&, STATE&, const std::string&, int, std::int64_t, int,            \
+        CudaExecutionContext&, MODEL&, STATE&, mfq::cuda::Executor*,           \
+        const std::string&, int, std::int64_t, int,                             \
         const KlReferenceContract&);                                            \
     template int run_selected_kl_eval<MODEL, STATE>(                            \
-        MODEL&, STATE&, const std::string&, int, KlEvaluator, std::int64_t, int,\
+        CudaExecutionContext&, MODEL&, STATE&, mfq::cuda::Executor*,            \
+        const std::string&, int, KlEvaluator, std::int64_t, int,                \
         const KlReferenceContract&)
 
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Run, mfq::cuda::qwen35::State);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMOTtsCausalLm, mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::Gemma4CausalLm, mfq::cuda::Gemma4CausalLm);

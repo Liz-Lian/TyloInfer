@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/executor/qwen35.h"
+#include "models/qwen35/forward.h"
 #include "engine/state/paged_kv.h"
 
 #include <cstdint>
@@ -14,26 +14,29 @@ struct CudaExecutionContext;
 namespace mfq::cuda::qwen35 {
 
 // A copyable snapshot is only needed for paused recurrent decode rows. KV state
-// remains owned by the real Run and is copied into its stable slot in place.
+// remains owned by the aggregate state and is copied into its stable slot in place.
 struct BatchState {
     std::int64_t batch = 0;
     std::vector<std::variant<KVCache, Recurrent::State>> layers;
 };
 
-// A request owns its prefill state. The batch only copies it into a stable
-// decode slot; immutable weights are shared by every Run.
+// A request owns its prefill state and executor. The batch only copies state
+// into a stable decode slot; immutable weights are shared by every request.
 class RequestState {
   public:
     RequestState() = default;
     RequestState(const RequestState &) = delete;
     RequestState &operator=(const RequestState &) = delete;
     std::int32_t slot() const noexcept { return slot_; }
-    Run &run() noexcept { return *run_; }
-    const Run &run() const noexcept { return *run_; }
+    qwen35::State &state() noexcept { return *state_; }
+    const qwen35::State &state() const noexcept { return *state_; }
+    Executor &executor() noexcept { return *executor_; }
+    const Executor &executor() const noexcept { return *executor_; }
 
   private:
     friend class Batch;
-    std::unique_ptr<Run> run_;
+    std::unique_ptr<Executor> executor_;
+    std::unique_ptr<qwen35::State> state_;
     PagedKv::Sequence pages_;
     std::int32_t slot_ = -1;
 };
@@ -71,18 +74,23 @@ class Batch {
     void restore_recurrent_slots(const std::vector<std::int32_t> &slots,
                                  const BatchState &state);
 
-    Run &run() noexcept { return *run_; }
-    const Run &run() const noexcept { return *run_; }
+    qwen35::State &state() noexcept { return *state_; }
+    const qwen35::State &state() const noexcept { return *state_; }
+    Executor &executor() noexcept { return *executor_; }
+    const Executor &executor() const noexcept { return *executor_; }
 
   private:
-    void copy_to_slot(Run &target, const Run &source, std::int64_t slot) const;
-    void bind_paged(Run &run, const std::vector<const PagedKv::Sequence *> &sequences);
+    void copy_to_slot(qwen35::State &target, const qwen35::State &source,
+                      std::int64_t slot) const;
+    void bind_paged(qwen35::State &state,
+                    const std::vector<const PagedKv::Sequence *> &sequences);
     void bind_paged_slots();
-    void detach_paged(Run &run) noexcept;
+    void detach_paged(qwen35::State &state) noexcept;
 
     std::shared_ptr<const Model> weights_;
     CudaExecutionContext *execution_ = nullptr;
-    std::unique_ptr<Run> run_;
+    std::unique_ptr<Executor> executor_;
+    std::unique_ptr<qwen35::State> state_;
     std::vector<RequestState *> slots_;
     std::int64_t slot_releases_ = 0;
     bool page_table_dirty_ = false;
