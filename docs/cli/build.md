@@ -62,23 +62,50 @@ TQ HIP implementation.
 
 ## CUDA backend layout
 
-`csrc/backends/cuda` keeps one interface per layer: `native/` is the
-context and tensor implementation behind the `backend.h` seam, `kernels/` the
-device sources, `ops/` the operator adapters, and `engine/`, `models/`,
-`storage/` the runtime above them.
+CUDA context, tensor, environment, allocation helpers, communication, branch
+scheduling, cuBLAS handles, and profiling live in `csrc/native/cuda/`.
+CMake and Python JIT use this source tree; `csrc/backends/cuda/native/` has
+been removed. The migration changes source and include paths only.
+The shared resource-exhaustion exception is in `csrc/native/error.h`;
+MoE route statistics are in `csrc/diagnostics/route_stats.*`.
+Shared CUDA kernel implementations live in `csrc/kernels/cuda/`.
+Under `csrc/backends/cuda/`, `ops/` holds operators, while `engine/` and `models/`
+hold execution and model assembly. The old `kernels/` directory retains only
+the three DeepSeek declaration headers also consumed by HIP.
 
 Shared linear operators in `ops/common/quant_linear.cpp` consume loaded weights.
 Model-source reads, dtype selection, shard planning and linear loading belong to
-`storage/weight_loader.cpp`.
+`storage/weights/loaders/weight.cpp`. TQ still has model-source loading and cache
+management in `ops/tq/`; separating these is part of the remaining work.
 
-`csrc/backends/cuda/kernels/` is the only source of the shared CUDA
-kernels. The native CMake targets (`TYLOINFER_CUDA_KERNEL_ROOT`) and the Python
+CUDA has no catch-all `core/` directory: decode graphs belong to `engine/`,
+RoPE to `ops/common/`, physical KV/recurrent state to `storage/state/`, and
+native model compositions to `models/common/`. The grid prompt implementation
+currently lives in `engine/model_components.h` alongside model assembly.
+
+The shared native modules are `components/io/`, `formats/`, `source/`,
+`backends/cpu/`, and the six Engine directories: `requests/`, `models/`,
+`state/`, `weights/`, `batch/`, and `executor/`. The public Engine interface is
+`csrc/engine/executor/engine.h`.
+
+CUDA combines the `mfq-cuda-ops`, `mfq-cuda-execution`, and `mfq-cuda-loading`
+object targets with concrete model/Engine bindings in `mfq-cuda-runtime`.
+The native context/tensor target retains the name `mfq-cuda-core`.
+The CUDA subdirectory currently requires
+`TYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON`.
+
+`csrc/kernels/cuda/` contains the shared CUDA kernel implementations.
+The native CMake targets (`TYLOINFER_CUDA_KERNEL_ROOT`) and the Python
 JIT extension (`tyloinfer.kernels.cuda._ext`) compile the same files; the Python
 package keeps no copy.
 
-TQ is the packaging exception: `tq_ops.cu`, `tq_ops.h` and `tq_*.cuh` stay in
-`tyloinfer/kernels/cuda` because they are installed wheel resources loaded by
-`tyloinfer/kernels/cuda/tq.py`.
+TQ sources (`tq_ops.cu`, `tq_ops.h` and `tq_*.cuh`) also live in
+`csrc/kernels/cuda`. `packaging/python/build.py` assembles them under
+`tyloinfer/kernels/cuda` in a temporary Python distribution, then builds its
+wheel with standard setuptools package-data declarations.
+`tq.py` uses the canonical source directory in a checkout or editable install,
+and the installed resources in a wheel. The standalone release scripts install
+that wheel for PyInstaller; no second source copy is maintained.
 
 `backend.h` is included by name rather than by path, so each backend supplies
 its own adapter at that seam (`csrc/backends/hip/include/backend.h`);

@@ -64,12 +64,18 @@ if [[ "${TYLOINFER_RELEASE_REUSE_VENV:-0}" != "1" ]]; then
     --locked \
     --active \
     --no-default-groups \
-    --no-editable \
+    --no-install-project \
     --group release \
     --extra metal \
     --extra benchmark \
     --extra reference
 fi
+
+mfq_wheel="$("${mfq_venv_dir}/bin/python" "${mfq_script_dir}/python/build.py" \
+  --output-dir "${mfq_build_root}/python")"
+uv pip install --python "${mfq_venv_dir}/bin/python" --no-deps --reinstall "${mfq_wheel}"
+mfq_cli_source="$("${mfq_venv_dir}/bin/python" -I -c \
+  'from importlib.metadata import distribution; print(distribution("tyloinfer").locate_file("tyloinfer/cli.py"))')"
 
 source "${mfq_script_dir}/macos_release_paths.sh"
 mfq_configure_release_paths
@@ -155,7 +161,6 @@ mfq_pyinstaller_args=(
   --onedir
   --name "${mfq_cli_name}"
   --target-architecture arm64
-  --paths "${mfq_project_dir}"
   --additional-hooks-dir "${mfq_script_dir}/hooks"
   --collect-data tyloinfer
   --collect-all av
@@ -200,8 +205,11 @@ mfq_pyinstaller_args=(
 if [[ "${mfq_signing_identity}" != "-" ]]; then
   mfq_pyinstaller_args+=(--codesign-identity "${mfq_signing_identity}")
 fi
-mfq_pyinstaller_args+=("${mfq_project_dir}/tyloinfer/cli.py")
-"${mfq_venv_dir}/bin/pyinstaller" "${mfq_pyinstaller_args[@]}"
+mfq_pyinstaller_args+=("${mfq_cli_source}")
+(
+  cd "${mfq_script_dir}"
+  "${mfq_venv_dir}/bin/pyinstaller" "${mfq_pyinstaller_args[@]}"
+)
 
 mfq_cli_path="${mfq_resource_dir}/${mfq_cli_name}/${mfq_cli_name}"
 [[ -x "${mfq_cli_path}" ]] || fail "PyInstaller did not create the unified mfq CLI"

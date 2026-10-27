@@ -7,6 +7,28 @@ The packages include the server, Python environment, native runtime, and
 required runtime libraries. `mfq serve` or TyloInfer manages the native
 sidecars.
 
+## Python wheel
+
+`packaging/python/build.py` owns the Python distribution layout. It assembles
+the Python package, canonical TQ CUDA sources, metadata, and licenses in a
+temporary directory, then uses the existing setuptools backend through `uv`
+to build a wheel. The root `pyproject.toml` supplies metadata, dependencies,
+and package-data declarations; no custom setuptools commands are installed.
+
+From the repository root:
+
+```shell
+uv run --no-project python packaging/python/build.py --output-dir packaging/python/dist
+```
+
+Only the finished wheel is copied to the output directory. The temporary
+distribution is removed on success or failure, and the repository's sources
+are not modified. Build distributable wheels through this entry point;
+root-level `uv sync` continues to support source development.
+
+The desktop release scripts install this wheel before PyInstaller collects
+the Python package and its resources.
+
 ## macOS
 
 The macOS release packages the `mfq` service/evaluation CLI and TyloInfer into an

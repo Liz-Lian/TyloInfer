@@ -439,7 +439,7 @@ function Initialize-PythonEnvironment {
     Add-ToPath (Join-Path $Context.VenvDirectory "Scripts")
 
     $syncArguments = @(
-        "sync", "--locked", "--active", "--no-default-groups", "--no-editable",
+        "sync", "--locked", "--active", "--no-default-groups", "--no-install-project",
         "--group", "release", "--extra", "benchmark"
     )
     Invoke-Checked $Context.Tools.Uv $syncArguments
@@ -452,6 +452,14 @@ function Initialize-PythonEnvironment {
     if (-not (Test-Path -LiteralPath $Context.PyInstaller -PathType Leaf)) {
         Fail "uv did not install PyInstaller into the release environment"
     }
+
+    $wheel = Invoke-Checked $Context.Python @(
+        (Join-Path $Context.ScriptDirectory "python\build.py"),
+        "--output-dir", (Join-Path $Context.ScriptDirectory "build\python")
+    )
+    Invoke-Checked $Context.Tools.Uv @(
+        "pip", "install", "--python", $Context.Python, "--no-deps", "--reinstall", $wheel
+    )
 }
 
 function Build-NativeSidecar {
@@ -531,10 +539,13 @@ function Stage-WindowsRuntime {
 function Build-PythonCli {
     param([Parameter(Mandatory)][hashtable] $Context)
 
+    $cliSource = Invoke-Checked $Context.Python @(
+        "-I", "-c",
+        'from importlib.metadata import distribution; print(distribution("tyloinfer").locate_file("tyloinfer/cli.py"))'
+    )
     $arguments = @(
         "--noconfirm", "--clean", "--onedir",
         "--name", $Context.CliName,
-        "--paths", $Context.ProjectDirectory,
         "--collect-data", "tyloinfer"
     )
     foreach ($package in @(
@@ -560,9 +571,15 @@ function Build-PythonCli {
         "--distpath", $Context.ResourceDirectory,
         "--workpath", $Context.PyInstallerBuildDirectory,
         "--specpath", $Context.SpecDirectory,
-        (Join-Path $Context.ProjectDirectory "tyloinfer\cli.py")
+        $cliSource
     )
-    Invoke-Checked $Context.PyInstaller $arguments
+    Push-Location $Context.ScriptDirectory
+    try {
+        Invoke-Checked $Context.PyInstaller $arguments
+    }
+    finally {
+        Pop-Location
+    }
 
     if (-not (Test-Path -LiteralPath $Context.CliArtifact -PathType Leaf)) {
         Fail "PyInstaller did not create $($Context.CliArtifact)"

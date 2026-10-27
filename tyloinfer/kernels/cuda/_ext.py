@@ -18,8 +18,8 @@ from pathlib import Path
 _DIR = os.path.dirname(__file__)
 _REPOSITORY_ROOT = str(Path(_DIR).resolve().parents[2])
 # The shared CUDA kernels have one source tree, consumed by the native CMake
-# targets and by this extension.  TQ kernels stay here as installed wheel
-# resources and are built separately by tq.py.
+# targets and by this extension. TQ is built separately by tq.py and its
+# sources are also collected into wheels from that tree.
 _CUDA_BACKEND = Path(_REPOSITORY_ROOT) / "csrc" / "backends" / "cuda"
 _KERNEL_DIR = str(Path(_REPOSITORY_ROOT) / "csrc" / "kernels" / "cuda")
 _CUDA_RUNTIME_INCLUDE = str(_CUDA_BACKEND / "include")

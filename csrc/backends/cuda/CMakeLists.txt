@@ -4,8 +4,6 @@
 set(TYLOINFER_CUDA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # Single source of the shared CUDA kernels; the Python extension builds the same files.
 set(TYLOINFER_CUDA_KERNEL_ROOT "${PROJECT_SOURCE_DIR}/kernels/cuda")
-# TQ kernels stay in the Python package because they are installed wheel resources.
-set(TYLOINFER_CUDA_TQ_ROOT "${TYLOINFER_REPOSITORY_ROOT}/tyloinfer/kernels/cuda")
 
 set(TYLOINFER_CUDA_ARCHITECTURES "" CACHE STRING
     "Optional CUDA architecture override; otherwise use CMAKE_CUDA_ARCHITECTURES, CUDAARCHS or native")
@@ -113,7 +111,7 @@ set(TYLOINFER_CUDA_KERNEL_SOURCES
     ${TYLOINFER_CUDA_KERNEL_ROOT}/mx_matmul.cu
     # nepq.cu is only the generic Hadamard transform pair; the default model path calls it.
     ${TYLOINFER_CUDA_KERNEL_ROOT}/nepq.cu
-    ${TYLOINFER_CUDA_TQ_ROOT}/tq_ops.cu
+    ${TYLOINFER_CUDA_KERNEL_ROOT}/tq_ops.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/norm.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/rope.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/sampling.cu

@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 from tyloinfer.formats.tq import RELATIVE, TQTensor
+from tyloinfer.kernels.cuda import tq_source_directory
 
 
 class ProjectionView(ct.Structure):
@@ -54,7 +55,7 @@ class PrefillMoeJob(ct.Structure):
 def library():
     from torch.utils.cpp_extension import load
 
-    directory = Path(__file__).parent
+    directory = tq_source_directory()
     path = load(
         name="mfq_tq_ops",
         sources=[str(directory / "tq_ops.cu")],
