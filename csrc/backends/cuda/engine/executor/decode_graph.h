@@ -8,12 +8,11 @@
 #include <span>
 #include <vector>
 
-struct ParallelConfig;
 namespace mfq::cuda { class Collectives; }
 
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
     const MfqCudaStream& primary_stream,
-    const ParallelConfig& parallel);
+    const mfq::cuda::Collectives& collectives);
 std::vector<MfqCudaStream> cuda_graph_participant_streams(
     const std::vector<MfqCudaStream>& compute_streams,
     const mfq::cuda::Collectives& collectives);
@@ -48,7 +47,7 @@ struct DecodeGraphCache {
     bool valid = false;
 
     explicit DecodeGraphCache(int64_t context_capacity);
-    void ensure_compute_streams(const ParallelConfig& parallel);
+    void ensure_compute_streams(const mfq::cuda::Collectives& collectives);
     std::vector<MfqCudaStream> graph_participant_streams(
         const mfq::cuda::Collectives& collectives) const;
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,

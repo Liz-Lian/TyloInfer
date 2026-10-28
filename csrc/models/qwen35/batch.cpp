@@ -397,12 +397,12 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
     }
 }
 
-Tensor Batch::logits_from_last_hidden(Tensor hidden) {
+Tensor Batch::logits_from_last_hidden(Tensor hidden, const Executor::Mode& mode) {
     auto last = hidden.index({mfq_tensor_backend::indexing::Slice(), -1,
                               mfq_tensor_backend::indexing::Slice()})
                     .to(mfq_tensor_backend::kFloat16)
                     .contiguous();
-    return qwen35::logits(*weights_, *executor_, std::move(last), true);
+    return qwen35::logits(*weights_, *executor_, std::move(last), true, mode);
 }
 
 std::vector<const void *> Batch::decode_state_addresses() {

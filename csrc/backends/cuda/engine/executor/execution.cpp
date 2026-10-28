@@ -621,41 +621,6 @@ void mfq_release_host_allocator_cache() noexcept {
 
 using mfq_tensor_backend::indexing::Slice;
 
-namespace mfq::cuda::internal {
-
-PrefillCudaTimer::PrefillCudaTimer()
-    : stream_(mfq_get_current_cuda_stream()) {
-    TYLOINFER_CUDA_CHECK(cudaEventCreate(&started_));
-    try {
-        TYLOINFER_CUDA_CHECK(cudaEventCreate(&finished_));
-        TYLOINFER_CUDA_CHECK(cudaEventRecord(started_, stream_));
-    } catch (...) {
-        if (finished_ != nullptr) cudaEventDestroy(finished_);
-        cudaEventDestroy(started_);
-        finished_ = nullptr;
-        started_ = nullptr;
-        throw;
-    }
-}
-
-PrefillCudaTimer::~PrefillCudaTimer() {
-    if (finished_ != nullptr) cudaEventDestroy(finished_);
-    if (started_ != nullptr) cudaEventDestroy(started_);
-}
-
-cudaEvent_t PrefillCudaTimer::finished_event() const {
-    return finished_;
-}
-
-double PrefillCudaTimer::elapsed_ms() const {
-    TYLOINFER_CUDA_CHECK(cudaEventSynchronize(finished_));
-    float elapsed = 0.0f;
-    TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&elapsed, started_, finished_));
-    return static_cast<double>(elapsed);
-}
-
-} // namespace mfq::cuda::internal
-
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());
     if (!enabled()) return;
@@ -702,8 +667,7 @@ mfq::cuda::FfnExec CudaExecutionContext::ffn() {
 std::unique_ptr<mfq::cuda::Executor> CudaExecutionContext::make_executor() {
     return std::make_unique<mfq::cuda::Executor>(
         profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
-        model_parallel_primary_device(*this), decode_graph_serial_branches,
-        decode_graph_tp_projection_major);
+        model_parallel_primary_device(*this));
 }
 
 mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
@@ -718,7 +682,8 @@ mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
             config.gdn_transposed_state,
             gemma_stage_trace,
             gemma_trace_layer,
-            layer_placement.primary_device()};
+            layer_placement.primary_device(),
+            decode_graph_tp_projection_major};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {

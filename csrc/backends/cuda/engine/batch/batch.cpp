@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/batch/batch.h"
 
-#include "backends/cuda/engine/executor/execution.h"
+#include "native/cuda/context.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "engine/batch/prefill_budget.h"
 #include "native/error.h"
@@ -10,10 +10,11 @@
 namespace mfq::cuda {
 
 mfq::engine::PrefillChunk budget_batch_prefill(
-        std::int64_t hidden_size, std::int64_t hc_mult, CudaExecutionContext& execution,
+        std::int64_t hidden_size, std::int64_t hc_mult, int device,
+        const std::shared_ptr<MoeExpertCache>& cache,
         mfq::engine::PrefillChunk chunk, std::size_t growth) {
-    const auto context=default_context(execution.layer_placement.primary_device());
-    const auto transfer=moe_prefill_workspace_budget(execution.stores.moe_expert_cache,false).transfer_bytes;
+    const auto context=default_context(device);
+    const auto transfer=moe_prefill_workspace_budget(cache,false).transfer_bytes;
     const auto fixed=mfq::engine::prefill_budget_add((std::size_t(1)<<30)+growth,transfer);
     const auto available=context->available_memory()+context->workspace_available();
     const auto row_bytes=std::size_t(hidden_size)*hc_mult*sizeof(float)*8;
@@ -34,9 +35,9 @@ BatchCacheScope::~BatchCacheScope() { serial_ = previous_; }
 
 BatchGraph::BatchGraph() : stream(mfq_get_stream_from_pool(false)) {}
 
-void BatchGraph::ensure_compute_streams(const ParallelConfig& parallel) {
+void BatchGraph::ensure_compute_streams(const Collectives& collectives) {
     if (compute_streams.empty()) {
-        compute_streams = make_cuda_graph_compute_streams(stream, parallel);
+        compute_streams = make_cuda_graph_compute_streams(stream, collectives);
     }
 }
 

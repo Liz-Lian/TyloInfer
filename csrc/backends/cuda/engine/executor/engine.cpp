@@ -290,9 +290,19 @@ struct CudaEngineState {
                     for (auto& layer_state : state.layers)
                         if (auto* cache = std::get_if<KVCache>(&layer_state)) *cache = KVCache();
                 }
+                auto batch_config = config.continuous_batch;
+                batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
+                const qwen35::Batch::Options batch_options{
+                    batch_config.max_sequences, batch_config.paged_kv,
+                    runtime_options::kv_vram_preallocated(),
+                    execution->dense_cpu_layer_count != 0 ||
+                        !execution->dsv4_cpu_offload_layers.empty(),
+                    execution->moe_cache_registration_min_slots};
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
-                    config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,
-                    model, *execution, config.continuous_batch);
+                    config.generation.prefill_chunk_size, batch_config.prefill_token_budget,
+                    model, execution->make_executor(), execution->collectives,
+                    execution->forward_mode(), batch_options,
+                    execution->stores.moe_expert_cache, std::move(batch_config));
             } else if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
                     config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,

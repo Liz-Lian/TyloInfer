@@ -74,12 +74,12 @@ void clear_linear_speculative(LinearState& state) noexcept {
 } // namespace
 
 Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
-             int primary, Tensor ids) {
+             int primary, Tensor ids, const Executor::Mode& mode) {
     auto normalized = normalize_ids(collectives, primary, std::move(ids));
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {std::move(normalized)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs));
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
 Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
@@ -90,24 +90,25 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
                     -1, {}, "model.output_norm"};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs));
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
 Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
     const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
     Inputs inputs;
     inputs.values = {std::move(logits)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs));
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
 }
 
-Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped) {
+Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+              const Executor::Mode& mode) {
     std::array<Task, 2> tasks{
         Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
         Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
     Inputs inputs;
     inputs.values = {std::move(hidden)};
     return executor.run(std::span<const Task>{tasks.data(), capped ? tasks.size() : 1},
-                        std::move(inputs));
+                        std::move(inputs), mode);
 }
 
 namespace {
@@ -236,7 +237,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     auto ids = normalize_ids(collectives, options.primary, std::move(input.ids));
     auto embeddings = input.embeddings.has_value()
                           ? std::move(*input.embeddings)
-                          : embed(model, executor, collectives, options.primary, ids);
+                          : embed(model, executor, collectives, options.primary, ids, options);
     return forward_impl(model, state, executor, collectives, options, std::move(ids),
                         std::move(embeddings), std::move(input.positions),
                         std::move(input.lengths), input.trace,
@@ -273,7 +274,7 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
             Inputs inputs;
             inputs.output = std::nullopt;
             inputs.linear = std::span<const LinearStateView>{&linear_view, 1};
-            executor.run(std::span<const Task>{&replay_task, 1}, std::move(inputs));
+            executor.run(std::span<const Task>{&replay_task, 1}, std::move(inputs), {});
         }
         state.commit_speculative();
         state.cache_pos = keep;
@@ -300,7 +301,7 @@ Tensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& s
                              LinearAttention::Options linear_options) {
         Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step, &rope, trace,
                       options.trace_layer, linear, linear_options, scratch_offset};
-        return executor.run(tasks, std::move(inputs), options.ffn);
+        return executor.run(tasks, std::move(inputs), options);
     };
     if (const auto* full = std::get_if<Full>(&layer.weights)) {
         auto* cache = std::get_if<KVCache>(&state);

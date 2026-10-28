@@ -2,8 +2,6 @@
 
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "native/error.h"
 
@@ -23,29 +21,22 @@ using Tensor = mfq_tensor_backend::Tensor;
 
 mfq::engine::PrefillChunk BatchOps::prefill_chunk(
         const std::shared_ptr<Request>&, mfq::engine::PrefillChunk chunk) {
-    CudaScope guard(execution_);
     return mfq::cuda::budget_batch_prefill(
-        model_->metadata.hidden_size, model_->metadata.hc_mult, execution_, chunk);
+        model_->metadata.hidden_size, model_->metadata.hc_mult, mode_.primary, moe_cache_, chunk);
 }
 
-bool batch_graph_enabled(const Model& model, const CudaExecutionContext& execution,
-                         const CudaContinuousBatchConfig& config) {
+bool batch_graph_enabled(const Model& model, const CudaContinuousBatchConfig& config) {
     return config.cuda_graph && !Batch::has_cached_moe(model) &&
-           mfq_cuda_graph_capture_supported() && model_parallel_cuda_graph_enabled(execution);
+           mfq_cuda_graph_capture_supported();
 }
 
-BatchOps::BatchOps(std::shared_ptr<const Model> model, CudaExecutionContext& execution,
+BatchOps::BatchOps(std::shared_ptr<const Model> model, std::unique_ptr<Executor> executor,
+                   Collectives& collectives, Executor::Mode mode, Batch::Options options,
+                   std::shared_ptr<MoeExpertCache> moe_cache,
                    CudaContinuousBatchConfig config)
-    : model_(std::move(model)),
-      state_(model_, execution.make_executor(), execution.config.gdn_transposed_state,
-             Batch::Options{
-                 config.max_sequences,
-                 config.paged_kv,
-                 runtime_options::kv_vram_preallocated(),
-                 execution.dense_cpu_layer_count != 0 ||
-                     !execution.dsv4_cpu_offload_layers.empty(),
-                 execution.moe_cache_registration_min_slots}),
-      execution_(execution), config_(std::move(config)),
+    : model_(std::move(model)), collectives_(collectives), mode_(mode),
+      state_(model_, std::move(executor), mode_.transposed, options),
+      moe_cache_(std::move(moe_cache)), config_(std::move(config)),
       max_sequences_(static_cast<int32_t>(config_.max_sequences)),
       moe_enabled_(state_.has_moe()),
       cached_moe_enabled_(state_.has_cached_moe()) {}
@@ -95,8 +86,7 @@ void BatchOps::suspend_decode() { invalidate_decode_graph(); }
 
 BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                                    mfq::engine::PrefillChunk chunk) {
-    const int primary = execution_.layer_placement.primary_device();
-    CudaScope guard(execution_);
+    const int primary = mode_.primary;
     state_.prepare_prefill(request->cache, chunk.offset, request->prompt.size());
     if (chunk.offset == 0) {
         request->prefill_ids =
@@ -120,7 +110,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     input.ids = request->prefill_ids.narrow(1, chunk.offset, chunk.count).contiguous();
     input.lengths = std::move(length);
     hidden = forward(*model_, request->cache.state(), request->cache.executor(),
-                     execution_.collectives, execution_.forward_mode(), std::move(input));
+                     collectives_, mode_, std::move(input));
     const auto end = chunk.offset + chunk.count;
     if (end < request->prefill_ids.size(1)) {
         TYLOINFER_CUDA_CHECK(
@@ -131,7 +121,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     }
     if (end < static_cast<int64_t>(request->prompt.size()))
         return {};
-    auto logits = state_.logits_from_last_hidden(std::move(hidden));
+    auto logits = state_.logits_from_last_hidden(std::move(hidden), mode_);
     TYLOINFER_RUNTIME_CHECK(final_timer != nullptr, "continuous batching lost the prefill timer");
     TYLOINFER_CUDA_CHECK(
         cudaEventRecord(final_timer->finished_event(), mfq_get_current_cuda_stream()));
@@ -148,14 +138,12 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
 }
 
 void BatchOps::activate(const std::shared_ptr<Request>& request, const Sample& sample) {
-    CudaScope guard(execution_);
     if (request->counts.defined())
         sample_token_counts_add_cuda(request->counts, sample.next.contiguous());
     state_.activate(request->cache);
 }
 
 void BatchOps::resume_decode(int64_t cache_position) {
-    CudaScope guard(execution_);
     state_.resume_decode(cache_position);
 }
 
@@ -196,8 +184,7 @@ void BatchOps::invalidate_decode_graph() {
 }
 
 BatchOps::Decoded BatchOps::decode(State& state) {
-    const int primary = execution_.layer_placement.primary_device();
-    CudaScope primary_guard(execution_);
+    const int primary = mode_.primary;
     for (const auto& request : state.active)
         state_.ensure_decode_tokens(request->cache, request->cache_length + 1);
     int64_t max_position = 0;
@@ -225,7 +212,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     bool graph_cache_hit = false;
     bool graph_decode = false;
     if (batch >= 2 && batch_greedy && config_.greedy &&
-        batch_graph_enabled(*model_, execution_, config_)) {
+        batch_graph_enabled(*model_, config_)) {
         graph_state_addresses = state_.decode_state_addresses();
         const auto found =
             std::find_if(decode_graphs_.begin(), decode_graphs_.end(), [&](const auto& graph) {
@@ -249,10 +236,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     std::unique_ptr<MfqCudaStreamGuard> graph_stream_guard;
     std::vector<std::unique_ptr<MfqCudaStreamGuard>> graph_compute_stream_guards;
     if (graph_decode) {
-        const auto& parallel = execution_.tensor_parallel.enabled()
-                                   ? execution_.tensor_parallel
-                                   : execution_.expert_parallel;
-        decode_graph->ensure_compute_streams(parallel);
+        decode_graph->ensure_compute_streams(collectives_);
         graph_stream_guard = std::make_unique<MfqCudaStreamGuard>(decode_graph->stream);
         graph_compute_stream_guards =
             activate_cuda_graph_compute_streams(decode_graph->compute_streams);
@@ -290,8 +274,12 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     const auto paused_state = state_.capture_recurrent_slots(paused_slots);
     Tensor logits;
     Tensor graph_tokens;
-    mfq::cuda::BatchCacheScope moe_cache_scope(
-        execution_.continuous_batch_cache_serial, cached_moe_enabled_ && batch > 1);
+    auto mode = mode_;
+    mode.ffn.batch_serial = cached_moe_enabled_ && batch > 1;
+    if (graph_decode) {
+        mode.ffn.serial = true;
+        mode.projection_major = true;
+    }
     try {
         if (graph_decode) {
             const auto invoke = [&]() {
@@ -303,24 +291,21 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                 input.kv_length = planned_len;
                 input.attention_parts = graph_attention_parts;
                 auto hidden = forward(*model_, state_.state(), state_.executor(),
-                                      execution_.collectives, execution_.forward_mode(),
+                                      collectives_, mode,
                                       std::move(input));
-                auto current_logits = state_.logits_from_last_hidden(std::move(hidden));
+                auto current_logits = state_.logits_from_last_hidden(std::move(hidden), mode);
                 return sample_greedy_cuda(current_logits.contiguous().view({batch, -1}));
             };
             if (!graph_cache_hit) {
                 decode_graph->invalidate();
                 try {
-                    DecodeGraphBranchScope branch_scope(execution_.decode_graph_serial_branches);
-                    DecodeGraphTpProjectionScope tp_projection_scope(
-                        execution_.decode_graph_tp_projection_major);
                     decode_graph->graph = std::make_unique<MfqCudaGraph>();
                     auto graph_warmup_states = state_.state().graph_state();
                     prepare_decode_graph_memory(
                         graph_warmup_states, state_.state().cache_pos,
                         model_->metadata.decode_graph_double_warmup, *decode_graph->graph,
                         [&]() { (void)invoke(); },
-                        decode_graph->participant_streams(execution_.collectives));
+                        decode_graph->participant_streams(collectives_));
                     decode_graph->graph->capture_begin();
                     decode_graph->static_next = invoke();
                     decode_graph->graph->capture_end();
@@ -341,9 +326,9 @@ BatchOps::Decoded BatchOps::decode(State& state) {
             input.lengths = lengths;
             input.cache_positions = pos;
             auto hidden = forward(*model_, state_.state(), state_.executor(),
-                                  execution_.collectives, execution_.forward_mode(),
+                                  collectives_, mode,
                                   std::move(input));
-            logits = state_.logits_from_last_hidden(std::move(hidden));
+            logits = state_.logits_from_last_hidden(std::move(hidden), mode);
         }
         state_.finish_decode(max_sequence_length);
     } catch (...) {

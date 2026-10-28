@@ -63,7 +63,7 @@ Tensor project(Model& model, mfq::cuda::Executor* executor,
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                             "CUDA model logits requires an executor");
     CudaScope scope(execution);
-    return logits(model, *executor, std::move(value), capped);
+    return logits(model, *executor, std::move(value), capped, execution.forward_mode());
 }
 
 template <typename Model, typename State>
@@ -310,9 +310,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     }
     void prepare_graph() {
         using Tensor = mfq_tensor_backend::Tensor;
-        graph.ensure_compute_streams(execution.tensor_parallel.enabled()
-                                         ? execution.tensor_parallel
-                                         : execution.expert_parallel);
+        graph.ensure_compute_streams(execution.collectives);
         MfqCudaGuard graph_device_guard(graph.stream.device_index());
         auto graph_stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
         cudaStream_t graph_stream = graph.stream.stream();

@@ -11,14 +11,16 @@
 
 namespace mfq::cuda::qwen35 {
 
-Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids);
+Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids,
+             const Executor::Mode& = {});
 
 Tensor forward(const Model&, State&, Executor&, Collectives&, const Executor::Mode&, Input);
 
 Tensor normalize(const Model&, Executor&, Tensor hidden, std::int64_t batch,
                  std::int64_t tokens);
 
-Tensor logits(const Model&, Executor&, Tensor hidden, bool capped = true);
+Tensor logits(const Model&, Executor&, Tensor hidden, bool capped = true,
+              const Executor::Mode& = {});
 
 Tensor softcap(const Model&, Executor&, Tensor logits);
 

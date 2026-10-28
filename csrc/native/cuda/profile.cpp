@@ -72,3 +72,38 @@ void CudaProfiler::report(const std::string& title) {
                   << '\n';
     }
 }
+
+namespace mfq::cuda::internal {
+
+PrefillCudaTimer::PrefillCudaTimer()
+    : stream_(mfq_get_current_cuda_stream()) {
+    TYLOINFER_CUDA_CHECK(cudaEventCreate(&started_));
+    try {
+        TYLOINFER_CUDA_CHECK(cudaEventCreate(&finished_));
+        TYLOINFER_CUDA_CHECK(cudaEventRecord(started_, stream_));
+    } catch (...) {
+        if (finished_ != nullptr) cudaEventDestroy(finished_);
+        cudaEventDestroy(started_);
+        finished_ = nullptr;
+        started_ = nullptr;
+        throw;
+    }
+}
+
+PrefillCudaTimer::~PrefillCudaTimer() {
+    if (finished_ != nullptr) cudaEventDestroy(finished_);
+    if (started_ != nullptr) cudaEventDestroy(started_);
+}
+
+cudaEvent_t PrefillCudaTimer::finished_event() const {
+    return finished_;
+}
+
+double PrefillCudaTimer::elapsed_ms() const {
+    TYLOINFER_CUDA_CHECK(cudaEventSynchronize(finished_));
+    float elapsed = 0.0f;
+    TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&elapsed, started_, finished_));
+    return static_cast<double>(elapsed);
+}
+
+} // namespace mfq::cuda::internal

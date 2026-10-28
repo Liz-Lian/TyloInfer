@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "native/cuda/collectives.h"
 
 #include <algorithm>
 
@@ -34,11 +34,12 @@ bool same_storage(const std::vector<mfq_tensor_backend::Tensor>& expected,
 
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
         const MfqCudaStream& primary_stream,
-        const ParallelConfig& parallel) {
-    if (!parallel.enabled()) return {primary_stream};
+        const mfq::cuda::Collectives& collectives) {
+    if (collectives.streams().empty()) return {primary_stream};
     std::vector<MfqCudaStream> streams;
-    streams.reserve(parallel.devices.size());
-    for (const int device : parallel.devices) {
+    streams.reserve(collectives.streams().size());
+    for (const auto& participant : collectives.streams()) {
+        const int device = participant.device_index();
         streams.push_back(
             device == primary_stream.device_index()
                 ? primary_stream
@@ -74,9 +75,9 @@ DecodeGraphCache::DecodeGraphCache(int64_t context_capacity)
       generated_capacity(std::max<int64_t>(context_capacity, 2048)) {}
 
 void DecodeGraphCache::ensure_compute_streams(
-        const ParallelConfig& parallel) {
+        const mfq::cuda::Collectives& collectives) {
     if (!compute_streams.empty()) return;
-    compute_streams = make_cuda_graph_compute_streams(stream, parallel);
+    compute_streams = make_cuda_graph_compute_streams(stream, collectives);
 }
 
 std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(

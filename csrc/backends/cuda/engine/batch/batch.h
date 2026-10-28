@@ -10,7 +10,7 @@
 #include <memory>
 #include <vector>
 
-struct CudaExecutionContext;
+class MoeExpertCache;
 
 namespace mfq::cuda {
 
@@ -23,7 +23,8 @@ struct BatchSample {
 };
 
 mfq::engine::PrefillChunk budget_batch_prefill(
-        std::int64_t hidden_size, std::int64_t hc_mult, CudaExecutionContext&,
+        std::int64_t hidden_size, std::int64_t hc_mult, int device,
+        const std::shared_ptr<MoeExpertCache>&,
         mfq::engine::PrefillChunk, std::size_t growth = 0);
 
 class BatchCacheScope {
@@ -51,7 +52,7 @@ struct BatchGraph {
 
     BatchGraph();
 
-    void ensure_compute_streams(const ParallelConfig& parallel);
+    void ensure_compute_streams(const Collectives& collectives);
 
     std::vector<MfqCudaStream>
     participant_streams(const mfq::cuda::Collectives& collectives) const;

@@ -78,7 +78,7 @@ tb::Tensor Mtp::evaluate(const MtpTarget& target, tb::Tensor hidden,
         inputs.attention.cache_positions = tb::arange(state_.position(), state_.position() + tokens, pos.options());
     inputs.trace = trace_;
     inputs.trace_scope = trace_scope_;
-    auto output = executor_->run(tasks_, std::move(inputs));
+    auto output = executor_->run(tasks_, std::move(inputs), {});
     state_.advance(tokens);
     return output;
 }

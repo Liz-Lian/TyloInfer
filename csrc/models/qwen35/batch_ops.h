@@ -1,11 +1,11 @@
 #pragma once
 
 #include "backends/cuda/engine/batch/batch.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "cuda_runtime_config.h"
 #include "engine/batch/batch.h"
 #include "engine/executor/sampler.h"
 #include "models/qwen35/batch.h"
+#include "native/cuda/profile.h"
 
 #include <cstdint>
 #include <memory>
@@ -16,8 +16,7 @@
 
 namespace mfq::cuda::qwen35 {
 
-bool batch_graph_enabled(const Model&, const CudaExecutionContext&,
-                         const CudaContinuousBatchConfig&);
+bool batch_graph_enabled(const Model&, const CudaContinuousBatchConfig&);
 
 struct BatchRequest : mfq::engine::BatchRequest {
     using mfq::engine::BatchRequest::BatchRequest;
@@ -39,7 +38,10 @@ class BatchOps {
         Tensor logits, greedy_tokens;
     };
 
-    BatchOps(std::shared_ptr<const Model>, CudaExecutionContext&, CudaContinuousBatchConfig);
+    // Calls run inside the owner's CUDA device/context scope.
+    BatchOps(std::shared_ptr<const Model>, std::unique_ptr<Executor>, Collectives&,
+             Executor::Mode, Batch::Options, std::shared_ptr<MoeExpertCache>,
+             CudaContinuousBatchConfig);
     ~BatchOps();
     BatchOps(const BatchOps&) = delete;
     BatchOps& operator=(const BatchOps&) = delete;
@@ -65,8 +67,10 @@ class BatchOps {
     void invalidate_decode_graph();
 
     std::shared_ptr<const Model> model_;
+    Collectives& collectives_;
+    const Executor::Mode mode_;
     Batch state_;
-    CudaExecutionContext& execution_;
+    std::shared_ptr<MoeExpertCache> moe_cache_;
     const CudaContinuousBatchConfig config_;
     int32_t max_sequences_ = 0;
     bool moe_enabled_ = false;

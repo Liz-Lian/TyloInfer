@@ -73,7 +73,8 @@ class Batch {
     void finish_decode(std::int64_t cache_position);
     void recover(const std::vector<RequestState *> &requests);
 
-    mfq_tensor_backend::Tensor logits_from_last_hidden(mfq_tensor_backend::Tensor hidden);
+    mfq_tensor_backend::Tensor logits_from_last_hidden(mfq_tensor_backend::Tensor hidden,
+                                                      const Executor::Mode&);
     std::vector<const void *> decode_state_addresses();
     BatchState capture_recurrent_slots(const std::vector<std::int32_t> &slots) const;
     void restore_recurrent_slots(const std::vector<std::int32_t> &slots,

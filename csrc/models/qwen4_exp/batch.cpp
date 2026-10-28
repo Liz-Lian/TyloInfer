@@ -69,7 +69,8 @@ mfq::engine::PrefillChunk BatchOps::prefill_chunk(
     CudaScope guard(execution_);
     initialize_prefill(request, chunk);
     return mfq::cuda::budget_batch_prefill(
-        model_.hidden_size(), model_.hc_mult(), execution_, chunk,
+        model_.hidden_size(), model_.hc_mult(), execution_.layer_placement.primary_device(),
+        execution_.stores.moe_expert_cache, chunk,
         request->cache->prefill_growth_bytes(chunk.count));
 }
 

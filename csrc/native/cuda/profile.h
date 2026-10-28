@@ -69,3 +69,24 @@ struct CudaProfiler {
 
     void report(const std::string& title);
 };
+
+namespace mfq::cuda::internal {
+
+class PrefillCudaTimer {
+public:
+    PrefillCudaTimer();
+    ~PrefillCudaTimer();
+
+    PrefillCudaTimer(const PrefillCudaTimer&) = delete;
+    PrefillCudaTimer& operator=(const PrefillCudaTimer&) = delete;
+
+    cudaEvent_t finished_event() const;
+    double elapsed_ms() const;
+
+private:
+    cudaStream_t stream_ = nullptr;
+    cudaEvent_t started_ = nullptr;
+    cudaEvent_t finished_ = nullptr;
+};
+
+} // namespace mfq::cuda::internal

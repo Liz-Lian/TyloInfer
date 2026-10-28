@@ -99,11 +99,10 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 
 std::unique_ptr<Executor> Executor::fork() const {
     return std::make_unique<Executor>(profiler_, mmq_, tq_, branches_, collectives_, routes_,
-                                      options_, ffn_options_, primary_, serial_,
-                                      projection_major_);
+                                      options_, ffn_options_, primary_);
 }
 
-Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, FfnExec::Mode mode) {
+Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
     const auto release = releases(tasks, inputs);
     auto options = options_;
     options.dense.mlp.nvq_fusion = options.projection.nvq_fusion;
@@ -111,9 +110,9 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, FfnExec::Mode m
     const auto scratch_size = inputs.scratch_offset + tasks.size();
     if (scratch_.size() < scratch_size) scratch_.resize(scratch_size);
     const Projector project(profiler_, mmq_, tq_, branches_, collectives_,
-        options_.projection, primary_, serial_, projection_major_);
+        options_.projection, primary_, mode.ffn.serial, mode.projection_major);
     FfnExec ffn(project, profiler_, mmq_, tq_, branches_, collectives_, routes_,
-        options_.projection, options_.attention, options_.dense, ffn_options_, mode);
+        options_.projection, options_.attention, options_.dense, ffn_options_, mode.ffn);
     for (size_t index = 0; index < tasks.size(); ++index) {
         const auto& task = tasks[index];
         std::visit([&](const auto& op) {
@@ -163,7 +162,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, FfnExec::Mode m
                         return std::move(output[1]);
                     } else if constexpr (std::is_same_v<Op, task::Dense>) {
                         return op.weights.forward(project, profiler_, mmq_, tq_, branches_, collectives_,
-                            options.projection, options.dense, serial_, std::move(second), std::move(input), trace);
+                            options.projection, options.dense, mode.ffn.serial, std::move(second), std::move(input), trace);
                     } else if constexpr (std::is_same_v<Op, task::FullFfn>) {
                         return ffn.full(op.weights, op.norm, op.attention,
                             std::move(second), std::move(input), trace);
