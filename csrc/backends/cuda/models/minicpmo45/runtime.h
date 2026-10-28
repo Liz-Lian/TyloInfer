@@ -19,6 +19,7 @@ struct MiniCPMO45Runtime {
     MiniCPMO45Resampler resampler;
     MiniCPMO45AudioEncoder audio;
     MiniCPMO45TtsDecoder tts;
+    mfq::cuda::Projector projector;
 
     static MiniCPMO45Runtime load(CudaExecutionContext &execution, const std::string &model_path,
                                   const std::string &config_path, int64_t context_size) {
@@ -27,18 +28,18 @@ struct MiniCPMO45Runtime {
     }
 
     static MiniCPMO45Runtime load_with_language(mfq::cuda::MiniCPMO45CausalLm language) {
-        MiniCPMO45Runtime result;
-        result.language = std::move(language);
-        auto &execution = *result.language.execution;
+        auto &execution = *language.execution;
         auto &placement = execution.layer_placement;
         placement.load_device = placement.primary_device();
         MfqCudaGuard guard(placement.primary_device());
-        const auto &mfq = *result.language.source;
-        result.vision = MiniCPMO45VisionEncoder::load(execution, mfq);
-        result.resampler = MiniCPMO45Resampler::load(execution, mfq);
-        result.audio = MiniCPMO45AudioEncoder::load(execution, mfq);
-        result.tts = MiniCPMO45TtsDecoder::load(*result.language.execution, mfq);
-        return result;
+        const auto &mfq = *language.source;
+        auto projector = execution.projector();
+        return {std::move(language),
+                MiniCPMO45VisionEncoder::load(execution, mfq),
+                MiniCPMO45Resampler::load(execution, mfq),
+                MiniCPMO45AudioEncoder::load(execution, mfq),
+                MiniCPMO45TtsDecoder::load(execution, mfq, projector),
+                projector};
     }
 
     struct EncodeOps {
@@ -53,15 +54,15 @@ struct MiniCPMO45Runtime {
         }
         Tensor embed(Tensor ids) { return runtime.language.embed_forward(ids); }
         auto vision(Tensor pixels, Tensor mask, Tensor sizes) {
-            return runtime.vision.forward_steps(*runtime.language.execution,
+            return runtime.vision.forward_steps(runtime.projector,
                                           pixels.to(mfq_tensor_backend::kCUDA), mask, sizes);
         }
         Tensor resample(Tensor hidden, Tensor sizes) {
-            return runtime.resampler.forward(*runtime.language.execution, hidden, sizes);
+            return runtime.resampler.forward(runtime.projector, hidden, sizes);
         }
         void reset_audio() { runtime.audio.reset(); }
         auto audio(Tensor features, Tensor lengths) {
-            return runtime.audio.forward_steps(*runtime.language.execution,
+            return runtime.audio.forward_steps(runtime.projector,
                                          features.to(mfq_tensor_backend::kCUDA), lengths, false);
         }
         static auto audio_lengths(Tensor lengths) {
@@ -249,7 +250,7 @@ struct MiniCPMO45DuplexSession {
                 std::vector<int64_t>{reference_audio_features.size(2)},
                 mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64));
             auto embeddings = runtime.audio.forward(
-                *runtime.language.execution,
+                runtime.projector,
                 reference_audio_features.to(mfq_tensor_backend::kCUDA),
                 raw_lengths, false);
             feed_embeddings(embeddings);
@@ -426,10 +427,10 @@ struct MiniCPMO45DuplexSession {
                     "MiniCPM-o duplex image pixels require patch mask and target sizes");
             }
             auto vision_states = runtime.vision.forward(
-                *runtime.language.execution,
+                runtime.projector,
                 pixels.to(mfq_tensor_backend::kCUDA), patch_mask, target_sizes);
             auto image_embeddings = runtime.resampler.forward(
-                *runtime.language.execution, vision_states, target_sizes);
+                runtime.projector, vision_states, target_sizes);
             std::vector<int64_t> counts;
             if (image_slice_counts.defined()) {
                 auto count_tensor = image_slice_counts
@@ -467,7 +468,7 @@ struct MiniCPMO45DuplexSession {
 
         if (audio_features.defined()) {
             audio_embeddings = runtime.audio.forward_streaming(
-                *runtime.language.execution,
+                runtime.projector,
                 audio_features.to(mfq_tensor_backend::kCUDA),
                 audio_prefix_extra_frames,
                 audio_suffix_extra_frames);

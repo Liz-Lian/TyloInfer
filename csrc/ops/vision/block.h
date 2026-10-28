@@ -1,9 +1,6 @@
 #pragma once
 
-#include "quant_linear.h"
-#include "backends/cuda/engine/weights/load.h"
-
-#include "engine/models/common/vision_block.h"
+#include "ops/common/include/projection.h"
 
 #include "backend.h"
 
@@ -23,17 +20,6 @@ struct BiasLinear {
     QuantLinear weight;
     mfq_tensor_backend::Tensor bias;
 
-    static BiasLinear load(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
-                           const std::string &prefix, bool with_bias = true) {
-        BiasLinear result;
-        result.weight = load_quant_linear(execution, mfq, prefix + ".weight");
-        const std::string bias_name = prefix + ".bias";
-        if (with_bias && has_tensor(mfq, bias_name)) {
-            result.bias = load_dense_gpu(execution, mfq, bias_name);
-        }
-        return result;
-    }
-
     // Row slice of a fused projection: RADIO stores q, k and v in one
     // [3 * width, hidden] tensor, so each head group is a contiguous slab.
     BiasLinear rows(int64_t begin, int64_t count) const {
@@ -52,7 +38,7 @@ struct BiasLinear {
         return result;
     }
 
-    mfq_tensor_backend::Tensor forward(CudaExecutionContext &execution,
+    mfq_tensor_backend::Tensor forward(const Projector& projector,
                                        mfq_tensor_backend::Tensor input) const {
         const auto output_dtype = input.scalar_type();
         if (weight.is_dense()) {
@@ -65,7 +51,7 @@ struct BiasLinear {
                 .to(output_dtype)
                 .contiguous();
         }
-        auto output = execution.projector().run(weight, input);
+        auto output = projector.run(weight, input);
         if (bias.defined()) {
             output = output + bias.to(output.scalar_type());
         }
@@ -134,7 +120,7 @@ struct VisionBlock {
     VisionActivation activation = VisionActivation::gelu_tanh;
 
     mfq_tensor_backend::Tensor forward(
-            CudaExecutionContext &execution, mfq_tensor_backend::Tensor input,
+            const Projector& projector, mfq_tensor_backend::Tensor input,
             MfqOptional<mfq_tensor_backend::Tensor> mask = mfq_nullopt) const {
         using Tensor = mfq_tensor_backend::Tensor;
         if (heads <= 0 || head_dim <= 0) {
@@ -146,47 +132,17 @@ struct VisionBlock {
             return value.reshape({batch, tokens, heads, head_dim}).transpose(1, 2).contiguous();
         };
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
-        return mfq::models::vision_block(
-            std::move(input),
-            [&](const Tensor &x, int stage) {
-                return vision_layer_norm(x, stage == 0 ? norm1_weight : norm2_weight,
-                                         stage == 0 ? norm1_bias : norm2_bias,
-                                         layer_norm_eps);
-            },
-            [&](Tensor x) {
-                return mfq::models::vision_attention(
-                    std::move(x),
-                    [&](Tensor x) {
-                        return split_heads(query.forward(execution, std::move(x)));
-                    },
-                    [&](Tensor x) {
-                        return split_heads(key.forward(execution, std::move(x)));
-                    },
-                    [&](Tensor x) {
-                        return split_heads(this->value.forward(execution, std::move(x)));
-                    },
-                    [&](Tensor q, Tensor k, Tensor v) {
-                        return vision_non_causal_attention(
-                            std::move(q), std::move(k), std::move(v), mask, scale);
-                    },
-                    [&](Tensor attended) {
-                        return output.forward(
-                            execution, attended.transpose(1, 2).reshape(
-                                           {batch, tokens, heads * head_dim}));
-                    });
-            },
-            [&](Tensor x) {
-                return mfq::models::vision_mlp(
-                    std::move(x),
-                    [&](Tensor value) { return fc1.forward(execution, std::move(value)); },
-                    [&](Tensor value) {
-                        return vision_activation(std::move(value), activation);
-                    },
-                    [&](Tensor value) { return fc2.forward(execution, std::move(value)); });
-            },
-            [](Tensor residual, Tensor branch) {
-                return (residual + branch.to(residual.scalar_type())).contiguous();
-            });
+        auto normalized = vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
+        auto q = split_heads(query.forward(projector, normalized));
+        auto k = split_heads(key.forward(projector, normalized));
+        auto v = split_heads(value.forward(projector, normalized));
+        auto attended = vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
+        auto branch = output.forward(projector, attended.transpose(1, 2).reshape(
+            {batch, tokens, heads * head_dim}));
+        input = (input + branch.to(input.scalar_type())).contiguous();
+        normalized = vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
+        branch = fc2.forward(projector, vision_activation(fc1.forward(projector, normalized), activation));
+        return (input + branch.to(input.scalar_type())).contiguous();
     }
 };
 

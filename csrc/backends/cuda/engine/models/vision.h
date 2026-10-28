@@ -2,6 +2,7 @@
 
 #include "backends/cuda/engine/weights/load.h"
 #include "ops/vision/vision.h"
+#include "ops/vision/block.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -9,6 +10,17 @@
 #include <utility>
 
 namespace mfq::cuda::vision {
+
+inline BiasLinear load_biased(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
+                              const std::string &prefix, bool with_bias = true) {
+    BiasLinear result;
+    result.weight = load_quant_linear(execution, mfq, prefix + ".weight");
+    const std::string bias_name = prefix + ".bias";
+    if (with_bias && has_tensor(mfq, bias_name)) {
+        result.bias = load_dense_gpu(execution, mfq, bias_name);
+    }
+    return result;
+}
 
 inline Affine load_affine(
     CudaExecutionContext& execution,

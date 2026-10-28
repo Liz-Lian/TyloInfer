@@ -1,6 +1,7 @@
 #pragma once
 
-#include "models/common/vision_block_ops.h"
+#include "ops/vision/block.h"
+#include "backends/cuda/engine/models/vision.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/minicpmo45/causal_lm.h"
@@ -45,16 +46,16 @@ inline mfq::cuda::VisionBlock load_minicpmo45_vision_block(
         int64_t heads, int64_t head_dim) {
     const std::string prefix = "vision.block." + std::to_string(index);
     mfq::cuda::VisionBlock result;
-    result.query = MiniCPMO45Linear::load(execution, mfq, prefix + ".attention.query");
-    result.key = MiniCPMO45Linear::load(execution, mfq, prefix + ".attention.key");
-    result.value = MiniCPMO45Linear::load(execution, mfq, prefix + ".attention.value");
-    result.output = MiniCPMO45Linear::load(execution, mfq, prefix + ".attention.output");
+    result.query = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.query");
+    result.key = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.key");
+    result.value = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.value");
+    result.output = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.output");
     result.norm1_weight = load_dense_native_gpu(execution, mfq, prefix + ".norm1.weight");
     result.norm1_bias = load_dense_native_gpu(execution, mfq, prefix + ".norm1.bias");
     result.norm2_weight = load_dense_native_gpu(execution, mfq, prefix + ".norm2.weight");
     result.norm2_bias = load_dense_native_gpu(execution, mfq, prefix + ".norm2.bias");
-    result.fc1 = MiniCPMO45Linear::load(execution, mfq, prefix + ".mlp.up");
-    result.fc2 = MiniCPMO45Linear::load(execution, mfq, prefix + ".mlp.down");
+    result.fc1 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.up");
+    result.fc2 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.down");
     result.heads = heads;
     result.head_dim = head_dim;
     result.layer_norm_eps = 1e-6;
@@ -96,7 +97,7 @@ struct MiniCPMO45VisionEncoder {
     }
 
     mfq::StepSequence<mfq_tensor_backend::Tensor> forward_steps(
-        CudaExecutionContext &execution,
+        mfq::cuda::Projector projector,
         mfq_tensor_backend::Tensor pixels,
         mfq_tensor_backend::Tensor patch_mask,
         mfq_tensor_backend::Tensor target_sizes) const {
@@ -163,7 +164,7 @@ struct MiniCPMO45VisionEncoder {
                 return embedded;
             },
             [&](const auto &layer, Tensor hidden) {
-                return layer.forward(execution, hidden, attention_mask);
+                return layer.forward(projector, hidden, attention_mask);
             },
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, post_norm_weight, post_norm_bias, 1e-6);
@@ -171,11 +172,11 @@ struct MiniCPMO45VisionEncoder {
         while (auto step = encoding.next()) co_yield std::move(step);
     }
 
-    mfq_tensor_backend::Tensor forward(CudaExecutionContext& execution,
+    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
         mfq_tensor_backend::Tensor pixels, mfq_tensor_backend::Tensor mask,
         mfq_tensor_backend::Tensor sizes) const {
         return mfq::finish_steps(
-            forward_steps(execution, std::move(pixels), std::move(mask), std::move(sizes)));
+            forward_steps(projector, std::move(pixels), std::move(mask), std::move(sizes)));
     }
 };
 
@@ -231,7 +232,7 @@ struct MiniCPMO45Resampler {
         }
         result.query = load_dense_native_gpu(execution, mfq, "vision.resampler.query");
         result.kv_projection =
-            MiniCPMO45Linear::load(execution, mfq, "vision.resampler.key_value", false);
+            mfq::cuda::vision::load_biased(execution, mfq, "vision.resampler.key_value", false);
         result.q_norm_weight =
             load_dense_native_gpu(execution, mfq, "vision.resampler.query_norm.weight");
         result.q_norm_bias =
@@ -261,7 +262,7 @@ struct MiniCPMO45Resampler {
         return result;
     }
 
-    mfq_tensor_backend::Tensor forward(CudaExecutionContext &execution,
+    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
                                        mfq_tensor_backend::Tensor input,
                                        mfq_tensor_backend::Tensor target_sizes) const {
         if (input.dim() != 3 || input.size(2) != 1152 || target_sizes.dim() != 2 ||
@@ -315,7 +316,7 @@ struct MiniCPMO45Resampler {
         };
         using Tensor = mfq_tensor_backend::Tensor;
         return mfq::models::minicpmo45::resample(
-            [&] { return kv_projection.forward(execution, input); },
+            [&] { return kv_projection.forward(projector, input); },
             [&](Tensor kv) {
                 return minicpmo45_layer_norm(kv, kv_norm_weight, kv_norm_bias, 1e-6);
             },

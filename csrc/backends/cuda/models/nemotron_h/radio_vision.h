@@ -1,7 +1,8 @@
 #pragma once
 
 #include "models/common/block.h"
-#include "models/common/vision_block_ops.h"
+#include "ops/vision/block.h"
+#include "backends/cuda/engine/models/vision.h"
 #include "engine/models/nemotron_h/vision.h"
 #include "backends/cuda/engine/weights/load.h"
 
@@ -73,7 +74,7 @@ class RadioEncoder {
     }
 
     // `patches` is [rows * columns, patch_width] row-major normalized pixels.
-    Tensor encode(CudaExecutionContext &execution, Tensor patches, std::int64_t rows,
+    Tensor encode(const mfq::cuda::Projector& projector, Tensor patches, std::int64_t rows,
                   std::int64_t columns) const {
         const auto& config = config_;
         if (rows <= 0 || columns <= 0 || rows > config.position_side() ||
@@ -98,7 +99,7 @@ class RadioEncoder {
                           .contiguous();
         hidden = mfq_tensor_backend::cat({prefix, hidden.unsqueeze(0)}, 1).contiguous();
         for (const auto& block : layers) {
-            hidden = block.forward(execution, std::move(hidden));
+            hidden = block.forward(projector, std::move(hidden));
         }
         return hidden.narrow(1, config.summary_tokens(), count).contiguous();
     }
@@ -110,19 +111,19 @@ class RadioEncoder {
                                   const mfq::ModelSource &source,
                                   const RadioVisionConfig &config, std::int64_t index) {
         const std::string prefix = "vision.block." + std::to_string(index);
-        const auto fused = BiasLinear::load(execution, source, prefix + ".attention.qkv");
+        const auto fused = mfq::cuda::vision::load_biased(execution, source, prefix + ".attention.qkv");
         const auto split = split_fused_qkv(fused, config.hidden_size);
         VisionBlock block;
         block.query = split[0];
         block.key = split[1];
         block.value = split[2];
-        block.output = BiasLinear::load(execution, source, prefix + ".attention.output");
+        block.output = mfq::cuda::vision::load_biased(execution, source, prefix + ".attention.output");
         block.norm1_weight = load_dense_native_gpu(execution, source, prefix + ".norm1.weight");
         block.norm1_bias = load_dense_native_gpu(execution, source, prefix + ".norm1.bias");
         block.norm2_weight = load_dense_native_gpu(execution, source, prefix + ".norm2.weight");
         block.norm2_bias = load_dense_native_gpu(execution, source, prefix + ".norm2.bias");
-        block.fc1 = BiasLinear::load(execution, source, prefix + ".mlp.up");
-        block.fc2 = BiasLinear::load(execution, source, prefix + ".mlp.down");
+        block.fc1 = mfq::cuda::vision::load_biased(execution, source, prefix + ".mlp.up");
+        block.fc2 = mfq::cuda::vision::load_biased(execution, source, prefix + ".mlp.down");
         block.heads = config.num_heads;
         block.head_dim = config.head_dim();
         block.layer_norm_eps = config.layer_norm_eps;
@@ -197,8 +198,8 @@ class RadioProjector {
             load_dense_native_gpu(execution, source, "vision.projector.norm.bias");
         result.mlp_norm =
             load_dense_native_gpu(execution, source, "vision.projector.mlp.norm.weight");
-        result.up = BiasLinear::load(execution, source, "vision.projector.mlp.up", false);
-        result.down = BiasLinear::load(execution, source, "vision.projector.mlp.down", false);
+        result.up = mfq::cuda::vision::load_biased(execution, source, "vision.projector.mlp.up", false);
+        result.down = mfq::cuda::vision::load_biased(execution, source, "vision.projector.mlp.down", false);
         if (result.norm_weight.numel() != config.hidden_size ||
             result.norm_bias.numel() != config.hidden_size ||
             result.mlp_norm.numel() != config.shuffle_width() ||
@@ -215,7 +216,7 @@ class RadioProjector {
 
     // `features` is [1, rows * columns, hidden]; the result is
     // [rows * columns / 4, text_hidden_size] in pixel-shuffle token order.
-    Tensor project(CudaExecutionContext &execution, Tensor features, std::int64_t rows,
+    Tensor project(const mfq::cuda::Projector& projector, Tensor features, std::int64_t rows,
                    std::int64_t columns) const {
         const auto& config = config_;
         const auto stride = config.downsample_factor;
@@ -247,9 +248,9 @@ class RadioProjector {
                                         config.projector_norm_eps, 0.0)
                               .reshape(hidden.sizes())
                               .to(dtype);
-        auto projected = up.forward(execution, std::move(normalized));
+        auto projected = up.forward(projector, std::move(normalized));
         projected = relu_squared_cuda(projected.contiguous());
-        return down.forward(execution, std::move(projected))
+        return down.forward(projector, std::move(projected))
             .reshape({patches / (stride * stride), config.text_hidden_size})
             .contiguous();
     }
@@ -274,10 +275,10 @@ class RadioVisionTower {
                                 RadioProjector::load(execution, source, config), config);
     }
 
-    Tensor embed(CudaExecutionContext &execution, Tensor patches, std::int64_t rows,
+    Tensor embed(const mfq::cuda::Projector& projector, Tensor patches, std::int64_t rows,
                  std::int64_t columns) const {
-        auto features = encoder_.encode(execution, std::move(patches), rows, columns);
-        return projector_.project(execution, std::move(features), rows, columns);
+        auto features = encoder_.encode(projector, std::move(patches), rows, columns);
+        return projector_.project(projector, std::move(features), rows, columns);
     }
 
     std::int64_t tokens(std::int64_t rows, std::int64_t columns) const {
@@ -365,7 +366,7 @@ class CudaRadioPromptComponent {
                     "Nemotron-H image placeholders disagree with the projected patch count");
             }
             auto projected =
-                tower_.embed(*language.execution, pixels.narrow(0, patch_offset, count),
+                tower_.embed(language.execution->projector(), pixels.narrow(0, patch_offset, count),
                              grid.rows, grid.columns);
             auto index = mfq_tensor_backend::tensor(
                              run, mfq_tensor_backend::TensorOptions()

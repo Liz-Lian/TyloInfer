@@ -14,14 +14,14 @@ struct MiniCPMO45WhisperAttention {
     static MiniCPMO45WhisperAttention load(CudaExecutionContext &execution,
                                            const mfq::ModelSource &mfq, const std::string &prefix) {
         MiniCPMO45WhisperAttention result;
-        result.q = MiniCPMO45Linear::load(execution, mfq, prefix + ".query");
-        result.k = MiniCPMO45Linear::load(execution, mfq, prefix + ".key", false);
-        result.v = MiniCPMO45Linear::load(execution, mfq, prefix + ".value");
-        result.output = MiniCPMO45Linear::load(execution, mfq, prefix + ".output");
+        result.q = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".query");
+        result.k = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".key", false);
+        result.v = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".value");
+        result.output = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".output");
         return result;
     }
 
-    mfq_tensor_backend::Tensor forward(CudaExecutionContext &execution,
+    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
                                        mfq_tensor_backend::Tensor input,
                                        MfqOptional<mfq_tensor_backend::Tensor> mask,
                                        mfq_tensor_backend::Tensor *key_cache = nullptr,
@@ -34,9 +34,9 @@ struct MiniCPMO45WhisperAttention {
         using Tensor = mfq_tensor_backend::Tensor;
         return mfq::models::minicpmo45::encoder_attention(
             input, key_cache && value_cache,
-            [&](const Tensor &x) { return reshape(q.forward(execution, x)); },
-            [&](const Tensor &x) { return reshape(k.forward(execution, x)); },
-            [&](const Tensor &x) { return reshape(v.forward(execution, x)); },
+            [&](const Tensor &x) { return reshape(q.forward(projector, x)); },
+            [&](const Tensor &x) { return reshape(k.forward(projector, x)); },
+            [&](const Tensor &x) { return reshape(v.forward(projector, x)); },
             [&](Tensor &key, Tensor &value) {
                 if (key_cache->defined()) {
                     key = mfq_tensor_backend::cat({*key_cache, key}, 2).contiguous();
@@ -56,7 +56,7 @@ struct MiniCPMO45WhisperAttention {
             },
             [&](Tensor attended) {
                 attended = attended.transpose(1, 2).reshape({batch, tokens, heads * head_dim});
-                return output.forward(execution, attended);
+                return output.forward(projector, attended);
             });
     }
 };
@@ -84,8 +84,8 @@ struct MiniCPMO45WhisperLayer {
         result.final_norm_weight =
             load_dense_native_gpu(execution, mfq, prefix + ".mlp.norm.weight");
         result.final_norm_bias = load_dense_native_gpu(execution, mfq, prefix + ".mlp.norm.bias");
-        result.fc1 = MiniCPMO45Linear::load(execution, mfq, prefix + ".mlp.up");
-        result.fc2 = MiniCPMO45Linear::load(execution, mfq, prefix + ".mlp.down");
+        result.fc1 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.up");
+        result.fc2 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.down");
         return result;
     }
 
@@ -94,7 +94,7 @@ struct MiniCPMO45WhisperLayer {
         value_cache = mfq_tensor_backend::Tensor();
     }
 
-    mfq_tensor_backend::Tensor forward(CudaExecutionContext &execution,
+    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
                                        mfq_tensor_backend::Tensor input,
                                        MfqOptional<mfq_tensor_backend::Tensor> mask,
                                        bool use_cache) {
@@ -107,14 +107,14 @@ struct MiniCPMO45WhisperLayer {
                     stage == 0 ? attention_norm_bias : final_norm_bias, 1e-5);
             },
             [&](Tensor x) {
-                return attention.forward(execution, x, mask, use_cache ? &key_cache : nullptr,
+                return attention.forward(projector, x, mask, use_cache ? &key_cache : nullptr,
                                          use_cache ? &value_cache : nullptr);
             },
             [&](Tensor x) {
                 return mfq::models::mlp(
-                    x, [&](Tensor x) { return fc1.forward(execution, x); },
+                    x, [&](Tensor x) { return fc1.forward(projector, x); },
                     [](Tensor x) { return mfq_tensor_backend::gelu(x); },
-                    [&](Tensor x) { return fc2.forward(execution, x); });
+                    [&](Tensor x) { return fc2.forward(projector, x); });
             },
             [](Tensor x, Tensor branch) { return (x + branch).contiguous(); });
     }
@@ -148,8 +148,8 @@ struct MiniCPMO45AudioEncoder {
         result.final_norm_weight =
             load_dense_native_gpu(execution, mfq, "audio.output_norm.weight");
         result.final_norm_bias = load_dense_native_gpu(execution, mfq, "audio.output_norm.bias");
-        result.projector1 = MiniCPMO45Linear::load(execution, mfq, "audio.projector.input");
-        result.projector2 = MiniCPMO45Linear::load(execution, mfq, "audio.projector.output");
+        result.projector1 = mfq::cuda::vision::load_biased(execution, mfq, "audio.projector.input");
+        result.projector2 = mfq::cuda::vision::load_biased(execution, mfq, "audio.projector.output");
         result.layers.reserve(24);
         for (int index = 0; index < 24; ++index) {
             result.layers.push_back(MiniCPMO45WhisperLayer::load(execution, mfq, index));
@@ -173,7 +173,7 @@ struct MiniCPMO45AudioEncoder {
         return layers.front().key_cache.size(2);
     }
 
-    mfq_tensor_backend::Tensor forward_streaming(CudaExecutionContext &execution,
+    mfq_tensor_backend::Tensor forward_streaming(const mfq::cuda::Projector& projector,
                                                  mfq_tensor_backend::Tensor features,
                                                  int64_t prefix_extra_frames,
                                                  int64_t suffix_extra_frames) {
@@ -230,14 +230,14 @@ struct MiniCPMO45AudioEncoder {
                 return std::array<Tensor, 2>{hidden, attention_mask};
             },
             [&](auto &layer, Tensor hidden, Tensor mask) {
-                return layer.forward(execution, hidden, mask, true);
+                return layer.forward(projector, hidden, mask, true);
             },
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, final_norm_weight, final_norm_bias, 1e-5);
             },
-            [&](Tensor hidden) { return projector1.forward(execution, hidden); },
+            [&](Tensor hidden) { return projector1.forward(projector, hidden); },
             [](Tensor hidden) { return mfq_tensor_backend::relu(hidden); },
-            [&](Tensor hidden) { return projector2.forward(execution, hidden); },
+            [&](Tensor hidden) { return projector2.forward(projector, hidden); },
             [&](Tensor hidden) {
                 if (hidden.size(1) < 5) {
                     throw std::runtime_error(
@@ -263,7 +263,7 @@ struct MiniCPMO45AudioEncoder {
     }
 
     mfq::StepSequence<mfq_tensor_backend::Tensor> forward_steps(
-        CudaExecutionContext &execution,
+        mfq::cuda::Projector projector,
         mfq_tensor_backend::Tensor features,
         mfq_tensor_backend::Tensor raw_lengths,
         bool use_cache = false) {
@@ -332,14 +332,14 @@ struct MiniCPMO45AudioEncoder {
                 return std::array<Tensor, 2>{hidden, attention_mask};
             },
             [&](auto &layer, Tensor hidden, Tensor mask) {
-                return layer.forward(execution, hidden, mask, use_cache);
+                return layer.forward(projector, hidden, mask, use_cache);
             },
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, final_norm_weight, final_norm_bias, 1e-5);
             },
-            [&](Tensor hidden) { return projector1.forward(execution, hidden); },
+            [&](Tensor hidden) { return projector1.forward(projector, hidden); },
             [](Tensor hidden) { return mfq_tensor_backend::relu(hidden); },
-            [&](Tensor hidden) { return projector2.forward(execution, hidden); },
+            [&](Tensor hidden) { return projector2.forward(projector, hidden); },
             [&](Tensor hidden) {
                 return mfq_tensor_backend::avg_pool1d(
                            hidden.transpose(1, 2), std::vector<int64_t>{5}, std::vector<int64_t>{5})
@@ -349,9 +349,9 @@ struct MiniCPMO45AudioEncoder {
         while (auto step = encoding.next()) co_yield std::move(step);
     }
 
-    mfq_tensor_backend::Tensor forward(CudaExecutionContext& execution,
+    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
         mfq_tensor_backend::Tensor features, mfq_tensor_backend::Tensor lengths, bool use_cache = false) {
         return mfq::finish_steps(
-            forward_steps(execution, std::move(features), std::move(lengths), use_cache));
+            forward_steps(projector, std::move(features), std::move(lengths), use_cache));
     }
 };

@@ -426,11 +426,11 @@ int run_minicpmo45_eval_batch(CudaExecutionContext &execution, const std::string
             for (int64_t begin = 0; begin < pixels.size(0); begin += vision_batch_size) {
                 const int64_t count = std::min<int64_t>(vision_batch_size, pixels.size(0) - begin);
                 auto vision_part = runtime.vision.forward(
-                    execution, pixels.narrow(0, begin, count).to(mfq_tensor_backend::kCUDA),
+                    runtime.projector, pixels.narrow(0, begin, count).to(mfq_tensor_backend::kCUDA),
                     patch_mask.narrow(0, begin, count), target_sizes.narrow(0, begin, count));
                 vision_parts.push_back(vision_part);
                 image_embedding_parts.push_back(runtime.resampler.forward(
-                    execution, vision_part, target_sizes.narrow(0, begin, count)));
+                    runtime.projector, vision_part, target_sizes.narrow(0, begin, count)));
             }
             image_embeddings = mfq_tensor_backend::cat(image_embedding_parts, 0).contiguous();
         }
@@ -459,7 +459,7 @@ int run_minicpmo45_eval_batch(CudaExecutionContext &execution, const std::string
                 auto part_length = mfq_tensor_backend::tensor(
                     std::vector<int64_t>{raw_lengths[index]},
                     mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64));
-                auto part = runtime.audio.forward(execution, part_features, part_length, false);
+                auto part = runtime.audio.forward(runtime.projector, part_features, part_length, false);
                 if (part.size(1) != valid_length_values[static_cast<size_t>(index)]) {
                     throw std::runtime_error("MiniCPM-o per-segment Whisper length mismatch");
                 }

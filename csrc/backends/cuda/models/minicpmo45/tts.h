@@ -70,6 +70,9 @@ struct MiniCPMO45TtsSamplingOps {
 };
 
 struct MiniCPMO45TtsDecoder {
+    mfq::cuda::Projector projector;
+    explicit MiniCPMO45TtsDecoder(mfq::cuda::Projector projector) : projector(projector) {}
+
     CudaExecutionContext* execution = nullptr;
     mfq::models::ModelConfig config;
     RopeCache rope;
@@ -87,8 +90,8 @@ struct MiniCPMO45TtsDecoder {
 
     static MiniCPMO45TtsDecoder load(
             CudaExecutionContext& execution,
-            const mfq::ModelSource& mfq) {
-        MiniCPMO45TtsDecoder result;
+            const mfq::ModelSource& mfq, mfq::cuda::Projector projector) {
+        MiniCPMO45TtsDecoder result(projector);
         result.execution = &execution;
         result.config = mfq::models::minicpmo45::tts_decoder_config();
         result.rope = RopeCache(
@@ -99,13 +102,13 @@ struct MiniCPMO45TtsDecoder {
             mfq, "tts.text_embedding.weight");
         result.code_embedding = load_quant_linear(execution,
             mfq, "tts.code_embedding.0.weight");
-        result.semantic_projector1 = MiniCPMO45Linear::load(execution,
+        result.semantic_projector1 = mfq::cuda::vision::load_biased(execution,
             mfq, "tts.semantic_projector.input");
-        result.semantic_projector2 = MiniCPMO45Linear::load(execution,
+        result.semantic_projector2 = mfq::cuda::vision::load_biased(execution,
             mfq, "tts.semantic_projector.output");
-        result.speaker_projector1 = MiniCPMO45Linear::load(execution,
+        result.speaker_projector1 = mfq::cuda::vision::load_biased(execution,
             mfq, "tts.speaker_projector.input");
-        result.speaker_projector2 = MiniCPMO45Linear::load(execution,
+        result.speaker_projector2 = mfq::cuda::vision::load_biased(execution,
             mfq, "tts.speaker_projector.output");
         result.output_norm = load_dense_native_gpu(execution,
             mfq, "tts.output_norm.weight");
@@ -148,10 +151,10 @@ struct MiniCPMO45TtsDecoder {
 
     mfq_tensor_backend::Tensor semantic_projection(mfq_tensor_backend::Tensor hidden) const {
         auto projected = semantic_projector1.forward(
-            *execution, hidden);
+            projector, hidden);
         projected = mfq_tensor_backend::relu(projected);
         projected = semantic_projector2.forward(
-            *execution, projected);
+            projector, projected);
         auto norm = mfq_tensor_backend::sqrt(
             mfq_tensor_backend::sum(projected.to(mfq_tensor_backend::kFloat32).square(), -1, true))
             .clamp_min(1e-12);
@@ -160,9 +163,9 @@ struct MiniCPMO45TtsDecoder {
 
     mfq_tensor_backend::Tensor speaker_projection(mfq_tensor_backend::Tensor hidden) const {
         return speaker_projector2.forward(
-            *execution,
+            projector,
             mfq_tensor_backend::relu(
-                speaker_projector1.forward(*execution, hidden)));
+                speaker_projector1.forward(projector, hidden)));
     }
 
     mfq_tensor_backend::Tensor condition(
