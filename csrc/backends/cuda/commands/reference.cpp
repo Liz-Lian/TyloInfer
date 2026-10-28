@@ -1,6 +1,7 @@
 #include "cli.h"
-#include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/models/components.h"
+#include "backends/cuda/engine/models/load.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/models/qwen35/load.h"
