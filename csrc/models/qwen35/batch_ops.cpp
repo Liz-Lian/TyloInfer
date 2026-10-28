@@ -396,10 +396,16 @@ void BatchOps::recover(State& state) {
 namespace mfq::cuda {
 
 std::unique_ptr<mfq::engine::Batch> make_batch(
-    std::shared_ptr<const qwen35::Model> model, std::unique_ptr<Executor> executor,
-    Collectives& copies, Executor::Mode mode, qwen35::Batch::Options options,
+    std::shared_ptr<const qwen35::Model> model, qwen35::State* serial,
+    std::unique_ptr<Executor> executor, Collectives& copies, Executor::Mode mode,
     std::shared_ptr<MoeExpertCache> cache, CudaContinuousBatchConfig config,
-    std::int64_t chunk_size) {
+    std::int64_t chunk_size, bool preallocate, bool cpu_offload, int cached_slots) {
+    if (serial && preallocate) {
+        for (auto& layer_state : serial->layers)
+            if (auto* cache = std::get_if<KVCache>(&layer_state)) *cache = KVCache();
+    }
+    const qwen35::Batch::Options options{config.max_sequences, config.paged_kv, preallocate,
+                                         cpu_offload, cached_slots};
     const auto token_budget = config.prefill_token_budget;
     return std::make_unique<mfq::engine::ContinuousBatch<qwen35::BatchOps>>(
         chunk_size, token_budget, std::move(model), std::move(executor), copies, mode, options,

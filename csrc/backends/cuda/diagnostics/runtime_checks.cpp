@@ -207,15 +207,13 @@ int run_qwen_continuous_batching_check(Model& model,
                     auto batch_config = config;
                     batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution);
                     return make_batch(
-                        owner, execution.make_executor(), execution.collectives,
-                        execution.forward_mode(),
-                        qwen35::Batch::Options{
-                            config.max_sequences, config.paged_kv,
-                            runtime_options::kv_vram_preallocated(),
-                            execution.dense_cpu_layer_count != 0 ||
-                                !execution.dsv4_cpu_offload_layers.empty(),
-                            execution.config.weights.min_slots},
-                        execution.stores.weights.moe, std::move(batch_config), 64);
+                        owner, nullptr, execution.make_executor(), execution.collectives,
+                        execution.forward_mode(), execution.stores.weights.moe,
+                        std::move(batch_config), 64,
+                        runtime_options::kv_vram_preallocated(),
+                        execution.dense_cpu_layer_count != 0 ||
+                            !execution.dsv4_cpu_offload_layers.empty(),
+                        execution.config.weights.min_slots);
                 } else if constexpr (std::is_same_v<Model, Qwen4CausalLm>) {
                     return make_batch(model, execution, config, 64);
                 }

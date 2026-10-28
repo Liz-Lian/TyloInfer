@@ -188,23 +188,16 @@ struct CudaEngineState {
             });
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model, qwen35::Model>) {
-                if (runtime_options::kv_vram_preallocated()) {
-                    for (auto& layer_state : state.layers)
-                        if (auto* cache = std::get_if<KVCache>(&layer_state)) *cache = KVCache();
-                }
                 auto batch_config = config.continuous_batch;
                 batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
-                const qwen35::Batch::Options batch_options{
-                    batch_config.max_sequences, batch_config.paged_kv,
+                batching = make_batch(
+                    model, &state, execution->make_executor(), execution->collectives,
+                    execution->forward_mode(), execution->stores.weights.moe,
+                    std::move(batch_config), config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
                     execution->dense_cpu_layer_count != 0 ||
                         !execution->dsv4_cpu_offload_layers.empty(),
-                    execution->config.weights.min_slots};
-                batching = make_batch(
-                    model, execution->make_executor(), execution->collectives,
-                    execution->forward_mode(), batch_options,
-                    execution->stores.weights.moe, std::move(batch_config),
-                    config.generation.prefill_chunk_size);
+                    execution->config.weights.min_slots);
             } else if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
                 batching = make_batch(language, *execution, config.continuous_batch,
                     config.generation.prefill_chunk_size);
