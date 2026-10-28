@@ -3,6 +3,7 @@
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/budget.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/load.h"
@@ -53,9 +54,9 @@ struct CudaEngineState {
     std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     TextSessionCache cache;
+    std::optional<Budget> budget;
     std::unique_ptr<mfq::engine::Batch> batching;
     bool duplex_active = false;
-    std::size_t resident_budget=0, weight_budget=0, initial_expert_budget=0, allocation_ceiling=0;
     std::optional<ExpertSpace> expert_space;
     int graph_draft_depth=3;
     bool preparing_graph_depth=true;
@@ -179,12 +180,12 @@ struct CudaEngineState {
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
         try {
-        initial_expert_budget=execution->stores.weights.budget();
+        budget.emplace(*weight_memory, execution->stores.weights, cache,
+            execution->layer_placement.primary_device());
         if (execution->stores.qsa_kv_store)
             execution->stores.qsa_kv_store->set_ram_reservation([this](std::size_t bytes) {
                 cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
             });
-        allocation_ceiling=mfq::cuda::default_context(execution->layer_placement.primary_device())->memory_stats().limit;
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model, qwen35::Model>) {
                 if (runtime_options::kv_vram_preallocated()) {
@@ -341,61 +342,16 @@ struct CudaEngineState {
     SessionResult session(const SessionCommand& command) {
         if(command.kind!=SessionCommand::Kind::memory_budget)return control_session(cache,command);
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
-        const auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
-        const auto dense=weight_memory->resident_bytes();
-        const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.weights.moe);
-        const auto requested_weights=command.weight_bytes.value_or(weight_budget);
-        if(requested_weights && requested_weights<dense+minimum)
-            throw std::invalid_argument("weight budget is below dense weights and minimum expert working set");
-        auto limit=command.bytes ? allocation_ceiling ? std::min<std::size_t>(command.bytes,allocation_ceiling) : command.bytes : allocation_ceiling;
-        if(limit) {
-            std::size_t free=0,total=0;
-            TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&free,&total));
-            limit=std::min(limit,std::min(total,free+context->resident_memory_usage()));
-        }
-        if(limit && limit<dense+minimum)
-            throw std::invalid_argument("resident memory budget is below non-offloadable weights");
-        const auto previous_limit=context->memory_stats().limit;
-        const auto previous_experts=execution->stores.weights.budget();
-        const auto before=context->resident_memory_usage();
-        if(expert_space) expert_space->release();
-        finish_moe_expert_exchanges(execution->stores.weights.moe);
-        graph.invalidate();
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
-            qwen4_release_decode_graphs(language,components.mtp.get());
-        if(batching)batching->release_idle_buffers();
-        if(components.mtp)components.mtp->reset(1);
-        state.reset(1);
-        release_moe_decode_buffers(execution->stores.weights.moe);
-        context->reclaim_idle_memory();
-        auto target=requested_weights ? requested_weights-dense : initial_expert_budget;
-        std::size_t hot=0,expert_bytes=0;
-        for(const auto& [name,value]:cache.metrics())if(name=="prefix_cache_hot_bytes")hot=std::size_t(value);
-        for(const auto& [name,value]:execution->stores.weights.metrics())
-            if(name=="resident_expert_cache_bytes")expert_bytes=std::size_t(value);
-        auto used=context->resident_memory_usage();
-        if(limit && used>limit) {
-            cache.trim_hot(hot>used-limit ? hot-(used-limit) : 0);
-            context->reclaim_idle_memory();used=context->resident_memory_usage();
-        }
-        const auto fixed=used>expert_bytes?used-expert_bytes:0;
-        if(limit) {
-            if(fixed>limit || minimum>limit-fixed)throw std::invalid_argument("resident memory budget is below live KV and workspace requirements");
-            target=std::min(target,limit-fixed);
-        }
-        try {
-            if(!limit || limit>previous_limit)context->set_memory_limit(limit);
-            execution->stores.weights.resize(std::max(target,minimum));
-            context->set_memory_limit(limit);
-        } catch(...) {
-            context->set_memory_limit(0);
-            execution->stores.weights.resize(previous_experts);
-            context->set_memory_limit(previous_limit);
-            throw;
-        }
-        resident_budget=command.bytes;weight_budget=requested_weights;
-        const auto after=context->resident_memory_usage();
-        return {before>after?before-after:0,{}};
+        return budget->set(command, [this] {
+            if(expert_space) expert_space->release();
+            finish_moe_expert_exchanges(execution->stores.weights.moe);
+            graph.invalidate();
+            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
+                qwen4_release_decode_graphs(language,components.mtp.get());
+            if(batching)batching->release_idle_buffers();
+            if(components.mtp)components.mtp->reset(1);
+            state.reset(1);
+        });
     }
     bool exclusive() const { return duplex_active; }
     bool mtp_available() const { return bool(components.mtp); }
@@ -538,7 +494,7 @@ struct CudaEngineState {
             const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.weights.moe);
             metrics.insert(metrics.end(),{{"resident_memory_dynamic_budget",online_budget_supported()?1.0:0.0},
                 {"resident_weight_dynamic_budget",online_budget_supported()?1.0:0.0},
-                {"resident_memory_budget_bytes",double(resident_budget)}, {"resident_weight_budget_bytes",double(weight_budget)},
+                {"resident_memory_budget_bytes",double(budget->resident())}, {"resident_weight_budget_bytes",double(budget->weights())},
                 {"resident_memory_used_bytes",double(std::max(allocated,reserved))},
                 {"resident_reclaimable_weight_bytes",double(expert_bytes>minimum?expert_bytes-minimum:0)}});
             metrics.emplace_back("qsa_kv_offload_supported",std::is_same_v<Model, Qwen4CausalLm> ? 1.0 : 0.0);
