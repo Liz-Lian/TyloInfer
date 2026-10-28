@@ -6,7 +6,7 @@
 
 namespace mfq::cuda::deepseek_v41_runtime {
 
-mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const weight_loader::Loader& weights,
+mfq::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
     auto result = load_moe_weights(weights, prefix,
@@ -21,13 +21,13 @@ mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const weight_loader:
     result.moe_router_scale = config.routed_scaling;
     result.swiglu_limit = config.swiglu_limit;
     result.shared->swiglu_limit = config.swiglu_limit;
-    prepare_moe_ffn(execution, result);
+    pipelines.prepare(result);
     return result;
 }
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
+std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
                                     std::int64_t layer,
-                                    const std::shared_ptr<SharedState> &shared) {
+                                    const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows) {
     TYLOINFER_RUNTIME_CHECK(shared, "missing DeepSeek-V4.1 CUDA state");
     const auto &config = shared->config;
     const auto prefix = "model.block." + std::to_string(layer) + ".";
@@ -39,7 +39,7 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weigh
     result->shared = shared;
     if (config.has_engram(layer)) {
         result->engram = Engram::load(weights, config, static_cast<int>(layer),
-                                      execution.config.deepseek_v41_engram_cache_rows);
+                                      engram_cache_rows);
         shared->engram_prefetch.push_back(result->engram.get());
     }
     result->attention_norm = weights.tensor(prefix + "attention.norm.weight")
@@ -98,7 +98,7 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weigh
         result->index_score =
             weights.projection(prefix + "attention.indexer.score.weight");
     }
-    result->mlp = load_moe_at(execution, weights, config, prefix + "mlp.", layer, config.top_k);
+    result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.", layer, config.top_k);
     if(weights.has(prefix+"mlp.router.vision_bias")) {
         result->vision_router_bias=weights.tensor(prefix+"mlp.router.vision_bias")
             .to(mfq_tensor_backend::kFloat32).contiguous();
@@ -216,7 +216,8 @@ std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const mfq::cuda::wei
                                                             int layer, int,
                                                             const std::string &type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
-    return deepseek_v41_runtime::load_block(*execution, weights, layer, shared);
+    return deepseek_v41_runtime::load_block(execution->pipelines, weights, layer, shared,
+                                              execution->config.deepseek_v41_engram_cache_rows);
 }
 
 void DeepseekV41Model::adapter_begin_forward(bool capture_raw_hidden) {

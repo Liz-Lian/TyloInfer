@@ -70,7 +70,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     model.graph = source.resolved_model_graph();
     model.plan = cuda_model_plan(model.graph);
     auto definition=load_model_config_json(source, config_path);
-    definition = configure_yarn(execution, std::move(definition),
+    definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
                                 model.graph.backbone, context_size_override);
     model.load_definition(definition, model.graph, source,
                           context_size_override);

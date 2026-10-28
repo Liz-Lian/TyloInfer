@@ -4,6 +4,7 @@
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/models/ffn.h"
 #include "engine/models/common/weight_loading.h"
+#include "engine/models/common/yarn.h"
 
 #include <memory>
 #include <string>
@@ -59,11 +60,10 @@ void load_important_neuron_branch(
     const std::string& up_name);
 
 void validate_native_placement(const ParallelConfig&, const LayerPlacementConfig&, int gpu_layers);
-void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& ffn);
 
 namespace mfq::cuda {
 
-std::string configure_yarn(CudaExecutionContext& execution, std::string definition,
+std::string configure_yarn(mfq::models::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context);
 
 std::string load_model_config_json(

@@ -27,6 +27,8 @@
 #include <utility>
 #include <vector>
 
+namespace mfq::cuda { class Pipelines; }
+
 namespace mfq::cuda::deepseek_v41_runtime {
 
 using Tensor = mfq_tensor_backend::Tensor;
@@ -889,12 +891,12 @@ struct Block final : ::Block {
     }
 };
 
-mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const weight_loader::Loader& weights,
+mfq::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
-                                    std::int64_t layer, const std::shared_ptr<SharedState> &shared);
+std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
+                                    std::int64_t layer, const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);
 std::shared_ptr<SharedState> load_shared_state(const mfq::ModelSource &source,
                                                const CommonConfig &config);

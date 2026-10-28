@@ -65,7 +65,7 @@ struct NemotronHMtp final : MtpModule {
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
                 std::string(mfq::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
-            auto block = mfq::cuda::nemotron_h::load_block(execution, weights, main,
+            auto block = mfq::cuda::nemotron_h::load_block(execution.pipelines, weights, main,
                                                           static_cast<int>(index), type,
                                                           "predictor");
             block->cuda_device = weights.placement.device;

@@ -1635,7 +1635,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // A fixed full PCIe quota schedules every cold expert on the GPU.
         // CPU dispatch replays retain their original wait, even with that quota.
         cell.skip_cpu_wait=cell.two_stage && mfq::cuda::runtime_options::skip_gpu_only_cpu_wait() &&
-            cache_->config_.moe_ram_pcie_fraction && cache_->ram_pcie_fraction_==1.0 &&
+            cache_->options_.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
             std::all_of(cache_->pipeline_dispatch_replay_.begin(),cache_->pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();});
         // The same fixed-quota proof also excludes CPU calibration and CPU
@@ -1648,7 +1648,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         // arithmetic rate. Keep timing whenever detailed DMA profiling needs
         // these event origins, or a dispatch replay can contain CPU work.
         cell.skip_gpu_timing=cell.two_stage && mfq::cuda::runtime_options::skip_fixed_gpu_timing() &&
-            cache_->config_.moe_ram_pcie_fraction && cache_->ram_pcie_fraction_==1.0 &&
+            cache_->options_.ram_fraction && cache_->ram_pcie_fraction_==1.0 &&
             !mfq::cuda::runtime_options::moe_diagnostics().dma &&
             std::all_of(cache_->pipeline_dispatch_replay_.begin(),cache_->pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();});
@@ -2378,7 +2378,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 }
             }
         }
-        if(!cell.batch_decode || cache_->config_.moe_ram_pcie_fraction) {
+        if(!cell.batch_decode || cache_->options_.ram_fraction) {
             const auto quota=!cell.batch_decode ? misses : static_cast<std::size_t>(misses*cache_->ram_pcie_fraction_);
             if(cell.reuse_plan)mfq::assign_moe_transfer_quota(cell.plan,quota,[](int){return true;});
             else cell.plan=mfq::plan_moe_dispatch(ids,experts_,quota,resident,[](int){return true;});
@@ -4681,11 +4681,10 @@ public:
     }
 };
 
-std::shared_ptr<MoeFfnPipeline> make_moe_ffn_pipeline(
-        CudaProfiler& profiler,KlMmqState& mmq,const MoeOptions& kernels,const MoeFfnOptions& options,
+std::shared_ptr<MoeFfnPipeline> mfq::cuda::Pipelines::make(
         const std::vector<std::shared_ptr<mfq::cuda::Experts>>& gate_up,
         const std::vector<std::shared_ptr<mfq::cuda::Experts>>& down,MoeFfnShared shared,MoeFfnDispatchObserver observer,
-        MoeFfnSharedWeights shared_weights,double swiglu_limit) {
+        MoeFfnSharedWeights shared_weights,double swiglu_limit) const {
     if((gate_up.size()!=1 && gate_up.size()!=2) || down.size()!=1)return {};
     const auto& up=gate_up.back();
     for(const auto& w:{gate_up[0],up,down[0]})if(!w || !w->cached_source)return {};
@@ -4698,7 +4697,7 @@ std::shared_ptr<MoeFfnPipeline> make_moe_ffn_pipeline(
             if(!w || !w->is_nint() || w->tensor_parallel() || w->nint.q8_zero)return {};
     }
     if(!gate_up[0]->cached_source->pipeline_enabled())return {};
-    auto runtime=std::make_shared<MoeFfnPipeline>(profiler,mmq,kernels,options,std::array<std::shared_ptr<MoeCachedSource>,3>{
+    auto runtime=std::make_shared<MoeFfnPipeline>(profiler_,mmq_,kernels_,options_,std::array<std::shared_ptr<MoeCachedSource>,3>{
         gate_up[0]->cached_source,up->cached_source,down[0]->cached_source},std::move(shared),std::move(observer),std::move(shared_weights),swiglu_limit);
     return runtime;
 }

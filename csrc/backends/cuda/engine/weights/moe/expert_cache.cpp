@@ -2666,6 +2666,17 @@ void prepare_moe_decode_residency(const std::shared_ptr<MoeExpertCache>& cache) 
     release_moe_prefill_buffers(cache);
     cache->prepare_decode_residency();
 }
+void drain_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache) {
+    if (!cache) return;
+    std::exception_ptr failure;
+    try { cache->finish_pipeline_exchanges(); }
+    catch (...) { failure = std::current_exception(); }
+    // Copy futures retain pipelines and can still enqueue CUDA work.
+    try { cache->finish_prefill_copies(); }
+    catch (...) { if (!failure) failure = std::current_exception(); }
+    if (failure) std::rethrow_exception(failure);
+}
+
 void finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache) {
     if(cache)cache->finish_pipeline_exchanges();
 }

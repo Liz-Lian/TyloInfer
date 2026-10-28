@@ -16,11 +16,13 @@ class ModelSource;
 }
 struct Block;
 
+namespace mfq::cuda { class Pipelines; }
+
 namespace mfq::cuda::nemotron_h {
 
 using Config = mfq::models::nemotron_h::Config;
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext& execution,
+std::unique_ptr<::Block> load_block(Pipelines& pipelines,
                                     const weight_loader::Loader& weights, const Config& config, int layer,
                                     const std::string& type,
                                     std::string_view tensor_root = "model");

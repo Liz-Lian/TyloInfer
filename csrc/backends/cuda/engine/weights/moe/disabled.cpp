@@ -40,6 +40,8 @@ std::uint64_t moe_expert_streamed_bytes(const std::shared_ptr<MoeExpertCache>& c
 
 std::uint64_t moe_expert_graph_captures(const std::shared_ptr<MoeExpertCache>& cache) { return {}; }
 
+void drain_moe_expert_cache(const std::shared_ptr<MoeExpertCache>&) {}
+
 void finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache) {}
 
 void prepare_moe_predictor_exchange(const std::shared_ptr<MoeExpertCache>& cache) {}

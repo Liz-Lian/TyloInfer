@@ -286,7 +286,7 @@ struct BlockLoader : TransformerWeightLoader {
     }
 };
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext& execution,
+std::unique_ptr<::Block> load_block(Pipelines& pipelines,
                                     const weight_loader::Loader& weights, const Config& config, int layer,
                                     const std::string& type, std::string_view tensor_root) {
     BlockLoader loader{{weights}};
@@ -314,7 +314,7 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext& execution,
             mfq::models::nemotron_h::load_moe(*block, loader, config, layer, tensor_root);
             // An expert cache turns the routed bank into the two-stage MFE
             // pipeline; without one the same FFN keeps the direct path.
-            prepare_moe_ffn(execution, block->ffn);
+            pipelines.prepare(block->ffn);
             return BlockLoader::finish(std::move(block));
         }
         case mfq::models::nemotron_h::MixerKind::mlp: {
@@ -456,7 +456,7 @@ void NemotronHModel::adapter_validate_components(const mfq::ModelGraph& graph) c
 
 std::unique_ptr<Block> NemotronHModel::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer,
                                                           int, const std::string& type) {
-    return nemotron_h::load_block(*execution, weights, config, layer, type);
+    return nemotron_h::load_block(execution->pipelines, weights, config, layer, type);
 }
 
 mfq_tensor_backend::Tensor

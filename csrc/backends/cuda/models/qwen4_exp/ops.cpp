@@ -221,7 +221,7 @@ Tensor Gdn::project_output(const mfq::cuda::Projector& projector,const Tensor& s
 }
 
 
-static auto qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_up, weight_loader::Routed down,
+static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weight_loader::Routed gate_up, weight_loader::Routed down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
                        const Config &c, MoeFfnPrefetch* prefetch=nullptr) {
     const auto shared_g=std::move(sg),shared_u=std::move(su);
@@ -310,7 +310,6 @@ static auto qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_
             "TQ MoE requires separate Gate, Up and Down banks");
         tq=std::make_shared<TqMoeBanks>();
         tq->gate=gate_up.tq_projections[0];tq->up=gate_up.tq_projections[1];tq->down=down.tq_projections[0];
-        const auto& parallel = moe_parallel_config(execution);
         if (parallel.enabled())
             tq->slices = plan_moe_expert_parallel_slices(parallel, tq->up->experts, "TQ experts");
     }
@@ -319,8 +318,7 @@ static auto qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_
     std::shared_ptr<MoeFfnPipeline> owned_pipeline;
     MoeFfnPrefetch prefetch_fn;
     if(!tq) {
-        owned_pipeline=make_moe_ffn_pipeline(
-            execution.profiler,execution.kl_mmq,execution.config.tasks.projection.moe,execution.config.moe_ffn,
+        owned_pipeline=pipelines.make(
             gate_up.projections,down.projections,shared,{},std::move(shared_weights));
         if(owned_pipeline) {
             const std::weak_ptr<MoeFfnPipeline> borrowed=owned_pipeline;
@@ -397,7 +395,7 @@ static auto qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_
     };
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if(owned_pipeline) {
-        execution.register_moe_pipeline(std::move(owned_pipeline));
+        pipelines.add(std::move(owned_pipeline));
         if(prefetch)*prefetch=std::move(prefetch_fn);
     }
 #endif
@@ -496,7 +494,7 @@ struct BlockLoader : weight_loader::Loader {
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
         if(router_capture)*router_capture=router;
         if(tq_graph_capture)*tq_graph_capture=gate_up.tq_projections.size()==2 && down.tq_projections.size()==1;
-        return qwen_moe(execution,std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
+        return qwen_moe(execution.pipelines, placement.experts, std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                         std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
     }
     auto embedding(const std::string &name) const {

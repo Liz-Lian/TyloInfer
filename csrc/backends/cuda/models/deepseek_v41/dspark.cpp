@@ -62,7 +62,7 @@ struct DeepseekV41Dspark final : MtpModule {
     std::int64_t batch = 0;
     std::int64_t position = 0;
 
-    static std::unique_ptr<Block> load_stage(CudaExecutionContext &execution,
+    static std::unique_ptr<Block> load_stage(Pipelines& pipelines,
                                              const weight_loader::Loader& weights,
                                              const CommonConfig &config, std::int64_t stage) {
         const auto prefix = "predictor.stage." + std::to_string(stage) + ".";
@@ -113,7 +113,7 @@ struct DeepseekV41Dspark final : MtpModule {
             weights.projection(prefix + "attention.output_b.weight");
         // Predictor bundles must not extend the backbone's final-layer marker:
         // residency updates also run when ordinary decoding skips DSpark.
-        result->mlp = load_moe_at(execution, weights, config, prefix + "mlp.",
+        result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.",
                                   -1 - stage, config.dspark_top_k);
         result->rope = Dsv4RopeTable(config.max_position_embeddings, config.rope_theta, 0);
         result->cuda_device = weights.placement.device;
@@ -187,7 +187,7 @@ struct DeepseekV41Dspark final : MtpModule {
             weights.projection(last + "confidence.projection.weight");
         result.stages.reserve(static_cast<std::size_t>(result.config.n_mtp_layers));
         for (std::int64_t stage = 0; stage < result.config.n_mtp_layers; ++stage) {
-            result.stages.push_back(load_stage(execution, weights, result.config, stage));
+            result.stages.push_back(load_stage(execution.pipelines, weights, result.config, stage));
         }
         const auto target_width =
             result.config.hidden *

@@ -164,7 +164,7 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
         model.plan.vision != CudaVisionAdapter::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
     auto definition = mfq::cuda::load_model_config_json(source, config_path);
-    definition = mfq::cuda::configure_yarn(execution, std::move(definition),
+    definition = mfq::cuda::configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
                                             model.graph.backbone, context_size);
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")
         throw std::runtime_error("Qwen3.5 loading requires a Qwen-compatible model graph");

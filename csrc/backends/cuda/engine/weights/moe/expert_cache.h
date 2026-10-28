@@ -116,6 +116,7 @@ std::uint64_t moe_expert_streamed_bytes(const std::shared_ptr<MoeExpertCache>& c
 // Successful private FFN captures change this counter for every model family.
 std::uint64_t moe_expert_graph_captures(const std::shared_ptr<MoeExpertCache>& cache);
 // Finish the adaptive transaction before a session reset or a prefill loan.
+void drain_moe_expert_cache(const std::shared_ptr<MoeExpertCache>& cache);
 void finish_moe_expert_exchanges(const std::shared_ptr<MoeExpertCache>& cache);
 void prepare_moe_predictor_exchange(const std::shared_ptr<MoeExpertCache>& cache);
 void begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows);

@@ -604,7 +604,8 @@ CudaExecutionContext::CudaExecutionContext(
         CudaStores& borrowed, std::shared_ptr<TqExec>& borrowed_tq)
     : config(load_cuda_execution_config()), stores(borrowed), tq(borrowed_tq),
       routes(environment("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
-             environment_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)) {
+             environment_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)),
+      pipelines(profiler, kl_mmq, config.tasks.projection.moe, config.moe_ffn, routes) {
     if (!tq) throw std::invalid_argument("CUDA execution context requires a TQ execution pool");
     profiler.filter = config.profile_filter;
 }
@@ -652,26 +653,15 @@ CudaExecutionContext::~CudaExecutionContext() {
         std::cerr << "runtime_execution_cleanup error=" << error.what() << '\n';
     }
     // Release pipelines while their borrowed branch streams still exist.
-    moe_pipelines.clear();
+    pipelines.clear();
     attention_scratch.clear();
-}
-
-void CudaExecutionContext::register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline) {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(!pipeline)throw std::invalid_argument("cannot register an empty MoE FFN pipeline");
-    moe_pipelines.push_back(pipeline);
-    try { activate_moe_ffn_pipeline(std::move(pipeline)); }
-    catch(...) { moe_pipelines.pop_back(); throw; }
-#else
-    throw std::invalid_argument("MoE FFN pipeline support is disabled");
-#endif
 }
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (native_contexts.empty() && !stores.weights.moe &&
         !stores.weights.tq && !stores.qsa_kv_store &&
-        (!tq || tq->empty()) && moe_pipelines.empty() && branches.empty() &&
+        (!tq || tq->empty()) && pipelines.empty() && branches.empty() &&
         attention_scratch.empty() && collectives.streams().empty()) return;
 #endif
     CudaScope scope(*this);
@@ -679,11 +669,8 @@ void CudaExecutionContext::drain() {
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
-    finish([&] { finish_moe_expert_exchanges(stores.weights.moe); });
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    for (const auto& pipeline : moe_pipelines)
-        finish([&] { drain_moe_ffn_pipeline(pipeline); });
-#endif
+    finish([&] { drain_moe_expert_cache(stores.weights.moe); });
+    finish([&] { pipelines.drain(); });
     finish([&] { collectives.drain(); });
     if (stores.qsa_kv_store) finish([&] { stores.qsa_kv_store->flush(); });
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
@@ -708,7 +695,7 @@ void CudaExecutionContext::drain() {
 
 void CudaExecutionContext::reset() {
     drain();
-    moe_pipelines.clear();
+    pipelines.clear();
     attention_scratch.clear();
     branches.clear();
     profiler.reset();

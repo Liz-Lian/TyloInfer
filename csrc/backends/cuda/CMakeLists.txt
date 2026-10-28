@@ -502,6 +502,7 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
+    ${TYLOINFER_CUDA_ROOT}/engine/executor/pipelines.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp

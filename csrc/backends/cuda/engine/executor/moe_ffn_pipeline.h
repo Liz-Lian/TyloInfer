@@ -10,7 +10,7 @@ struct CudaProfiler;
 struct KlMmqState;
 struct MoeOptions;
 namespace mfq { struct MoeDispatchPlan; }
-namespace mfq::cuda { class Projector; struct Experts; }
+namespace mfq::cuda { class Projector; class RouteStats; struct Experts; struct Ffn; }
 
 struct MoeFfnOptions {
     bool fused_activation = true;
@@ -30,12 +30,39 @@ struct MoeFfnSharedWeights {
     MoeFfnShared gate;
     std::shared_ptr<const QuantLinear> scalar_gate;
 };
-// Borrowed resources and live options outlive the pipeline and its drain.
-std::shared_ptr<MoeFfnPipeline> make_moe_ffn_pipeline(
-    CudaProfiler& profiler, KlMmqState& mmq, const MoeOptions& kernels, const MoeFfnOptions& options,
-    const std::vector<std::shared_ptr<mfq::cuda::Experts>>& gate_up,
-    const std::vector<std::shared_ptr<mfq::cuda::Experts>>& down,MoeFfnShared shared={},MoeFfnDispatchObserver observer={},
-    MoeFfnSharedWeights shared_weights={},double swiglu_limit=0);
+namespace mfq::cuda {
+
+// Pipelines own mutable workspaces; models only borrow the resulting handles.
+class Pipelines {
+public:
+    Pipelines(CudaProfiler& profiler, KlMmqState& mmq, const MoeOptions& kernels,
+              const MoeFfnOptions& options, const RouteStats& routes)
+        : profiler_(profiler), mmq_(mmq), kernels_(kernels), options_(options), routes_(routes) {}
+    Pipelines(const Pipelines&) = delete;
+    Pipelines& operator=(const Pipelines&) = delete;
+
+    std::shared_ptr<MoeFfnPipeline> make(
+        const std::vector<std::shared_ptr<Experts>>& gate_up,
+        const std::vector<std::shared_ptr<Experts>>& down,
+        MoeFfnShared shared = {}, MoeFfnDispatchObserver observer = {},
+        MoeFfnSharedWeights shared_weights = {}, double swiglu_limit = 0) const;
+    void add(std::shared_ptr<MoeFfnPipeline> pipeline);
+    void prepare(Ffn& weights);
+    void drain();
+    void clear() noexcept { items_.clear(); }
+    bool empty() const noexcept { return items_.empty(); }
+
+private:
+    CudaProfiler& profiler_;
+    KlMmqState& mmq_;
+    const MoeOptions& kernels_;
+    const MoeFfnOptions& options_;
+    const RouteStats& routes_;
+    std::vector<std::shared_ptr<MoeFfnPipeline>> items_;
+};
+
+} // namespace mfq::cuda
+
 mfq_tensor_backend::Tensor run_moe_ffn_pipeline(
     std::shared_ptr<MoeFfnPipeline> pipeline,const mfq::cuda::Projector& project,
     const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& ids,

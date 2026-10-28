@@ -1,12 +1,9 @@
 #include "backends/cuda/engine/models/load.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "native/cuda/env.h"
-#include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/moe/load.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/tq/load.h"
 #include "moe.h"
-#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 
 #include <cstdio>
@@ -213,38 +210,13 @@ static void prepare_ffn(bool cpu, mfq::cuda::Ffn &f) {
     }
 }
 
-void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& f) {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if(!f.moe_pipeline.expired() || !mfq::cuda::uses_expert_cache(f) || mfq::cuda::expert_parallel(f) ||
-            f.cpu_moe_gate || f.cpu_moe_up || f.cpu_moe_gate_up || f.cpu_moe_down ||
-            execution.routes.enabled())return;
-    std::vector<std::shared_ptr<mfq::cuda::Experts>> gate_up;
-    // An ungated bank publishes Up in both slots; the pipeline detects the
-    // single-image layout from the projection geometry, not the model name.
-    if(f.moe_ungated_experts)
-        gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_up),std::make_shared<mfq::cuda::Experts>(f.moe_up)};
-    else if(f.moe_split_gate_up)gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_gate),std::make_shared<mfq::cuda::Experts>(f.moe_up)};
-    else gate_up={std::make_shared<mfq::cuda::Experts>(f.moe_gate_up)};
-    auto pipeline=make_moe_ffn_pipeline(
-        execution.profiler,execution.kl_mmq,execution.config.tasks.projection.moe,execution.config.moe_ffn,
-        gate_up,{std::make_shared<mfq::cuda::Experts>(f.moe_down)},
-        {},{},{},f.swiglu_limit);
-    if(!pipeline)return;
-    execution.register_moe_pipeline(pipeline);
-    f.moe_pipeline=pipeline;
-    std::fprintf(stderr,"moe_generic_pipeline_dispatch layer=%d clipped_swiglu=%g\n",
-        f.moe_layer,f.swiglu_limit);
-#else
-    return;
-#endif
-}
 
 namespace mfq::cuda {
 
-std::string configure_yarn(CudaExecutionContext& execution, std::string definition,
+std::string configure_yarn(mfq::models::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context) {
-    execution.yarn={};
-    if(execution.yarn_context_extension) {
+    yarn = {};
+    if(extend) {
         if(backbone!="qwen3_5" && backbone!="qwen4_exp")
             throw std::invalid_argument("YaRN extension requires a Qwen model");
         auto config=nlohmann::json::parse(definition);
@@ -257,11 +229,11 @@ std::string configure_yarn(CudaExecutionContext& execution, std::string definiti
         const auto maximum=rope.value("factor",4.0);
         if((kind!="default" && kind!="yarn") || native<=0 || !std::isfinite(maximum) || maximum<1 ||
             context>std::floor(native*maximum))throw std::invalid_argument("context exceeds Qwen YaRN limit");
-        execution.yarn.original_context=native;
-        execution.yarn.factor=std::max(1.0,double(context)/native);
-        execution.yarn.beta_fast=rope.value("beta_fast",32.0);
-        execution.yarn.beta_slow=rope.value("beta_slow",1.0);
-        if(execution.yarn.enabled())text["max_position_embeddings"]=context;
+        yarn.original_context=native;
+        yarn.factor=std::max(1.0,double(context)/native);
+        yarn.beta_fast=rope.value("beta_fast",32.0);
+        yarn.beta_slow=rope.value("beta_slow",1.0);
+        if(yarn.enabled())text["max_position_embeddings"]=context;
         definition=config.dump();
     }
     return definition;

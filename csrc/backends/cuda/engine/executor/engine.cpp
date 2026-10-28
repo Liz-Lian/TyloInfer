@@ -780,6 +780,7 @@ struct CudaBackend {
             {
                 CudaScope scope(*execution);
                 state = std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>>{};
+                execution->pipelines.clear();
             }
         }
         stores.reset();

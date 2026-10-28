@@ -159,11 +159,11 @@ struct CudaExecutionContext {
     LayerPlacementConfig layer_placement;
     CudaStores& stores;
     const std::shared_ptr<TqExec>& tq;
-    std::vector<std::shared_ptr<MoeFfnPipeline>> moe_pipelines;
     mfq::cuda::Branches branches;
     // Layer addresses identify reusable workspace; only execution retires it after drain.
     std::unordered_map<const void*, mfq::cuda::AttentionScratch> attention_scratch;
     mfq::cuda::RouteStats routes;
+    mfq::cuda::Pipelines pipelines;
 
     mfq::cuda::Projector projector();
     mfq::cuda::FfnExec ffn();
@@ -171,7 +171,6 @@ struct CudaExecutionContext {
     mfq::cuda::Executor::Mode forward_mode() const;
     void drain();
     void reset();
-    void register_moe_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);
 };
 
 void mfq_release_host_allocator_cache() noexcept;
