@@ -31,20 +31,22 @@ Model load_reference_model(CudaExecutionContext& execution,
                            const std::shared_ptr<const mfq::ModelSource>& source) {
     if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
         CudaScope scope(execution);
-        auto model = mfq::cuda::qwen35::read(
-            source, options.config_path, options.context_size,
-            execution.yarn, execution.yarn_context_extension);
-        mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
+        mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
             execution.stores.weights, execution.tq};
-        execution.dense_cpu_layer_count = mfq::cuda::qwen35::place(
-            model, weights, execution.layer_placement, execution.n_gpu_layers,
-            execution.expert_parallel.enabled());
-        mfq::cuda::qwen35::load(
-            model, weights, execution.layer_placement, execution.dense_cpu_layer_count,
-            execution.yarn, false, false,
-            execution.config.tensor_parallel_mirror_linear_attention_scalars);
+        auto model = mfq::cuda::qwen35::load(
+            source, weights, execution.layer_placement, execution.yarn,
+            execution.dense_cpu_layer_count,
+            mfq::cuda::qwen35::LoadOptions{
+                .config_path = options.config_path,
+                .context_size = options.context_size,
+                .gpu_layers = execution.n_gpu_layers,
+                .extend_yarn = execution.yarn_context_extension,
+                .expert_parallel = execution.expert_parallel.enabled(),
+                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars,
+                .load_layers = false,
+                .load_input_output = false});
         if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
             !moe_expert_cache_finalized(execution.stores.weights.moe))
             finalize_moe_expert_cache(execution.stores.weights.moe);

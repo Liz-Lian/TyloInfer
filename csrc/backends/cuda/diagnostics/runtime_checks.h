@@ -52,20 +52,20 @@ static Model load_diagnostic_reference(CudaExecutionContext& execution,
     if constexpr (mfq::cuda::internal::is_qwen35_v<Model>) {
         auto source = mfq::open_model_source(model_path);
         CudaScope scope(execution);
-        auto model = mfq::cuda::qwen35::read(
-            source, config_path, context_size,
-            execution.yarn, execution.yarn_context_extension);
-        mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
+        mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
             execution.stores.weights, execution.tq};
-        execution.dense_cpu_layer_count = mfq::cuda::qwen35::place(
-            model, weights, execution.layer_placement, execution.n_gpu_layers,
-            execution.expert_parallel.enabled());
-        mfq::cuda::qwen35::load(
-            model, weights, execution.layer_placement, execution.dense_cpu_layer_count,
-            execution.yarn, true, true,
-            execution.config.tensor_parallel_mirror_linear_attention_scalars);
+        auto model = mfq::cuda::qwen35::load(
+            source, weights, execution.layer_placement, execution.yarn,
+            execution.dense_cpu_layer_count,
+            mfq::cuda::qwen35::LoadOptions{
+                .config_path = config_path,
+                .context_size = context_size,
+                .gpu_layers = execution.n_gpu_layers,
+                .extend_yarn = execution.yarn_context_extension,
+                .expert_parallel = execution.expert_parallel.enabled(),
+                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars});
         return model;
     } else {
         return mfq::cuda::load_causal_lm<Model>(

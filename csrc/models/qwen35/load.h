@@ -17,16 +17,21 @@ namespace mfq::cuda::weight_loader { struct Loader; }
 
 namespace mfq::cuda::qwen35 {
 
-Model read(std::shared_ptr<const mfq::ModelSource> source,
-           const std::string& config_path, std::int64_t context,
-           mfq::models::YarnScaling& yarn, bool extend_yarn);
+struct LoadOptions {
+    std::string config_path;
+    std::int64_t context_size = 0;
+    int gpu_layers = -1;
+    bool extend_yarn = false;
+    bool expert_parallel = false;
+    bool mirror_scalars = true;
+    bool load_layers = true;
+    bool load_input_output = true;
+};
 
-int place(const Model&, const weight_loader::Loader&, LayerPlacementConfig&,
-          int gpu_layers, bool expert_parallel);
-
-void load(Model&, const weight_loader::Loader&, const LayerPlacementConfig&,
-          int cpu_layers, const mfq::models::YarnScaling&, bool load_layers,
-          bool load_input_output, bool mirror_scalars = true);
+Model load(std::shared_ptr<const mfq::ModelSource> source,
+           const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+           mfq::models::YarnScaling& yarn, int& cpu_layers,
+           const LoadOptions& options);
 
 Layer load_layer(const weight_loader::Loader&, const Config&,
                  int index, const std::string& type, bool mirror_scalars = true,
