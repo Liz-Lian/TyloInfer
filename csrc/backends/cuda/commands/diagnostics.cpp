@@ -595,8 +595,11 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
                 check_nemotron_h_vision ||
                 !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),
-            [&](auto& model, auto& state, auto& executor,
-                    auto& runtime_components, auto t0, auto t1) -> int {
+            [&](auto& runtime, auto t0, auto t1) -> int {
+        auto& model = *runtime.model;
+        auto& state = runtime.state();
+        auto& executor = runtime.executor;
+        auto& runtime_components = runtime.components;
         using Model = std::remove_cvref_t<decltype(model)>;
         if (check_continuous_batching) {
             if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model> ||

@@ -14,6 +14,7 @@
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
 #include "models/qwen35/forward.h"
+#include "models/qwen35/runtime.h"
 #include "models/qwen35/state.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "models/batch.h"
@@ -37,17 +38,19 @@ using namespace mfq::engine;
 using namespace mfq::cuda::internal;
 
 namespace engine_detail {
-template <typename Model, typename State = Model,
-          typename Parts = RuntimeComponents<Model>>
+template <typename Runtime>
 struct CudaEngineState {
+    using Model = typename Runtime::Model;
+    using State = typename Runtime::State;
+    using Parts = typename Runtime::Parts;
+
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
     CudaRuntimeConfig config;
     std::shared_ptr<const mfq::ModelSource> source;
-    std::shared_ptr<Model> model;
-    Parts components;
-    std::unique_ptr<State> owned_state;
-    std::unique_ptr<Executor> executor;
+    Runtime runtime;
+    Parts& components;
+    std::unique_ptr<Executor>& executor;
     Model& language;
     State& state;
     const mfq::models::CausalLmMetadata& metadata;
@@ -150,28 +153,14 @@ struct CudaEngineState {
             <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
     }
 
-    CudaEngineState(CudaExecutionContext& borrowed, Model loaded,
-            Parts optional, CudaRuntimeConfig runtime_config,
+    CudaEngineState(CudaExecutionContext& borrowed, Runtime loaded,
+            CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
-            std::shared_ptr<WeightMemoryLedger> weights,
-            std::unique_ptr<State> loaded_state,
-            std::unique_ptr<Executor> loaded_executor)
+            std::shared_ptr<WeightMemoryLedger> weights)
         : weight_memory(std::move(weights)), execution(&borrowed), config(std::move(runtime_config)),
           source(std::move(model_source)),
-          model(std::make_shared<Model>(std::move(loaded))), components(std::move(optional)),
-          owned_state(std::move(loaded_state)), executor(std::move(loaded_executor)),
-          language([&]() -> Model& {
-              if constexpr (requires { components.language(*model); })
-                  return components.language(*model);
-              else
-                  return *model;
-          }()),
-          state([this]() -> State& {
-              if constexpr (std::is_same_v<Model, State>)
-                  return language;
-              else
-                  return *owned_state;
-          }()),
+          runtime(std::move(loaded)), components(runtime.components), executor(runtime.executor),
+          language(runtime.language()), state(runtime.state()),
           metadata(language.metadata),
           graph(language.metadata.max_position_embeddings),
           cache(config.session_cache, config.prefix_cache,
@@ -191,7 +180,7 @@ struct CudaEngineState {
                 auto batch_config = config.continuous_batch;
                 batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
                 batching = make_batch(
-                    model, &state, execution->make_executor(), execution->collectives,
+                    runtime.model, &state, execution->make_executor(), execution->collectives,
                     execution->forward_mode(), execution->stores.weights.moe,
                     std::move(batch_config), config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
@@ -528,17 +517,16 @@ struct CudaEngineState {
 
 };
 using State = std::variant<
-    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State,
-                                   mfq::cuda::qwen35::Components>>,
-    std::unique_ptr<CudaEngineState<MiniCPMO45CausalLm>>,
-    std::unique_ptr<CudaEngineState<minicpmo45::Model, minicpmo45::State>>,
-    std::unique_ptr<CudaEngineState<Gemma4CausalLm>>,
-    std::unique_ptr<CudaEngineState<GlmDsaCausalLm>>,
-    std::unique_ptr<CudaEngineState<Glm5CausalLm>>,
-    std::unique_ptr<CudaEngineState<Qwen4CausalLm>>,
-    std::unique_ptr<CudaEngineState<DeepseekV4CausalLm>>,
-    std::unique_ptr<CudaEngineState<DeepseekV41CausalLm>>,
-    std::unique_ptr<CudaEngineState<NemotronHCausalLm>>>;
+    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Runtime>>,
+    std::unique_ptr<CudaEngineState<Loaded<MiniCPMO45CausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<minicpmo45::Model, minicpmo45::State>>>,
+    std::unique_ptr<CudaEngineState<Loaded<Gemma4CausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<GlmDsaCausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<Glm5CausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<Qwen4CausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<DeepseekV4CausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<DeepseekV41CausalLm>>>,
+    std::unique_ptr<CudaEngineState<Loaded<NemotronHCausalLm>>> >;
 
 struct CudaBackend {
     using Options = CudaEngineOptions;
@@ -587,25 +575,15 @@ struct CudaBackend {
             execution->stores.qsa_kv_store = std::make_shared<KvOffloadStore>(std::move(kv));
         }
         state = with_loaded_cuda_model(*execution, options, true,
-            [&](auto& model, auto& model_state, auto& executor, auto& components,
-                auto, auto) -> State {
-                using Model = std::decay_t<decltype(model)>;
-                using Parts = std::remove_cvref_t<decltype(components)>;
+            [&](auto& runtime, auto, auto) -> State {
+                using Runtime = std::remove_cvref_t<decltype(runtime)>;
+                using Model = typename Runtime::Model;
                 if constexpr (!std::is_same_v<Model, Qwen4CausalLm>)
                     if (execution->stores.qsa_kv_store) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
-                std::shared_ptr<const mfq::ModelSource> source;
-                source = model.source;
-                using ModelState = std::remove_cvref_t<decltype(model_state)>;
-                if constexpr (!std::is_same_v<Model, ModelState>)
-                    return std::make_unique<CudaEngineState<Model, ModelState, Parts>>(
-                        *execution, std::move(model), std::move(components), config,
-                        std::move(source), weight_memory,
-                        std::make_unique<ModelState>(std::move(model_state)),
-                        std::move(executor));
-                else
-                    return std::make_unique<CudaEngineState<Model, ModelState, Parts>>(
-                        *execution, std::move(model), std::move(components), config,
-                        std::move(source), weight_memory, nullptr, std::move(executor));
+                auto source = runtime.language().source;
+                return std::make_unique<CudaEngineState<Runtime>>(
+                    *execution, std::move(runtime), config,
+                    std::move(source), weight_memory);
             });
         return visit([&](auto& state) {
             EngineInfo info;
