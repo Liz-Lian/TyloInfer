@@ -47,14 +47,14 @@ class Kda {
         recurrent_ = rollback_recurrent_;
         commit();
     }
-    Tensor forward(CudaExecutionContext &execution, const Tensor &hidden, bool use_cache,
+    Tensor forward(const Projector& project, const Tensor &hidden, bool use_cache,
                    int64_t confirmed = 0) {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
         return mfq::models::recurrent_window(
             hidden.size(1), use_cache, confirmed, pending(),
             [&](int64_t start, int64_t count) {
-                return forward_chunk(execution, hidden.narrow(1, start, count), use_cache);
+                return forward_chunk(project, hidden.narrow(1, start, count), use_cache);
             },
             [&] {
                 rollback_conv_ = conv_;
@@ -63,7 +63,7 @@ class Kda {
             [&] { rollback(); },
             [](Tensor prefix, Tensor suffix) { return tb::cat({prefix, suffix}, 1); });
     }
-    Tensor forward_chunk(CudaExecutionContext &execution, const Tensor &hidden, bool use_cache) {
+    Tensor forward_chunk(const Projector& project, const Tensor &hidden, bool use_cache) {
         const auto b = hidden.size(0), t = hidden.size(1), channels = heads_ * width_;
         const auto options = hidden.options().dtype(tb::kFloat32);
         TYLOINFER_RUNTIME_CHECK(!use_cache || !conv_.defined() ||
@@ -75,8 +75,8 @@ class Kda {
         return mfq::models::gated_delta_attention(
             use_cache,
             [&] {
-                auto projected = tb::cat({w_.query(execution, hidden), w_.key(execution, hidden),
-                                          w_.value(execution, hidden)},
+                auto projected = tb::cat({project.run(*w_.query, hidden), project.run(*w_.key, hidden),
+                                          project.run(*w_.value, hidden)},
                                          -1)
                                      .to(tb::kFloat32);
                 TYLOINFER_RUNTIME_CHECK(projected.sizes().vec() ==
@@ -107,7 +107,7 @@ class Kda {
                                                    w_.a_log, heads_, width_, lower_bound_)
                         .permute({0, 2, 1, 3})
                         .contiguous();
-                auto beta = tb::sigmoid(w_.beta(execution, hidden).to(tb::kFloat32))
+                auto beta = tb::sigmoid(project.run(*w_.beta, hidden).to(tb::kFloat32))
                                 .transpose(1, 2)
                                 .contiguous();
                 return std::array<Tensor, 2>{forget, beta};
@@ -146,14 +146,14 @@ class Kda {
                 return std::array<Tensor, 2>{attended, next_recurrent};
             },
             [&](Tensor attended) {
-                auto gate = w_.gate_b(execution, w_.gate_a(execution, hidden))
+                auto gate = project.run(*w_.gate_b, project.run(*w_.gate_a, hidden))
                                 .reshape({b, t, heads_, width_})
                                 .permute({0, 2, 1, 3});
                 return rms_norm(attended, w_.output_norm, eps_) *
                        tb::sigmoid(gate.to(tb::kFloat32));
             },
             [&](Tensor normalized) {
-                auto result = w_.output(execution, normalized.permute({0, 2, 1, 3})
+                auto result = project.run(*w_.output, normalized.permute({0, 2, 1, 3})
                                                        .reshape({b, t, channels})
                                                        .to(hidden.scalar_type()));
                 return result;
@@ -174,7 +174,7 @@ class Kda {
 struct MlaWeights {
     Linear query_a, key_value_a, query_b, output, index_query, index_key, index_score;
     // Head-wise absorbed projections accept/return [B,T,heads,width].
-    Linear embed_query, unembed_output;
+    attention_ops::Transform embed_query, unembed_output;
     Tensor query_norm, latent_norm, index_norm, index_bias, index_gate, index_position;
 };
 
@@ -204,7 +204,7 @@ class SparseMla {
         latent_.truncate(keep);
         index_.truncate(keep);
     }
-    Tensor forward(CudaExecutionContext &execution, const Tensor &hidden, bool use_cache) {
+    Tensor forward(const Projector& project, const Tensor &hidden, bool use_cache) {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0 &&
                               hidden.size(1) > 0,
                           "GLM MLA requires nonempty [B,T,H] input");
@@ -218,12 +218,12 @@ class SparseMla {
         return mfq::models::glm5_next::sparse_mla(
             offset + t, c_.budget, use_cache,
             [&] {
-                auto qr = rms_norm(w_.query_a(execution, hidden), w_.query_norm, c_.eps);
-                auto query = w_.query_b(execution, qr).reshape({b, t, c_.heads, c_.nope});
-                auto latent = rms_norm(w_.key_value_a(execution, hidden).narrow(-1, 0, c_.latent),
+                auto qr = rms_norm(project.run(*w_.query_a, hidden), w_.query_norm, c_.eps);
+                auto query = project.run(*w_.query_b, qr).reshape({b, t, c_.heads, c_.nope});
+                auto latent = rms_norm(project.run(*w_.key_value_a, hidden).narrow(-1, 0, c_.latent),
                                        w_.latent_norm, c_.eps);
                 // Metal's indexer LayerNorm explicitly casts the source/output to F16.
-                auto ik = w_.index_key(execution, hidden).to(tb::kFloat16).to(tb::kFloat32);
+                auto ik = project.run(*w_.index_key, hidden).to(tb::kFloat16).to(tb::kFloat32);
                 auto centered = ik - ik.mean(-1, true);
                 ik = (centered * tb::rsqrt((centered * centered).mean(-1, true) + 1e-6) *
                           w_.index_norm.to(tb::kFloat32) +
@@ -242,7 +242,7 @@ class SparseMla {
                 p.index = index_.append(p.index);
             },
             [&](const Projection &p) {
-                return w_.embed_query(execution, p.query).permute({0, 2, 1, 3}).to(tb::kFloat32);
+                return w_.embed_query(project, p.query).permute({0, 2, 1, 3}).to(tb::kFloat32);
             },
             [&](const Tensor &query, const Projection &p) {
                 return mfq_glm5_next::dense_mla_attention(query, p.latent, offset, scale);
@@ -253,12 +253,12 @@ class SparseMla {
                     p.index.narrow(-1, c_.index_width, c_.index_width), w_.index_position, c_.pool);
             },
             [&](const Projection &p) {
-                return w_.index_query(execution, p.rank)
+                return project.run(*w_.index_query, p.rank)
                     .reshape({b, t, c_.index_heads, c_.index_width});
             },
             [&](Tensor query, Tensor pooled) {
                 return mfq_glm5_next::kpool_scores(query, pooled,
-                                                   w_.index_score(execution, hidden));
+                                                   project.run(*w_.index_score, hidden));
             },
             [&](Tensor scores) {
                 return select_pooled_blocks(scores, offset, offset + t, c_.pool, c_.budget,
@@ -268,10 +268,10 @@ class SparseMla {
                 return mfq_glm5_next::sparse_mla_attention(query, p.latent, selected, scale);
             },
             [&](Tensor attended) {
-                return w_.unembed_output(execution, attended.to(tb::kFloat16));
+                return w_.unembed_output(project, attended.to(tb::kFloat16));
             },
             [&](Tensor value) {
-                return w_.output(execution, value.reshape({b, t, c_.heads * c_.value_width}));
+                return project.run(*w_.output, value.reshape({b, t, c_.heads * c_.value_width}));
             },
             [&] {
                 latent_.truncate(offset);

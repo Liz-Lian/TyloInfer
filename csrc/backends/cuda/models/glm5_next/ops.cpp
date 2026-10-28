@@ -1,4 +1,5 @@
 #include "mfq_cuda_moe_ops.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"
@@ -10,43 +11,44 @@
 
 namespace mfq::cuda::glm5_next {
 using Config = mfq::models::glm5_next::Config;
+using attention_ops::Transform;
 
-static Linear headwise(weight_loader::Routed projection,int64_t heads,int64_t output) {
+static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t output) {
     return [projection=std::move(projection),heads,output](
-            CudaExecutionContext& execution, const Tensor& x) {
+            const Projector& project, const Tensor& x) {
         TYLOINFER_RUNTIME_CHECK(x.dim()==4 && x.size(2)==heads,"GLM head-wise projection shape mismatch");
         const auto b=x.size(0),t=x.size(1),rows=b*t*heads;
         auto ids=tb::arange(rows,x.options().dtype(tb::kInt32)).remainder(heads).reshape({rows,1});
-        return projection(execution,x.reshape({rows,x.size(-1)}),ids).reshape({b,t,heads,output});
+        return projection(project,x.reshape({rows,x.size(-1)}),ids).reshape({b,t,heads,output});
     };
 }
 
-static Linear dense_ffn(Linear gate, Linear up, Linear down, double limit) {
-    return [gate, up, down, limit](CudaExecutionContext &execution, const Tensor &x) {
+static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
+    return [gate, up, down, limit](const Projector& project, const Tensor &x) {
         auto unfused = [](const auto &...) { return std::optional<Tensor>{}; };
         return mfq::models::gated_mlp(
             x, false, limit, unfused, unfused,
             [&](Tensor input) {
-                return std::array<Tensor, 2>{gate(execution, input), up(execution, input)};
+                return std::array<Tensor, 2>{project.run(*gate, input), project.run(*up, input)};
             },
             [](Tensor g, Tensor u, mfq::models::GatedActivation, double bound) {
                 g = tb::clamp_max(g, bound);
                 u = tb::clamp(u, -bound, bound);
                 return (g * tb::sigmoid(g)) * u;
             },
-            [&](Tensor hidden) { return down(execution, hidden); }, unfused);
+            [&](Tensor hidden) { return project.run(*down, hidden); }, unfused);
     };
 }
 
-static Linear glm_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
-                      Linear router, Linear shared, Tensor bias, const Config &c) {
-    return [gate_up, down, router, shared, bias, c](CudaExecutionContext &execution,
+static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
+                      Linear router, Transform shared, Tensor bias, const Config &c) {
+    return [gate_up, down, router, shared, bias, c](const Projector& project,
                                                     const Tensor &x) {
         auto source = x.reshape({-1, c.hidden}).to(tb::kFloat16);
         const auto routing = c.routing();
         return mfq::models::mixture_of_experts(
             [&] {
-                return router(execution, source.to(tb::kFloat32)).to(tb::kFloat32).contiguous();
+                return project.run(*router, source.to(tb::kFloat32)).to(tb::kFloat32).contiguous();
             },
             [&](Tensor logits) {
                 return moe_topk_cuda(
@@ -54,10 +56,10 @@ static Linear glm_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
                     routing.activation == mfq::models::RouterActivation::sqrt_softplus,
                     routing.normalize, routing.delayed_softmax, bias, 1e-20, routing.scale);
             },
-            [&](const auto &) { return shared(execution, source); },
+            [&](const auto &) { return shared(project, source); },
             [&](const auto &selected) {
                 return mfq::models::routed_experts(
-                    [&] { return gate_up(execution, source, selected[0]); },
+                    [&] { return gate_up(project, source, selected[0]); },
                     [&](Tensor gu) {
                         auto gate =
                             tb::clamp_max(gu.narrow(-1, 0, c.moe_intermediate), c.swiglu_limit);
@@ -65,7 +67,7 @@ static Linear glm_moe(weight_loader::Routed gate_up, weight_loader::Routed down,
                                             -c.swiglu_limit, c.swiglu_limit);
                         return (gate * tb::sigmoid(gate)) * up;
                     },
-                    [&](Tensor hidden) { return down(execution, hidden, selected[0]); },
+                    [&](Tensor hidden) { return down(project, hidden, selected[0]); },
                     [&](Tensor pairs) {
                         auto reduced = tb::zeros({source.size(0), c.hidden},
                                                  source.options().dtype(tb::kFloat32));
@@ -112,7 +114,7 @@ struct BlockLoader : weight_loader::Loader {
         return dense_ffn(std::move(gate), std::move(up), std::move(down), limit);
     }
     static auto moe(weight_loader::Routed gate_up, weight_loader::Routed down, Linear router,
-                    Linear shared, Tensor bias, const Config &c) {
+                    Transform shared, Tensor bias, const Config &c) {
         return glm_moe(std::move(gate_up), std::move(down), std::move(router), std::move(shared),
                        std::move(bias), c);
     }
@@ -123,7 +125,7 @@ struct Glm5NextBlock final : Block {
     mfq::models::glm5_next::Config config;
     Mhc attention_hc, ffn_hc;
     Tensor attention_norm, ffn_norm;
-    Linear ffn;
+    Transform ffn;
     std::unique_ptr<Kda> kda;
     std::unique_ptr<SparseMla> mla;
 
@@ -149,7 +151,7 @@ struct Glm5NextBlock final : Block {
         if (mla)
             mla->truncate(keep);
     }
-    Tensor execute(CudaExecutionContext &execution, const Tensor &x, int64_t position,
+    Tensor execute(const Projector& project, const Tensor &x, int64_t position,
                    int64_t confirmed = 0) {
         if (mla)
             TYLOINFER_RUNTIME_CHECK(mla->position() == position,
@@ -159,37 +161,35 @@ struct Glm5NextBlock final : Block {
             [&](Tensor branch, int role) {
                 return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
             },
-            [&](Tensor branch) { return kda->forward(execution, branch, true, confirmed); },
-            [&](Tensor branch) { return mla->forward(execution, branch, true); },
+            [&](Tensor branch) { return kda->forward(project, branch, true, confirmed); },
+            [&](Tensor branch) { return mla->forward(project, branch, true); },
             [](Tensor branch, const Tensor &residual, const auto &mix) {
                 return mfq_glm5_next::mhc_post(branch, residual, mix[0], mix[1]);
             },
             [&](const Tensor &hidden) { return ffn_hc.pre(hidden, config); },
-            [&](Tensor branch) { return ffn(execution, branch); });
+            [&](Tensor branch) { return ffn(project, branch); });
     }
     Tensor forward(CudaExecutionContext &execution, Tensor x, Tensor, int64_t position,
                    const MfqOptional<Tensor> &, const RopeCache &,
                    const MfqOptional<Tensor> & = mfq_nullopt,
                    const MfqOptional<Tensor> &mask = mfq_nullopt) override {
         TYLOINFER_RUNTIME_CHECK(!mask.has_value(), "GLM requires its causal unpadded attention geometry");
-        return execute(execution, x, position);
+        return execute(execution.projector(), x, position);
     }
     Tensor forward_context(CudaExecutionContext &execution, Tensor x, const Context &context,
                            const RopeCache &) override {
-        return execute(execution, x, context.cache_position, context.confirmed_prefix);
+        return execute(execution.projector(), x, context.cache_position, context.confirmed_prefix);
     }
 };
 
-Glm5NextMtp::Glm5NextMtp() = default;
+Glm5NextMtp::Glm5NextMtp(Projector project) : project_(std::move(project)) {}
 Glm5NextMtp::~Glm5NextMtp() = default;
 Glm5NextMtp::Glm5NextMtp(Glm5NextMtp&&) noexcept = default;
-Glm5NextMtp& Glm5NextMtp::operator=(Glm5NextMtp&&) noexcept = default;
 
 std::optional<Glm5NextMtp> Glm5NextMtp::load_if_present(CudaExecutionContext &execution,
                                                       const mfq::ModelSource &file,
                                                       const mfq::models::glm5_next::Config &main) {
-    Glm5NextMtp result;
-    result.execution = &execution;
+    Glm5NextMtp result{execution.projector()};
     BlockLoader loader{{execution, file, "glm5_next"}};
     if (!mfq::models::glm5_next::load_predictor(result, loader, main))
         return std::nullopt;
@@ -244,7 +244,7 @@ std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const MtpTarget &target, const T
             return rms_norm(masked, embedding_norm, config.eps);
         },
         [&] { return rms_norm(hidden, hidden_norm, config.eps); },
-        [&](Tensor e, Tensor streams) { return fusion(*execution, tb::cat({e, streams}, -1)); },
+        [&](Tensor e, Tensor streams) { return project_.run(*fusion, tb::cat({e, streams}, -1)); },
         [&](Tensor x, int64_t layer, const auto &pos) {
             auto &block = layers[layer];
             dtype = x.scalar_type() == tb::kFloat32 ? tb::kFloat32 : tb::kFloat16;
@@ -256,9 +256,9 @@ std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const MtpTarget &target, const T
                     return stage == 0 ? normalized : normalized.to(dtype);
                 },
                 [&](Tensor value) {
-                    return block.attention->forward(*execution, value, cache);
+                    return block.attention->forward(project_, value, cache);
                 },
-                [&](Tensor value) { return block.ffn(*execution, value); },
+                [&](Tensor value) { return block.ffn(project_, value); },
                 [](Tensor residual, Tensor branch) {
                     return residual.to(tb::kFloat32) + branch.to(tb::kFloat32);
                 });

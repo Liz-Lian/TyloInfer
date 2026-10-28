@@ -867,19 +867,8 @@ std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
 
 namespace mfq::cuda::weight_loader {
 namespace tb = mfq_tensor_backend;
-namespace {
-struct LoadedLinear {
-    std::shared_ptr<QuantLinear> weight;
-    Tensor operator()(CudaExecutionContext& execution,const Tensor& x)const{return execution.projector().run(*weight, x);}
-};
-}
-
 Linear linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name) {
-    auto weight=std::make_shared<QuantLinear>(load_quant_linear(execution, file,name));
-    return LoadedLinear{std::move(weight)};
-}
-std::shared_ptr<const QuantLinear> linear_weight(const Linear& function) {
-    const auto* loaded=function.target<LoadedLinear>();return loaded?loaded->weight:nullptr;
+    return std::make_shared<const QuantLinear>(load_quant_linear(execution, file, name));
 }
 
 GatedResidual::Projection residual_linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name) {
@@ -996,7 +985,7 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
     const auto& dtype=require_tensor(file, name).dtype;
     if(dtype=="TQ") {
         auto weight=load_tq_routed_weight(execution,file,name,experts,output,input);
-        Routed result=[weight](CudaExecutionContext&,const Tensor& source,const Tensor& ids) {
+        Routed result=[weight](const Projector&,const Tensor& source,const Tensor& ids) {
             return weight->forward(source,ids);
         };
         result.tq_projections.push_back(std::move(weight));
@@ -1008,7 +997,7 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
         auto w=dense(execution,file,name);
         TYLOINFER_RUNTIME_CHECK(w.sizes().vec()==std::vector<int64_t>({experts,output,input}),
             "dense expert tensor shape mismatch: ",name);
-        return [w,output,input](CudaExecutionContext&, const Tensor& x,const Tensor& ids) {
+        return [w,output,input](const Projector&, const Tensor& x,const Tensor& ids) {
             const auto rows=ids.size(0), routes=ids.size(1);
             auto selected=w.index_select(0,ids.reshape({-1}).to(tb::kInt64)).reshape({rows,routes,output,input});
             auto source=x.dim()==2 ? x.unsqueeze(1).expand({rows,routes,input}) : x;
@@ -1023,9 +1012,9 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
     auto w=std::make_shared<mfq::cuda::Experts>(load_mfe_gpu(execution, file,name,true,layer,role));
     TYLOINFER_RUNTIME_CHECK(w->n_experts==experts && w->out_per_expert==output && w->neuron_len==input,
         "routed tensor shape mismatch: ",name);
-    Routed result=[w,experts](CudaExecutionContext& execution, const Tensor& x,const Tensor& ids) {
+    Routed result=[w,experts](const Projector& project, const Tensor& x,const Tensor& ids) {
         auto route=build_moe_route_plan(ids.to(tb::kInt32).contiguous(),int(experts));
-        return execution.projector().run(*w, x.contiguous(), route);
+        return project.run(*w, x.contiguous(), route);
     };
     result.projections.push_back(w);
     return result;
@@ -1048,8 +1037,8 @@ Routed routed_gate_up(CudaExecutionContext& execution, const mfq::ModelSource& f
     projections.insert(projections.end(),up.projections.begin(),up.projections.end());
     auto tq_projections=gate.tq_projections;
     tq_projections.insert(tq_projections.end(),up.tq_projections.begin(),up.tq_projections.end());
-    Routed result=[gate=std::move(gate),up=std::move(up)](CudaExecutionContext& execution, const Tensor& x,const Tensor& ids) {
-        return tb::cat({gate(execution,x,ids),up(execution,x,ids)},-1);
+    Routed result=[gate=std::move(gate),up=std::move(up)](const Projector& project, const Tensor& x,const Tensor& ids) {
+        return tb::cat({gate(project,x,ids),up(project,x,ids)},-1);
     };
     result.projections=std::move(projections);
     result.tq_projections=std::move(tq_projections);

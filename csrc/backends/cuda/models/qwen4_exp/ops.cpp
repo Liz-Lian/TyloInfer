@@ -1,4 +1,5 @@
 #include "env.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
@@ -220,11 +221,11 @@ Tensor Gdn::project_output(const mfq::cuda::Projector& projector,const Tensor& s
 }
 
 
-static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_up, weight_loader::Routed down,
+static auto qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gate_up, weight_loader::Routed down,
                        Linear router, Linear shared_gate, Linear sg, Linear su, Linear sd,
                        const Config &c, MoeFfnPrefetch* prefetch=nullptr) {
-    const auto shared_g=weight_loader::linear_weight(sg),shared_u=weight_loader::linear_weight(su);
-    const auto shared_d=weight_loader::linear_weight(sd),shared_gate_weight=weight_loader::linear_weight(shared_gate);
+    const auto shared_g=std::move(sg),shared_u=std::move(su);
+    const auto shared_d=std::move(sd),shared_gate_weight=std::move(shared_gate);
     TYLOINFER_RUNTIME_CHECK(shared_g && shared_u && shared_d && shared_gate_weight,
         "Qwen shared expert requires projection weights");
     std::shared_ptr<QuantLinearGroup> shared_tq;
@@ -353,7 +354,7 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
 #endif
         const auto routing = c.routing();
         return mfq::models::mixture_of_experts(
-            [&] { return qwen_prefill_preserve_rows(source,[&](const Tensor& part){return router(execution,part);}).contiguous(); },
+            [&] { return qwen_prefill_preserve_rows(source,[&](const Tensor& part){return execution.projector().run(*router,part);}).contiguous(); },
             [&](Tensor logits) {
                 return moe_topk_cuda(
                     logits, c.topk, routing.activation == mfq::models::RouterActivation::sigmoid,
@@ -373,13 +374,13 @@ static Linear qwen_moe(CudaExecutionContext& execution,weight_loader::Routed gat
                     return execution.projector().run(*tq,source,selected[0],selected[1]);
                 });
                 return mfq::models::routed_experts(
-                    [&] { return gate_up(execution, source, selected[0]); },
+                    [&] { return gate_up(execution.projector(), source, selected[0]); },
                     [&](Tensor gu) {
                         auto gate = gu.narrow(-1, 0, c.moe_width),
                              up = gu.narrow(-1, c.moe_width, c.moe_width);
                         return (gate * tb::sigmoid(gate)) * up;
                     },
-                    [&](Tensor hidden) { return down(execution, hidden, selected[0]); },
+                    [&](Tensor hidden) { return down(execution.projector(), hidden, selected[0]); },
                     [&](Tensor pairs) {
                         auto reduced = tb::zeros({source.size(0), c.hidden},
                                                  source.options().dtype(tb::kFloat32));
@@ -558,7 +559,8 @@ struct Qwen4Block final : Block {
     using Tensor = mfq_tensor_backend::Tensor;
     mfq::models::qwen4_exp::Config config;
     GatedResidual attention_gr, ffn_gr;
-    Linear ffn,router;
+    std::function<Tensor(CudaExecutionContext&, const Tensor&)> ffn;
+    Linear router;
     Linear next_router;
     MoeFfnPrefetch prefetch,next_prefetch;
     bool tq_graph_ffn=false;
@@ -625,7 +627,7 @@ struct Qwen4Block final : Block {
         retained_prefix=confirmed>0 && ids.size(1)<=8;
         auto& profiler=execution.profiler;
         if(ple)x=x+profiler.measure("prefill.ple",[&] {
-            return ple->forward(execution,x,ids,true,confirmed,host_ids,full_positions.size(-1)-ids.size(1));
+            return ple->forward(execution.projector(),x,ids,true,confirmed,host_ids,full_positions.size(-1)-ids.size(1));
         });
         auto [attention_input,attention_residual,attention_gate]=profiler.measure("prefill.gr_attention",[&] {
             return attention_gr.pre(x);
@@ -657,7 +659,7 @@ struct Qwen4Block final : Block {
     }
     Tensor prefill_ple(CudaExecutionContext& execution,Tensor x,const Context& context) {
         if(ple)x=x+execution.profiler.measure("prefill.ple",[&] {
-            return ple->forward(execution,x,context.token_ids,true,0,context.host_token_ids);
+            return ple->forward(execution.projector(),x,context.token_ids,true,0,context.host_token_ids);
         });
         return x;
     }
@@ -695,8 +697,8 @@ struct Qwen4Block final : Block {
             };
         };
         if(ple)x=x+(confirmed
-            ? ple->forward_graph(execution,x,ids,ple_rows,confirmed,checkpoint->ple_conv)
-            : ple->forward_chunk(execution,x,ids,true,{},ple_rows));
+            ? ple->forward_graph(execution.projector(),x,ids,ple_rows,confirmed,checkpoint->ple_conv)
+            : ple->forward_chunk(execution.projector(),x,ids,true,{},ple_rows));
         auto [attention_input,attention_residual,attention_gate]=pending_residual
             ? attention_gr.pre_after(x,pending_residual->residual,pending_residual->gate,marker("attention_mhc_"))
             : attention_gr.pre(x,marker("attention_mhc_"));
@@ -713,7 +715,7 @@ struct Qwen4Block final : Block {
         DecodeWindow::Task prediction{};
         if(next_prefetch && ffn_input.numel()==config.hidden && DecodeWindow::recording()->prediction_enabled()) {
             const auto routing=config.routing();
-            auto logits=next_router(execution,ffn_input.reshape({1,config.hidden}).to(tb::kFloat16)).to(tb::kFloat32).contiguous();
+            auto logits=execution.projector().run(*next_router,ffn_input.reshape({1,config.hidden}).to(tb::kFloat16)).to(tb::kFloat32).contiguous();
             const int prediction_count=std::min<int64_t>(logits.size(-1),
                 moe_expert_cache_ssd_experts(execution.stores.moe_expert_cache)?4:2);
             auto selected=moe_topk_cuda(logits,prediction_count,
@@ -843,8 +845,8 @@ struct Qwen4MtpGraph {
                     cell.window.mark(-1,"window_begin");
                     const auto make_input=[&](const Tensor& hidden_rows,const Tensor& token_rows,int64_t rows) {
                         auto embeddings=target.embed(token_rows);
-                        auto e=predictor.embedding_fusion(execution,rms_norm(embeddings,predictor.embedding_norm+1,predictor.config.eps));
-                        auto h=predictor.hidden_fusion(execution,rms_norm(hidden_rows,predictor.hidden_norm+1,predictor.config.eps)
+                        auto e=execution.projector().run(*predictor.embedding_fusion,rms_norm(embeddings,predictor.embedding_norm+1,predictor.config.eps));
+                        auto h=execution.projector().run(*predictor.hidden_fusion,rms_norm(hidden_rows,predictor.hidden_norm+1,predictor.config.eps)
                             .reshape({1,rows,predictor.config.streams,predictor.config.hidden}));
                         return (h+e.unsqueeze(-2)).reshape({1,rows,predictor.config.streams*predictor.config.hidden});
                     };
@@ -997,11 +999,11 @@ std::pair<Tensor, Tensor> Qwen4ExpMtp::evaluate(const MtpTarget &target, const T
             return std::array<Tensor, 2>{current, full};
         },
         [&](Tensor embeds, const auto &pos) {
-            return embedding_fusion(*execution,
+            return execution->projector().run(*embedding_fusion,
                                     rms_norm(embeds, embedding_norm + 1, config.eps));
         },
         [&] {
-            return hidden_fusion(*execution,
+            return execution->projector().run(*hidden_fusion,
                                  rms_norm(hidden, hidden_norm + 1, config.eps)
                                      .reshape({b, t, config.streams, config.hidden}));
         },
@@ -1832,7 +1834,7 @@ void qwen4_finish_router_lookahead_audit(Qwen4CausalLm& model,const std::string&
         auto& b=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[layer]);
         for(int input_layer:{static_cast<int>(layer)-1,static_cast<int>(layer)}) {
             auto input=audit->rows(input_layer).to(mfq_tensor_backend::kCUDA);
-            auto logits=b.router(*model.execution,input).to(mfq_tensor_backend::kFloat32).cpu().contiguous();
+            auto logits=model.execution->projector().run(*b.router,input).to(mfq_tensor_backend::kFloat32).cpu().contiguous();
             if(logits.dim()!=2 || logits.size(0)!=audit->samples() || logits.size(1)!=model.config.experts)
                 throw std::runtime_error("router lookahead audit router shape mismatch");
             file.write(reinterpret_cast<const char*>(logits.data_ptr()),logits.numel()*logits.element_size());
@@ -2170,7 +2172,7 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
                         graph.ple[row][i]->decode();
                         auto rows = graph.ple[row][i]->output().reshape({1,1,model.hidden_size()});
                         positional.push_back(x + requests[row]->state_->layers[i].ple->forward_chunk(
-                            execution,x,graph.ids.narrow(0,row,1),true,{},rows));
+                            execution.projector(),x,graph.ids.narrow(0,row,1),true,{},rows));
                     }
                     hidden = join_request_outputs(positional,0);
                     graph.window->mark(static_cast<int>(i),"ple_end");
@@ -2289,10 +2291,10 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
             for (std::size_t row=0;row<requests.size();++row) {
                 auto x=hidden.narrow(1,offsets[row],chunks[row].size(1));
                 auto& layer=requests[row]->state_->layers[i];
-                auto ple=packed ? layer.ple->forward(execution,x,chunks[row],true,0,
+                auto ple=packed ? layer.ple->forward(execution.projector(),x,chunks[row],true,0,
                     host_ids.narrow(1,offsets[row],chunks[row].size(1))) :
                     execution.profiler.measure("prefill.ple",[&] {
-                        return layer.ple->forward(execution,x,chunks[row],true,0,
+                        return layer.ple->forward(execution.projector(),x,chunks[row],true,0,
                             host_ids.narrow(1,offsets[row],chunks[row].size(1)));
                     });
                 positional.push_back(x+ple);
@@ -2375,7 +2377,7 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
             for (int64_t row = 0; row < batch; ++row) {
                 auto& layer = requests[row]->state_->layers[i];
                 auto x = hidden.narrow(0,row,1);
-                positional.push_back(x + layer.ple->forward(execution,x,ids.narrow(0,row,1),true,0,
+                positional.push_back(x + layer.ple->forward(execution.projector(),x,ids.narrow(0,row,1),true,0,
                                                            host_ids.narrow(0,row,1)));
             }
             hidden = join_request_outputs(positional,0);

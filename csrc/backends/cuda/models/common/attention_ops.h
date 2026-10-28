@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend.h"
+#include "ops/common/include/projection.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,13 +10,11 @@
 #include <utility>
 #include <vector>
 
-struct CudaExecutionContext;
-
 namespace mfq::cuda::attention_ops {
 namespace tb = mfq_tensor_backend;
 using Tensor = tb::Tensor;
-using Linear =
-    std::function<Tensor(CudaExecutionContext&, const Tensor&)>;
+using Linear = std::shared_ptr<const QuantLinear>;
+using Transform = std::function<Tensor(const Projector&, const Tensor&)>;
 using Embedding = std::function<Tensor(const Tensor&)>;
 
 inline Tensor rms_norm(const Tensor& value, const Tensor& weight, double eps) {

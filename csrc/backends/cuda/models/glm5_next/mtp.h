@@ -13,7 +13,7 @@ struct Glm5NextMtp final : MtpModule {
     struct Layer {
         Tensor attention_norm, ffn_norm;
         std::unique_ptr<SparseMla> attention;
-        Linear ffn;
+        attention_ops::Transform ffn;
     };
 
     mfq::models::glm5_next::Config config;
@@ -21,13 +21,11 @@ struct Glm5NextMtp final : MtpModule {
     Linear fusion;
     std::vector<Layer> layers;
     std::vector<int64_t> lengths;
-    CudaExecutionContext *execution = nullptr;
     int64_t batch = 0;
 
-    Glm5NextMtp();
+    explicit Glm5NextMtp(Projector project);
     ~Glm5NextMtp() override;
     Glm5NextMtp(Glm5NextMtp&&) noexcept;
-    Glm5NextMtp& operator=(Glm5NextMtp&&) noexcept;
 
     static std::optional<Glm5NextMtp> load_if_present(CudaExecutionContext &execution,
                                                       const mfq::ModelSource &file,
@@ -53,6 +51,9 @@ struct Glm5NextMtp final : MtpModule {
     bool target_bootstrap_decode() const noexcept override;
 
     bool preserve_output_dtype() const noexcept override;
+
+  private:
+    Projector project_;
 };
 
 } // namespace mfq::cuda::glm5_next

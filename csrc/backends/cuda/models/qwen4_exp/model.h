@@ -1,7 +1,6 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/options.h"
 #pragma once
-#include "backends/cuda/engine/executor/execution.h"
 #include "resident_allocations.h"
 #include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_norm_ops.h"
@@ -804,19 +803,19 @@ class Ple {
         saved_=true;saved_conv_=conv.front();saved_context_=context.front();
         saved_prefix_conv_=conv;saved_prefix_context_=std::move(context);saved_prefix_position_=position;
     }
-    Tensor forward_graph(CudaExecutionContext& execution,const Tensor& x,const Tensor& ids,
+    Tensor forward_graph(const Projector& project,const Tensor& x,const Tensor& ids,
                          const Tensor& rows,int64_t confirmed,std::vector<Tensor>& checkpoint_conv) {
-        if(!confirmed)return forward_chunk(execution,x,ids,true,{},rows);
-        auto prefix=forward_chunk(execution,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),
+        if(!confirmed)return forward_chunk(project,x,ids,true,{},rows);
+        auto prefix=forward_chunk(project,x.narrow(1,0,confirmed),ids.narrow(1,0,confirmed),
             true,{},rows.narrow(1,0,confirmed));
         checkpoint_conv.front().copy_(conv_);
-        auto suffix=forward_chunk(execution,x.narrow(1,confirmed,x.size(1)-confirmed),
+        auto suffix=forward_chunk(project,x.narrow(1,confirmed,x.size(1)-confirmed),
             ids.narrow(1,confirmed,x.size(1)-confirmed),true,{},
             rows.narrow(1,confirmed,x.size(1)-confirmed),&checkpoint_conv,1);
         return tb::cat({prefix,suffix},1);
     }
     void prefetch_tokens(const Tensor& ids,bool early_prefix=false) { embedding_.prefetch(ids,early_prefix); }
-    Tensor forward(CudaExecutionContext &execution, const Tensor &x, const Tensor &ids, bool cache,
+    Tensor forward(const Projector& project, const Tensor &x, const Tensor &ids, bool cache,
                    int64_t confirmed = 0,const Tensor& host_ids = {},int64_t cache_position = -1) {
         TYLOINFER_RUNTIME_CHECK(x.dim() == 3 && ids.dim() == 2 && x.size(0) == ids.size(0) &&
                               x.size(1) == ids.size(1) && x.size(2) == hidden_ * streams_ &&
@@ -831,14 +830,14 @@ class Ple {
                 conv.push_back(tb::empty_like(conv_));context.push_back(embedding_.prefix_context(host,i));
             }
             auto rows=embedding_.forward(ids,true,nullptr,host);
-            auto result=forward_graph(execution,x,ids,rows,confirmed,conv);
+            auto result=forward_graph(project,x,ids,rows,confirmed,conv);
             bind_graph_checkpoint(conv,std::move(context),cache_position+confirmed);
             return result;
         }
         return mfq::models::recurrent_window(
             x.size(1), cache, confirmed, saved_,
             [&](int64_t start, int64_t count) {
-                return forward_chunk(execution, x.narrow(1, start, count),
+                return forward_chunk(project, x.narrow(1, start, count),
                                      ids.narrow(1, start, count), cache,
                                      host_ids.defined() ? host_ids.narrow(1,start,count) : Tensor{});
             },
@@ -850,7 +849,7 @@ class Ple {
             [&] { rollback(); },
             [](Tensor first, Tensor second) { return tb::cat({first, second}, 1); });
     }
-    Tensor forward_chunk(CudaExecutionContext &execution, const Tensor &x, const Tensor &ids,
+    Tensor forward_chunk(const Projector& project, const Tensor &x, const Tensor &ids,
                          bool cache,const Tensor& host_ids = {},const Tensor& graph_embeddings = {},
                          std::vector<Tensor>* checkpoints=nullptr,std::size_t checkpoint_offset=0) {
         auto context = embedding_.context();
@@ -877,9 +876,9 @@ class Ple {
             try {
                 auto embeddings=graph_embeddings.defined()?graph_embeddings:
                     embedding_.forward(ids,cache,nullptr,host_ids);
-                auto key=mfq_qwen4_exp::grouped_rms_norm(w_.key(execution,embeddings),w_.key_norm,hidden_,eps_);
+                auto key=mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key,embeddings),w_.key_norm,hidden_,eps_);
                 auto query=mfq_qwen4_exp::grouped_rms_norm(x,w_.query_norm,hidden_,eps_);
-                auto value=w_.value(execution,embeddings);
+                auto value=project.run(*w_.value,embeddings);
                 auto prepared=mfq_qwen4_exp::ple_gate_norm_cuda(key,query,value,
                     w_.conv_norm.to(tb::kFloat32).contiguous(),hidden_,streams_,eps_);
                 save_prefixes(prepared[1]);
@@ -894,7 +893,7 @@ class Ple {
         return mfq::models::qwen4_exp::position_embedding(
             cache, [&] { return graph_embeddings.defined() ? graph_embeddings : embedding_.forward(ids, cache,nullptr,host_ids); },
             [&](const Tensor &embeddings) {
-                auto key = mfq_qwen4_exp::grouped_rms_norm(w_.key(execution, embeddings),
+                auto key = mfq_qwen4_exp::grouped_rms_norm(project.run(*w_.key, embeddings),
                                                            w_.key_norm, hidden_, eps_)
                                .reshape({b, t, streams_, hidden_});
                 return key;
@@ -910,7 +909,7 @@ class Ple {
                 auto sign = (score > 0).to(tb::kFloat32) - (score < 0).to(tb::kFloat32);
                 auto root = sign * tb::clamp_min(score.abs(), 1e-6).sqrt();
                 auto gated = (tb::sigmoid(root).unsqueeze(-1) *
-                              w_.value(execution, embeddings).to(tb::kFloat32).unsqueeze(-2))
+                              project.run(*w_.value, embeddings).to(tb::kFloat32).unsqueeze(-2))
                                  .reshape({b, t, streams_ * hidden_});
                 return gated;
             },

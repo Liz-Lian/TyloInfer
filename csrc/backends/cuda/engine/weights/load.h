@@ -8,6 +8,7 @@
 
 struct CudaExecutionContext;
 struct ParallelConfig;
+namespace mfq::cuda { class Projector; }
 
 std::vector<mfq::TensorParallelSlice> plan_moe_expert_parallel_slices(
     const ParallelConfig& parallel,
@@ -102,23 +103,22 @@ mfq_tensor_backend::Tensor materialize_mfe_dense(
 
 namespace mfq::cuda::weight_loader {
 using Tensor = mfq_tensor_backend::Tensor;
-using Linear = std::function<Tensor(CudaExecutionContext&, const Tensor&)>;
+using Linear = std::shared_ptr<const QuantLinear>;
 struct Routed {
-    using Function=std::function<Tensor(CudaExecutionContext&,const Tensor&,const Tensor&)>;
+    using Function=std::function<Tensor(const Projector&,const Tensor&,const Tensor&)>;
     Function function;
     std::vector<std::shared_ptr<mfq::cuda::Experts>> projections;
     std::vector<std::shared_ptr<TqRoutedWeight>> tq_projections;
     Routed()=default;
     template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>
     Routed(Callable&& call):function(std::forward<Callable>(call)) {}
-    Tensor operator()(CudaExecutionContext& execution,const Tensor& input,const Tensor& ids)const {
-        return function(execution,input,ids);
+    Tensor operator()(const Projector& project,const Tensor& input,const Tensor& ids)const {
+        return function(project,input,ids);
     }
     explicit operator bool()const{return bool(function);}
 };
 
 Linear linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name);
-std::shared_ptr<const QuantLinear> linear_weight(const Linear& function);
 
 // GR projections retain floating activation math for dense and quantized input.
 GatedResidual::Projection residual_linear(CudaExecutionContext&, const mfq::ModelSource&, const std::string& name);
