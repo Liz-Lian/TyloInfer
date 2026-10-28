@@ -3,8 +3,9 @@
 #include "quant_linear.h"
 #include "engine/weights/moe/experts.h"
 #include "source/read.h"
-#include "gated_residual.h"
 #include "backends/cuda/engine/weights/tq/routed.h"
+
+#include <functional>
 
 struct CudaExecutionContext;
 struct ParallelConfig;
@@ -119,9 +120,6 @@ struct Routed {
 };
 
 Linear linear(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name);
-
-// GR projections retain floating activation math for dense and quantized input.
-GatedResidual::Projection residual_linear(CudaExecutionContext&, const mfq::ModelSource&, const std::string& name);
 
 Tensor dense(CudaExecutionContext& execution, const mfq::ModelSource& file, const std::string& name);
 

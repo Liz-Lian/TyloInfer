@@ -419,7 +419,12 @@ struct BlockLoader : weight_loader::Loader {
     };
 
     auto residual_linear(const std::string &name) const {
-        return weight_loader::residual_linear(execution, source, name);
+        const auto part = name=="model.mhc.pre.down.weight" || name=="predictor.mhc.pre.down.weight"
+            ? GatedResidual::Part::final_down
+            : name=="model.mhc.pre.up.weight" || name=="predictor.mhc.pre.up.weight"
+                ? GatedResidual::Part::final_up : GatedResidual::Part::generic;
+        return GatedResidual::projection(linear(name), execution.projector(), execution.profiler,
+                                          execution.config.residual, part);
     }
     GatedResidual residual(Tensor norm, GatedResidual::Projection down,
         GatedResidual::Projection up, GatedResidual::Projection injection, const Config &c) const {

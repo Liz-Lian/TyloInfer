@@ -6,9 +6,11 @@
 #include <utility>
 
 struct QuantLinear;
+struct CudaProfiler;
 using GatedResidualMarker = std::function<void(const char*)>;
 
 namespace mfq::cuda {
+class Projector;
 
 class GatedResidual {
 public:
@@ -43,6 +45,10 @@ public:
         Tensor up_group_coefficients;
         explicit operator bool() const { return bool(forward); }
     };
+    enum class Part { generic, final_down, final_up };
+    // Borrowed execution resources and options outlive the prepared projections.
+    static Projection projection(std::shared_ptr<const QuantLinear>, Projector,
+                                 CudaProfiler&, const Options&, Part);
 
     GatedResidual() = default;
     GatedResidual(Tensor norm, Projection down, Projection up, Projection injection,
