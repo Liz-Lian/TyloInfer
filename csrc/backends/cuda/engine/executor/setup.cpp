@@ -376,6 +376,8 @@ void setup_cuda_load(
         CudaExecutionContext& execution) {
     execution.reset();
     execution.stores.reset();
+    execution.stores.weights.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
+    execution.stores.weights.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
     if (options.n_gpu_layers_set) execution.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");
@@ -448,12 +450,12 @@ void setup_cuda_load(
             throw std::runtime_error(
                 "--moe-gpu-cache-gb is outside the supported range");
         }
-        execution.config.moe_device_cache_bytes = static_cast<std::size_t>(bytes);
-        execution.stores.moe_expert_cache =
+        execution.stores.weights.device_bytes = static_cast<std::size_t>(bytes);
+        execution.stores.weights.moe =
             make_moe_expert_cache(
                 static_cast<int64_t>(bytes), MoeCacheOptions{
-                .host_bytes = execution.config.moe_host_cache_bytes,
-                .host_limit = execution.config.moe_host_physical_bytes,
+                .host_bytes = execution.stores.weights.host_bytes,
+                .host_limit = execution.stores.weights.host_limit,
                 .mapped = execution.config.moe_mapped_gather,
                 .copy_blocks = execution.config.moe_mapped_copy_blocks,
                 .io_workers = execution.config.moe_ssd_io_workers,
@@ -470,8 +472,8 @@ void setup_cuda_load(
                 .ram_fraction = execution.config.moe_ram_pcie_fraction,
                 .two_stage = execution.config.moe_ffn.two_stage,
                 .heterogeneous = execution.config.tasks.projection.moe.heterogeneous});
-        if (!profile_path.empty() && execution.stores.moe_expert_cache) {
-            set_moe_expert_cache_profile(*execution.stores.moe_expert_cache,mfq::load_moe_cache_profile(profile_path));
+        if (!profile_path.empty() && execution.stores.weights.moe) {
+            set_moe_expert_cache_profile(*execution.stores.weights.moe,mfq::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }

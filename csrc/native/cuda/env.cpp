@@ -96,6 +96,11 @@ long long env_number(const char* name, long long when_unset) {
     return text.empty() ? when_unset : parse<long long>(name, text);
 }
 
+std::size_t env_size(const char* name, std::size_t when_unset) {
+    const auto text = require_value(name, env_lookup(name));
+    return text.empty() ? when_unset : parse<std::size_t>(name, text);
+}
+
 std::string env_text(const char* name, std::string when_unset) {
     const auto text = require_value(name, env_lookup(name));
     return text.empty() ? when_unset : std::string(text);

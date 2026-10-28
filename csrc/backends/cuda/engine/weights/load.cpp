@@ -732,7 +732,7 @@ mfq::cuda::Experts load_mfe_gpu(
         .nvq_groups = execution.config.nvq_extended_group_exec,
         .heterogeneous = execution.config.tasks.projection.moe.heterogeneous};
     const mfq::cuda::WeightAllocationScope weight_memory;
-    auto& cache = execution.stores.moe_expert_cache;
+    auto& cache = execution.stores.weights.moe;
     if (cache && cacheable &&
             !moe_parallel_config(execution).enabled() &&
             execution.config.moe_ssd_ranges) {
@@ -884,7 +884,7 @@ Routed routed(CudaExecutionContext& execution, const mfq::ModelSource& file, con
     int64_t experts, int64_t output, int64_t input, const std::string& role) {
     const auto& dtype=require_tensor(file, name).dtype;
     if(dtype=="TQ") {
-        auto weight=load_tq_routed_weight(execution,file,name,experts,output,input);
+        auto weight=load_tq_routed_weight(execution.stores.weights,execution.tq,file,name,experts,output,input);
         Routed result=[weight](const Projector&,const Tensor& source,const Tensor& ids) {
             return weight->forward(source,ids);
         };

@@ -8,13 +8,16 @@
 #include <string>
 #include <vector>
 
-struct CudaExecutionContext;
+namespace mfq::cuda { struct RoutedCache; }
+class TqExec;
 
 TqWeight load_tq_weight(
     const mfq::ModelSource&, const std::string&, int device, bool cuda = true);
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
-    CudaExecutionContext&, const mfq::ModelSource&, const std::string&);
+    mfq::cuda::RoutedCache&, const std::shared_ptr<TqExec>&,
+    const mfq::ModelSource&, const std::string&);
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
-    CudaExecutionContext&, const mfq::ModelSource&, const std::string&,
+    mfq::cuda::RoutedCache&, const std::shared_ptr<TqExec>&,
+    const mfq::ModelSource&, const std::string&,
     std::int64_t experts, std::int64_t output, std::int64_t input);

@@ -1,26 +1,37 @@
 #pragma once
-#include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/weights/tq/cache.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+
+#include <cstddef>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+class MoeExpertCache;
+class TqCache;
+class TqExec;
 
 namespace mfq::cuda {
-// Resource ownership follows the loaded bank implementation. The service uses
-// these operations without interpreting a tensor's row precision or encoding.
-inline std::vector<std::pair<std::string,double>> routed_expert_memory_metrics(
-        const CudaExecutionContext& execution) {
-    return execution.stores.tq_expert_cache?execution.stores.tq_expert_cache->metrics():
-        moe_expert_memory_metrics(execution.stores.moe_expert_cache);
-}
-inline std::size_t routed_expert_cache_budget_bytes(const CudaExecutionContext& execution) {
-    return execution.stores.tq_expert_cache?execution.stores.tq_expert_cache->budget():
-        moe_expert_cache_budget_bytes(execution.stores.moe_expert_cache);
-}
-inline void resize_routed_expert_cache(CudaExecutionContext& execution,std::size_t bytes) {
-    if(execution.stores.tq_expert_cache)execution.stores.tq_expert_cache->resize(bytes);
-    else resize_moe_expert_cache(execution.stores.moe_expert_cache,bytes);
-}
-inline std::size_t reclaim_routed_optional_host(CudaExecutionContext& execution,std::size_t allocation_bytes) {
-    return execution.stores.tq_expert_cache?execution.stores.tq_expert_cache->reserve(allocation_bytes):
-        reclaim_moe_optional_host(execution.stores.moe_expert_cache,allocation_bytes);
-}
-}
+
+// One loaded model owns both cache implementations; selected banks retain their backing.
+struct RoutedCache {
+    RoutedCache() = default;
+    RoutedCache(const RoutedCache&) = delete;
+    RoutedCache& operator=(const RoutedCache&) = delete;
+
+    std::shared_ptr<MoeExpertCache> moe;
+    std::shared_ptr<TqCache> tq;
+    std::optional<std::size_t> device_bytes;
+    std::size_t host_bytes = 0;
+    std::size_t host_limit = 0;
+
+    std::shared_ptr<TqCache> ensure_tq(const std::shared_ptr<TqExec>& exec);
+    std::vector<std::pair<std::string, double>> metrics() const;
+    std::size_t budget() const;
+    void resize(std::size_t bytes);
+    std::size_t reserve(std::size_t bytes);
+    // The execution owner drains all consumers before releasing cache backing.
+    void reset() noexcept;
+};
+
+} // namespace mfq::cuda

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@ const char* env_lookup(const char* name);
 // Strict readers: a value that is set but not parseable throws std::runtime_error.
 bool env_flag(const char* name, bool when_unset);
 long long env_number(const char* name, long long when_unset);
+std::size_t env_size(const char* name, std::size_t when_unset);
 std::string env_text(const char* name, std::string when_unset);
 
 // Frozen mode is entered once per process by the engine after it has read its

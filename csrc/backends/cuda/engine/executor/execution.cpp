@@ -70,19 +70,6 @@ int environment_int(
     return parsed;
 }
 
-std::size_t environment_size(
-        const char* name, std::size_t fallback) {
-    const auto value = environment(name);
-    if (!value) return fallback;
-    std::size_t parsed = 0;
-    const auto [end, error] = std::from_chars(
-        value->data(), value->data() + value->size(), parsed);
-    if (error != std::errc{} || end != value->data() + value->size()) {
-        throw std::runtime_error(std::string("invalid ") + name);
-    }
-    return parsed;
-}
-
 bool enabled_unless_disabled(const char* name) {
     return !environment_flag(name, false);
 }
@@ -403,8 +390,8 @@ std::optional<bool> qsa_prefill_fused() {
 }
 
 QsaKvOffloadOptions qsa_kv_offload() {
-    return {environment_size("TYLOINFER_QSA_KV_BUDGET_BYTES", 0),
-        environment_size("TYLOINFER_QSA_KV_RAM_BUDGET_BYTES", 4ULL << 30),
+    return {mfq::cuda::env_size("TYLOINFER_QSA_KV_BUDGET_BYTES", 0),
+        mfq::cuda::env_size("TYLOINFER_QSA_KV_RAM_BUDGET_BYTES", 4ULL << 30),
         environment("TYLOINFER_RUNTIME_PREFIX_CACHE_DIR").value_or("")};
 }
 std::optional<bool> qsa_select_fused() {
@@ -569,7 +556,7 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_ATTENTION_DECODE_ATEN", false);
     result.tasks.attention.kernels.split_k = environment_flag(
         "TYLOINFER_ATTENTION_DECODE_SPLITK", true);
-    result.deepseek_v41_engram_cache_rows = environment_size(
+    result.deepseek_v41_engram_cache_rows = mfq::cuda::env_size(
         "TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_ROWS", 16'384);
     result.moe_mapped_gather = environment_flag("TYLOINFER_MOE_MAPPED_GATHER", false);
     result.moe_mapped_copy_blocks = environment_int(
@@ -580,7 +567,6 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_DISABLE_MOE_SSD_OVERLAP");
     result.moe_ssd_ranges = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SSD_RANGES");
-    result.moe_host_cache_bytes = environment_size("TYLOINFER_MOE_HOST_CACHE_BYTES",0);
     result.moe_pipeline = environment_flag("TYLOINFER_MOE_PIPELINE",false);
     result.moe_hybrid_cpu = environment_flag("TYLOINFER_MOE_HYBRID_CPU",false);
     result.moe_preload_all = environment_flag("TYLOINFER_MOE_PRELOAD_ALL",false);
@@ -590,7 +576,6 @@ CudaExecutionConfig load_cuda_execution_config() {
     result.moe_residency_adapt = environment_flag("TYLOINFER_MOE_RESIDENCY_ADAPT",true);
     result.moe_residency_warm = environment_flag("TYLOINFER_MOE_RESIDENCY_WARM",true);
     result.moe_residency_projection_heat = environment_flag("TYLOINFER_MOE_RESIDENCY_PROJECTION_HEAT",true);
-    result.moe_host_physical_bytes = environment_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES",0);
     result.residual.fused_projections = environment_flag("TYLOINFER_GR_FUSED_PROJECTIONS",true);
     result.residual.fused_activation = environment_flag("TYLOINFER_GR_FUSED_PROJECTION_ACTIVATION",true);
     result.residual.fused_post_norm = environment_flag("TYLOINFER_GR_FUSED_POST_NORM",true);
@@ -709,8 +694,8 @@ void CudaExecutionContext::register_moe_pipeline(std::shared_ptr<MoeFfnPipeline>
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (native_contexts.empty() && !stores.moe_expert_cache &&
-        !stores.tq_expert_cache && !stores.qsa_kv_store &&
+    if (native_contexts.empty() && !stores.weights.moe &&
+        !stores.weights.tq && !stores.qsa_kv_store &&
         (!tq || tq->empty()) && moe_pipelines.empty() && branches.empty() &&
         attention_scratch.empty() && collectives.streams().empty()) return;
 #endif
@@ -719,7 +704,7 @@ void CudaExecutionContext::drain() {
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
-    finish([&] { finish_moe_expert_exchanges(stores.moe_expert_cache); });
+    finish([&] { finish_moe_expert_exchanges(stores.weights.moe); });
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     for (const auto& pipeline : moe_pipelines)
         finish([&] { drain_moe_ffn_pipeline(pipeline); });
@@ -805,7 +790,7 @@ int model_parallel_primary_device(const CudaExecutionContext& execution) {
 
 bool model_parallel_cuda_graph_enabled(
         const CudaExecutionContext& execution) {
-    if(execution.stores.tq_expert_cache && moe_parallel_config(execution).enabled())return false;
+    if(execution.stores.weights.tq && moe_parallel_config(execution).enabled())return false;
     if (!execution.tensor_parallel.enabled() &&
             !execution.expert_parallel.enabled()) {
         return true;

@@ -293,9 +293,9 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
 
     execution.loading_cpu_layer = false;
     execution.layer_placement.load_device = execution.layer_placement.primary_device();
-    if (moe_expert_cache_has_sources(execution.stores.moe_expert_cache) &&
-        !moe_expert_cache_finalized(execution.stores.moe_expert_cache) && !defer_cache)
-        finalize_moe_expert_cache(execution.stores.moe_expert_cache);
+    if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
+        !moe_expert_cache_finalized(execution.stores.weights.moe) && !defer_cache)
+        finalize_moe_expert_cache(execution.stores.weights.moe);
     return model;
 }
 

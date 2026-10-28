@@ -1,5 +1,6 @@
 #pragma once
 #include "formats/format_features.h"
+#include "backends/cuda/engine/weights/routed_cache.h"
 #include "engine/executor/run.h"
 #include "engine/executor/ffn.h"
 #include "engine/executor/moe_ffn_pipeline.h"
@@ -50,16 +51,14 @@ struct CudaStores {
     CudaStores(const CudaStores&) = delete;
     CudaStores& operator=(const CudaStores&) = delete;
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv_memory;
-    std::shared_ptr<MoeExpertCache> moe_expert_cache;
-    std::shared_ptr<TqCache> tq_expert_cache;
+    mfq::cuda::RoutedCache weights;
     std::shared_ptr<mfq::cuda::KvOffloadStore> qsa_kv_store;
 
     // Drain execution before retiring backing; leases may retain individual handles.
     void reset() noexcept {
         qsa_kv_store.reset();
         kv_memory.reset();
-        moe_expert_cache.reset();
-        tq_expert_cache.reset();
+        weights.reset();
     }
 };
 
@@ -160,8 +159,6 @@ struct CudaExecutionConfig {
     int moe_ssd_io_workers = 8;
     bool moe_ssd_overlap = true;
     bool moe_ssd_ranges = true;
-    std::optional<std::size_t> moe_device_cache_bytes;
-    std::size_t moe_host_cache_bytes = 0;
     bool moe_pipeline = false;
     bool moe_hybrid_cpu = false;
     bool moe_preload_all = false;
@@ -172,7 +169,6 @@ struct CudaExecutionConfig {
     bool moe_residency_adapt = true;
     bool moe_residency_warm = true;
     bool moe_residency_projection_heat = true;
-    std::size_t moe_host_physical_bytes = 0;
     std::optional<double> moe_ram_pcie_fraction;
 };
 

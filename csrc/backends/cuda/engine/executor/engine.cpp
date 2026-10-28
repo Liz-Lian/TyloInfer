@@ -73,7 +73,7 @@ struct CudaEngineState {
     }
     void release_graph_expert_space(std::size_t required_available=std::numeric_limits<std::size_t>::max()) {
         if(!graph_expert_region && workspace_expert_regions.empty())return;
-        finish_moe_expert_exchanges(execution->stores.moe_expert_cache);
+        finish_moe_expert_exchanges(execution->stores.weights.moe);
         TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
         auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
         const bool all=required_available==std::numeric_limits<std::size_t>::max();
@@ -99,7 +99,7 @@ struct CudaEngineState {
     void restore_mtp_expert_space() {
         // These regions hold legacy paged expert fields. TQ retains ordinary
         // compressed tensor images and cannot consume those page addresses.
-        if(execution->stores.tq_expert_cache)return;
+        if(execution->stores.weights.tq)return;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
             if(preparing_graph_depth || graph_expert_region || !graph_expert_loan || !components.mtp)return;
             const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
@@ -128,14 +128,14 @@ struct CudaEngineState {
     }
 
     void restore_graph_expert_space() {
-        if(execution->stores.tq_expert_cache)return;
+        if(execution->stores.weights.tq)return;
         if(preparing_graph_depth)return;
-        prepare_moe_decode_residency(execution->stores.moe_expert_cache);
+        prepare_moe_decode_residency(execution->stores.weights.moe);
         mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
         if(!graph_expert_loan)return;
         bool ssd=false;std::size_t transfer=0,streamed=0;
-        const auto expert_metrics=routed_expert_memory_metrics(*execution);
+        const auto expert_metrics=execution->stores.weights.metrics();
         for(const auto& [name,value]:expert_metrics) {
             if(name=="ssd_expert_enabled")ssd=value!=0;
             if(name=="expert_decode_stage_budget_bytes")transfer=std::size_t(value);
@@ -210,7 +210,7 @@ struct CudaEngineState {
                 release_graph_expert_space();
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,components.mtp.get());
-                release_moe_decode_buffers(execution->stores.moe_expert_cache);
+                release_moe_decode_buffers(execution->stores.weights.moe);
                 state.reset(1);components.mtp->reset(1);
                 auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
                 context->reclaim_idle_memory();
@@ -278,10 +278,10 @@ struct CudaEngineState {
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
         try {
-        initial_expert_budget=routed_expert_cache_budget_bytes(*execution);
+        initial_expert_budget=execution->stores.weights.budget();
         if (execution->stores.qsa_kv_store)
             execution->stores.qsa_kv_store->set_ram_reservation([this](std::size_t bytes) {
-                cache.reserve_ram(bytes);reclaim_routed_optional_host(*execution,bytes);
+                cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
             });
         allocation_ceiling=mfq::cuda::default_context(execution->layer_placement.primary_device())->memory_stats().limit;
         if (config.continuous_batch.max_sequences) {
@@ -302,7 +302,7 @@ struct CudaEngineState {
                     config.generation.prefill_chunk_size, batch_config.prefill_token_budget,
                     model, execution->make_executor(), execution->collectives,
                     execution->forward_mode(), batch_options,
-                    execution->stores.moe_expert_cache, std::move(batch_config));
+                    execution->stores.weights.moe, std::move(batch_config));
             } else if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
                     config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,
@@ -310,21 +310,21 @@ struct CudaEngineState {
             else throw std::invalid_argument("continuous batching is unavailable for this model");
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if(execution->stores.moe_expert_cache) {
+        if(execution->stores.weights.moe) {
             graph_expert_loan=execution->stores.kv_memory?execution->stores.kv_memory->expert_loan():nullptr;
-            if(!graph_expert_loan && (components.mtp || moe_expert_cache_ssd_experts(execution->stores.moe_expert_cache))) {
+            if(!graph_expert_loan && (components.mtp || moe_expert_cache_ssd_experts(execution->stores.weights.moe))) {
                 graph_expert_loan=std::make_shared<KvExpertLoan>();
-                set_moe_kv_expert_loan(execution->stores.moe_expert_cache,graph_expert_loan);
+                set_moe_kv_expert_loan(execution->stores.weights.moe,graph_expert_loan);
             }
             restore_decode_workspace=[this]{restore_graph_expert_space();};
             if constexpr (requires(Model& value) {
                               value.restore_decode_workspace = std::function<void()>();
                           })
                 language.restore_decode_workspace = restore_decode_workspace;
-            set_moe_workspace_reservation(execution->stores.moe_expert_cache,
+            set_moe_workspace_reservation(execution->stores.weights.moe,
                 [this](std::size_t bytes) {reclaim_prefix_workspace(bytes);},
                 [this](std::size_t bytes) {
-                    cache.reserve_ram(bytes);reclaim_routed_optional_host(*execution,bytes);
+                    cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
                 });
         }
         if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
@@ -370,7 +370,7 @@ struct CudaEngineState {
                     explicit CacheLearningScope(std::shared_ptr<MoeExpertCache> value):cache(std::move(value)),
                         previous(set_moe_reuse_learning(cache,false)) {}
                     ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);}
-                } learning(execution->stores.moe_expert_cache);
+                } learning(execution->stores.weights.moe);
                 auto& predictor=*components.mtp;
                 const auto saved_policy=predictor.policy_state;
                 const auto start=std::chrono::steady_clock::now();
@@ -389,7 +389,7 @@ struct CudaEngineState {
                 auto generation=run_mtp_generation(language,state,executor.get(),*execution,metadata,predictor,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
-                finish_moe_expert_exchanges(execution->stores.moe_expert_cache);
+                finish_moe_expert_exchanges(execution->stores.weights.moe);
                 predictor.reset(1);
                 state.reset(1);
                 predictor.policy_state=saved_policy;
@@ -399,7 +399,7 @@ struct CudaEngineState {
                 std::cerr<<"runtime_qwen4_mtp_warmup tokens="<<output.result.completion_tokens
                     <<" ms="<<std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-start).count()<<'\n';
-                release_moe_prefill_buffers(execution->stores.moe_expert_cache);
+                release_moe_prefill_buffers(execution->stores.weights.moe);
                 mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
             }
         }
@@ -427,7 +427,7 @@ struct CudaEngineState {
             language.restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) language.reserve_kv_workspace={};
         if(execution->stores.kv_memory)execution->stores.kv_memory->set_reservation({});
-        set_moe_workspace_reservation(execution->stores.moe_expert_cache,{});
+        set_moe_workspace_reservation(execution->stores.weights.moe,{});
         if (execution->stores.qsa_kv_store) execution->stores.qsa_kv_store->set_ram_reservation({});
     }
     ~CudaEngineState() {
@@ -440,7 +440,7 @@ struct CudaEngineState {
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
         const auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
         const auto dense=weight_memory->resident_bytes();
-        const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.moe_expert_cache);
+        const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.weights.moe);
         const auto requested_weights=command.weight_bytes.value_or(weight_budget);
         if(requested_weights && requested_weights<dense+minimum)
             throw std::invalid_argument("weight budget is below dense weights and minimum expert working set");
@@ -453,22 +453,22 @@ struct CudaEngineState {
         if(limit && limit<dense+minimum)
             throw std::invalid_argument("resident memory budget is below non-offloadable weights");
         const auto previous_limit=context->memory_stats().limit;
-        const auto previous_experts=routed_expert_cache_budget_bytes(*execution);
+        const auto previous_experts=execution->stores.weights.budget();
         const auto before=context->resident_memory_usage();
         release_graph_expert_space();
-        finish_moe_expert_exchanges(execution->stores.moe_expert_cache);
+        finish_moe_expert_exchanges(execution->stores.weights.moe);
         graph.invalidate();
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             qwen4_release_decode_graphs(language,components.mtp.get());
         if(batching)batching->release_idle_buffers();
         if(components.mtp)components.mtp->reset(1);
         state.reset(1);
-        release_moe_decode_buffers(execution->stores.moe_expert_cache);
+        release_moe_decode_buffers(execution->stores.weights.moe);
         context->reclaim_idle_memory();
         auto target=requested_weights ? requested_weights-dense : initial_expert_budget;
         std::size_t hot=0,expert_bytes=0;
         for(const auto& [name,value]:cache.metrics())if(name=="prefix_cache_hot_bytes")hot=std::size_t(value);
-        for(const auto& [name,value]:routed_expert_memory_metrics(*execution))
+        for(const auto& [name,value]:execution->stores.weights.metrics())
             if(name=="resident_expert_cache_bytes")expert_bytes=std::size_t(value);
         auto used=context->resident_memory_usage();
         if(limit && used>limit) {
@@ -482,11 +482,11 @@ struct CudaEngineState {
         }
         try {
             if(!limit || limit>previous_limit)context->set_memory_limit(limit);
-            resize_routed_expert_cache(*execution,std::max(target,minimum));
+            execution->stores.weights.resize(std::max(target,minimum));
             context->set_memory_limit(limit);
         } catch(...) {
             context->set_memory_limit(0);
-            resize_routed_expert_cache(*execution,previous_experts);
+            execution->stores.weights.resize(previous_experts);
             context->set_memory_limit(previous_limit);
             throw;
         }
@@ -554,7 +554,7 @@ struct CudaEngineState {
                 {"vision_declared", double(capabilities.vision_declared)}, {"vision_supported", double(capabilities.vision_supported)},
                 {"vision_available", double(capabilities.vision_available)}, {"mtp_declared", double(capabilities.mtp_declared)},
                 {"mtp_supported", double(capabilities.mtp_supported)}, {"mtp_available", double(capabilities.mtp_available)}};
-            auto experts = routed_expert_memory_metrics(*execution);
+            auto experts = execution->stores.weights.metrics();
             metrics.insert(metrics.end(), experts.begin(), experts.end());
             if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
                 auto phases=qwen4_decode_graph_profile_metrics(language,components.mtp.get());
@@ -630,7 +630,7 @@ struct CudaEngineState {
                 {"cuda_allocated_bytes",double(allocated)}, {"cuda_reserved_bytes",double(reserved)}});
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>)metrics.emplace_back("resident_buffer_bytes",double(buffers));
             const auto expert_bytes=metric_bytes("resident_expert_cache_bytes");
-            const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.moe_expert_cache);
+            const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.weights.moe);
             metrics.insert(metrics.end(),{{"resident_memory_dynamic_budget",online_budget_supported()?1.0:0.0},
                 {"resident_weight_dynamic_budget",online_budget_supported()?1.0:0.0},
                 {"resident_memory_budget_bytes",double(resident_budget)}, {"resident_weight_budget_bytes",double(weight_budget)},

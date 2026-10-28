@@ -70,7 +70,7 @@ mfq::engine::PrefillChunk BatchOps::prefill_chunk(
     initialize_prefill(request, chunk);
     return mfq::cuda::budget_batch_prefill(
         model_.hidden_size(), model_.hc_mult(), execution_.layer_placement.primary_device(),
-        execution_.stores.moe_expert_cache, chunk,
+        execution_.stores.weights.moe, chunk,
         request->cache->prefill_growth_bytes(chunk.count));
 }
 
@@ -105,7 +105,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
             // unused while independent batch rows own their own context.
             qwen4_release_decode_graphs(model_, nullptr);
             model_.reset(1);
-            release_moe_decode_buffers(execution_.stores.moe_expert_cache);
+            release_moe_decode_buffers(execution_.stores.weights.moe);
             default_context(execution_.layer_placement.primary_device())->reclaim_idle_memory();
         }
         requests_.push_back(request);
@@ -180,7 +180,7 @@ std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill
     CudaScope guard(execution_);
     qwen4_release_decode_graphs(model_, nullptr);
     model_.adapter_begin_forward(false);
-    release_moe_decode_buffers(execution_.stores.moe_expert_cache);
+    release_moe_decode_buffers(execution_.stores.weights.moe);
     std::vector<mfq::engine::PrefillBatchResult<Sample>> result(items.size());
     std::vector<std::size_t> ready;
     for (std::size_t row = 0; row < items.size(); ++row) {
@@ -280,7 +280,7 @@ void BatchOps::activate(const std::shared_ptr<Request>& request, const Sample& s
 void BatchOps::discard_prefill(const std::shared_ptr<Request>& request) {
     if (graph_)
         graph_->clear();
-    finish_moe_expert_exchanges(execution_.stores.moe_expert_cache);
+    finish_moe_expert_exchanges(execution_.stores.weights.moe);
     request->cache.reset();
     request->prefill_ids = {};
     request->prefill_timers.clear();
@@ -297,7 +297,7 @@ void BatchOps::retire(const std::vector<std::shared_ptr<Request>>& retired, int6
     if (!active && !model_.graph_registry) {
         // Batch widths have distinct transfer arenas and graph scratch. Return
         // them at idle while preserving resident experts and adaptation heat.
-        release_moe_decode_buffers(execution_.stores.moe_expert_cache);
+        release_moe_decode_buffers(execution_.stores.weights.moe);
         default_context(execution_.layer_placement.primary_device())->reclaim_idle_memory();
     }
 }

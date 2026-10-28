@@ -879,7 +879,7 @@ struct Block final : ::Block {
                             execution.ffn().prefetch(
                                 *next, value,
                                 moe_expert_cache_ssd_router_prefetch(
-                                    execution.stores.moe_expert_cache),
+                                    execution.stores.weights.moe),
                                 current_ids);
                     return execution.ffn().run(
                             mlp, value.reshape({-1, config.hidden}), current_ids)

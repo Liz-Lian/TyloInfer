@@ -101,7 +101,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
     if(record.dtype=="TQ") {
         if(projection==Role::gate_up)
             throw std::invalid_argument("TQ MoE stores separate Gate, Up and Down tensors: "+name);
-        auto weight=load_tq_routed_weight(execution,source,name);
+        auto weight=load_tq_routed_weight(execution.stores.weights,execution.tq,source,name);
         if(!ffn.moe_tq)ffn.moe_tq=std::make_shared<TqMoeBanks>();
         switch(projection) {
             case Role::gate: ffn.moe_tq->gate=std::move(weight);break;
