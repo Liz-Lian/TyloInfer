@@ -842,7 +842,7 @@ struct Block final : ::Block {
             std::move(hidden), bool(engram), shared->previous_pre,
             [&](Tensor value) {
                 return profiler.measure("deepseek_v41.engram", [&] {
-                    return engram->forward(execution, value, shared->engram_hashes,
+                    return engram->forward(execution.projector(), profiler, value, shared->engram_hashes,
                                           shared->text_rows,&shared->text_row_ids);
                 });
             },

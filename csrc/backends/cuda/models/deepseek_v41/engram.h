@@ -7,6 +7,8 @@
 #include "engine/models/deepseek_v41/engram.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 #include "quant_linear.h"
+#include "ops/common/include/projection.h"
+#include "native/cuda/profile.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>
@@ -354,7 +356,7 @@ class Engram {
             std::size_t(hashes.batch) * hashes.tokens * hashes.columns);
     }
 
-    EngramTensor forward(CudaExecutionContext &execution, const EngramTensor &hidden,
+    EngramTensor forward(const Projector& projector, CudaProfiler& profiler, const EngramTensor &hidden,
                          const EngramHashBatch &hashes,const EngramTensor& text_rows={},
                          const std::vector<int64_t>* host_rows=nullptr) const {
         if(text_rows.defined()) {
@@ -362,7 +364,7 @@ class Engram {
             TYLOINFER_RUNTIME_CHECK(host_rows && host_rows->size()==std::size_t(text_rows.numel()),
                               "DeepSeek-V4.1 Engram image participation is incomplete");
             auto flat=hidden.reshape({1,-1,config_.hc_mult,config_.hidden});
-            auto selected=forward(execution,flat.index_select(1,text_rows).contiguous(),
+            auto selected=forward(projector,profiler,flat.index_select(1,text_rows).contiguous(),
                                   select_hash_rows(hashes,*host_rows));
             auto result=flat.clone();result.index_copy_(1,text_rows,selected);
             return result.reshape(hidden.sizes());
@@ -375,14 +377,14 @@ class Engram {
             hashes.columns != (config_.engram_max_ngram_size - 1) * config_.engram_n_heads) {
             throw std::invalid_argument("DeepSeek-V4.1 Engram activation geometry disagrees");
         }
-        auto embeddings = execution.profiler.measure("deepseek_v41.engram.rows", [&] {
+        auto embeddings = profiler.measure("deepseek_v41.engram.rows", [&] {
             return table_->gather(hashes.layer_data(hash_layer_), batch, tokens,
                                   hashes.columns, hidden.device());
         });
-        auto projected = execution.profiler.measure("deepseek_v41.engram.projection", [&] {
-            return execution.projector().run(projection_, embeddings);
+        auto projected = profiler.measure("deepseek_v41.engram.projection", [&] {
+            return projector.run(projection_, embeddings);
         });
-        return execution.profiler.measure("deepseek_v41.engram.gate_add", [&] {
+        return profiler.measure("deepseek_v41.engram.gate_add", [&] {
             return deepseek_v41_engram_gate_add_cuda(hidden, projected.contiguous(),
                                                        query_key_weight_, config_.rms_eps);
         });
