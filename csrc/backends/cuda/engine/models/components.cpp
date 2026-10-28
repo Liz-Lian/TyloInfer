@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/models/components.h"
-#include "backends/cuda/engine/models/qwen35/load.h"
+#include "models/qwen35/load.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
 #include "models/qwen35/mtp.h"

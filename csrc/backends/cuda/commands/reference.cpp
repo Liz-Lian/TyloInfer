@@ -4,7 +4,8 @@
 #include "backends/cuda/engine/models/load.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/load.h"
-#include "backends/cuda/engine/models/qwen35/load.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "models/qwen35/load.h"
 #include "models/qwen35/forward.h"
 #include "models/common/block.h"
 
@@ -29,10 +30,25 @@ Model load_reference_model(CudaExecutionContext& execution,
                            const CudaLoadOptions& options,
                            const std::shared_ptr<const mfq::ModelSource>& source) {
     if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-        auto loaded = mfq::cuda::qwen35::load(
-            execution, options.model_path, options.config_path, options.context_size,
-            false, false, source, false);
-        return loaded;
+        CudaScope scope(execution);
+        auto model = mfq::cuda::qwen35::read(
+            source, options.config_path, options.context_size,
+            execution.yarn, execution.yarn_context_extension);
+        mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.stores.weights, execution.tq};
+        execution.dense_cpu_layer_count = mfq::cuda::qwen35::place(
+            model, weights, execution.layer_placement, execution.n_gpu_layers,
+            execution.expert_parallel.enabled());
+        mfq::cuda::qwen35::load(
+            model, weights, execution.layer_placement, execution.dense_cpu_layer_count,
+            execution.yarn, false, false,
+            execution.config.tensor_parallel_mirror_linear_attention_scalars);
+        if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
+            !moe_expert_cache_finalized(execution.stores.weights.moe))
+            finalize_moe_expert_cache(execution.stores.weights.moe);
+        return model;
     } else {
         return load_causal_lm<Model>(execution, options.model_path, options.config_path,
                                      options.context_size, false, false, source, false);

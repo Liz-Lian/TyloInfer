@@ -1,14 +1,12 @@
-#include "load.h"
+#include "models/qwen35/load.h"
 
+#include "backend.h"
 #include "engine/models/qwen35/metadata.h"
 #include "engine/models/qwen35/weights.h"
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/weights/load.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "engine/weights/group.h"
-#include "mfq_cuda_kv_quantization.h"
 #include "source/read.h"
 
 #include <algorithm>
@@ -103,7 +101,8 @@ struct LayerLoader : TransformerWeightLoader {
 } // namespace
 
 Layer load_layer(const weight_loader::Loader& weights, const Config& config,
-                 int index, const std::string& type, bool mirror_scalars, std::string_view tensor_root) {
+                 int index, const std::string& type, bool mirror_scalars,
+                 std::string_view tensor_root) {
     if (index < 0 || index >= config.num_hidden_layers)
         throw std::out_of_range("Qwen layer index is outside the configured model");
     if (static_cast<std::size_t>(index) < config.layer_types.size() &&
@@ -149,81 +148,87 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config,
     return result;
 }
 
-Model load(CudaExecutionContext& execution, const std::string& model_path,
-           const std::string& config_path, std::int64_t context_size,
-           bool load_layers, bool defer_cache,
-           std::shared_ptr<const mfq::ModelSource> model_source,
-           bool load_input_output) {
+Model read(std::shared_ptr<const mfq::ModelSource> source,
+           const std::string& config_path, std::int64_t context,
+           mfq::models::YarnScaling& yarn, bool extend_yarn) {
+    mfq::cuda::validate_model_source(*source);
     Model model;
-    model.source = model_source ? std::move(model_source) : mfq::open_model_source(model_path);
-    const auto& source = *model.source;
-    mfq::cuda::validate_model_source(source);
-    model.graph = source.resolved_model_graph();
+    model.source = std::move(source);
+    const auto& source_ref = *model.source;
+    model.graph = source_ref.resolved_model_graph();
     model.plan = cuda_model_plan(model.graph);
     if (model.graph.component("vision") != nullptr &&
         model.plan.vision != CudaVisionAdapter::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
-    auto definition = mfq::cuda::load_model_config_json(source, config_path);
-    definition = mfq::cuda::configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
-                                            model.graph.backbone, context_size);
+    auto definition = mfq::cuda::load_model_config_json(source_ref, config_path);
+    definition = mfq::cuda::configure_yarn(yarn, extend_yarn, std::move(definition),
+                                           model.graph.backbone, context);
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")
         throw std::runtime_error("Qwen3.5 loading requires a Qwen-compatible model graph");
     model.config = Config::from_json(definition, model.graph);
-    model.config.legacy_tensor_layout = source.tensor_layout();
-    if (context_size > 0) {
-        if (context_size > model.config.max_position_embeddings)
+    model.config.legacy_tensor_layout = source_ref.tensor_layout();
+    if (context > 0) {
+        if (context > model.config.max_position_embeddings)
             throw std::runtime_error("--ctx-size exceeds max_position_embeddings");
-        model.config.max_position_embeddings = context_size;
+        model.config.max_position_embeddings = context;
     }
     if (model.config.num_hidden_layers != model.graph.topology.text_layers)
         throw std::runtime_error("model graph/config text-layer topology mismatch");
     model.metadata = mfq::models::qwen35::metadata_from_config(model.config);
-    if (execution.expert_parallel.enabled() && model.config.num_experts <= 0)
+    return model;
+}
+
+int place(const Model& model, const weight_loader::Loader& weights,
+          LayerPlacementConfig& placement, int gpu_layers, bool expert_parallel) {
+    if (expert_parallel && model.config.num_experts <= 0)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
 
-    execution.layer_placement.prepare(model.config.num_hidden_layers);
-    execution.dense_cpu_layer_count = 0;
-    if (execution.n_gpu_layers >= 0) {
-        execution.dense_cpu_layer_count = static_cast<int>(std::max<int64_t>(
-            model.config.num_hidden_layers - execution.n_gpu_layers, 0));
-        if (execution.dense_cpu_layer_count > 0) {
-            if (model_parallel_enabled(execution) || execution.layer_placement.enabled())
-                throw std::runtime_error(
-                    "--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
-            bool supported = model.config.num_experts <= 0;
-            for (const auto& layer_type : model.config.layer_types)
-                supported = supported &&
-                            (layer_type == "full_attention" || layer_type == "linear_attention");
-            if (!supported)
-                throw std::runtime_error(
-                    "--n-gpu-layers currently supports dense Qwen-style blocks only");
-            std::cerr << "dense_layer_placement cpu=0-" << execution.dense_cpu_layer_count - 1
-                      << " gpu=" << execution.dense_cpu_layer_count << '-'
-                      << model.config.num_hidden_layers - 1 << " cpu_threads="
-                      << mfq_get_num_threads() << std::endl;
-        }
+    placement.prepare(model.config.num_hidden_layers);
+    const int cpu_layers = gpu_layers < 0
+        ? 0
+        : static_cast<int>(std::max<int64_t>(model.config.num_hidden_layers - gpu_layers, 0));
+    if (cpu_layers > 0) {
+        if (weights.placement.tensor.enabled() || expert_parallel || placement.enabled())
+            throw std::runtime_error(
+                "--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
+        bool supported = model.config.num_experts <= 0;
+        for (const auto& layer_type : model.config.layer_types)
+            supported = supported &&
+                        (layer_type == "full_attention" || layer_type == "linear_attention");
+        if (!supported)
+            throw std::runtime_error(
+                "--n-gpu-layers currently supports dense Qwen-style blocks only");
+        std::cerr << "dense_layer_placement cpu=0-" << cpu_layers - 1
+                  << " gpu=" << cpu_layers << '-' << model.config.num_hidden_layers - 1
+                  << " cpu_threads=" << mfq_get_num_threads() << std::endl;
     }
-
-    CudaScope model_scope(execution);
-    if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.dense_cpu_layer_count > 0)
+    if (model.plan.vision == CudaVisionAdapter::grid_vit && cpu_layers > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
+    return cpu_layers;
+}
 
-    if (model.config.positional_encoding != mfq::models::PositionalEncoding::none) {
+void load(Model& model, const weight_loader::Loader& weights,
+          const LayerPlacementConfig& placement, int cpu_layers,
+          const mfq::models::YarnScaling& yarn, bool load_layers,
+          bool load_input_output, bool mirror_scalars) {
+    const auto& config = model.config;
+    MfqCudaGuard scope(weights.placement.device);
+    if (config.positional_encoding != mfq::models::PositionalEncoding::none) {
         const auto make_rope = [&](mfq_tensor_backend::Device device) {
-            RopeCache rope(model.config.max_position_embeddings, model.config.rotary_dim,
-                           model.config.rope_base, 0, -1, device,
-                           model.metadata.rope_interleaved, execution.yarn);
-            rope.configure_mrope(model.config.mrope_sections, model.config.mrope_interleaved,
-                                 model.config.rotary_dim, device);
+            RopeCache rope(config.max_position_embeddings, config.rotary_dim,
+                           config.rope_base, 0, -1, device,
+                           model.metadata.rope_interleaved, yarn);
+            rope.configure_mrope(config.mrope_sections, config.mrope_interleaved,
+                                 config.rotary_dim, device);
             return rope;
         };
         const auto primary = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, execution.layer_placement.primary_device());
+            mfq_tensor_backend::kCUDA, weights.placement.device);
         model.rope = make_rope(primary);
-        if (execution.dense_cpu_layer_count > 0)
+        if (cpu_layers > 0)
             model.cpu_rope = make_rope(mfq_tensor_backend::Device(mfq_tensor_backend::kCPU));
-        if (execution.layer_placement.enabled()) {
-            for (int device : execution.layer_placement.devices) {
+        if (placement.enabled()) {
+            for (int device : placement.devices) {
                 MfqCudaGuard rope_guard(device);
                 model.device_ropes.emplace(
                     device, make_rope(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device)));
@@ -231,38 +236,29 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
         }
     }
 
-    weight_loader::Loader weights{source, execution.config.weights,
-        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-         execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.stores.weights, execution.tq};
     if (load_input_output) {
         const auto output_name = std::string("model.output.weight");
-        const bool independent_output = !model.config.tie_word_embeddings &&
-                                        has_tensor(source, output_name);
-        model.embed = weights.embedding("model.token_embedding.weight",
-                                     independent_output);
+        const bool independent_output = !config.tie_word_embeddings && weights.has(output_name);
+        model.embed = weights.embedding("model.token_embedding.weight", independent_output);
         model.output_norm = weights.tensor("model.output_norm.weight");
-        if (model.config.tie_word_embeddings || !has_tensor(source, output_name)) {
-            model.lm_head = execution.tensor_parallel.enabled()
-                ? weights.projection("model.token_embedding.weight",
-                                    TensorParallelAxis::Output)
+        if (config.tie_word_embeddings || !weights.has(output_name)) {
+            model.lm_head = weights.placement.tensor.enabled()
+                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
                 : model.embed;
         } else {
-            model.lm_head = weights.projection(output_name,
-                                              TensorParallelAxis::Output);
+            model.lm_head = weights.projection(output_name, TensorParallelAxis::Output);
         }
         if (load_layers) {
-            model.layers.reserve(static_cast<std::size_t>(model.config.num_hidden_layers));
-            for (int index = 0; index < model.config.num_hidden_layers; ++index) {
-                const int device = execution.layer_placement.device_for_layer(index);
-                const bool cpu = index < execution.dense_cpu_layer_count;
+            model.layers.reserve(static_cast<std::size_t>(config.num_hidden_layers));
+            for (int index = 0; index < config.num_hidden_layers; ++index) {
+                const int device = placement.device_for_layer(index);
+                const bool cpu = index < cpu_layers;
                 std::cerr << "loading layer " << index << ' '
-                          << model.config.layer_types.at(static_cast<std::size_t>(index)) << ' '
+                          << config.layer_types.at(static_cast<std::size_t>(index)) << ' '
                           << (cpu ? "CPU" : "CUDA") << std::endl;
                 model.layers.push_back(load_layer(
-                    weights.for_layer(device, cpu), model.config, index,
-                    model.config.layer_types.at(static_cast<std::size_t>(index)),
-                    execution.config.tensor_parallel_mirror_linear_attention_scalars));
+                    weights.for_layer(device, cpu), config, index,
+                    config.layer_types.at(static_cast<std::size_t>(index)), mirror_scalars));
             }
         }
     } else {
@@ -270,11 +266,6 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
             throw std::invalid_argument("streamed model setup requires deferred layers");
         model.output_norm = weights.tensor("model.output_norm.weight");
     }
-
-    if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
-        !moe_expert_cache_finalized(execution.stores.weights.moe) && !defer_cache)
-        finalize_moe_expert_cache(execution.stores.weights.moe);
-    return model;
 }
 
 std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,

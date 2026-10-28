@@ -17,7 +17,7 @@
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/models/qwen35/load.h"
+#include "models/qwen35/load.h"
 #include "csrc/backends/cuda/kernels/deepseek_v41.h"
 #include "nlohmann/json.hpp"
 
@@ -50,9 +50,23 @@ static Model load_diagnostic_reference(CudaExecutionContext& execution,
                                        const std::string& config_path,
                                        int64_t context_size) {
     if constexpr (mfq::cuda::internal::is_qwen35_v<Model>) {
-        return mfq::cuda::qwen35::load(
-            execution, model_path, config_path, context_size, true, true,
-            mfq::open_model_source(model_path));
+        auto source = mfq::open_model_source(model_path);
+        CudaScope scope(execution);
+        auto model = mfq::cuda::qwen35::read(
+            source, config_path, context_size,
+            execution.yarn, execution.yarn_context_extension);
+        mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.stores.weights, execution.tq};
+        execution.dense_cpu_layer_count = mfq::cuda::qwen35::place(
+            model, weights, execution.layer_placement, execution.n_gpu_layers,
+            execution.expert_parallel.enabled());
+        mfq::cuda::qwen35::load(
+            model, weights, execution.layer_placement, execution.dense_cpu_layer_count,
+            execution.yarn, true, true,
+            execution.config.tensor_parallel_mirror_linear_attention_scalars);
+        return model;
     } else {
         return mfq::cuda::load_causal_lm<Model>(
             execution, model_path, config_path, context_size);

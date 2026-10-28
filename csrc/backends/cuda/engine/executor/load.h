@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/models/load.h"
-#include "backends/cuda/engine/models/qwen35/load.h"
+#include "models/qwen35/load.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -76,19 +76,25 @@ auto with_loaded_cuda_model(
     };
     auto load_qwen = [&] {
         auto started = std::chrono::steady_clock::now();
-        auto loaded_model = mfq::cuda::qwen35::load(
-            execution, options.model_path, options.config_path, options.context_size,
-            true, true, source);
-        mfq::cuda::qwen35::Model model = std::move(loaded_model);
+        auto model = mfq::cuda::qwen35::read(
+            source, options.config_path, options.context_size,
+            execution.yarn, execution.yarn_context_extension);
+        weight_loader::Loader weights{*model.source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.stores.weights, execution.tq};
+        execution.dense_cpu_layer_count = mfq::cuda::qwen35::place(
+            model, weights, execution.layer_placement, execution.n_gpu_layers,
+            execution.expert_parallel.enabled());
+        mfq::cuda::qwen35::load(
+            model, weights, execution.layer_placement, execution.dense_cpu_layer_count,
+            execution.yarn, true, true,
+            execution.config.tensor_parallel_mirror_linear_attention_scalars);
         mfq::cuda::qwen35::State state(
             model, execution.config.gdn_transposed_state);
         if (mfq::cuda::runtime_options::kv_vram_preallocated())
             state.preallocate();
         auto executor = execution.make_executor();
-        weight_loader::Loader weights{*model.source, execution.config.weights,
-            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-             execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.stores.weights, execution.tq};
         auto runtime_components =
             load_runtime_components(model, weights, execution, load_optional_components);
         return finish(model, state, executor, runtime_components, started);

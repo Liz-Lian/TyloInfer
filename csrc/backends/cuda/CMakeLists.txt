@@ -538,7 +538,6 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/models/qwen35/load.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
