@@ -12,9 +12,11 @@
 #include "models/qwen35/state.h"
 #include "models/minicpmo45/state.h"
 #include "cuda_runtime_config.h"
+#include "mfq_cuda_kv_quantization.h"
 
 #include <chrono>
 #include <iostream>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -35,6 +37,10 @@ struct Loaded {
     State& state() {
         if constexpr (std::is_same_v<Model, State>) return language();
         else return *owned_state;
+    }
+    std::optional<KvQuantization> kv_quantization() const {
+        if constexpr (std::is_same_v<Model, Qwen4CausalLm>) return cuda_kv_quantization();
+        else return std::nullopt;
     }
 };
 

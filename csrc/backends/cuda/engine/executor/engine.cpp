@@ -13,9 +13,7 @@
 #include "backends/cuda/engine/state/kv_offload.h"
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
-#include "models/qwen35/forward.h"
 #include "models/qwen35/runtime.h"
-#include "models/qwen35/state.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "models/batch.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
@@ -26,7 +24,6 @@
 #include "weight_memory.h"
 
 #include <cuda_runtime_api.h>
-#include "mfq_cuda_kv_quantization.h"
 #include <algorithm>
 #include <functional>
 #include <optional>
@@ -176,11 +173,11 @@ struct CudaEngineState {
                 cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
             });
         if (config.continuous_batch.max_sequences) {
-            if constexpr (std::is_same_v<Model, qwen35::Model>) {
+            if constexpr (requires { &Runtime::batch; }) {
                 auto batch_config = config.continuous_batch;
                 batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
-                batching = make_batch(
-                    runtime.model, &state, execution->make_executor(), execution->collectives,
+                batching = runtime.batch(
+                    execution->make_executor(), execution->collectives,
                     execution->forward_mode(), execution->stores.weights.moe,
                     std::move(batch_config), config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
@@ -342,17 +339,22 @@ struct CudaEngineState {
     }
     using Prepared = PreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
-        if constexpr (requires { components.composite; })
-            if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
-        if (components.grid_vision)
-            return components.grid_vision->prepare(language, execution->projector(),
-                execution->stores.weights.moe, execution->collectives,
-                execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
-        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
-            if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
-        if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
-            if (components.radio_vision) return components.radio_vision->prepare(language, execution->projector(), input.prompt, *input.vision);
-        throw std::invalid_argument("model has no multimodal component");
+        if constexpr (requires { &Runtime::prepare; }) {
+            return runtime.prepare(input, execution->projector(), execution->stores.weights.moe,
+                execution->collectives, execution->layer_placement.primary_device());
+        } else {
+            if constexpr (requires { components.composite; })
+                if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
+            if (components.grid_vision)
+                return components.grid_vision->prepare(language, execution->projector(),
+                    execution->stores.weights.moe, execution->collectives,
+                    execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
+            if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
+                if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
+            if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
+                if (components.radio_vision) return components.radio_vision->prepare(language, execution->projector(), input.prompt, *input.vision);
+            throw std::invalid_argument("model has no multimodal component");
+        }
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
         PrefillCudaTimer timer;
@@ -388,6 +390,7 @@ struct CudaEngineState {
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {
+            const auto quantization = runtime.kv_quantization();
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
             const auto capabilities = components.state();
             const auto workspace_metrics = expert_space ? expert_space->metrics() : ExpertSpace::Metrics{};
@@ -399,8 +402,8 @@ struct CudaEngineState {
                 {"prefill_workspace_expert_used_bytes",double(workspace_metrics.prefill_used)},
                 {"prefill_workspace_expert_reclaimed_used_bytes",double(workspace_metrics.prefill_reclaimed_used)},
                 {"kv_memory_supported",std::is_same_v<Model,Qwen4CausalLm>?1.0:0.0},
-                {"kv_quantization_supported",(std::is_same_v<Model,Qwen4CausalLm>||std::is_same_v<Model,qwen35::Model>)?1.0:0.0},
-                {"kv_quantization_bits",(std::is_same_v<Model,Qwen4CausalLm>||std::is_same_v<Model,qwen35::Model>)?cuda_kv_quantization().bits:0.0},
+                {"kv_quantization_supported",double(quantization.has_value())},
+                {"kv_quantization_bits",quantization?quantization->bits:0.0},
                 {"vision_declared", double(capabilities.vision_declared)}, {"vision_supported", double(capabilities.vision_supported)},
                 {"vision_available", double(capabilities.vision_available)}, {"mtp_declared", double(capabilities.mtp_declared)},
                 {"mtp_supported", double(capabilities.mtp_supported)}, {"mtp_available", double(capabilities.mtp_available)}};
