@@ -74,10 +74,9 @@ mfq::StepSequence<Tensor> Vision::encode(Projector projector,Tensor patches,int 
     }
 }
 
-mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
+mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language, Projector projector,
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const {
     auto spans=validate_media(config_,tokens,media);
-    auto& execution=*language.execution;
     auto options=mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA);
     auto ids=mfq_tensor_backend::tensor(tokens,options).reshape({1,-1});
     auto embeddings=language.embed_forward(ids).contiguous();
@@ -96,7 +95,7 @@ mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
             auto patches=mfq_tensor_backend::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
                 mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32).device(mfq_tensor_backend::kCPU))
                 .to(mfq_tensor_backend::kCUDA).to(mfq_tensor_backend::kFloat16);
-            auto encoding=encode(execution.projector(),std::move(patches),int(span.height),int(span.width));
+            auto encoding=encode(projector,std::move(patches),int(span.height),int(span.width));
             while(auto step=encoding.next()){if(step.value)visual=std::move(*step.value);else co_yield step.state;}
             cached_key_=key;cached_image_=visual;
         }

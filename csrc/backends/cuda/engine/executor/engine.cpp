@@ -507,9 +507,9 @@ struct CudaEngineState {
                 execution->stores.weights.moe, execution->collectives,
                 execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
         if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
-            if(components.deepseek_vision)return components.deepseek_vision->prepare(language,input.prompt,*input.vision);
+            if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
         if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
-            if (components.radio_vision) return components.radio_vision->prepare(language, input.prompt, *input.vision);
+            if (components.radio_vision) return components.radio_vision->prepare(language, execution->projector(), input.prompt, *input.vision);
         throw std::invalid_argument("model has no multimodal component");
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {

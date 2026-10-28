@@ -9,7 +9,7 @@ namespace mfq::cuda::deepseek_v41_runtime {
 class Vision {
 public:
     static Vision load(std::shared_ptr<const mfq::ModelSource> source,weight_loader::Loader weights,const CommonConfig& config);
-    mfq::StepSequence<PreparedPrompt> prepare(DeepseekV41CausalLm& language,
+    mfq::StepSequence<PreparedPrompt> prepare(DeepseekV41CausalLm& language, Projector projector,
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const;
 private:
     Vision(std::shared_ptr<const mfq::ModelSource> source,weight_loader::Loader weights,CommonConfig config)

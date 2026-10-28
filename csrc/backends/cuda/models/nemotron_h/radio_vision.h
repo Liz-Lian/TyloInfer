@@ -1,13 +1,13 @@
 #pragma once
+#include "engine/executor/sequence.h"
 #include "backends/cuda/engine/requests/prompt.h"
 
-#include "models/common/block.h"
+#include "ops/norm/rms.h"
 #include "ops/vision/block.h"
 #include "backends/cuda/engine/models/vision.h"
 #include "engine/models/nemotron_h/vision.h"
 #include "backends/cuda/engine/weights/load.h"
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "engine/requests/media.h"
 #include "mfq_cuda_activation_ops.h"
 #include "formats/model_graph.h"
@@ -330,7 +330,7 @@ class CudaRadioPromptComponent {
     }
 
     template <typename Model>
-    mfq::StepSequence<PreparedPrompt> prepare(Model &language,
+    mfq::StepSequence<PreparedPrompt> prepare(Model &language, Projector projector,
                                                   const std::vector<std::int64_t> &token_ids,
                                                   const MfqMultimodalInput &media) const {
         const auto grids = validated_grids(media);
@@ -363,7 +363,7 @@ class CudaRadioPromptComponent {
                     "Nemotron-H image placeholders disagree with the projected patch count");
             }
             auto projected =
-                tower_.embed(language.execution->projector(), pixels.narrow(0, patch_offset, count),
+                tower_.embed(projector, pixels.narrow(0, patch_offset, count),
                              grid.rows, grid.columns);
             auto index = mfq_tensor_backend::tensor(
                              run, mfq_tensor_backend::TensorOptions()
