@@ -6,7 +6,7 @@
 #include "models/deepseek_v4/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/nemotron_h/mtp.h"
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "diagnostics/flash_next_mtp.h"
 #include "diagnostics/token_generation.h"
@@ -410,8 +410,13 @@ static int run_prefill_sweep(
                 mfq::engine::InferenceOutput output(request,nullptr,"layer-major-check");
                 const auto engine_started=std::chrono::steady_clock::now();
                 auto result=collect_generation(generate(
-                    model,state,executor,execution,metadata,graph,cache,config,
-                    request,output));
+                    model, state, executor, execution.collectives,
+                    execution.forward_mode(), execution.profiler, execution.stores.weights,
+                    execution.decode_graph_serial_branches, execution.config.report_cuda_memory,
+                    execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
+                        model_parallel_cuda_graph_enabled(execution),
+                    [owner = &execution] { owner->drain(); },
+                    metadata, graph, cache, config, request, output));
                 mfq_cuda_synchronize();
                 const auto engine_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-engine_started).count();
                 std::cout<<"prefill_ordinary_generation_timing prompt="<<sizes.front()<<" chunk="<<engine_chunk
@@ -1377,7 +1382,18 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
             request.sampling.top_k=1;request.sampling.top_p=1.;request.sampling.enable_mtp=enable_mtp;
             request.sampling.mtp_max_draft_tokens=5;
             mfq::engine::InferenceOutput output(request,nullptr,"mtp-operator-variants");
-            auto result=collect_generation(generate(model,model,nullptr,*model.execution,model.metadata,graph,cache,config,request,output,enable_mtp?&mtp:nullptr));
+            auto result=collect_generation(generate(
+                model, model, nullptr, model.execution->collectives,
+                model.execution->forward_mode(), model.execution->profiler,
+                model.execution->stores.weights,
+                model.execution->decode_graph_serial_branches,
+                model.execution->config.report_cuda_memory,
+                model.execution->dsv4_cpu_offload_layers.empty() &&
+                    model.execution->dense_cpu_layer_count == 0 &&
+                    model_parallel_cuda_graph_enabled(*model.execution),
+                [owner = model.execution] { owner->drain(); },
+                model.metadata, graph, cache, config, request, output,
+                enable_mtp ? &mtp : nullptr));
             mfq_cuda_synchronize();
             const auto decode_ms=std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-result.first_token).count();
@@ -1896,7 +1912,17 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
         request.prompt=prompt;request.sampling=greedy;request.sampling.enable_mtp=enable_mtp;
         mfq::engine::InferenceOutput output(request,nullptr,"nemotron-h-mtp");
         model.reset(1);mtp.reset(1);
-        return collect_generation(generate(model,model,nullptr,*model.execution,model.metadata,graph,cache,config,request,output,predictor)).tokens;
+        return collect_generation(generate(
+            model, model, nullptr, model.execution->collectives,
+            model.execution->forward_mode(), model.execution->profiler,
+            model.execution->stores.weights,
+            model.execution->decode_graph_serial_branches,
+            model.execution->config.report_cuda_memory,
+            model.execution->dsv4_cpu_offload_layers.empty() &&
+                model.execution->dense_cpu_layer_count == 0 &&
+                model_parallel_cuda_graph_enabled(*model.execution),
+            [owner = model.execution] { owner->drain(); },
+            model.metadata, graph, cache, config, request, output, predictor)).tokens;
     };
     const auto plain=ordinary(nullptr,false);
     result["greedy_plain"]=plain;

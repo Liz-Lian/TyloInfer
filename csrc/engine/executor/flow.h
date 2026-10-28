@@ -95,7 +95,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     typename Ops::Restore restored;
     if (caching && (!use_mtp || mtp->supports_session_state()))
         restored = session_cache.restore_best(state,
-            ops.execution,
+            ops.drain,
             use_mtp ? mtp : nullptr,
             cache_plan.session_id,
             prompt,

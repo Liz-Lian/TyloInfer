@@ -91,8 +91,14 @@ int run_qwen35_mtp_bench(
             request.prompt = prompt; request.sampling = params;
             mfq::engine::InferenceOutput parsed(request, nullptr, "bench");
             auto result = collect_generation(generate(
-                model, state, executor, execution, model.metadata, graph_cache,
-                session_cache, runtime_config, request, parsed, &mtp));
+                model, state, executor, execution.collectives, execution.forward_mode(),
+                execution.profiler, execution.stores.weights,
+                execution.decode_graph_serial_branches, execution.config.report_cuda_memory,
+                execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
+                    model_parallel_cuda_graph_enabled(execution),
+                [owner = &execution] { owner->drain(); },
+                model.metadata, graph_cache, session_cache, runtime_config,
+                request, parsed, &mtp));
             output = std::move(result.tokens); prefill = result.prefill; first_token = result.first_token;
             const int produced = static_cast<int>(output.size());
             mfq_cuda_synchronize();
@@ -153,8 +159,15 @@ int run_qwen_continuous_batching_check(Model& model,
         InferenceRequest request; request.prompt = prompt; request.sampling = sampling; request.cache_plan = std::move(plan);
         InferenceOutput output(request, nullptr, "serial");
         return collect_generation(generate(
-            model, state, executor, execution_context, metadata, graph, cache,
-            config, request, output)).tokens;
+            model, state, executor, execution_context.collectives,
+            execution_context.forward_mode(), execution_context.profiler,
+            execution_context.stores.weights, execution_context.decode_graph_serial_branches,
+            execution_context.config.report_cuda_memory,
+            execution_context.dsv4_cpu_offload_layers.empty() &&
+                execution_context.dense_cpu_layer_count == 0 &&
+                model_parallel_cuda_graph_enabled(execution_context),
+            [owner = &execution_context] { owner->drain(); },
+            metadata, graph, cache, config, request, output)).tokens;
     };
     const auto first_reference = serial(first_prompt), second_reference = serial(second_prompt);
     std::vector<int64_t> growth_prompt(253);
@@ -213,9 +226,17 @@ int run_qwen_continuous_batching_check(Model& model,
             void execute(const std::vector<RequestId>& eligible) { batcher->step(eligible); }
             Generation generate(const RequestId& id, ExecutionRequest& request) {
                 return internal::generate(
-                    model, state, executor, execution_context, metadata, graph,
-                    cache, config, request.input, request.output, nullptr, {},
-                    batcher.get(), id);
+                    model, state, executor, execution_context.collectives,
+                    execution_context.forward_mode(), execution_context.profiler,
+                    execution_context.stores.weights,
+                    execution_context.decode_graph_serial_branches,
+                    execution_context.config.report_cuda_memory,
+                    execution_context.dsv4_cpu_offload_layers.empty() &&
+                        execution_context.dense_cpu_layer_count == 0 &&
+                        model_parallel_cuda_graph_enabled(execution_context),
+                    [owner = &execution_context] { owner->drain(); },
+                    metadata, graph, cache, config, request.input, request.output,
+                    nullptr, {}, batcher.get(), id);
             }
         } execution(model, metadata, graph, cache, config, state, executor,
                     execution_context, std::move(model_owner));

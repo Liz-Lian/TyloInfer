@@ -10,7 +10,9 @@
 
 namespace mfq::cuda::internal {
 #define TYLOINFER_INSTANTIATE_FLOW(MODEL, STATE)                                                                \
-    template Generation generate(MODEL &, STATE &, mfq::cuda::Executor*, CudaExecutionContext &,    \
+    template Generation generate(MODEL &, STATE &, mfq::cuda::Executor*, mfq::cuda::Collectives&, \
+        mfq::cuda::Executor::Mode, CudaProfiler&, mfq::cuda::RoutedCache&, bool&, bool, bool,       \
+        std::function<void()>,                                                                      \
         const mfq::models::CausalLmMetadata &,                                                       \
         DecodeGraphCache &,                                                                        \
         TextSessionCache &,                                                                        \

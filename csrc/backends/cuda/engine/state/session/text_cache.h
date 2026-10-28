@@ -1,7 +1,6 @@
 #pragma once
 
 #include "backend.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/state/session/state.h"
 #include "engine/executor/mtp.h"
 #include "engine/state/sessions.h"
@@ -9,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <map>
 #include <string>
@@ -60,21 +60,21 @@ struct CudaSessionOps {
 
     template <class State>
     static void restore(
-        State& state, const Snapshot& snapshot, CudaExecutionContext& execution) {
+        State& state, const Snapshot& snapshot, const std::function<void()>& drain) {
+        // The caller owns the CUDA scope for the entire restore operation.
         if constexpr (requires(decltype(state.prepare(snapshot))& candidate) {
             state.stage(candidate, snapshot);
             { state.publish(std::move(candidate)) } noexcept;
         }) {
             auto candidate = state.prepare(snapshot);
             try {
-                CudaScope scope(execution);
                 state.stage(candidate, snapshot);
-                execution.drain();
+                drain();
                 state.publish(std::move(candidate));
             } catch (...) {
                 const auto error = std::current_exception();
                 try {
-                    execution.drain();
+                    drain();
                 } catch (...) {
                 }
                 std::rethrow_exception(error);
@@ -111,7 +111,7 @@ public:
     template <typename State>
     TextSessionRestore restore_best(
         State& state,
-        CudaExecutionContext& execution,
+        const std::function<void()>& drain,
         MtpModule* mtp,
         const std::string& requested_session,
         const std::vector<std::int64_t>& prompt,
@@ -144,14 +144,14 @@ private:
 template <typename State>
 TextSessionRestore TextSessionCache::restore_best(
     State& state,
-    CudaExecutionContext& execution,
+    const std::function<void()>& drain,
     MtpModule* mtp,
     const std::string& requested_session,
     const std::vector<std::int64_t>& prompt,
     std::size_t maximum_prefix_tokens,
     const std::string& input_key) {
     return impl_->restore_best(
-        state, execution, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
+        state, drain, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
 }
 
 } // namespace mfq::cuda::internal

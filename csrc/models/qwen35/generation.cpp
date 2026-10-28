@@ -5,7 +5,9 @@
 namespace mfq::cuda::internal {
 template Generation generate(
     mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &, mfq::cuda::Executor*,
-    CudaExecutionContext &, const mfq::models::CausalLmMetadata &,
+    mfq::cuda::Collectives&, mfq::cuda::Executor::Mode, CudaProfiler&,
+    mfq::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>,
+    const mfq::models::CausalLmMetadata &,
     DecodeGraphCache &, TextSessionCache &, const CudaRuntimeConfig &,
     mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &, MtpModule *,
     std::optional<PreparedPrompt>, mfq::engine::Batch*, std::string,

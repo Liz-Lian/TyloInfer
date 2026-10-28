@@ -1,5 +1,6 @@
 #pragma once
 #include "backends/cuda/engine/executor/generation.h"
+#include "backends/cuda/engine/executor/execution.h"
 
 namespace mfq::cuda::diagnostics {
 struct GenerationResult {
@@ -34,7 +35,8 @@ std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
     state.reset(1);
     mtp.reset(1);
     auto generation = run_mtp_generation(
-        model, state, executor, execution, metadata, mtp, request, output);
+        model, state, executor, execution.collectives, execution.forward_mode(),
+        execution.stores.weights, metadata, mtp, request, output);
     std::vector<int64_t> tokens;
     std::size_t largest_delta = 0;
     while (auto step = generation.next()) {

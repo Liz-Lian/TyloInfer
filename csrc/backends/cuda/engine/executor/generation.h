@@ -3,8 +3,8 @@
 
 #include "engine/batch/batch.h"
 #include "engine/executor/step.h"
+#include "engine/executor/run.h"
 #include "engine/models/common/causal_metadata.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "engine/executor/mtp.h"
 #include "cuda_runtime_config.h"
@@ -15,11 +15,25 @@
 
 namespace mfq::cuda::internal {
 class TextSessionCache;
+}
 
+namespace mfq::cuda {
+class Collectives;
+struct RoutedCache;
+}
+
+struct CudaProfiler;
+
+namespace mfq::cuda::internal {
+
+// Creation and every resume run inside the owner's CUDA device/context scope.
 template <typename Model, typename State>
 mfq::engine::Generation generate(
     Model& model, State& state, mfq::cuda::Executor* executor,
-    CudaExecutionContext& execution,
+    mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
+    CudaProfiler& profiler, mfq::cuda::RoutedCache& weights,
+    bool& serial_branches, bool report_memory, bool graph_allowed,
+    std::function<void()> drain,
     const mfq::models::CausalLmMetadata& metadata,
     DecodeGraphCache& graph, TextSessionCache& cache,
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,

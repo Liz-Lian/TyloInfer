@@ -381,9 +381,16 @@ struct CudaEngineState {
     Generation generate_text(InferenceRequest& input, InferenceOutput& output, std::optional<Prepared> prepared,
                              const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
-        return internal::generate(language, state, executor.get(), *execution, metadata, graph, cache, config,
-                                  input, output, batched ? nullptr : components.mtp.get(), std::move(prepared),
-                                  batched ? batching.get() : nullptr, id, restore_decode_workspace);
+        return internal::generate(
+            language, state, executor.get(), execution->collectives,
+            execution->forward_mode(), execution->profiler, execution->stores.weights,
+            execution->decode_graph_serial_branches, execution->config.report_cuda_memory,
+            execution->dsv4_cpu_offload_layers.empty() && execution->dense_cpu_layer_count == 0 &&
+                model_parallel_cuda_graph_enabled(*execution),
+            [owner = execution] { owner->drain(); },
+            metadata, graph, cache, config, input, output,
+            batched ? nullptr : components.mtp.get(), std::move(prepared),
+            batched ? batching.get() : nullptr, id, restore_decode_workspace);
     }
     Generation generate(const RequestId& id, ExecutionRequest& request) {
         if (request.batched) {

@@ -2,7 +2,7 @@
 
 #include "nlohmann/json.hpp"
 #include "generation_result.h"
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 
 #include <cstdint>
 #include <utility>
