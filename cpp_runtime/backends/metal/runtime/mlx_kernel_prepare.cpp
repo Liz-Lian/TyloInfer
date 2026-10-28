@@ -86,22 +86,37 @@ void MlxKernelPreparation::add(const mlx::core::array& output) {
         if (dynamic_cast<MlxPreparableKernel*>(primitive.get()) || std::string_view(primitive->name()) == "CustomKernel") {
             if (keys_.insert("kernel:" + mlx_kernel_preparation_key(*primitive)).second)
                 jobs_.push_back([primitive] { prepare_mlx_kernel_gpu(*primitive); });
-        } else if (const auto* compiled = dynamic_cast<mlx::core::Compiled*>(primitive.get())) {
+        } else if (const auto* compiled = dynamic_cast<mlx::core::Compiled*>(primitive.get());
+            compiled || std::string_view(primitive->name()) == "ScatterAxis" ||
+                std::string_view(primitive->name()) == "Gather") {
             const auto outputs = value.outputs();
             const auto& inputs = value.inputs();
-            const auto bounded = [](const auto& arrays) {
+            std::vector<mlx::core::Shape> input_shapes, output_shapes;
+            std::vector<mlx::core::Dtype> input_dtypes, output_dtypes;
+            for (const auto& input : inputs) { input_shapes.push_back(input.shape()); input_dtypes.push_back(input.dtype()); }
+            for (const auto& output : outputs) { output_shapes.push_back(output.shape()); output_dtypes.push_back(output.dtype()); }
+            if (std::string_view(primitive->name()) == "ScatterAxis") {
+                const int axis = static_cast<mlx::core::ScatterAxis*>(primitive.get())->state().second;
+                for (auto& shape : input_shapes) shape.at(axis) = std::min(shape.at(axis), 8);
+                for (auto& shape : output_shapes) shape.at(axis) = std::min(shape.at(axis), 8);
+            }
+            const auto bounded = [](const auto& shapes, const auto& dtypes) {
                 std::size_t bytes = 0;
-                for (const auto& item : arrays) {
-                    if (item.nbytes() > (4u << 20) - bytes) return false;
-                    bytes += item.nbytes();
+                for (std::size_t index = 0; index < shapes.size(); ++index) {
+                    std::size_t size = dtypes[index].size();
+                    for (const int dimension : shapes[index]) {
+                        if (dimension && size > (4u << 20) / dimension) return false;
+                        size *= dimension;
+                    }
+                    if (size > (4u << 20) - bytes) return false;
+                    bytes += size;
                 }
                 return true;
             };
-            if (bounded(inputs) && bounded(outputs) && keys_.insert("compiled:" + compiled->lib_name()).second) {
-                std::vector<mlx::core::Shape> input_shapes, output_shapes;
-                std::vector<mlx::core::Dtype> input_dtypes, output_dtypes;
-                for (const auto& input : inputs) { input_shapes.push_back(input.shape()); input_dtypes.push_back(input.dtype()); }
-                for (const auto& output : outputs) { output_shapes.push_back(output.shape()); output_dtypes.push_back(output.dtype()); }
+            std::string key = compiled ? "compiled:" + compiled->lib_name() : primitive->name();
+            if (!compiled)
+                for (const auto& input : inputs) key += ':' + std::to_string(static_cast<int>(input.dtype().val()));
+            if (bounded(input_shapes, input_dtypes) && bounded(output_shapes, output_dtypes) && keys_.insert(key).second) {
                 compiled_jobs_.push_back([primitive, input_shapes, input_dtypes, output_shapes, output_dtypes] {
                     std::vector<mlx::core::array> inputs;
                     for (std::size_t index = 0; index < input_shapes.size(); ++index)

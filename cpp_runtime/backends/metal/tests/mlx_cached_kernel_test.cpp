@@ -75,6 +75,22 @@ if (i < uint(x_shape[0] * x_shape[1])) {
             "uint i=thread_position_in_grid.x; out[i]=x[i];", "", true);
         auto flat_stock = fast::metal_kernel("tinfer_cached_contiguous_view_test", {"x"}, {"out"},
             "uint i=thread_position_in_grid.x; out[i]=x[i];", "", true);
+        for (const auto dtype : {float32, bfloat16, float16, int32, uint8})
+            for (const bool ready : {false, true}) for (const bool strided : {false, true}) {
+            auto parent = reshape(astype(arange(64 * 1024, float32), dtype), {64, 1024});
+            if (ready) eval(parent);
+            auto input = slice(parent, {16, 0}, {48, 1024});
+            if (strided) input = transpose(input);
+            const auto view = mfq::metal::mlx_row_contiguous_view(input, default_stream(Device::gpu));
+            eval(view);
+            if (!view.flags().row_contiguous) throw std::runtime_error("row-major view retained strided input");
+            if (!strided && (view.buffer().ptr() != input.buffer().ptr() || view.offset() != input.offset()))
+                throw std::runtime_error("row-major view copied an offset inside a larger allocation");
+            assert_same(view, input);
+            const auto output = flat({input}, {input.shape()}, {dtype}, {int(input.size()), 1, 1},
+                {256, 1, 1}, {}, std::nullopt, false, {}).front();
+            assert_same(output, input);
+        }
         for (auto dtype : {float32, bfloat16, float16, uint8, int32, int64})
             for (int rows : {1, 2, 3, 7}) for (int width : {1, 2, 9}) for (bool ready : {false, true}) {
             const auto parent = reshape(astype(arange(rows * 17, float32), dtype), {rows, 17});

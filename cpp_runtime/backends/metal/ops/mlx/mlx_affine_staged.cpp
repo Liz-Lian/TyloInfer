@@ -326,7 +326,7 @@ std::optional<mlx::core::array> MlxAffineStaged::project(const MlxAffineWeight& 
         plan.tiles_[slot].emplace(result[0], result[1]);
     }
     const auto& [tiles, count] = *plan.tiles_[slot];
-    auto x = contiguous(reshape(astype(input, weight.scales_.dtype()), {-1, width}));
+    auto x = reshape(astype(input, weight.scales_.dtype()), {-1, width});
     const auto params = array({output, width, shared_input ? plan.routes_ : 1,
         !shared_input && input_in_route_order ? 1 : 0}, int32);
     const int columns = (output + 63) / 64;
@@ -349,26 +349,33 @@ std::optional<mlx::core::array> MlxAffineStaged::project_indirect(const MlxAffin
     bool shared_input, const MlxExpertRouteTiles& plan) {
     using namespace mlx::core;
     const int width = weight.input_size(), output = weight.output_size(), experts = weight.expert_count();
-    if (ids.shape(0) <= 6 || experts > 2048 || width % 32 || output % 32 ||
+    if (ids.shape(0) <= MlxAffineIndirectWeight::kVectorRows || experts > 2048 || width % 32 || output % 32 ||
         (weight.group_size_ != 32 && weight.group_size_ != 64 && weight.group_size_ != 128) ||
         weight.dtype_ != input.dtype() || (input.dtype() != float16 && input.dtype() != bfloat16) ||
         input.size() >= std::uint64_t(1) << 32 || mlx_metal_nax_disabled() ||
         !mlx_apple_chip_starts_with("Apple M5")) return std::nullopt;
     const auto config = geometry(int(ids.size()), experts, width, output);
     const int capacity = int(std::min(ids.size(), (ids.size() + config.rows - 1) / config.rows + experts - 1));
-    int max_experts = 1;
-    while (max_experts < experts) max_experts *= 2;
-    const auto order = astype(plan.order, uint32);
-    const auto sorted_ids = take(reshape(astype(ids, uint32), {-1}), order, 0);
-    const auto tiles = tile_kernel()({sorted_ids, array({int(ids.size()), experts, capacity}, int32)},
-        {{capacity, 4}, {1}}, {uint32, uint32}, {1024, 1, 1}, {1024, 1, 1},
-        {{"BM", config.rows}, {"MAXE", max_experts}}, std::nullopt, false, {});
+    if (plan.order.size() != ids.size() || plan.bounds.shape() != Shape{experts, 2})
+        throw std::invalid_argument("MLX indirect route plan differs from projection geometry");
+    const auto order = view(plan.order, uint32);
+    const int slot = config.rows / 32 - 2;
+    if (!plan.affine_tiles[slot]) {
+        if (!plan.affine_sorted_ids) plan.affine_sorted_ids = take(reshape(view(ids, uint32), {-1}), order, 0);
+        int max_experts = 1;
+        while (max_experts < experts) max_experts *= 2;
+        auto tiles = tile_kernel()({*plan.affine_sorted_ids, array({int(ids.size()), experts, capacity}, int32)},
+            {{capacity, 4}, {1}}, {uint32, uint32}, {1024, 1, 1}, {1024, 1, 1},
+            {{"BM", config.rows}, {"MAXE", max_experts}}, std::nullopt, false, {});
+        plan.affine_tiles[slot].emplace(tiles[0], tiles[1]);
+    }
+    const auto& [tiles, count] = *plan.affine_tiles[slot];
     const int columns = (output + 63) / 64, threads = config.rows * 2;
     const std::tuple<int, int, int> grid = config.tile_x
         ? std::tuple{config.tile_x * threads, ((capacity + config.tile_x - 1) / config.tile_x) * columns, 1}
         : std::tuple{columns * threads, capacity, 1};
-    auto result = projection_kernel(true)({contiguous(reshape(input, {-1, width})), weight.tables_[0],
-        weight.tables_[1], weight.tables_[2], order, tiles[0], tiles[1],
+    auto result = projection_kernel(true)({reshape(input, {-1, width}), weight.tables_[0],
+        weight.tables_[1], weight.tables_[2], order, tiles, count,
         array({output, width, shared_input ? ids.shape(1) : 1, 0}, int32)},
         {{int(ids.size()), output}}, {input.dtype()}, grid, {threads, 1, 1},
         {{"T", input.dtype()}, {"Y", input.dtype()}, {"Q", weight.bits_}, {"GS", weight.group_size_},

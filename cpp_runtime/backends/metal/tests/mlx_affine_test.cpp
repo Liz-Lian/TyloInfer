@@ -1,6 +1,7 @@
 #include "mlx_affine.h"
 #include "mlx_tensor.h"
 #include "mlx_affine_rows.h"
+#include "mlx_float_rows.h"
 #include "mlx_affine_indirect.h"
 #include "mlx_moe_ops.h"
 #include "mlx_weight_residency.h"
@@ -35,6 +36,7 @@ void check(int bits, int group, Dtype dtype) {
     compare(joined->dequantize(float32), concatenate({full, full}, -2), 0.f,
         "MLX joined projections changed raw quantized rows");
     MlxLinear linear(weight); MlxEmbedding embedding(weight);
+    MlxProjectionBatch batch({&linear, &linear, &linear, &linear});
     if (embedding.preferred_activation_dtype() != dtype)
         throw std::runtime_error("MLX model activation precision lost its scale dtype");
     for (const int m : {1, 2, 6, 19, 128}) {
@@ -44,8 +46,13 @@ void check(int bits, int group, Dtype dtype) {
             "MLX ordinary projection M=" + std::to_string(m));
         compare(linear(x), astype(quantized_matmul(astype(x, dtype), take(fields[0], 0, 0),
             take(fields[1], 0, 0), take(fields[2], 0, 0), true, group, bits, "affine"), float32),
-            0.f, "MLX native quantized projection agreement");
-        compare(embedding.project(x), linear(x), 0.f, "MLX tied LM head");
+            linear.affine_weight_ref()->native_weight_ref() ? .02f : 0.f, "MLX native quantized projection agreement");
+        compare(embedding.project(x), linear(x), linear.affine_weight_ref()->native_weight_ref() ? .02f : 0.f,
+            "MLX tied LM head");
+        const auto projected = batch(x);
+        if (projected.size() != 4) throw std::runtime_error("MLX projection batch lost an output");
+        for (const auto& value : projected)
+            compare(value, linear(x), .02f, "MLX vector/matrix projection batch dispatch");
     }
     const array ids({31, 0, -1, 32, 7}, int32);
     const auto rows = concatenate({take(take(full, 0, 0), array({31, 0}, int32), 0), zeros({2, 256}, dtype),
@@ -148,22 +155,63 @@ void check_rows() {
         0.f, "MLX composite loader field boundaries");
 }
 
+void check_float_rows() {
+    for (const auto dtype : {float16, bfloat16, float32}) {
+        const std::string name = dtype == float16 ? "F16" : dtype == bfloat16 ? "BF16" : "F32";
+        std::vector<float> data{0.f, .25f, -1.f, 2.f, 3.5f, -.1f, .1f, 5.f, -7.f, 11.f, 13.f, -17.f, 19.f, 23.f, 29.f};
+        if (dtype != float16) data[7] = 1e30f;
+        auto source = astype(array(data.begin(), Shape{3, 5}), dtype); source.eval();
+        std::vector<std::uint8_t> bytes(20 + source.nbytes());
+        const std::uint32_t ndim = 2;
+        const std::int64_t rows = 3, width = 5;
+        std::memcpy(bytes.data(), &ndim, 4);
+        std::memcpy(bytes.data() + 4, &rows, 8);
+        std::memcpy(bytes.data() + 12, &width, 8);
+        std::memcpy(bytes.data() + 20, source.data<std::uint8_t>(), source.nbytes());
+        MlxMappedFloatRows table(bytes, name);
+        if (table.rows() != rows || table.width() != width)
+            throw std::runtime_error("floating row geometry lost");
+        MlxFloatRowBatch selected, tail;
+        table.append_row(2, selected, .5f); table.append_row(0, selected, .5f);
+        table.append_row(2, tail, .5f); selected.append_batch(tail);
+        if (selected.source_bytes_read() != 3 * width * dtype.size())
+            throw std::runtime_error("floating row accounting differs");
+        const array ids({2, 0, 2}, int32);
+        const auto expected = astype(take(source, ids, 0), float32) * .5f;
+        for (const auto output : {float32, bfloat16})
+            compare(selected.decode(output), astype(expected, output), 0.f, "floating selected rows " + name);
+        if (dtype == float16)
+            compare(selected.decode(float16), astype(expected, float16), 0.f, "F16 selected rows");
+        for (const auto row : {-1, 3}) {
+            bool rejected = false;
+            try { table.append_row(row, selected); } catch (const std::out_of_range&) { rejected = true; }
+            if (!rejected) throw std::runtime_error("floating row bounds accepted");
+        }
+        bool rejected = false;
+        try { selected.append_batch(selected); } catch (const std::invalid_argument&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("floating row self append accepted");
+        bytes.pop_back(); rejected = false;
+        try { MlxMappedFloatRows invalid(bytes, name); } catch (const std::invalid_argument&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("truncated floating row accepted");
+    }
+}
+
 void check_gated_residual() {
-    for (const auto dtype : {float16, bfloat16}) for (const int bits : {2, 3, 4, 5, 6, 8})
+    for (const int width : {512, 4096}) for (const auto dtype : {float16, bfloat16}) for (const int bits : {2, 3, 4, 5, 6, 8})
         for (const int group : {32, 64, 128}) {
         const auto make = [&](int output, int input, int precision, float phase) {
             const auto fields = quantize(astype(reshape(sin(arange(output * input, float32) * .017f + phase)
                 * .02f, {output, input}), dtype), group, precision, "affine");
             return MlxAffineWeight::from_arrays(fields[0], fields[1], fields[2], precision, group);
         };
-        const auto down = make(128, 512, bits, .1f), up = make(512, 128, bits, .3f);
-        const auto inject = make(4, 512, bits == 8 ? 4 : 8, .7f);
+        const auto down = make(128, width, bits, .1f), up = make(width, 128, bits, .3f);
+        const auto inject = make(4, width, bits == 8 ? 4 : 8, .7f);
         for (const int rows : {1, 2, 6}) {
-            const auto input = astype(reshape(cos(arange(rows * 512, float32) * .013f), {1, rows, 512}), dtype);
+            const auto input = astype(reshape(cos(arange(rows * width, float32) * .013f), {1, rows, width}), dtype);
             auto low = down.matmul(input) / array(4.f, dtype);
             low = low * sigmoid(low);
             const auto mixing = sigmoid(up.matmul(low));
-            const auto expected = mean(reshape(mixing * input, {1, rows, 4, 128}), -2);
+            const auto expected = mean(reshape(mixing * input, {1, rows, 4, width / 4}), -2);
             const auto expected_gate = array(2.f, dtype) * sigmoid(inject.matmul(input) / array(4.f, dtype));
             for (const bool injection : {true, false}) {
                 const auto actual = down.gated_residual(input, up, injection ? &inject : nullptr, 4);
@@ -174,7 +222,7 @@ void check_gated_residual() {
                     "MLX fused affine injection gate");
             }
         }
-        if (down.gated_residual(zeros({1, 7, 512}, dtype), up, &inject, 4))
+        if (down.gated_residual(zeros({1, 7, width}, dtype), up, &inject, 4))
             throw std::runtime_error("MLX fused mHC selected a prefill shape");
     }
 }
@@ -318,6 +366,7 @@ int main(int argc, char** argv) {
         for (const int bits : {2, 3, 4, 5, 6, 8}) for (const int group : {32, 64, 128})
             for (const auto dtype : {float16, bfloat16}) check(bits, group, dtype);
         check_rows();
+        check_float_rows();
         check_gated_residual();
         check_indirect();
         check_staged();

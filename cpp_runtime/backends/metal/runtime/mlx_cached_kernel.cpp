@@ -13,6 +13,30 @@
 #include <sstream>
 
 namespace mfq::metal {
+namespace {
+class RowMajorView final : public mlx::core::Primitive {
+public:
+    RowMajorView(const mlx::core::array& input, mlx::core::Stream stream)
+        : Primitive(stream), copy_(mlx::core::contiguous(input, false, stream).primitive_ptr()) {}
+    const char* name() const override { return "MlxRowMajorView"; }
+    void eval_cpu(const std::vector<mlx::core::array>& inputs, std::vector<mlx::core::array>& outputs) override {
+        if (inputs.front().flags().row_contiguous) outputs.front().copy_shared_buffer(inputs.front());
+        else copy_->eval_cpu(inputs, outputs);
+    }
+    void eval_gpu(const std::vector<mlx::core::array>& inputs, std::vector<mlx::core::array>& outputs) override {
+        if (inputs.front().flags().row_contiguous) outputs.front().copy_shared_buffer(inputs.front());
+        else copy_->eval_gpu(inputs, outputs);
+    }
+private:
+    std::shared_ptr<mlx::core::Primitive> copy_;
+};
+}
+
+mlx::core::array mlx_row_contiguous_view(const mlx::core::array& input, mlx::core::Stream stream) {
+    return mlx::core::array(input.shape(), input.dtype(),
+        std::make_shared<RowMajorView>(input, stream), {input});
+}
+
 #if MLX_VERSION_NUMERIC >= 32001
 namespace {
 using namespace mlx::core;
@@ -187,7 +211,7 @@ mlx::core::fast::CustomKernelFunction cached_metal_kernel(
         if (description->contiguous)
             for (auto& value : checked)
                 if (!value.is_available() || !value.flags().row_contiguous)
-                    value = mlx::core::contiguous(value, false, stream);
+                    value = mlx_row_contiguous_view(value, stream);
         return array::make_arrays(shapes, types,
             std::make_shared<CachedKernel>(stream, std::move(description), grid, group, initial), std::move(checked));
     };

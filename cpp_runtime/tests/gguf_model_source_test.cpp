@@ -2,6 +2,7 @@
 #include "gguf.h"
 #include "nlohmann/json.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -102,6 +103,47 @@ void qwen4_source(const std::filesystem::path& directory) {
     const auto bytes = source.read("model.block.0.position_embedding.ngram.head_vocab_sizes");
     int64_t vocab = 0; std::memcpy(&vocab, bytes.data() + 12, 8);
     require(vocab == 2, "GGUF PLE hash metadata missing");
+
+    auto* predictor_tensors = ggml_init({3 << 20, nullptr, false});
+    auto* predictor = gguf_init_empty();
+    gguf_set_val_str(predictor, "general.architecture", "qwen4exp-mtp");
+    const auto add_predictor = [&](const char* name, ggml_type type, std::vector<int64_t> shape) {
+        std::reverse(shape.begin(), shape.end());
+        auto* tensor = ggml_new_tensor(predictor_tensors, type, static_cast<int>(shape.size()), shape.data());
+        ggml_set_name(tensor, name);
+        std::memset(tensor->data, 0, ggml_nbytes(tensor));
+        if (type == GGML_TYPE_F32)
+            for (int64_t i = 0; i < ggml_nelements(tensor); ++i) static_cast<float*>(tensor->data)[i] = .25f;
+        gguf_add_tensor(predictor, tensor);
+    };
+    add_predictor("mtp.pre_fc_norm_embedding.weight", GGML_TYPE_F32, {256});
+    add_predictor("mtp.pre_fc_norm_hidden.weight", GGML_TYPE_F32, {512});
+    add_predictor("mtp.fc_embedding.weight", GGML_TYPE_BF16, {256, 256});
+    add_predictor("mtp.fc_hidden.weight", GGML_TYPE_BF16, {256, 256});
+    add_predictor("mtp.layers.0.self_attn.q_proj.weight", GGML_TYPE_BF16, {512, 256});
+    add_predictor("mtp.layers.0.mlp.gate.weight", GGML_TYPE_BF16, {4, 256});
+    add_predictor("mtp.layers.0.mlp.experts.gate_up_proj", GGML_TYPE_Q2_0, {4, 256, 256});
+    add_predictor("mtp.layers.0.mlp.experts.down_proj", GGML_TYPE_Q2_0, {4, 256, 128});
+    const auto predictor_path = directory / "predictor.gguf";
+    require(gguf_write_to_file(predictor, predictor_path.string().c_str(), false), "GGUF predictor write failed");
+    const mfq::GgufModelSource with_predictor(main_path, {table_path, predictor_path});
+    const auto predictor_config = nlohmann::json::parse(with_predictor.model_config_json());
+    require(predictor_config["mtp_num_hidden_layers"] == 1, "GGUF companion predictor was not declared");
+    require(with_predictor.find_tensor("predictor.block.0.mlp.experts.gate_up.weight") &&
+        *with_predictor.find_tensor("predictor.block.0.mlp.experts.gate_up.weight")->shape ==
+            std::vector<int64_t>({4, 256, 256}), "GGUF fused predictor experts were not normalized");
+    const auto predictor_norm = with_predictor.read("predictor.embedding_norm.weight");
+    float original_norm = 0;
+    std::memcpy(&original_norm, predictor_norm.data() + 12, 4);
+    require(original_norm == .25f, "raw MTP companion norm was converted as a folded main-model norm");
+    require(with_predictor.read(packed_down->name) == packed_bytes, "MTP companion changed backbone weights");
+    add_predictor("mtp.unsupported.weight", GGML_TYPE_F32, {1});
+    require(gguf_write_to_file(predictor, predictor_path.string().c_str(), false), "GGUF invalid predictor write failed");
+    bool unsupported_predictor = false;
+    try { mfq::GgufModelSource invalid(main_path, {table_path, predictor_path}); }
+    catch (const std::runtime_error&) { unsupported_predictor = true; }
+    require(unsupported_predictor, "GGUF predictor silently ignored unsupported tensors");
+    gguf_free(predictor); ggml_free(predictor_tensors);
 }
 }
 

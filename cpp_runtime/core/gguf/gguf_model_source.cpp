@@ -223,6 +223,34 @@ json model_config(const json& meta, const json& shapes, const std::string& arch)
             config["hidden_act"] = "silu";
             config["output_gate_type"] = "sigmoid";
             config["norm_topk_prob"] = true;
+            const auto predictor = shapes.find("predictor.embedding_norm.weight");
+            bool has_predictor = false;
+            for (auto item = shapes.begin(); item != shapes.end(); ++item)
+                has_predictor = has_predictor || item.key().rfind("predictor.", 0) == 0;
+            if (has_predictor) {
+                const auto matches = [&](const std::string& name, const std::vector<int64_t>& shape) {
+                    return shapes.contains(name) && shapes.at(name) == shape;
+                };
+                if (predictor == shapes.end() || !matches("predictor.embedding_norm.weight", {hidden}) ||
+                    !matches("predictor.hidden_norm.weight", {hidden * config.at("hc_count").get<int64_t>()}) ||
+                    !matches("predictor.fusion.embedding.weight", {hidden, hidden}) ||
+                    !matches("predictor.fusion.hidden.weight", {hidden, hidden}))
+                    throw std::runtime_error("GGUF predictor input geometry differs from the backbone");
+                int64_t layers = 0;
+                while (shapes.contains("predictor.block." + std::to_string(layers) + ".attention.query.weight")) {
+                    const auto root = "predictor.block." + std::to_string(layers) + ".mlp.";
+                    const auto experts = config.at("num_experts").get<int64_t>();
+                    const auto width = config.at("moe_intermediate_size").get<int64_t>();
+                    if (!matches(root + "router.weight", {experts, hidden}) ||
+                        !matches(root + "experts.gate_up.weight", {experts, 2 * width, hidden}) ||
+                        !matches(root + "experts.down.weight", {experts, hidden, width}))
+                        throw std::runtime_error("GGUF predictor expert geometry differs from the backbone");
+                    ++layers;
+                }
+                if (!layers) throw std::runtime_error("GGUF predictor has no attention layers");
+                config["mtp_num_hidden_layers"] = layers;
+                config["mtp_use_dedicated_embeddings"] = false;
+            }
         }
     }
     return config;
@@ -316,6 +344,23 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             asset.resize(gguf_get_meta_size(tokenizer.get()));
             gguf_get_meta_data(tokenizer.get(), asset.data());
         }
+        std::unordered_map<std::string, std::string> predictor_names;
+        const auto architecture_key = gguf_find_key(ctx.get(), "general.architecture");
+        const bool raw_predictor = shard >= model_shards && architecture_key >= 0 &&
+            scalar(ctx.get(), architecture_key) == "qwen4exp-mtp";
+        if (raw_predictor) {
+            if (impl_->arch != "qwen4exp")
+                throw std::runtime_error("Qwen4 MTP companion requires a Qwen4 backbone");
+            std::vector<std::string> names;
+            for (int64_t i = 0; i < gguf_get_n_tensors(ctx.get()); ++i)
+                names.emplace_back(gguf_get_tensor_name(ctx.get(), i));
+            const auto aliases = make_legacy_tensor_aliases("qwen4_exp_text",
+                json{{"model_type", "qwen4_exp_text"}, {"num_hidden_layers", meta.at("qwen4exp.block_count")}}.dump(), names);
+            for (const auto& [canonical, stored] : aliases.canonical_to_stored)
+                if (canonical.rfind("predictor.", 0) == 0) predictor_names.emplace(stored, canonical);
+            if (predictor_names.size() != names.size())
+                throw std::runtime_error("GGUF MTP companion contains unsupported predictor tensors");
+        }
         for (int64_t i = 0; i < gguf_get_n_tensors(ctx.get()); ++i) {
             const auto* original = gguf_get_tensor_name(ctx.get(), i);
             const auto* tensor = ggml_get_tensor(tensors.get(), original);
@@ -323,7 +368,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             const auto type = gguf_get_tensor_type(ctx.get(), i);
             std::vector<int64_t> shape;
             for (int d = ggml_n_dims(tensor) - 1; d >= 0; --d) shape.push_back(tensor->ne[d]);
-            auto name = canonical_name(original);
+            auto name = raw_predictor ? predictor_names.at(original) : canonical_name(original);
             if (impl_->arch == "qwen4exp") {
                 if (name == "per_layer_token_embd.weight") {
                     const auto layers = meta.at("qwen4exp.ple.layers").get<std::vector<int64_t>>();
@@ -356,7 +401,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             std::transform(dtype.begin(), dtype.end(), dtype.begin(), [](unsigned char c) { return std::toupper(c); });
             if (!ggml_is_quantized(type)) record.prefix = dense_prefix(shape);
             record.tensor = {name, dtype, dtype, shape, size + record.prefix.size()};
-            const bool norm_delta = impl_->arch == "qwen4exp" && name.find("norm.weight") != std::string::npos &&
+            const bool norm_delta = impl_->arch == "qwen4exp" && !raw_predictor && name.find("norm.weight") != std::string::npos &&
                 name.find(".linear_attention.norm.weight") == std::string::npos;
             const bool decay_log = impl_->arch == "qwen4exp" && name.find(".linear_attention.a") != std::string::npos &&
                 name.size() >= 2 && name.substr(name.size() - 2) == ".a";

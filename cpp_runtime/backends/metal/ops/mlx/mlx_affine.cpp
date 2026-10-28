@@ -3,6 +3,7 @@
 #include "mlx_moe_ops.h"
 #include "mfq_container.h"
 #include "mlx_weight_residency.h"
+#include "../gguf/native/mlx_native_gguf.h"
 #include "tyloinfer/mlx_affine.h"
 
 #include <mlx/allocator.h>
@@ -22,6 +23,15 @@ void check_input(const array& input, int width) {
     if (input.ndim() < 1 || input.shape(-1) != width ||
         (input.dtype() != float16 && input.dtype() != bfloat16 && input.dtype() != float32))
         throw std::invalid_argument("MLX affine projection input mismatch");
+}
+mfq::MlxAffineLayout read_layout(const MfqContainer& model, const std::string& name) {
+    auto prefix = model.read_range(name, 0, 8);
+    const auto size = mfq::MlxAffineLayout::prefix_size(reinterpret_cast<const std::byte*>(prefix.data()), prefix.size());
+    prefix = model.read_range(name, 0, size);
+    const auto layout = mfq::MlxAffineLayout::parse(reinterpret_cast<const std::byte*>(prefix.data()), prefix.size());
+    if (layout.total_bytes() != model.record(name).nbytes)
+        throw std::invalid_argument("MLX affine tensor payload length mismatch");
+    return layout;
 }
 }
 
@@ -49,12 +59,7 @@ MlxAffineWeight MlxAffineWeight::from_arrays(array values, array scales, array b
 }
 MlxAffineWeight MlxAffineWeight::load(const MfqContainer& model, const std::string& name) {
     if (model.record(name).dtype != "MLX-AFFINE") throw std::invalid_argument("tensor is not MLX affine");
-    auto prefix = model.read_range(name, 0, 8);
-    const auto size = mfq::MlxAffineLayout::prefix_size(reinterpret_cast<const std::byte*>(prefix.data()), prefix.size());
-    prefix = model.read_range(name, 0, size);
-    const auto layout = mfq::MlxAffineLayout::parse(reinterpret_cast<const std::byte*>(prefix.data()), prefix.size());
-    if (layout.total_bytes() != model.record(name).nbytes)
-        throw std::invalid_argument("MLX affine tensor payload length mismatch");
+    const auto layout = read_layout(model, name);
     Shape shape;
     for (const auto dimension : layout.shape) {
         if (dimension > INT_MAX) throw std::invalid_argument("MLX affine tensor dimension exceeds runtime limits");
@@ -74,6 +79,15 @@ MlxAffineWeight MlxAffineWeight::load(const MfqContainer& model, const std::stri
     model.record_prepared(name);
     return result;
 }
+bool MlxAffineWeight::supports_native(const MfqContainer& model, const std::string& name) {
+    if (model.record(name).dtype != "MLX-AFFINE") return false;
+    const auto layout = read_layout(model, name);
+    if (layout.shape.size() != 2 && layout.shape.size() != 3) return false;
+    const auto rows = layout.shape[layout.shape.size() - 2], width = layout.shape.back();
+    return layout.scale_dtype == "BF16" && rows <= INT_MAX && width <= INT_MAX &&
+        (layout.shape.size() != 3 || rows % 64 == 0) &&
+        mlx_native_affine_supported(layout.bits, layout.group_size, int(rows), int(width));
+}
 std::optional<MlxAffineWeight> MlxAffineWeight::join_rows(const MlxAffineWeight& first, const MlxAffineWeight& second) {
     if (first.bits_ != second.bits_ || first.group_size_ != second.group_size_ || first.width_ != second.width_ ||
         first.scales_.dtype() != second.scales_.dtype() || first.values_.ndim() != second.values_.ndim() ||
@@ -82,9 +96,27 @@ std::optional<MlxAffineWeight> MlxAffineWeight::join_rows(const MlxAffineWeight&
         concatenate({first.scales_, second.scales_}, -2), concatenate({first.biases_, second.biases_}, -2),
         first.bits_, first.group_size_);
 }
+void MlxAffineWeight::prepare_native() {
+    if (native_ || scales_.dtype() != bfloat16 ||
+        (values_.ndim() == 3 && output_size() % 64) ||
+        !mlx_native_affine_supported(bits_, group_size_, output_size(), width_)) return;
+    auto weight = mlx_native_affine_pack(values_, scales_, biases_, bits_, group_size_);
+    eval(std::vector<array>(weight.planes.begin(), weight.planes.end()));
+    for (const auto& plane : weight.planes) MlxWeightResidency::track(plane);
+    native_ = std::make_shared<MlxNativeGgufWeight>(std::move(weight));
+}
+
+std::size_t MlxAffineWeight::packed_nbytes() const noexcept {
+    std::size_t bytes = values_.nbytes() + scales_.nbytes() + biases_.nbytes();
+    if (native_) for (const auto& plane : native_->planes) bytes += plane.nbytes();
+    return bytes;
+}
+
 array MlxAffineWeight::matmul(const array& input) const {
     check_input(input, width_);
     if (values_.ndim() != 2) throw std::invalid_argument("MLX expert matrix requires routed projection");
+    if (native_ && input.ndim() >= 2 && input.size() > std::size_t(width_))
+        return mlx_native_gguf_project(std::span(native_.get(), 1), input)[0];
     auto result = quantized_matmul(astype(input, scales_.dtype()), values_, scales_, biases_,
         true, group_size_, bits_, "affine");
     return result.dtype() == input.dtype() ? result : astype(result, input.dtype());

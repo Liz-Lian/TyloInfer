@@ -575,6 +575,28 @@ int main() {
             catch (const std::invalid_argument&) { rejected_shape = true; }
             if (!rejected_empty || !rejected_shape || !history.empty())
                 throw std::runtime_error("MTP history invalid batch accepted");
+            const std::array<std::int32_t, 1> one{20};
+            const std::array<std::int32_t, 2> two{21, 22};
+            history.append(mlx::core::astype(mlx::core::array({1.5f}, {1, 1, 1}), mlx::core::bfloat16), one);
+            history.append(mlx::core::astype(mlx::core::array({2.25f, 3.75f}, {1, 2, 1}), mlx::core::float16), two);
+            history.append(mlx::core::array({5.125f}, {1, 1, 1}), one);
+            bool rejected_width = false, rejected_dtype = false;
+            try { history.append(mlx::core::zeros({1, 1, 2}), one); }
+            catch (const std::invalid_argument&) { rejected_width = true; }
+            try { history.append(mlx::core::zeros({1, 1, 1}, mlx::core::int32), one); }
+            catch (const std::invalid_argument&) { rejected_dtype = true; }
+            if (!rejected_width || !rejected_dtype || history.size() != 4)
+                throw std::runtime_error("MTP history invalid mixed batch mutated the buffer");
+            auto mixed = history.drain();
+            mlx::core::eval(mixed.hidden, mixed.token_ids);
+            if (mixed.hidden.dtype() != mlx::core::float32 || mixed.hidden.shape() != mlx::core::Shape{1, 4, 1})
+                throw std::runtime_error("MTP history did not promote committed floating states");
+            const std::array<float, 4> expected{1.5f, 2.25f, 3.75f, 5.125f};
+            const std::array<std::int32_t, 4> expected_ids{20, 21, 22, 20};
+            for (int row = 0; row < 4; ++row)
+                if (mixed.hidden.data<float>()[row] != expected[row] ||
+                    mixed.token_ids.data<std::int32_t>()[row] != expected_ids[row])
+                    throw std::runtime_error("MTP history mixed-precision pairing changed values");
         }
         {
             int target_position = 0;

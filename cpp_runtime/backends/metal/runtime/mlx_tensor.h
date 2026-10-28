@@ -180,7 +180,8 @@ class MlxEmbedding {
 public:
     static MlxEmbedding load(
         const MfqContainer& model,
-        const std::string& name);
+        const std::string& name,
+        std::optional<mlx::core::Dtype> activation_dtype = std::nullopt);
 
     explicit MlxEmbedding(MlxMxWeight weight);
     explicit MlxEmbedding(MlxTqWeight weight);
@@ -212,6 +213,7 @@ public:
         return hidden_size_;
     }
     mlx::core::Dtype preferred_activation_dtype() const noexcept;
+    void set_activation_dtype(mlx::core::Dtype dtype);
 
     void materialize_fp16();
 
@@ -231,6 +233,7 @@ private:
         mlx::core::array> weight_;
     int vocabulary_size_ = 0;
     int hidden_size_ = 0;
+    std::optional<mlx::core::Dtype> activation_dtype_;
 };
 
 } // namespace mfq::metal

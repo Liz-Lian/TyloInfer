@@ -389,6 +389,12 @@ target_include_directories(tyloinfer-metal-gguf-test PRIVATE "${PROJECT_SOURCE_D
 target_compile_features(tyloinfer-metal-gguf-test PRIVATE cxx_std_20)
 set_target_properties(tyloinfer-metal-gguf-test PROPERTIES BUILD_RPATH "${TYLOINFER_MLX_ROOT}/lib")
 add_test(NAME tyloinfer-metal-gguf-test COMMAND tyloinfer-metal-gguf-test)
+add_test(NAME tyloinfer-metal-gguf-native-stack-test COMMAND tyloinfer-metal-gguf-test native-stack)
+add_test(NAME tyloinfer-metal-gguf-native-hyper-test COMMAND tyloinfer-metal-gguf-test native-hyper)
+add_test(NAME tyloinfer-metal-gguf-native-stack-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test> native-stack)
+add_test(NAME tyloinfer-metal-gguf-native-hyper-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test> native-hyper)
 add_test(NAME tyloinfer-metal-gguf-no-nax-test
     COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test>)
 add_executable(tyloinfer-metal-gguf-cache-test tests/mlx_gguf_expert_cache_test.cpp)
@@ -454,7 +460,11 @@ function(tyloinfer_add_metal_format target)
     target_sources(mfq-metal-runtime PRIVATE $<TARGET_OBJECTS:${target}>)
 endfunction()
 
+add_subdirectory(ops/gguf/native)
+target_sources(mfq-metal-runtime PRIVATE $<TARGET_OBJECTS:tyloinfer-metal-gguf-plans>)
+
 tyloinfer_add_metal_format(tyloinfer-metal-gguf-ops
+    ops/gguf/native/mlx_native_gguf.cpp
     ops/gguf/mlx_gguf.cpp
     ops/gguf/mlx_gguf_prefill.cpp
     ops/gguf/mlx_gguf_routes.cpp
@@ -463,6 +473,13 @@ tyloinfer_add_metal_format(tyloinfer-metal-gguf-ops
     ops/gguf/mlx_gguf_mhc.cpp
     storage/gguf/mlx_gguf_rows.cpp
     storage/gguf/mlx_gguf_expert_cache.cpp)
+target_include_directories(tyloinfer-metal-gguf-ops PRIVATE
+    "${TYLOINFER_METAL_ROOT}/ops/gguf/native"
+    "${TYLOINFER_METAL_ROOT}/ops/gguf/native/metal"
+    "${CMAKE_CURRENT_BINARY_DIR}/ops/gguf/native"
+    "${PROJECT_SOURCE_DIR}/third_party/splash/runtime")
+target_compile_options(tyloinfer-metal-gguf-ops PRIVATE
+    -include "${CMAKE_CURRENT_BINARY_DIR}/ops/gguf/native/native_limits.h")
 tyloinfer_add_metal_format(tyloinfer-metal-mlx-ops
     ops/mlx/mlx_affine.cpp
     ops/mlx/mlx_affine_staged.cpp
@@ -470,6 +487,7 @@ tyloinfer_add_metal_format(tyloinfer-metal-mlx-ops
     ops/mlx/mlx_affine_indirect.cpp
     storage/mlx/mlx_affine_rows.cpp
     storage/mlx/mlx_affine_expert_cache.cpp)
+target_link_libraries(tyloinfer-metal-gguf-ops PRIVATE mfq-ggml)
 
 add_executable(mfq-metal-tq-test tests/mlx_tq_test.cpp)
 target_link_libraries(mfq-metal-tq-test PRIVATE mfq-metal-runtime)
@@ -566,6 +584,7 @@ option(TYLOINFER_BUILD_PRECOMPILED_METAL "Build bundled MFQ Metal libraries" OFF
 add_executable(mfq-metal-source-export
     apps/mfq_metal_source_export.cpp runtime/mlx_builtin_kernels.cpp)
 target_include_directories(mfq-metal-source-export PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/ops/gguf/native"
     "${TYLOINFER_METAL_ROOT}/runtime" "${TYLOINFER_METAL_ROOT}/ops/common" "${TYLOINFER_METAL_ROOT}/ops/tq" "${TYLOINFER_METAL_ROOT}/ops/mfq" "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_features(mfq-metal-source-export PRIVATE cxx_std_20)
 if(TYLOINFER_BUILD_PRECOMPILED_METAL)

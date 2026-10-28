@@ -38,8 +38,10 @@ MlxMappedGgufRows::MlxMappedGgufRows(std::span<const std::uint8_t> bytes,
         throw std::invalid_argument("GGUF mapped row geometry differs");
     if (auto* preparation = MlxKernelPreparation::current()) {
         preparation->collect([&] {
-            const std::vector<std::uint8_t> packed(row_bytes_, 0);
-            preparation->add(MlxGgufWeight::from_bytes(dtype_, packed, {1, width_}).dequantize());
+            for (const int count : {1, 64}) {
+                const std::vector<std::uint8_t> packed(row_bytes_ * count, 0);
+                preparation->add(MlxGgufWeight::from_bytes(dtype_, packed, {count, width_}).dequantize());
+            }
         });
     }
 }

@@ -2,6 +2,7 @@
 #include "mfq_mlx_utils_embedded.h"
 #include "mlx_gguf_prefill.h"
 #include "mlx_gguf_staged.h"
+#include "native/mlx_native_gguf.h"
 
 #include "mfq_container.h"
 #include "gguf_embedded.h"
@@ -568,7 +569,7 @@ MlxGgufWeight::MlxGgufWeight(array bytes, Shape shape, int format, int row_bytes
     : bytes_(std::move(bytes)), shape_(std::move(shape)), format_(format), row_bytes_(row_bytes), indirect_(indirect) {}
 
 void MlxGgufWeight::prepare_grouped() {
-    if (!use_nax()) return;
+    if (native_ || !use_nax()) return;
     MlxGgufStagedPrefill::prepare(*this);
     if (planes_) {
         MlxWeightResidency::track(bytes_);
@@ -631,7 +632,7 @@ MlxGgufWeight MlxGgufWeight::from_experts(std::string_view dtype, Shape shape,
         [&](const Format& f) { return dtype == f.name; });
     return MlxGgufWeight(std::move(table), std::move(shape), format->id, checked_int(stride), true);
 }
-MlxGgufWeight MlxGgufWeight::load(const MfqContainer& model, const std::string& name) {
+MlxGgufWeight MlxGgufWeight::load(const MfqContainer& model, const std::string& name, bool native_projection) {
     Shape shape;
     for (const auto d : model.tensor_shape(name)) {
         if (d <= 0 || d > INT_MAX) throw std::invalid_argument("invalid GGUF tensor dimension");
@@ -640,7 +641,14 @@ MlxGgufWeight MlxGgufWeight::load(const MfqContainer& model, const std::string& 
     const auto& record = model.record(name);
     auto result = allocate_packed(record.dtype, std::move(shape), record.nbytes);
     model.read_range_into(name, 0, {reinterpret_cast<std::byte*>(result.bytes_.data<std::uint8_t>()), record.nbytes});
-    if (use_nax() && result.expert_count() <= 512)
+    if (native_projection && result.shape_.size() == 2 &&
+        mlx_native_gguf_supported(result.format_, result.output_size(), result.input_size())) {
+        auto prepared = mlx_native_gguf_pack(result.bytes_, result.format_, result.output_size(), result.input_size(), result.row_bytes_);
+        eval(std::vector<array>(prepared.planes.begin(), prepared.planes.end()));
+        for (const auto& plane : prepared.planes) MlxWeightResidency::track(plane);
+        result.native_ = std::make_shared<MlxNativeGgufWeight>(std::move(prepared));
+    }
+    if (!result.native_ && use_nax() && result.expert_count() <= 512)
         MlxGgufStagedPrefill::prepare(result);
     MlxWeightResidency::track(result.bytes_);
     if (result.planes_) for (const auto& plane : *result.planes_) MlxWeightResidency::track(plane);
@@ -662,12 +670,19 @@ MlxGgufWeight MlxGgufWeight::from_address_table(std::string_view dtype, Shape sh
         [&](const Format& f) { return dtype == f.name; });
     return MlxGgufWeight(std::move(handle), std::move(shape), format->id, checked_int(stride), true);
 }
+std::size_t MlxGgufWeight::packed_nbytes() const noexcept {
+    std::size_t bytes = bytes_.size() + (planes_ ? (*planes_)[0].nbytes() + (*planes_)[1].nbytes() : 0);
+    if (native_) for (const auto& plane : native_->planes) bytes += plane.nbytes();
+    return bytes;
+}
+
 array MlxGgufWeight::matmul(const array& input) const {
     check_input(input, input_size());
     if (shape_.size() != 2) throw std::invalid_argument("GGUF expert weights require routed_matmul");
     const auto m = checked_int(input.size() / input_size());
     auto shape = input.shape(); shape.back() = output_size();
     if (!m) return zeros(shape, input.dtype());
+    if (native_) return mlx_native_gguf_project(std::span(native_.get(), 1), input)[0];
     const auto x = contiguous(input);
     if (planes_) {
         if (m >= 7 && m <= 8 && use_nax() && MlxGgufStagedPrefill::prefers_small_matrix(*this))
@@ -719,6 +734,7 @@ array MlxGgufWeight::swiglu(const MlxGgufWeight& up, const array& input) const {
     const auto rows = checked_int(input.size() / input_size());
     auto shape = input.shape(); shape.back() = output_size();
     if (!rows) return zeros(shape, input.dtype());
+    if (native_ && up.native_) return mlx_native_gguf_swiglu(*native_, *up.native_, input);
     if (planes_ && up.planes_ && rows <= 6) {
         const std::array weights{*this, up};
         auto values = MlxGgufStagedPrefill::project_many(weights, input);

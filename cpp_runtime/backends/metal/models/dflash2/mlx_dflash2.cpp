@@ -162,21 +162,11 @@ struct Loader {
         for (const auto& value : quantized) {
             bytes += value.nbytes(); MlxWeightResidency::track(value); allocations.push_back(value);
         }
-        return MlxLinear(MlxAffineWeight::from_arrays(quantized[0], quantized[1], quantized[2], 4, 64));
+        MlxLinear result(MlxAffineWeight::from_arrays(quantized[0], quantized[1], quantized[2], 4, 64));
+        bytes += result.affine_weight_ref()->packed_nbytes() - quantized[0].nbytes() - quantized[1].nbytes() - quantized[2].nbytes();
+        return result;
     }
 };
-
-array draft_swiglu(const array& gate, const array& up) {
-    static const auto kernel = cached_metal_kernel("tinfer_dflash2_swiglu",
-        {"gate", "up", "count"}, {"output"}, R"METAL(
-uint index = thread_position_in_grid.x;
-if (index >= count[0]) return;
-float g = float(gate[index]);
-output[index] = bfloat(float(up[index]) * (g / (1.f + fast::exp2(-1.44269504089f * g))));
-)METAL");
-    return kernel({gate, up, array({uint32_t(gate.size())})}, {gate.shape()}, {bfloat16},
-        {int(gate.size()), 1, 1}, {256, 1, 1}, {}, std::nullopt, false, {})[0];
-}
 
 struct Layer {
     array input_norm, attention_base, q_norm, k_norm, post_norm, mlp_base;
@@ -369,8 +359,7 @@ MlxDFlash2Proposal MlxDFlash2::propose(const MlxDFlash2Context& context, int anc
         input = normalized(residual, layer.post_norm, c.epsilon);
         dynamic = layer.dynamic_mlp(input);
         convolved = dynamic_convolution(input, dynamic, layer.mlp_base, residual, c.convolution_group, false);
-        auto gate_up = layer.ffn(convolved);
-        projected = layer.down(draft_swiglu(gate_up[0], gate_up[1]));
+        projected = layer.down(layer.ffn.swiglu(convolved));
         hidden = dynamic_convolution(projected, dynamic, layer.mlp_base, residual, c.convolution_group, true);
         if (trace) trace("layer_" + std::to_string(index), hidden);
     }

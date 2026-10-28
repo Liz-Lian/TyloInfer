@@ -8,6 +8,7 @@ namespace mfq::metal {
 class MlxWeightResidency;
 class MlxAffineIndirectWeight {
 public:
+    static constexpr int kVectorRows = 6;
     static MlxAffineIndirectWeight from_address_tables(mlx::core::Shape shape, int bits, int group_size,
         mlx::core::Dtype scale_dtype, std::array<mlx::core::array, 3> tables,
         std::shared_ptr<MlxWeightResidency> residency);

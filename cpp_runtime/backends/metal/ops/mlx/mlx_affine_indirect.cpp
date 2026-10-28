@@ -36,9 +36,7 @@ const fast::CustomKernelFunction& projection_kernel() {
                 for (uint local = (lane & 7u) * 4u; local < uint(GS); local += 32u) {
                     const uint column = group * GS + local;
                     const float4 activation(source[column], source[column + 1u], source[column + 2u], source[column + 3u]);
-                    const float4 code(tinfer_affine_code<Q>(v, row, column, width),
-                        tinfer_affine_code<Q>(v, row, column + 1u, width), tinfer_affine_code<Q>(v, row, column + 2u, width),
-                        tinfer_affine_code<Q>(v, row, column + 3u, width));
+                    const float4 code = float4(tinfer_affine_codes4<Q>(v, row, column, width));
                     dot_value += dot(activation, code);
                     input_sum += activation.x + activation.y + activation.z + activation.w;
                 }
@@ -79,14 +77,8 @@ const fast::CustomKernelFunction& gate_up_kernel() {
                 for (uint local = (lane & 7u) * 4u; local < uint(GS); local += 32u) {
                     const uint column = group * GS + local;
                     const float4 activation(source[column], source[column + 1u], source[column + 2u], source[column + 3u]);
-                    const float4 gate_code(tinfer_affine_code<Q>(gate_values, row, column, width),
-                        tinfer_affine_code<Q>(gate_values, row, column + 1u, width),
-                        tinfer_affine_code<Q>(gate_values, row, column + 2u, width),
-                        tinfer_affine_code<Q>(gate_values, row, column + 3u, width));
-                    const float4 up_code(tinfer_affine_code<Q>(up_values, row, column, width),
-                        tinfer_affine_code<Q>(up_values, row, column + 1u, width),
-                        tinfer_affine_code<Q>(up_values, row, column + 2u, width),
-                        tinfer_affine_code<Q>(up_values, row, column + 3u, width));
+                    const float4 gate_code = float4(tinfer_affine_codes4<Q>(gate_values, row, column, width));
+                    const float4 up_code = float4(tinfer_affine_codes4<Q>(up_values, row, column, width));
                     gate_dot += dot(activation, gate_code); up_dot += dot(activation, up_code);
                     input_sum += activation.x + activation.y + activation.z + activation.w;
                 }
@@ -242,8 +234,8 @@ array MlxAffineIndirectWeight::routed_matmul(const array& input, const array& id
     if (!ids.size()) return zeros(shape, input.dtype());
     const array params({uint32_t(input_size()), uint32_t(output_size()), uint32_t(expert_count()),
         uint32_t(ids.shape(1)), uint32_t(shared)});
-    if (ids.shape(0) <= 6) return projection_kernel()(
-        {tables_[0], tables_[1], tables_[2], contiguous(input), contiguous(astype(ids, int32)), params},
+    if (ids.shape(0) <= kVectorRows) return projection_kernel()(
+        {tables_[0], tables_[1], tables_[2], input, astype(ids, int32), params},
         {shape}, {input.dtype()}, {((output_size() + 15) / 16) * 128, int(ids.size()), 1}, {128, 1, 1},
         {{"T", input.dtype()}, {"S", dtype_}, {"Q", bits_}, {"GS", group_size_}}, std::nullopt, false, {}).front();
     std::optional<MlxExpertRouteTiles> owned;
@@ -251,7 +243,7 @@ array MlxAffineIndirectWeight::routed_matmul(const array& input, const array& id
     if (auto result = MlxAffineStaged::project_indirect(*this, input, ids, shared, *plan)) return *result;
     const bool nax = input.dtype() != float32 && !mlx_metal_nax_disabled() && mlx_apple_chip_starts_with("Apple M5");
     const int tile_width = nax ? 128 : 32;
-    return prefill_kernel(nax)({tables_[0], tables_[1], tables_[2], contiguous(input), plan->order, plan->bounds, plan->tile_offsets, params},
+    return prefill_kernel(nax)({tables_[0], tables_[1], tables_[2], input, plan->order, plan->bounds, plan->tile_offsets, params},
         {shape}, {input.dtype()}, {((output_size() + tile_width - 1) / tile_width) * 128, plan->tiles, 1}, {128, 1, 1},
         {{"T", input.dtype()}, {"S", dtype_}, {"Q", bits_}, {"GS", group_size_}}, 0.f, false, {}).front();
 }
@@ -264,13 +256,15 @@ array MlxAffineIndirectWeight::routed_swiglu(const MlxAffineIndirectWeight& up, 
         ids.ndim() != 2 || (ids.dtype() != int32 && ids.dtype() != uint32) || ids.shape(1) < 1 ||
         input.size() / input_size() != std::size_t(ids.shape(0)) || ids.size() > INT_MAX)
         throw std::invalid_argument("indirect MLX Gate/Up inputs disagree");
-    if (ids.shape(0) > 6 || bits_ != up.bits_ || group_size_ != up.group_size_ || dtype_ != up.dtype_)
+    std::optional<MlxExpertRouteTiles> owned;
+    if (ids.shape(0) > kVectorRows && !plan) { owned = mlx_expert_route_tiles(ids, expert_count()); plan = &*owned; }
+    if (ids.shape(0) > kVectorRows || bits_ != up.bits_ || group_size_ != up.group_size_ || dtype_ != up.dtype_)
         return moe_swiglu_pair(routed_matmul(input, ids, true, plan), up.routed_matmul(input, ids, true, plan));
     const Shape shape{ids.shape(0), ids.shape(1), output_size()};
     if (!ids.size()) return zeros(shape, input.dtype());
     const array params({uint32_t(input_size()), uint32_t(output_size()), uint32_t(expert_count()), uint32_t(ids.shape(1))});
     return gate_up_kernel()({tables_[0], tables_[1], tables_[2], up.tables_[0], up.tables_[1], up.tables_[2],
-        contiguous(input), contiguous(astype(ids, int32)), params}, {shape}, {input.dtype()},
+        input, astype(ids, int32), params}, {shape}, {input.dtype()},
         {((output_size() + 15) / 16) * 128, int(ids.size()), 1}, {128, 1, 1},
         {{"T", input.dtype()}, {"S", dtype_}, {"Q", bits_}, {"GS", group_size_}}, std::nullopt, false, {}).front();
 }

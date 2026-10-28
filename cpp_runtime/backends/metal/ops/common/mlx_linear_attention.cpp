@@ -1,5 +1,6 @@
 #include "mlx_linear_attention.h"
 #include "mlx_kernel_prepare.h"
+#include "../../platform/metal_device_info.h"
 
 #include <algorithm>
 #include <array>
@@ -1520,23 +1521,27 @@ MlxGatedDeltaNetResult gated_delta_net_impl(
             ? state_values
             : mlx::core::contiguous(mlx::core::transpose(
                   state_values, {0, 1, 3, 2}));
-        const int value_blocks = dimension / 16;
+        const int cores = metal_apple_gpu_core_count();
+        const int value_rows = cores > 0 &&
+            std::int64_t(batch) * value_heads * (dimension / 32) >= std::int64_t(cores) * 2 ? 32 : 16;
+        const int threads = value_rows * 8, value_blocks = dimension / value_rows;
         auto outputs = gdn_blocked_kernel()(
             {q, k, v, g, beta_values, blocked_state},
             {v.shape(), state_shape},
             {mlx::core::float32, mlx::core::float32},
             {checked_int(
-                 static_cast<std::int64_t>(value_blocks) * 128,
+                 static_cast<std::int64_t>(value_blocks) * threads,
                  "blocked GDN grid"),
              value_heads,
              batch},
-            {128, 1, 1},
+            {threads, 1, 1},
             {
                 {"B", batch},
                 {"HQ", query_heads},
                 {"HV", value_heads},
                 {"D", dimension},
                 {"TILED_HEADS", static_cast<int>(tiled_heads)},
+                {"VALUE_ROWS", value_rows},
             },
             std::nullopt,
             false,

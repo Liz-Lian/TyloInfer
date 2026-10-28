@@ -1,0 +1,15 @@
+#pragma once
+
+namespace mfq::metal::native_gguf {
+inline constexpr char linear_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_LINEAR_SOURCE@)TIGGUF";
+inline constexpr char register_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_REGISTER_SOURCE@)TIGGUF";
+inline constexpr char float_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_FLOAT_SOURCE@)TIGGUF";
+inline constexpr char repack_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_REPACK_SOURCE@)TIGGUF";
+inline constexpr char moe_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_MOE_SOURCE@)TIGGUF";
+inline constexpr char moe_projection_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_MOE_PROJECTION_SOURCE@)TIGGUF"
+    R"TIGGUF(@TYLOINFER_NATIVE_AFFINE_VECTOR_SOURCE@)TIGGUF"
+    R"TIGGUF(@TYLOINFER_NATIVE_GGUF_VECTOR_SOURCE@)TIGGUF"
+    R"TIGGUF(@TYLOINFER_NATIVE_GGUF_SINGLE_MOE_SOURCE@)TIGGUF";
+inline constexpr char hyper_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_HYPER_SOURCE@)TIGGUF"
+    R"TIGGUF(@TYLOINFER_NATIVE_HYPER_BFLOAT_SOURCE@)TIGGUF";
+}

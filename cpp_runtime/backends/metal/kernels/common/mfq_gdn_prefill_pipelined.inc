@@ -75,7 +75,7 @@ std::string gdn_pipeline_step(int token) {
 std::string gdn_pipeline_source() {
     std::string code = R"METAL(
     const int TOKENS = v_shape[2];
-    constexpr int TB = 12, DB = 16, NT = 128;
+    constexpr int TB = 12, DB = VALUE_ROWS, NT = DB * 8;
     const int tid = thread_index_in_threadgroup;
     const int hv = threadgroup_position_in_grid.y;
     const int b = threadgroup_position_in_grid.z;

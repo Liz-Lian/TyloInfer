@@ -586,11 +586,9 @@ void test_gdn_decode_step(
     }
 }
 
-void test_blocked_gdn_prefill(bool tiled_heads, int tokens) {
+void test_blocked_gdn_prefill(bool tiled_heads, int tokens, int query_heads = 2, int value_heads = 4) {
     using namespace mlx::core;
     constexpr int batch = 1;
-    constexpr int query_heads = 2;
-    constexpr int value_heads = 4;
     constexpr int dimension = 128;
     const std::size_t query_size =
         batch * query_heads * tokens * dimension;
@@ -930,6 +928,7 @@ int main(int argc, char** argv) {
             test_blocked_gdn_prefill(false, tokens);
             test_blocked_gdn_prefill(true, tokens);
         }
+        for (const bool tiled : {false, true}) test_blocked_gdn_prefill(tiled, 65, 16, 48);
         test_gdn_state_only();
 
         const array conv_input(

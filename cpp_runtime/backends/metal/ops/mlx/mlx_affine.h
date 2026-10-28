@@ -3,11 +3,13 @@
 #include <mlx/mlx.h>
 #include <array>
 #include <optional>
+#include <memory>
 #include <string>
 #include <utility>
 
 namespace mfq::metal {
 class MfqContainer;
+struct MlxNativeGgufWeight;
 
 class MlxAffineRoutePlan {
 public:
@@ -26,6 +28,9 @@ private:
 
 class MlxAffineWeight {
 public:
+    void prepare_native();
+    const MlxNativeGgufWeight* native_weight_ref() const noexcept { return native_.get(); }
+    static bool supports_native(const MfqContainer& model, const std::string& name);
     static MlxAffineWeight load(const MfqContainer& model, const std::string& name);
     static MlxAffineWeight from_arrays(mlx::core::array values, mlx::core::array scales,
         mlx::core::array biases, int bits, int group_size);
@@ -45,12 +50,13 @@ public:
     int output_size() const noexcept { return values_.shape(-2); }
     int expert_count() const noexcept { return values_.ndim() == 3 ? values_.shape(0) : 1; }
     mlx::core::Dtype activation_dtype() const noexcept { return scales_.dtype(); }
-    std::size_t packed_nbytes() const noexcept { return values_.nbytes() + scales_.nbytes() + biases_.nbytes(); }
+    std::size_t packed_nbytes() const noexcept;
 private:
     MlxAffineWeight(mlx::core::array values, mlx::core::array scales, mlx::core::array biases,
         int bits, int group_size, int width);
     mlx::core::array values_, scales_, biases_;
     int bits_, group_size_, width_;
+    std::shared_ptr<const MlxNativeGgufWeight> native_;
     friend class MlxAffineStaged;
 };
 

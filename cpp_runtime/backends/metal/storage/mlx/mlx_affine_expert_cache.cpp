@@ -18,7 +18,7 @@ using Layer = std::array<mfq::MlxAffineLayout, 3>;
 array ffn(const std::array<MlxAffineIndirectWeight, 3>& weights, const array& input,
     const array& ids, const array& scores, bool partial = false) {
     std::optional<MlxExpertRouteTiles> plan;
-    if (ids.shape(0) > 6) plan = mlx_expert_route_tiles(ids, weights[0].expert_count());
+    if (ids.shape(0) > MlxAffineIndirectWeight::kVectorRows) plan = mlx_expert_route_tiles(ids, weights[0].expert_count());
     const auto* routes = plan ? &*plan : nullptr;
     auto intermediate = weights[0].routed_swiglu(weights[1], input, ids, routes);
     auto pairs = weights[2].routed_matmul(intermediate, ids, false, routes);
@@ -113,7 +113,7 @@ array MlxAffineExpertCache::apply_ffn(std::size_t index, const array& input, con
     std::optional<MlxExpertRouteTiles> plan;
     auto result = impl_->cache->apply(index, ids, 6, [&] {
         const auto& layer = impl_->layer_weights(index);
-        if (ids.shape(0) > 6) plan = mlx_expert_route_tiles(ids, layer[0].expert_count());
+        if (ids.shape(0) > MlxAffineIndirectWeight::kVectorRows && !plan) plan = mlx_expert_route_tiles(ids, layer[0].expert_count());
         return layer[0].routed_swiglu(layer[1], input, ids, plan ? &*plan : nullptr);
     }, [&](const array& hidden, bool partial) {
         auto pairs = impl_->layer_weights(index)[2].routed_matmul(hidden, ids, false, plan ? &*plan : nullptr);

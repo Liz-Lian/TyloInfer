@@ -13,6 +13,7 @@ class MfqContainer;
 class MlxWeightResidency;
 class MlxGgufPrefillPlan;
 class MlxGgufStagedPrefill;
+struct MlxNativeGgufWeight;
 
 bool is_gguf_dtype(std::string_view dtype) noexcept;
 std::size_t gguf_packed_row_bytes(std::string_view dtype, int width);
@@ -21,7 +22,8 @@ MlxGgufRoutePlan gguf_route_plan(const mlx::core::array& ids, int experts);
 
 class MlxGgufWeight {
 public:
-    static MlxGgufWeight load(const MfqContainer& model, const std::string& name);
+    static MlxGgufWeight load(const MfqContainer& model, const std::string& name, bool native_projection = false);
+    const MlxNativeGgufWeight* native_weight_ref() const noexcept { return native_.get(); }
     static MlxGgufWeight from_bytes(std::string_view dtype,
         std::span<const std::uint8_t> bytes, mlx::core::Shape shape);
     static MlxGgufWeight from_experts(std::string_view dtype, mlx::core::Shape shape,
@@ -46,9 +48,7 @@ public:
     int expert_count() const noexcept { return shape_.size() == 3 ? shape_[0] : 1; }
     bool has_staged_planes() const noexcept { return planes_.has_value(); }
     void prepare_grouped();
-    std::size_t packed_nbytes() const noexcept {
-        return bytes_.size() + (planes_ ? (*planes_)[0].nbytes() + (*planes_)[1].nbytes() : 0);
-    }
+    std::size_t packed_nbytes() const noexcept;
 private:
     friend class MlxGgufPrefillPlan;
     friend class MlxGgufStagedPrefill;
@@ -62,5 +62,6 @@ private:
     int row_bytes_;
     bool indirect_;
     std::optional<std::array<mlx::core::array, 2>> planes_;
+    std::shared_ptr<const MlxNativeGgufWeight> native_;
 };
 } // namespace mfq::metal
