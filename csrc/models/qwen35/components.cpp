@@ -15,7 +15,7 @@
 
 namespace mfq::cuda::qwen35 {
 
-RuntimeComponents<Model> load_components(
+Components load_components(
     const Model& model,
     const weight_loader::Loader& weights,
     const Executor& executor,
@@ -26,7 +26,7 @@ RuntimeComponents<Model> load_components(
     bool optional,
     bool mtp_allowed,
     bool preallocate) {
-    RuntimeComponents<Model> result{model.graph, model.plan};
+    Components result{model.graph, model.plan};
     if (!optional) return result;
 
     if (result.plan.vision == CudaVisionAdapter::grid_vit) {
@@ -42,7 +42,6 @@ RuntimeComponents<Model> load_components(
                 weights, *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
-        result.vision_available = true;
     } else if (result.plan.vision != CudaVisionAdapter::none) {
         throw std::runtime_error("CUDA vision adapter is unsupported for Qwen");
     }
@@ -60,7 +59,6 @@ RuntimeComponents<Model> load_components(
                     executor.fork(), copies, weights.placement.device,
                     kv_capacity, trace, trace_scope, preallocate);
             }
-            result.mtp_available = static_cast<bool>(result.mtp);
         } else {
             std::cerr
                 << "qwen_mtp unavailable: CUDA adapter requires dense GPU-resident Qwen blocks\n";

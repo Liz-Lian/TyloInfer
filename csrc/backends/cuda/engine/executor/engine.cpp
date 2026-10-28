@@ -27,6 +27,7 @@
 #include "mfq_cuda_kv_quantization.h"
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <variant>
 #include <set>
 
@@ -35,14 +36,15 @@ using namespace mfq::engine;
 using namespace mfq::cuda::internal;
 
 namespace engine_detail {
-template <typename Model, typename State = Model>
+template <typename Model, typename State = Model,
+          typename Parts = RuntimeComponents<Model>>
 struct CudaEngineState {
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
     CudaRuntimeConfig config;
     std::shared_ptr<const mfq::ModelSource> source;
     std::shared_ptr<Model> model;
-    RuntimeComponents<Model> components;
+    Parts components;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
     Model& language;
@@ -148,7 +150,7 @@ struct CudaEngineState {
     }
 
     CudaEngineState(CudaExecutionContext& borrowed, Model loaded,
-            RuntimeComponents<Model> optional, CudaRuntimeConfig runtime_config,
+            Parts optional, CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
             std::shared_ptr<WeightMemoryLedger> weights,
             std::unique_ptr<State> loaded_state,
@@ -157,7 +159,12 @@ struct CudaEngineState {
           source(std::move(model_source)),
           model(std::make_shared<Model>(std::move(loaded))), components(std::move(optional)),
           owned_state(std::move(loaded_state)), executor(std::move(loaded_executor)),
-          language(components.language(*model)),
+          language([&]() -> Model& {
+              if constexpr (requires { components.language(*model); })
+                  return components.language(*model);
+              else
+                  return *model;
+          }()),
           state([this]() -> State& {
               if constexpr (std::is_same_v<Model, State>)
                   return language;
@@ -397,7 +404,8 @@ struct CudaEngineState {
     }
     using Prepared = PreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
-        if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
+        if constexpr (requires { components.composite; })
+            if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
         if (components.grid_vision)
             return components.grid_vision->prepare(language, execution->projector(),
                 execution->stores.weights.moe, execution->collectives,
@@ -548,19 +556,24 @@ struct CudaEngineState {
             }
             return metrics;
         } else {
-            if (!components.composite) throw std::invalid_argument("model has no duplex component");
-            if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) {
-                components.composite->start(value); duplex_active = true;
-            } else if constexpr (std::is_same_v<T, MfqDuplexStepInput>) {
-                return components.composite->step(value);
-            } else { components.composite->stop(); duplex_active = false; }
-            return std::monostate{};
+            if constexpr (requires { components.composite; }) {
+                if (!components.composite) throw std::invalid_argument("model has no duplex component");
+                if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) {
+                    components.composite->start(value); duplex_active = true;
+                } else if constexpr (std::is_same_v<T, MfqDuplexStepInput>) {
+                    return components.composite->step(value);
+                } else { components.composite->stop(); duplex_active = false; }
+                return std::monostate{};
+            } else {
+                throw std::invalid_argument("model has no duplex component");
+            }
         }
     }
 
 };
 using State = std::variant<
-    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>>,
+    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State,
+                                   mfq::cuda::qwen35::Components>>,
     std::unique_ptr<CudaEngineState<MiniCPMO45CausalLm>>,
     std::unique_ptr<CudaEngineState<minicpmo45::Model, minicpmo45::State>>,
     std::unique_ptr<CudaEngineState<Gemma4CausalLm>>,
@@ -577,18 +590,19 @@ struct CudaBackend {
     std::shared_ptr<TqExec> tq;
     CudaStores stores;
     std::unique_ptr<CudaExecutionContext> execution;
-    State state;
+    std::optional<State> state;
     ~CudaBackend() {
         try { unload(); }
         catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
     }
     template <class F> decltype(auto) visit(F&& run) {
-        return std::visit([&](auto& state) -> decltype(auto) {
-            if (!state) throw std::runtime_error("CUDA engine is unloaded");
-            CudaScope guard(*state->execution);
+        if (!state) throw std::runtime_error("CUDA engine is unloaded");
+        return std::visit([&](auto& value) -> decltype(auto) {
+            if (!value) throw std::runtime_error("CUDA engine is unloaded");
+            CudaScope guard(*value->execution);
             mfq_tensor_backend::NoGradGuard no_grad;
-            return run(*state);
-        }, state);
+            return run(*value);
+        }, *state);
     }
     std::pair<EngineInfo, std::unique_ptr<TextProcessor>> load() {
         const bool dump_env = mfq::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
@@ -620,19 +634,20 @@ struct CudaBackend {
             [&](auto& model, auto& model_state, auto& executor, auto& components,
                 auto, auto) -> State {
                 using Model = std::decay_t<decltype(model)>;
+                using Parts = std::remove_cvref_t<decltype(components)>;
                 if constexpr (!std::is_same_v<Model, Qwen4CausalLm>)
                     if (execution->stores.qsa_kv_store) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 std::shared_ptr<const mfq::ModelSource> source;
                 source = model.source;
                 using ModelState = std::remove_cvref_t<decltype(model_state)>;
                 if constexpr (!std::is_same_v<Model, ModelState>)
-                    return std::make_unique<CudaEngineState<Model, ModelState>>(
+                    return std::make_unique<CudaEngineState<Model, ModelState, Parts>>(
                         *execution, std::move(model), std::move(components), config,
                         std::move(source), weight_memory,
                         std::make_unique<ModelState>(std::move(model_state)),
                         std::move(executor));
                 else
-                    return std::make_unique<CudaEngineState<Model>>(
+                    return std::make_unique<CudaEngineState<Model, ModelState, Parts>>(
                         *execution, std::move(model), std::move(components), config,
                         std::move(source), weight_memory, nullptr, std::move(executor));
             });
@@ -642,12 +657,17 @@ struct CudaBackend {
             info.max_context = state.metadata.max_position_embeddings;
             info.vocab_size = static_cast<int32_t>(state.metadata.vocab_size);
             info.model_type = state.metadata.model_type;
-            info.multimodal = state.components.grid_vision.has_value() ||
-                state.components.deepseek_vision.has_value() ||
-                state.components.radio_vision.has_value() || bool(state.components.composite);
+            const auto component_state = state.components.state();
+            const bool composite = [&] {
+                if constexpr (requires { state.components.composite; })
+                    return bool(state.components.composite);
+                else
+                    return false;
+            }();
+            info.multimodal = component_state.vision_available || composite;
             info.reload = true;
             const auto caps = cuda_runtime_capabilities(state.components.graph, state.components.plan,
-                state.components.state(), info.multimodal, bool(state.components.composite));
+                component_state, info.multimodal, composite);
             info.duplex = caps.full_duplex;
             info.capabilities = {state.components.graph.architecture, caps.text,
                 caps.image_input, caps.video_input, caps.audio_input, caps.audio_output,
@@ -660,7 +680,8 @@ struct CudaBackend {
         });
     }
     bool exclusive() const {
-        return std::visit([](const auto& state) { return state && state->exclusive(); }, state);
+        if (!state) return false;
+        return std::visit([](const auto& value) { return value && value->exclusive(); }, *state);
     }
     void unload() {
         if (mfq::cuda::env_frozen() && mfq::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
@@ -670,7 +691,7 @@ struct CudaBackend {
             try { execution->drain(); } catch (...) { failure = std::current_exception(); }
             {
                 CudaScope scope(*execution);
-                state = std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>>{};
+                state.reset();
                 execution->pipelines.clear();
             }
         }
