@@ -6,7 +6,7 @@
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/minicpmo45/causal_lm.h"
 
-#include "ops.h"
+#include "engine/executor/sequence.h"
 #include "backend.h"
 
 #include <algorithm>

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ops.h"
+#include "audio.h"
 #include "tts.h"
 
 inline auto minicpmo45_parse_bounds(mfq_tensor_backend::Tensor bounds, const char *label) {
@@ -18,7 +20,9 @@ struct MiniCPMO45Runtime {
     MiniCPMO45VisionEncoder vision;
     MiniCPMO45Resampler resampler;
     MiniCPMO45AudioEncoder audio;
-    MiniCPMO45TtsDecoder tts;
+    mfq::cuda::minicpmo45::Tts tts;
+    std::unique_ptr<mfq::cuda::Executor> tts_executor;
+    const mfq::cuda::Executor::Mode tts_mode;
     mfq::cuda::Projector projector;
 
     static MiniCPMO45Runtime load(CudaExecutionContext& execution, const std::string& model_path,
@@ -172,6 +176,7 @@ struct MiniCPMO45DuplexStepResult {
 
 struct MiniCPMO45DuplexSession {
     MiniCPMO45Runtime & runtime;
+    mfq::cuda::minicpmo45::Tts::State tts_state;
     MiniCPMO45DuplexSpecialIds ids;
     std::vector<int64_t> forbidden_ids;
     std::vector<int64_t> generated_text_ids;
@@ -194,7 +199,7 @@ struct MiniCPMO45DuplexSession {
             MiniCPMO45DuplexSpecialIds ids_,
             std::vector<int64_t> forbidden_ids_,
             bool greedy_)
-        : runtime(runtime_), ids(ids_),
+        : runtime(runtime_), tts_state(runtime_.tts), ids(ids_),
           forbidden_ids(std::move(forbidden_ids_)), greedy(greedy_) {
         if (std::find(forbidden_ids.begin(), forbidden_ids.end(),
                 ids.chunk_eos) == forbidden_ids.end()) {
@@ -212,7 +217,7 @@ struct MiniCPMO45DuplexSession {
             mfq_tensor_backend::Tensor system_suffix_ids = mfq_tensor_backend::Tensor()) {
         runtime.language.reset(1);
         runtime.audio.reset();
-        runtime.tts.reset(1);
+        tts_state.reset(1);
         generated_text_ids.clear();
         audio_chunk_index = 0;
         tts_text_start_position = 0;
@@ -544,29 +549,29 @@ struct MiniCPMO45DuplexSession {
                     .to(mfq_tensor_backend::kBFloat16).contiguous();
             }
             auto condition = runtime.tts.duplex_condition(
-                text_id_tensor, hidden_tensor, ids.audio_bos);
+                runtime.projector, text_id_tensor, hidden_tensor, ids.audio_bos);
             const bool first_tts_chunk = tts_text_start_position == 0;
             if (first_tts_chunk) {
-                runtime.tts.reset(1);
+                tts_state.reset(1);
                 result.tts_force_flush = true;
             }
-            if (runtime.tts.cache_position != tts_text_start_position) {
+            if (tts_state.position != tts_text_start_position) {
                 throw std::runtime_error(
                     "MiniCPM-o duplex TTS cache position is inconsistent");
             }
             const int64_t minimum_codes =
                 result.end_of_turn || first_tts_chunk ? 0 : 26;
             auto tts_result = runtime.tts.generate_duplex_chunk(
-                condition, 26, minimum_codes, 6561,
+                tts_state, *runtime.tts_executor, runtime.tts_mode, condition, 26, minimum_codes, 6561,
                 tts_temperature, tts_repetition_penalty);
             result.tts_codes = tts_result.codes;
             if (result.end_of_turn) {
-                runtime.tts.reset(1);
+                tts_state.reset(1);
                 tts_text_start_position = 0;
             } else {
                 tts_text_start_position +=
                     condition.size(1) + result.tts_codes.size(1);
-                if (runtime.tts.cache_position != tts_text_start_position) {
+                if (tts_state.position != tts_text_start_position) {
                     throw std::runtime_error(
                         "MiniCPM-o duplex TTS cache did not advance exactly");
                 }

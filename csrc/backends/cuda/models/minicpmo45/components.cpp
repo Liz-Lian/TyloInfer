@@ -35,7 +35,8 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load_with_language(mfq::cuda::MiniCPMO45Cau
             MiniCPMO45VisionEncoder::load(weights),
             MiniCPMO45Resampler::load(weights),
             MiniCPMO45AudioEncoder::load(weights),
-            MiniCPMO45TtsDecoder::load(execution, weights, projector),
+            mfq::cuda::minicpmo45::Tts::load(weights),
+            execution.make_executor(), execution.forward_mode(),
             projector};
 }
 
@@ -193,6 +194,7 @@ void Components::start(const MfqDuplexSessionParams& parameters) {
             mfq_tensor_backend::tensor(
                 parameters.special_ids,
                 mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64)));
+        if (state_->duplex_session) mfq_cuda_synchronize();
         state_->duplex_session.reset();
         state_->duplex_session.emplace(
             state_->runtime, special_ids, parameters.forbidden_ids,
@@ -294,7 +296,7 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
         response.audio_chunk_index = state_->duplex_session->audio_chunk_index;
         response.language_cache_position = state_->runtime.language.cache_pos;
         response.audio_cache_position = state_->runtime.audio.cache_length();
-        response.tts_cache_position = state_->runtime.tts.cache_position;
+        response.tts_cache_position = state_->duplex_session->tts_state.position;
         response.inference_ms =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - started).count();
@@ -304,10 +306,10 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
 void Components::stop() {
         MfqCudaGuard guard(
             state_->runtime.language.execution->layer_placement.primary_device());
+        mfq_cuda_synchronize();
         state_->duplex_session.reset();
         state_->runtime.language.reset(1);
         state_->runtime.audio.reset();
-        state_->runtime.tts.reset(1);
         mfq_cuda_synchronize();
 }
 } // namespace mfq::cuda::minicpmo45

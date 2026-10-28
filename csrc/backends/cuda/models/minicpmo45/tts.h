@@ -2,12 +2,17 @@
 
 #include "backends/cuda/engine/weights/load.h"
 
-#include "audio.h"
+#include "vision.h"
 #include <random>
 #include "engine/requests/policy.h"
 #include "engine/executor/sampling.h"
-#include "models/common/full_block.h"
-#include "ops.h"
+#include "backends/cuda/engine/models/load.h"
+#include "backends/cuda/engine/executor/run.h"
+#include "engine/state/kv_cache.h"
+
+#include <array>
+
+using mfq_tensor_backend::indexing::Slice;
 
 struct MiniCPMO45TtsSamplingOps {
     using Tensor = mfq_tensor_backend::Tensor;
@@ -69,12 +74,29 @@ struct MiniCPMO45TtsSamplingOps {
     }
 };
 
-struct MiniCPMO45TtsDecoder {
-    mfq::cuda::Projector projector;
-    explicit MiniCPMO45TtsDecoder(mfq::cuda::Projector projector) : projector(projector) {}
+namespace mfq::cuda::minicpmo45 {
 
-    CudaExecutionContext* execution = nullptr;
+struct Tts {
+    struct Layer {
+        FullAttention attention;
+        mfq_tensor_backend::Tensor ffn_norm;
+        Ffn ffn;
+    };
+
+    struct State {
+        explicit State(const Tts& model) : kv(model.layers.size()) {}
+        std::vector<KVCache> kv;
+        int64_t position = 0;
+
+        void reset(int64_t batch) {
+            position = 0;
+            for (auto& cache : kv)
+                if (cache.defined() && cache.batch_size() != batch) cache = {};
+        }
+    };
+
     mfq::models::ModelConfig config;
+    int device = 0;
     RopeCache rope;
     QuantLinear text_embedding;
     QuantLinear code_embedding;
@@ -82,22 +104,19 @@ struct MiniCPMO45TtsDecoder {
     MiniCPMO45Linear semantic_projector2;
     MiniCPMO45Linear speaker_projector1;
     MiniCPMO45Linear speaker_projector2;
-    std::vector<std::unique_ptr<Block>> blocks;
+    std::vector<Layer> layers;
     mfq_tensor_backend::Tensor output_norm;
     mfq_tensor_backend::Tensor code_head;
-    int64_t cache_position = 0;
-
-
-    static MiniCPMO45TtsDecoder load(
-            CudaExecutionContext& execution,
-            const mfq::cuda::weight_loader::Loader& weights, mfq::cuda::Projector projector) {
-        MiniCPMO45TtsDecoder result(projector);
-        result.execution = &execution;
+    static Tts load(const weight_loader::Loader& weights) {
+        MfqCudaGuard guard(weights.placement.device);
+        Tts result;
+        result.device = weights.placement.device;
         result.config = mfq::models::minicpmo45::tts_decoder_config();
         result.rope = RopeCache(
             result.config.max_position_embeddings,
             result.config.rotary_dim,
-            result.config.rope_base);
+            result.config.rope_base, 0, -1,
+            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, result.device));
         result.text_embedding = weights.projection("tts.text_embedding.weight");
         result.code_embedding = weights.projection("tts.code_embedding.0.weight");
         result.semantic_projector1 = mfq::cuda::vision::load_biased(weights, "tts.semantic_projector.input");
@@ -123,24 +142,21 @@ struct MiniCPMO45TtsDecoder {
         result.code_head = (
             head_g.to(mfq_tensor_backend::kFloat32) * head_v_f32 /
             row_norm).to(head_v.scalar_type()).contiguous();
-        result.blocks.reserve(20);
+        result.layers.reserve(20);
+        TransformerWeightLoader loader{weights};
         for (int index = 0; index < 20; ++index) {
-            auto block = mfq::cuda::minicpmo45::load_language_block(
-                weights, result.config, index,
-                "full_attention", mfq::models::minicpmo45::LanguageComponent::tts, "tts");
-            block->cuda_device =
-                weights.placement.device;
-            result.blocks.push_back(std::move(block));
+            auto& layer = result.layers.emplace_back();
+            const auto prefix = "tts.block." + std::to_string(index) + ".";
+            mfq::models::load_attention_mixer(layer.attention, loader, result.config, index,
+                                             prefix, 0.0);
+            layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
+            layer.ffn = mfq::models::load_dense_ffn<Ffn>(loader, result.config, prefix + "mlp.");
         }
         return result;
     }
 
-    void reset(int64_t batch) {
-        cache_position = 0;
-        for (auto & block : blocks) block->reset(batch);
-    }
-
-    mfq_tensor_backend::Tensor semantic_projection(mfq_tensor_backend::Tensor hidden) const {
+    mfq_tensor_backend::Tensor semantic_projection(const Projector& projector,
+                                                  mfq_tensor_backend::Tensor hidden) const {
         auto projected = semantic_projector1.forward(
             projector, hidden);
         projected = mfq_tensor_backend::relu(projected);
@@ -152,7 +168,8 @@ struct MiniCPMO45TtsDecoder {
         return (projected / norm.to(projected.scalar_type())).contiguous();
     }
 
-    mfq_tensor_backend::Tensor speaker_projection(mfq_tensor_backend::Tensor hidden) const {
+    mfq_tensor_backend::Tensor speaker_projection(const Projector& projector,
+                                                 mfq_tensor_backend::Tensor hidden) const {
         return speaker_projector2.forward(
             projector,
             mfq_tensor_backend::relu(
@@ -160,8 +177,10 @@ struct MiniCPMO45TtsDecoder {
     }
 
     mfq_tensor_backend::Tensor condition(
+            const Projector& projector,
             mfq_tensor_backend::Tensor text_ids,
             mfq_tensor_backend::Tensor language_hidden) const {
+        MfqCudaGuard guard(device);
         if (text_ids.dim() == 1) text_ids = text_ids.unsqueeze(0);
         if (language_hidden.dim() == 2) {
             language_hidden = language_hidden.unsqueeze(0);
@@ -174,7 +193,7 @@ struct MiniCPMO45TtsDecoder {
                 "MiniCPM-o TTS condition expects one aligned text/hidden span");
         }
         auto text = minicpmo45_embedding(text_embedding, text_ids);
-        auto semantic = semantic_projection(language_hidden)
+        auto semantic = semantic_projection(projector, language_hidden)
             .to(text.scalar_type());
         auto merged = (text + semantic).contiguous();
         auto suffix_ids = mfq_tensor_backend::tensor(
@@ -187,9 +206,11 @@ struct MiniCPMO45TtsDecoder {
     }
 
     mfq_tensor_backend::Tensor duplex_condition(
+            const Projector& projector,
             mfq_tensor_backend::Tensor text_ids,
             mfq_tensor_backend::Tensor language_hidden,
             int64_t audio_bos_token) const {
+        MfqCudaGuard guard(device);
         if (text_ids.dim() == 1) text_ids = text_ids.unsqueeze(0);
         if (language_hidden.dim() == 2) {
             language_hidden = language_hidden.unsqueeze(0);
@@ -205,7 +226,7 @@ struct MiniCPMO45TtsDecoder {
         mfq_tensor_backend::Tensor condition;
         if (text_ids.size(1) > 0) {
             auto text = minicpmo45_embedding(text_embedding, text_ids);
-            auto semantic = semantic_projection(language_hidden)
+            auto semantic = semantic_projection(projector, language_hidden)
                 .to(text.scalar_type());
             condition = (text + semantic).contiguous();
         }
@@ -220,7 +241,9 @@ struct MiniCPMO45TtsDecoder {
             : bos.contiguous();
     }
 
-    mfq_tensor_backend::Tensor hidden_forward(mfq_tensor_backend::Tensor input_embeddings) {
+    mfq_tensor_backend::Tensor hidden_forward(State& state, Executor& executor,
+            const Executor::Mode& mode, mfq_tensor_backend::Tensor input_embeddings) const {
+        MfqCudaGuard guard(device);
         if (input_embeddings.dim() != 3 ||
                 input_embeddings.size(2) != config.hidden_size) {
             throw std::runtime_error(
@@ -228,28 +251,53 @@ struct MiniCPMO45TtsDecoder {
         }
         const int64_t batch = input_embeddings.size(0);
         const int64_t tokens = input_embeddings.size(1);
+        TYLOINFER_RUNTIME_CHECK(state.kv.size() == layers.size(), "MiniCPM-o TTS state layer count differs");
         return mfq::models::minicpmo45::tts_forward(
             std::move(input_embeddings), batch, tokens, config.max_position_embeddings,
-            cache_position, blocks,
-            [&] { reset(batch); },
+            state.position, layers,
+            [&] { state.reset(batch); },
             [&](auto value) { return value.to(mfq_tensor_backend::kBFloat16).contiguous(); },
             [&] {
                 auto positions = mfq_tensor_backend::arange(
-                    cache_position, cache_position + tokens,
+                    state.position, state.position + tokens,
                     mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA)
                         .dtype(mfq_tensor_backend::kInt64));
                 MfqOptional<mfq_tensor_backend::Tensor> sequence_length = mfq_nullopt;
-                if (cache_position > 0) {
+                if (state.position > 0) {
                     sequence_length = mfq_tensor_backend::full(
-                        {batch}, cache_position + tokens,
+                        {batch}, state.position + tokens,
                         mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA)
                             .dtype(mfq_tensor_backend::kInt64));
                 }
                 return std::make_pair(positions, sequence_length);
             },
-            [&](auto& block, auto hidden, const auto& positions) {
-                return block->forward(*execution, hidden, positions.first, cache_position,
-                                      positions.second, rope);
+            [&](const Layer& layer, auto hidden, const auto& positions) {
+                const auto& attention = layer.attention;
+                auto& cache = state.kv.at(attention.layer);
+                if (!cache.defined()) {
+                    const auto capacity = mode.kv_capacity > 0
+                        ? std::max(state.position + tokens, mode.kv_capacity)
+                        : attention.max_position_embeddings;
+                    cache = KVCache(batch, attention.kv_heads, capacity, attention.attention_head_dim,
+                        false, hidden.device(), mfq_tensor_backend::kFloat16, attention.kv_quantization);
+                }
+                cache.quantization = attention.kv_quantization;
+                const std::array<AttentionKvView, 1> kv{cache.view()};
+                const std::array<Task, 2> tasks{{
+                    {task::Attention{0, 1, 2, attention, 0}, attention.layer},
+                    {task::FullFfn{1, 2, 0, layer.ffn, layer.ffn_norm, attention}, attention.layer},
+                }};
+                Inputs inputs;
+                inputs.values = {std::move(hidden), {}, {}};
+                inputs.kv = kv;
+                inputs.attention.positions = positions.first;
+                inputs.attention.sequence_lengths = positions.second;
+                inputs.attention.cache_position = state.position;
+                inputs.rope = &rope;
+                inputs.trace = mode.trace;
+                inputs.trace_scope = mode.trace_layer;
+                inputs.scratch_offset = 2 * attention.layer;
+                return executor.run(tasks, std::move(inputs), mode);
             },
             [&](auto hidden) {
                 auto flat = hidden.reshape(
@@ -278,12 +326,14 @@ struct MiniCPMO45TtsDecoder {
     };
 
     ChunkResult generate_duplex_chunk(
+            State& state, Executor& executor, const Executor::Mode& mode,
             mfq_tensor_backend::Tensor condition_embeddings,
             int64_t max_new_tokens,
             int64_t minimum_new_tokens,
             int64_t eos_token,
             double temperature,
-            double repetition_penalty) {
+            double repetition_penalty) const {
+        MfqCudaGuard guard(device);
         if (condition_embeddings.dim() != 3 ||
                 condition_embeddings.size(0) != 1 ||
                 condition_embeddings.size(2) != config.hidden_size ||
@@ -298,7 +348,7 @@ struct MiniCPMO45TtsDecoder {
         auto current = condition_embeddings.to(mfq_tensor_backend::kBFloat16).contiguous();
         bool finished = false;
         for (int64_t step = 0; step < max_new_tokens; ++step) {
-            auto hidden = hidden_forward(current);
+            auto hidden = hidden_forward(state, executor, mode, current);
             auto step_logits = logits(
                 hidden.index({Slice(), -1, Slice()}))
                 .to(mfq_tensor_backend::kFloat32) / temperature;
@@ -349,18 +399,20 @@ struct MiniCPMO45TtsDecoder {
     }
 
     mfq_tensor_backend::Tensor generate_official(
+        State& state, Executor& executor, const Executor::Mode& mode,
         mfq_tensor_backend::Tensor condition_embeddings, int64_t steps, int64_t eos_token = 6561,
         int64_t minimum_steps = 50, double temperature = 0.8, double top_p = 0.85,
         int64_t top_k = 25, double repetition_penalty = 1.05,
         std::vector<mfq_tensor_backend::Tensor> *logits_trace = nullptr, double min_p = 0.0,
-        std::mt19937 *evaluator_rng = nullptr, int64_t evaluator_min_keep = 0) {
+        std::mt19937 *evaluator_rng = nullptr, int64_t evaluator_min_keep = 0) const {
+        MfqCudaGuard guard(device);
         const mfq::models::minicpmo45::TtsSampling config{eos_token,          minimum_steps, top_k,
                                                           evaluator_min_keep, temperature,   top_p,
                                                           repetition_penalty, min_p};
         config.validate(steps, 6562);
         if (condition_embeddings.dim() != 3 || condition_embeddings.size(0) != 1)
             throw std::runtime_error("official MiniCPM-o TTS generation requires batch size one");
-        reset(1);
+        state.reset(1);
         using Tensor = mfq_tensor_backend::Tensor;
         std::vector<Tensor> generated;
         generated.reserve(static_cast<size_t>(steps));
@@ -369,7 +421,7 @@ struct MiniCPMO45TtsDecoder {
         const auto result = mfq::engine::generate_tokens(
             steps,
             [&](int64_t step) {
-                auto hidden = hidden_forward(current);
+                auto hidden = hidden_forward(state, executor, mode, current);
                 auto raw_step_logits =
                     logits(hidden.index({Slice(), -1, Slice()})).to(mfq_tensor_backend::kFloat32);
                 if (logits_trace)
@@ -389,3 +441,5 @@ struct MiniCPMO45TtsDecoder {
             .contiguous();
     }
 };
+
+} // namespace mfq::cuda::minicpmo45

@@ -161,7 +161,7 @@ int run_minicpmo45_duplex(CudaExecutionContext &execution, const std::string &mo
             mfq_tensor_backend::tensor(
                 std::vector<int64_t>{result.is_listen ? 1 : 0, result.end_of_turn ? 1 : 0,
                                      runtime.language.cache_pos, runtime.audio.cache_length(),
-                                     runtime.tts.cache_position, session.audio_chunk_index},
+                                     session.tts_state.position, session.audio_chunk_index},
                 mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64)),
             output + ".state.pt");
         if (result.is_listen) {
@@ -174,7 +174,7 @@ int run_minicpmo45_duplex(CudaExecutionContext &execution, const std::string &mo
               << " steps=" << steps << " listens=" << listen_steps << " speaks=" << speak_steps
               << " language_cache=" << runtime.language.cache_pos
               << " audio_cache=" << runtime.audio.cache_length()
-              << " tts_cache=" << runtime.tts.cache_position << " seed=" << seed << "\n";
+              << " tts_cache=" << session.tts_state.position << " seed=" << seed << "\n";
     return 0;
 }
 
@@ -745,10 +745,12 @@ int run_minicpmo45_eval_batch(CudaExecutionContext &execution, const std::string
                                       .narrow(1, 0, text_length)
                                       .contiguous();
                 }
-                auto condition = runtime.tts.condition(text_ids, text_hidden);
+                auto condition = runtime.tts.condition(runtime.projector, text_ids, text_hidden);
                 std::mt19937 evaluator_rng(static_cast<std::mt19937::result_type>(seed));
+                mfq::cuda::minicpmo45::Tts::State tts_state(runtime.tts);
                 tts_codes = runtime.tts
                                 .generate_official(
+                                    tts_state, *runtime.tts_executor, runtime.tts_mode,
                                     condition, tts_max_steps, 6561, tts_minimum_steps,
                                     tts_temperature, tts_top_p, tts_top_k, tts_repetition_penalty,
                                     nullptr, tts_min_p, &evaluator_rng, tts_min_tokens_to_keep)
@@ -865,14 +867,16 @@ int run_minicpmo45_composite(CudaExecutionContext &execution, const std::string 
                 throw std::runtime_error("MiniCPM-o TTS text span is invalid");
             }
             condition =
-                runtime.tts.condition(input_ids.index({0, Slice(begin, end)}),
+                runtime.tts.condition(runtime.projector, input_ids.index({0, Slice(begin, end)}),
                                       result.hidden_states.index({0, Slice(begin, end), Slice()}));
         } else {
             condition = condition.to(mfq_tensor_backend::kCUDA).contiguous();
         }
         std::vector<mfq_tensor_backend::Tensor> tts_logits;
-        const auto codes = runtime.tts.generate_official(condition, tts_steps, 6561, 50, 0.8, 0.85,
-                                                         25, 1.05, &tts_logits);
+        mfq::cuda::minicpmo45::Tts::State tts_state(runtime.tts);
+        const auto codes = runtime.tts.generate_official(
+            tts_state, *runtime.tts_executor, runtime.tts_mode,
+            condition, tts_steps, 6561, 50, 0.8, 0.85, 25, 1.05, &tts_logits);
         minicpmo45_save_tensor(condition, output_prefix + ".tts_inputs_embeds.pt");
         minicpmo45_save_tensor(codes, output_prefix + ".tts_codes.pt");
         if (!tts_logits.empty()) {
