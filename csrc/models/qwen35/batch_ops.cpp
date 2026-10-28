@@ -1,4 +1,5 @@
 #include "models/qwen35/batch_ops.h"
+#include "models/batch.h"
 
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
@@ -391,3 +392,18 @@ void BatchOps::recover(State& state) {
 }
 
 } // namespace mfq::cuda::qwen35
+
+namespace mfq::cuda {
+
+std::unique_ptr<mfq::engine::Batch> make_batch(
+    std::shared_ptr<const qwen35::Model> model, std::unique_ptr<Executor> executor,
+    Collectives& copies, Executor::Mode mode, qwen35::Batch::Options options,
+    std::shared_ptr<MoeExpertCache> cache, CudaContinuousBatchConfig config,
+    std::int64_t chunk_size) {
+    const auto token_budget = config.prefill_token_budget;
+    return std::make_unique<mfq::engine::ContinuousBatch<qwen35::BatchOps>>(
+        chunk_size, token_budget, std::move(model), std::move(executor), copies, mode, options,
+        std::move(cache), std::move(config));
+}
+
+} // namespace mfq::cuda

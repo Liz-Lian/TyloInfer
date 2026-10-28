@@ -5,6 +5,7 @@
 
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/generation.h"
+#include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "models/batch.h"
 
@@ -172,7 +173,7 @@ int run_qwen_continuous_batching_check(Model& model,
             mfq::cuda::Executor* executor;
             CudaExecutionContext& execution_context;
             std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner;
-            ContinuousBatch<CudaBatchOperations<Model>> batcher;
+            std::unique_ptr<mfq::engine::Batch> batcher;
             Execution(Model& model, const mfq::models::CausalLmMetadata& metadata,
                       DecodeGraphCache& graph, TextSessionCache& cache,
                       const CudaRuntimeConfig& config, State& state,
@@ -185,27 +186,36 @@ int run_qwen_continuous_batching_check(Model& model,
                   batcher(make_batcher(model, execution_context,
                                        config.continuous_batch,
                                        this->model_owner)) {}
-            static ContinuousBatch<CudaBatchOperations<Model>> make_batcher(
+            static std::unique_ptr<mfq::engine::Batch> make_batcher(
                     Model& model, CudaExecutionContext& execution,
                     const CudaContinuousBatchConfig& config,
                     const std::shared_ptr<const mfq::cuda::qwen35::Model>& owner) {
                 if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-                    return ContinuousBatch<CudaBatchOperations<Model>>(
-                        64, config.prefill_token_budget, owner, execution, config);
-                } else {
-                    return ContinuousBatch<CudaBatchOperations<Model>>(
-                        64, config.prefill_token_budget, model, execution, config);
+                    auto batch_config = config;
+                    batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution);
+                    return make_batch(
+                        owner, execution.make_executor(), execution.collectives,
+                        execution.forward_mode(),
+                        qwen35::Batch::Options{
+                            config.max_sequences, config.paged_kv,
+                            runtime_options::kv_vram_preallocated(),
+                            execution.dense_cpu_layer_count != 0 ||
+                                !execution.dsv4_cpu_offload_layers.empty(),
+                            execution.config.weights.min_slots},
+                        execution.stores.weights.moe, std::move(batch_config), 64);
+                } else if constexpr (std::is_same_v<Model, Qwen4CausalLm>) {
+                    return make_batch(model, execution, config, 64);
                 }
             }
             bool can_batch(const EngineRequest&) const { return true; }
             bool exclusive() const { return false; }
             bool mtp_available() const { return false; }
-            void execute(const std::vector<RequestId>& eligible) { batcher.step(eligible); }
+            void execute(const std::vector<RequestId>& eligible) { batcher->step(eligible); }
             Generation generate(const RequestId& id, ExecutionRequest& request) {
                 return internal::generate(
                     model, state, executor, execution_context, metadata, graph,
                     cache, config, request.input, request.output, nullptr, {},
-                    &batcher, id);
+                    batcher.get(), id);
             }
         } execution(model, metadata, graph, cache, config, state, executor,
                     execution_context, std::move(model_owner));
@@ -306,7 +316,7 @@ int run_qwen_continuous_batching_check(Model& model,
                 TYLOINFER_RUNTIME_CHECK(tokens[ids[row]]==(row%2?second_reference:first_reference) &&
                     terminals[ids[row]]==1,"packed prefill differs from serial oracle");
         }
-        for (const auto& [key, value] : batcher.metrics()) {
+        for (const auto& [key, value] : batcher->metrics()) {
             if (key == "paged_kv_live_pages") TYLOINFER_RUNTIME_CHECK(value == 0, "paged KV leaked");
             if (key == "continuous_batching_active" || key == "continuous_batching_prefilling")
                 TYLOINFER_RUNTIME_CHECK(value == 0, "batch retained finished requests");

@@ -557,7 +557,7 @@ template <class Model, class State> struct CudaGenerationContext {
     const CudaRuntimeConfig &config;
     MtpModule *mtp;
     std::optional<PreparedPrompt> prepared;
-    mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching;
+    mfq::engine::Batch* batching;
     std::string request_id;
     std::function<void()> restore;
 
@@ -829,7 +829,7 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
     mfq::engine::InferenceOutput &output, MtpModule *mtp,
     std::optional<PreparedPrompt> prepared,
-    mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching, std::string request_id,
+    mfq::engine::Batch* batching, std::string request_id,
     std::function<void()> restore) {
     return mfq::engine::generate_request(
         CudaGenerationContext<Model, State>{model, state, executor, execution, metadata, graph, cache, config, mtp,
@@ -849,7 +849,7 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
         mfq::engine::InferenceOutput &,                                                            \
         MtpModule *,                                                                               \
         std::optional<PreparedPrompt>,                                                         \
-        mfq::engine::ContinuousBatch<CudaBatchOperations<MODEL>>*, std::string,                    \
+        mfq::engine::Batch*, std::string,                    \
         std::function<void()>);
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State)

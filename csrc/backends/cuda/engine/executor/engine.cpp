@@ -52,7 +52,7 @@ struct CudaEngineState {
     std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     TextSessionCache cache;
-    std::unique_ptr<ContinuousBatch<CudaBatchOperations<Model>>> batching;
+    std::unique_ptr<mfq::engine::Batch> batching;
     bool duplex_active = false;
     std::size_t resident_budget=0, weight_budget=0, initial_expert_budget=0, allocation_ceiling=0;
     std::shared_ptr<KvExpertLoan> graph_expert_loan;
@@ -299,15 +299,14 @@ struct CudaEngineState {
                     execution->dense_cpu_layer_count != 0 ||
                         !execution->dsv4_cpu_offload_layers.empty(),
                     execution->config.weights.min_slots};
-                batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
-                    config.generation.prefill_chunk_size, batch_config.prefill_token_budget,
+                batching = make_batch(
                     model, execution->make_executor(), execution->collectives,
                     execution->forward_mode(), batch_options,
-                    execution->stores.weights.moe, std::move(batch_config));
+                    execution->stores.weights.moe, std::move(batch_config),
+                    config.generation.prefill_chunk_size);
             } else if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
-                batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
-                    config.generation.prefill_chunk_size, config.continuous_batch.prefill_token_budget,
-                    language, *execution, config.continuous_batch);
+                batching = make_batch(language, *execution, config.continuous_batch,
+                    config.generation.prefill_chunk_size);
             else throw std::invalid_argument("continuous batching is unavailable for this model");
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

@@ -1,4 +1,5 @@
 #include "models/qwen4_exp/batch.h"
+#include "models/batch.h"
 
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/execution.h"
@@ -388,3 +389,14 @@ void BatchOps::recover(State& state) {
 }
 
 } // namespace mfq::cuda::qwen4_exp
+
+namespace mfq::cuda {
+
+std::unique_ptr<mfq::engine::Batch> make_batch(
+    Qwen4CausalLm& model, CudaExecutionContext& execution,
+    const CudaContinuousBatchConfig& config, std::int64_t chunk_size) {
+    return std::make_unique<mfq::engine::ContinuousBatch<qwen4_exp::BatchOps>>(
+        chunk_size, config.prefill_token_budget, model, execution, config);
+}
+
+} // namespace mfq::cuda

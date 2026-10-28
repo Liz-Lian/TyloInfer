@@ -6,6 +6,15 @@
 
 namespace mfq::engine {
 
+class Batch {
+  public:
+    virtual ~Batch() = default;
+    virtual Generation generate(std::string id, InferenceRequest&, InferenceOutput&) = 0;
+    virtual void step(const std::vector<std::string>& eligible) = 0;
+    virtual Metrics metrics() const = 0;
+    virtual void release_idle_buffers() = 0;
+};
+
 // Physical row metadata only. Request lifecycle and output belong to the executor.
 struct BatchRequest {
     BatchRequest(std::string id, const InferenceRequest& input)
@@ -33,7 +42,7 @@ template <class Sample> struct PrefillBatchResult {
 
 // Groups pending numerical operations. All rows run generate_sequence(), also
 // used by B=1 execution; this component never accepts tokens or publishes events.
-template <class Ops> class ContinuousBatch {
+template <class Ops> class ContinuousBatch : public Batch {
     using Request = typename Ops::Request;
     using Sample = typename Ops::Sample;
     using State = BatchState<Request>;
@@ -127,7 +136,7 @@ template <class Ops> class ContinuousBatch {
     void invalidate_runtime_policy() {
         if constexpr (requires { operations.invalidate_runtime_policy(); }) operations.invalidate_runtime_policy();
     }
-    void release_idle_buffers() {
+    void release_idle_buffers() override {
         if(!empty())throw std::runtime_error("cannot release active batch buffers");
         operations.suspend_decode();
     }
@@ -139,7 +148,7 @@ template <class Ops> class ContinuousBatch {
             throw std::invalid_argument("continuous batching requires a positive prefill chunk");
     }
 
-    Generation generate(std::string id, InferenceRequest& input, InferenceOutput& output) {
+    Generation generate(std::string id, InferenceRequest& input, InferenceOutput& output) override {
         if (output.stopped()) co_return;
         auto work = std::make_shared<Work>();
         work->request = std::make_shared<Request>(std::move(id), input);
@@ -157,7 +166,7 @@ template <class Ops> class ContinuousBatch {
         cleanup.finish();
     }
 
-    void step(const std::vector<std::string>& eligible) {
+    void step(const std::vector<std::string>& eligible) override {
         for (const auto& request : state.active) {
             const auto& work = *requests.at(request->id);
             request->eligible = work.decode &&
@@ -330,7 +339,7 @@ template <class Ops> class ContinuousBatch {
         }
     }
 
-    Metrics metrics() const {
+    Metrics metrics() const override {
         auto result = operations.metrics();
         result.emplace_back("continuous_batching_active", state.active.size());
         result.emplace_back("continuous_batching_prefilling", requests.size() - state.active.size());

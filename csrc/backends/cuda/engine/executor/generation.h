@@ -1,9 +1,9 @@
 #pragma once
 #include "backends/cuda/engine/requests/prompt.h"
 
+#include "engine/batch/batch.h"
 #include "engine/executor/step.h"
 #include "engine/models/common/causal_metadata.h"
-#include "models/batch.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "engine/executor/mtp.h"
@@ -25,7 +25,7 @@ mfq::engine::Generation generate(
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, MtpModule* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},
-    mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching = nullptr,
+    mfq::engine::Batch* batching = nullptr,
     std::string request_id = {}, std::function<void()> restore = {});
 } // namespace mfq::cuda::internal
 
