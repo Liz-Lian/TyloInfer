@@ -6,6 +6,7 @@
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/load.h"
+#include "models/minicpmo45/forward.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
@@ -667,7 +668,7 @@ struct CudaEngineState {
 using State = std::variant<
     std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>>,
     std::unique_ptr<CudaEngineState<MiniCPMO45CausalLm>>,
-    std::unique_ptr<CudaEngineState<MiniCPMOTtsCausalLm>>,
+    std::unique_ptr<CudaEngineState<minicpmo45::Model, minicpmo45::State>>,
     std::unique_ptr<CudaEngineState<Gemma4CausalLm>>,
     std::unique_ptr<CudaEngineState<GlmDsaCausalLm>>,
     std::unique_ptr<CudaEngineState<Glm5CausalLm>>,
@@ -729,11 +730,12 @@ struct CudaBackend {
                     if (execution->stores.qsa_kv_store) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 std::shared_ptr<const mfq::ModelSource> source;
                 source = model.source;
-                if constexpr (std::is_same_v<Model, qwen35::Model>)
-                    return std::make_unique<CudaEngineState<Model, qwen35::State>>(
+                using ModelState = std::remove_cvref_t<decltype(model_state)>;
+                if constexpr (!std::is_same_v<Model, ModelState>)
+                    return std::make_unique<CudaEngineState<Model, ModelState>>(
                         *execution, std::move(model), std::move(components), config,
                         std::move(source), weight_memory,
-                        std::make_unique<qwen35::State>(std::move(model_state)),
+                        std::make_unique<ModelState>(std::move(model_state)),
                         std::move(executor));
                 else
                     return std::make_unique<CudaEngineState<Model>>(
@@ -743,15 +745,9 @@ struct CudaBackend {
         return visit([&](auto& state) {
             EngineInfo info;
             info.max_requests = std::max<std::size_t>(1, config.continuous_batch.max_sequences);
-            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(state.language)>, qwen35::Model>) {
-                info.max_context = state.language.metadata.max_position_embeddings;
-                info.vocab_size = static_cast<int32_t>(state.language.metadata.vocab_size);
-                info.model_type = state.language.metadata.model_type;
-            } else {
-                info.max_context = state.language.max_position_embeddings();
-                info.vocab_size = static_cast<int32_t>(state.language.vocab_size());
-                info.model_type = state.language.model_type();
-            }
+            info.max_context = state.metadata.max_position_embeddings;
+            info.vocab_size = static_cast<int32_t>(state.metadata.vocab_size);
+            info.model_type = state.metadata.model_type;
             info.multimodal = state.components.grid_vision.has_value() ||
                 state.components.deepseek_vision.has_value() ||
                 state.components.radio_vision.has_value() || bool(state.components.composite);

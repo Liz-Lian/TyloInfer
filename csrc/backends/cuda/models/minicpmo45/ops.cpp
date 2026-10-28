@@ -30,17 +30,6 @@ std::unique_ptr<Block> MiniCPMO45Model::adapter_load_block(const mfq::cuda::weig
         mfq::models::minicpmo45::LanguageComponent::text);
 }
 
-bool MiniCPMOTtsModel::adapter_uses_common_rope() const noexcept { return true; }
-
-bool MiniCPMOTtsModel::adapter_supports_dense_cpu_offload() const noexcept { return true; }
-
-std::unique_ptr<Block> MiniCPMOTtsModel::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights,
-                                                            int layer, int,
-                                                            const std::string &type) {
-    return minicpmo45::load_language_block(weights, config, layer, type,
-        mfq::models::minicpmo45::LanguageComponent::standalone_tts);
-}
-
 mfq_tensor_backend::Tensor MiniCPMO45Model::adapter_embed(mfq_tensor_backend::Tensor output) const {
     return output.to(mfq_tensor_backend::kBFloat16).contiguous();
 }
@@ -92,11 +81,9 @@ MiniCPMO45Model::adapter_next_token(const QuantLinear &lm_head,
 namespace mfq::cuda {
 
 template struct FullAttentionSessionCodec<MiniCPMO45Model>;
-template struct FullAttentionSessionCodec<MiniCPMOTtsModel>;
 
 } // namespace mfq::cuda
 
 namespace mfq::models {
 template struct minicpmo45::CausalLm<cuda::CudaCausalOps<cuda::MiniCPMO45Model>>;
-template struct minicpmo45::TtsCausalLm<cuda::CudaCausalOps<cuda::MiniCPMOTtsModel>>;
 } // namespace mfq::models

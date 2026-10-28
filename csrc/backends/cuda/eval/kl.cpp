@@ -9,6 +9,7 @@
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen35/forward.h"
+#include "models/minicpmo45/forward.h"
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/models/load.h"
 #include "quant_linear.h"
@@ -73,10 +74,6 @@ const char * kl_evaluator_name(KlEvaluator evaluator) {
 }
 
 template <typename Model>
-constexpr bool is_qwen35_model =
-    std::is_same_v<std::remove_cvref_t<Model>, mfq::cuda::qwen35::Model>;
-
-template <typename Model>
 std::string_view kl_model_type(const Model& model) {
     return model.metadata.model_type;
 }
@@ -88,9 +85,10 @@ mfq_tensor_backend::Tensor kl_hidden_forward(
     auto& state,
     mfq::cuda::Executor* executor,
     mfq_tensor_backend::Tensor ids) {
-    if constexpr (is_qwen35_model<Model>) {
-        if (!executor) throw std::runtime_error("Qwen KL evaluation requires an executor");
-        return mfq::cuda::qwen35::forward(
+    if constexpr (requires { forward(model, state, *executor, execution.collectives,
+            execution.forward_mode(), mfq::cuda::Input{}); }) {
+        if (!executor) throw std::runtime_error("CUDA model evaluation requires an executor");
+        return forward(
             model, state, *executor, execution.collectives,
             execution.forward_mode(), mfq::cuda::Input{std::move(ids)});
     } else {
@@ -103,9 +101,9 @@ mfq_tensor_backend::Tensor kl_logits_from_hidden(
     Model& model,
     mfq::cuda::Executor* executor,
     mfq_tensor_backend::Tensor hidden) {
-    if constexpr (is_qwen35_model<Model>) {
-        if (!executor) throw std::runtime_error("Qwen KL evaluation requires an executor");
-        return mfq::cuda::qwen35::logits(model, *executor, std::move(hidden));
+    if constexpr (requires { logits(model, *executor, hidden); }) {
+        if (!executor) throw std::runtime_error("CUDA model evaluation requires an executor");
+        return logits(model, *executor, std::move(hidden));
     } else {
         return model.logits_from_hidden(std::move(hidden));
     }
@@ -118,7 +116,8 @@ mfq_tensor_backend::Tensor kl_forward_logits(
     auto& state,
     mfq::cuda::Executor* executor,
     mfq_tensor_backend::Tensor ids) {
-    if constexpr (is_qwen35_model<Model>) {
+    if constexpr (requires { forward(model, state, *executor, execution.collectives,
+            execution.forward_mode(), mfq::cuda::Input{}); }) {
         return kl_logits_from_hidden(
             model, executor, kl_hidden_forward(
                 execution, model, state, executor, std::move(ids)));
@@ -1192,7 +1191,7 @@ int run_kl_eval_streamed(
 
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_KL(mfq::cuda::MiniCPMOTtsCausalLm, mfq::cuda::MiniCPMOTtsCausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::Gemma4CausalLm, mfq::cuda::Gemma4CausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::GlmDsaCausalLm, mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::Glm5CausalLm, mfq::cuda::Glm5CausalLm);

@@ -963,7 +963,6 @@ template Generation run_mtp_generation<mfq::cuda::qwen35::Model, mfq::cuda::qwen
   InferenceOutput &, int64_t, const mfq::cuda::PreparedPrompt *, std::size_t,
   mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Gemma4CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Glm5CausalLm);

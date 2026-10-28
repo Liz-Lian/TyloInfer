@@ -1,13 +1,14 @@
 #pragma once
 
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/models/qwen35/load.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/qwen35/state.h"
+#include "models/minicpmo45/state.h"
 #include "cuda_runtime_config.h"
 
 #include <chrono>
@@ -93,13 +94,44 @@ auto with_loaded_cuda_model(
         return finish(model, state, executor, runtime_components, started);
     };
 
+    auto load_tts = [&] {
+        auto started = std::chrono::steady_clock::now();
+        auto definition = load_model_config_json(*source, options.config_path);
+        definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
+            source->resolved_model_graph().backbone, options.context_size);
+        auto model = minicpmo45::read(source, definition, options.context_size);
+        if (execution.expert_parallel.enabled())
+            throw std::runtime_error("--expert-parallel requires a model with routed experts");
+        execution.layer_placement.prepare(model.config.num_hidden_layers);
+        execution.dense_cpu_layer_count = execution.n_gpu_layers >= 0
+            ? static_cast<int>(std::max<int64_t>(model.config.num_hidden_layers - execution.n_gpu_layers, 0)) : 0;
+        if (execution.dense_cpu_layer_count > 0) {
+            if (model_parallel_enabled(execution) || execution.layer_placement.enabled())
+                throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
+            std::cerr << "dense_layer_placement cpu=0-" << execution.dense_cpu_layer_count - 1
+                << " gpu=" << execution.dense_cpu_layer_count << '-' << model.config.num_hidden_layers - 1
+                << " cpu_threads=" << mfq_get_num_threads() << '\n';
+        }
+        weight_loader::Loader weights{*source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.stores.weights, execution.tq};
+        minicpmo45::load(model, weights, execution.layer_placement,
+            execution.dense_cpu_layer_count, execution.yarn);
+        minicpmo45::State state(model);
+        if (runtime_options::kv_vram_preallocated()) state.preallocate();
+        auto executor = execution.make_executor();
+        auto components = load_runtime_components(model, weights, load_optional_components);
+        return finish(model, state, executor, components, started);
+    };
+
     switch (cuda_backbone(source->resolved_model_graph().backbone)) {
         case CudaBackbone::generic_qwen:
             return load_qwen();
         case CudaBackbone::minicpmo45:
             return load.template operator()<MiniCPMO45CausalLm>();
         case CudaBackbone::minicpmo_tts:
-            return load.template operator()<MiniCPMOTtsCausalLm>();
+            return load_tts();
         case CudaBackbone::gemma4:
             return load.template operator()<Gemma4CausalLm>();
         case CudaBackbone::glm_dsa:

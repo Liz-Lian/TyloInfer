@@ -161,7 +161,6 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
                                                   std::shared_ptr<const mfq::ModelSource>, bool)
 
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMOTtsCausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Gemma4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Glm5CausalLm);
@@ -444,12 +443,12 @@ load_runtime_components(
 }
 
 template <>
-RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm>
+RuntimeComponents<mfq::cuda::minicpmo45::Model>
 load_runtime_components(
-        mfq::cuda::MiniCPMOTtsCausalLm& model,
+        mfq::cuda::minicpmo45::Model& model,
         const mfq::cuda::weight_loader::Loader& weights,
         bool) {
-    RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm> result{model.graph, model.plan};
+    RuntimeComponents<mfq::cuda::minicpmo45::Model> result{model.graph, model.plan};
     return result;
 }
 

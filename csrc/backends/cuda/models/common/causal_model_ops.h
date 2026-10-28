@@ -102,7 +102,6 @@ struct CausalResources {
 };
 
 struct MiniCPMO45Model;
-struct MiniCPMOTtsModel;
 struct Gemma4Model;
 struct GlmDsaModel;
 struct Glm5Model;
@@ -343,7 +342,6 @@ template <typename Model> struct CudaCausalOps : Model {
 };
 
 using MiniCPMO45CausalLm = mfq::models::minicpmo45::CausalLm<CudaCausalOps<MiniCPMO45Model>>;
-using MiniCPMOTtsCausalLm = mfq::models::minicpmo45::TtsCausalLm<CudaCausalOps<MiniCPMOTtsModel>>;
 using Gemma4CausalLm = mfq::models::gemma4::CausalLm<CudaCausalOps<Gemma4Model>>;
 using GlmDsaCausalLm = mfq::models::glm_dsa::CausalLm<CudaCausalOps<GlmDsaModel>>;
 using Glm5CausalLm = mfq::models::glm5_next::CausalLm<CudaCausalOps<Glm5Model>>;

@@ -9,6 +9,7 @@
 #include "models/glm5_next/ops.h"
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
+#include "models/minicpmo45/forward.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen35/forward.h"
 #include "models/qwen4_exp/ops.h"
@@ -800,17 +801,23 @@ template <class Model, class State> struct CudaGenerationContext {
     }
     Generation speculate(mfq::engine::InferenceRequest &input, mfq::engine::InferenceOutput &output,
         size_t reused, Hidden restored, Hidden *committed) {
-        prepare_prefill_workspace(input.prompt.size()-reused);
-        return run_mtp_generation(model, state, executor, execution.collectives,
-            execution.forward_mode(), execution.stores.weights, metadata,
-            *mtp,
-            input,
-            output,
-            prefill_chunk(input.prompt.size()-reused),
-            prepared ? &*prepared : nullptr,
-            reused,
-            std::move(restored),
-            committed,prefix_boundary,restore);
+        if constexpr (has_forward<Model, State> && !requires {
+            replay(model, state, *executor, int64_t{});
+        }) {
+            throw std::invalid_argument("this CUDA model has no speculative predictor");
+        } else {
+            prepare_prefill_workspace(input.prompt.size()-reused);
+            return run_mtp_generation(model, state, executor, execution.collectives,
+                execution.forward_mode(), execution.stores.weights, metadata,
+                *mtp,
+                input,
+                output,
+                prefill_chunk(input.prompt.size()-reused),
+                prepared ? &*prepared : nullptr,
+                reused,
+                std::move(restored),
+                committed,prefix_boundary,restore);
+        }
     }
 };
 
@@ -832,8 +839,8 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
         output);
 }
 
-#define TYLOINFER_INSTANTIATE_FLOW(MODEL)                                                                \
-    template Generation generate(MODEL &, MODEL &, mfq::cuda::Executor*, CudaExecutionContext &,    \
+#define TYLOINFER_INSTANTIATE_FLOW(MODEL, STATE)                                                                \
+    template Generation generate(MODEL &, STATE &, mfq::cuda::Executor*, CudaExecutionContext &,    \
         const mfq::models::CausalLmMetadata &,                                                       \
         DecodeGraphCache &,                                                                        \
         TextSessionCache &,                                                                        \
@@ -844,22 +851,16 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
         std::optional<PreparedPrompt>,                                                         \
         mfq::engine::ContinuousBatch<CudaBatchOperations<MODEL>>*, std::string,                    \
         std::function<void()>);
-template Generation generate(mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &,
-    mfq::cuda::Executor*, CudaExecutionContext &,
-    const mfq::models::CausalLmMetadata &, DecodeGraphCache &, TextSessionCache &,
-    const CudaRuntimeConfig &, mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &,
-    MtpModule *, std::optional<PreparedPrompt>,
-    mfq::engine::ContinuousBatch<CudaBatchOperations<mfq::cuda::qwen35::Model>>*, std::string,
-    std::function<void()>);
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMOTtsCausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Gemma4CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::GlmDsaCausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Glm5CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV4CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV41CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::NemotronHCausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Gemma4CausalLm, mfq::cuda::Gemma4CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::GlmDsaCausalLm, mfq::cuda::GlmDsaCausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Glm5CausalLm, mfq::cuda::Glm5CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV4CausalLm, mfq::cuda::DeepseekV4CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::NemotronHCausalLm, mfq::cuda::NemotronHCausalLm)
 
 #undef TYLOINFER_INSTANTIATE_FLOW
 } // namespace mfq::cuda::internal

@@ -46,26 +46,10 @@ struct CudaSessionCodec<MiniCPMO45Model> : FullAttentionSessionCodec<MiniCPMO45M
 
 extern template struct FullAttentionSessionCodec<MiniCPMO45Model>;
 
-struct MiniCPMOTtsModel : CausalResources {
-    template <class Backend> using CausalModel = mfq::models::minicpmo45::TtsCausalLm<Backend>;
-    mfq::models::ModelConfig config;
-
-    bool adapter_uses_common_rope() const noexcept;
-    bool adapter_supports_dense_cpu_offload() const noexcept;
-    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
-                                              const std::string &type);
-};
-
-template <>
-struct CudaSessionCodec<MiniCPMOTtsModel> : FullAttentionSessionCodec<MiniCPMOTtsModel> {};
-
-extern template struct FullAttentionSessionCodec<MiniCPMOTtsModel>;
-
 } // namespace mfq::cuda
 
 namespace mfq::models {
 extern template struct minicpmo45::CausalLm<cuda::CudaCausalOps<cuda::MiniCPMO45Model>>;
-extern template struct minicpmo45::TtsCausalLm<cuda::CudaCausalOps<cuda::MiniCPMOTtsModel>>;
 } // namespace mfq::models
 
 namespace mfq::cuda::minicpmo45 {

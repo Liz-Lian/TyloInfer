@@ -7,6 +7,7 @@
 #include "models/glm5_next/ops.h"
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
+#include "models/minicpmo45/model.h"
 #include "models/nemotron_h/ops.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "models/qwen35/model.h"
@@ -95,8 +96,8 @@ load_runtime_components(
     bool load_optional_components);
 
 template <>
-RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm>
+RuntimeComponents<mfq::cuda::minicpmo45::Model>
 load_runtime_components(
-    mfq::cuda::MiniCPMOTtsCausalLm& model,
+    mfq::cuda::minicpmo45::Model& model,
         const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
