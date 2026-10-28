@@ -8,8 +8,6 @@
 #include <stdexcept>
 #include <utility>
 
-struct MtpTarget;
-
 struct MtpStep {
     mfq_tensor_backend::Tensor sample_hidden;
     mfq_tensor_backend::Tensor chain_hidden;
@@ -23,19 +21,16 @@ struct MtpModule {
     virtual ~MtpModule() = default;
     virtual void reset(int64_t batch = 1) = 0;
     virtual mfq_tensor_backend::Tensor forward(
-        const MtpTarget& target,
         mfq_tensor_backend::Tensor previous_hidden,
         mfq_tensor_backend::Tensor next_ids) = 0;
     virtual MtpStep step(
-        const MtpTarget& target,
         mfq_tensor_backend::Tensor previous_hidden,
         mfq_tensor_backend::Tensor next_ids) {
         auto hidden = forward(
-            target, std::move(previous_hidden), std::move(next_ids));
+            std::move(previous_hidden), std::move(next_ids));
         return {hidden, hidden};
     }
     virtual MtpStep step_positioned(
-        const MtpTarget&,
         mfq_tensor_backend::Tensor,
         mfq_tensor_backend::Tensor,
         mfq_tensor_backend::Tensor) {
@@ -81,7 +76,6 @@ struct MtpModule {
             "this CUDA MTP predictor has no target-context adapter");
     }
     virtual mfq_tensor_backend::Tensor draft_block(
-        const MtpTarget&,
         mfq_tensor_backend::Tensor,
         int) {
         throw std::runtime_error(

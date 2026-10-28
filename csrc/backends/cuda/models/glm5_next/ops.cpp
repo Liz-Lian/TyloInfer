@@ -183,14 +183,19 @@ struct Glm5NextBlock final : Block {
     }
 };
 
-Glm5NextMtp::Glm5NextMtp(Projector project) : project_(std::move(project)) {}
+Glm5NextMtp::Glm5NextMtp(Projector project, Collectives& copies, CudaProfiler& profiler,
+                        QuantLinear embedding, int primary)
+    : project_(std::move(project)), copies_(copies), profiler_(profiler),
+      embedding_(std::move(embedding)), primary_(primary) {}
 Glm5NextMtp::~Glm5NextMtp() = default;
 Glm5NextMtp::Glm5NextMtp(Glm5NextMtp&&) noexcept = default;
 
 std::optional<Glm5NextMtp> Glm5NextMtp::load_if_present(const weight_loader::Loader& weights,
-                                                      Projector projector,
+                                                      Projector projector, Collectives& copies,
+                                                      CudaProfiler& profiler, QuantLinear embedding,
                                                       const mfq::models::glm5_next::Config &main) {
-    Glm5NextMtp result{std::move(projector)};
+    Glm5NextMtp result{std::move(projector), copies, profiler, std::move(embedding),
+                       weights.placement.device};
     BlockLoader loader{weights};
     loader.role = "glm5_next";
     if (!mfq::models::glm5_next::load_predictor(result, loader, main))
@@ -206,7 +211,7 @@ void Glm5NextMtp::reset(int64_t next_batch) {
     batch = next_batch;
 }
 
-std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const MtpTarget &target, const Tensor &hidden,
+std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth, bool cache,
                                        const Tensor &supplied_positions,
                                        const Tensor &supplied_embeddings) {
@@ -222,7 +227,7 @@ std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const MtpTarget &target, const T
         *this, b, t, depth, cache, [&](int64_t next) { reset(next); },
         [&] {
             auto embeds =
-                supplied_embeddings.defined() ? supplied_embeddings : target.embed(ids);
+                supplied_embeddings.defined() ? supplied_embeddings : mfq::cuda::embed(embedding_, ids, copies_, profiler_, primary_);
             TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
                                   std::vector<int64_t>({b, t, config.hidden}),
                               "GLM5-Next MTP embedding shape mismatch");
@@ -269,12 +274,12 @@ std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const MtpTarget &target, const T
         [&](int64_t layer, const auto &pos) {});
 }
 
-Tensor Glm5NextMtp::forward(const MtpTarget &target, Tensor hidden, Tensor ids) {
-    return evaluate(target, hidden, ids).first;
+Tensor Glm5NextMtp::forward(Tensor hidden, Tensor ids) {
+    return evaluate(hidden, ids).first;
 }
 
-MtpStep Glm5NextMtp::step(const MtpTarget &target, Tensor hidden, Tensor ids) {
-    auto result = evaluate(target, hidden, ids);
+MtpStep Glm5NextMtp::step(Tensor hidden, Tensor ids) {
+    auto result = evaluate(hidden, ids);
     return {std::move(result.first), std::move(result.second)};
 }
 

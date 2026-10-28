@@ -643,4 +643,16 @@ mfq_tensor_backend::Tensor Projector::geglu(
 
 #endif
 
+mfq_tensor_backend::Tensor embed(const QuantLinear& weight, mfq_tensor_backend::Tensor ids,
+        Collectives& copies, CudaProfiler& profiler, int device) {
+    ids = copies.copy(ids.to(mfq_tensor_backend::kInt64), device).contiguous();
+    return profiler.measure("model.embed", [&] { return quant_embedding_lookup(weight, ids); });
+}
+
+mfq_tensor_backend::Tensor logits(const QuantLinear& weight, mfq_tensor_backend::Tensor hidden,
+        const Projector& project, CudaProfiler& profiler, double softcap) {
+    auto output = profiler.measure("model.lm_head", [&] { return project.run(weight, hidden); });
+    return softcap > 0.0 ? mfq_tensor_backend::tanh(output / softcap) * softcap : output;
+}
+
 } // namespace mfq::cuda

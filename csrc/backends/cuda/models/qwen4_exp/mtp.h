@@ -1,9 +1,10 @@
 #pragma once
 
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 #include "models/common/attention_ops.h"
 #include "engine/models/qwen4_exp/config.h"
 
+struct CudaExecutionContext;
 namespace mfq::cuda::weight_loader { struct Loader; }
 
 namespace mfq::cuda { class GatedResidual; }
@@ -17,6 +18,9 @@ struct Qwen4ExpMtp final : MtpModule {
     using Tensor = mfq_tensor_backend::Tensor;
 
     mfq::models::qwen4_exp::Config config;
+    QuantLinear embedding, output;
+    double softcap = 0;
+    int primary = 0;
     Tensor embedding_norm, hidden_norm;
     Linear embedding_fusion, hidden_fusion;
     std::unique_ptr<GatedResidual> final_mixer;
@@ -42,21 +46,26 @@ struct Qwen4ExpMtp final : MtpModule {
 
     static std::optional<Qwen4ExpMtp> load_if_present(CudaExecutionContext &execution,
                                                       const weight_loader::Loader& weights,
-                                                      const mfq::models::qwen4_exp::Config &main);
+                                                      const mfq::models::qwen4_exp::Config &main,
+                                                      QuantLinear embedding, QuantLinear output,
+                                                      double softcap);
+
+    Tensor embed(Tensor ids) const;
+    Tensor logits(Tensor hidden) const;
 
     void reset(int64_t next_batch = 1) override;
 
-    std::pair<Tensor, Tensor> evaluate(const MtpTarget &target, const Tensor &hidden,
+    std::pair<Tensor, Tensor> evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth = 0, bool cache = true,
                                        const Tensor &supplied_positions = {},
                                        const Tensor &supplied_embeddings = {},
                                        bool history_only = false);
 
-    Tensor forward(const MtpTarget &target, Tensor hidden, Tensor ids) override;
+    Tensor forward(Tensor hidden, Tensor ids) override;
 
-    MtpStep step(const MtpTarget &target, Tensor hidden, Tensor ids) override;
-    MtpStep step_positioned(const MtpTarget &target, Tensor hidden, Tensor ids, Tensor positions) override;
-    void history_step(const MtpTarget &target, Tensor hidden, Tensor ids, Tensor positions = {},
+    MtpStep step(Tensor hidden, Tensor ids) override;
+    MtpStep step_positioned(Tensor hidden, Tensor ids, Tensor positions) override;
+    void history_step(Tensor hidden, Tensor ids, Tensor positions = {},
                       bool scalar_chain = false);
 
     int64_t cache_position() const noexcept override;

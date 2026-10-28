@@ -443,7 +443,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     "block predictor cache did not advance");
                 if (requested_depth > 0) {
                     auto block = mtp.draft_block(
-                        ops.target, ops.ids_for({next_ids.back()}), requested_depth);
+                        ops.ids_for({next_ids.back()}), requested_depth);
                     require_execution(ops.size(block, 1) == requested_depth,
                         "block predictor returned an incomplete draft");
                     auto previous = ops.ids_for({next_ids.back()});

@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/executor/speculative_sequence.h"
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 #include "models/common/prompt.h"
 
 #include "engine/executor/sampler.h"
@@ -92,7 +92,6 @@ template <class Model, class State> struct CudaMtpOps {
   const mfq::models::CausalLmMetadata &metadata;
   MtpModule &mtp;
   const mfq::cuda::PreparedPrompt *prepared;
-  MtpTarget target;
   bool transformed_prompt;
   int position_axes;
   int64_t prefill_compute_chunk;
@@ -283,7 +282,6 @@ template <class Model, class State> struct CudaMtpOps {
              std::function<void()> restore = {})
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
         weights(weights), metadata(metadata), mtp(mtp), prepared(prepared),
-        target(model, executor, collectives, mode.primary),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt && prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
@@ -551,7 +549,7 @@ template <class Model, class State> struct CudaMtpOps {
         const auto check_start=mtp.cache_position();
         if(!checked[ids.size(1)]) {
           const auto start=mtp.cache_position();
-          auto expected=mtp.step_positioned(target,hidden,ids,positions);
+          auto expected=mtp.step_positioned(hidden,ids,positions);
           expected_hidden=expected.sample_hidden.narrow(1,prefix,1).clone();
           expected_chain=expected.chain_hidden.narrow(1,prefix,1).clone();
           mtp.trim_cache_to(start);
@@ -596,7 +594,7 @@ template <class Model, class State> struct CudaMtpOps {
             mtp.trim_cache_to(check_start);
             MtpStep scalar;
             for(int64_t row=0;row<ids.size(1);++row)
-              scalar=mtp.step_positioned(target,hidden.narrow(1,row,1),ids.narrow(1,row,1),
+              scalar=mtp.step_positioned(hidden.narrow(1,row,1),ids.narrow(1,row,1),
                   positions.defined()?positions.narrow(-1,row,1):Tensor{});
             const auto [error,close]=difference(scalar);scalar_error=error;
             std::fprintf(stderr,"runtime_mtp_history_tail_scalar_check rows=%lld batch_max_error=%.8f scalar_max_error=%.8f close=%d\n",
@@ -623,9 +621,9 @@ template <class Model, class State> struct CudaMtpOps {
       }
     }
     auto result=positions.defined()
-               ? mtp.step_positioned(target, std::move(hidden), std::move(ids),
+               ? mtp.step_positioned(std::move(hidden), std::move(ids),
                                      std::move(positions))
-               : mtp.step(target, std::move(hidden), std::move(ids));
+               : mtp.step(std::move(hidden), std::move(ids));
     const bool initialized=mtp.take_graph_initialization();
     target_maintenance=target_maintenance || initialized;
     projected_predictor_logits = result.sample_logits;
@@ -644,7 +642,7 @@ template <class Model, class State> struct CudaMtpOps {
           predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
           const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
-          predictor->history_step(target,hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),
+          predictor->history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),
               positions.defined()?positions.narrow(-1,offset,rows):Tensor{},scalar_chain);
         }
         target_maintenance=mtp.take_graph_initialization() || target_maintenance;
@@ -704,7 +702,7 @@ template <class Model, class State> struct CudaMtpOps {
             std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
         {
           auto resident_hidden=hidden.to(mfq_tensor_backend::kCUDA);
-          (void)predictor.evaluate(target,resident_hidden,ids,0,true,positions,{},true);
+          (void)predictor.evaluate(resident_hidden,ids,0,true,positions,{},true);
         }
         TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
         prefill_finished=true;

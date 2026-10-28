@@ -3,7 +3,7 @@
 #include "models/qwen35/predictor.h"
 #include "engine/executor/run.h"
 #include "models/qwen35/mtp_state.h"
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 
 #include <memory>
 
@@ -11,14 +11,15 @@ namespace mfq::cuda::qwen35 {
 
 class Mtp final : public MtpModule {
 public:
-    Mtp(Predictor model, std::unique_ptr<Executor> executor, Collectives& copies,
+    Mtp(Predictor model, QuantLinear embedding, RopeCache rope,
+        std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate);
 
     void reset(int64_t batch = 1) override;
-    mfq_tensor_backend::Tensor forward(const MtpTarget& target,
+    mfq_tensor_backend::Tensor forward(
         mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor next_ids) override;
-    MtpStep step_positioned(const MtpTarget& target, mfq_tensor_backend::Tensor hidden,
+    MtpStep step_positioned(mfq_tensor_backend::Tensor hidden,
         mfq_tensor_backend::Tensor next_ids, mfq_tensor_backend::Tensor positions) override;
 
     int64_t cache_position() const noexcept override { return state_.position(); }
@@ -34,11 +35,13 @@ public:
     bool retains_partial_target_prefix() const noexcept override { return true; }
 
 private:
-    mfq_tensor_backend::Tensor evaluate(const MtpTarget& target,
+    mfq_tensor_backend::Tensor evaluate(
         mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor next_ids,
         mfq_tensor_backend::Tensor positions);
 
     Predictor model_;
+    QuantLinear embedding_;
+    RopeCache rope_;
     MtpState state_;
     std::vector<Task> tasks_;
     std::unique_ptr<Executor> executor_;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 #include "models/common/attention_ops.h"
 #include "engine/models/glm5_next/config.h"
 
@@ -25,24 +25,26 @@ struct Glm5NextMtp final : MtpModule {
     std::vector<int64_t> lengths;
     int64_t batch = 0;
 
-    explicit Glm5NextMtp(Projector project);
+    Glm5NextMtp(Projector project, Collectives& copies, CudaProfiler& profiler,
+                QuantLinear embedding, int primary);
     ~Glm5NextMtp() override;
     Glm5NextMtp(Glm5NextMtp&&) noexcept;
 
     static std::optional<Glm5NextMtp> load_if_present(const weight_loader::Loader& weights,
-                                                       Projector projector,
+                                                      Projector projector, Collectives& copies,
+                                                      CudaProfiler& profiler, QuantLinear embedding,
                                                       const mfq::models::glm5_next::Config &main);
 
     void reset(int64_t next_batch = 1) override;
 
-    std::pair<Tensor, Tensor> evaluate(const MtpTarget &target, const Tensor &hidden,
+    std::pair<Tensor, Tensor> evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth = 0, bool cache = true,
                                        const Tensor &supplied_positions = {},
                                        const Tensor &supplied_embeddings = {});
 
-    Tensor forward(const MtpTarget &target, Tensor hidden, Tensor ids) override;
+    Tensor forward(Tensor hidden, Tensor ids) override;
 
-    MtpStep step(const MtpTarget &target, Tensor hidden, Tensor ids) override;
+    MtpStep step(Tensor hidden, Tensor ids) override;
 
     int64_t cache_position() const noexcept override;
 
@@ -56,6 +58,10 @@ struct Glm5NextMtp final : MtpModule {
 
   private:
     Projector project_;
+    Collectives& copies_;
+    CudaProfiler& profiler_;
+    QuantLinear embedding_;
+    int primary_;
 };
 
 } // namespace mfq::cuda::glm5_next

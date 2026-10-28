@@ -2,7 +2,7 @@
 
 #include "backends/cuda/engine/weights/load.h"
 
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 #include "models/common/full_block.h"
 #include "engine/models/nemotron_h/causal_lm.h"
 #include "ops.h"
@@ -27,6 +27,9 @@ struct NemotronHMtp final : MtpModule {
     using Tensor = mfq_tensor_backend::Tensor;
 
     mfq::cuda::nemotron_h::Config config;
+    QuantLinear embedding;
+    RopeCache rope;
+    int primary = 0;
     QuantLinear fusion;
     Tensor embedding_norm, hidden_norm, output_norm;
     std::vector<std::unique_ptr<Block>> blocks;
@@ -40,7 +43,8 @@ struct NemotronHMtp final : MtpModule {
 
     static std::optional<NemotronHMtp> load_if_present(CudaExecutionContext &execution,
                                                        const weight_loader::Loader& weights,
-                                                       const mfq::models::nemotron_h::Config &main) {
+                                                       const mfq::models::nemotron_h::Config &main,
+                                                       QuantLinear embedding, RopeCache rope) {
         const bool fusion_present = weights.has("predictor.fusion.weight");
         if (!fusion_present) {
             TYLOINFER_RUNTIME_CHECK(!weights.has_prefix("predictor."),
@@ -52,6 +56,9 @@ struct NemotronHMtp final : MtpModule {
         NemotronHMtp result;
         result.config = main;
         result.execution = &execution;
+        result.embedding = std::move(embedding);
+        result.rope = std::move(rope);
+        result.primary = weights.placement.device;
         result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
         result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
         result.output_norm = weights.tensor("predictor.output_norm.weight");
@@ -85,19 +92,20 @@ struct NemotronHMtp final : MtpModule {
         batch = next_batch;
     }
 
-    std::pair<Tensor, Tensor> evaluate(const MtpTarget &target, const Tensor &hidden,
+    std::pair<Tensor, Tensor> evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth = 0,
                                        const Tensor &supplied_positions = {}) {
         struct Ops {
             using Tensor = mfq_tensor_backend::Tensor;
             NemotronHMtp &model;
-            const MtpTarget &target;
             static int rank(const Tensor &x) { return x.dim(); }
             static int64_t size(const Tensor &x, int axis) { return x.size(axis); }
             static int64_t elements(const Tensor &x) { return x.numel(); }
             static bool defined(const Tensor &x) { return x.defined(); }
             Tensor embed(Tensor ids, const Tensor &like) {
-                return target.embed(std::move(ids)).to(like.scalar_type());
+                return mfq::cuda::embed(model.embedding, std::move(ids),
+                    model.execution->collectives, model.execution->profiler, model.primary)
+                    .to(like.scalar_type());
             }
             Tensor normalize(const Tensor &x, mfq::models::nemotron_h::PredictorNorm role) {
                 using Norm = mfq::models::nemotron_h::PredictorNorm;
@@ -133,30 +141,30 @@ struct NemotronHMtp final : MtpModule {
                     sequence_lengths = lengths(x.size(0), model.lengths[stage] + 1, pos);
                 for (auto &block : model.blocks)
                     x = block->forward(*model.execution, std::move(x), pos, model.lengths[stage],
-                                       sequence_lengths, *target.rope);
+                                       sequence_lengths, model.rope);
                 return x;
             }
-        } ops{*this, target};
+        } ops{*this};
         return mfq::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
                                                      true);
     }
 
-    Tensor forward(const MtpTarget &target, Tensor hidden, Tensor ids) override {
-        return evaluate(target, hidden, ids).first;
+    Tensor forward(Tensor hidden, Tensor ids) override {
+        return evaluate(hidden, ids).first;
     }
 
     // Depth chaining reuses the MTP's own final_layernorm output as the next
     // step's hidden state (llama.cpp/vLLM/SGLang), so the chain value is the
     // same normalized tensor the lm_head consumes. The backbone's output_norm
     // is not applied again.
-    MtpStep step(const MtpTarget &target, Tensor hidden, Tensor ids) override {
-        auto result = evaluate(target, hidden, ids);
+    MtpStep step(Tensor hidden, Tensor ids) override {
+        auto result = evaluate(hidden, ids);
         return {result.first, result.first};
     }
 
-    MtpStep step_positioned(const MtpTarget &target, Tensor hidden, Tensor ids,
+    MtpStep step_positioned(Tensor hidden, Tensor ids,
                             Tensor positions) override {
-        auto result = evaluate(target, hidden, ids, 0, positions);
+        auto result = evaluate(hidden, ids, 0, positions);
         return {result.first, result.first};
     }
 

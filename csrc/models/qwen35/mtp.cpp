@@ -20,10 +20,12 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
 
 } // namespace
 
-Mtp::Mtp(Predictor model, std::unique_ptr<Executor> executor, Collectives& copies,
+Mtp::Mtp(Predictor model, QuantLinear embedding, RopeCache rope,
+        std::unique_ptr<Executor> executor, Collectives& copies,
         int device, const int64_t& kv_capacity, Trace* const& trace, const int& trace_scope,
         bool preallocate)
-    : model_(std::move(model)), state_(layout(model_, device), model_.config.hidden_size),
+    : model_(std::move(model)), embedding_(std::move(embedding)), rope_(std::move(rope)),
+      state_(layout(model_, device), model_.config.hidden_size),
       tasks_(model_.tasks()), executor_(std::move(executor)), copies_(copies), device_(device),
       kv_capacity_(kv_capacity), trace_(trace), trace_scope_(trace_scope) {
     if (preallocate) state_.prepare(1, 1);
@@ -31,22 +33,22 @@ Mtp::Mtp(Predictor model, std::unique_ptr<Executor> executor, Collectives& copie
 
 void Mtp::reset(int64_t batch) { state_.reset(batch); }
 
-tb::Tensor Mtp::forward(const MtpTarget& target, tb::Tensor hidden, tb::Tensor next_ids) {
-    return evaluate(target, std::move(hidden), std::move(next_ids), {});
+tb::Tensor Mtp::forward(tb::Tensor hidden, tb::Tensor next_ids) {
+    return evaluate(std::move(hidden), std::move(next_ids), {});
 }
 
-MtpStep Mtp::step_positioned(const MtpTarget& target, tb::Tensor hidden,
+MtpStep Mtp::step_positioned(tb::Tensor hidden,
         tb::Tensor next_ids, tb::Tensor positions) {
-    auto output = evaluate(target, std::move(hidden), std::move(next_ids), std::move(positions));
+    auto output = evaluate(std::move(hidden), std::move(next_ids), std::move(positions));
     return {output, output};
 }
 
-tb::Tensor Mtp::evaluate(const MtpTarget& target, tb::Tensor hidden,
+tb::Tensor Mtp::evaluate(tb::Tensor hidden,
         tb::Tensor next_ids, tb::Tensor positions) {
     const auto& config = model_.config;
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && next_ids.dim() == 2 &&
         hidden.size(0) == next_ids.size(0) && hidden.size(1) == next_ids.size(1) &&
-        hidden.size(2) == config.hidden_size && hidden.size(1) > 0,
+        hidden.size(2) == config.hidden_size && hidden.size(0) > 0 && hidden.size(1) > 0,
         "Qwen MTP inputs must be matching [B,T,H] hidden states and [B,T] next-token IDs");
     const auto batch = hidden.size(0), tokens = hidden.size(1);
     TYLOINFER_RUNTIME_CHECK(state_.position() <= config.max_position_embeddings - tokens,
@@ -65,11 +67,15 @@ tb::Tensor Mtp::evaluate(const MtpTarget& target, tb::Tensor hidden,
 
     state_.prepare(batch, tokens, kv_capacity_);
     const auto kv = state_.views();
-    auto embedded = target.embed(std::move(next_ids)).to(hidden.scalar_type());
+    const Task embedding{task::Embed{0, 0, embedding_}, -1, {}, "model.embed"};
+    Inputs tokens_input;
+    tokens_input.values = {copies_.copy(next_ids.to(tb::kInt64), device_).contiguous()};
+    auto embedded = executor_->run(std::span<const Task>{&embedding, 1}, std::move(tokens_input), {})
+                        .to(hidden.scalar_type());
     Inputs inputs;
     inputs.values = {std::move(hidden), std::move(embedded), {}};
     inputs.kv = kv;
-    inputs.rope = target.rope;
+    inputs.rope = &rope_;
     inputs.attention.positions = pos;
     inputs.attention.cache_position = state_.position();
     if (tokens == 1 && state_.position() > 0)

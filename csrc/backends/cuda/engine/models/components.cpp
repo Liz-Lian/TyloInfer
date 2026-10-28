@@ -231,7 +231,8 @@ RuntimeComponents<mfq::cuda::qwen35::Model> load_runtime_components(
                     execution.collectives, execution.routes, execution.config.tasks,
                     execution.config.ffn, model_parallel_primary_device(execution));
                 result.mtp = std::make_unique<mfq::cuda::qwen35::Mtp>(
-                    std::move(*predictor), std::move(executor), execution.collectives,
+                    std::move(*predictor), model.embed, model.rope,
+                    std::move(executor), execution.collectives,
                     execution.layer_placement.primary_device(), execution.kl_mmq.kv_cache_capacity,
                     execution.gemma_stage_trace, execution.gemma_trace_layer,
                     mfq::cuda::runtime_options::kv_vram_preallocated());
@@ -303,7 +304,8 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
     auto predictor = mfq::cuda::qwen4_exp::Qwen4ExpMtp::load_if_present(
-        *model.execution, weights, model.config);
+        *model.execution, weights, model.config, model.embed, model.lm_head,
+        model.metadata.final_logit_softcapping);
     if (predictor) {
         result.mtp =
             std::make_unique<mfq::cuda::qwen4_exp::Qwen4ExpMtp>(
@@ -333,7 +335,8 @@ RuntimeComponents<mfq::cuda::Glm5CausalLm> load_runtime_components(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
     auto predictor = mfq::cuda::glm5_next::Glm5NextMtp::load_if_present(
-        weights, model.execution->projector(), model.config);
+        weights, model.execution->projector(), model.execution->collectives,
+        model.execution->profiler, model.embed, model.config);
     if (predictor) {
         result.mtp =
             std::make_unique<mfq::cuda::glm5_next::Glm5NextMtp>(
@@ -369,7 +372,8 @@ RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
         "invalid DeepSeek-V4.1 DSpark model");
     result.mtp =
         mfq::cuda::deepseek_v41_runtime::load_dspark_if_present(
-            *model.execution, weights, model.shared->config);
+            *model.execution, weights, model.shared->config, model.embed, model.lm_head,
+            model.metadata.final_logit_softcapping);
     result.mtp_available = static_cast<bool>(result.mtp);
     return result;
 }
@@ -405,7 +409,7 @@ RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
     TYLOINFER_RUNTIME_CHECK(model.supports_speculation(),
         "invalid Nemotron-H predictor model");
     auto predictor = mfq::cuda::nemotron_h::NemotronHMtp::load_if_present(
-        *model.execution, weights, model.config);
+        *model.execution, weights, model.config, model.embed, model.rope);
     // The graph declares the component, so missing weights are a broken
     // container rather than a text-only model.
     TYLOINFER_RUNTIME_CHECK(predictor,

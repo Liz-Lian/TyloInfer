@@ -6,7 +6,7 @@
 #include "dspark.h"
 
 #include "models/common/causal_model_ops.h"
-#include "models/mtp.h"
+#include "engine/executor/mtp.h"
 #include "ops.h"
 
 #include <algorithm>
@@ -48,6 +48,9 @@ dspark_full_attention_plan(std::int64_t batch, std::int64_t queries, std::int64_
 
 struct DeepseekV41Dspark final : MtpModule {
     CudaExecutionContext *execution = nullptr;
+    QuantLinear embedding, output;
+    double softcap = 0;
+    int primary = 0;
     CommonConfig config;
     QuantLinear main_projection;
     Tensor main_norm;
@@ -158,7 +161,9 @@ struct DeepseekV41Dspark final : MtpModule {
 
     static std::optional<DeepseekV41Dspark> load_if_present(CudaExecutionContext &execution,
                                                             const weight_loader::Loader& weights,
-                                                            const CommonConfig &config) {
+                                                            const CommonConfig &config,
+                                                            QuantLinear embedding, QuantLinear output,
+                                                            double softcap) {
         const bool root = weights.has("predictor.stage.0.main_projection.weight");
         const bool any = root || weights.has("predictor.stage.0.attention.query_a.weight") ||
                          weights.has("predictor.stage.0.mlp.router.weight") ||
@@ -172,6 +177,10 @@ struct DeepseekV41Dspark final : MtpModule {
                           "DeepSeek-V4.1 model source has DSpark tensors without configuration");
         DeepseekV41Dspark result;
         result.execution = &execution;
+        result.embedding = std::move(embedding);
+        result.output = std::move(output);
+        result.softcap = softcap;
+        result.primary = weights.placement.device;
         result.config = config;
         result.maximum_context = config.max_position_embeddings;
         const auto first = std::string("predictor.stage.0.");
@@ -227,7 +236,7 @@ struct DeepseekV41Dspark final : MtpModule {
         position = 0;
     }
 
-    Tensor forward(const MtpTarget &, Tensor, Tensor) override {
+    Tensor forward(Tensor, Tensor) override {
         throw std::runtime_error("DeepSeek-V4.1 DSpark uses blockwise drafting");
     }
 
@@ -389,7 +398,7 @@ struct DeepseekV41Dspark final : MtpModule {
             [&](Tensor attended) { return stage.output_projection(*execution, attended); });
     }
 
-    Tensor draft_block(const MtpTarget &target, Tensor anchor_ids, int requested) override {
+    Tensor draft_block(Tensor anchor_ids, int requested) override {
         const auto physical_width =
             std::min<std::int64_t>(config.dspark_block_size, maximum_context - position);
         TYLOINFER_RUNTIME_CHECK(
@@ -410,7 +419,10 @@ struct DeepseekV41Dspark final : MtpModule {
         }
         return mfq::models::deepseek_v41::dspark_draft(
             physical_width, requested, stages.size(),
-            [&](int64_t) { return target.embed(draft_ids).to(mfq_tensor_backend::kFloat16); },
+            [&](int64_t) {
+                return mfq::cuda::embed(embedding, draft_ids, execution->collectives,
+                    execution->profiler, primary).to(mfq_tensor_backend::kFloat16);
+            },
             [&](Tensor embedded) {
                 return embedded.unsqueeze(2)
                     .expand({batch, physical_width, config.hc_mult, config.hidden})
@@ -462,7 +474,8 @@ struct DeepseekV41Dspark final : MtpModule {
                     .contiguous();
             },
             [&](Tensor head_hidden) {
-                return target.logits(weighted_rms(head_hidden, output_norm, config.rms_eps))
+                return mfq::cuda::logits(output, weighted_rms(head_hidden, output_norm, config.rms_eps),
+                    execution->projector(), execution->profiler, softcap)
                     .to(mfq_tensor_backend::kFloat32)
                     .contiguous();
             },
@@ -479,8 +492,11 @@ struct DeepseekV41Dspark final : MtpModule {
 
 std::unique_ptr<::MtpModule> load_dspark_if_present(CudaExecutionContext &execution,
                                                     const weight_loader::Loader& weights,
-                                                    const CommonConfig &config) {
-    auto predictor = DeepseekV41Dspark::load_if_present(execution, weights, config);
+                                                    const CommonConfig &config,
+                                                    QuantLinear embedding, QuantLinear output,
+                                                    double softcap) {
+    auto predictor = DeepseekV41Dspark::load_if_present(execution, weights, config,
+        std::move(embedding), std::move(output), softcap);
     return predictor ? std::make_unique<DeepseekV41Dspark>(std::move(*predictor)) : nullptr;
 }
 

@@ -94,4 +94,9 @@ private:
     mfq_tensor_backend::Tensor geglu(const NintLinearGroup& group, mfq_tensor_backend::Tensor input) const;
 };
 
+mfq_tensor_backend::Tensor embed(const QuantLinear& weight, mfq_tensor_backend::Tensor ids,
+    Collectives& copies, CudaProfiler& profiler, int device);
+mfq_tensor_backend::Tensor logits(const QuantLinear& weight, mfq_tensor_backend::Tensor hidden,
+    const Projector& project, CudaProfiler& profiler, double softcap);
+
 } // namespace mfq::cuda
