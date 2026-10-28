@@ -1,10 +1,27 @@
 #pragma once
 
 #include "ops/vision/vision.h"
+#include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <cstddef>
 
 namespace mfq::cuda::vision {
+
+template <class Forward>
+Tensor workspace(
+    const std::shared_ptr<MoeExpertCache>& cache,
+    std::size_t bytes,
+    Forward forward) {
+    MoePrefillWorkspaceLoan loan(cache);
+    const bool borrowed = loan.begin(bytes) != 0;
+    auto result = forward();
+    if (borrowed) {
+        loan.suspend();
+        result = result.clone();
+        loan.finish();
+    }
+    return result;
+}
 
 template <class Visitor>
 void visit_linear(QuantLinear& weight, Visitor visit) {

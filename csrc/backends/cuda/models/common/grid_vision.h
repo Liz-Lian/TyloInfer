@@ -1,7 +1,6 @@
 #pragma once
+#include "backends/cuda/engine/requests/prompt.h"
 
-#include "backends/cuda/engine/executor/vision.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/vision.h"
 #include "models/qwen35/forward.h"
 #include "ops/vision/vision.h"
@@ -17,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+struct CudaExecutionContext;
 namespace mfq { class ModelSource; }
 
 namespace mfq::cuda::grid_vision_runtime {
@@ -29,8 +29,8 @@ class CudaGridVisionEncoder {
                                       const mfq::ModelSource &model,
                                       const GridVisionConfig &config);
 
-    mfq::StepSequence<Tensor> encode(CudaExecutionContext &execution, Tensor pixels,
-                                      const std::vector<GridShape> &grids) const;
+    mfq::StepSequence<Tensor> encode(Projector projector, std::shared_ptr<MoeExpertCache> cache,
+                                   Tensor pixels, const std::vector<GridShape> &grids) const;
 
     const GridVisionConfig &config() const noexcept { return config_; }
     bool host_weights() const noexcept { return !patch_weight_.is_cuda(); }
@@ -54,11 +54,10 @@ class CudaGridVisionPromptComponent {
          std::string input_contract, std::string position_policy);
 
     template <typename Model>
-    mfq::StepSequence<CudaPreparedPrompt> prepare(const Model &language,
-                                                   CudaExecutionContext &execution,
-                                                   mfq::cuda::Executor *executor,
-                                                   const std::vector<int64_t> &token_ids,
-                                                   const MfqMultimodalInput &media) const {
+    mfq::StepSequence<PreparedPrompt> prepare(
+        const Model &language, Projector projector, std::shared_ptr<MoeExpertCache> cache,
+        Collectives &collectives, int primary, Executor *executor,
+        const std::vector<int64_t> &token_ids, const MfqMultimodalInput &media) const {
         if (media.processor != MfqMultimodalProcessor::grid_vision ||
             media.processor_name != input_contract_ ||
             media.vision_grid_shape != std::vector<int64_t>{1, 3} ||
@@ -103,7 +102,7 @@ class CudaGridVisionPromptComponent {
                               .clone()
                               .to(mfq_tensor_backend::kCUDA);
             co_yield mfq::StepState::advanced;
-            auto encoding = encoder_.encode(execution, std::move(pixels), {grid});
+            auto encoding = encoder_.encode(projector, cache, std::move(pixels), {grid});
             Tensor patches;
             while (auto step = encoding.next()) {
                 if (step.value)
@@ -118,16 +117,16 @@ class CudaGridVisionPromptComponent {
                     [](Tensor value, int64_t rows, int64_t width) {
                         return value.reshape({rows, width});
                     },
-                    [&](Tensor value) { return up(execution.projector(), std::move(value)); },
+                    [&](Tensor value) { return up(projector, std::move(value)); },
                     [](Tensor value) { return mfq_tensor_backend::gelu(value, "none"); },
-                    [&](Tensor value) { return down(execution.projector(), std::move(value)); });
+                    [&](Tensor value) { return down(projector, std::move(value)); });
             };
             if (encoder_.host_weights()) {
                 const auto bytes = vision::weight_bytes(merger_norm_) +
                                    vision::weight_bytes(merger_up_) +
                                    vision::weight_bytes(merger_down_);
-                merged = vision::vision_workspace(
-                    execution, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20),
+                merged = vision::workspace(
+                    cache, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20),
                     [&] {
                         auto norm = vision::to_cuda(merger_norm_);
                         auto up = vision::to_cuda(merger_up_);
@@ -162,8 +161,7 @@ class CudaGridVisionPromptComponent {
                     if (!executor)
                         throw std::invalid_argument(
                             "CUDA grid-Vision Qwen embedding requires an executor");
-                    return embed(language, *executor, execution.collectives,
-                                 execution.layer_placement.primary_device(), std::move(ids))
+                    return embed(language, *executor, collectives, primary, std::move(ids))
                         .contiguous();
                 } else {
                     return language.embed_forward(ids).contiguous();
@@ -185,7 +183,7 @@ class CudaGridVisionPromptComponent {
                     .to(mfq_tensor_backend::kCUDA)
                     .to(mfq_tensor_backend::kInt64);
             });
-        co_yield CudaPreparedPrompt{token_ids, std::move(prepared.embeddings),
+        co_yield PreparedPrompt{token_ids, std::move(prepared.embeddings),
                                     std::move(prepared.positions), prepared.decode_delta,
                                     std::move(cache_key)};
     }

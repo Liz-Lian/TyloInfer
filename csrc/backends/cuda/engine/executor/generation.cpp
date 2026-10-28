@@ -134,7 +134,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     mfq_tensor_backend::Tensor known_token_host;
     mfq::cuda::Sampler sampler;
     bool has_penalties;
-    const CudaPreparedPrompt *prepared;
+    const PreparedPrompt *prepared;
     const CudaDecodeGraphConfig &graph_config;
     mfq_tensor_backend::Tensor full_ids;
     std::int32_t generation_limit = 0;
@@ -147,7 +147,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     CudaGenerationOps(Model &model, State &state, mfq::cuda::Executor* executor,
         CudaExecutionContext &execution,
         const mfq::models::CausalLmMetadata &metadata, DecodeGraphCache &graph,
-        const mfq::engine::InferenceRequest &request, const CudaPreparedPrompt *prepared,
+        const mfq::engine::InferenceRequest &request, const PreparedPrompt *prepared,
         const CudaDecodeGraphConfig &graph_config,int64_t compute_chunk=1024,
         mfq::engine::InferenceOutput* inference_output=nullptr,
         std::function<void()> restore = {})
@@ -548,7 +548,7 @@ template <class Model, class State> struct CudaGenerationContext {
     TextSessionCache &cache;
     const CudaRuntimeConfig &config;
     MtpModule *mtp;
-    std::optional<CudaPreparedPrompt> prepared;
+    std::optional<PreparedPrompt> prepared;
     mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching;
     std::string request_id;
     std::function<void()> restore;
@@ -808,7 +808,7 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     DecodeGraphCache &graph, TextSessionCache &cache,
     const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
     mfq::engine::InferenceOutput &output, MtpModule *mtp,
-    std::optional<CudaPreparedPrompt> prepared,
+    std::optional<PreparedPrompt> prepared,
     mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching, std::string request_id,
     std::function<void()> restore) {
     return mfq::engine::generate_request(
@@ -828,14 +828,14 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
         mfq::engine::InferenceRequest &,                                                           \
         mfq::engine::InferenceOutput &,                                                            \
         MtpModule *,                                                                               \
-        std::optional<CudaPreparedPrompt>,                                                         \
+        std::optional<PreparedPrompt>,                                                         \
         mfq::engine::ContinuousBatch<CudaBatchOperations<MODEL>>*, std::string,                    \
         std::function<void()>);
 template Generation generate(mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &,
     mfq::cuda::Executor*, CudaExecutionContext &,
     const mfq::models::CausalLmMetadata &, DecodeGraphCache &, TextSessionCache &,
     const CudaRuntimeConfig &, mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &,
-    MtpModule *, std::optional<CudaPreparedPrompt>,
+    MtpModule *, std::optional<PreparedPrompt>,
     mfq::engine::ContinuousBatch<CudaBatchOperations<mfq::cuda::qwen35::Model>>*, std::string,
     std::function<void()>);
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm)

@@ -1,5 +1,5 @@
 #include "models/common/axial_patch_vision_ops.h"
-#include "backends/cuda/engine/executor/vision.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/vision.h"
 #include "backends/cuda/engine/weights/vision.h"
 #include "engine/executor/sequence.h"
@@ -56,9 +56,9 @@ struct AlignerWeights {
 };
 
 template<class Weights, class Forward>
-Tensor use_weights(CudaExecutionContext& execution, Weights weights,
+Tensor use_weights(const std::shared_ptr<MoeExpertCache>& cache, Weights weights,
                    std::size_t activations, Forward forward) {
-    return vision::vision_workspace(execution, vision::weight_bytes(weights) + activations, [&] {
+    return vision::workspace(cache, vision::weight_bytes(weights) + activations, [&] {
         auto device = vision::to_cuda(std::move(weights));
         return forward(device);
     });
@@ -87,7 +87,7 @@ struct CudaAxialPatchVisionTower::Impl {
             Affine patch;
             { HostLoading loading(execution);
               patch = affine(execution, *source, "vision.patch_embedding", config.patch_width(), hidden); }
-            value = use_weights(execution, std::move(patch), activations,
+            value = use_weights(execution.stores.weights.moe, std::move(patch), activations,
                                 [&](const auto& weight) { return weight(execution.projector(), patches); });
         }
         co_yield mfq::StepState::advanced;
@@ -109,7 +109,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 block.gate_up = affine(execution, *source, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate);
                 block.down = affine(execution, *source, prefix + ".mlp.down", config.intermediate, hidden);
             }
-            value = use_weights(execution, std::move(block), activations, [&](const auto& weights) {
+            value = use_weights(execution.stores.weights.moe, std::move(block), activations, [&](const auto& weights) {
                 const auto projector = execution.projector();
                 auto qkv = weights.qkv(projector, weights.norm1(value));
                 const auto rope = [&](int index) {
@@ -138,7 +138,7 @@ struct CudaAxialPatchVisionTower::Impl {
                 weights.input = affine(execution, *source, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden);
                 weights.output = affine(execution, *source, "vision.aligner.output", config.output_hidden, config.output_hidden);
             }
-            value = use_weights(execution, std::move(weights), activations, [&](const auto& device) {
+            value = use_weights(execution.stores.weights.moe, std::move(weights), activations, [&](const auto& device) {
                 const auto projector = execution.projector();
                 auto padded = mfq_tensor_backend::cat({device.norm(value), mfq_tensor_backend::zeros({1, hidden}, value.options())}, 0);
                 auto index = mfq_tensor_backend::tensor(indices,

@@ -1,4 +1,5 @@
 #pragma once
+#include "backends/cuda/engine/requests/prompt.h"
 #include "engine/executor/sequence.h"
 
 #include "models/common/causal_model_ops.h"
@@ -75,7 +76,7 @@ class Components {
     ~Components();
 
     mfq::cuda::MiniCPMO45CausalLm &language() noexcept;
-    mfq::StepSequence<CudaPreparedPrompt> prepare(const std::vector<int64_t> &prompt, const MfqMultimodalInput &media);
+    mfq::StepSequence<PreparedPrompt> prepare(const std::vector<int64_t> &prompt, const MfqMultimodalInput &media);
     void start(const MfqDuplexSessionParams &parameters);
     MfqDuplexStepResult step(const MfqDuplexStepInput &input);
     void stop();

@@ -1,4 +1,5 @@
 #pragma once
+#include "backends/cuda/engine/requests/prompt.h"
 
 #include "models/common/block.h"
 #include "ops/vision/block.h"
@@ -333,7 +334,7 @@ class CudaRadioPromptComponent {
     }
 
     template <typename Model>
-    mfq::StepSequence<CudaPreparedPrompt> prepare(Model &language,
+    mfq::StepSequence<PreparedPrompt> prepare(Model &language,
                                                   const std::vector<std::int64_t> &token_ids,
                                                   const MfqMultimodalInput &media) const {
         const auto grids = validated_grids(media);
@@ -385,7 +386,7 @@ class CudaRadioPromptComponent {
                                  .dtype(mfq_tensor_backend::kInt64)
                                  .device(mfq_tensor_backend::kCUDA))
                              .reshape({1, static_cast<std::int64_t>(token_ids.size())});
-        co_yield CudaPreparedPrompt{token_ids, std::move(embeddings), std::move(positions), 0,
+        co_yield PreparedPrompt{token_ids, std::move(embeddings), std::move(positions), 0,
                                     cache_key};
     }
 

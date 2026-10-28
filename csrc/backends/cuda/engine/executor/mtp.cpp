@@ -91,7 +91,7 @@ template <class Model, class State> struct CudaMtpOps {
   CudaExecutionContext &execution;
   const mfq::models::CausalLmMetadata &metadata;
   MtpModule &mtp;
-  const CudaPreparedPrompt *prepared;
+  const mfq::cuda::PreparedPrompt *prepared;
   MtpTarget target;
   bool transformed_prompt;
   int position_axes;
@@ -277,7 +277,7 @@ template <class Model, class State> struct CudaMtpOps {
   CudaMtpOps(Model &model, State &state, mfq::cuda::Executor* executor,
              CudaExecutionContext &execution,
              const mfq::models::CausalLmMetadata &metadata,
-             MtpModule &mtp, const CudaPreparedPrompt *prepared,
+             MtpModule &mtp, const mfq::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              std::function<void()> restore = {})
       : model(model), state(state), executor(executor), execution(execution), metadata(metadata), mtp(mtp), prepared(prepared),
@@ -927,7 +927,7 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
                    const mfq::models::CausalLmMetadata &metadata,
                    MtpModule &mtp, InferenceRequest &request,
                    InferenceOutput &output, int64_t prefill_chunk_size,
-                   const CudaPreparedPrompt *prepared,
+                   const mfq::cuda::PreparedPrompt *prepared,
                    std::size_t reused_tokens,
                    mfq_tensor_backend::Tensor restored_last_hidden,
                    mfq_tensor_backend::Tensor *session_last_hidden,
@@ -957,14 +957,14 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
       MODEL &, MODEL &, mfq::cuda::Executor*, CudaExecutionContext &,            \
       const mfq::models::CausalLmMetadata &, MtpModule &,                       \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
-      const CudaPreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
+      const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>)
 
 template Generation run_mtp_generation<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>(
   mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &,
   mfq::cuda::Executor*, CudaExecutionContext &, const mfq::models::CausalLmMetadata &,
   MtpModule &, InferenceRequest &,
-  InferenceOutput &, int64_t, const CudaPreparedPrompt *, std::size_t,
+  InferenceOutput &, int64_t, const mfq::cuda::PreparedPrompt *, std::size_t,
   mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMOTtsCausalLm);

@@ -2,6 +2,7 @@
 
 #include "backends/cuda/engine/models/vision.h"
 #include "backends/cuda/engine/executor/options.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/load.h"
 
 #include <algorithm>
@@ -108,10 +109,11 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(CudaExecutionContext &executio
 }
 
 mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
-    CudaExecutionContext &execution, Tensor pixels, const std::vector<GridShape> &grids) const {
+    Projector projector, std::shared_ptr<MoeExpertCache> cache, Tensor pixels,
+    const std::vector<GridShape> &grids) const {
     return mfq::models::grid_vision::encode(
         std::move(pixels), config_, grids, blocks_,
-        [&](Tensor input, int64_t count) {
+        [this, cache](Tensor input, int64_t count) {
             if (input.dim() == 5)
                 input = input.reshape({input.size(0), -1});
             if (input.dim() != 2 || input.size(0) != count ||
@@ -127,14 +129,14 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                                    .to(output.scalar_type());
             };
             return host_weights()
-                       ? vision::vision_workspace(
-                             execution,
+                       ? vision::workspace(
+                             cache,
                              patch_weight_.nbytes() + patch_bias_.nbytes() +
                                  std::size_t(count * config_.hidden_size) * 16,
                              run)
                        : run();
         },
-        [&](const LearnedPositionInterpolation &interpolation) {
+        [this, cache](const LearnedPositionInterpolation &interpolation) {
             auto run = [&] {
                 auto position_weight = position_weight_.to(mfq_tensor_backend::kCUDA);
                 auto index = mfq_tensor_backend::tensor(
@@ -158,8 +160,8 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                     1);
             };
             return host_weights()
-                       ? vision::vision_workspace(
-                             execution,
+                       ? vision::workspace(
+                             cache,
                              position_weight_.nbytes() +
                                  std::size_t(interpolation.patch_count * config_.hidden_size) *
                                      48,
@@ -167,23 +169,23 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                        : run();
         },
         [](Tensor hidden, Tensor learned) { return hidden + learned.to(hidden.scalar_type()); },
-        [&](const auto &block, Tensor value, const GridVisionLayout &layout) {
+        [this, projector, cache](const auto &block, Tensor value, const GridVisionLayout &layout) {
             // FP32 RoPE intermediates, Q/K/V copies and residual overlap;
             // FFN input/output plus a decoded FP16 projection. GELU is fused.
             const auto projection_scratch =
                 std::size_t(2) * config_.hidden_size *
                 std::max<int64_t>(3 * config_.hidden_size, config_.intermediate_size);
             if (host_weights())
-                return vision::vision_workspace(
-                    execution,
+                return vision::workspace(
+                    cache,
                     vision::weight_bytes(block) + value.nbytes() * 16 + projection_scratch +
                         std::size_t(value.size(0) * config_.intermediate_size) * 12 +
                         (std::size_t(16) << 20),
                     [&] {
                         auto resident = vision::to_cuda(block);
-                        return resident(execution.projector(), value, layout.positions, layout.segment_lengths);
+                        return resident(projector, value, layout.positions, layout.segment_lengths);
                     });
-            return block(execution.projector(), std::move(value), layout.positions, layout.segment_lengths);
+            return block(projector, std::move(value), layout.positions, layout.segment_lengths);
         });
 }
 

@@ -1,4 +1,5 @@
 #pragma once
+#include "backends/cuda/engine/requests/prompt.h"
 
 #include "engine/executor/step.h"
 #include "engine/models/common/causal_metadata.h"
@@ -23,7 +24,7 @@ mfq::engine::Generation generate(
     DecodeGraphCache& graph, TextSessionCache& cache,
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, MtpModule* mtp = nullptr,
-    std::optional<CudaPreparedPrompt> prepared = {},
+    std::optional<PreparedPrompt> prepared = {},
     mfq::engine::ContinuousBatch<CudaBatchOperations<Model>>* batching = nullptr,
     std::string request_id = {}, std::function<void()> restore = {});
 } // namespace mfq::cuda::internal
@@ -35,7 +36,7 @@ mfq::engine::Generation run_mtp_generation(
     const mfq::models::CausalLmMetadata& metadata,
     MtpModule& mtp, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
-    const CudaPreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,
+    const mfq::cuda::PreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,
     mfq_tensor_backend::Tensor restored_last_hidden = {},
     mfq_tensor_backend::Tensor* session_last_hidden = nullptr,
     std::size_t stable_prefix_tokens = 0,

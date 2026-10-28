@@ -499,12 +499,13 @@ struct CudaEngineState {
     void execute(const std::vector<RequestId>& eligible) {
         if (batching) batching->step(eligible);
     }
-    using Prepared = CudaPreparedPrompt;
+    using Prepared = PreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
         if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
         if (components.grid_vision)
-            return components.grid_vision->prepare(language, *execution, executor.get(),
-                                                   input.prompt, *input.vision);
+            return components.grid_vision->prepare(language, execution->projector(),
+                execution->stores.weights.moe, execution->collectives,
+                execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
         if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
             if(components.deepseek_vision)return components.deepseek_vision->prepare(language,input.prompt,*input.vision);
         if constexpr(std::is_same_v<Model,NemotronHCausalLm>)

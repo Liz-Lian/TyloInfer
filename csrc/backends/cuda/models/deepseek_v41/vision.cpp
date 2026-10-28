@@ -79,7 +79,7 @@ mfq::StepSequence<Tensor> Vision::encode(CudaExecutionContext& execution,Tensor 
     }
 }
 
-mfq::StepSequence<CudaPreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
+mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const {
     auto spans=validate_media(config_,tokens,media);
     auto& execution=*language.execution;
@@ -124,7 +124,7 @@ mfq::StepSequence<CudaPreparedPrompt> Vision::prepare(DeepseekV41CausalLm& langu
         request_key+=key+"|"+std::to_string(span.begin)+"|"+std::to_string(span.end)+";";
         co_yield mfq::StepState::advanced;
     }
-    CudaPreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
+    PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
     prepared.image_mask=mfq_tensor_backend::tensor(mask,mfq_tensor_backend::TensorOptions()
         .dtype(mfq_tensor_backend::kUInt8).device(mfq_tensor_backend::kCPU)).reshape({1,-1});
     static std::atomic_flag reported=ATOMIC_FLAG_INIT;

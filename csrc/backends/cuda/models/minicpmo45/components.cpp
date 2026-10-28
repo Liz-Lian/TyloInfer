@@ -34,7 +34,7 @@ mfq::cuda::MiniCPMO45CausalLm& Components::language() noexcept {
     return state_->runtime.language;
 }
 
-mfq::StepSequence<CudaPreparedPrompt> Components::prepare(
+mfq::StepSequence<PreparedPrompt> Components::prepare(
         const std::vector<int64_t>& prompt, const MfqMultimodalInput& vision) {
     const auto cpu_i64 =
         mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCPU);
@@ -95,7 +95,7 @@ mfq::StepSequence<CudaPreparedPrompt> Components::prepare(
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
     }
-    CudaPreparedPrompt prepared;
+    PreparedPrompt prepared;
     prepared.token_ids = prompt;
     prepared.embeddings = std::move(result.input_embeddings);
     prepared.positions = mfq_tensor_backend::arange(static_cast<int64_t>(prompt.size()), cuda_i64);

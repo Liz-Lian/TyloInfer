@@ -1,5 +1,6 @@
 #pragma once
 #include "formats/format_features.h"
+#include "backends/cuda/engine/requests/prompt.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "engine/executor/run.h"
 #include "engine/executor/ffn.h"
@@ -62,27 +63,13 @@ struct CudaStores {
     }
 };
 
-struct CudaPreparedPrompt {
-    std::vector<std::int64_t> token_ids;
-    mfq_tensor_backend::Tensor embeddings;
-    mfq_tensor_backend::Tensor positions;
-    int decode_position_delta = 0;
-    std::string cache_key;
-    mfq_tensor_backend::Tensor image_mask;
-
-    bool transformed() const noexcept {
-        return embeddings.defined() || positions.defined() ||
-            decode_position_delta != 0;
-    }
-};
-
 // Image participation is scoped to one prepared prefill chunk. It must not
 // survive cancellation, a failed forward, ordinary decode or graph capture.
 template<class Model> class CudaImageMaskScope {
     Model& model_;
     bool active_=false;
 public:
-    CudaImageMaskScope(Model& model,const CudaPreparedPrompt* prepared,
+    CudaImageMaskScope(Model& model,const mfq::cuda::PreparedPrompt* prepared,
                        int64_t offset,int64_t count):model_(model) {
         if(!prepared || !prepared->image_mask.defined())return;
         if constexpr(requires {model_.adapter_set_image_mask(prepared->image_mask);}) {
