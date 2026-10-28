@@ -79,7 +79,8 @@ Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
     Inputs inputs;
     inputs.values = {std::move(normalized)};
-    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
+        .to(mfq_tensor_backend::kFloat16).contiguous();
 }
 
 Tensor normalize(const Model& model, Executor& executor, Tensor hidden,

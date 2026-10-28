@@ -71,6 +71,7 @@ tb::Tensor Mtp::evaluate(tb::Tensor hidden,
     Inputs tokens_input;
     tokens_input.values = {copies_.copy(next_ids.to(tb::kInt64), device_).contiguous()};
     auto embedded = executor_->run(std::span<const Task>{&embedding, 1}, std::move(tokens_input), {})
+                        .to(tb::kFloat16).contiguous()
                         .to(hidden.scalar_type());
     Inputs inputs;
     inputs.values = {std::move(hidden), std::move(embedded), {}};

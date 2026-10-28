@@ -139,8 +139,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                         return qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(tb::kFloat32),
                             op.weight, op.eps, op.offset).reshape(input.sizes());
                     } else if constexpr (std::is_same_v<Op, task::Embed>) {
-                        return quant_embedding_lookup(op.weight, std::move(input))
-                            .to(tb::kFloat16).contiguous();
+                        return quant_embedding_lookup(op.weight, std::move(input));
                     } else if constexpr (std::is_same_v<Op, task::Softcap>) {
                         return op.cap > 0.0 ? tb::tanh(input / op.cap) * op.cap : std::move(input);
                     } else if constexpr (std::is_same_v<Op, task::Concat>) {
