@@ -1,5 +1,6 @@
 #include "env.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/executor/decode_graph.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/tq_moe.h"

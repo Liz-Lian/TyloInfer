@@ -386,7 +386,8 @@ struct CudaEngineState {
                 for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.vocab_size());
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
-                auto generation=run_mtp_generation(language,state,executor.get(),*execution,metadata,predictor,request,output,16,
+                auto generation=run_mtp_generation(language,state,executor.get(),execution->collectives,
+                                                   execution->forward_mode(),execution->stores.weights,metadata,predictor,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(execution->stores.weights.moe);

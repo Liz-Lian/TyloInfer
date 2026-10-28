@@ -12,8 +12,7 @@
 #include "models/nemotron_h/ops.h"
 #include "models/qwen35/forward.h"
 #include "models/qwen4_exp/ops.h"
-#include "models/common/full_block.h"
-#include "models/common/block.h"
+#include "models/common/prompt.h"
 #include "engine/executor/sampler.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "mfq_cuda_sampling_ops.h"
@@ -30,6 +29,7 @@ using mfq::engine::Generation;
 namespace {
 
 using Tensor = mfq_tensor_backend::Tensor;
+using mfq_tensor_backend::indexing::Slice;
 
 template <typename Model, typename State>
 constexpr bool has_forward = requires(
@@ -47,31 +47,29 @@ constexpr bool has_logits = requires(
 
 template <typename Model, typename State>
 Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
-              CudaExecutionContext& execution, mfq::cuda::Input input) {
+              Collectives& collectives, const Executor::Mode& mode, mfq::cuda::Input input) {
     static_assert(has_forward<Model, State>);
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                             "CUDA model forward requires an executor");
-    CudaScope scope(execution);
-    return forward(model, state, *executor, execution.collectives,
-                   execution.forward_mode(), std::move(input));
+    return forward(model, state, *executor, collectives,
+                   mode, std::move(input));
 }
 
 template <typename Model>
 Tensor project(Model& model, mfq::cuda::Executor* executor,
-               CudaExecutionContext& execution, Tensor value, bool capped) {
+               const Executor::Mode& mode, Tensor value, bool capped) {
     static_assert(has_logits<Model>);
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                             "CUDA model logits requires an executor");
-    CudaScope scope(execution);
-    return logits(model, *executor, std::move(value), capped, execution.forward_mode());
+    return logits(model, *executor, std::move(value), capped, mode);
 }
 
 template <typename Model, typename State>
 Tensor last_logits(Model& model, State& state, mfq::cuda::Executor* executor,
-                   CudaExecutionContext& execution, Tensor ids, bool capped) {
-    auto value = hidden(model, state, executor, execution,
+                   Collectives& collectives, const Executor::Mode& mode, Tensor ids, bool capped) {
+    auto value = hidden(model, state, executor, collectives, mode,
                         mfq::cuda::Input{std::move(ids)});
-    return project(model, executor, execution,
+    return project(model, executor, mode,
                    value.index({Slice(), -1, Slice()})
                           .to(mfq_tensor_backend::kFloat16)
                           .contiguous(),
@@ -80,13 +78,13 @@ Tensor last_logits(Model& model, State& state, mfq::cuda::Executor* executor,
 
 template <typename Model, typename State>
 static Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* executor,
-    CudaExecutionContext &execution, Tensor ids,
+    Collectives& collectives, const Executor::Mode& mode, CudaProfiler& profiler, Tensor ids,
     mfq::cuda::Sampler &sampler, mfq_tensor_backend::Tensor counts,
     const MfqTokenConstraintPtr &token_constraint) {
     const auto run = [&]() {
         if (sampler.greedy() && !sampler.has_penalties() && !token_constraint) {
             if constexpr (has_forward<Model, State> && has_logits<Model>) {
-                auto logits = last_logits(model, state, executor, execution,
+                auto logits = last_logits(model, state, executor, collectives, mode,
                                               std::move(ids), false)
                                   .contiguous().view({1, -1});
                 return sampler.ops().sample_greedy(std::move(logits));
@@ -95,7 +93,7 @@ static Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* exec
             }
         }
         if constexpr (has_forward<Model, State> && has_logits<Model>) {
-            auto logits = last_logits(model, state, executor, execution,
+            auto logits = last_logits(model, state, executor, collectives, mode,
                                           std::move(ids), true)
                               .contiguous().view({1, -1});
             return mfq::cuda::sample_logits(sampler, std::move(logits), counts,
@@ -107,7 +105,6 @@ static Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* exec
     };
     const auto* setting = mfq::cuda::env_lookup("TYLOINFER_PROFILE_DECODE");
     if (!setting || setting[0] != '1' || ids.numel() > 8) return run();
-    auto& profiler = execution.profiler;
     const bool previous = profiler.enabled;
     profiler.reset();
     profiler.enabled = true;
@@ -126,7 +123,12 @@ template <typename Model, typename State> struct CudaGenerationOps {
     Model &model;
     State &state;
     mfq::cuda::Executor* executor;
-    CudaExecutionContext &execution;
+    Collectives& collectives;
+    const Executor::Mode mode;
+    CudaProfiler& profiler;
+    RoutedCache& weights;
+    bool& serial_branches;
+    bool report_memory;
     const mfq::models::CausalLmMetadata &metadata;
     DecodeGraphCache &graph;
     const MfqTokenConstraintPtr &constraint;
@@ -135,7 +137,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     mfq::cuda::Sampler sampler;
     bool has_penalties;
     const PreparedPrompt *prepared;
-    const CudaDecodeGraphConfig &graph_config;
+    const CudaDecodeGraphConfig graph_config;
     mfq_tensor_backend::Tensor full_ids;
     std::int32_t generation_limit = 0;
     bool graph_active = false;
@@ -145,13 +147,16 @@ template <typename Model, typename State> struct CudaGenerationOps {
     std::function<void()> restore;
 
     CudaGenerationOps(Model &model, State &state, mfq::cuda::Executor* executor,
-        CudaExecutionContext &execution,
+        Collectives& collectives, Executor::Mode mode, CudaProfiler& profiler,
+        RoutedCache& weights, bool& serial_branches, bool report_memory,
         const mfq::models::CausalLmMetadata &metadata, DecodeGraphCache &graph,
         const mfq::engine::InferenceRequest &request, const PreparedPrompt *prepared,
         const CudaDecodeGraphConfig &graph_config,int64_t compute_chunk=1024,
         mfq::engine::InferenceOutput* inference_output=nullptr,
         std::function<void()> restore = {})
-        : model(model), state(state), executor(executor), execution(execution), metadata(metadata), graph(graph), constraint(request.token_constraint),
+        : model(model), state(state), executor(executor), collectives(collectives), mode(mode), profiler(profiler),
+          weights(weights), serial_branches(serial_branches), report_memory(report_memory),
+          metadata(metadata), graph(graph), constraint(request.token_constraint),
           sampler(request.sampling),
           has_penalties(sampler.has_penalties()), prepared(prepared), graph_config(graph_config),
           prefill_compute_chunk(compute_chunk),output(inference_output),restore(std::move(restore)) {
@@ -179,14 +184,14 @@ template <typename Model, typename State> struct CudaGenerationOps {
             prefill_finished=true;
         };
         auto ids = full_ids.narrow(1, chunk.offset, chunk.count).contiguous();
-        CudaImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
+        ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
         Tensor hidden;
         bool layer_major=false,short_windows=false;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
             // TQ groups all prompt rows by expert without expanding an entire
             // layer. Splitting these batches into verification windows would
             // repeatedly transfer the same expert when it is not resident.
-            const bool verification_windows=!execution.stores.weights.tq || chunk.count<=8;
+            const bool verification_windows=!weights.tq || chunk.count<=8;
             if(verification_windows && (!prepared || !prepared->transformed()) && model.reuse_decode_graphs &&
                     model.graph_registry && chunk.count<=128) {
                 // The same bounded prompt windows as MTP avoid materializing
@@ -224,7 +229,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         if (hidden.defined()) {
             // The layer-major path has already advanced every physical cache.
         } else if (prepared && prepared->transformed()) {
-            MoePrefillWorkspaceLoan workspace(execution.stores.weights.moe);
+            MoePrefillWorkspaceLoan workspace(weights.moe);
             bool borrowed=false;
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
                 borrowed=workspace.begin((std::size_t(4)<<30)+
@@ -239,7 +244,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                                            .contiguous();
                 input.advance = true;
                 hidden = ::mfq::cuda::internal::hidden(
-                    model, state, executor, execution, std::move(input));
+                    model, state, executor, collectives, mode, std::move(input));
             } else {
                 hidden = model.hidden_forward_inputs(ids,
                     prepared->embeddings.narrow(1, chunk.offset, chunk.count).contiguous(),
@@ -260,7 +265,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         } else {
             if constexpr (has_forward<Model, State>) {
                 hidden = ::mfq::cuda::internal::hidden(
-                    model, state, executor, execution, mfq::cuda::Input{std::move(ids)});
+                    model, state, executor, collectives, mode, mfq::cuda::Input{std::move(ids)});
             } else {
                 MfqOptional<Tensor> length = mfq_nullopt;
                 if (model.adapter_uses_decode_sequence_length() && chunk.offset > 0 && chunk.count == 1)
@@ -276,7 +281,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                              .to(mfq_tensor_backend::kFloat16)
                              .contiguous();
             if constexpr (has_logits<Model>) {
-                auto logits = project(model, executor, execution, std::move(input), true)
+                auto logits = project(model, executor, mode, std::move(input), true)
                                   .reshape({1, -1});
                 pending = mfq::cuda::sample_logits(sampler, std::move(logits), counts, constraint);
             } else {
@@ -303,14 +308,13 @@ template <typename Model, typename State> struct CudaGenerationOps {
     bool graph_eligible() const {
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
                !metadata.flash_next && mfq_cuda_graph_capture_supported() &&
-               execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
-               !execution.stores.weights.moe && model_parallel_cuda_graph_enabled(execution) &&
+               !weights.moe &&
                generation_limit >= graph_config.minimum_generation_tokens &&
                generation_limit <= graph.generated_capacity;
     }
     void prepare_graph() {
         using Tensor = mfq_tensor_backend::Tensor;
-        graph.ensure_compute_streams(execution.collectives);
+        graph.ensure_compute_streams(collectives);
         MfqCudaGuard graph_device_guard(graph.stream.device_index());
         auto graph_stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
         cudaStream_t graph_stream = graph.stream.stream();
@@ -358,8 +362,10 @@ template <typename Model, typename State> struct CudaGenerationOps {
         const std::int64_t planned =
             decode_graph_bucket(requested, metadata.max_position_embeddings);
         const std::int64_t parts =
-            decode_graph_attention_parts(planned, FullBlock::kDecodeAttentionMaxParts);
+            decode_graph_attention_parts(planned, FullAttention::kDecodeAttentionMaxParts);
         const bool greedy = sampler.greedy();
+        auto graph_mode = mode;
+        graph_mode.ffn.serial = true;
         const auto sample_static = [&]() {
             if constexpr (has_forward<Model, State> && has_logits<Model>) {
                 mfq::cuda::Input input;
@@ -370,9 +376,9 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 input.kv_length = planned;
                 input.attention_parts = parts;
                 auto value = ::mfq::cuda::internal::hidden(
-                    model, state, executor, execution, std::move(input));
+                    model, state, executor, collectives, graph_mode, std::move(input));
                 auto logits = project(
-                    model, executor, execution,
+                    model, executor, graph_mode,
                     value.index({Slice(), -1, Slice()})
                         .to(mfq_tensor_backend::kFloat16)
                         .contiguous(),
@@ -430,7 +436,8 @@ template <typename Model, typename State> struct CudaGenerationOps {
             ++graph.reuses;
         } else {
             graph.invalidate();
-            DecodeGraphBranchScope branch_scope(execution.decode_graph_serial_branches);
+            std::optional<DecodeGraphBranchScope> branch_scope;
+            if constexpr (!has_forward<Model, State>) branch_scope.emplace(serial_branches);
             graph.graph = std::make_unique<MfqCudaGraph>();
             try {
                 const bool double_warmup = metadata.decode_graph_double_warmup;
@@ -446,7 +453,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 }
                 prepare_decode_graph_memory(warmup_states, state.cache_pos,
                     double_warmup, *graph.graph, sample_static,
-                    graph.graph_participant_streams(execution.collectives));
+                    graph.graph_participant_streams(collectives));
                 graph.graph->capture_begin();
                 graph.static_next = sample_static();
                 if (has_penalties) {
@@ -468,7 +475,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
             }
         }
         if (!hit)
-            report_cuda_memory(execution.config, "runtime_graph_capture");
+            report_cuda_memory(report_memory, "runtime_graph_capture");
         if (graph_config.trace) {
             std::cerr << "runtime_cuda_graph action=" << (hit ? "reuse" : "capture")
                       << " requested_len=" << requested << " planned_len=" << planned
@@ -487,7 +494,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                     }
                 }
             }
-            pending = sample_token(model, state, executor, execution,
+            pending = sample_token(model, state, executor, collectives, mode, profiler,
                                    pending.reshape({1, 1}), sampler, counts, constraint);
             return pending.template item<int64_t>();
         }
@@ -780,16 +787,22 @@ template <class Model, class State> struct CudaGenerationContext {
             if(!short_streamed_prefill(input.prompt.size()-reused) &&
                     (!prepared || !prepared->transformed()))logical_chunk=input.prompt.size();
         }
+        auto graph_options = config.decode_graph;
+        graph_options.enabled = graph_options.enabled && execution.dsv4_cpu_offload_layers.empty() &&
+            execution.dense_cpu_layer_count == 0 && model_parallel_cuda_graph_enabled(execution);
         return mfq::engine::generate_sequence(
-            CudaGenerationOps<Model, State>(model, state, executor, execution, metadata, graph, input,
+            CudaGenerationOps<Model, State>(model, state, executor, execution.collectives,
+                execution.forward_mode(), execution.profiler, execution.stores.weights,
+                execution.decode_graph_serial_branches, execution.config.report_cuda_memory, metadata, graph, input,
                 prepared ? &*prepared : nullptr,
-                config.decode_graph,compute_chunk,&output,restore),
+                graph_options,compute_chunk,&output,restore),
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
     Generation speculate(mfq::engine::InferenceRequest &input, mfq::engine::InferenceOutput &output,
         size_t reused, Hidden restored, Hidden *committed) {
         prepare_prefill_workspace(input.prompt.size()-reused);
-        return run_mtp_generation(model, state, executor, execution, metadata,
+        return run_mtp_generation(model, state, executor, execution.collectives,
+            execution.forward_mode(), execution.stores.weights, metadata,
             *mtp,
             input,
             output,

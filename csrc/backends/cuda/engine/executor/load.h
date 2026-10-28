@@ -50,7 +50,7 @@ auto with_loaded_cuda_model(
         }
         mfq_cuda_synchronize();
         const auto loaded = std::chrono::steady_clock::now();
-        report_cuda_memory(execution.config, "loaded");
+        report_cuda_memory(execution.config.report_cuda_memory, "loaded");
         return run(model, state, executor, runtime_components, started, loaded);
     };
     auto load = [&]<typename Model>() {

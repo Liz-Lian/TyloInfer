@@ -1,6 +1,5 @@
 #pragma once
 #include "formats/format_features.h"
-#include "backends/cuda/engine/requests/prompt.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/run.h"
@@ -62,28 +61,6 @@ struct CudaStores {
         kv_memory.reset();
         weights.reset();
     }
-};
-
-// Image participation is scoped to one prepared prefill chunk. It must not
-// survive cancellation, a failed forward, ordinary decode or graph capture.
-template<class Model> class CudaImageMaskScope {
-    Model& model_;
-    bool active_=false;
-public:
-    CudaImageMaskScope(Model& model,const mfq::cuda::PreparedPrompt* prepared,
-                       int64_t offset,int64_t count):model_(model) {
-        if(!prepared || !prepared->image_mask.defined())return;
-        if constexpr(requires {model_.adapter_set_image_mask(prepared->image_mask);}) {
-            model_.adapter_set_image_mask(prepared->image_mask.narrow(1,offset,count).contiguous());
-            active_=true;
-        } else throw std::invalid_argument("model cannot apply an image participation mask");
-    }
-    ~CudaImageMaskScope() {
-        if constexpr(requires {model_.adapter_set_image_mask(mfq_tensor_backend::Tensor{});})
-            if(active_)model_.adapter_set_image_mask({});
-    }
-    CudaImageMaskScope(const CudaImageMaskScope&)=delete;
-    CudaImageMaskScope& operator=(const CudaImageMaskScope&)=delete;
 };
 
 struct CudaExecutionConfig {
@@ -199,36 +176,6 @@ void trace_gemma_stage(
     int layer,
     const char* name,
     const mfq_tensor_backend::Tensor& value);
-void report_cuda_memory(
-    const CudaExecutionConfig& config,
-    const char* stage);
-
-struct DecodeGraphBranchScope {
-    bool& setting;
-    bool previous;
-
-    explicit DecodeGraphBranchScope(bool& value)
-        : setting(value), previous(value) {
-        setting = true;
-    }
-    ~DecodeGraphBranchScope() {
-        setting = previous;
-    }
-};
-
-struct DecodeGraphTpProjectionScope {
-    bool& setting;
-    bool previous;
-
-    explicit DecodeGraphTpProjectionScope(bool& value)
-        : setting(value), previous(value) {
-        setting = true;
-    }
-    ~DecodeGraphTpProjectionScope() {
-        setting = previous;
-    }
-};
-
 namespace mfq::cuda::internal {
 void prepare_sampling_runtime(int64_t vocabulary);
 }

@@ -13,6 +13,8 @@ namespace mfq::cuda {
 using Trace = std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>>;
 }
 
+void report_cuda_memory(bool enabled, const char* stage);
+
 struct ProfileStat {
     double ms = 0.0;
     double wall_ms = 0.0;

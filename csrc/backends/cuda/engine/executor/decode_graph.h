@@ -20,6 +20,19 @@ std::vector<std::unique_ptr<MfqCudaStreamGuard>>
 activate_cuda_graph_compute_streams(
     const std::vector<MfqCudaStream>& compute_streams);
 
+struct DecodeGraphBranchScope {
+    bool& setting;
+    bool previous;
+
+    explicit DecodeGraphBranchScope(bool& value)
+        : setting(value), previous(value) {
+        setting = true;
+    }
+    ~DecodeGraphBranchScope() {
+        setting = previous;
+    }
+};
+
 struct DecodeGraphCache {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;

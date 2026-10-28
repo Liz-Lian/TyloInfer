@@ -29,10 +29,12 @@ mfq::engine::Generation generate(
     std::string request_id = {}, std::function<void()> restore = {});
 } // namespace mfq::cuda::internal
 
+// Creation and every resume run inside the owner's CUDA device/context scope.
 template <typename Model, typename State>
 mfq::engine::Generation run_mtp_generation(
     Model& model, State& state, mfq::cuda::Executor* executor,
-    CudaExecutionContext& execution,
+    mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
+    mfq::cuda::RoutedCache& weights,
     const mfq::models::CausalLmMetadata& metadata,
     MtpModule& mtp, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,

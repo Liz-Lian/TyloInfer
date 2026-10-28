@@ -4,8 +4,8 @@
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/executor/speculative_sequence.h"
 #include "models/mtp.h"
+#include "models/common/prompt.h"
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/sampler.h"
 #include "engine/requests/policy.h"
 #include "engine/requests/inference.h"
@@ -62,22 +62,20 @@ constexpr bool has_replay = requires(
 
 template <typename Model, typename State>
 Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
-              CudaExecutionContext& execution, mfq::cuda::Input input) {
+              mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
+              mfq::cuda::Input input) {
   static_assert(has_forward<Model, State>);
   TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                           "CUDA model forward requires an executor");
-  CudaScope scope(execution);
-  return forward(model, state, *executor, execution.collectives,
-                 execution.forward_mode(), std::move(input));
+  return forward(model, state, *executor, collectives, mode, std::move(input));
 }
 
 template <typename Model, typename State>
 void replay_target(Model& model, State& state, mfq::cuda::Executor* executor,
-                   CudaExecutionContext& execution, std::int64_t accepted) {
+                   std::int64_t accepted) {
   static_assert(has_replay<Model, State>);
   TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                           "CUDA model replay requires an executor");
-  CudaScope scope(execution);
   replay(model, state, *executor, accepted);
 }
 
@@ -88,7 +86,9 @@ template <class Model, class State> struct CudaMtpOps {
   Model &model;
   State &state;
   mfq::cuda::Executor* executor;
-  CudaExecutionContext &execution;
+  mfq::cuda::Collectives& collectives;
+  const mfq::cuda::Executor::Mode mode;
+  mfq::cuda::RoutedCache& weights;
   const mfq::models::CausalLmMetadata &metadata;
   MtpModule &mtp;
   const mfq::cuda::PreparedPrompt *prepared;
@@ -129,7 +129,7 @@ template <class Model, class State> struct CudaMtpOps {
   }
   std::array<double,6> target_costs() const {
     std::array<double,6> result{};
-    for(const auto& [name,value]:execution.stores.weights.metrics()) {
+    for(const auto& [name,value]:weights.metrics()) {
       if(name=="expert_route_wait_ms")result[0]=value;
       else if(name=="expert_host_fetch_ms")result[1]=value;
       else if(name=="expert_host_copy_ms")result[2]=value;
@@ -148,8 +148,8 @@ template <class Model, class State> struct CudaMtpOps {
     if(target_route_cache)discard_moe_speculative_routes(target_route_cache);
   }
   void begin_target_routes(int rows) {
-    begin_moe_speculative_routes(execution.stores.weights.moe,rows);
-    target_route_cache=execution.stores.weights.moe;
+    begin_moe_speculative_routes(weights.moe,rows);
+    target_route_cache=weights.moe;
   }
   void resolve_target_routes(int rows,bool cancelled) {
     if(!target_route_cache)return;
@@ -158,7 +158,7 @@ template <class Model, class State> struct CudaMtpOps {
     target_route_cache.reset();
   }
   bool take_target_maintenance() {
-    const auto captures=moe_expert_graph_captures(execution.stores.weights.moe);
+    const auto captures=moe_expert_graph_captures(weights.moe);
     const bool initialized=captures!=target_graph_captures;
     target_graph_captures=captures;
     return std::exchange(target_maintenance,false) || initialized;
@@ -275,25 +275,26 @@ template <class Model, class State> struct CudaMtpOps {
   }
 
   CudaMtpOps(Model &model, State &state, mfq::cuda::Executor* executor,
-             CudaExecutionContext &execution,
+             mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
+             mfq::cuda::RoutedCache& weights,
              const mfq::models::CausalLmMetadata &metadata,
              MtpModule &mtp, const mfq::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              std::function<void()> restore = {})
-      : model(model), state(state), executor(executor), execution(execution), metadata(metadata), mtp(mtp), prepared(prepared),
-        target(model, executor, execution.collectives,
-               execution.layer_placement.primary_device()),
+      : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
+        weights(weights), metadata(metadata), mtp(mtp), prepared(prepared),
+        target(model, executor, collectives, mode.primary),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt && prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
                           ? 3
                           : 1), prefill_compute_chunk(compute_chunk), output(output),
         restore(std::move(restore)) {
-    target_graph_captures=moe_expert_graph_captures(execution.stores.weights.moe);
+    target_graph_captures=moe_expert_graph_captures(weights.moe);
   }
   void rollback_target(std::int64_t accepted) {
     if constexpr (has_replay<Model, State>)
-      replay_target(model, state, executor, execution, accepted);
+      replay_target(model, state, executor, accepted);
     else
       model.rollback_speculative(accepted);
   }
@@ -344,12 +345,11 @@ template <class Model, class State> struct CudaMtpOps {
   }
   Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
                         int64_t confirmed = 0) {
-    CudaScope scope(execution);
     projected_target_hidden = {}; projected_target_logits = {};
     projected_target_compact={};
     projected_target_greedy.clear();
     target_transfer_bytes = 0;
-    const auto transfer_before=moe_expert_streamed_bytes(execution.stores.weights.moe);
+    const auto transfer_before=moe_expert_streamed_bytes(weights.moe);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     const auto finish_profile=[&] {
       if(!profile_target())return;
@@ -364,7 +364,7 @@ template <class Model, class State> struct CudaMtpOps {
             ? known_ids_host : Tensor{};
         Tensor logits;
         if(auto hidden=mfq::cuda::qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&projected_target_greedy,captured_compact_requested())) {
-          target_transfer_bytes=moe_expert_streamed_bytes(execution.stores.weights.moe)-transfer_before;
+          target_transfer_bytes=moe_expert_streamed_bytes(weights.moe)-transfer_before;
           target_maintenance=target_maintenance || initialized;
           projected_target_hidden = *hidden; projected_target_logits = std::move(logits);
           projected_target_compact=mfq::cuda::qwen4_decode_graph_compact_topk(model);
@@ -379,17 +379,16 @@ template <class Model, class State> struct CudaMtpOps {
       input.ids = std::move(ids);
       input.raw_hidden = raw;
       input.confirmed = confirmed;
-      hidden = ::hidden(model, state, executor, execution, std::move(input));
+      hidden = ::hidden(model, state, executor, collectives, mode, std::move(input));
     } else {
       hidden = model.hidden_forward(ids, mfq_nullopt, mfq_nullopt, nullptr,
                                     mfq_nullopt, raw, confirmed);
     }
-    target_transfer_bytes=moe_expert_streamed_bytes(execution.stores.weights.moe)-transfer_before;
+    target_transfer_bytes=moe_expert_streamed_bytes(weights.moe)-transfer_before;
     finish_profile();
     return hidden;
   }
   Tensor target_suffix(Tensor ids, Tensor *raw) {
-    CudaScope scope(execution);
     if constexpr (requires(Model& value) { value.supports_suffix_speculation(); }) {
       TYLOINFER_RUNTIME_CHECK(model.supports_suffix_speculation(),
                               "model does not support speculative suffix forwarding");
@@ -400,10 +399,10 @@ template <class Model, class State> struct CudaMtpOps {
       projected_target_hidden = {}; projected_target_logits = {};
       projected_target_compact={};
       projected_target_greedy.clear();
-      const auto transfer_before=moe_expert_streamed_bytes(execution.stores.weights.moe);
+      const auto transfer_before=moe_expert_streamed_bytes(weights.moe);
       const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
       auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
-      target_transfer_bytes+=moe_expert_streamed_bytes(execution.stores.weights.moe)-transfer_before;
+      target_transfer_bytes+=moe_expert_streamed_bytes(weights.moe)-transfer_before;
       if(profile_target()) {
         const auto costs_after=target_costs();
         for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];
@@ -437,7 +436,7 @@ template <class Model, class State> struct CudaMtpOps {
     };
     Tensor raw;
     auto ids = input_ids.narrow(1, chunk.offset, chunk.count).contiguous();
-    CudaImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
+    mfq::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(!transformed_prompt && model.reuse_decode_graphs && model.graph_registry && chunk.count<=128) {
         // Reuse bounded routed windows for short prompts as well as continuations.
@@ -480,7 +479,7 @@ template <class Model, class State> struct CudaMtpOps {
         return {std::move(hidden),std::move(raw),timer.elapsed_ms()};
       }
     }
-    MoePrefillWorkspaceLoan workspace(execution.stores.weights.moe);
+    MoePrefillWorkspaceLoan workspace(weights.moe);
     const bool host_history=host_prompt_history(chunk.count);
     bool borrowed=false;
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
@@ -501,7 +500,7 @@ template <class Model, class State> struct CudaMtpOps {
         if (positions) input.positions = std::move(*positions);
         input.advance = true;
         input.raw_hidden = &raw;
-        hidden = ::hidden(model, state, executor, execution, std::move(input));
+        hidden = ::hidden(model, state, executor, collectives, mode, std::move(input));
       } else {
         hidden = model.hidden_forward_inputs(
             ids, std::move(embeddings), std::move(positions), mfq_nullopt, nullptr,
@@ -541,7 +540,6 @@ template <class Model, class State> struct CudaMtpOps {
                : result;
   }
   MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
-    CudaScope scope(execution);
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
           predictor && predictor->layers.size()==1 && model.reuse_decode_graphs &&
@@ -641,7 +639,6 @@ template <class Model, class State> struct CudaMtpOps {
     return result;
   }
   void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions,bool scalar_chain=false) {
-    CudaScope scope(execution);
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
           predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
@@ -675,11 +672,11 @@ template <class Model, class State> struct CudaMtpOps {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(cache_only_prompt_history())return 0;
       if(pairs<=128 || !model.reuse_decode_graphs || !model.graph_registry)return 0;
-      prepare_moe_decode_residency(execution.stores.weights.moe);
+      prepare_moe_decode_residency(weights.moe);
       const auto rows=std::min<int64_t>(1024,pairs);
       const auto bytes=(std::size_t(1)<<30)+std::size_t(rows)*model.config.hidden*
-          model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(execution.stores.weights.moe,true);
-      auto loan=std::make_unique<MoePrefillWorkspaceLoan>(execution.stores.weights.moe);
+          model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(weights.moe,true);
+      auto loan=std::make_unique<MoePrefillWorkspaceLoan>(weights.moe);
       if(loan->begin(bytes))predictor_loan=std::move(loan);
     }
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
@@ -692,7 +689,6 @@ template <class Model, class State> struct CudaMtpOps {
     return 0;
   }
   double predictor_prefill(Tensor hidden, Tensor ids, Tensor positions) {
-    CudaScope scope(execution);
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(!cache_only_prompt_history() && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128)
         end_predictor_prefill();
@@ -703,7 +699,7 @@ template <class Model, class State> struct CudaMtpOps {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(cache_only_prompt_history()) {
         auto& predictor=static_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp&>(mtp);
-        MoePrefillWorkspaceLoan workspace(execution.stores.weights.moe);
+        MoePrefillWorkspaceLoan workspace(weights.moe);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
         {
@@ -905,7 +901,6 @@ template <class Model, class State> struct CudaMtpOps {
                   }) {
       TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                               "CUDA model logits requires an executor");
-      CudaScope scope(execution);
       auto input = (mtp.preserve_output_dtype()
                         ? normalized
                         : normalized.to(mfq_tensor_backend::kFloat16))
@@ -923,7 +918,8 @@ template <class Model, class State> struct CudaMtpOps {
 template <typename Model, typename State>
 Generation
 run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
-                   CudaExecutionContext &execution,
+                   mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
+                   mfq::cuda::RoutedCache& weights,
                    const mfq::models::CausalLmMetadata &metadata,
                    MtpModule &mtp, InferenceRequest &request,
                    InferenceOutput &output, int64_t prefill_chunk_size,
@@ -946,7 +942,7 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
     if(!retained_chunks && (!prepared || !prepared->transformed()))logical_chunk=request.prompt.size();
   }
   return mfq::engine::speculative_sequence(
-      CudaMtpOps<Model, State>{model, state, executor, execution, metadata, mtp, prepared,
+      CudaMtpOps<Model, State>{model, state, executor, collectives, mode, weights, metadata, mtp, prepared,
                                prefill_chunk_size, &output, std::move(restore)},
       request, output,
       logical_chunk, reused_tokens, std::move(restored_last_hidden),
@@ -954,7 +950,8 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
 }
 #define TYLOINFER_INSTANTIATE_MTP(MODEL)                                             \
   template Generation run_mtp_generation<MODEL, MODEL>(                         \
-      MODEL &, MODEL &, mfq::cuda::Executor*, CudaExecutionContext &,            \
+      MODEL &, MODEL &, mfq::cuda::Executor*, mfq::cuda::Collectives&,           \
+      mfq::cuda::Executor::Mode, mfq::cuda::RoutedCache&,                        \
       const mfq::models::CausalLmMetadata &, MtpModule &,                       \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
       const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
@@ -962,7 +959,8 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
 
 template Generation run_mtp_generation<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>(
   mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &,
-  mfq::cuda::Executor*, CudaExecutionContext &, const mfq::models::CausalLmMetadata &,
+  mfq::cuda::Executor*, mfq::cuda::Collectives&, mfq::cuda::Executor::Mode,
+  mfq::cuda::RoutedCache&, const mfq::models::CausalLmMetadata &,
   MtpModule &, InferenceRequest &,
   InferenceOutput &, int64_t, const mfq::cuda::PreparedPrompt *, std::size_t,
   mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>);
