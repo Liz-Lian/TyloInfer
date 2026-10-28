@@ -225,7 +225,7 @@ int run_qwen_continuous_batching_check(Model& model,
             bool mtp_available() const { return false; }
             void execute(const std::vector<RequestId>& eligible) { batcher->step(eligible); }
             Generation generate(const RequestId& id, ExecutionRequest& request) {
-                return internal::generate(
+                return internal::generate<Model, State, MtpModule>(
                     model, state, executor, execution_context.collectives,
                     execution_context.forward_mode(), execution_context.profiler,
                     execution_context.stores.weights,

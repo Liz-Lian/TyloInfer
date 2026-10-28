@@ -9,6 +9,11 @@ namespace mfq::cuda::qwen35 {
 
 class MtpState {
 public:
+    struct Restore {
+        std::vector<KVCache> kv;
+        int64_t position;
+    };
+
     struct Layout {
         int device;
         int64_t heads, head_dim, capacity;
@@ -25,7 +30,9 @@ public:
     std::vector<AttentionKvView> views() const;
     MtpSessionState capture(int64_t target_position,
         const mfq_tensor_backend::Tensor& hidden) const;
-    void restore(const MtpSessionState& saved);
+    Restore prepare(const MtpSessionState& saved) const;
+    void stage(Restore& restore, const MtpSessionState& saved) const;
+    void publish(Restore&& restore) noexcept;
 
 private:
     std::vector<Layout> layout_;

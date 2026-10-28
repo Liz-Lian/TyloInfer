@@ -1,6 +1,10 @@
 #include "models/qwen35/mtp.h"
 
+#include "models/qwen35/state.h"
 #include "native/cuda/collectives.h"
+
+#include <exception>
+#include <optional>
 
 namespace mfq::cuda::qwen35 {
 
@@ -97,8 +101,29 @@ MtpSessionState Mtp::capture_session_state(int64_t position, const tb::Tensor& h
     return state_.capture(position, hidden);
 }
 
-void Mtp::restore_session_state(const MtpSessionState& saved) {
-    state_.restore(saved);
+void restore_session(State& state, Mtp* mtp, const TextSessionState& snapshot,
+        const std::function<void()>& drain) {
+    auto target = state.prepare(snapshot);
+    std::optional<MtpState::Restore> predictor;
+    if (mtp != nullptr) {
+        if (!snapshot.mtp || snapshot.mtp->cache_pos != snapshot.cache_pos - 1)
+            throw CudaSessionStateError("Qwen MTP session boundary is incompatible");
+        predictor.emplace(mtp->state_.prepare(*snapshot.mtp));
+    }
+    try {
+        state.stage(target, snapshot);
+        if (mtp != nullptr) mtp->state_.stage(*predictor, *snapshot.mtp);
+        drain();
+        state.publish(std::move(target));
+        if (mtp != nullptr) mtp->state_.publish(std::move(*predictor));
+    } catch (...) {
+        const auto error = std::current_exception();
+        try {
+            drain();
+        } catch (...) {
+        }
+        std::rethrow_exception(error);
+    }
 }
 
 } // namespace mfq::cuda::qwen35

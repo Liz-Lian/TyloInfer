@@ -2,7 +2,6 @@
 
 #include "backend.h"
 #include "backends/cuda/engine/state/session/state.h"
-#include "engine/executor/mtp.h"
 #include "engine/state/sessions.h"
 
 #include <cstddef>
@@ -39,7 +38,6 @@ struct TextSessionRestore {
 struct CudaSessionOps {
     using Snapshot = TextSessionState;
     using Restore = TextSessionRestore;
-    using Predictor = MtpModule;
     using StateError = CudaSessionStateError;
 
     static TextSessionState decode(
@@ -58,29 +56,35 @@ struct CudaSessionOps {
     static std::size_t token_count(const CudaPagedPayload& payload);
     static void release_host_cache();
 
-    template <class State>
+    template <class State, class Predictor>
     static void restore(
-        State& state, const Snapshot& snapshot, const std::function<void()>& drain) {
+        State& state, const Snapshot& snapshot, const std::function<void()>& drain,
+        Predictor* mtp) {
         // The caller owns the CUDA scope for the entire restore operation.
-        if constexpr (requires(decltype(state.prepare(snapshot))& candidate) {
-            state.stage(candidate, snapshot);
-            { state.publish(std::move(candidate)) } noexcept;
-        }) {
-            auto candidate = state.prepare(snapshot);
-            try {
-                state.stage(candidate, snapshot);
-                drain();
-                state.publish(std::move(candidate));
-            } catch (...) {
-                const auto error = std::current_exception();
-                try {
-                    drain();
-                } catch (...) {
-                }
-                std::rethrow_exception(error);
-            }
+        if constexpr (requires { restore_session(state, mtp, snapshot, drain); }) {
+            restore_session(state, mtp, snapshot, drain);
         } else {
-            state.restore_text_session_state(snapshot);
+            if constexpr (requires(decltype(state.prepare(snapshot))& candidate) {
+                state.stage(candidate, snapshot);
+                { state.publish(std::move(candidate)) } noexcept;
+            }) {
+                auto candidate = state.prepare(snapshot);
+                try {
+                    state.stage(candidate, snapshot);
+                    drain();
+                    state.publish(std::move(candidate));
+                } catch (...) {
+                    const auto error = std::current_exception();
+                    try {
+                        drain();
+                    } catch (...) {
+                    }
+                    std::rethrow_exception(error);
+                }
+            } else {
+                state.restore_text_session_state(snapshot);
+            }
+            if (mtp) mtp->restore_session_state(*snapshot.mtp);
         }
     }
 };
@@ -108,11 +112,11 @@ public:
 
     bool persistent_prefix_enabled() const noexcept;
 
-    template <typename State>
+    template <typename State, typename Predictor>
     TextSessionRestore restore_best(
         State& state,
         const std::function<void()>& drain,
-        MtpModule* mtp,
+        Predictor* mtp,
         const std::string& requested_session,
         const std::vector<std::int64_t>& prompt,
         std::size_t maximum_prefix_tokens,
@@ -141,11 +145,11 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-template <typename State>
+template <typename State, typename Predictor>
 TextSessionRestore TextSessionCache::restore_best(
     State& state,
     const std::function<void()>& drain,
-    MtpModule* mtp,
+    Predictor* mtp,
     const std::string& requested_session,
     const std::vector<std::int64_t>& prompt,
     std::size_t maximum_prefix_tokens,

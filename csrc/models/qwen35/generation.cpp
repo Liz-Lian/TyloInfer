@@ -1,17 +1,22 @@
 #include "models/qwen35/forward.h"
+#include "models/qwen35/mtp.h"
 #include "backends/cuda/engine/executor/generation_impl.h"
 #include "backends/cuda/engine/executor/mtp_impl.h"
 
 namespace mfq::cuda::internal {
-template Generation generate(
-    mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &, mfq::cuda::Executor*,
-    mfq::cuda::Collectives&, mfq::cuda::Executor::Mode, CudaProfiler&,
-    mfq::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>,
-    const mfq::models::CausalLmMetadata &,
-    DecodeGraphCache &, TextSessionCache &, const CudaRuntimeConfig &,
-    mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &, MtpModule *,
-    std::optional<PreparedPrompt>, mfq::engine::Batch*, std::string,
+#define TYLOINFER_INSTANTIATE_QWEN35_GENERATION(PREDICTOR) \
+template Generation generate( \
+    mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &, mfq::cuda::Executor*, \
+    mfq::cuda::Collectives&, mfq::cuda::Executor::Mode, CudaProfiler&, \
+    mfq::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>, \
+    const mfq::models::CausalLmMetadata &, \
+    DecodeGraphCache &, TextSessionCache &, const CudaRuntimeConfig &, \
+    mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &, PREDICTOR *, \
+    std::optional<PreparedPrompt>, mfq::engine::Batch*, std::string, \
     std::function<void()>);
+TYLOINFER_INSTANTIATE_QWEN35_GENERATION(MtpModule)
+TYLOINFER_INSTANTIATE_QWEN35_GENERATION(mfq::cuda::qwen35::Mtp)
+#undef TYLOINFER_INSTANTIATE_QWEN35_GENERATION
 } // namespace mfq::cuda::internal
 
 using mfq::engine::Generation;

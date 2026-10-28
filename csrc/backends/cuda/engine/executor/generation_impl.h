@@ -537,7 +537,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     }
 };
 
-template <class Model, class State> struct CudaGenerationContext {
+template <class Model, class State, class Predictor> struct CudaGenerationContext {
     using Hidden = mfq_tensor_backend::Tensor;
     using Restore = TextSessionRestore;
     Model &model;
@@ -555,7 +555,7 @@ template <class Model, class State> struct CudaGenerationContext {
     DecodeGraphCache &graph;
     TextSessionCache &cache;
     const CudaRuntimeConfig &config;
-    MtpModule *mtp;
+    Predictor *mtp;
     std::optional<PreparedPrompt> prepared;
     mfq::engine::Batch* batching;
     std::string request_id;
@@ -821,7 +821,7 @@ template <class Model, class State> struct CudaGenerationContext {
 
 } // namespace generation_detail
 
-template <typename Model, typename State>
+template <typename Model, typename State, typename Predictor>
 Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
     CudaProfiler& profiler, mfq::cuda::RoutedCache& weights,
@@ -830,12 +830,12 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     const mfq::models::CausalLmMetadata &metadata,
     DecodeGraphCache &graph, TextSessionCache &cache,
     const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
-    mfq::engine::InferenceOutput &output, MtpModule *mtp,
+    mfq::engine::InferenceOutput &output, Predictor *mtp,
     std::optional<PreparedPrompt> prepared,
     mfq::engine::Batch* batching, std::string request_id,
     std::function<void()> restore) {
     return mfq::engine::generate_request(
-        generation_detail::CudaGenerationContext<Model, State>{model, state, executor, collectives, mode,
+        generation_detail::CudaGenerationContext<Model, State, Predictor>{model, state, executor, collectives, mode,
                                      profiler, weights, serial_branches, report_memory, graph_allowed,
                                      std::move(drain), metadata, graph, cache, config, mtp,
                                      std::move(prepared), batching,

@@ -5,9 +5,15 @@
 #include "models/qwen35/mtp_state.h"
 #include "engine/executor/mtp.h"
 
+#include <functional>
 #include <memory>
 
 namespace mfq::cuda::qwen35 {
+
+class State;
+class Mtp;
+
+void restore_session(State&, Mtp*, const TextSessionState&, const std::function<void()>&);
 
 class Mtp final : public MtpModule {
 public:
@@ -27,7 +33,6 @@ public:
     bool supports_session_state() const noexcept override { return true; }
     MtpSessionState capture_session_state(int64_t target_cache_position,
         const mfq_tensor_backend::Tensor& last_target_hidden) const override;
-    void restore_session_state(const MtpSessionState& state) override;
 
     bool teacher_forced_prompt_prime() const noexcept override { return true; }
     bool target_bootstrap_decode() const noexcept override { return false; }
@@ -35,6 +40,9 @@ public:
     bool retains_partial_target_prefix() const noexcept override { return true; }
 
 private:
+    friend void restore_session(State&, Mtp*, const TextSessionState&,
+        const std::function<void()>&);
+
     mfq_tensor_backend::Tensor evaluate(
         mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor next_ids,
         mfq_tensor_backend::Tensor positions);

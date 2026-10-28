@@ -27,7 +27,7 @@ struct CudaProfiler;
 namespace mfq::cuda::internal {
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
-template <typename Model, typename State>
+template <typename Model, typename State, typename Predictor = MtpModule>
 mfq::engine::Generation generate(
     Model& model, State& state, mfq::cuda::Executor* executor,
     mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
@@ -37,7 +37,7 @@ mfq::engine::Generation generate(
     const mfq::models::CausalLmMetadata& metadata,
     DecodeGraphCache& graph, TextSessionCache& cache,
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
-    mfq::engine::InferenceOutput& output, MtpModule* mtp = nullptr,
+    mfq::engine::InferenceOutput& output, Predictor* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},
     mfq::engine::Batch* batching = nullptr,
     std::string request_id = {}, std::function<void()> restore = {});

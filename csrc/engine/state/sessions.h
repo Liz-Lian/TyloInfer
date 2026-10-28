@@ -17,7 +17,6 @@ namespace mfq::engine {
 template <class Backend> class SessionCache {
     using Snapshot = typename Backend::Snapshot;
     using Restore = typename Backend::Restore;
-    using Predictor = typename Backend::Predictor;
     using StateError = typename Backend::StateError;
 
   public:
@@ -44,7 +43,7 @@ template <class Backend> class SessionCache {
         return static_cast<bool>(paged_cache_) || (native_hot_snapshots_ && supported_ && snapshots_.enabled());
     }
 
-    template <typename State, typename Resources>
+    template <typename State, typename Resources, typename Predictor>
     Restore restore_best(State &state, Resources &resources, Predictor *mtp,
         const std::string &requested_session,
         const std::vector<int64_t> &prompt, size_t maximum_prefix_tokens,
@@ -71,12 +70,10 @@ template <class Backend> class SessionCache {
             return {};
         }
         try {
-            Backend::restore(state, *match->state, resources);
             Restore restored{match->tokens(), {}};
-            if (mtp != nullptr) {
-                mtp->restore_session_state(*match->state->mtp);
+            if (mtp != nullptr)
                 restored.mtp_last_target_hidden = match->state->mtp->last_target_hidden;
-            }
+            Backend::restore(state, *match->state, resources, mtp);
             snapshots_.record_hit(*match);
             if (paged_cache_ && native_hot_snapshots_) paged_cache_->record_match(match->tokens());
             if (trace_) {
@@ -284,7 +281,7 @@ template <class Backend> class SessionCache {
     }
 
   private:
-    template <typename State, typename Resources>
+    template <typename State, typename Resources, typename Predictor>
     Restore restore_paged(State &state, Resources &resources,
         const std::string &requested_session,
         const std::vector<int64_t> &prompt, size_t maximum_prefix_tokens, Predictor* mtp,
@@ -350,12 +347,10 @@ template <class Backend> class SessionCache {
             }
             invalid_action = "paged_restore_invalidate";
             failure_action = "paged_restore_failed";
-            Backend::restore(state, snapshot, resources);
             Restore restored{match.matched_tokens,{}};
-            if(mtp) {
-                mtp->restore_session_state(*snapshot.mtp);
+            if(mtp)
                 restored.mtp_last_target_hidden=snapshot.mtp->last_target_hidden;
-            }
+            Backend::restore(state, snapshot, resources, mtp);
             if (native_hot_snapshots_)
                 snapshots_.store(requested_session.empty() ? "\x01prefix-" + std::to_string(++anonymous_snapshots_) : requested_session,
                     std::move(snapshot), [](const Snapshot &saved, const Snapshot &candidate) {

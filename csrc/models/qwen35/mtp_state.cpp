@@ -77,7 +77,7 @@ MtpSessionState MtpState::capture(int64_t target_position, const tb::Tensor& hid
     return saved;
 }
 
-void MtpState::restore(const MtpSessionState& saved) {
+MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
     if (saved.cache_pos <= 0 || saved.blocks.size() != kv_.size() ||
         !saved.last_target_hidden.defined() || saved.last_target_hidden.dim() != 3 ||
         saved.last_target_hidden.size(0) != 1 || saved.last_target_hidden.size(1) != 1 ||
@@ -101,16 +101,21 @@ void MtpState::restore(const MtpSessionState& saved) {
             block.k.get_device() != layout.device || block.v.get_device() != layout.device)
             throw CudaSessionStateError("Qwen MTP session KV topology changed");
     }
-    // Publish only after every layer has restored into independent storage.
-    std::vector<KVCache> restored(kv_.size());
-    for (size_t index = 0; index < restored.size(); ++index) {
+    return {std::vector<KVCache>(kv_.size()), saved.cache_pos};
+}
+
+void MtpState::stage(Restore& restore, const MtpSessionState& saved) const {
+    for (size_t index = 0; index < restore.kv.size(); ++index) {
         const auto& layout = layout_[index];
         MfqCudaGuard guard(layout.device);
-        restore_kv(restored[index], saved.blocks[index], layout.head_dim,
+        restore_kv(restore.kv[index], saved.blocks[index], layout.head_dim,
             layout.dtype, layout.quantization);
     }
-    kv_ = std::move(restored);
-    position_ = saved.cache_pos;
+}
+
+void MtpState::publish(Restore&& restore) noexcept {
+    kv_.swap(restore.kv);
+    position_ = restore.position;
 }
 
 } // namespace mfq::cuda::qwen35
