@@ -35,16 +35,15 @@ using mfq::models::nemotron_h::RadioVisionConfig;
 // layer_scale parameter.
 class RadioEncoder {
   public:
-    static RadioEncoder load(CudaExecutionContext &execution, const mfq::ModelSource &source,
+    static RadioEncoder load(const mfq::cuda::weight_loader::Loader& weights,
                              const RadioVisionConfig &config) {
         config.validate();
         RadioEncoder result;
-        result.patch_projection = load_quant_linear(
-            execution, source, "vision.patch_embedding.weight");
+        result.patch_projection = weights.projection("vision.patch_embedding.weight");
         result.position_embedding =
-            load_dense_native_gpu(execution, source, "vision.position_embedding.weight");
+            weights.native("vision.position_embedding.weight");
         result.cls_register_token =
-            load_dense_native_gpu(execution, source, "vision.cls_register_token.weight");
+            weights.native("vision.cls_register_token.weight");
         if (!result.patch_projection.is_dense()) {
             throw std::runtime_error(
                 "Nemotron-H RADIO patch projection must stay dense: the tower is exported "
@@ -68,7 +67,7 @@ class RadioEncoder {
         }
         result.layers.reserve(static_cast<std::size_t>(config.depth));
         for (std::int64_t index = 0; index < config.depth; ++index) {
-            result.layers.push_back(load_layer(execution, source, config, index));
+            result.layers.push_back(load_layer(weights, config, index));
         }
         result.config_ = config;
         return result;
@@ -108,23 +107,22 @@ class RadioEncoder {
     const RadioVisionConfig &config() const noexcept { return config_; }
 
   private:
-    static VisionBlock load_layer(CudaExecutionContext &execution,
-                                  const mfq::ModelSource &source,
+    static VisionBlock load_layer(const mfq::cuda::weight_loader::Loader& weights,
                                   const RadioVisionConfig &config, std::int64_t index) {
         const std::string prefix = "vision.block." + std::to_string(index);
-        const auto fused = mfq::cuda::vision::load_biased(execution, source, prefix + ".attention.qkv");
+        const auto fused = mfq::cuda::vision::load_biased(weights, prefix + ".attention.qkv");
         const auto split = split_fused_qkv(fused, config.hidden_size);
         VisionBlock block;
         block.query = split[0];
         block.key = split[1];
         block.value = split[2];
-        block.output = mfq::cuda::vision::load_biased(execution, source, prefix + ".attention.output");
-        block.norm1_weight = load_dense_native_gpu(execution, source, prefix + ".norm1.weight");
-        block.norm1_bias = load_dense_native_gpu(execution, source, prefix + ".norm1.bias");
-        block.norm2_weight = load_dense_native_gpu(execution, source, prefix + ".norm2.weight");
-        block.norm2_bias = load_dense_native_gpu(execution, source, prefix + ".norm2.bias");
-        block.fc1 = mfq::cuda::vision::load_biased(execution, source, prefix + ".mlp.up");
-        block.fc2 = mfq::cuda::vision::load_biased(execution, source, prefix + ".mlp.down");
+        block.output = mfq::cuda::vision::load_biased(weights, prefix + ".attention.output");
+        block.norm1_weight = weights.native(prefix + ".norm1.weight");
+        block.norm1_bias = weights.native(prefix + ".norm1.bias");
+        block.norm2_weight = weights.native(prefix + ".norm2.weight");
+        block.norm2_bias = weights.native(prefix + ".norm2.bias");
+        block.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
+        block.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
         block.heads = config.num_heads;
         block.head_dim = config.head_dim();
         block.layer_norm_eps = config.layer_norm_eps;
@@ -190,17 +188,17 @@ class RadioEncoder {
 // (downsample 0.5, `ps_version v2`) -> `mlp1` (RMSNorm, up, relu-squared, down).
 class RadioProjector {
   public:
-    static RadioProjector load(CudaExecutionContext &execution, const mfq::ModelSource &source,
+    static RadioProjector load(const mfq::cuda::weight_loader::Loader& weights,
                                const RadioVisionConfig &config) {
         RadioProjector result;
         result.norm_weight =
-            load_dense_native_gpu(execution, source, "vision.projector.norm.weight");
+            weights.native("vision.projector.norm.weight");
         result.norm_bias =
-            load_dense_native_gpu(execution, source, "vision.projector.norm.bias");
+            weights.native("vision.projector.norm.bias");
         result.mlp_norm =
-            load_dense_native_gpu(execution, source, "vision.projector.mlp.norm.weight");
-        result.up = mfq::cuda::vision::load_biased(execution, source, "vision.projector.mlp.up", false);
-        result.down = mfq::cuda::vision::load_biased(execution, source, "vision.projector.mlp.down", false);
+            weights.native("vision.projector.mlp.norm.weight");
+        result.up = mfq::cuda::vision::load_biased(weights, "vision.projector.mlp.up", false);
+        result.down = mfq::cuda::vision::load_biased(weights, "vision.projector.mlp.down", false);
         if (result.norm_weight.numel() != config.hidden_size ||
             result.norm_bias.numel() != config.hidden_size ||
             result.mlp_norm.numel() != config.shuffle_width() ||
@@ -269,11 +267,10 @@ class RadioProjector {
 // the language model's placeholder rows.
 class RadioVisionTower {
   public:
-    static RadioVisionTower load(CudaExecutionContext &execution,
-                                 const mfq::ModelSource &source,
+    static RadioVisionTower load(const mfq::cuda::weight_loader::Loader& weights,
                                  const RadioVisionConfig &config) {
-        return RadioVisionTower(RadioEncoder::load(execution, source, config),
-                                RadioProjector::load(execution, source, config), config);
+        return RadioVisionTower(RadioEncoder::load(weights, config),
+                                RadioProjector::load(weights, config), config);
     }
 
     Tensor embed(const mfq::cuda::Projector& projector, Tensor patches, std::int64_t rows,
@@ -313,8 +310,7 @@ struct RadioImageGrid {
 // positions are plain token offsets and only address the text cache.
 class CudaRadioPromptComponent {
   public:
-    static CudaRadioPromptComponent load(CudaExecutionContext &execution,
-                                         const mfq::ModelSource &source,
+    static CudaRadioPromptComponent load(const mfq::cuda::weight_loader::Loader& weights,
                                          const RadioVisionConfig &config,
                                          std::string input_contract,
                                          std::string position_policy) {
@@ -329,7 +325,7 @@ class CudaRadioPromptComponent {
         if (config.image_token_id < 0) {
             throw std::invalid_argument("Nemotron-H RADIO needs the `<image>` placeholder id");
         }
-        return CudaRadioPromptComponent(RadioVisionTower::load(execution, source, config), config,
+        return CudaRadioPromptComponent(RadioVisionTower::load(weights, config), config,
                                         std::move(input_contract));
     }
 

@@ -10,7 +10,7 @@
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/models/load.h"
 #include "engine/weights/group.h"
 #include "source/tq_source.h"
 #include "backends/cuda/engine/weights/tq/rows.h"
@@ -408,6 +408,7 @@ struct BlockLoader : weight_loader::Loader {
     using GdnWeights = qwen4_exp::GdnWeights;
     using QsaWeights = qwen4_exp::QsaWeights;
     using PleWeights = qwen4_exp::PleWeights;
+    CudaExecutionContext& execution;
     Linear* router_capture=nullptr;
     MoeFfnPrefetch* prefetch_capture=nullptr;
     bool* tq_graph_capture=nullptr;
@@ -437,26 +438,26 @@ struct BlockLoader : weight_loader::Loader {
         TYLOINFER_RUNTIME_CHECK(!independent || !has(p + ".qkv.weight"), "ambiguous Qwen4 GDN input projections");
         GdnWeights w;
         if(independent)for(const auto* name:{"query","key","value"})
-            w.input_projection.weights.push_back(load_quant_linear(execution,source,p+"."+name+".weight"));
-        else w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".qkv.weight"));
-        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".gate.weight"));
-        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".alpha.weight"));
-        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".beta.weight"));
+            w.input_projection.weights.push_back(projection(p+"."+name+".weight"));
+        else w.input_projection.weights.push_back(projection(p+".qkv.weight"));
+        w.input_projection.weights.push_back(projection(p+".gate.weight"));
+        w.input_projection.weights.push_back(projection(p+".alpha.weight"));
+        w.input_projection.weights.push_back(projection(p+".beta.weight"));
         w.qkv_count=independent?3:1;
-        w.output=load_quant_linear(execution,source,p+".output.weight");
+        w.output=projection(p+".output.weight");
         w.conv=dense(p+".conv.weight");w.dt_bias=dense(p+".dt_bias");w.a_log=dense(p+".a");w.norm=dense(p+".norm.weight");
         return w;
     }
     auto qsa_weights(const std::string &p) const {
         QsaWeights w;
         for(const auto* name:{"query","key","value"})
-            w.input_projection.weights.push_back(load_quant_linear(execution,source,p+"."+name+".weight"));
-        w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".indexer.query_key.weight"));
-        w.output=load_quant_linear(execution,source,p+".output.weight");
+            w.input_projection.weights.push_back(projection(p+"."+name+".weight"));
+        w.input_projection.weights.push_back(projection(p+".indexer.query_key.weight"));
+        w.output=projection(p+".output.weight");
         w.query_norm=dense(p+".query_norm.weight");w.key_norm=dense(p+".key_norm.weight");
         w.index_query_norm=dense(p+".indexer.query_norm.weight");w.index_key_norm=dense(p+".indexer.key_norm.weight");
         if(has(p+".gate.weight")) {
-            w.input_projection.weights.push_back(load_quant_linear(execution,source,p+".gate.weight"));
+            w.input_projection.weights.push_back(projection(p+".gate.weight"));
             w.has_gate=true;
         }
         return w;
@@ -465,7 +466,7 @@ struct BlockLoader : weight_loader::Loader {
         const auto packed_qkv_option=mfq::cuda::runtime_options::gdn_packed_qkv();
         const bool packed_qkv=weights.qkv_count==3 && (!packed_qkv_option || *packed_qkv_option);
         weights.input_projection=make_projections(std::move(weights.input_projection.weights),
-            execution.config.diagnostic_nint_group,execution.loading_cpu_layer,packed_qkv?3:1);
+            options.grouped,placement.cpu,packed_qkv?3:1);
         if(!weights.input_projection.grouped())weights.input_projection.prefix=1;
         auto shared=std::make_shared<const GdnWeights>(std::move(weights));
         return std::make_unique<Gdn>(std::move(shared), c.key_heads, c.value_heads, c.linear_width,
@@ -475,7 +476,7 @@ struct BlockLoader : weight_loader::Loader {
     }
     auto qsa(QsaWeights weights, const Config &c) const {
         weights.input_projection=make_projections(std::move(weights.input_projection.weights),
-            execution.config.diagnostic_nint_group,execution.loading_cpu_layer);
+            options.grouped,placement.cpu);
         QsaConfig geometry{c.heads, c.kv_heads, c.width, c.index_heads, c.index_width,
                            c.pool, c.budget, c.maximum, c.eps};
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -514,7 +515,7 @@ struct BlockLoader : weight_loader::Loader {
         }
 #endif
 
-        auto weight = std::make_shared<QuantLinear>(load_quant_linear(execution, source, name));
+        auto weight = std::make_shared<QuantLinear>(projection(name));
         Embedding lookup{[weight](const Tensor &ids) { return quant_embedding_lookup(*weight, ids); },{}};
         return std::pair{std::move(lookup), std::array<int64_t, 2>{weight->out(), weight->neuron_len()}};
     }
@@ -522,7 +523,7 @@ struct BlockLoader : weight_loader::Loader {
         const auto &type = require_tensor(source, name).dtype;
         TYLOINFER_RUNTIME_CHECK(type == "I64" || type == "I32",
                           "Qwen4 PLE metadata must be a dense integer array: ", name);
-        auto host = load_dense_gpu(execution, source, name).to(tb::kInt64).contiguous().cpu();
+        auto host = tensor(name).to(tb::kInt64).contiguous().cpu();
         TYLOINFER_RUNTIME_CHECK(host.dim() == 1, "Qwen4 PLE metadata must be a vector");
         return {host.data_ptr<int64_t>(), host.data_ptr<int64_t>() + host.numel()};
     }
@@ -597,9 +598,10 @@ struct Qwen4Block final : Block {
         }
         return tb::cat(outputs,0);
     }
-    Qwen4Block(CudaExecutionContext &execution, const mfq::ModelSource &file,
+    Qwen4Block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
                const Config &c, int layer, bool predictor = false) {
-        BlockLoader loader{{execution, file, "qwen4_exp"},&router,&prefetch,&tq_graph_ffn};
+        BlockLoader loader{weights,execution,&router,&prefetch,&tq_graph_ffn};
+        loader.role = "qwen4_exp";
         mfq::models::qwen4_exp::load_block(*this, loader, c, layer, predictor);
     }
     bool retain_graph_storage=false,retained_prefix=false;
@@ -745,7 +747,7 @@ struct Qwen4Block final : Block {
 };
 
 std::unique_ptr<Qwen4Block> BlockLoader::block(const Config &c, int layer, bool predictor) {
-    return std::make_unique<Qwen4Block>(execution, source, c, layer, predictor);
+    return std::make_unique<Qwen4Block>(execution, *this, c, layer, predictor);
 }
 
 // One word changes the captured readout's work without retaining a second
@@ -926,11 +928,12 @@ Qwen4ExpMtp::Qwen4ExpMtp(Qwen4ExpMtp&&) noexcept = default;
 Qwen4ExpMtp& Qwen4ExpMtp::operator=(Qwen4ExpMtp&&) noexcept = default;
 
 std::optional<Qwen4ExpMtp> Qwen4ExpMtp::load_if_present(CudaExecutionContext &execution,
-                                                      const mfq::ModelSource &file,
+                                                      const weight_loader::Loader& weights,
                                                       const mfq::models::qwen4_exp::Config &main) {
     Qwen4ExpMtp result;
     result.execution = &execution;
-    BlockLoader loader{{execution, file, "qwen4_exp"}};
+    BlockLoader loader{weights,execution};
+    loader.role = "qwen4_exp";
     if (!mfq::models::qwen4_exp::load_predictor(result, loader, main))
         return std::nullopt;
     return result;
@@ -2414,20 +2417,22 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
 }
 
 void Qwen4Model::adapter_validate_load_options() const {
-    weight_loader::validate_load_options(*execution);
+    validate_native_placement(execution->tensor_parallel, execution->layer_placement,
+                              execution->n_gpu_layers);
 }
 
-void Qwen4Model::adapter_load_final_state(const mfq::ModelSource &source,
+void Qwen4Model::adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                           mfq_tensor_backend::Tensor &output_norm) {
-    qwen4_exp::BlockLoader loader{{*execution, source, "qwen4_exp"}};
+    qwen4_exp::BlockLoader loader{weights,*execution};
+    loader.role = "qwen4_exp";
     final_mixer = loader.final_mixer(
         mfq::models::qwen4_exp::load_residual(loader, config, "model.mhc.pre", false));
     output_norm = mfq_tensor_backend::Tensor();
 }
 
-std::unique_ptr<Block> Qwen4Model::adapter_load_block(const mfq::ModelSource &source, int layer,
+std::unique_ptr<Block> Qwen4Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer,
                                                       int, const std::string &) {
-    auto block=std::make_unique<qwen4_exp::Qwen4Block>(*execution, source, config, layer);
+    auto block=std::make_unique<qwen4_exp::Qwen4Block>(*execution, weights, config, layer);
     loaded_blocks.push_back(block.get());
     return block;
 }

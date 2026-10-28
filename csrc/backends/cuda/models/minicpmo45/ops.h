@@ -22,7 +22,7 @@ struct MiniCPMO45Model : CausalResources {
 
     bool adapter_uses_common_rope() const noexcept;
     bool adapter_supports_dense_cpu_offload() const noexcept;
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     mfq_tensor_backend::Tensor adapter_embed(mfq_tensor_backend::Tensor output) const;
@@ -52,7 +52,7 @@ struct MiniCPMOTtsModel : CausalResources {
 
     bool adapter_uses_common_rope() const noexcept;
     bool adapter_supports_dense_cpu_offload() const noexcept;
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 };
 
@@ -89,8 +89,7 @@ class Components {
 } // namespace mfq::cuda::minicpmo45
 
 namespace mfq::cuda::minicpmo45 {
-std::unique_ptr<Block> load_language_block(CudaExecutionContext& execution,
-    const mfq::ModelSource& source, const mfq::models::ModelConfig& config, int layer,
+std::unique_ptr<Block> load_language_block(const mfq::cuda::weight_loader::Loader& weights, const mfq::models::ModelConfig& config, int layer,
     const std::string& type, mfq::models::minicpmo45::LanguageComponent component,
     std::string_view tensor_root = "model");
 }

@@ -3,7 +3,7 @@
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/models/load.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/moe.h"
 #include "engine/models/common/transformer_layer.h"
@@ -129,9 +129,10 @@ struct Glm5NextBlock final : Block {
     std::unique_ptr<Kda> kda;
     std::unique_ptr<SparseMla> mla;
 
-    Glm5NextBlock(CudaExecutionContext &execution, const mfq::ModelSource &file,
+    Glm5NextBlock(const weight_loader::Loader& weights,
                   const Config &c, int layer) {
-        BlockLoader loader{{execution, file, "glm5_next"}};
+        BlockLoader loader{weights};
+        loader.role = "glm5_next";
         mfq::models::glm5_next::load_block(*this, loader, c, layer);
     }
     void reset(int64_t) override {
@@ -186,11 +187,12 @@ Glm5NextMtp::Glm5NextMtp(Projector project) : project_(std::move(project)) {}
 Glm5NextMtp::~Glm5NextMtp() = default;
 Glm5NextMtp::Glm5NextMtp(Glm5NextMtp&&) noexcept = default;
 
-std::optional<Glm5NextMtp> Glm5NextMtp::load_if_present(CudaExecutionContext &execution,
-                                                      const mfq::ModelSource &file,
+std::optional<Glm5NextMtp> Glm5NextMtp::load_if_present(const weight_loader::Loader& weights,
+                                                      Projector projector,
                                                       const mfq::models::glm5_next::Config &main) {
-    Glm5NextMtp result{execution.projector()};
-    BlockLoader loader{{execution, file, "glm5_next"}};
+    Glm5NextMtp result{std::move(projector)};
+    BlockLoader loader{weights};
+    loader.role = "glm5_next";
     if (!mfq::models::glm5_next::load_predictor(result, loader, main))
         return std::nullopt;
     return result;
@@ -300,12 +302,13 @@ bool Glm5NextMtp::preserve_output_dtype() const noexcept { return true; }
 namespace mfq::cuda {
 
 void Glm5Model::adapter_validate_load_options() const {
-    weight_loader::validate_load_options(*execution);
+    validate_native_placement(execution->tensor_parallel, execution->layer_placement,
+                              execution->n_gpu_layers);
 }
 
-std::unique_ptr<Block> Glm5Model::adapter_load_block(const mfq::ModelSource &source, int layer, int,
+std::unique_ptr<Block> Glm5Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int,
                                                      const std::string &) {
-    return std::make_unique<glm5_next::Glm5NextBlock>(*execution, source, config, layer);
+    return std::make_unique<glm5_next::Glm5NextBlock>(weights, config, layer);
 }
 
 mfq_tensor_backend::Tensor Glm5Model::collapse_hidden(mfq_tensor_backend::Tensor hidden, int64_t,

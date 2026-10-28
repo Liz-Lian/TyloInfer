@@ -488,9 +488,9 @@ struct GlmDsaBlock : Block {
 };
 namespace mfq::cuda::glm_dsa {
 
-void load_ffn(CudaExecutionContext &execution, const mfq::ModelSource &source, const Config &config,
+void load_ffn(const weight_loader::Loader& weights, const Config &config,
               int layer, mfq::cuda::Ffn &ffn);
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &source,
+std::unique_ptr<::Block> load_block(const weight_loader::Loader& weights,
                                     const Config &config, int layer, const std::string &type,
                                     const std::shared_ptr<::GlmDsaSharedState> &state);
 
@@ -505,7 +505,7 @@ struct GlmDsaModel : CausalResources {
     std::unordered_map<int, std::shared_ptr<GlmDsaSharedState>> block_states;
 
     bool adapter_uses_common_rope() const noexcept;
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 };
 

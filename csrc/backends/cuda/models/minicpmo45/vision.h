@@ -42,20 +42,20 @@ inline mfq_tensor_backend::Tensor minicpmo45_layer_norm(
 // Load one SigLIP block into the shared pre-LayerNorm vision block.  SigLIP
 // keeps q/k/v separate and approximates GELU with tanh.
 inline mfq::cuda::VisionBlock load_minicpmo45_vision_block(
-        CudaExecutionContext &execution, const mfq::ModelSource &mfq, int index,
+        const mfq::cuda::weight_loader::Loader& weights, int index,
         int64_t heads, int64_t head_dim) {
     const std::string prefix = "vision.block." + std::to_string(index);
     mfq::cuda::VisionBlock result;
-    result.query = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.query");
-    result.key = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.key");
-    result.value = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.value");
-    result.output = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".attention.output");
-    result.norm1_weight = load_dense_native_gpu(execution, mfq, prefix + ".norm1.weight");
-    result.norm1_bias = load_dense_native_gpu(execution, mfq, prefix + ".norm1.bias");
-    result.norm2_weight = load_dense_native_gpu(execution, mfq, prefix + ".norm2.weight");
-    result.norm2_bias = load_dense_native_gpu(execution, mfq, prefix + ".norm2.bias");
-    result.fc1 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.up");
-    result.fc2 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.down");
+    result.query = mfq::cuda::vision::load_biased(weights, prefix + ".attention.query");
+    result.key = mfq::cuda::vision::load_biased(weights, prefix + ".attention.key");
+    result.value = mfq::cuda::vision::load_biased(weights, prefix + ".attention.value");
+    result.output = mfq::cuda::vision::load_biased(weights, prefix + ".attention.output");
+    result.norm1_weight = weights.native(prefix + ".norm1.weight");
+    result.norm1_bias = weights.native(prefix + ".norm1.bias");
+    result.norm2_weight = weights.native(prefix + ".norm2.weight");
+    result.norm2_bias = weights.native(prefix + ".norm2.bias");
+    result.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
+    result.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
     result.heads = heads;
     result.head_dim = head_dim;
     result.layer_norm_eps = 1e-6;
@@ -74,20 +74,19 @@ struct MiniCPMO45VisionEncoder {
     int64_t patch_size = 14;
     int64_t position_side = 70;
 
-    static MiniCPMO45VisionEncoder load(CudaExecutionContext &execution,
-                                        const mfq::ModelSource &mfq) {
+    static MiniCPMO45VisionEncoder load(const mfq::cuda::weight_loader::Loader& weights) {
         MiniCPMO45VisionEncoder result;
         result.patch_weight =
-            load_dense_native_gpu(execution, mfq, "vision.patch_embedding.weight");
-        result.patch_bias = load_dense_native_gpu(execution, mfq, "vision.patch_embedding.bias");
+            weights.native("vision.patch_embedding.weight");
+        result.patch_bias = weights.native("vision.patch_embedding.bias");
         result.position_embedding =
-            load_dense_native_gpu(execution, mfq, "vision.position_embedding.weight");
+            weights.native("vision.position_embedding.weight");
         result.post_norm_weight =
-            load_dense_native_gpu(execution, mfq, "vision.output_norm.weight");
-        result.post_norm_bias = load_dense_native_gpu(execution, mfq, "vision.output_norm.bias");
+            weights.native("vision.output_norm.weight");
+        result.post_norm_bias = weights.native("vision.output_norm.bias");
         result.layers.reserve(27);
         for (int index = 0; index < 27; ++index) {
-            result.layers.push_back(load_minicpmo45_vision_block(execution, mfq, index, 16, 72));
+            result.layers.push_back(load_minicpmo45_vision_block(weights, index, 16, 72));
         }
         if (result.patch_weight.sizes().vec() != std::vector<int64_t>({1152, 3, 14, 14}) ||
             result.position_embedding.sizes().vec() != std::vector<int64_t>({4900, 1152})) {
@@ -198,13 +197,13 @@ struct MiniCPMO45Resampler {
     int64_t heads = 32;
     int64_t head_dim = 128;
 
-    static MiniCPMO45Resampler load(CudaExecutionContext &execution, const mfq::ModelSource &mfq) {
+    static MiniCPMO45Resampler load(const mfq::cuda::weight_loader::Loader& weights) {
         MiniCPMO45Resampler result;
-        if (!mfq.has_asset(MINICPMO45_RESAMPLER_POS_EMBED_ASSET)) {
+        if (!weights.source.has_asset(MINICPMO45_RESAMPLER_POS_EMBED_ASSET)) {
             throw std::runtime_error("MiniCPM-o MFQ is missing the exact Resampler position asset; "
                                      "repack it with the current runtime assets tool");
         }
-        auto position_blob = read_asset(mfq, MINICPMO45_RESAMPLER_POS_EMBED_ASSET);
+        auto position_blob = read_asset(weights.source, MINICPMO45_RESAMPLER_POS_EMBED_ASSET);
         constexpr size_t position_header_bytes = 20;
         constexpr size_t position_value_bytes =
             static_cast<size_t>(70) * 70 * 4096 * sizeof(uint16_t);
@@ -221,7 +220,7 @@ struct MiniCPMO45Resampler {
             throw std::runtime_error("MiniCPM-o Resampler position asset shape is not 70x70x4096");
         }
         {
-            MfqCudaGuard guard(active_weight_load_device(execution));
+            MfqCudaGuard guard(weights.placement.device);
             result.position_embedding =
                 mfq_tensor_backend::from_blob(
                     position_blob.data() + position_offset, std::vector<int64_t>{70, 70, 4096},
@@ -230,31 +229,31 @@ struct MiniCPMO45Resampler {
                     .to(mfq_tensor_backend::kCUDA)
                     .contiguous();
         }
-        result.query = load_dense_native_gpu(execution, mfq, "vision.resampler.query");
+        result.query = weights.native("vision.resampler.query");
         result.kv_projection =
-            mfq::cuda::vision::load_biased(execution, mfq, "vision.resampler.key_value", false);
+            mfq::cuda::vision::load_biased(weights, "vision.resampler.key_value", false);
         result.q_norm_weight =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.query_norm.weight");
+            weights.native("vision.resampler.query_norm.weight");
         result.q_norm_bias =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.query_norm.bias");
+            weights.native("vision.resampler.query_norm.bias");
         result.kv_norm_weight =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.key_value_norm.weight");
+            weights.native("vision.resampler.key_value_norm.weight");
         result.kv_norm_bias =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.key_value_norm.bias");
+            weights.native("vision.resampler.key_value_norm.bias");
         result.post_norm_weight =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.output_norm.weight");
+            weights.native("vision.resampler.output_norm.weight");
         result.post_norm_bias =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.output_norm.bias");
+            weights.native("vision.resampler.output_norm.bias");
         result.in_projection_weight =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.attention.qkv.weight");
+            weights.native("vision.resampler.attention.qkv.weight");
         result.in_projection_bias =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.attention.qkv.bias");
+            weights.native("vision.resampler.attention.qkv.bias");
         result.out_projection_weight =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.attention.output.weight");
+            weights.native("vision.resampler.attention.output.weight");
         result.out_projection_bias =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.attention.output.bias");
+            weights.native("vision.resampler.attention.output.bias");
         result.final_projection =
-            load_dense_native_gpu(execution, mfq, "vision.resampler.output.weight");
+            weights.native("vision.resampler.output.weight");
         if (result.query.sizes().vec() != std::vector<int64_t>({64, 4096}) ||
             result.in_projection_weight.sizes().vec() != std::vector<int64_t>({12288, 4096})) {
             throw std::runtime_error("MiniCPM-o Resampler tensor shapes disagree with version 4.5");

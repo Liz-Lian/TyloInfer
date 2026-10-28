@@ -306,9 +306,8 @@ class EngramTable {
 
 class Engram {
   public:
-    static std::unique_ptr<Engram> load(CudaExecutionContext &execution,
-                                        const mfq::ModelSource &model, const EngramConfig &config,
-                                        int layer) {
+    static std::unique_ptr<Engram> load(const weight_loader::Loader& weights, const EngramConfig &config,
+                                        int layer, std::size_t cache_rows) {
         const auto found =
             std::find(config.engram_layer_ids.begin(), config.engram_layer_ids.end(), layer);
         if (found == config.engram_layer_ids.end()) {
@@ -317,17 +316,17 @@ class Engram {
         const auto hash_layer =
             static_cast<int>(std::distance(config.engram_layer_ids.begin(), found));
         const auto prefix = "model.block." + std::to_string(layer) + ".associative_memory.";
-        auto query = load_dense_gpu(execution, model, prefix + "query.weight")
+        auto query = weights.tensor(prefix + "query.weight")
                          .to(mfq_tensor_backend::kFloat32)
                          .contiguous();
-        auto key = load_dense_gpu(execution, model, prefix + "key.weight")
+        auto key = weights.tensor(prefix + "key.weight")
                        .to(mfq_tensor_backend::kFloat32)
                        .contiguous();
         if (query.dim() != 2 || query.size(0) != config.hc_mult || query.size(1) != config.hidden ||
             key.sizes() != query.sizes()) {
             throw std::runtime_error("DeepSeek-V4.1 Engram query/key geometry disagrees");
         }
-        auto projection = load_quant_linear(execution, model, prefix + "projection.weight");
+        auto projection = weights.projection(prefix + "projection.weight");
         const auto hash_columns = (config.engram_max_ngram_size - 1) * config.engram_n_heads;
         if (projection.neuron_len() != hash_columns * config.engram_head_dim ||
             projection.out() != (config.hc_mult + 1) * config.hidden) {
@@ -335,10 +334,10 @@ class Engram {
         }
         return std::unique_ptr<Engram>(new Engram(
             config, hash_layer,
-            EngramTable::load(model, prefix + "embedding.weight",
+            EngramTable::load(weights.source, prefix + "embedding.weight",
                               config.engram_num_embeddings[static_cast<std::size_t>(hash_layer)],
                               static_cast<int>(config.engram_head_dim),
-                              execution.config.deepseek_v41_engram_cache_rows),
+                              cache_rows),
             std::move(projection), (query * key).contiguous()));
     }
 

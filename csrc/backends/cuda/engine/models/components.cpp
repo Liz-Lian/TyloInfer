@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -10,7 +11,6 @@
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 
 #include <algorithm>
@@ -21,34 +21,33 @@ namespace {
 
 // Allocation, packing, placement and device lifetime are native. The shared
 // causal model supplies weight relationships and layer traversal.
-template <class Model> struct CudaWeightLoader {
+template <class Model> struct ModelLoader {
     Model &model;
-    const mfq::ModelSource &source;
+    const mfq::cuda::weight_loader::Loader& weights;
     auto embedding(const std::string& name) {
-        return load_embedding(*model.execution, source, name,
+        return weights.embedding(name,
                               model.has_independent_output_weights(*this));
     }
     auto output(const std::string &name) {
-        return load_quant_linear(*model.execution, source, name, TensorParallelAxis::Output);
+        return weights.projection(name, TensorParallelAxis::Output);
     }
     auto tied_output(const QuantLinear &embedding, const std::string &name) {
-        return model.execution->tensor_parallel.enabled() ? output(name) : embedding;
+        return weights.placement.tensor.enabled() ? output(name) : embedding;
     }
-    bool has_weight(const std::string &name) { return has_tensor(source, name); }
+    bool has_weight(const std::string &name) { return weights.has(name); }
     void final_state(mfq_tensor_backend::Tensor &norm) {
-        model.adapter_load_final_state(source, norm);
+        model.adapter_load_final_state(weights, norm);
     }
-    void prepare_blocks() { model.adapter_prepare_blocks(source); }
+    void prepare_blocks() { model.adapter_prepare_blocks(weights); }
     auto block(int layer, const std::string &type) {
         auto &execution = *model.execution;
         const int device = execution.layer_placement.device_for_layer(layer);
         const bool cpu_offloaded = layer < execution.dense_cpu_layer_count;
-        execution.loading_cpu_layer = cpu_offloaded;
-        execution.layer_placement.load_device = device;
         MfqCudaGuard layer_guard(device);
         std::cerr << "loading layer " << layer << ' ' << type << ' '
                   << (cpu_offloaded ? "CPU" : "CUDA") << std::endl;
-        auto block = model.adapter_load_block(source, layer, device, type);
+        auto placed = weights.for_layer(device, cpu_offloaded);
+        auto block = model.adapter_load_block(placed, layer, device, type);
         block->cuda_device = device;
         block->cpu_offloaded = cpu_offloaded;
         if (auto* full = dynamic_cast<FullBlock*>(block.get())) full->preallocate_kv();
@@ -106,7 +105,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
                       << std::endl;
         }
     }
-    execution.layer_placement.load_device = execution.layer_placement.primary_device();
+
     CudaScope model_guard(execution);
     if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.dense_cpu_layer_count > 0) {
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
@@ -134,17 +133,19 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
         }
     }
 
-    CudaWeightLoader<Model> weights{model, source};
+    weight_loader::Loader tensors{source, execution.config.weights,
+        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+         execution.tensor_parallel, moe_parallel_config(execution)},
+        execution.stores.weights, execution.tq};
+    ModelLoader<Model> weights{model, tensors};
     if (load_input_output) {
         model.load_weights(weights, load_blocks);
     } else {
         if (load_blocks) throw std::invalid_argument("streamed model setup requires deferred blocks");
-        model.adapter_load_final_state(source, model.output_norm);
-        model.adapter_prepare_blocks(source);
+        model.adapter_load_final_state(tensors, model.output_norm);
+        model.adapter_prepare_blocks(tensors);
     }
 
-    execution.loading_cpu_layer = false;
-    execution.layer_placement.load_device = execution.layer_placement.primary_device();
     if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
         !moe_expert_cache_finalized(execution.stores.weights.moe) && !defer_moe_cache_finalize) {
         if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
@@ -174,6 +175,7 @@ TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::NemotronHCausalLm);
 template <typename Model>
 RuntimeComponents<Model> load_runtime_components(
         Model& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<Model> result{model.graph, model.plan};
     if (load_optional_components &&
@@ -187,6 +189,7 @@ RuntimeComponents<Model> load_runtime_components(
 
 RuntimeComponents<mfq::cuda::qwen35::Model> load_runtime_components(
         mfq::cuda::qwen35::Model& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         CudaExecutionContext& execution,
         bool load_optional_components) {
     RuntimeComponents<mfq::cuda::qwen35::Model> result{model.graph, model.plan};
@@ -202,7 +205,7 @@ RuntimeComponents<mfq::cuda::qwen35::Model> load_runtime_components(
         }
         result.grid_vision.emplace(
             mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                execution, *model.source, *config.grid_vision,
+                weights, *config.grid_vision,
                 *config.image_token_id, *config.video_token_id,
                 component->input_contract, component->position_policy));
         result.vision_available = true;
@@ -220,8 +223,8 @@ RuntimeComponents<mfq::cuda::qwen35::Model> load_runtime_components(
             !model_execution.stores.weights.moe;
         if (supported_placement && model.metadata.num_experts == 0 &&
                 mfq::cuda::qwen35::supports_speculation(model)) {
-            TransformerWeightLoader loader{execution, *model.source};
-            auto predictor = mfq::cuda::qwen35::load_predictor(loader, model.config, cuda_kv_quantization());
+            TransformerWeightLoader loader{weights};
+            auto predictor = mfq::cuda::qwen35::load_predictor(loader, model.config, mfq::cuda::cuda_kv_quantization());
             if (predictor) {
                 auto executor = std::make_unique<mfq::cuda::Executor>(
                     execution.profiler, execution.kl_mmq, *execution.tq, execution.branches,
@@ -248,6 +251,7 @@ RuntimeComponents<mfq::cuda::qwen35::Model> load_runtime_components(
 template <>
 RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
         mfq::cuda::Qwen4CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<mfq::cuda::Qwen4CausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
@@ -281,7 +285,7 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
         const auto* component = result.graph.component("vision");
         result.grid_vision.emplace(
             mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
-                *model.execution, *model.source, config, image, video,
+                weights, config, image, video,
                 component->input_contract, component->position_policy));
         result.vision_available = true;
     } else if (result.plan.vision != mfq::cuda::CudaVisionAdapter::none) {
@@ -299,7 +303,7 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
     auto predictor = mfq::cuda::qwen4_exp::Qwen4ExpMtp::load_if_present(
-        *model.execution, *model.source, model.config);
+        *model.execution, weights, model.config);
     if (predictor) {
         result.mtp =
             std::make_unique<mfq::cuda::qwen4_exp::Qwen4ExpMtp>(
@@ -312,6 +316,7 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
 template <>
 RuntimeComponents<mfq::cuda::Glm5CausalLm> load_runtime_components(
         mfq::cuda::Glm5CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<mfq::cuda::Glm5CausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
@@ -328,7 +333,7 @@ RuntimeComponents<mfq::cuda::Glm5CausalLm> load_runtime_components(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
     auto predictor = mfq::cuda::glm5_next::Glm5NextMtp::load_if_present(
-        *model.execution, *model.source, model.config);
+        weights, model.execution->projector(), model.config);
     if (predictor) {
         result.mtp =
             std::make_unique<mfq::cuda::glm5_next::Glm5NextMtp>(
@@ -341,6 +346,7 @@ RuntimeComponents<mfq::cuda::Glm5CausalLm> load_runtime_components(
 template <>
 RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
         mfq::cuda::DeepseekV41CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
@@ -353,7 +359,7 @@ RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
             "unsupported DeepSeek-V4.1 CUDA component adapter");
     }
     if(result.plan.vision==mfq::cuda::CudaVisionAdapter::deepseek_v41) {
-        result.deepseek_vision.emplace(mfq::cuda::deepseek_v41_runtime::Vision::load(model.source,model.shared->config));
+        result.deepseek_vision.emplace(mfq::cuda::deepseek_v41_runtime::Vision::load(model.source,weights,model.shared->config));
         result.vision_available=true;
     }
     if (result.plan.predictor ==
@@ -363,7 +369,7 @@ RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
         "invalid DeepSeek-V4.1 DSpark model");
     result.mtp =
         mfq::cuda::deepseek_v41_runtime::load_dspark_if_present(
-            *model.execution, *model.source, model.shared->config);
+            *model.execution, weights, model.shared->config);
     result.mtp_available = static_cast<bool>(result.mtp);
     return result;
 }
@@ -371,6 +377,7 @@ RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
 template <>
 RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
         mfq::cuda::NemotronHCausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<mfq::cuda::NemotronHCausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
@@ -389,7 +396,7 @@ RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
             model.source->model_config_json());
         result.radio_vision.emplace(
             mfq::cuda::nemotron_h::CudaRadioPromptComponent::load(
-                *model.execution, *model.source, vision, component->input_contract,
+                weights, vision, component->input_contract,
                 component->position_policy));
         result.vision_available = true;
     }
@@ -398,7 +405,7 @@ RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
     TYLOINFER_RUNTIME_CHECK(model.supports_speculation(),
         "invalid Nemotron-H predictor model");
     auto predictor = mfq::cuda::nemotron_h::NemotronHMtp::load_if_present(
-        *model.execution, *model.source, model.config);
+        *model.execution, weights, model.config);
     // The graph declares the component, so missing weights are a broken
     // container rather than a text-only model.
     TYLOINFER_RUNTIME_CHECK(predictor,
@@ -413,6 +420,7 @@ template <>
 RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm>
 load_runtime_components(
         mfq::cuda::MiniCPMO45CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm> result{model.graph, model.plan};
     if (!load_optional_components ||
@@ -435,17 +443,17 @@ template <>
 RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm>
 load_runtime_components(
         mfq::cuda::MiniCPMOTtsCausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
         bool) {
     RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm> result{model.graph, model.plan};
     return result;
 }
 
 #define TYLOINFER_INSTANTIATE_COMPONENTS(TYPE)                                  \
-    template RuntimeComponents<TYPE> load_runtime_components(TYPE&, bool)
+    template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const mfq::cuda::weight_loader::Loader&, bool)
 
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::Gemma4CausalLm);
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::DeepseekV4CausalLm);
-
 
 #undef TYLOINFER_INSTANTIATE_COMPONENTS

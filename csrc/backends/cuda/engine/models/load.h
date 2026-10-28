@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ops/attention/full.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "engine/models/ffn.h"
 #include "engine/models/common/weight_loading.h"
 
@@ -12,8 +13,7 @@ namespace mfq { class ModelSource; }
 struct CudaExecutionContext;
 
 struct TransformerWeightLoader {
-    CudaExecutionContext& execution;
-    const mfq::ModelSource& source;
+    const mfq::cuda::weight_loader::Loader& weights;
     bool preserve_projection_boundaries = false;
     bool cpu_offloaded = false;
     std::size_t shared_gate_up_compatible_prefix = 2;
@@ -46,13 +46,11 @@ struct MoeWeightLoadOptions {
 };
 
 mfq::cuda::Ffn load_moe_weights(
-    CudaExecutionContext& execution,
-    const mfq::ModelSource& source,
+    const mfq::cuda::weight_loader::Loader& weights,
     std::string_view prefix,
     const MoeWeightLoadOptions& options);
 void load_important_neuron_branch(
-    CudaExecutionContext& execution,
-    const mfq::ModelSource& source,
+    const mfq::cuda::weight_loader::Loader& weights,
     int64_t hidden_size,
     int64_t intermediate_size,
     mfq::cuda::Ffn& ffn,
@@ -60,7 +58,7 @@ void load_important_neuron_branch(
     const std::string& gate_name,
     const std::string& up_name);
 
-void prepare_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& ffn);
+void validate_native_placement(const ParallelConfig&, const LayerPlacementConfig&, int gpu_layers);
 void prepare_moe_ffn(CudaExecutionContext& execution, mfq::cuda::Ffn& ffn);
 
 namespace mfq::cuda {
@@ -74,4 +72,12 @@ std::string load_model_config_json(
 
 void validate_model_source(const mfq::ModelSource& source);
 
+} // namespace mfq::cuda
+
+namespace mfq::cuda {
+template <typename Model>
+Model load_causal_lm(CudaExecutionContext& execution, const std::string& model_path,
+                    const std::string& config_path, std::int64_t context_size_override = 0,
+                    bool load_blocks = true, bool defer_moe_cache_finalize = false,
+                    std::shared_ptr<const mfq::ModelSource> source = {}, bool load_input_output = true);
 } // namespace mfq::cuda

@@ -1,5 +1,4 @@
 #include "models/common/axial_patch_vision_ops.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/vision.h"
 #include "backends/cuda/engine/weights/vision.h"
 #include "engine/executor/sequence.h"
@@ -15,25 +14,17 @@ using Tensor = mfq_tensor_backend::Tensor;
 using vision::Affine;
 using vision::RmsNorm;
 
-struct HostLoading {
-    bool& flag;
-    bool previous;
-    explicit HostLoading(CudaExecutionContext& execution)
-        : flag(execution.loading_cpu_layer), previous(flag) { flag = true; }
-    ~HostLoading() { flag = previous; }
-};
-
-Affine affine(CudaExecutionContext& execution, const mfq::ModelSource& source,
+Affine affine(const weight_loader::Loader& loader,
               const std::string& prefix, std::int64_t input, std::int64_t output) {
-    auto result = vision::load_affine(execution, source, prefix + ".weight", prefix + ".bias");
+    auto result = vision::load_affine(loader, prefix + ".weight", prefix + ".bias");
     TYLOINFER_RUNTIME_CHECK(result.linear.neuron_len() == input && result.linear.out() == output,
                       "axial patch vision affine geometry mismatch: " + prefix);
     return result;
 }
 
-RmsNorm norm(CudaExecutionContext& execution, const mfq::ModelSource& source,
+RmsNorm norm(const weight_loader::Loader& loader,
              const std::string& name, std::int64_t width, double epsilon) {
-    return vision::load_rms_norm(execution, source, name, width, epsilon);
+    return vision::load_rms_norm(loader, name, width, epsilon);
 }
 
 struct BlockWeights {
@@ -67,10 +58,10 @@ Tensor use_weights(const std::shared_ptr<MoeExpertCache>& cache, Weights weights
 
 struct CudaAxialPatchVisionTower::Impl {
     // The model owns the source for the lifetime of its vision component.
-    const mfq::ModelSource* source;
+    weight_loader::Loader loader;
     Config config;
 
-    mfq::StepSequence<Tensor> encode_steps(CudaExecutionContext& execution, Tensor patches,
+    mfq::StepSequence<Tensor> encode_steps(Projector projector, Tensor patches,
                                           int height, int width) const {
         if (height <= 0 || width <= 0 || height > std::numeric_limits<int>::max() / width)
             throw std::invalid_argument("invalid axial patch vision grid");
@@ -79,16 +70,15 @@ struct CudaAxialPatchVisionTower::Impl {
         if (patches.dim() == 4) patches = patches.reshape({count, config.patch_width()});
         if (patches.dim() != 2 || patches.size(0) != count || patches.size(1) != config.patch_width())
             throw std::invalid_argument("axial patch vision patch geometry mismatch");
+        const auto host = loader.for_layer(loader.placement.device, true);
         patches = patches.to(mfq_tensor_backend::kFloat16);
         const auto activations = std::size_t(count) * std::size_t(std::max(6 * hidden, 2 * config.intermediate)) * sizeof(float)
             + (std::size_t(32) << 20);
         Tensor value;
         {
-            Affine patch;
-            { HostLoading loading(execution);
-              patch = affine(execution, *source, "vision.patch_embedding", config.patch_width(), hidden); }
-            value = use_weights(execution.stores.weights.moe, std::move(patch), activations,
-                                [&](const auto& weight) { return weight(execution.projector(), patches); });
+            auto patch = affine(host, "vision.patch_embedding", config.patch_width(), hidden);
+            value = use_weights(loader.cache.moe, std::move(patch), activations,
+                                [&](const auto& weight) { return weight(projector, patches); });
         }
         co_yield mfq::StepState::advanced;
         std::vector<std::int32_t> positions;
@@ -98,19 +88,15 @@ struct CudaAxialPatchVisionTower::Impl {
                 positions.push_back(row); positions.push_back(column);
             }
         for (std::int64_t layer = 0; layer < config.layers; ++layer) {
-            BlockWeights block;
-            {
-                HostLoading loading(execution);
-                const auto prefix = "vision.block." + std::to_string(layer);
-                block.norm1 = norm(execution, *source, prefix + ".norm1.weight", hidden, config.rms_eps);
-                block.norm2 = norm(execution, *source, prefix + ".norm2.weight", hidden, config.rms_eps);
-                block.qkv = affine(execution, *source, prefix + ".attention.qkv", hidden, 3 * hidden);
-                block.output = affine(execution, *source, prefix + ".attention.output", hidden, hidden);
-                block.gate_up = affine(execution, *source, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate);
-                block.down = affine(execution, *source, prefix + ".mlp.down", config.intermediate, hidden);
-            }
-            value = use_weights(execution.stores.weights.moe, std::move(block), activations, [&](const auto& weights) {
-                const auto projector = execution.projector();
+            const auto prefix = "vision.block." + std::to_string(layer);
+            BlockWeights block{
+                norm(host, prefix + ".norm1.weight", hidden, config.rms_eps),
+                norm(host, prefix + ".norm2.weight", hidden, config.rms_eps),
+                affine(host, prefix + ".attention.qkv", hidden, 3 * hidden),
+                affine(host, prefix + ".attention.output", hidden, hidden),
+                affine(host, prefix + ".mlp.gate_up", hidden, 2 * config.intermediate),
+                affine(host, prefix + ".mlp.down", config.intermediate, hidden)};
+            value = use_weights(loader.cache.moe, std::move(block), activations, [&](const auto& weights) {
                 auto qkv = weights.qkv(projector, weights.norm1(value));
                 const auto rope = [&](int index) {
                     return vision::apply_axial_rope(
@@ -131,15 +117,11 @@ struct CudaAxialPatchVisionTower::Impl {
             const auto ratio = int(config.downsample_ratio);
             const auto grid = mfq::models::axial_patch_vision::aligned_grid(height, width, ratio);
             const auto indices = mfq::models::axial_patch_vision::gather_indices(height, width, ratio);
-            AlignerWeights weights;
-            {
-                HostLoading loading(execution);
-                weights.norm = norm(execution, *source, "vision.output_norm.weight", hidden, config.rms_eps);
-                weights.input = affine(execution, *source, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden);
-                weights.output = affine(execution, *source, "vision.aligner.output", config.output_hidden, config.output_hidden);
-            }
-            value = use_weights(execution.stores.weights.moe, std::move(weights), activations, [&](const auto& device) {
-                const auto projector = execution.projector();
+            AlignerWeights weights{
+                norm(host, "vision.output_norm.weight", hidden, config.rms_eps),
+                affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
+                affine(host, "vision.aligner.output", config.output_hidden, config.output_hidden)};
+            value = use_weights(loader.cache.moe, std::move(weights), activations, [&](const auto& device) {
                 auto padded = mfq_tensor_backend::cat({device.norm(value), mfq_tensor_backend::zeros({1, hidden}, value.options())}, 0);
                 auto index = mfq_tensor_backend::tensor(indices,
                     mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32).device(mfq_tensor_backend::kCPU))
@@ -155,13 +137,12 @@ struct CudaAxialPatchVisionTower::Impl {
 };
 
 CudaAxialPatchVisionTower CudaAxialPatchVisionTower::load(
-    CudaExecutionContext& execution, const mfq::ModelSource& model, const Config& config) {
-    (void)execution;
+    const weight_loader::Loader& loader, const Config& config) {
     config.validate();
     for (const auto* name : {"vision.patch_embedding.weight", "vision.output_norm.weight",
                             "vision.aligner.input.weight", "vision.aligner.output.weight"})
-        TYLOINFER_RUNTIME_CHECK(has_tensor(model, name), std::string("axial patch vision tensor missing: ") + name);
-    return CudaAxialPatchVisionTower(std::make_unique<Impl>(Impl{&model, config}));
+        TYLOINFER_RUNTIME_CHECK(loader.has(name), std::string("axial patch vision tensor missing: ") + name);
+    return CudaAxialPatchVisionTower(std::make_unique<Impl>(Impl{loader, config}));
 }
 
 CudaAxialPatchVisionTower::CudaAxialPatchVisionTower(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -170,12 +151,12 @@ CudaAxialPatchVisionTower& CudaAxialPatchVisionTower::operator=(CudaAxialPatchVi
 CudaAxialPatchVisionTower::~CudaAxialPatchVisionTower() = default;
 
 mfq::StepSequence<Tensor> CudaAxialPatchVisionTower::encode_steps(
-    CudaExecutionContext& execution, Tensor patches, int height, int width) const {
-    return impl_->encode_steps(execution, std::move(patches), height, width);
+    Projector projector, Tensor patches, int height, int width) const {
+    return impl_->encode_steps(projector, std::move(patches), height, width);
 }
 
-Tensor CudaAxialPatchVisionTower::encode(CudaExecutionContext& execution, Tensor patches, int height, int width) const {
-    auto steps = encode_steps(execution, std::move(patches), height, width);
+Tensor CudaAxialPatchVisionTower::encode(Projector projector, Tensor patches, int height, int width) const {
+    auto steps = encode_steps(projector, std::move(patches), height, width);
     Tensor output;
     while (auto step = steps.next()) if (step.value) output = std::move(*step.value);
     return output;

@@ -15,6 +15,7 @@
 #include <vector>
 
 namespace mfq { class ModelSource; }
+namespace mfq::cuda::weight_loader { struct Loader; }
 
 enum class TextSessionStateKind : int;
 struct TextSessionState;
@@ -59,9 +60,9 @@ struct CausalResources {
     void adapter_validate_load_options() const;
     bool adapter_uses_common_rope() const noexcept;
     void adapter_configure_rope(RopeCache &rope, mfq_tensor_backend::Device device) const;
-    void adapter_load_final_state(const mfq::ModelSource &source,
+    void adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                   mfq_tensor_backend::Tensor &output_norm);
-    void adapter_prepare_blocks(const mfq::ModelSource &source);
+    void adapter_prepare_blocks(const mfq::cuda::weight_loader::Loader& weights);
     bool adapter_supports_dense_cpu_offload() const noexcept;
 
     mfq_tensor_backend::Tensor adapter_embed(mfq_tensor_backend::Tensor output) const;

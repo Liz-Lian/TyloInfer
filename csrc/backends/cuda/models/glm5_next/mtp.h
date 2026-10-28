@@ -4,6 +4,8 @@
 #include "models/common/attention_ops.h"
 #include "engine/models/glm5_next/config.h"
 
+namespace mfq::cuda::weight_loader { struct Loader; }
+
 namespace mfq::cuda::glm5_next {
 using attention_ops::Linear;
 class SparseMla;
@@ -27,8 +29,8 @@ struct Glm5NextMtp final : MtpModule {
     ~Glm5NextMtp() override;
     Glm5NextMtp(Glm5NextMtp&&) noexcept;
 
-    static std::optional<Glm5NextMtp> load_if_present(CudaExecutionContext &execution,
-                                                      const mfq::ModelSource &file,
+    static std::optional<Glm5NextMtp> load_if_present(const weight_loader::Loader& weights,
+                                                       Projector projector,
                                                       const mfq::models::glm5_next::Config &main);
 
     void reset(int64_t next_batch = 1) override;

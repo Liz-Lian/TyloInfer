@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backends/cuda/engine/models/components.h"
+#include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/models/qwen35/load.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
@@ -62,8 +63,12 @@ auto with_loaded_cuda_model(
             true,
             load_optional_components,
             source);
+        weight_loader::Loader weights{*model.source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.stores.weights, execution.tq};
         auto runtime_components =
-            load_runtime_components(model, load_optional_components);
+            load_runtime_components(model, weights, load_optional_components);
         std::unique_ptr<mfq::cuda::Executor> executor;
         return finish(model, runtime_components.language(model), executor,
                       runtime_components, started);
@@ -79,8 +84,12 @@ auto with_loaded_cuda_model(
         if (mfq::cuda::runtime_options::kv_vram_preallocated())
             state.preallocate();
         auto executor = execution.make_executor();
+        weight_loader::Loader weights{*model.source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.stores.weights, execution.tq};
         auto runtime_components =
-            load_runtime_components(model, execution, load_optional_components);
+            load_runtime_components(model, weights, execution, load_optional_components);
         return finish(model, state, executor, runtime_components, started);
     };
 

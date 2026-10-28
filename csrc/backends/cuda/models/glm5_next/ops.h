@@ -15,7 +15,7 @@ struct Glm5Model : CausalResources {
     mfq::models::glm5_next::Config config;
 
     void adapter_validate_load_options() const;
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     mfq_tensor_backend::Tensor collapse_hidden(mfq_tensor_backend::Tensor hidden, int64_t batch,

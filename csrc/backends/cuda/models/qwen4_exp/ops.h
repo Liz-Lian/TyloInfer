@@ -124,9 +124,9 @@ struct Qwen4Model : CausalResources {
     }
 
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const mfq::ModelSource &source,
+    void adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                   mfq_tensor_backend::Tensor &output_norm);
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     void adapter_reset(int64_t batch);

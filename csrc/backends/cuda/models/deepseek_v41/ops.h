@@ -889,11 +889,11 @@ struct Block final : ::Block {
     }
 };
 
-mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
+mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const weight_loader::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &model,
+std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
                                     std::int64_t layer, const std::shared_ptr<SharedState> &shared);
 void validate_load_options(const CudaExecutionContext &execution);
 std::shared_ptr<SharedState> load_shared_state(const mfq::ModelSource &source,
@@ -933,10 +933,10 @@ struct DeepseekV41Model : CausalResources {
     std::shared_ptr<deepseek_v41_runtime::SharedState> shared;
 
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const mfq::ModelSource &source,
+    void adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                   mfq_tensor_backend::Tensor &output_norm);
-    void adapter_prepare_blocks(const mfq::ModelSource &source);
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    void adapter_prepare_blocks(const mfq::cuda::weight_loader::Loader& weights);
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     void adapter_begin_forward(bool capture_raw_hidden);

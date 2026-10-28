@@ -21,7 +21,7 @@ namespace mfq::cuda::nemotron_h {
 using Config = mfq::models::nemotron_h::Config;
 
 std::unique_ptr<::Block> load_block(CudaExecutionContext& execution,
-                                    const mfq::ModelSource& source, const Config& config, int layer,
+                                    const weight_loader::Loader& weights, const Config& config, int layer,
                                     const std::string& type,
                                     std::string_view tensor_root = "model");
 
@@ -43,7 +43,7 @@ struct NemotronHModel : CausalResources {
     mfq::models::nemotron_h::Config config;
 
     void adapter_validate_components(const mfq::ModelGraph& graph) const;
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource& source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string& type);
     // Nemotron-H's MTP head consumes the backbone hidden state *after*
     // output_norm (unlike DeepSeek-V3); see the implementation for sources.

@@ -1,7 +1,8 @@
+#include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/models/load.h"
 #include "ops.h"
 #include "runtime.h"
 
-#include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/sampler.h"
 #include "backend.h"
 #include "engine/weights/tensor_parallel.h"
@@ -14,6 +15,29 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+MiniCPMO45Runtime MiniCPMO45Runtime::load(CudaExecutionContext &execution, const std::string &model_path,
+                              const std::string &config_path, int64_t context_size) {
+    return load_with_language(mfq::cuda::load_causal_lm<mfq::cuda::MiniCPMO45CausalLm>(
+        execution, model_path, config_path, context_size));
+}
+
+MiniCPMO45Runtime MiniCPMO45Runtime::load_with_language(mfq::cuda::MiniCPMO45CausalLm language) {
+    auto &execution = *language.execution;
+    auto &placement = execution.layer_placement;
+    MfqCudaGuard guard(placement.primary_device());
+    mfq::cuda::weight_loader::Loader weights{*language.source, execution.config.weights,
+        {placement.primary_device(), false, execution.drop_file_cache,
+         execution.tensor_parallel, moe_parallel_config(execution)},
+        execution.stores.weights, execution.tq};
+    auto projector = execution.projector();
+    return {std::move(language),
+            MiniCPMO45VisionEncoder::load(weights),
+            MiniCPMO45Resampler::load(weights),
+            MiniCPMO45AudioEncoder::load(weights),
+            MiniCPMO45TtsDecoder::load(execution, weights, projector),
+            projector};
+}
 
 namespace mfq::cuda::minicpmo45 {
 

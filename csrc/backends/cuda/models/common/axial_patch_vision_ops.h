@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <memory>
 
-struct CudaExecutionContext;
-namespace mfq { class ModelSource; }
+namespace mfq::cuda {
+class Projector;
+namespace weight_loader { struct Loader; }
+}
 
 namespace mfq::cuda::axial_patch_vision {
 
@@ -20,8 +22,7 @@ using Config = mfq::models::axial_patch_vision::Config;
 class CudaAxialPatchVisionTower {
   public:
     static CudaAxialPatchVisionTower load(
-        CudaExecutionContext& execution,
-        const mfq::ModelSource& model,
+        const weight_loader::Loader& loader,
         const Config& config);
 
     CudaAxialPatchVisionTower(CudaAxialPatchVisionTower&&) noexcept;
@@ -36,7 +37,7 @@ class CudaAxialPatchVisionTower {
     // Patches accept [H*W,3,P,P] or [H*W,3*P*P]. The output is the
     // row-major, ceil(H/R)*ceil(W/R) aligned embedding grid.
     mfq_tensor_backend::Tensor encode(
-        CudaExecutionContext& execution,
+        Projector projector,
         mfq_tensor_backend::Tensor patches,
         int height,
         int width) const;
@@ -44,7 +45,7 @@ class CudaAxialPatchVisionTower {
     // Load one block at a time and restore borrowed expert storage before
     // yielding, so image preparation can share the request scheduler.
     mfq::StepSequence<mfq_tensor_backend::Tensor> encode_steps(
-        CudaExecutionContext& execution,
+        Projector projector,
         mfq_tensor_backend::Tensor patches,
         int height,
         int width) const;

@@ -22,6 +22,7 @@ namespace {
 
 struct LayerLoader : TransformerWeightLoader {
     using Ffn = mfq::cuda::Ffn;
+    bool mirror_scalars = true;
     using Tensor = mfq_tensor_backend::Tensor;
 
     static Tensor log_negative(Tensor value) {
@@ -33,66 +34,63 @@ struct LayerLoader : TransformerWeightLoader {
                             bool split_qkv) const {
         if (split_qkv) {
             attention.split_in_proj = true;
-            attention.qkv_proj = load_quant_group(execution, source, {names.qk, names.value});
-            if (is_quant_dtype(require_tensor(source, names.gate).dtype)) {
-                attention.z_proj = load_quant_linear(execution, source, names.gate);
-                const bool alpha_quant = is_quant_dtype(require_tensor(source, names.alpha).dtype);
-                const bool beta_quant = is_quant_dtype(require_tensor(source, names.beta).dtype);
+            attention.qkv_proj = weights.group({names.qk, names.value});
+            if (is_quant_dtype(require_tensor(weights.source, names.gate).dtype)) {
+                attention.z_proj = weights.projection(names.gate);
+                const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
+                const bool beta_quant = is_quant_dtype(require_tensor(weights.source, names.beta).dtype);
                 if (alpha_quant != beta_quant)
                     throw std::runtime_error(
                         "linear_attn alpha/beta must use the same storage kind");
                 attention.ab_is_nint = alpha_quant;
                 if (attention.ab_is_nint) {
                     const auto scalar_axis =
-                        execution.config.tensor_parallel_mirror_linear_attention_scalars
+                        mirror_scalars
                             ? std::optional<TensorParallelAxis>(TensorParallelAxis::Mirrored)
                             : std::nullopt;
                     attention.ab_nint_proj = make_quant_group(
-                        {load_quant_linear(execution, source, names.alpha, scalar_axis),
-                         load_quant_linear(execution, source, names.beta, scalar_axis)},
-                        execution.config.diagnostic_nint_group,
-                        execution.loading_cpu_layer);
+                        {weights.projection(names.alpha, scalar_axis),
+                         weights.projection(names.beta, scalar_axis)},
+                        weights.options.grouped,
+                        weights.placement.cpu);
                 } else {
                     attention.ab_proj = make_dense_group({
-                        load_dense_gpu(execution, source, names.alpha),
-                        load_dense_gpu(execution, source, names.beta)});
+                        weights.tensor(names.alpha),
+                        weights.tensor(names.beta)});
                 }
             } else {
                 attention.split_dense_zab = true;
                 attention.zab_proj = make_dense_group({
-                    load_dense_gpu(execution, source, names.gate),
-                    load_dense_gpu(execution, source, names.alpha),
-                    load_dense_gpu(execution, source, names.beta)});
+                    weights.tensor(names.gate),
+                    weights.tensor(names.alpha),
+                    weights.tensor(names.beta)});
             }
             return;
         }
 
-        const bool alpha_quant = is_quant_dtype(require_tensor(source, names.alpha).dtype);
-        const bool beta_quant = is_quant_dtype(require_tensor(source, names.beta).dtype);
+        const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
+        const bool beta_quant = is_quant_dtype(require_tensor(weights.source, names.beta).dtype);
         if (alpha_quant != beta_quant)
             throw std::runtime_error(
                 "linear_attention alpha/beta must use the same storage kind");
         if (alpha_quant) {
-            attention.in_proj = load_quant_group(
-                execution, source,
-                {names.qkv, names.gate, names.alpha, names.beta});
+            attention.in_proj = weights.group({names.qkv, names.gate, names.alpha, names.beta});
         } else {
             attention.dense_ab_tail = true;
-            attention.in_proj = load_quant_group(
-                execution, source, {names.qkv, names.gate});
+            attention.in_proj = weights.group({names.qkv, names.gate});
             attention.ab_proj = make_dense_group({
-                load_dense_gpu(execution, source, names.alpha),
-                load_dense_gpu(execution, source, names.beta)});
+                weights.tensor(names.alpha),
+                weights.tensor(names.beta)});
         }
     }
 
     void linear_output(LinearAttention& attention, const std::string& name) const {
-        if (is_quant_dtype(require_tensor(source, name).dtype)) {
-            attention.out_proj = load_quant_linear(execution, source, name);
+        if (is_quant_dtype(require_tensor(weights.source, name).dtype)) {
+            attention.out_proj = weights.projection(name);
         } else {
             attention.dense_out_proj = true;
-            attention.out_proj_dense = load_dense_gpu(execution, source, name);
-            if (require_tensor(source, name).dtype == "F16")
+            attention.out_proj_dense = weights.tensor(name);
+            if (require_tensor(weights.source, name).dtype == "F16")
                 attention.out_proj_dense =
                     attention.out_proj_dense.to(mfq_tensor_backend::kFloat16).contiguous();
             if (attention.out_proj_dense.dim() != 2)
@@ -102,40 +100,20 @@ struct LayerLoader : TransformerWeightLoader {
     }
 };
 
-struct LoadingScope {
-    CudaExecutionContext& execution;
-    const bool previous_cpu;
-    const int previous_device;
-    MfqCudaGuard device;
-
-    LoadingScope(CudaExecutionContext& execution, int load_device, bool cpu)
-        : execution(execution), previous_cpu(execution.loading_cpu_layer),
-          previous_device(execution.layer_placement.load_device), device(load_device) {
-        execution.loading_cpu_layer = cpu;
-        execution.layer_placement.load_device = load_device;
-    }
-
-    ~LoadingScope() {
-        execution.loading_cpu_layer = previous_cpu;
-        execution.layer_placement.load_device = previous_device;
-    }
-};
-
 } // namespace
 
-Layer load_layer(CudaExecutionContext& execution, const mfq::ModelSource& source,
-                 const Config& config, int index, const std::string& type, int device,
-                 bool cpu, std::string_view tensor_root) {
+Layer load_layer(const weight_loader::Loader& weights, const Config& config,
+                 int index, const std::string& type, bool mirror_scalars, std::string_view tensor_root) {
     if (index < 0 || index >= config.num_hidden_layers)
         throw std::out_of_range("Qwen layer index is outside the configured model");
     if (static_cast<std::size_t>(index) < config.layer_types.size() &&
         config.layer_types[static_cast<std::size_t>(index)] != type)
         throw std::invalid_argument("Qwen layer type disagrees with model config");
-    LoadingScope scope(execution, device, cpu);
+    MfqCudaGuard scope(weights.placement.device);
     Layer result;
-    result.device = device;
-    result.cpu = cpu;
-    LayerLoader loader{{execution, source}};
+    result.device = weights.placement.device;
+    result.cpu = weights.placement.cpu;
+    LayerLoader loader{{weights}, mirror_scalars};
     if (Config::attention_kind(type) == Config::AttentionKind::full) {
         Full full;
         full.attention.kv_quantization = cuda_kv_quantization();
@@ -225,8 +203,7 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
                       << mfq_get_num_threads() << std::endl;
         }
     }
-    execution.layer_placement.load_device = execution.layer_placement.primary_device();
-    execution.loading_cpu_layer = false;
+
     CudaScope model_scope(execution);
     if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.dense_cpu_layer_count > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
@@ -254,22 +231,24 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
         }
     }
 
-    execution.layer_placement.load_device = execution.layer_placement.primary_device();
-    execution.loading_cpu_layer = false;
+    weight_loader::Loader weights{source, execution.config.weights,
+        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+         execution.tensor_parallel, moe_parallel_config(execution)},
+        execution.stores.weights, execution.tq};
     if (load_input_output) {
         const auto output_name = std::string("model.output.weight");
         const bool independent_output = !model.config.tie_word_embeddings &&
                                         has_tensor(source, output_name);
-        model.embed = load_embedding(execution, source, "model.token_embedding.weight",
+        model.embed = weights.embedding("model.token_embedding.weight",
                                      independent_output);
-        model.output_norm = load_dense_gpu(execution, source, "model.output_norm.weight");
+        model.output_norm = weights.tensor("model.output_norm.weight");
         if (model.config.tie_word_embeddings || !has_tensor(source, output_name)) {
             model.lm_head = execution.tensor_parallel.enabled()
-                ? load_quant_linear(execution, source, "model.token_embedding.weight",
+                ? weights.projection("model.token_embedding.weight",
                                     TensorParallelAxis::Output)
                 : model.embed;
         } else {
-            model.lm_head = load_quant_linear(execution, source, output_name,
+            model.lm_head = weights.projection(output_name,
                                               TensorParallelAxis::Output);
         }
         if (load_layers) {
@@ -281,18 +260,17 @@ Model load(CudaExecutionContext& execution, const std::string& model_path,
                           << model.config.layer_types.at(static_cast<std::size_t>(index)) << ' '
                           << (cpu ? "CPU" : "CUDA") << std::endl;
                 model.layers.push_back(load_layer(
-                    execution, source, model.config, index,
-                    model.config.layer_types.at(static_cast<std::size_t>(index)), device, cpu));
+                    weights.for_layer(device, cpu), model.config, index,
+                    model.config.layer_types.at(static_cast<std::size_t>(index)),
+                    execution.config.tensor_parallel_mirror_linear_attention_scalars));
             }
         }
     } else {
         if (load_layers)
             throw std::invalid_argument("streamed model setup requires deferred layers");
-        model.output_norm = load_dense_gpu(execution, source, "model.output_norm.weight");
+        model.output_norm = weights.tensor("model.output_norm.weight");
     }
 
-    execution.loading_cpu_layer = false;
-    execution.layer_placement.load_device = execution.layer_placement.primary_device();
     if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
         !moe_expert_cache_finalized(execution.stores.weights.moe) && !defer_cache)
         finalize_moe_expert_cache(execution.stores.weights.moe);

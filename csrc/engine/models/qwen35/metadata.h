@@ -1,6 +1,6 @@
 #pragma once
 
-#include "config.h"
+#include "models/qwen35/config.h"
 #include "../common/causal_metadata.h"
 
 namespace mfq::models::qwen35 {

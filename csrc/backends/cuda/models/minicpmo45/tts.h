@@ -90,7 +90,7 @@ struct MiniCPMO45TtsDecoder {
 
     static MiniCPMO45TtsDecoder load(
             CudaExecutionContext& execution,
-            const mfq::ModelSource& mfq, mfq::cuda::Projector projector) {
+            const mfq::cuda::weight_loader::Loader& weights, mfq::cuda::Projector projector) {
         MiniCPMO45TtsDecoder result(projector);
         result.execution = &execution;
         result.config = mfq::models::minicpmo45::tts_decoder_config();
@@ -98,24 +98,15 @@ struct MiniCPMO45TtsDecoder {
             result.config.max_position_embeddings,
             result.config.rotary_dim,
             result.config.rope_base);
-        result.text_embedding = load_quant_linear(execution,
-            mfq, "tts.text_embedding.weight");
-        result.code_embedding = load_quant_linear(execution,
-            mfq, "tts.code_embedding.0.weight");
-        result.semantic_projector1 = mfq::cuda::vision::load_biased(execution,
-            mfq, "tts.semantic_projector.input");
-        result.semantic_projector2 = mfq::cuda::vision::load_biased(execution,
-            mfq, "tts.semantic_projector.output");
-        result.speaker_projector1 = mfq::cuda::vision::load_biased(execution,
-            mfq, "tts.speaker_projector.input");
-        result.speaker_projector2 = mfq::cuda::vision::load_biased(execution,
-            mfq, "tts.speaker_projector.output");
-        result.output_norm = load_dense_native_gpu(execution,
-            mfq, "tts.output_norm.weight");
-        auto head_g = load_dense_native_gpu(execution,
-            mfq, "tts.code_output.0.weight_norm.magnitude");
-        auto head_v = load_dense_native_gpu(execution,
-            mfq, "tts.code_output.0.weight_norm.direction");
+        result.text_embedding = weights.projection("tts.text_embedding.weight");
+        result.code_embedding = weights.projection("tts.code_embedding.0.weight");
+        result.semantic_projector1 = mfq::cuda::vision::load_biased(weights, "tts.semantic_projector.input");
+        result.semantic_projector2 = mfq::cuda::vision::load_biased(weights, "tts.semantic_projector.output");
+        result.speaker_projector1 = mfq::cuda::vision::load_biased(weights, "tts.speaker_projector.input");
+        result.speaker_projector2 = mfq::cuda::vision::load_biased(weights, "tts.speaker_projector.output");
+        result.output_norm = weights.native("tts.output_norm.weight");
+        auto head_g = weights.native("tts.code_output.0.weight_norm.magnitude");
+        auto head_v = weights.native("tts.code_output.0.weight_norm.direction");
         if (head_g.sizes().vec() != std::vector<int64_t>({6562, 1}) ||
                 head_v.sizes().vec() != std::vector<int64_t>({6562, 768}) ||
                 result.text_embedding.out() != 152064 ||
@@ -135,10 +126,10 @@ struct MiniCPMO45TtsDecoder {
         result.blocks.reserve(20);
         for (int index = 0; index < 20; ++index) {
             auto block = mfq::cuda::minicpmo45::load_language_block(
-                execution, mfq, result.config, index,
+                weights, result.config, index,
                 "full_attention", mfq::models::minicpmo45::LanguageComponent::tts, "tts");
             block->cuda_device =
-                execution.layer_placement.primary_device();
+                weights.placement.device;
             result.blocks.push_back(std::move(block));
         }
         return result;

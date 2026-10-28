@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/models/load.h"
+#include "backends/cuda/engine/executor/execution.h"
 #include "native/cuda/env.h"
 #include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/moe/load.h"
@@ -14,16 +15,18 @@
 #include <fstream>
 #include <iterator>
 
-void load_important_neuron_branch(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
+static void prepare_ffn(bool cpu, mfq::cuda::Ffn& f);
+
+void load_important_neuron_branch(const mfq::cuda::weight_loader::Loader& weights,
                                   int64_t hidden_size, int64_t intermediate_size, mfq::cuda::Ffn &f,
                                   const std::string &down_name, const std::string &gate_name,
                                   const std::string &up_name) {
     const std::string down_high = down_name + ".in_high";
     const std::string gate_high = gate_name + ".in_high";
     const std::string up_high = up_name + ".in_high";
-    const bool has_down = has_tensor(mfq, down_high);
-    const bool has_gate = has_tensor(mfq, gate_high);
-    const bool has_up = has_tensor(mfq, up_high);
+    const bool has_down = has_tensor(weights.source, down_high);
+    const bool has_gate = has_tensor(weights.source, gate_high);
+    const bool has_up = has_tensor(weights.source, up_high);
     if (!has_down && !has_gate && !has_up) {
         return;
     }
@@ -36,8 +39,8 @@ void load_important_neuron_branch(CudaExecutionContext &execution, const mfq::Mo
     }
 
     auto high = std::make_unique<mfq::cuda::Ffn>();
-    high->down = load_quant_linear(execution, mfq, down_high, TensorParallelAxis::Input);
-    high->gate_up = load_paired_gate_up(execution, mfq, {gate_high, up_high}, high->down);
+    high->down = weights.projection(down_high, TensorParallelAxis::Input);
+    high->gate_up = weights.gate_up({gate_high, up_high}, high->down);
     high->geglu = f.geglu;
     high->swiglu_limit = f.swiglu_limit;
 
@@ -53,55 +56,55 @@ void load_important_neuron_branch(CudaExecutionContext &execution, const mfq::Mo
 }
 
 mfq_tensor_backend::Tensor TransformerWeightLoader::dense(const std::string& name) const {
-    return load_dense_gpu(execution, source, name);
+    return weights.tensor(name);
 }
 QuantLinear TransformerWeightLoader::linear(const std::string& name) const {
-    return load_quant_linear(execution, source, name);
+    return weights.projection(name);
 }
-bool TransformerWeightLoader::has(const std::string& name) const { return has_tensor(source, name); }
+bool TransformerWeightLoader::has(const std::string& name) const { return has_tensor(weights.source, name); }
 mfq_tensor_backend::Tensor TransformerWeightLoader::router_parameter(const std::string& name) const {
-    if(keep_quantized_router && name.ends_with("router.weight") && require_tensor(source,name).dtype=="TQ") {
+    if(keep_quantized_router && name.ends_with("router.weight") && require_tensor(weights.source,name).dtype=="TQ") {
         router_projection=std::make_shared<QuantLinear>(linear(name));
         return {};
     }
     return dense(name).to(mfq_tensor_backend::kFloat32).contiguous();
 }
 QuantLinearGroup TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
-    return load_quant_group(execution, source, names);
+    return weights.group(names);
 }
 QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>& names,
                                                  const QuantLinear& down) const {
-    return load_paired_gate_up(execution, source, names, down, shared_gate_up_compatible_prefix,
+    return weights.gate_up(names, down, shared_gate_up_compatible_prefix,
                               preserve_projection_boundaries);
 }
 void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::vector<std::string>& names) const {
     const bool mirror_kv = block.attention_output_gate &&
         mfq::cuda::env_flag("TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true) &&
-        is_quant_dtype(require_tensor(source, names[1]).dtype) &&
-        is_quant_dtype(require_tensor(source, names[2]).dtype);
+        is_quant_dtype(require_tensor(weights.source, names[1]).dtype) &&
+        is_quant_dtype(require_tensor(weights.source, names[2]).dtype);
     if (mirror_kv) {
         block.split_q_kv_projections = true;
         block.q_projection = linear(names[0]);
-        block.k_projection = load_quant_linear(execution, source, names[1], TensorParallelAxis::Mirrored);
-        block.v_projection = load_quant_linear(execution, source, names[2], TensorParallelAxis::Mirrored);
+        block.k_projection = weights.projection(names[1], TensorParallelAxis::Mirrored);
+        block.v_projection = weights.projection(names[2], TensorParallelAxis::Mirrored);
     } else {
-        block.qkv = load_quant_group(execution, source, names, 2, nullptr,
+        block.qkv = weights.group(names, 2, nullptr,
                                     preserve_projection_boundaries);
     }
 }
-void TransformerWeightLoader::workspace(mfq::cuda::Ffn& ffn) const { prepare_ffn(execution, ffn); }
+void TransformerWeightLoader::workspace(mfq::cuda::Ffn& ffn) const { prepare_ffn(weights.placement.cpu, ffn); }
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {
-    load_important_neuron_branch(execution, source, hidden, intermediate, ffn, down, gate, up);
+    load_important_neuron_branch(weights, hidden, intermediate, ffn, down, gate, up);
 }
 void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,
                                      const std::string& name, int layer) const {
     using Role = mfq::models::ExpertProjection;
-    const auto& record = require_tensor(source, name);
+    const auto& record = require_tensor(weights.source, name);
     if(record.dtype=="TQ") {
         if(projection==Role::gate_up)
             throw std::invalid_argument("TQ MoE stores separate Gate, Up and Down tensors: "+name);
-        auto weight=load_tq_routed_weight(execution.stores.weights,execution.tq,source,name);
+        auto weight=load_tq_routed_weight(weights.cache,weights.tq,weights.source,name);
         if(!ffn.moe_tq)ffn.moe_tq=std::make_shared<TqMoeBanks>();
         switch(projection) {
             case Role::gate: ffn.moe_tq->gate=std::move(weight);break;
@@ -121,7 +124,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
             throw std::runtime_error(
                 "dense fused Gate/Up expert banks require separate Gate and Up records at layer " +
                 std::to_string(layer));
-        auto bank = load_dense_native_gpu(execution, source, name);
+        auto bank = weights.native(name);
         if (bank.dim() != 3)
             throw std::runtime_error(
                 "dense routed expert tensor must be [experts,out,in]: " + name);
@@ -145,10 +148,10 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
         case Role::down: weight = &ffn.moe_down; cpu = &ffn.cpu_moe_down; role = "down"; break;
     }
     if (cpu_offloaded) {
-        *cpu = load_mfe_cpu_offloaded(source, name);
+        *cpu = load_mfe_cpu_offloaded(weights.source, name);
         *weight = cpu_mixed_moe_metadata(*cpu);
     } else {
-        *weight = load_mfe_gpu(execution, source, name, true, layer, role);
+        *weight = weights.experts(name, true, layer, role);
     }
 
 #else
@@ -158,15 +161,15 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
 mfq::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    return load_mfe_gpu(execution, source, name);
+    return weights.experts(name);
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-mfq::cuda::Ffn load_moe_weights(CudaExecutionContext& execution, const mfq::ModelSource& source,
+mfq::cuda::Ffn load_moe_weights(const mfq::cuda::weight_loader::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
-    TransformerWeightLoader loader{execution, source};
+    TransformerWeightLoader loader{weights};
     loader.keep_quantized_router=true;
     loader.cpu_offloaded = options.cpu_offloaded;
     loader.shared_gate_up_compatible_prefix = options.shared_gate_up_compatible_prefix;
@@ -182,7 +185,7 @@ mfq::cuda::Ffn load_moe_weights(CudaExecutionContext& execution, const mfq::Mode
             (!banks.gate || (banks.gate->experts==banks.up->experts &&
                 banks.gate->out==banks.up->out && banks.gate->input==banks.up->input)),
             "TQ Gate/Up/Down expert dimensions disagree");
-        const auto& parallel = moe_parallel_config(execution);
+        const auto& parallel = weights.placement.experts;
         if (parallel.enabled())
             banks.slices = plan_moe_expert_parallel_slices(parallel, banks.up->experts, std::string(prefix));
     }
@@ -190,8 +193,8 @@ mfq::cuda::Ffn load_moe_weights(CudaExecutionContext& execution, const mfq::Mode
     return result;
 }
 
-void prepare_ffn(CudaExecutionContext &execution, mfq::cuda::Ffn &f) {
-    if (execution.loading_cpu_layer)
+static void prepare_ffn(bool cpu, mfq::cuda::Ffn &f) {
+    if (cpu)
         return;
     if (f.down.tensor_parallel())
         return;
@@ -206,7 +209,7 @@ void prepare_ffn(CudaExecutionContext &execution, mfq::cuda::Ffn &f) {
         (void)f.down.nvq.workspace(1);
     }
     if (f.important_neurons) {
-        prepare_ffn(execution, *f.important_neurons);
+        prepare_ffn(cpu, *f.important_neurons);
     }
 }
 
@@ -289,3 +292,11 @@ void validate_model_source(const mfq::ModelSource& source) {
 }
 
 } // namespace mfq::cuda
+
+void validate_native_placement(const ParallelConfig& tensor, const LayerPlacementConfig& layers,
+                               int gpu_layers) {
+    if (tensor.enabled() || layers.enabled() || gpu_layers >= 0)
+        throw std::runtime_error(
+            "native attention adapter supports expert parallelism, but "
+            "tensor/layer parallelism and offload require a different placement path");
+}

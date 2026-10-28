@@ -2,6 +2,7 @@
 #include "formats/format_features.h"
 #include "backends/cuda/engine/requests/prompt.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
+#include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/run.h"
 #include "engine/executor/ffn.h"
 #include "engine/executor/moe_ffn_pipeline.h"
@@ -85,39 +86,8 @@ public:
     CudaImageMaskScope& operator=(const CudaImageMaskScope&)=delete;
 };
 
-struct ParallelConfig {
-    std::vector<int> devices;
-    std::vector<double> split;
-    bool allow_duplicate_devices = false;
-
-    bool enabled() const {
-        return devices.size() > 1;
-    }
-
-    int primary_device() const {
-        return devices.empty() ? 0 : devices.front();
-    }
-};
-
-struct LayerPlacementConfig {
-    std::vector<int> devices;
-    std::vector<double> split;
-    std::vector<int> layer_devices;
-    int load_device = -1;
-
-    bool enabled() const {
-        return devices.size() > 1;
-    }
-
-    int primary_device() const {
-        return devices.empty() ? 0 : devices.front();
-    }
-
-    void prepare(int64_t layers);
-    int device_for_layer(int64_t layer) const;
-};
-
 struct CudaExecutionConfig {
+    mfq::cuda::weight_loader::Loader::Options weights;
     mfq::cuda::Executor::Options tasks;
     MoeFfnOptions moe_ffn;
     std::string profile_filter;
@@ -127,13 +97,9 @@ struct CudaExecutionConfig {
     bool expert_parallel_cuda_graph = true;
     bool tensor_parallel_shared_linear_attention_input = true;
     bool tensor_parallel_mirror_linear_attention_scalars = true;
-    bool tensor_parallel_shard_native_float = false;
-    bool nvq2_exec = false;
-    bool nvq_extended_group_exec = false;
     mfq::cuda::FfnExec::Options ffn;
     bool gemma4_fused_norms = true;
     bool dsv4_groupwise_output_a = true;
-    bool diagnostic_nint_group = true;
     mfq::cuda::GatedResidual::Options residual;
     bool gdn_transposed_state = true;
     bool gdn_fused_output = true;
@@ -145,10 +111,8 @@ struct CudaExecutionConfig {
     int moe_mapped_copy_blocks = 64;
     int moe_ssd_io_workers = 8;
     bool moe_ssd_overlap = true;
-    bool moe_ssd_ranges = true;
     bool moe_pipeline = false;
     bool moe_hybrid_cpu = false;
-    bool moe_preload_all = false;
     bool moe_assert_resident = false;
     bool moe_ram_pcie = false;
     bool moe_direct_ram = true;
@@ -181,14 +145,12 @@ struct CudaExecutionContext {
     int64_t dsv4_cpu_offload_host_bytes = 0;
     int n_gpu_layers = -1;
     int dense_cpu_layer_count = 0;
-    bool loading_cpu_layer = false;
     bool drop_file_cache = false;
     bool decode_graph_serial_branches = false;
     bool decode_graph_tp_projection_major = false;
     bool continuous_batch_cache_serial = false;
     int continuous_batch_ffn_tile = 0;
     int continuous_batch_ffn_tiles = 1;
-    int moe_cache_registration_min_slots = 8;
     int gemma_trace_layer = -1;
     mfq::cuda::Trace* gemma_stage_trace = nullptr;
     ParallelConfig tensor_parallel;
@@ -233,7 +195,6 @@ const ParallelConfig& moe_parallel_config(
     const CudaExecutionContext& execution);
 int model_parallel_primary_device(const CudaExecutionContext& execution);
 bool model_parallel_cuda_graph_enabled(const CudaExecutionContext& execution);
-int active_weight_load_device(const CudaExecutionContext& execution);
 void trace_gemma_stage(
     CudaExecutionContext& execution,
     int layer,

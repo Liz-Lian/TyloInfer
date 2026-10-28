@@ -794,11 +794,11 @@ struct OutputHeadWeights {
     mfq_tensor_backend::Tensor base;
 };
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &source,
+std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
                                     const Config &config, int layer, const std::string &type,
                                     const std::shared_ptr<::Dsv4SharedState> &state);
 void validate_load_options(const Config &config, CudaExecutionContext &execution);
-OutputHeadWeights load_output_head(CudaExecutionContext &execution, const mfq::ModelSource &source);
+OutputHeadWeights load_output_head(const weight_loader::Loader& weights);
 mfq_tensor_backend::Tensor finalize_hidden(mfq_tensor_backend::Tensor hidden,
                                            const OutputHeadWeights &output_head,
                                            const Config &config, CudaProfiler &profiler,
@@ -815,9 +815,9 @@ struct DeepseekV4Model : CausalResources {
     std::unordered_map<int, std::shared_ptr<Dsv4SharedState>> block_states;
 
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const mfq::ModelSource &source,
+    void adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                   mfq_tensor_backend::Tensor &output_norm);
-    std::unique_ptr<Block> adapter_load_block(const mfq::ModelSource &source, int layer, int device,
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     mfq_tensor_backend::Tensor collapse_hidden(mfq_tensor_backend::Tensor hidden, int64_t batch,

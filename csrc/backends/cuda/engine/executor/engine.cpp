@@ -297,7 +297,7 @@ struct CudaEngineState {
                     runtime_options::kv_vram_preallocated(),
                     execution->dense_cpu_layer_count != 0 ||
                         !execution->dsv4_cpu_offload_layers.empty(),
-                    execution->moe_cache_registration_min_slots};
+                    execution->config.weights.min_slots};
                 batching = std::make_unique<ContinuousBatch<CudaBatchOperations<Model>>>(
                     config.generation.prefill_chunk_size, batch_config.prefill_token_budget,
                     model, execution->make_executor(), execution->collectives,

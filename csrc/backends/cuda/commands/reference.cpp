@@ -54,7 +54,7 @@ std::string_view reference_layer_type(const Model& model, int index) {
 template <typename Model> struct ReferenceLayers {
     Model& model;
     CudaExecutionContext& execution;
-    const mfq::ModelSource& source;
+    const mfq::cuda::weight_loader::Loader& weights;
     bool resident = false;
     std::unique_ptr<::Block> streamed;
     std::vector<mfq::cuda::qwen35::Layer> qwen_layers;
@@ -69,8 +69,9 @@ template <typename Model> struct ReferenceLayers {
                 const int device = execution.layer_placement.device_for_layer(index);
                 const bool cpu = index < execution.dense_cpu_layer_count;
                 qwen_layers.push_back(mfq::cuda::qwen35::load_layer(
-                    execution, source, model.config, index,
-                    std::string(reference_layer_type(model, index)), device, cpu));
+                    weights.for_layer(device, cpu), model.config, index,
+                    std::string(reference_layer_type(model, index)),
+                    execution.config.tensor_parallel_mirror_linear_attention_scalars));
             }
             resident = true;
             return true;
@@ -78,7 +79,7 @@ template <typename Model> struct ReferenceLayers {
             model.blocks.reserve(static_cast<std::size_t>(model.num_hidden_layers()));
             for (int index = 0; index < model.num_hidden_layers(); ++index)
                 model.blocks.push_back(model.adapter_load_block(
-                    source, index, 0, std::string(model.layer_type(index))));
+                    weights, index, 0, std::string(model.layer_type(index))));
             resident = true;
             return true;
         }
@@ -89,14 +90,15 @@ template <typename Model> struct ReferenceLayers {
             const int device = execution.layer_placement.device_for_layer(index);
             const bool cpu = index < execution.dense_cpu_layer_count;
             qwen_streamed = mfq::cuda::qwen35::load_layer(
-                execution, source, model.config, index,
-                std::string(reference_layer_type(model, index)), device, cpu);
+                weights.for_layer(device, cpu), model.config, index,
+                std::string(reference_layer_type(model, index)),
+                    execution.config.tensor_parallel_mirror_linear_attention_scalars);
             if (std::holds_alternative<mfq::cuda::qwen35::Full>(qwen_streamed->weights))
                 qwen_state.emplace<KVCache>();
             else
                 qwen_state.emplace<mfq::cuda::qwen35::LinearState>();
         } else {
-            streamed = model.adapter_load_block(source, index, 0,
+            streamed = model.adapter_load_block(weights, index, 0,
                                                 std::string(model.layer_type(index)));
         }
     }
@@ -244,7 +246,11 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
             store(chunk, model.adapter_prepare_hidden(embedded.to(tb::kCUDA), 1, context));
     }
     auto positions = tb::arange(0, context, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64));
-    ReferenceLayers<Model> layers{model, execution, source_data};
+    mfq::cuda::weight_loader::Loader weights{source_data, execution.config.weights,
+        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+         execution.tensor_parallel, moe_parallel_config(execution)},
+        execution.stores.weights, execution.tq};
+    ReferenceLayers<Model> layers{model, execution, weights};
     if (resident) {
         try {
             resident = layers.load_resident();

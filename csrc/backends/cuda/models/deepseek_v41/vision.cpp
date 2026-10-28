@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "vision.h"
 #include "models/common/axial_patch_vision_ops.h"
 #include "engine/state/prefix_cache.h"
@@ -5,15 +6,9 @@
 namespace mfq::cuda::deepseek_v41_runtime {
 namespace {
 
-struct HostLoading {
-    bool& value;bool previous;
-    explicit HostLoading(CudaExecutionContext& execution):value(execution.loading_cpu_layer),previous(value){value=true;}
-    ~HostLoading(){value=previous;}
-};
-
-Tensor vector_weight(CudaExecutionContext& execution,const mfq::ModelSource& source,
+Tensor vector_weight(const weight_loader::Loader& weights,
                      const std::string& name,int64_t width) {
-    auto value=load_dense_gpu(execution,source,name);
+    auto value=weights.tensor(name);
     TYLOINFER_RUNTIME_CHECK(value.dim()==1 && value.size(0)==width,"DeepSeek-V4.1 vision vector shape mismatch: "+name);
     return value;
 }
@@ -55,7 +50,7 @@ std::vector<Span> validate_media(const CommonConfig& config,const std::vector<in
 }
 } // namespace
 
-Vision Vision::load(std::shared_ptr<const mfq::ModelSource> source,const CommonConfig& config) {
+Vision Vision::load(std::shared_ptr<const mfq::ModelSource> source,weight_loader::Loader weights,const CommonConfig& config) {
     TYLOINFER_RUNTIME_CHECK(source && config.has_vision() && config.image_token_id>=0 &&
         config.image_token_id<config.vocab && config.vision.hidden%config.vision.n_heads==0 &&
         (config.vision.hidden/config.vision.n_heads)%4==0,"invalid DeepSeek-V4.1 CUDA vision config");
@@ -63,16 +58,16 @@ Vision Vision::load(std::shared_ptr<const mfq::ModelSource> source,const CommonC
             "vision.aligner.input.weight","vision.aligner.output.weight","vision.special_token.start",
             "vision.special_token.newline","vision.special_token.end"})
         TYLOINFER_RUNTIME_CHECK(has_tensor(*source,name),std::string("DeepSeek-V4.1 vision tensor missing: ")+name);
-    return Vision(std::move(source),config);
+    return Vision(std::move(source),std::move(weights),config);
 }
 
-mfq::StepSequence<Tensor> Vision::encode(CudaExecutionContext& execution,Tensor patches,int height,int width) const {
+mfq::StepSequence<Tensor> Vision::encode(Projector projector,Tensor patches,int height,int width) const {
     const auto& v=config_.vision;
     const mfq::models::axial_patch_vision::Config config{
         v.hidden,v.n_layers,v.n_heads,v.intermediate,v.patch_size,
         v.downsample_ratio,config_.hidden,v.rope_theta,1e-6};
-    auto tower=mfq::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(execution,*source_,config);
-    auto steps=tower.encode_steps(execution,std::move(patches),height,width);
+    auto tower=mfq::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,config);
+    auto steps=tower.encode_steps(projector,std::move(patches),height,width);
     while(auto step=steps.next()) {
         if(step.value)co_yield std::move(*step.value);
         else co_yield step.state;
@@ -101,17 +96,17 @@ mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
             auto patches=mfq_tensor_backend::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
                 mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32).device(mfq_tensor_backend::kCPU))
                 .to(mfq_tensor_backend::kCUDA).to(mfq_tensor_backend::kFloat16);
-            auto encoding=encode(execution,std::move(patches),int(span.height),int(span.width));
+            auto encoding=encode(execution.projector(),std::move(patches),int(span.height),int(span.width));
             while(auto step=encoding.next()){if(step.value)visual=std::move(*step.value);else co_yield step.state;}
             cached_key_=key;cached_image_=visual;
         }
         TYLOINFER_RUNTIME_CHECK(visual.dim()==2 && visual.size(0)==span.rows*span.columns && visual.size(1)==config_.hidden,
                           "DeepSeek-V4.1 aligned image shape mismatch");
         Tensor start,newline,end;
-        {HostLoading loading(execution);
-            start=vector_weight(execution,*source_,"vision.special_token.start",config_.hidden).to(mfq_tensor_backend::kCUDA);
-            newline=vector_weight(execution,*source_,"vision.special_token.newline",config_.hidden).to(mfq_tensor_backend::kCUDA);
-            end=vector_weight(execution,*source_,"vision.special_token.end",config_.hidden).to(mfq_tensor_backend::kCUDA);}
+        {const auto host=weights_.for_layer(weights_.placement.device,true);
+            start=vector_weight(host,"vision.special_token.start",config_.hidden).to(mfq_tensor_backend::kCUDA);
+            newline=vector_weight(host,"vision.special_token.newline",config_.hidden).to(mfq_tensor_backend::kCUDA);
+            end=vector_weight(host,"vision.special_token.end",config_.hidden).to(mfq_tensor_backend::kCUDA);}
         std::vector<Tensor> rows{start.reshape({1,-1}).to(visual.scalar_type())};
         for(int64_t row=0;row<span.rows;++row) {
             rows.push_back(visual.narrow(0,row*span.columns,span.columns));

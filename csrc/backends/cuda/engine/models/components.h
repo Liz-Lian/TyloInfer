@@ -47,12 +47,14 @@ struct RuntimeComponents {
 template <typename Model>
 RuntimeComponents<Model> load_runtime_components(
     Model& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 
 RuntimeComponents<mfq::cuda::qwen35::Model>
 load_runtime_components(
     mfq::cuda::qwen35::Model& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     CudaExecutionContext& execution,
     bool load_optional_components);
 
@@ -60,24 +62,28 @@ template <>
 RuntimeComponents<mfq::cuda::Qwen4CausalLm>
 load_runtime_components(
     mfq::cuda::Qwen4CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 template <>
 RuntimeComponents<mfq::cuda::Glm5CausalLm>
 load_runtime_components(
     mfq::cuda::Glm5CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 template <>
 RuntimeComponents<mfq::cuda::DeepseekV41CausalLm>
 load_runtime_components(
     mfq::cuda::DeepseekV41CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 template <>
 RuntimeComponents<mfq::cuda::NemotronHCausalLm>
 load_runtime_components(
     mfq::cuda::NemotronHCausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 
@@ -85,10 +91,12 @@ template <>
 RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm>
 load_runtime_components(
     mfq::cuda::MiniCPMO45CausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 template <>
 RuntimeComponents<mfq::cuda::MiniCPMOTtsCausalLm>
 load_runtime_components(
     mfq::cuda::MiniCPMOTtsCausalLm& model,
+        const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);

@@ -228,10 +228,6 @@ MoeDiagnostics moe_diagnostics() {
     if (const auto* path = mfq::cuda::env_lookup("TYLOINFER_MOE_DISPATCH_REPLAY")) result.dispatch_replay = path;
     return result;
 }
-std::optional<int> embedding_mapped() {
-    const auto* value=mfq::cuda::env_lookup("TYLOINFER_EMBEDDING_MAPPED");
-    return value ? std::optional<int>(value[0] - '0') : std::nullopt;
-}
 std::optional<bool> gdn_inplace_state() {
     const auto* value=mfq::cuda::env_lookup("TYLOINFER_GDN_INPLACE_STATE");
     return value ? std::optional<bool>(value[0] != '0') : std::nullopt;
@@ -372,10 +368,6 @@ bool nvq_dense_reference() {
     const auto* value=mfq::cuda::env_lookup("TYLOINFER_NVQ_DENSE_REFERENCE");
     return value != nullptr;
 }
-std::optional<bool> ple_file_map() {
-    const auto* value=mfq::cuda::env_lookup("TYLOINFER_PLE_FILE_MAP");
-    return value ? std::optional<bool>(value[0] == '1') : std::nullopt;
-}
 std::optional<bool> prefill_expert_batch_audit() {
     const auto* value=mfq::cuda::env_lookup("TYLOINFER_PREFILL_EXPERT_BATCH_AUDIT");
     return value ? std::optional<bool>(std::atoi(value) != 0) : std::nullopt;
@@ -466,16 +458,16 @@ CudaExecutionConfig load_cuda_execution_config() {
 
     result.tasks.projection.parallel = enabled_unless_disabled(
         "TYLOINFER_DISABLE_DECODE_BRANCH_PARALLEL");
-    result.tensor_parallel_shard_native_float = environment_flag(
+    result.weights.shard_dense = environment_flag(
         "TYLOINFER_TP_SHARD_NATIVE_FLOAT", false);
     result.tasks.projection.nvq_fusion = environment("TYLOINFER_DISABLE_NVQ_FUSION")
         ? enabled_unless_disabled("TYLOINFER_DISABLE_NVQ_FUSION")
         : enabled_unless_disabled("TYLOINFER_DISABLE_NIQ_FUSION");
-    result.nvq2_exec = environment_flag("TYLOINFER_NVQ2_EXEC", false) &&
+    result.weights.quant.nvq2 = environment_flag("TYLOINFER_NVQ2_EXEC", false) &&
         (environment("TYLOINFER_DISABLE_NVQ2_EXEC")
             ? enabled_unless_disabled("TYLOINFER_DISABLE_NVQ2_EXEC")
             : enabled_unless_disabled("TYLOINFER_DISABLE_NIQ2_EXEC"));
-    result.nvq_extended_group_exec = environment_flag(
+    result.weights.quant.nvq_groups = environment_flag(
         "TYLOINFER_NVQ_EXTENDED_GROUP_EXEC", false);
     result.tasks.projection.moe.heterogeneous = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_NVQ_HETERO");
@@ -518,7 +510,7 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_GEMMA4_FUSED_NORMS", true);
     result.dsv4_groupwise_output_a = environment_flag(
         "TYLOINFER_DSV4_GROUPWISE_OUTPUT_A", true);
-    result.diagnostic_nint_group = enabled_unless_disabled(
+    result.weights.grouped = enabled_unless_disabled(
         "TYLOINFER_DIAGNOSTIC_DISABLE_NINT_GROUP");
     result.tasks.dense.fp32_residual = environment_flag(
         "TYLOINFER_DIAGNOSTIC_FP32_RESIDUAL", false);
@@ -565,11 +557,11 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_MOE_SSD_IO_WORKERS", 8, 1, 64);
     result.moe_ssd_overlap = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SSD_OVERLAP");
-    result.moe_ssd_ranges = enabled_unless_disabled(
+    result.weights.ranges = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SSD_RANGES");
     result.moe_pipeline = environment_flag("TYLOINFER_MOE_PIPELINE",false);
     result.moe_hybrid_cpu = environment_flag("TYLOINFER_MOE_HYBRID_CPU",false);
-    result.moe_preload_all = environment_flag("TYLOINFER_MOE_PRELOAD_ALL",false);
+    result.weights.preload = environment_flag("TYLOINFER_MOE_PRELOAD_ALL",false);
     result.moe_assert_resident = environment_flag("TYLOINFER_MOE_ASSERT_RESIDENT",false);
     result.moe_ram_pcie = environment_flag("TYLOINFER_MOE_RAM_PCIE",false);
     result.moe_direct_ram = environment_flag("TYLOINFER_MOE_DIRECT_RAM",true);
@@ -595,6 +587,8 @@ CudaExecutionConfig load_cuda_execution_config() {
             throw std::invalid_argument("TYLOINFER_MOE_RAM_PCIE_FRACTION must be in [0,1]");
         result.moe_ram_pcie_fraction = fraction;
     }
+    result.weights.quant.heterogeneous = result.tasks.projection.moe.heterogeneous;
+    result.weights.mapped_embedding = result.moe_pipeline && result.moe_ram_pcie;
     return result;
 }
 
@@ -605,25 +599,6 @@ void mfq_release_host_allocator_cache() noexcept {
 }
 
 using mfq_tensor_backend::indexing::Slice;
-
-void LayerPlacementConfig::prepare(int64_t layers) {
-    layer_devices.assign(static_cast<size_t>(layers), primary_device());
-    if (!enabled()) return;
-    const auto slices = mfq::plan_tensor_parallel_slices(
-        layers, 1, devices, split);
-    for (const auto& slice : slices) {
-        for (int64_t layer = slice.begin; layer < slice.end; ++layer) {
-            layer_devices.at(static_cast<size_t>(layer)) = slice.device;
-        }
-    }
-}
-
-int LayerPlacementConfig::device_for_layer(int64_t layer) const {
-    if (layer < 0 || layer >= static_cast<int64_t>(layer_devices.size())) {
-        throw std::runtime_error("layer-placement index is outside the model");
-    }
-    return layer_devices.at(static_cast<size_t>(layer));
-}
 
 CudaExecutionContext::CudaExecutionContext(
         CudaStores& borrowed, std::shared_ptr<TqExec>& borrowed_tq)
@@ -745,7 +720,6 @@ void CudaExecutionContext::reset() {
     dsv4_cpu_offload_host_bytes = 0;
     n_gpu_layers = -1;
     dense_cpu_layer_count = 0;
-    loading_cpu_layer = false;
     drop_file_cache = false;
     decode_graph_serial_branches = false;
     decode_graph_tp_projection_major = false;
@@ -754,7 +728,7 @@ void CudaExecutionContext::reset() {
     kl_mmq.reset();
     force_moe_unfused_reduce = false;
     force_moe_materialized_swiglu = false;
-    moe_cache_registration_min_slots = 8;
+    config.weights.min_slots = 8;
     gemma_trace_layer = -1;
     gemma_stage_trace = nullptr;
 }
@@ -800,13 +774,6 @@ bool model_parallel_cuda_graph_enabled(
         ? execution.config.expert_parallel_cuda_graph
         : execution.config.tensor_parallel_cuda_graph;
     return execution.collectives.enabled() && enabled;
-}
-
-int active_weight_load_device(const CudaExecutionContext& execution) {
-    const auto& placement = execution.layer_placement;
-    return placement.load_device >= 0
-        ? placement.load_device
-        : model_parallel_primary_device(execution);
 }
 
 void trace_gemma_stage(

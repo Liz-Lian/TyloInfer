@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/executor/ffn.h"
@@ -246,13 +247,9 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
     return result;
 }
 
-struct BlockLoader {
-    CudaExecutionContext &execution;
-    const mfq::ModelSource &source;
-    auto dense(const std::string &name) { return load_dense_gpu(execution, source, name); }
-    auto linear(const std::string &name) { return load_quant_linear(execution, source, name); }
+struct BlockLoader : TransformerWeightLoader {
     auto projections(const std::vector<std::string> &names) {
-        return load_quant_group(execution, source, names, 2);
+        return weights.group(names, 2);
     }
     auto rope(int64_t capacity, const mfq::models::gemma4::LayerSpec &spec) {
         return RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
@@ -271,24 +268,18 @@ struct BlockLoader {
     auto normalized_router_parameter(const std::string &name, double divisor) {
         return (router_parameter(name) / divisor).contiguous();
     }
-    auto gate_up(const std::vector<std::string> &names, const QuantLinear &down) {
-        return load_paired_gate_up(execution, source, names, down);
-    }
-    void workspace(mfq::cuda::Ffn &ffn) { prepare_ffn(execution, ffn); }
     auto experts(const std::string &name, int layer, const char *projection) {
-        return load_mfe_gpu(execution, source, name, true, layer, projection);
+        return weights.experts(name, true, layer, projection);
     }
     static auto expert_shape(const mfq::cuda::Experts &weight) {
         return std::array<int64_t, 3>{weight.n_experts, weight.out_per_expert, weight.neuron_len};
     }
-    static auto shape(const mfq_tensor_backend::Tensor &t) { return t.sizes().vec(); }
-    static auto elements(const mfq_tensor_backend::Tensor &t) { return t.numel(); }
 };
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &source,
+std::unique_ptr<::Block> load_block(const weight_loader::Loader& weights,
                                     const Config &config, int layer, const std::string &type) {
     auto block = std::make_unique<Gemma4Block>();
-    BlockLoader loader{execution, source};
+    BlockLoader loader{{weights}};
     mfq::models::gemma4::load_block(*block, loader, config, layer, type);
     return block;
 }
@@ -297,9 +288,9 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::
 
 namespace mfq::cuda {
 
-std::unique_ptr<Block> Gemma4Model::adapter_load_block(const mfq::ModelSource &source, int layer,
+std::unique_ptr<Block> Gemma4Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer,
                                                        int, const std::string &type) {
-    return gemma4::load_block(*execution, source, config, layer, type);
+    return gemma4::load_block(weights, config, layer, type);
 }
 
 } // namespace mfq::cuda

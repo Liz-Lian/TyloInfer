@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "models/common/causal_model_ops.h"
@@ -27,12 +28,12 @@ bool CausalResources::adapter_uses_common_rope() const noexcept { return false; 
 
 void CausalResources::adapter_configure_rope(RopeCache &, mfq_tensor_backend::Device) const {}
 
-void CausalResources::adapter_load_final_state(const mfq::ModelSource &source,
+void CausalResources::adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                                mfq_tensor_backend::Tensor &output_norm) {
-    output_norm = load_dense_gpu(*execution, source, "model.output_norm.weight");
+    output_norm = weights.tensor("model.output_norm.weight");
 }
 
-void CausalResources::adapter_prepare_blocks(const mfq::ModelSource &) {}
+void CausalResources::adapter_prepare_blocks(const mfq::cuda::weight_loader::Loader& weights) {}
 
 bool CausalResources::adapter_supports_dense_cpu_offload() const noexcept { return false; }
 

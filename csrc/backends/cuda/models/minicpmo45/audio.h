@@ -11,13 +11,12 @@ struct MiniCPMO45WhisperAttention {
     int64_t heads = 16;
     int64_t head_dim = 64;
 
-    static MiniCPMO45WhisperAttention load(CudaExecutionContext &execution,
-                                           const mfq::ModelSource &mfq, const std::string &prefix) {
+    static MiniCPMO45WhisperAttention load(const mfq::cuda::weight_loader::Loader& weights, const std::string &prefix) {
         MiniCPMO45WhisperAttention result;
-        result.q = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".query");
-        result.k = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".key", false);
-        result.v = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".value");
-        result.output = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".output");
+        result.q = mfq::cuda::vision::load_biased(weights, prefix + ".query");
+        result.k = mfq::cuda::vision::load_biased(weights, prefix + ".key", false);
+        result.v = mfq::cuda::vision::load_biased(weights, prefix + ".value");
+        result.output = mfq::cuda::vision::load_biased(weights, prefix + ".output");
         return result;
     }
 
@@ -72,20 +71,20 @@ struct MiniCPMO45WhisperLayer {
     mfq_tensor_backend::Tensor key_cache;
     mfq_tensor_backend::Tensor value_cache;
 
-    static MiniCPMO45WhisperLayer load(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
+    static MiniCPMO45WhisperLayer load(const mfq::cuda::weight_loader::Loader& weights,
                                        int index) {
         const std::string prefix = "audio.block." + std::to_string(index);
         MiniCPMO45WhisperLayer result;
-        result.attention = MiniCPMO45WhisperAttention::load(execution, mfq, prefix + ".attention");
+        result.attention = MiniCPMO45WhisperAttention::load(weights, prefix + ".attention");
         result.attention_norm_weight =
-            load_dense_native_gpu(execution, mfq, prefix + ".attention.norm.weight");
+            weights.native(prefix + ".attention.norm.weight");
         result.attention_norm_bias =
-            load_dense_native_gpu(execution, mfq, prefix + ".attention.norm.bias");
+            weights.native(prefix + ".attention.norm.bias");
         result.final_norm_weight =
-            load_dense_native_gpu(execution, mfq, prefix + ".mlp.norm.weight");
-        result.final_norm_bias = load_dense_native_gpu(execution, mfq, prefix + ".mlp.norm.bias");
-        result.fc1 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.up");
-        result.fc2 = mfq::cuda::vision::load_biased(execution, mfq, prefix + ".mlp.down");
+            weights.native(prefix + ".mlp.norm.weight");
+        result.final_norm_bias = weights.native(prefix + ".mlp.norm.bias");
+        result.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
+        result.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
         return result;
     }
 
@@ -132,27 +131,26 @@ struct MiniCPMO45AudioEncoder {
     MiniCPMO45Linear projector1;
     MiniCPMO45Linear projector2;
 
-    static MiniCPMO45AudioEncoder load(CudaExecutionContext &execution,
-                                       const mfq::ModelSource &mfq) {
+    static MiniCPMO45AudioEncoder load(const mfq::cuda::weight_loader::Loader& weights) {
         MiniCPMO45AudioEncoder result;
         result.conv1_weight =
-            load_dense_native_gpu(execution, mfq, "audio.patch_embedding.conv1.weight");
+            weights.native("audio.patch_embedding.conv1.weight");
         result.conv1_bias =
-            load_dense_native_gpu(execution, mfq, "audio.patch_embedding.conv1.bias");
+            weights.native("audio.patch_embedding.conv1.bias");
         result.conv2_weight =
-            load_dense_native_gpu(execution, mfq, "audio.patch_embedding.conv2.weight");
+            weights.native("audio.patch_embedding.conv2.weight");
         result.conv2_bias =
-            load_dense_native_gpu(execution, mfq, "audio.patch_embedding.conv2.bias");
+            weights.native("audio.patch_embedding.conv2.bias");
         result.position_embedding =
-            load_dense_native_gpu(execution, mfq, "audio.position_embedding.weight");
+            weights.native("audio.position_embedding.weight");
         result.final_norm_weight =
-            load_dense_native_gpu(execution, mfq, "audio.output_norm.weight");
-        result.final_norm_bias = load_dense_native_gpu(execution, mfq, "audio.output_norm.bias");
-        result.projector1 = mfq::cuda::vision::load_biased(execution, mfq, "audio.projector.input");
-        result.projector2 = mfq::cuda::vision::load_biased(execution, mfq, "audio.projector.output");
+            weights.native("audio.output_norm.weight");
+        result.final_norm_bias = weights.native("audio.output_norm.bias");
+        result.projector1 = mfq::cuda::vision::load_biased(weights, "audio.projector.input");
+        result.projector2 = mfq::cuda::vision::load_biased(weights, "audio.projector.output");
         result.layers.reserve(24);
         for (int index = 0; index < 24; ++index) {
-            result.layers.push_back(MiniCPMO45WhisperLayer::load(execution, mfq, index));
+            result.layers.push_back(MiniCPMO45WhisperLayer::load(weights, index));
         }
         if (result.conv1_weight.sizes().vec() != std::vector<int64_t>({1024, 80, 3}) ||
             result.conv2_weight.sizes().vec() != std::vector<int64_t>({1024, 1024, 3}) ||

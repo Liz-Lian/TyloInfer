@@ -11,6 +11,7 @@
 
 struct CudaExecutionContext;
 struct TransformerWeightLoader;
+namespace mfq::cuda::weight_loader { struct Loader; }
 
 namespace mfq::cuda::qwen35 {
 
@@ -20,8 +21,8 @@ Model load(CudaExecutionContext&, const std::string& model_path,
            std::shared_ptr<const mfq::ModelSource> source = {},
            bool load_input_output = true);
 
-Layer load_layer(CudaExecutionContext&, const mfq::ModelSource&, const Config&,
-                 int index, const std::string& type, int device, bool cpu,
+Layer load_layer(const weight_loader::Loader&, const Config&,
+                 int index, const std::string& type, bool mirror_scalars = true,
                  std::string_view tensor_root = "model");
 
 std::optional<Predictor> load_predictor(

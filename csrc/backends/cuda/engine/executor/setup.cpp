@@ -462,7 +462,7 @@ void setup_cuda_load(
                 .overlap = execution.config.moe_ssd_overlap,
                 .pipeline = execution.config.moe_pipeline,
                 .hybrid_cpu = execution.config.moe_hybrid_cpu,
-                .preload = execution.config.moe_preload_all,
+                .preload = execution.config.weights.preload,
                 .assert_resident = execution.config.moe_assert_resident,
                 .ram_pcie = execution.config.moe_ram_pcie,
                 .direct_ram = execution.config.moe_direct_ram,

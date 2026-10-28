@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "kl.h"
 
 #include "models/deepseek_v4/ops.h"
@@ -9,9 +10,8 @@
 #include "models/nemotron_h/ops.h"
 #include "models/qwen35/forward.h"
 #include "models/qwen4_exp/ops.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "backends/cuda/engine/models/load.h"
 #include "quant_linear.h"
-#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
@@ -997,7 +997,10 @@ int run_kl_eval_streamed(
     if (model.vocab_size() != input.n_vocab) {
         throw std::runtime_error("KL vocab size mismatch");
     }
-    const auto& mfq = *model.source;
+    mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
+        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+         execution.tensor_parallel, moe_parallel_config(execution)},
+        execution.stores.weights, execution.tq};
 
     const int64_t hidden_bytes =
         (int64_t)chunks * n_ctx * model.hc_mult() *
@@ -1049,7 +1052,7 @@ int run_kl_eval_streamed(
             std::cerr << "stream loading layer " << layer << " "
                       << model.layer_type(layer) << std::endl;
             blocks.push_back(mfq::cuda::deepseek_v4::load_block(
-                *model.execution, mfq, model.config, layer,
+                *model.execution, weights, model.config, layer,
                 std::string(model.layer_type(layer)), dsv4_state));
         }
         for (int begin = 0; begin < chunks; begin += chunk_batch) {

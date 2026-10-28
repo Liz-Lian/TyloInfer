@@ -262,11 +262,11 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                 execution.config.moe_ram_pcie_fraction && *execution.config.moe_ram_pcie_fraction==1.0;
             TYLOINFER_RUNTIME_CHECK(gen>1 && (!decode_inputs.empty() || free_gpu_comparison) && !profile &&
                 runtime_comparison_modes() == 1 && router_lookahead_audit.empty() &&
-                !execution.config.moe_mapped_gather && execution.config.moe_preload_all &&
+                !execution.config.moe_mapped_gather && execution.config.weights.preload &&
                 execution.config.moe_ffn.two_stage && moe_gpu_cache_gb>0,
                 "runtime comparison requires fixed inputs or an eligible GPU-only free-decode comparison, complete preload, two-stage FFN and profiling disabled");
             TYLOINFER_RUNTIME_CHECK(!compare_attention_grouping ||
-                execution.config.diagnostic_nint_group,
+                execution.config.weights.grouped,
                 "attention-grouping comparison requires grouped NINT enabled");
             TYLOINFER_RUNTIME_CHECK(!compare_mhc_fusion || (execution.config.residual.fused_projections &&
                 execution.config.residual.native_input),

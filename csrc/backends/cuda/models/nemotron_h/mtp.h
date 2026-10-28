@@ -39,11 +39,11 @@ struct NemotronHMtp final : MtpModule {
     int64_t predictor_capacity() const noexcept { return config.max_position_embeddings; }
 
     static std::optional<NemotronHMtp> load_if_present(CudaExecutionContext &execution,
-                                                       const mfq::ModelSource &file,
+                                                       const weight_loader::Loader& weights,
                                                        const mfq::models::nemotron_h::Config &main) {
-        const bool fusion_present = has_tensor(file, "predictor.fusion.weight");
+        const bool fusion_present = weights.has("predictor.fusion.weight");
         if (!fusion_present) {
-            TYLOINFER_RUNTIME_CHECK(!has_tensor_prefix(file, "predictor."),
+            TYLOINFER_RUNTIME_CHECK(!weights.has_prefix("predictor."),
                               "Nemotron-H source contains an incomplete MTP head");
             return std::nullopt;
         }
@@ -52,10 +52,10 @@ struct NemotronHMtp final : MtpModule {
         NemotronHMtp result;
         result.config = main;
         result.execution = &execution;
-        result.embedding_norm = load_dense_gpu(execution, file, "predictor.embedding_norm.weight");
-        result.hidden_norm = load_dense_gpu(execution, file, "predictor.hidden_norm.weight");
-        result.output_norm = load_dense_gpu(execution, file, "predictor.output_norm.weight");
-        result.fusion = load_quant_linear(execution, file, "predictor.fusion.weight");
+        result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
+        result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
+        result.output_norm = weights.tensor("predictor.output_norm.weight");
+        result.fusion = weights.projection("predictor.fusion.weight");
         TYLOINFER_RUNTIME_CHECK(result.fusion.neuron_len() == 2 * main.hidden_size &&
                               result.fusion.out() == main.hidden_size &&
                               result.embedding_norm.numel() == main.hidden_size &&
@@ -65,10 +65,10 @@ struct NemotronHMtp final : MtpModule {
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
                 std::string(mfq::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
-            auto block = mfq::cuda::nemotron_h::load_block(execution, file, main,
+            auto block = mfq::cuda::nemotron_h::load_block(execution, weights, main,
                                                           static_cast<int>(index), type,
                                                           "predictor");
-            block->cuda_device = execution.layer_placement.primary_device();
+            block->cuda_device = weights.placement.device;
             if (auto *full = dynamic_cast<FullBlock *>(block.get()))
                 full->preallocate_kv();
             result.blocks.push_back(std::move(block));

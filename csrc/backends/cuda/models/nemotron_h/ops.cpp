@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
 #include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -286,9 +287,9 @@ struct BlockLoader : TransformerWeightLoader {
 };
 
 std::unique_ptr<::Block> load_block(CudaExecutionContext& execution,
-                                    const mfq::ModelSource& source, const Config& config, int layer,
+                                    const weight_loader::Loader& weights, const Config& config, int layer,
                                     const std::string& type, std::string_view tensor_root) {
-    BlockLoader loader{{execution, source}};
+    BlockLoader loader{{weights}};
     switch (Config::mixer_kind(type)) {
         case mfq::models::nemotron_h::MixerKind::linear_attention: {
             auto block = loader.mamba_block();
@@ -453,9 +454,9 @@ void NemotronHModel::adapter_validate_components(const mfq::ModelGraph& graph) c
             "implementation under the predictor tensor root");
 }
 
-std::unique_ptr<Block> NemotronHModel::adapter_load_block(const mfq::ModelSource& source, int layer,
+std::unique_ptr<Block> NemotronHModel::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer,
                                                           int, const std::string& type) {
-    return nemotron_h::load_block(*execution, source, config, layer, type);
+    return nemotron_h::load_block(*execution, weights, config, layer, type);
 }
 
 mfq_tensor_backend::Tensor

@@ -4,6 +4,8 @@
 #include "models/common/attention_ops.h"
 #include "engine/models/qwen4_exp/config.h"
 
+namespace mfq::cuda::weight_loader { struct Loader; }
+
 namespace mfq::cuda { class GatedResidual; }
 
 namespace mfq::cuda::qwen4_exp {
@@ -39,7 +41,7 @@ struct Qwen4ExpMtp final : MtpModule {
     Qwen4ExpMtp& operator=(Qwen4ExpMtp&&) noexcept;
 
     static std::optional<Qwen4ExpMtp> load_if_present(CudaExecutionContext &execution,
-                                                      const mfq::ModelSource &file,
+                                                      const weight_loader::Loader& weights,
                                                       const mfq::models::qwen4_exp::Config &main);
 
     void reset(int64_t next_batch = 1) override;

@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "mfq_cuda_sampling_ops.h"
 #include "minicpmo45.h"
 

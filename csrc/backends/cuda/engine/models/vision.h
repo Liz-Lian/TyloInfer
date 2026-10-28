@@ -11,25 +11,24 @@
 
 namespace mfq::cuda::vision {
 
-inline BiasLinear load_biased(CudaExecutionContext &execution, const mfq::ModelSource &mfq,
+inline BiasLinear load_biased(const mfq::cuda::weight_loader::Loader& weights,
                               const std::string &prefix, bool with_bias = true) {
     BiasLinear result;
-    result.weight = load_quant_linear(execution, mfq, prefix + ".weight");
+    result.weight = weights.projection(prefix + ".weight");
     const std::string bias_name = prefix + ".bias";
-    if (with_bias && has_tensor(mfq, bias_name)) {
-        result.bias = load_dense_gpu(execution, mfq, bias_name);
+    if (with_bias && has_tensor(weights.source, bias_name)) {
+        result.bias = weights.tensor(bias_name);
     }
     return result;
 }
 
 inline Affine load_affine(
-    CudaExecutionContext& execution,
-    const mfq::ModelSource& model,
+    const mfq::cuda::weight_loader::Loader& weights,
     const std::string& weight_name,
     const std::string& bias_name) {
-    Affine result{load_quant_linear(execution, model, weight_name), {}};
-    if (has_tensor(model, bias_name)) {
-        result.bias = load_dense_gpu(execution, model, bias_name);
+    Affine result{weights.projection(weight_name), {}};
+    if (has_tensor(weights.source, bias_name)) {
+        result.bias = weights.tensor(bias_name);
         if (result.bias.dim() != 1 ||
             result.bias.size(0) != result.linear.out()) {
             throw std::runtime_error(
@@ -40,12 +39,11 @@ inline Affine load_affine(
 }
 
 inline RmsNorm load_rms_norm(
-    CudaExecutionContext& execution,
-    const mfq::ModelSource& model,
+    const mfq::cuda::weight_loader::Loader& weights,
     const std::string& name,
     std::int64_t width,
     double epsilon) {
-    auto weight = load_dense_gpu(execution, model, name)
+    auto weight = weights.tensor(name)
                       .to(mfq_tensor_backend::kFloat32)
                       .contiguous();
     if (weight.dim() != 1 || weight.size(0) != width) {

@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "ops.h"
 #include "backends/cuda/engine/models/load.h"
 #include "models/common/session_codec.h"
@@ -5,13 +6,12 @@
 
 namespace mfq::cuda {
 
-std::unique_ptr<Block> minicpmo45::load_language_block(CudaExecutionContext& execution,
-    const mfq::ModelSource& source, const mfq::models::ModelConfig& config, int layer,
+std::unique_ptr<Block> minicpmo45::load_language_block(const mfq::cuda::weight_loader::Loader& weights, const mfq::models::ModelConfig& config, int layer,
     const std::string& type, mfq::models::minicpmo45::LanguageComponent component,
     std::string_view tensor_root) {
     auto block = std::make_unique<FullBlock>();
     block->official_bf16 = component == mfq::models::minicpmo45::LanguageComponent::text;
-    TransformerWeightLoader loader{execution, source};
+    TransformerWeightLoader loader{weights};
     loader.preserve_projection_boundaries = block->official_bf16;
     mfq::models::minicpmo45::load_language_block(*block, loader, config, layer, type, component,
                                                 tensor_root);
@@ -23,10 +23,10 @@ bool MiniCPMO45Model::adapter_uses_common_rope() const noexcept { return true; }
 
 bool MiniCPMO45Model::adapter_supports_dense_cpu_offload() const noexcept { return true; }
 
-std::unique_ptr<Block> MiniCPMO45Model::adapter_load_block(const mfq::ModelSource &source,
+std::unique_ptr<Block> MiniCPMO45Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights,
                                                            int layer, int,
                                                            const std::string &type) {
-    return minicpmo45::load_language_block(*execution, source, config, layer, type,
+    return minicpmo45::load_language_block(weights, config, layer, type,
         mfq::models::minicpmo45::LanguageComponent::text);
 }
 
@@ -34,10 +34,10 @@ bool MiniCPMOTtsModel::adapter_uses_common_rope() const noexcept { return true; 
 
 bool MiniCPMOTtsModel::adapter_supports_dense_cpu_offload() const noexcept { return true; }
 
-std::unique_ptr<Block> MiniCPMOTtsModel::adapter_load_block(const mfq::ModelSource &source,
+std::unique_ptr<Block> MiniCPMOTtsModel::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights,
                                                             int layer, int,
                                                             const std::string &type) {
-    return minicpmo45::load_language_block(*execution, source, config, layer, type,
+    return minicpmo45::load_language_block(weights, config, layer, type,
         mfq::models::minicpmo45::LanguageComponent::standalone_tts);
 }
 

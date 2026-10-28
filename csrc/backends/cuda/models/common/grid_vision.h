@@ -16,8 +16,7 @@
 #include <utility>
 #include <vector>
 
-struct CudaExecutionContext;
-namespace mfq { class ModelSource; }
+namespace mfq::cuda::weight_loader { struct Loader; }
 
 namespace mfq::cuda::grid_vision_runtime {
 
@@ -25,8 +24,7 @@ using Tensor = mfq_tensor_backend::Tensor;
 
 class CudaGridVisionEncoder {
   public:
-    static CudaGridVisionEncoder load(CudaExecutionContext &execution,
-                                      const mfq::ModelSource &model,
+    static CudaGridVisionEncoder load(const weight_loader::Loader& weights,
                                       const GridVisionConfig &config);
 
     mfq::StepSequence<Tensor> encode(Projector projector, std::shared_ptr<MoeExpertCache> cache,
@@ -49,7 +47,7 @@ class CudaGridVisionEncoder {
 class CudaGridVisionPromptComponent {
   public:
     static CudaGridVisionPromptComponent
-    load(CudaExecutionContext &execution, const mfq::ModelSource &model,
+    load(const weight_loader::Loader& weights,
          const GridVisionConfig &vision, int64_t image_token_id, int64_t video_token_id,
          std::string input_contract, std::string position_policy);
 

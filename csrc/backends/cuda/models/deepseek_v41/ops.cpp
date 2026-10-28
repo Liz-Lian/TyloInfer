@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "ops.h"
@@ -5,10 +6,10 @@
 
 namespace mfq::cuda::deepseek_v41_runtime {
 
-mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const mfq::ModelSource &model,
+mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const weight_loader::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
-    auto result = load_moe_weights(execution, model, prefix,
+    auto result = load_moe_weights(weights, prefix,
                                    {.layer = static_cast<int>(layer),
                                     .router_bias_required = true,
                                     .shared_gate_up_compatible_prefix = 0});
@@ -24,7 +25,7 @@ mfq::cuda::Ffn load_moe_at(CudaExecutionContext &execution, const mfq::ModelSour
     return result;
 }
 
-std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::ModelSource &model,
+std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const weight_loader::Loader& weights,
                                     std::int64_t layer,
                                     const std::shared_ptr<SharedState> &shared) {
     TYLOINFER_RUNTIME_CHECK(shared, "missing DeepSeek-V4.1 CUDA state");
@@ -37,68 +38,69 @@ std::unique_ptr<::Block> load_block(CudaExecutionContext &execution, const mfq::
     result->max_context = config.max_position_embeddings;
     result->shared = shared;
     if (config.has_engram(layer)) {
-        result->engram = Engram::load(execution, model, config, static_cast<int>(layer));
+        result->engram = Engram::load(weights, config, static_cast<int>(layer),
+                                      execution.config.deepseek_v41_engram_cache_rows);
         shared->engram_prefetch.push_back(result->engram.get());
     }
-    result->attention_norm = load_dense_gpu(execution, model, prefix + "attention.norm.weight")
+    result->attention_norm = weights.tensor(prefix + "attention.norm.weight")
                                  .to(mfq_tensor_backend::kFloat32).contiguous();
-    result->mlp_norm = load_dense_gpu(execution, model, prefix + "mlp.norm.weight")
+    result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight")
                            .to(mfq_tensor_backend::kFloat32).contiguous();
     result->query_a_norm =
-        load_dense_gpu(execution, model, prefix + "attention.query_a_norm.weight");
+        weights.tensor(prefix + "attention.query_a_norm.weight");
     result->key_value_norm =
-        load_dense_gpu(execution, model, prefix + "attention.key_value_norm.weight");
-    result->sinks = load_dense_gpu(execution, model, prefix + "attention.sink")
+        weights.tensor(prefix + "attention.key_value_norm.weight");
+    result->sinks = weights.tensor(prefix + "attention.sink")
                         .to(mfq_tensor_backend::kFloat32)
                         .contiguous();
     result->attention_mhc_function =
-        load_dense_gpu(execution, model, prefix + "attention.mhc.pre.function")
+        weights.tensor(prefix + "attention.mhc.pre.function")
             .to(mfq_tensor_backend::kFloat32)
             .contiguous();
     result->attention_mhc_scale =
-        load_dense_gpu(execution, model, prefix + "attention.mhc.pre.scale")
+        weights.tensor(prefix + "attention.mhc.pre.scale")
             .to(mfq_tensor_backend::kFloat32)
             .contiguous();
-    result->attention_mhc_base = load_dense_gpu(execution, model, prefix + "attention.mhc.pre.base")
+    result->attention_mhc_base = weights.tensor(prefix + "attention.mhc.pre.base")
                                      .to(mfq_tensor_backend::kFloat32)
                                      .contiguous();
-    result->mlp_mhc_function = load_dense_gpu(execution, model, prefix + "mlp.mhc.pre.function")
+    result->mlp_mhc_function = weights.tensor(prefix + "mlp.mhc.pre.function")
                                    .to(mfq_tensor_backend::kFloat32)
                                    .contiguous();
-    result->mlp_mhc_scale = load_dense_gpu(execution, model, prefix + "mlp.mhc.pre.scale")
+    result->mlp_mhc_scale = weights.tensor(prefix + "mlp.mhc.pre.scale")
                                 .to(mfq_tensor_backend::kFloat32)
                                 .contiguous();
-    result->mlp_mhc_base = load_dense_gpu(execution, model, prefix + "mlp.mhc.pre.base")
+    result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
                                .to(mfq_tensor_backend::kFloat32)
                                .contiguous();
-    result->query_a = load_quant_linear(execution, model, prefix + "attention.query_a.weight");
-    result->query_b = load_quant_linear(execution, model, prefix + "attention.query_b.weight");
-    result->key_value = load_quant_linear(execution, model, prefix + "attention.key_value.weight");
-    result->output_a = load_quant_linear(execution, model, prefix + "attention.output_a.weight");
-    result->output_b = load_quant_linear(execution, model, prefix + "attention.output_b.weight");
+    result->query_a = weights.projection(prefix + "attention.query_a.weight");
+    result->query_b = weights.projection(prefix + "attention.query_b.weight");
+    result->key_value = weights.projection(prefix + "attention.key_value.weight");
+    result->output_a = weights.projection(prefix + "attention.output_a.weight");
+    result->output_b = weights.projection(prefix + "attention.output_b.weight");
     if (result->kv_source()) {
         result->compressor_key_value =
-            load_quant_linear(execution, model, prefix + "attention.compressor.key_value.weight");
+            weights.projection(prefix + "attention.compressor.key_value.weight");
         result->compressor_norm =
-            load_dense_gpu(execution, model, prefix + "attention.compressor.norm.weight");
+            weights.tensor(prefix + "attention.compressor.norm.weight");
         result->index_key =
-            load_quant_linear(execution, model, prefix + "attention.indexer.key.weight");
+            weights.projection(prefix + "attention.indexer.key.weight");
         result->index_key_norm =
-            load_dense_gpu(execution, model, prefix + "attention.indexer.key_norm.weight");
+            weights.tensor(prefix + "attention.indexer.key_norm.weight");
         if (result->ratio > 1) {
             result->compressor_gate =
-                load_quant_linear(execution, model, prefix + "attention.compressor.gate.weight");
+                weights.projection(prefix + "attention.compressor.gate.weight");
         }
     }
     if (result->index_source()) {
         result->index_query =
-            load_quant_linear(execution, model, prefix + "attention.indexer.query.weight");
+            weights.projection(prefix + "attention.indexer.query.weight");
         result->index_score =
-            load_quant_linear(execution, model, prefix + "attention.indexer.score.weight");
+            weights.projection(prefix + "attention.indexer.score.weight");
     }
-    result->mlp = load_moe_at(execution, model, config, prefix + "mlp.", layer, config.top_k);
-    if(has_tensor(model,prefix+"mlp.router.vision_bias")) {
-        result->vision_router_bias=load_dense_gpu(execution,model,prefix+"mlp.router.vision_bias")
+    result->mlp = load_moe_at(execution, weights, config, prefix + "mlp.", layer, config.top_k);
+    if(weights.has(prefix+"mlp.router.vision_bias")) {
+        result->vision_router_bias=weights.tensor(prefix+"mlp.router.vision_bias")
             .to(mfq_tensor_backend::kFloat32).contiguous();
         TYLOINFER_RUNTIME_CHECK(result->vision_router_bias.dim()==1 && result->vision_router_bias.size(0)==config.n_experts,
                           "DeepSeek-V4.1 vision router bias shape mismatch");
@@ -190,13 +192,13 @@ void DeepseekV41Model::adapter_validate_load_options() const {
     deepseek_v41_runtime::validate_load_options(*execution);
 }
 
-void DeepseekV41Model::adapter_load_final_state(const mfq::ModelSource &source,
+void DeepseekV41Model::adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
                                                 mfq_tensor_backend::Tensor &output_norm) {
-    CausalResources::adapter_load_final_state(source, output_norm);
+    CausalResources::adapter_load_final_state(weights, output_norm);
 }
 
-void DeepseekV41Model::adapter_prepare_blocks(const mfq::ModelSource &source) {
-    shared = deepseek_v41_runtime::load_shared_state(source, config);
+void DeepseekV41Model::adapter_prepare_blocks(const mfq::cuda::weight_loader::Loader& weights) {
+    shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
 }
 
 bool DeepseekV41Model::adapter_prefetch_token_rows(DeepseekV41CausalLm& model,
@@ -210,11 +212,11 @@ bool DeepseekV41Model::adapter_prefetch_token_rows(DeepseekV41CausalLm& model,
     return true;
 }
 
-std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const mfq::ModelSource &source,
+std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights,
                                                             int layer, int,
                                                             const std::string &type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
-    return deepseek_v41_runtime::load_block(*execution, source, layer, shared);
+    return deepseek_v41_runtime::load_block(*execution, weights, layer, shared);
 }
 
 void DeepseekV41Model::adapter_begin_forward(bool capture_raw_hidden) {

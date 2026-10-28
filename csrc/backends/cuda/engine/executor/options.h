@@ -64,7 +64,6 @@ struct MoeDiagnostics {
 };
 MoeDiagnostics moe_diagnostics();
 // Operator and storage controls are parsed only at this execution boundary.
-std::optional<int> embedding_mapped();
 std::optional<bool> gdn_inplace_state();
 std::optional<bool> gdn_prefill_fused();
 std::optional<bool> gr_dense_vector();
@@ -100,7 +99,6 @@ std::optional<int> nint_route_warps();
 std::optional<bool> nvq1_group_records();
 std::optional<bool> nvq1_integer_delta();
 bool nvq_dense_reference();
-std::optional<bool> ple_file_map();
 std::optional<bool> prefill_expert_batch_audit();
 std::optional<bool> prefill_layer_major_trace();
 std::optional<bool> qsa_prefill_fused();

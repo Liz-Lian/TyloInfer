@@ -1,3 +1,4 @@
+#include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/ffn.h"
 #include "engine/executor/tq.h"
@@ -62,7 +63,7 @@ struct DeepseekV41Dspark final : MtpModule {
     std::int64_t position = 0;
 
     static std::unique_ptr<Block> load_stage(CudaExecutionContext &execution,
-                                             const mfq::ModelSource &model,
+                                             const weight_loader::Loader& weights,
                                              const CommonConfig &config, std::int64_t stage) {
         const auto prefix = "predictor.stage." + std::to_string(stage) + ".";
         auto result = std::make_unique<Block>();
@@ -70,52 +71,52 @@ struct DeepseekV41Dspark final : MtpModule {
         result->layer = config.n_layers + stage;
         result->ratio = 0;
         result->max_context = config.max_position_embeddings;
-        result->attention_norm = load_dense_gpu(execution, model, prefix + "attention.norm.weight")
+        result->attention_norm = weights.tensor(prefix + "attention.norm.weight")
                                      .to(mfq_tensor_backend::kFloat32).contiguous();
-        result->mlp_norm = load_dense_gpu(execution, model, prefix + "mlp.norm.weight")
+        result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight")
                                .to(mfq_tensor_backend::kFloat32).contiguous();
         result->query_a_norm =
-            load_dense_gpu(execution, model, prefix + "attention.query_a_norm.weight");
+            weights.tensor(prefix + "attention.query_a_norm.weight");
         result->key_value_norm =
-            load_dense_gpu(execution, model, prefix + "attention.key_value_norm.weight");
-        result->sinks = load_dense_gpu(execution, model, prefix + "attention.sink")
+            weights.tensor(prefix + "attention.key_value_norm.weight");
+        result->sinks = weights.tensor(prefix + "attention.sink")
                             .to(mfq_tensor_backend::kFloat32)
                             .contiguous();
         result->attention_mhc_function =
-            load_dense_gpu(execution, model, prefix + "attention.mhc.pre.function")
+            weights.tensor(prefix + "attention.mhc.pre.function")
                 .to(mfq_tensor_backend::kFloat32)
                 .contiguous();
         result->attention_mhc_scale =
-            load_dense_gpu(execution, model, prefix + "attention.mhc.pre.scale")
+            weights.tensor(prefix + "attention.mhc.pre.scale")
                 .to(mfq_tensor_backend::kFloat32)
                 .contiguous();
         result->attention_mhc_base =
-            load_dense_gpu(execution, model, prefix + "attention.mhc.pre.base")
+            weights.tensor(prefix + "attention.mhc.pre.base")
                 .to(mfq_tensor_backend::kFloat32)
                 .contiguous();
-        result->mlp_mhc_function = load_dense_gpu(execution, model, prefix + "mlp.mhc.pre.function")
+        result->mlp_mhc_function = weights.tensor(prefix + "mlp.mhc.pre.function")
                                        .to(mfq_tensor_backend::kFloat32)
                                        .contiguous();
-        result->mlp_mhc_scale = load_dense_gpu(execution, model, prefix + "mlp.mhc.pre.scale")
+        result->mlp_mhc_scale = weights.tensor(prefix + "mlp.mhc.pre.scale")
                                     .to(mfq_tensor_backend::kFloat32)
                                     .contiguous();
-        result->mlp_mhc_base = load_dense_gpu(execution, model, prefix + "mlp.mhc.pre.base")
+        result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
                                    .to(mfq_tensor_backend::kFloat32)
                                    .contiguous();
-        result->query_a = load_quant_linear(execution, model, prefix + "attention.query_a.weight");
-        result->query_b = load_quant_linear(execution, model, prefix + "attention.query_b.weight");
+        result->query_a = weights.projection(prefix + "attention.query_a.weight");
+        result->query_b = weights.projection(prefix + "attention.query_b.weight");
         result->key_value =
-            load_quant_linear(execution, model, prefix + "attention.key_value.weight");
+            weights.projection(prefix + "attention.key_value.weight");
         result->output_a =
-            load_quant_linear(execution, model, prefix + "attention.output_a.weight");
+            weights.projection(prefix + "attention.output_a.weight");
         result->output_b =
-            load_quant_linear(execution, model, prefix + "attention.output_b.weight");
+            weights.projection(prefix + "attention.output_b.weight");
         // Predictor bundles must not extend the backbone's final-layer marker:
         // residency updates also run when ordinary decoding skips DSpark.
-        result->mlp = load_moe_at(execution, model, config, prefix + "mlp.",
+        result->mlp = load_moe_at(execution, weights, config, prefix + "mlp.",
                                   -1 - stage, config.dspark_top_k);
         result->rope = Dsv4RopeTable(config.max_position_embeddings, config.rope_theta, 0);
-        result->cuda_device = execution.layer_placement.primary_device();
+        result->cuda_device = weights.placement.device;
 
         const auto function_width = config.hc_mult * config.hidden;
         const auto valid_mhc = [&](const Tensor &function, const Tensor &scale, const Tensor &base,
@@ -156,12 +157,12 @@ struct DeepseekV41Dspark final : MtpModule {
     }
 
     static std::optional<DeepseekV41Dspark> load_if_present(CudaExecutionContext &execution,
-                                                            const mfq::ModelSource &model,
+                                                            const weight_loader::Loader& weights,
                                                             const CommonConfig &config) {
-        const bool root = has_tensor(model, "predictor.stage.0.main_projection.weight");
-        const bool any = root || has_tensor(model, "predictor.stage.0.attention.query_a.weight") ||
-                         has_tensor(model, "predictor.stage.0.mlp.router.weight") ||
-                         has_tensor(model, "predictor.stage.0.output_norm.weight");
+        const bool root = weights.has("predictor.stage.0.main_projection.weight");
+        const bool any = root || weights.has("predictor.stage.0.attention.query_a.weight") ||
+                         weights.has("predictor.stage.0.mlp.router.weight") ||
+                         weights.has("predictor.stage.0.output_norm.weight");
         if (!root) {
             TYLOINFER_RUNTIME_CHECK(!any,
                               "DeepSeek-V4.1 model source contains an incomplete DSpark head");
@@ -176,17 +177,17 @@ struct DeepseekV41Dspark final : MtpModule {
         const auto first = std::string("predictor.stage.0.");
         const auto last = "predictor.stage." + std::to_string(result.config.n_mtp_layers - 1) + ".";
         result.main_projection =
-            load_quant_linear(execution, model, first + "main_projection.weight");
-        result.main_norm = load_dense_gpu(execution, model, first + "main_norm.weight");
-        result.output_norm = load_dense_gpu(execution, model, last + "output_norm.weight");
+            weights.projection(first + "main_projection.weight");
+        result.main_norm = weights.tensor(first + "main_norm.weight");
+        result.output_norm = weights.tensor(last + "output_norm.weight");
         result.markov_embedding =
-            load_quant_linear(execution, model, last + "markov.embedding.weight");
-        result.markov_output = load_quant_linear(execution, model, last + "markov.output.weight");
+            weights.projection(last + "markov.embedding.weight");
+        result.markov_output = weights.projection(last + "markov.output.weight");
         result.confidence_projection =
-            load_quant_linear(execution, model, last + "confidence.projection.weight");
+            weights.projection(last + "confidence.projection.weight");
         result.stages.reserve(static_cast<std::size_t>(result.config.n_mtp_layers));
         for (std::int64_t stage = 0; stage < result.config.n_mtp_layers; ++stage) {
-            result.stages.push_back(load_stage(execution, model, result.config, stage));
+            result.stages.push_back(load_stage(execution, weights, result.config, stage));
         }
         const auto target_width =
             result.config.hidden *
@@ -477,9 +478,9 @@ struct DeepseekV41Dspark final : MtpModule {
 };
 
 std::unique_ptr<::MtpModule> load_dspark_if_present(CudaExecutionContext &execution,
-                                                    const mfq::ModelSource &source,
+                                                    const weight_loader::Loader& weights,
                                                     const CommonConfig &config) {
-    auto predictor = DeepseekV41Dspark::load_if_present(execution, source, config);
+    auto predictor = DeepseekV41Dspark::load_if_present(execution, weights, config);
     return predictor ? std::make_unique<DeepseekV41Dspark>(std::move(*predictor)) : nullptr;
 }
 
