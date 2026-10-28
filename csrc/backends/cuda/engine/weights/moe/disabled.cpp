@@ -6,7 +6,7 @@ void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache, std::s
 
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache, bool predictor) { return {}; }
 
-std::shared_ptr<MoeExpertCache> make_moe_expert_cache(std::int64_t bytes, const CudaExecutionConfig& config) { return {}; }
+std::shared_ptr<MoeExpertCache> make_moe_expert_cache(std::int64_t bytes, const MoeCacheOptions& options) { return {}; }
 
 bool moe_expert_cache_has_sources(const std::shared_ptr<MoeExpertCache>& cache) { return {}; }
 

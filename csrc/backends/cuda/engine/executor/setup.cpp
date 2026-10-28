@@ -451,7 +451,25 @@ void setup_cuda_load(
         execution.config.moe_device_cache_bytes = static_cast<std::size_t>(bytes);
         execution.stores.moe_expert_cache =
             make_moe_expert_cache(
-                static_cast<int64_t>(bytes), execution.config);
+                static_cast<int64_t>(bytes), MoeCacheOptions{
+                .host_bytes = execution.config.moe_host_cache_bytes,
+                .host_limit = execution.config.moe_host_physical_bytes,
+                .mapped = execution.config.moe_mapped_gather,
+                .copy_blocks = execution.config.moe_mapped_copy_blocks,
+                .io_workers = execution.config.moe_ssd_io_workers,
+                .overlap = execution.config.moe_ssd_overlap,
+                .pipeline = execution.config.moe_pipeline,
+                .hybrid_cpu = execution.config.moe_hybrid_cpu,
+                .preload = execution.config.moe_preload_all,
+                .assert_resident = execution.config.moe_assert_resident,
+                .ram_pcie = execution.config.moe_ram_pcie,
+                .direct_ram = execution.config.moe_direct_ram,
+                .adapt = execution.config.moe_residency_adapt,
+                .warm = execution.config.moe_residency_warm,
+                .projection_heat = execution.config.moe_residency_projection_heat,
+                .ram_fraction = execution.config.moe_ram_pcie_fraction,
+                .two_stage = execution.config.moe_ffn.two_stage,
+                .heterogeneous = execution.config.tasks.projection.moe.heterogeneous});
         if (!profile_path.empty() && execution.stores.moe_expert_cache) {
             set_moe_expert_cache_profile(*execution.stores.moe_expert_cache,mfq::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")

@@ -100,10 +100,10 @@ struct MoeResidencyManager::Impl {
         // transfer-cache reuse and no background CPU calibration. Keep it a
         // coherent default: an explicit opt-out restores legacy defaults for
         // the other switches, while every explicit setting remains respected.
-        if(!cache || !cache->complete_residency_ || !cache->config_.moe_residency_adapt ||
-           !cache->config_.moe_residency_warm || !cache->config_.moe_residency_projection_heat ||
-           !cache->config_.moe_direct_ram || !cache->pipeline_ram_registered_bytes_ ||
-           !cache->pipeline_transfer_cache_ || !cache->config_.moe_ram_pcie_fraction ||
+        if(!cache || !cache->complete_residency_ || !cache->options_.adapt ||
+           !cache->options_.warm || !cache->options_.projection_heat ||
+           !cache->options_.direct_ram || !cache->pipeline_ram_registered_bytes_ ||
+           !cache->pipeline_transfer_cache_ || !cache->options_.ram_fraction ||
            cache->ram_pcie_fraction_!=1.0 || cache->pipeline_shared_cpu_cost_)return false;
         for(const auto* name:{"TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE","TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE",
                 "TYLOINFER_MOE_RESIDENCY_CACHED_REFILL","TYLOINFER_MOE_RESIDENCY_BATCHED",
@@ -414,7 +414,7 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
         throw std::invalid_argument("adaptive tier requires resident expert bundles");
     auto& s=*impl_;s.first=std::numeric_limits<int>::max();s.last=std::numeric_limits<int>::min();
     std::cerr<<"moe_residency_policy retention="<<s.heat_retention<<" interval="<<s.interval
-        <<" projection_heat="<<(cache->config_.moe_residency_warm && cache->config_.moe_residency_projection_heat)<<'\n';
+        <<" projection_heat="<<(cache->options_.warm && cache->options_.projection_heat)<<'\n';
     s.transfer_stages.resize(cache->sources_.size());
     std::vector<mfq::engine::RouteHistory::Bundle> route_layout;
     route_layout.reserve(cache->pipeline_bundles_.size());
@@ -448,7 +448,7 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
     }
     using Expert=mfq::MoeResidencyRanker::Expert;
     std::vector<std::vector<Expert>> layout;
-    if(cache->config_.moe_residency_warm && cache->config_.moe_residency_projection_heat) {
+    if(cache->options_.warm && cache->options_.projection_heat) {
         std::map<std::pair<MoeGpuArena*,int>,std::vector<Expert>> groups;
         for(std::size_t b=0;b<cache->pipeline_bundles_.size();++b) {
             const auto& bundle=cache->pipeline_bundles_[b];
@@ -505,9 +505,9 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
         const auto memory=s.memory_probe();
         auto capacity=std::min<std::uint64_t>({cache->host_experts_->stats().budget_bytes/4,
             std::uint64_t(moe_ssd_residency_stage_limit_bytes),memory.available_host_bytes()/8});
-        if(cache->config_.moe_host_physical_bytes)
-            capacity=std::min(capacity,memory.resident_bytes>=cache->config_.moe_host_physical_bytes?std::uint64_t(0):
-                (cache->config_.moe_host_physical_bytes-memory.resident_bytes)/8);
+        if(cache->options_.host_limit)
+            capacity=std::min(capacity,memory.resident_bytes>=cache->options_.host_limit?std::uint64_t(0):
+                (cache->options_.host_limit-memory.resident_bytes)/8);
         const auto options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true);
         for(capacity=capacity/4096*4096;capacity;capacity=capacity/2/4096*4096) {
             try {
@@ -553,7 +553,7 @@ MoeResidencyManager::~MoeResidencyManager() {
 }
 void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int tokens,int routes,void* raw_stream) {
     auto& s=*impl_;
-    if(layer<0 || !s.cache->config_.moe_residency_adapt || !s.cache->config_.moe_residency_warm)return;
+    if(layer<0 || !s.cache->options_.adapt || !s.cache->options_.warm)return;
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_RESIDENCY");
     if(option && option[0]=='0')return;
     const auto stream=static_cast<cudaStream_t>(raw_stream);
@@ -726,9 +726,9 @@ void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,
         if(s.cache->sources_[s.cache->pipeline_bundles_[b][0]]->layer_id_==layer) {
             s.route_history->observe(b,ids,tokens,independent_sequences);
         }
-    if(!s.cache->config_.moe_residency_adapt)return;
+    if(!s.cache->options_.adapt)return;
     if(layer!=s.last || s.work_pending.load(std::memory_order_acquire))return;
-    if(!s.cache->config_.moe_residency_warm && (tokens>8 || (++s.rounds%4)!=0))return;
+    if(!s.cache->options_.warm && (tokens>8 || (++s.rounds%4)!=0))return;
     // Strata adjusts its cache every few completed windows. Keep collecting
     // all routes between rounds; prompt batches still prepare immediately.
     // Speculative observations become visible when verification commits its
@@ -740,7 +740,7 @@ void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,
     const auto* short_interval=mfq::cuda::env_lookup("TYLOINFER_MOE_SHORT_DECODE_INTERVAL");
     const bool interval_decode=tokens==1 || (tokens<=8 &&
         (!independent_sequences || !short_interval || short_interval[0]!='0'));
-    if(s.cache->config_.moe_residency_warm && interval_decode && (++s.rounds%s.interval)!=0)return;
+    if(s.cache->options_.warm && interval_decode && (++s.rounds%s.interval)!=0)return;
     if(!s.pending.empty())throw std::logic_error("adaptive tier has an unpublished transaction");
     s.route_history->flush();
     ++s.scheduled_rounds;
@@ -856,8 +856,8 @@ void MoeResidencyManager::prepare() {
             pair.incoming.bundle,pair.incoming.expert,pair.incoming.projection);
         s.candidate_projections+=pair.incoming.projection<0?3:1;
     }
-    if(!cache.config_.moe_residency_warm && pairs.size()>32)pairs.resize(32);
-    s.direct=cache.config_.moe_direct_ram && cache.pipeline_ram_registered_bytes_>0;
+    if(!cache.options_.warm && pairs.size()>32)pairs.resize(32);
+    s.direct=cache.options_.direct_ram && cache.pipeline_ram_registered_bytes_>0;
     bool copies_ready=false;
     const auto allow_copies=[&] {
         if(copies_ready)return;
@@ -873,7 +873,7 @@ void MoeResidencyManager::prepare() {
         }else TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(s.stream,s.window_done,0));
         copies_ready=true;
     };
-    const bool shared_backup=cache.config_.moe_residency_warm && s.direct && cache.pipeline_host_stage_.defined() &&
+    const bool shared_backup=cache.options_.warm && s.direct && cache.pipeline_host_stage_.defined() &&
         !cache.ssd_experts();
     // The next layer waits for publication before using the transfer workspace.
     // Reuse its pinned storage between windows instead of allocating a second
@@ -883,11 +883,11 @@ void MoeResidencyManager::prepare() {
         s.shared_backup_bytes=s.backup.numel();
     }
     std::uint64_t stage_limit=std::numeric_limits<std::uint64_t>::max();
-    if(cache.config_.moe_residency_warm) {
+    if(cache.options_.warm) {
         const auto memory=s.memory_probe();auto available=memory.available_host_bytes();
-        if(cache.config_.moe_host_physical_bytes)
-            available=std::min(available,memory.resident_bytes>=cache.config_.moe_host_physical_bytes
-                ? std::uint64_t(0):cache.config_.moe_host_physical_bytes-memory.resident_bytes);
+        if(cache.options_.host_limit)
+            available=std::min(available,memory.resident_bytes>=cache.options_.host_limit
+                ? std::uint64_t(0):cache.options_.host_limit-memory.resident_bytes);
         const auto reusable=std::uint64_t(s.backup.defined()?s.backup.numel():0)+
             std::uint64_t(s.upload.defined()?s.upload.numel():0);
         stage_limit=(available+reusable)/(s.direct?1:2);
@@ -1128,7 +1128,7 @@ void MoeResidencyManager::prepare() {
     s.route_history->decay();
     if(s.pending.empty()){finish_plan();return;}
     const auto options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true);
-    if(cache.config_.moe_residency_warm &&
+    if(cache.options_.warm &&
         (!s.backup.defined() || s.backup.numel()<bytes || (!s.direct && (!s.upload.defined() || s.upload.numel()<bytes)))) {
         s.backup={};s.upload={};
     }
@@ -1163,7 +1163,7 @@ void MoeResidencyManager::prepare() {
     // never require a new host-cache lookup. Existing readers reject it.
     if(s.direct_exchange && s.direct && s.reuse_transfer && !cache.ssd_experts() &&
             (!s.pending_window || s.pending_expert_fence) &&
-            cache.config_.moe_ram_pcie_fraction && cache.ram_pcie_fraction_==1.0 &&
+            cache.options_.ram_fraction && cache.ram_pcie_fraction_==1.0 &&
             !cache.pipeline_shared_cpu_cost_ &&
             std::all_of(cache.pipeline_dispatch_replay_.begin(),cache.pipeline_dispatch_replay_.end(),
                 [](const auto& record){return record.cpu.empty();}) &&

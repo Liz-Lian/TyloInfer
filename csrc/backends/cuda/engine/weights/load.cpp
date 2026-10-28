@@ -731,6 +731,10 @@ mfq::cuda::Experts load_mfe_gpu(
         const std::string & projection_role) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
+    const MoeLoadOptions options{
+        .nvq2 = execution.config.nvq2_exec,
+        .nvq_groups = execution.config.nvq_extended_group_exec,
+        .heterogeneous = execution.config.tasks.projection.moe.heterogeneous};
     const mfq::cuda::WeightAllocationScope weight_memory;
     auto& cache = execution.stores.moe_expert_cache;
     if (cache && cacheable &&
@@ -815,7 +819,7 @@ mfq::cuda::Experts load_mfe_gpu(
                         cpu, slice.begin,
                         slice.end,
                         slice.device,
-                        execution.config));
+                        options));
             result.expert_parallel_shards.push_back({
                 slice.device,
                 slice.begin,
@@ -843,7 +847,7 @@ mfq::cuda::Experts load_mfe_gpu(
         });
     return all_nint
         ? to_gpu_mfe(cpu)
-        : to_gpu_mixed_moe(cpu, execution.config);
+        : to_gpu_mixed_moe(cpu, options);
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");

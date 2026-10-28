@@ -154,7 +154,7 @@ int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
 std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
         const mfq::mfe::Data & cpu,
         bool cuda,
-        const CudaExecutionConfig& config) {
+        const MoeLoadOptions& options) {
     auto runtime = std::make_shared<MixedMoeRuntime>();
     runtime->n_experts = cpu.n_experts;
     runtime->out_per_expert = cpu.out_per_expert;
@@ -240,14 +240,14 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
             }
             pool.nvq = cuda
                 ? to_device_nvq(
-                    parsed, true, config.nvq2_exec,
-                    config.nvq_extended_group_exec)
+                    parsed, true, options.nvq2,
+                    options.nvq_groups)
                 : to_device_nvq(parsed, false, false, false);
         }
         runtime->pools.push_back(std::move(pool));
     }
     if (cuda) {
-        prepare_moe(*runtime, config.tasks.projection.moe.heterogeneous);
+        prepare_moe(*runtime, options.heterogeneous);
     }
     return runtime;
 }
@@ -269,9 +269,9 @@ static mfq::cuda::Experts wrap_mixed_moe_runtime(
 
 mfq::cuda::Experts to_gpu_mixed_moe(
         const mfq::mfe::Data & cpu,
-        const CudaExecutionConfig& config) {
+        const MoeLoadOptions& options) {
     return wrap_mixed_moe_runtime(
-        make_mixed_moe_runtime(cpu, true, config));
+        make_mixed_moe_runtime(cpu, true, options));
 }
 
 mfq::cuda::Experts to_cuda_device_moe_expert_slice(
@@ -279,7 +279,7 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
         int64_t expert_begin,
         int64_t expert_end,
         int device,
-        const CudaExecutionConfig& config) {
+        const MoeLoadOptions& options) {
     if (expert_begin < 0 || expert_begin >= expert_end ||
             expert_end > cpu.n_experts) {
         throw std::runtime_error(
@@ -392,7 +392,7 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
             auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
             pool.nvq = to_device_nvq(
                 select_nvq_cpu_rows(parsed, rows), true,
-                config.nvq2_exec, config.nvq_extended_group_exec);
+                options.nvq2, options.nvq_groups);
         }
         runtime->pools.push_back(std::move(pool));
     }
@@ -400,7 +400,7 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
         throw std::runtime_error(
             "expert-parallel MoE shard has no owned experts");
     }
-    prepare_moe(*runtime, config.tasks.projection.moe.heterogeneous);
+    prepare_moe(*runtime, options.heterogeneous);
     return wrap_mixed_moe_runtime(runtime);
 }
 

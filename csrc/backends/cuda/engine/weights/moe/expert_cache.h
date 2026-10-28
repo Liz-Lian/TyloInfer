@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -65,14 +66,31 @@ private:
 };
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor=false);
 class MoeQuantRangeSource;
-struct CudaExecutionConfig;
+struct MoeCacheOptions {
+    std::size_t host_bytes = 0;
+    std::size_t host_limit = 0;
+    bool mapped = false;
+    int copy_blocks = 64;
+    int io_workers = 8;
+    bool overlap = true;
+    bool pipeline = false;
+    bool hybrid_cpu = false;
+    bool preload = false;
+    bool assert_resident = false;
+    bool ram_pcie = false;
+    bool direct_ram = true;
+    bool adapt = true;
+    bool warm = true;
+    bool projection_heat = true;
+    std::optional<double> ram_fraction;
+    bool two_stage = false;
+    bool heterogeneous = true;
+};
 
-// One cache per Engine load, shared by its target and optional predictor weights.
-// Registered weights retain the cache; resetting the Engine's execution resources
-// drops only its ownership. Cache APIs receive the resource, never the execution.
+// Loaded target/predictor weights retain the cache after the load owner releases it.
 std::shared_ptr<MoeExpertCache> make_moe_expert_cache(
     std::int64_t bytes,
-    const CudaExecutionConfig& config);
+    const MoeCacheOptions& options);
 bool moe_expert_cache_has_sources(
     const std::shared_ptr<MoeExpertCache>& cache);
 bool moe_expert_cache_finalized(

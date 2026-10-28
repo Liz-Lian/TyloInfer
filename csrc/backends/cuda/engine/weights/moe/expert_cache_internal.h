@@ -57,8 +57,8 @@ public:
     std::uint64_t streamed_bytes() const {return stats_.ram_pcie_bytes;}
     MoeExpertCache(
             int64_t budget_bytes,
-            const CudaExecutionConfig& config)
-        : budget_bytes_(budget_bytes),config_(config) {
+            const MoeCacheOptions& options)
+        : budget_bytes_(budget_bytes),options_(options) {
         if (budget_bytes_ <= 0) {
             throw std::invalid_argument(
                 "MoE GPU cache budget must be positive");
@@ -76,17 +76,17 @@ public:
         TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
             &route_done_, cudaEventDisableTiming));
         stages_.resize(4);
-        host_experts_=std::make_shared<MoeHostExpertCache>(config.moe_host_cache_bytes);
+        host_experts_=std::make_shared<MoeHostExpertCache>(options.host_bytes);
         for (auto & stage : stages_) {
             TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
                 &stage.done, cudaEventDisableTiming));
         }
-        mapped_gather_enabled_ = config.moe_mapped_gather;
-        mapped_copy_blocks_ = config.moe_mapped_copy_blocks;
+        mapped_gather_enabled_ = options.mapped;
+        mapped_copy_blocks_ = options.copy_blocks;
         range_read_pool_ =
             std::make_unique<mfq::cuda::MfeMxfp4ReadPool>(
-                config.moe_ssd_io_workers);
-        range_overlap_enabled_ = config.moe_ssd_overlap;
+                options.io_workers);
+        range_overlap_enabled_ = options.overlap;
         const auto diagnostics=mfq::cuda::runtime_options::moe_diagnostics();
         pipeline_cpu_profile_enabled_=diagnostics.cpu_rows;
         pipeline_cpu_profile_fail_alloc_=diagnostics.cpu_rows_fail_alloc;
@@ -885,9 +885,9 @@ public:
                << " pipeline_sigmoid_table_bytes=" << tensor_nbytes(pipeline_sigmoid_table_)
                << " pipeline_wire_route_bytes=" << pipeline_wire_route_bytes_
                << " pipeline_wire_route_fields=" << pipeline_wire_route_fields_
-               << " residency_adapt=" << config_.moe_residency_adapt
-               << " residency_warm=" << config_.moe_residency_warm
-               << " residency_projection_heat=" << (config_.moe_residency_warm && config_.moe_residency_projection_heat)
+               << " residency_adapt=" << options_.adapt
+               << " residency_warm=" << options_.warm
+               << " residency_projection_heat=" << (options_.warm && options_.projection_heat)
                << " residency_observed_routes=" << (moe_residency_?moe_residency_->stats().observed_routes:0)
                << " residency_rounds=" << (moe_residency_?moe_residency_->stats().scheduled_rounds:0)
                << " residency_candidates=" << (moe_residency_?moe_residency_->stats().candidate_bundles:0)
@@ -958,7 +958,7 @@ public:
                << " residency_async_publish_ns=" << (moe_residency_?moe_residency_->stats().async_publish_ns:0)
                << " residency_decode_async_publish_ns=" << (moe_residency_?moe_residency_->stats().decode_async_publish_ns:0)
                << " residency_window_prepares=" << (moe_residency_?moe_residency_->stats().window_prepares:0)
-               << " pipeline_adaptive=" << !config_.moe_ram_pcie_fraction.has_value()
+               << " pipeline_adaptive=" << !options_.ram_fraction.has_value()
                << " pipeline_dispatch_replay_used=" << pipeline_dispatch_replay_cursor_
                << " pipeline_dispatch_replay_total=" << pipeline_dispatch_replay_.size()
                << " h2d_submissions="
@@ -1038,7 +1038,7 @@ public:
         }
         const auto cold=ssd_expert_total_bytes_>gpu_weights?ssd_expert_total_bytes_-gpu_weights:0;
         std::vector<std::pair<std::string,double>> result{{"ssd_expert_enabled", ssd_experts_ ? 1.0 : 0.0},
-            {"ssd_io_workers",double(config_.moe_ssd_io_workers)},
+            {"ssd_io_workers",double(options_.io_workers)},
             {"host_tensor_bytes",double(mfq::cuda::tensor_host_bytes.load())},
             {"ssd_expert_payload_bytes",double(ssd_experts_ && cold>host.resident_bytes?cold-host.resident_bytes:0)},
             {"ssd_expert_bytes_read",double(disk_read_bytes)},
@@ -1337,7 +1337,7 @@ private:
     std::atomic<std::uint64_t> ssd_prediction_io_deferrals_{0},ssd_prediction_spare_jobs_{0};
     bool pipeline_residency_suspended_=false;
     bool pipeline_reuse_learning_=true;
-    CudaExecutionConfig config_;
+    MoeCacheOptions options_;
     double ram_pcie_fraction_=0;
     double pipeline_pcie_gbps_=0;
     bool pipeline_cpu_transfer_budget_=mfq::cuda::runtime_options::cpu_transfer_budget();
