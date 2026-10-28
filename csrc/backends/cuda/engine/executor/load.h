@@ -7,6 +7,7 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "models/qwen35/components.h"
 #include "models/qwen35/state.h"
 #include "models/minicpmo45/state.h"
 #include "cuda_runtime_config.h"
@@ -95,8 +96,16 @@ auto with_loaded_cuda_model(
         if (mfq::cuda::runtime_options::kv_vram_preallocated())
             state.preallocate();
         auto executor = execution.make_executor();
-        auto runtime_components =
-            load_runtime_components(model, weights, execution, load_optional_components);
+        const bool mtp_allowed =
+            !execution.layer_placement.enabled() &&
+            execution.dense_cpu_layer_count == 0 &&
+            execution.dsv4_cpu_offload_layers.empty() &&
+            !execution.stores.weights.moe;
+        auto runtime_components = mfq::cuda::qwen35::load_components(
+            model, weights, *executor, execution.collectives,
+            execution.kl_mmq.kv_cache_capacity, execution.gemma_stage_trace,
+            execution.gemma_trace_layer, load_optional_components, mtp_allowed,
+            mfq::cuda::runtime_options::kv_vram_preallocated());
         return finish(model, state, executor, runtime_components, started);
     };
 
