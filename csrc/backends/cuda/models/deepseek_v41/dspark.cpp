@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "engine/executor/ffn.h"
 #include "engine/executor/tq.h"
@@ -507,8 +508,9 @@ void run_dspark_self_check() {
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
     mfq::cuda::RoutedCache weights;
     std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-    CudaExecutionContext execution(weights, kv, offload, tq);
-    CudaScope scope(execution);
+    mfq::cuda::ContextSet contexts;
+    CudaExecutionContext execution(contexts, weights, kv, offload, tq);
+    CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
     DeepseekV41Dspark predictor;
     predictor.execution = &execution;
     predictor.config.hidden = 32;

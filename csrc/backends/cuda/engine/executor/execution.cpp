@@ -592,11 +592,13 @@ void mfq_release_host_allocator_cache() noexcept {
 using mfq_tensor_backend::indexing::Slice;
 
 CudaExecutionContext::CudaExecutionContext(
+        mfq::cuda::ContextSet& borrowed_contexts,
         mfq::cuda::RoutedCache& borrowed_weights,
         std::shared_ptr<mfq::cuda::KvMemoryManager>& borrowed_kv,
         std::shared_ptr<mfq::cuda::KvOffloadStore>& borrowed_offload,
         std::shared_ptr<TqExec>& borrowed_tq)
-    : config(load_cuda_execution_config()), weights(borrowed_weights),
+    : contexts(borrowed_contexts), config(load_cuda_execution_config()),
+      weights(borrowed_weights),
       kv(borrowed_kv), offload(borrowed_offload), tq(borrowed_tq),
       routes(environment("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
              environment_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)),
@@ -654,12 +656,12 @@ CudaExecutionContext::~CudaExecutionContext() {
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (native_contexts.empty() && !weights.moe &&
+    if (contexts.empty() && !weights.moe &&
         !weights.tq && !offload &&
         (!tq || tq->empty()) && pipelines.empty() && branches.empty() &&
         attention_scratch.empty() && collectives.streams().empty()) return;
 #endif
-    CudaScope scope(*this);
+    CudaScope scope(layer_placement.primary_device(), contexts);
     std::exception_ptr failure;
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
@@ -670,7 +672,7 @@ void CudaExecutionContext::drain() {
     if (offload) finish([&] { offload->flush(); });
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    for (const auto& [device, context] : native_contexts) finish([&] {
+    for (const auto& [device, context] : contexts) finish([&] {
         MfqCudaGuard guard(device);
         TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     });

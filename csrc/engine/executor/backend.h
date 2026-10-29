@@ -4,6 +4,7 @@
 #include "env.h"
 #include "cuda_runtime_config.h"
 #include "cuda_model_plan.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
 #include "engine/executor/text.h"
@@ -38,6 +39,7 @@ struct Backend {
     std::shared_ptr<KvMemoryManager> kv;
     RoutedCache weights;
     std::shared_ptr<KvOffloadStore> offload;
+    mfq::cuda::ContextSet contexts;
     std::unique_ptr<CudaExecutionContext> execution;
     std::optional<State> state;
     ~Backend() {
@@ -48,7 +50,7 @@ struct Backend {
         if (!state) throw std::runtime_error("CUDA engine is unloaded");
         return std::visit([&](auto& value) -> decltype(auto) {
             if (!value) throw std::runtime_error("CUDA engine is unloaded");
-            CudaScope guard(*value->execution);
+            CudaScope guard(value->execution->layer_placement.primary_device(), contexts);
             mfq_tensor_backend::NoGradGuard no_grad;
             return run(*value);
         }, *state);
@@ -60,8 +62,8 @@ struct Backend {
         if (!options.context_size) options.context_size = 32768;
         if (execution) throw std::logic_error("CUDA load requires retired resources");
         tq = std::make_shared<TqExec>();
-        execution = std::make_unique<CudaExecutionContext>(weights, kv, offload, tq);
-        CudaScope scope(*execution);
+        execution = std::make_unique<CudaExecutionContext>(contexts, weights, kv, offload, tq);
+        CudaScope scope(execution->layer_placement.primary_device(), contexts);
         setup_cuda_load(options, *execution);
         execution->profiler.enabled = false;
         auto weight_memory=std::make_shared<WeightMemoryLedger>();
@@ -129,7 +131,7 @@ struct Backend {
         if (execution) {
             try { execution->drain(); } catch (...) { failure = std::current_exception(); }
             {
-                CudaScope scope(*execution);
+                CudaScope scope(execution->layer_placement.primary_device(), contexts);
                 state.reset();
                 execution->pipelines.clear();
             }
@@ -138,6 +140,7 @@ struct Backend {
         kv.reset();
         weights.reset();
         execution.reset();
+        contexts.clear();
         tq.reset();
         if (failure) std::rethrow_exception(failure);
     }

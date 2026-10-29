@@ -5,6 +5,7 @@
 #include "engine/executor/run.h"
 #include "engine/executor/ffn.h"
 #include "engine/executor/moe_ffn_pipeline.h"
+#include "engine/executor/scope.h"
 #include "ops/common/include/gated_residual.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
@@ -87,6 +88,7 @@ CudaExecutionConfig load_cuda_execution_config();
 
 struct CudaExecutionContext {
     CudaExecutionContext(
+        mfq::cuda::ContextSet& contexts,
         mfq::cuda::RoutedCache& weights,
         std::shared_ptr<mfq::cuda::KvMemoryManager>& kv,
         std::shared_ptr<mfq::cuda::KvOffloadStore>& offload,
@@ -94,9 +96,7 @@ struct CudaExecutionContext {
     ~CudaExecutionContext();
     CudaExecutionContext(const CudaExecutionContext&) = delete;
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::cuda::ContextSet native_contexts;
-#endif
+    mfq::cuda::ContextSet& contexts;
     bool yarn_context_extension=false;
     mfq::models::YarnScaling yarn;
 
@@ -140,18 +140,6 @@ struct CudaExecutionContext {
 };
 
 void mfq_release_host_allocator_cache() noexcept;
-struct CudaScope {
-    MfqCudaGuard device;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::cuda::ContextGuard context;
-#endif
-    explicit CudaScope(CudaExecutionContext& execution)
-        : device(execution.layer_placement.primary_device())
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        , context(execution.native_contexts)
-#endif
-    {}
-};
 
 bool model_parallel_enabled(const CudaExecutionContext& execution);
 const ParallelConfig& model_parallel_config(

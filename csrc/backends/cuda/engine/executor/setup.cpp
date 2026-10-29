@@ -1,5 +1,6 @@
 #include "env.h"
 #include "cuda_runtime_config.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -490,8 +491,9 @@ int with_cuda_load(
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
     mfq::cuda::RoutedCache weights;
     std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-    CudaExecutionContext execution(weights, kv, offload, tq);
-    CudaScope scope(execution);
+    mfq::cuda::ContextSet contexts;
+    CudaExecutionContext execution(contexts, weights, kv, offload, tq);
+    CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
     setup_cuda_load(options, execution);
     return run(execution);
 }

@@ -2,6 +2,7 @@
 #include "models/batch.h"
 
 #include "mfq_cuda_sampling_ops.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -67,7 +68,7 @@ void BatchOps::resume_decode(int64_t) {}
 
 mfq::engine::PrefillChunk BatchOps::prefill_chunk(
     const std::shared_ptr<Request>& request, mfq::engine::PrefillChunk chunk) {
-    CudaScope guard(execution_);
+    CudaScope guard(execution_.layer_placement.primary_device(), execution_.contexts);
     initialize_prefill(request, chunk);
     return mfq::cuda::budget_batch_prefill(
         model_.hidden_size(), model_.hc_mult(), execution_.layer_placement.primary_device(),
@@ -143,7 +144,7 @@ BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& reques
 BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                                    mfq::engine::PrefillChunk chunk) {
     try {
-        CudaScope guard(execution_);
+        CudaScope guard(execution_.layer_placement.primary_device(), execution_.contexts);
         initialize_prefill(request, chunk);
         auto timer = std::make_unique<PrefillCudaTimer>();
         auto hidden =
@@ -178,7 +179,7 @@ int64_t BatchOps::prefill_batch_token_budget() const {
 
 std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill_batch(
     const std::vector<std::pair<std::shared_ptr<Request>, mfq::engine::PrefillChunk>>& items) {
-    CudaScope guard(execution_);
+    CudaScope guard(execution_.layer_placement.primary_device(), execution_.contexts);
     qwen4_release_decode_graphs(model_, nullptr);
     model_.adapter_begin_forward(false);
     release_moe_decode_buffers(execution_.weights.moe);
@@ -304,7 +305,7 @@ void BatchOps::retire(const std::vector<std::shared_ptr<Request>>& retired, int6
 }
 
 BatchOps::Decoded BatchOps::decode(State& state) {
-    CudaScope guard(execution_);
+    CudaScope guard(execution_.layer_placement.primary_device(), execution_.contexts);
     std::vector<Qwen4BatchRequestState*> caches;
     std::vector<int64_t> tokens;
     for (const auto& request : state.active) {

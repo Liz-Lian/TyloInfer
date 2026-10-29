@@ -4,6 +4,7 @@
 #include "engine/requests/inference.h"
 
 #include "mfq_cuda_sampling_ops.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "models/qwen35/forward.h"
@@ -74,7 +75,7 @@ mfq_tensor_backend::Tensor diagnostic_hidden(
     if constexpr (is_qwen35_v<Model>) {
         TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                                 "Qwen3.5 diagnostics require an executor");
-        CudaScope scope(execution);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         mfq::cuda::Input input;
         input.ids = std::move(ids);
         input.positions = std::move(positions);
@@ -110,7 +111,7 @@ mfq_tensor_backend::Tensor diagnostic_logits(
     if constexpr (is_qwen35_v<Model>) {
         TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                                 "Qwen3.5 diagnostics require an executor");
-        CudaScope scope(execution);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         return mfq::cuda::qwen35::logits(
             model, *executor, std::move(hidden), capped);
     } else {

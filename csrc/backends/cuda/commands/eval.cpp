@@ -2,6 +2,7 @@
 #include "cli.h"
 #include "models/load.h"
 #include "eval/kl.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -48,8 +49,9 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
         std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
         mfq::cuda::RoutedCache weights;
         std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        CudaExecutionContext execution(weights, kv, offload, tq);
-        CudaScope scope(execution);
+        mfq::cuda::ContextSet contexts;
+        CudaExecutionContext execution(contexts, weights, kv, offload, tq);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         setup_cuda_load(*this, execution);
         if (model_path.empty()) {
             std::cerr << "missing model or execution mode (see --help)\n";

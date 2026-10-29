@@ -1,4 +1,5 @@
 #include "cli.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/models/load.h"
@@ -30,7 +31,7 @@ Model load_reference_model(CudaExecutionContext& execution,
                            const CudaLoadOptions& options,
                            const std::shared_ptr<const mfq::ModelSource>& source) {
     if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-        CudaScope scope(execution);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
@@ -355,8 +356,9 @@ int run_reference(int argc, char** argv) {
         std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
         mfq::cuda::RoutedCache weights;
         std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        CudaExecutionContext execution(weights, kv, offload, tq);
-        CudaScope scope(execution);
+        mfq::cuda::ContextSet contexts;
+        CudaExecutionContext execution(contexts, weights, kv, offload, tq);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         internal::setup_cuda_load(options, execution);
         tb::NoGradGuard guard;
         auto source = mfq::open_model_source(options.model_path);

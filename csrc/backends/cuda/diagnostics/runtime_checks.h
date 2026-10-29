@@ -2,6 +2,7 @@
 #include "env.h"
 
 #include "backends/cuda/engine/executor/generation.h"
+#include "engine/executor/scope.h"
 #include "generation_result.h"
 #include "models/deepseek_v4/ops.h"
 #include "models/qwen4_exp/ops.h"
@@ -51,7 +52,7 @@ static Model load_diagnostic_reference(CudaExecutionContext& execution,
                                        int64_t context_size) {
     if constexpr (mfq::cuda::internal::is_qwen35_v<Model>) {
         auto source = mfq::open_model_source(model_path);
-        CudaScope scope(execution);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
         mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
@@ -886,7 +887,7 @@ static int run_qwen35_mtp_check(
         mfq::cuda::Executor* executor, CudaExecutionContext& execution,
         mfq::cuda::qwen35::Mtp& mtp) {
     using Tensor = mfq_tensor_backend::Tensor;
-    CudaScope scope(execution);
+    CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
         "Qwen3.5 MTP diagnostic requires an executor");
     const MtpTarget target(

@@ -2,6 +2,7 @@
 
 #include "engine/executor/loaded.h"
 #include "engine/executor/load.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/models/load.h"
@@ -26,7 +27,7 @@ inline constexpr auto with_model = []<typename F>(
         const CudaLoadOptions& options,
         bool load_optional_components,
         F&& run) -> auto {
-    CudaScope scope(execution);
+    CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
     auto source = mfq::open_model_source(options.model_path);
     auto finish = [&](auto& loaded, auto started) {
         auto& model = *loaded.model;

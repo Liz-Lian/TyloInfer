@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cuda_model_plan.h"
+#include "engine/executor/scope.h"
 #include "models/common/block.h"
 #include "engine/models/common/causal_model.h"
 #include "quant_linear.h"
@@ -149,7 +150,7 @@ template <typename Model> struct CudaCausalOps : Model {
     }
 
     auto execution_scope() const {
-        return CudaScope(*this->execution);
+        return CudaScope(this->execution->layer_placement.primary_device(), this->execution->contexts);
     }
     static auto block_scope(const std::unique_ptr<Block> &block) {
         return MfqCudaGuard(block->cuda_device);

@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/scope.h"
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/weights/load.h"
@@ -103,7 +104,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
         }
     }
 
-    CudaScope model_guard(execution);
+    CudaScope model_guard(execution.layer_placement.primary_device(), execution.contexts);
     if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.dense_cpu_layer_count > 0) {
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     }
