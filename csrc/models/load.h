@@ -22,6 +22,7 @@
 
 namespace mfq::cuda {
 
+template <bool IncludeQwen = true>
 inline constexpr auto with_model = []<typename F>(
         CudaExecutionContext& execution,
         const CudaLoadOptions& options,
@@ -72,34 +73,9 @@ inline constexpr auto with_model = []<typename F>(
         Loaded<Model> loaded{std::move(owner), std::move(runtime_components), {}, {}};
         return finish(loaded, started);
     };
-    auto load_qwen = [&] {
-        auto started = std::chrono::steady_clock::now();
-        weight_loader::Loader weights{*source, execution.config.weights,
-            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-             execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.weights, execution.tq};
-        auto loaded = qwen35::assemble(
-            source, weights, execution.layer_placement, execution.yarn,
-            execution.dense_cpu_layer_count,
-            mfq::cuda::qwen35::LoadOptions{
-                .config_path = options.config_path,
-                .context_size = options.context_size,
-                .gpu_layers = execution.n_gpu_layers,
-                .extend_yarn = execution.yarn_context_extension,
-                .expert_parallel = execution.expert_parallel.enabled(),
-                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars},
-            execution.make_executor(), execution.collectives,
-            execution.config.gdn_transposed_state,
-            execution.kl_mmq.kv_cache_capacity, execution.gemma_stage_trace,
-            execution.gemma_trace_layer, load_optional_components,
-            !execution.dsv4_cpu_offload_layers.empty(),
-            runtime_options::kv_vram_preallocated());
-        return finish(loaded, started);
-    };
-
     auto load_tts = [&] {
         auto started = std::chrono::steady_clock::now();
-        auto definition = load_model_config_json(*source, options.config_path);
+        auto definition = source->model_config_json(options.config_path);
         definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
             source->resolved_model_graph().backbone, options.context_size);
         auto owner = std::make_shared<minicpmo45::Model>(
@@ -136,7 +112,32 @@ inline constexpr auto with_model = []<typename F>(
 
     switch (cuda_backbone(source->resolved_model_graph().backbone)) {
         case CudaBackbone::generic_qwen:
-            return load_qwen();
+            if constexpr (IncludeQwen) {
+                auto started = std::chrono::steady_clock::now();
+                weight_loader::Loader weights{*source, execution.config.weights,
+                    {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+                     execution.tensor_parallel, moe_parallel_config(execution)},
+                    execution.weights, execution.tq};
+                auto loaded = qwen35::assemble(
+                    source, weights, execution.layer_placement, execution.yarn,
+                    execution.dense_cpu_layer_count,
+                    mfq::cuda::qwen35::LoadOptions{
+                        .config_path = options.config_path,
+                        .context_size = options.context_size,
+                        .gpu_layers = execution.n_gpu_layers,
+                        .extend_yarn = execution.yarn_context_extension,
+                        .expert_parallel = execution.expert_parallel.enabled(),
+                        .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars},
+                    execution.make_executor(), execution.collectives,
+                    execution.config.gdn_transposed_state,
+                    execution.kl_mmq.kv_cache_capacity, execution.gemma_stage_trace,
+                    execution.gemma_trace_layer, load_optional_components,
+                    !execution.dsv4_cpu_offload_layers.empty(),
+                    runtime_options::kv_vram_preallocated());
+                return finish(loaded, started);
+            } else {
+                throw std::runtime_error("unsupported CUDA model backbone");
+            }
         case CudaBackbone::minicpmo45:
             return load.template operator()<MiniCPMO45CausalLm>();
         case CudaBackbone::minicpmo_tts:

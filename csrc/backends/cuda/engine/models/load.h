@@ -66,10 +66,6 @@ namespace mfq::cuda {
 std::string configure_yarn(mfq::models::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context);
 
-std::string load_model_config_json(
-    const mfq::ModelSource& source,
-    const std::string& external_path = {});
-
 void validate_model_source(const mfq::ModelSource& source);
 
 } // namespace mfq::cuda

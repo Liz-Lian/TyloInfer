@@ -9,8 +9,6 @@
 #include <cstdio>
 #include <cmath>
 #include <nlohmann/json.hpp>
-#include <fstream>
-#include <iterator>
 
 static void prepare_ffn(bool cpu, mfq::cuda::Ffn& f);
 
@@ -237,15 +235,6 @@ std::string configure_yarn(mfq::models::YarnScaling& yarn, bool extend, std::str
         definition=config.dump();
     }
     return definition;
-}
-
-std::string load_model_config_json(
-        const mfq::ModelSource& source,
-        const std::string& external_path) {
-    if (external_path.empty()) return source.model_config_json();
-    std::ifstream input(external_path, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open config: " + external_path);
-    return {std::istreambuf_iterator<char>(input), {}};
 }
 
 void validate_model_source(const mfq::ModelSource& source) {

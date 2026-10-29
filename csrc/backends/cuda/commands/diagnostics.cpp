@@ -405,7 +405,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             auto model_source = mfq::open_model_source(model_path);
             const auto& mfq = *model_source;
             const auto config = mfq::models::ModelConfig::from_json(
-                mfq::cuda::load_model_config_json(mfq, config_path));
+                mfq.model_config_json(config_path));
             if (!mfq.has_asset(mfq::kTokenizerGgufAsset)) {
                 throw std::runtime_error(
                     "model source has no tokenizer GGUF");
@@ -595,7 +595,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         execution.profiler.enabled = false;
         mfq_tensor_backend::NoGradGuard no_grad;
-        return mfq::cuda::with_model(execution, *this,
+        return mfq::cuda::with_model<>(execution, *this,
             check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
                 check_nemotron_h_vision ||
                 !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),
@@ -1183,7 +1183,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             const auto* source = diagnostic_source(model);
             if (!source) throw std::runtime_error("diagnostics model source is unavailable");
             stop_ids = mfq::engine::model_stop_token_ids(
-                mfq::cuda::load_model_config_json(*source, config_path),
+                source->model_config_json(config_path),
                 diagnostic_vocab_size(model));
             if (stop_ids.empty()) std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
         }

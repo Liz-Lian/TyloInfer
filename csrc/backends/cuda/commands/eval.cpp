@@ -186,7 +186,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 kl_stream_layers, kl_stream_batch,
                 kl_score_count, kl_reference_contract);
         }
-        return mfq::cuda::with_model(execution, *this, false,
+        return mfq::cuda::with_model<>(execution, *this, false,
             [&](auto& runtime, auto, auto) -> int {
         auto& model = *runtime.model;
         auto& state = runtime.state();

@@ -102,7 +102,7 @@ struct Backend {
             auto text = TextProcessor::load(*state.source, options.tokenizer_model,
                 info.vocab_size, info.model_type);
             info.stop_token_ids = model_stop_token_ids(
-                load_model_config_json(*state.source, options.config_path), info.vocab_size);
+                state.source->model_config_json(options.config_path), info.vocab_size);
             return std::pair{std::move(info), std::move(text)};
         });
     }

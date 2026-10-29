@@ -161,7 +161,7 @@ Model load(std::shared_ptr<const mfq::ModelSource> source,
     if (model.graph.component("vision") != nullptr &&
         model.plan.vision != CudaVisionAdapter::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
-    auto definition = mfq::cuda::load_model_config_json(source_ref, options.config_path);
+    auto definition = source_ref.model_config_json(options.config_path);
     definition = mfq::cuda::configure_yarn(yarn, options.extend_yarn, std::move(definition),
                                            model.graph.backbone, options.context_size);
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")

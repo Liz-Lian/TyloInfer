@@ -806,8 +806,7 @@ int run_moe_check(
     const auto& mfq = *model_source;
     mfq::cuda::validate_model_source(mfq);
     const auto graph = mfq.resolved_model_graph();
-    const auto payload = mfq::cuda::load_model_config_json(
-        mfq, config_path);
+    const auto payload = mfq.model_config_json(config_path);
     mfq::cuda::Ffn ffn;
     int64_t hidden_size = 0;
     if (graph.backbone == "gemma4") {

@@ -9,6 +9,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 
 namespace mfq {
 
@@ -37,7 +39,12 @@ std::shared_ptr<const ModelSource> open_model_source(
     return std::make_shared<MfqModelSource>(path);
 }
 
-std::string ModelSource::model_config_json() const {
+std::string ModelSource::model_config_json(const std::string& external_path) const {
+    if (!external_path.empty()) {
+        std::ifstream input(external_path, std::ios::binary);
+        if (!input) throw std::runtime_error("cannot open config: " + external_path);
+        return {std::istreambuf_iterator<char>(input), {}};
+    }
     if (!has_asset(kModelConfigAsset)) {
         throw std::runtime_error("model source has no model config");
     }

@@ -114,7 +114,7 @@ public:
     // the source boundary.
     virtual std::optional<ModelGraph> model_graph() const = 0;
 
-    std::string model_config_json() const;
+    std::string model_config_json(const std::string& external_path = {}) const;
     ModelGraph resolved_model_graph() const;
 
     std::vector<std::byte> read(
