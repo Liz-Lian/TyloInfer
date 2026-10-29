@@ -20,6 +20,8 @@ int main(int argc, char** argv) {
             {"tinfer_gguf_repack", [] { return std::string(mfq::metal::native_gguf::repack_source); }},
             {"tinfer_gguf_moe", [] { return std::string(mfq::metal::native_gguf::moe_source); }},
             {"tinfer_gguf_moe_projection", [] { return std::string(mfq::metal::native_gguf::moe_projection_source); }},
+            {"tinfer_gguf_moe_pair", [] { return std::string(mfq::metal::native_gguf::pair_moe_source); }},
+            {"tinfer_gguf_vector", [] { return std::string(mfq::metal::native_gguf::vector_source); }},
             {"tinfer_gguf_hyper", [] { return std::string(mfq::metal::native_gguf::hyper_source); }},
 #if TYLOINFER_ENABLE_MFQ_COMPAT
             {"mfq_dsv4_mxfp4_blocks_v5", mfq::metal::dsv4_mxfp4_blocks_source},

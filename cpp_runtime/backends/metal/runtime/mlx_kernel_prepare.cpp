@@ -17,6 +17,33 @@
 #include <mlx/version.h>
 
 namespace mfq::metal {
+namespace {
+
+mlx::core::array preparation_view_input(const mlx::core::array& input, std::string& key, int depth = 0) {
+    key += '[';
+    for (const int dimension : input.shape()) key += dimension == 1 ? '1' : 'n';
+    key += ']';
+    if (depth < 8 && input.has_primitive() && input.inputs().size() == 1 &&
+        input.inputs().front().nbytes() <= (4u << 20)) {
+        const auto primitive = input.primitive_ptr();
+        const std::string_view name = primitive->name();
+        if (name == "Transpose" || name == "Reshape" || name == "Slice" || name == "Broadcast") {
+            key += name;
+            if (name == "Transpose")
+                for (const int axis : static_cast<const mlx::core::Transpose*>(primitive.get())->state())
+                    key += ':' + std::to_string(axis);
+            if (name == "Slice")
+                for (const int stride : std::get<2>(static_cast<const mlx::core::Slice*>(primitive.get())->state()))
+                    key += ':' + std::to_string(stride);
+            auto source = preparation_view_input(input.inputs().front(), key, depth + 1);
+            return mlx::core::array(input.shape(), input.dtype(), primitive, {std::move(source)});
+        }
+    }
+    return mlx::core::zeros(input.shape(), input.dtype(), input.has_primitive()
+        ? input.primitive().stream() : mlx::core::default_stream(mlx::core::Device::gpu));
+}
+
+}
 
 std::string mlx_kernel_preparation_key(const mlx::core::Primitive& primitive) {
     if (const auto* native = dynamic_cast<const MlxPreparableKernel*>(&primitive))
@@ -116,10 +143,13 @@ void MlxKernelPreparation::add(const mlx::core::array& output) {
             std::string key = compiled ? "compiled:" + compiled->lib_name() : primitive->name();
             if (!compiled)
                 for (const auto& input : inputs) key += ':' + std::to_string(static_cast<int>(input.dtype().val()));
+            std::vector<mlx::core::array> view_inputs;
+            if (compiled && bounded(input_shapes, input_dtypes))
+                for (const auto& input : inputs) view_inputs.push_back(preparation_view_input(input, key));
             if (bounded(input_shapes, input_dtypes) && bounded(output_shapes, output_dtypes) && keys_.insert(key).second) {
-                compiled_jobs_.push_back([primitive, input_shapes, input_dtypes, output_shapes, output_dtypes] {
-                    std::vector<mlx::core::array> inputs;
-                    for (std::size_t index = 0; index < input_shapes.size(); ++index)
+                compiled_jobs_.push_back([primitive, input_shapes, input_dtypes, output_shapes, output_dtypes,
+                        inputs = std::move(view_inputs)]() mutable {
+                    if (inputs.empty()) for (std::size_t index = 0; index < input_shapes.size(); ++index)
                         inputs.push_back(mlx::core::zeros(input_shapes[index], input_dtypes[index], primitive->stream()));
                     auto outputs = mlx::core::array::make_arrays(output_shapes, output_dtypes, primitive, inputs);
                     mlx::core::eval(outputs);

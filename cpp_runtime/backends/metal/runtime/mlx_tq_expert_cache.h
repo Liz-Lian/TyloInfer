@@ -15,6 +15,7 @@ namespace mfq::metal {
 struct MlxTqExpertWeights {
     MlxTqWeight gate, up, down;
     void prepare(int top_k, float limit = 0.f, bool gelu = false) const;
+    std::optional<mlx::core::array> reuse_plan(const mlx::core::array& ids) const;
     mlx::core::array routed_ffn(const mlx::core::array& input, const mlx::core::array& ids,
         const mlx::core::array& weights, float limit = 0.f, bool gelu = false,
         const mlx::core::array* reuse = nullptr) const;

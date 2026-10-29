@@ -39,7 +39,7 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     const mlx::core::array& norm_weight,
     int key_heads, int value_heads, int dimension,
     float convolution_eps, float norm_eps, bool output_gate_silu = false,
-    bool tiled_heads = false);
+    bool tiled_heads = false, mlx::core::Dtype output_dtype = mlx::core::float32);
 
 // Projected inputs are [B,T,H]; outputs are FP32 [B,H,T]. The caller
 // precomputes decay_scale = -exp(a_log), preserving the model's storage
@@ -78,7 +78,8 @@ MlxGatedDeltaDecodeResult gated_delta_decode_step(
     float convolution_eps,
     float norm_eps,
     bool output_gate_silu = false,
-    bool tiled_heads = false);
+    bool tiled_heads = false,
+    mlx::core::Dtype output_dtype = mlx::core::float32);
 
 struct MlxLinearConvQkvResult {
     mlx::core::array query;

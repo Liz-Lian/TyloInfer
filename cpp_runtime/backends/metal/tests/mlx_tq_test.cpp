@@ -588,7 +588,14 @@ static void check_ffn_column_inputs() {
                 check(moe_weighted_reduce(pairs, factors), expected, 0.f);
             } else check(bank.down.routed_down_pairs(intermediate, ids),
                 bank.down.routed_matmul(intermediate.values, ids), 0.f);
-            check(bank.routed_ffn(x, ids, factors, limit, gelu), expected, 0.f);
+            const auto reuse = make_tq_reuse_plan(ids, experts);
+            const auto dispatched = reuse ? bank.down.routed_down(
+                bank.gate.swiglu_for_down(bank.up, bank.down, x, ids, limit, gelu, &*reuse),
+                ids, factors, &*reuse) : expected;
+            const auto actual = bank.routed_ffn(x, ids, factors, limit, gelu);
+            check(actual, dispatched, 0.f);
+            if (reuse && !allclose(actual, expected, .004, .0001).item<bool>())
+                throw std::runtime_error("TQ device column FFN differs from ungrouped projections");
             if (tokens == 1 && dtype == float16) {
                 check(pool.routed_ffn(x, ids, factors, limit, gelu), expected, 0.f);
                 const auto mixed = pool.gate.swiglu_for_down(bank.up, pool.down, x, ids, limit, gelu);
@@ -605,6 +612,20 @@ static void check_ffn_column_inputs() {
             preparation.collect([&] { preparation.add(bank.routed_ffn(zeros({1, width}, float16),
                 zeros({1, routes}, int32), full({1, routes}, .25f, float32), .05f, gelu)); });
             if (preparation.size()) throw std::runtime_error("TQ FFN leaves late column-preparation compilation");
+        }
+        {
+            MlxKernelPreparation preparation(8, 8);
+            bank.prepare(routes);
+            preparation.finish();
+            for (const int tokens : {2, 3, 4, 6, 8}) {
+                const auto ids = add(broadcast_to(array({0, 2, 5, 7}, {1, routes}, int32),
+                    {tokens, routes}), array(0));
+                const auto input = zeros({tokens, width}, float16);
+                preparation.collect([&] { preparation.add(bank.routed_ffn(input, ids,
+                    full({tokens, routes}, .25f, float32))); });
+                if (ids.is_available()) throw std::runtime_error("TQ FFN device planning waits for route IDs");
+                if (preparation.size()) throw std::runtime_error("TQ FFN leaves late device-reuse compilation");
+            }
         }
         if (per_expert) {
             const auto path = std::filesystem::temp_directory_path() / ("tq-ffn-input-"
@@ -643,7 +664,30 @@ static void check_ffn_column_inputs() {
                 }
                 if (!cache.stats().overlapped_read_batches || !cache.stats().evictions)
                     throw std::runtime_error("TQ fused FFN cache fixture did not exercise staged reads and eviction");
+                for (const int tokens : {2, 4, 6, 8}) {
+                    const auto input = reshape(astype(sin(arange(tokens * width, float32)) * .1f, float16), {tokens, width});
+                    const auto factors = full({tokens, routes}, .25f, float32);
+                    for (const int first : {0, 4, 0}) {
+                        const auto ids = broadcast_to(reshape(arange(first, first + routes, int32), {1, routes}), {tokens, routes});
+                        const auto expected = bank.routed_ffn(input, ids, factors, .05f);
+                        if (!allclose(cache.apply_ffn(0, input, ids, factors, .05f), expected, .004, .0001).item<bool>())
+                            throw std::runtime_error("TQ staged repeated-route FFN differs from resident execution");
+                    }
+                }
                 cache.clear();
+                MlxTqExpertCache hot(model, {"unit"}, std::numeric_limits<std::size_t>::max(), 4);
+                const auto reads = hot.stats().bytes_read;
+                for (const int tokens : {2, 4, 6, 8}) {
+                    const auto ids = add(broadcast_to(array({0, 2, 5, 7}, {1, routes}, int32),
+                        {tokens, routes}), array(0));
+                    const auto input = reshape(astype(sin(arange(tokens * width, float32)) * .1f, float16), {tokens, width});
+                    const auto factors = full({tokens, routes}, .25f, float32);
+                    const auto output = hot.apply_ffn(0, input, ids, factors, .05f);
+                    if (ids.is_available()) throw std::runtime_error("TQ hot FFN device planning waits for routes");
+                    check(output, bank.routed_ffn(input, ids, factors, .05f), 0.f);
+                }
+                if (hot.stats().bytes_read != reads)
+                    throw std::runtime_error("TQ hot repeated routes re-read expert payloads");
             } catch (...) { std::filesystem::remove(path); throw; }
             std::filesystem::remove(path);
         }
@@ -1068,8 +1112,8 @@ static void check_device_reuse_plans() {
             const auto ids = add(array(selected.begin(), {tokens, routes}, int32), array(0));
             const auto plan = make_tq_reuse_plan(ids, experts);
             if (ids.is_available()) throw std::runtime_error("TQ device reuse planning evaluates routes on the host");
-            if (tokens < 3 || tokens > 16) {
-                if (plan) throw std::runtime_error("TQ device planning changes single/pair or long-token dispatch");
+            if (tokens < 2 || tokens > 16) {
+                if (plan) throw std::runtime_error("TQ device planning changes single or long-token dispatch");
                 continue;
             }
             if (!plan || plan->shape() != Shape{tokens * routes, 18})
@@ -1100,7 +1144,7 @@ static void check_device_reuse_plans() {
         const auto up_blob = random_blob(experts * outputs, width, 5472, layout == 0 ? 16 : 512, layout == 2);
         const auto weight = MlxTqWeight::from_blob(blob, width, experts), up = MlxTqWeight::from_blob(up_blob, width, experts);
         const auto pooled = pooled_weight(blob, width, experts);
-        for (int tokens : {3, 6, 8, 12, 16}) {
+        for (int tokens : {2, 3, 6, 8, 12, 16}) {
             std::vector<int> selected(tokens * routes);
             for (int token = 0; token < tokens; ++token) {
                 selected[token * routes] = 0;
@@ -1603,7 +1647,7 @@ static void check_shared_expansion_tiles() {
             std::iota(permutation.begin(), permutation.end(), 0);
             std::stable_sort(permutation.begin(), permutation.end(), [&](int a, int b) { return selected[a] < selected[b]; });
             std::vector<MlxTqRoutePlan> plans;
-            for (const int tile_rows : {64, 128}) for (const int block_rows : {1, 16, 17, 32, 64, 65, 96, 128}) {
+            for (const int tile_rows : {64, 128}) for (const int block_rows : {1, 16, 17, 23, 31, 32, 33, 64, 65, 96, 128}) {
                 if (block_rows > tile_rows) continue;
                 std::vector<int> blocks;
                 for (int first = 0; first < int(selected.size());) {

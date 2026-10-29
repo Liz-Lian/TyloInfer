@@ -33,30 +33,35 @@ using mlx::core::MathMode;
 constexpr int kGatedHcProjectionThreads = 256;
 constexpr int kGatedHcUpThreads = 320;
 
-class QsaPrefillOutputGatePrimitive final : public mlx::core::Primitive, public MlxPreparableKernel {
+class QsaOutputGatePrimitive final : public mlx::core::Primitive, public MlxPreparableKernel {
 public:
-    QsaPrefillOutputGatePrimitive(mlx::core::Stream stream, mlx::core::Dtype dtype,
+    QsaOutputGatePrimitive(mlx::core::Stream stream, std::array<mlx::core::Dtype, 3> types,
         int heads, int dimension)
-        : Primitive(stream), dtype_(dtype), heads_(heads), dimension_(dimension) {}
+        : Primitive(stream), types_(types), heads_(heads), dimension_(dimension) {}
 
-    std::string preparation_key() const override { return "mfq_qsa_prefill_output_gate_" + mlx::core::type_to_name(dtype_) + "_" + std::to_string(heads_) + "_" + std::to_string(dimension_); }
+    std::string preparation_key() const override {
+        std::string key = "mfq_qsa_output_gate";
+        for (auto dtype : types_) key += "_" + mlx::core::type_to_name(dtype);
+        return key + "_" + std::to_string(heads_) + "_" + std::to_string(dimension_);
+    }
     void prepare_gpu() override { (void)prepared_kernel(); }
 
     MTL::ComputePipelineState* prepared_kernel() {
         auto& device = kernel_device(stream().device);
-        const std::string type = dtype_ == mlx::core::float16 ? "half"
-            : dtype_ == mlx::core::bfloat16 ? "bfloat" : "float";
-        const std::string name = "mfq_qsa_prefill_output_gate_" + type + "_" +
-            std::to_string(heads_) + "_" + std::to_string(dimension_);
+        const auto metal_type = [](mlx::core::Dtype dtype) {
+            return dtype == mlx::core::float16 ? "half" : dtype == mlx::core::bfloat16 ? "bfloat" : "float";
+        };
+        const auto name = preparation_key();
         CompileOptions options;
         options.math_mode = MathMode::Safe;
         auto* library = device.get_library(name, options, [&] {
-            return "#include <metal_stdlib>\nusing namespace metal;\nusing T = " + type +
+            return std::string("#include <metal_stdlib>\nusing namespace metal;\nusing A = ") + metal_type(types_[0]) +
+                "; using G = " + metal_type(types_[1]) + "; using T = " + metal_type(types_[2]) +
                 ";\n#define HEADS " + std::to_string(heads_) +
                 "\n#define DIM " + std::to_string(dimension_) +
                 "\nkernel void " + name + R"METAL((
-                    device const T* attended [[buffer(0)]],
-                    device const T* gate [[buffer(1)]],
+                    device const A* attended [[buffer(0)]],
+                    device const G* gate [[buffer(1)]],
                     device T* output [[buffer(2)]],
                     constant long* strides [[buffer(3)]],
                     constant uint2& shape [[buffer(4)]],
@@ -85,7 +90,7 @@ public:
     }
 
     void eval_cpu(const std::vector<array>&, std::vector<array>&) override {
-        throw std::runtime_error("QSA prefill output gate requires Metal");
+        throw std::runtime_error("QSA output gate requires Metal");
     }
 
     void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs) override {
@@ -110,10 +115,10 @@ public:
             MTL::Size(256, 1, 1));
     }
 
-    const char* name() const override { return "QsaPrefillOutputGate"; }
+    const char* name() const override { return "QsaOutputGate"; }
 
 private:
-    mlx::core::Dtype dtype_;
+    std::array<mlx::core::Dtype, 3> types_;
     int heads_;
     int dimension_;
 };
@@ -308,11 +313,12 @@ constexpr const char* kQsaDecodePrologueSource = R"METAL(
     uint width = is_query || is_key
         ? uint(HEAD_DIM)
         : uint(INDEX_DIM);
-    uint source_base = is_query
-        ? (token * uint(QUERY_HEADS) + head) * uint(2 * HEAD_DIM)
+    long column_stride = projected_strides[is_query ? 4 : is_key ? 5 : 6];
+    long source_base = is_query
+        ? token * projected_strides[0] + head * uint(2 * HEAD_DIM) * column_stride
         : (is_key
-            ? (token * uint(KEY_HEADS) + head) * uint(HEAD_DIM)
-            : (token * uint(INDEX_HEADS + 1) + head) * uint(INDEX_DIM));
+            ? token * projected_strides[1] + head * uint(HEAD_DIM) * column_stride
+            : token * projected_strides[2] + head * uint(INDEX_DIM) * column_stride);
     device const T* source = is_query
         ? query_gate_input
         : (is_key ? key_input : index_query_key_input);
@@ -327,7 +333,7 @@ constexpr const char* kQsaDecodePrologueSource = R"METAL(
     for (uint item = 0u; item < VALUES_PER_THREAD; ++item) {
         uint column = column_base + item;
         if (column < width) {
-            float value = float(source[source_base + column]);
+            float value = float(source[source_base + column * column_stride]);
             sum_squares += value * value;
         }
     }
@@ -356,10 +362,10 @@ constexpr const char* kQsaDecodePrologueSource = R"METAL(
                 ? column
                 : column - ROTARY_HALF;
             T first_rounded = T(
-                float(source[source_base + pair])
+                float(source[source_base + pair * column_stride])
                 * inverse_rms[0] * norm_weight[pair]);
             T second_rounded = T(
-                float(source[source_base + pair + ROTARY_HALF])
+                float(source[source_base + (pair + ROTARY_HALF) * column_stride])
                 * inverse_rms[0]
                 * norm_weight[pair + ROTARY_HALF]);
             float exponent =
@@ -374,18 +380,25 @@ constexpr const char* kQsaDecodePrologueSource = R"METAL(
                     + float(first_rounded) * sine;
         } else {
             normalized = float(T(
-                float(source[source_base + column])
+                float(source[source_base + column * column_stride])
                 * inverse_rms[0] * norm_weight[column]));
         }
         uint output_index = (head * rows + token) * width + column;
         if (is_query) {
-            query_output[output_index] = T(normalized);
+            query_output[output_index] = Q(T(normalized));
             output_gate[(token * uint(QUERY_HEADS) + head) * width + column] = query_gate_input[
-                source_base + uint(HEAD_DIM) + column];
+                source_base + (uint(HEAD_DIM) + column) * column_stride];
         } else if (is_key) {
-            key_output[output_index] = T(normalized);
+            key_output[output_index] = C(T(normalized));
+#if CACHE_OUTPUTS
+            value_output[output_index] = half(float(value_input[token * projected_strides[3] + (head * width + column) * projected_strides[7]]));
+#endif
         } else {
             index_query_output[(token * uint(INDEX_HEADS) + head) * width + column] = T(normalized);
+#if CACHE_OUTPUTS
+            if (!head) index_key_output[token * uint(INDEX_DIM) + column] = half(float(
+                index_query_key_input[token * projected_strides[2] + (uint(INDEX_HEADS * INDEX_DIM) + column) * column_stride]));
+#endif
         }
     }
 )METAL";
@@ -1073,6 +1086,8 @@ struct QsaPrologueConfig {
     mlx::core::Dtype dtype;
     std::array<int, 6> geometry;
     std::array<float, 2> params;
+    bool cache_outputs;
+    bool half_query;
 };
 
 class QsaProloguePrimitive final : public mlx::core::Primitive, public MlxPreparableKernel {
@@ -1084,6 +1099,8 @@ public:
         for (int value : config_.geometry) {
             kernel_name_ += "_" + std::to_string(value);
         }
+        if (config_.cache_outputs) kernel_name_ += "_cache";
+        if (config_.half_query) kernel_name_ += "_qhalf";
     }
 
     std::string preparation_key() const override { return kernel_name_; }
@@ -1118,8 +1135,19 @@ public:
         encoder.set_bytes(config_.params, 7);
         const int rows = inputs[0].shape(1);
         encoder.set_bytes(rows, 12);
+        const std::array<std::int64_t, 8> strides{
+            inputs[0].strides()[1], inputs[1].strides()[1],
+            inputs[2].strides()[1], config_.cache_outputs ? inputs[7].strides()[1] : 0u,
+            inputs[0].strides()[2], inputs[1].strides()[2],
+            inputs[2].strides()[2], config_.cache_outputs ? inputs[7].strides()[2] : 0u};
+        encoder.set_bytes(strides, 16);
         for (int index = 0; index < 4; ++index) {
             encoder.set_output_array(outputs[index], index + 8);
+        }
+        if (config_.cache_outputs) {
+            encoder.set_input_array(inputs[7], 13);
+            encoder.set_output_array(outputs[4], 14);
+            encoder.set_output_array(outputs[5], 15);
         }
         encoder.dispatch_threadgroups(
             MTL::Size(config_.geometry[0] + config_.geometry[1] +
@@ -1136,6 +1164,9 @@ private:
         const char* type = config_.dtype == mlx::core::float16
             ? "half" : config_.dtype == mlx::core::bfloat16 ? "bfloat" : "float";
         code += "using T = " + std::string(type) + ";\n";
+        code += "using C = " + std::string(config_.cache_outputs ? "half" : type) + ";\n";
+        code += "using Q = " + std::string(config_.half_query ? "half" : type) + ";\n";
+        code += "#define CACHE_OUTPUTS " + std::to_string(int(config_.cache_outputs)) + "\n";
         const std::array<const char*, 6> names{
             "QUERY_HEADS", "KEY_HEADS", "INDEX_HEADS",
             "HEAD_DIM", "INDEX_DIM", "ROTARY_DIM"};
@@ -1152,11 +1183,17 @@ private:
             "device const float* index_weight [[buffer(5)]], "
             "device const int* positions [[buffer(6)]], "
             "constant float* params [[buffer(7)]], "
-            "device T* query_output [[buffer(8)]], "
+            "device Q* query_output [[buffer(8)]], "
             "device T* output_gate [[buffer(9)]], "
-            "device T* key_output [[buffer(10)]], "
+            "device C* key_output [[buffer(10)]], "
             "device T* index_query_output [[buffer(11)]], "
             "constant int* token_count [[buffer(12)]], "
+            "constant long* projected_strides [[buffer(16)]], ";
+        if (config_.cache_outputs) code +=
+            "device const T* value_input [[buffer(13)]], "
+            "device half* value_output [[buffer(14)]], "
+            "device half* index_key_output [[buffer(15)]], ";
+        code +=
             "uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]], "
             "uint3 thread_position_in_threadgroup [[thread_position_in_threadgroup]], "
             "uint thread_index_in_simdgroup [[thread_index_in_simdgroup]], "
@@ -2405,13 +2442,18 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
     int index_dimension,
     int rotary_dimension,
     float rope_theta,
-    float eps) {
+    float eps,
+    const array* cache_value,
+    bool half_query) {
     const auto dtype = query_gate.dtype();
+    half_query = half_query && dtype != mlx::core::float16;
     const int rows = query_gate.ndim() == 3 ? query_gate.shape(1) : 0;
     if ((dtype != mlx::core::float16 &&
          dtype != mlx::core::bfloat16 &&
          dtype != mlx::core::float32) ||
         key.dtype() != dtype || index_query_key.dtype() != dtype ||
+        (cache_value && (cache_value->dtype() != dtype ||
+            cache_value->shape() != Shape{1, rows, key_heads * head_dimension})) ||
         query_heads <= 0 || key_heads <= 0 || index_heads <= 0 ||
         head_dimension <= 0 || index_dimension <= 0 ||
         head_dimension > 256 || index_dimension > 256 ||
@@ -2439,48 +2481,108 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
         dtype,
         {query_heads, key_heads, index_heads,
          head_dimension, index_dimension, rotary_dimension},
-        {eps, rope_theta}};
-    auto outputs = array::make_arrays(
-        {
-            Shape{1, query_heads, rows, head_dimension},
-            Shape{1, rows, query_heads * head_dimension},
-            Shape{1, key_heads, rows, head_dimension},
-            Shape{1, rows, index_heads, index_dimension},
-        },
-        {dtype, dtype, dtype, dtype},
-        std::make_shared<QsaProloguePrimitive>(
-            mlx::core::default_stream(mlx::core::default_device()), config),
-        {
-            mlx::core::contiguous(query_gate),
-            mlx::core::contiguous(key),
-            mlx::core::contiguous(index_query_key),
-            query_norm_weight,
-            key_norm_weight,
-            index_query_norm_weight,
-            mlx::core::contiguous(positions),
-        });
+        {eps, rope_theta}, cache_value != nullptr, half_query};
+    std::vector<Shape> shapes{
+        Shape{1, query_heads, rows, head_dimension},
+        Shape{1, rows, query_heads * head_dimension},
+        Shape{1, key_heads, rows, head_dimension},
+        Shape{1, rows, index_heads, index_dimension},
+    };
+    std::vector<mlx::core::Dtype> types{half_query ? mlx::core::float16 : dtype, dtype, cache_value ? mlx::core::float16 : dtype, dtype};
+    std::vector<array> inputs{
+        query_gate,
+        key,
+        index_query_key,
+        query_norm_weight,
+        key_norm_weight,
+        index_query_norm_weight,
+        mlx::core::contiguous(positions),
+    };
+    if (cache_value) {
+        shapes.insert(shapes.end(), {Shape{1, key_heads, rows, head_dimension}, Shape{1, rows, index_dimension}});
+        types.insert(types.end(), {mlx::core::float16, mlx::core::float16});
+        inputs.push_back(*cache_value);
+    }
+    auto outputs = array::make_arrays(shapes, types,
+        std::make_shared<QsaProloguePrimitive>(mlx::core::default_stream(mlx::core::default_device()), config), std::move(inputs));
     return {
         std::move(outputs.at(0)),
         std::move(outputs.at(1)),
         std::move(outputs.at(2)),
         std::move(outputs.at(3)),
+        cache_value ? std::optional<array>(std::move(outputs.at(4))) : std::nullopt,
+        cache_value ? std::optional<array>(std::move(outputs.at(5))) : std::nullopt,
     };
 }
 
-array qwen4_qsa_prefill_output_gate(const array& attended, const array& gate) {
+array qwen4_qsa_pool_index_keys(const array& raw_keys, const array& norm_weight, const array& positions,
+    int begin, int end, int position_offset, int rotary_dimension, float rope_theta, float eps) {
+    if (raw_keys.ndim() != 3 || raw_keys.shape(0) <= 0 || raw_keys.shape(2) != 128 ||
+        !gated_hc_float_dtype(raw_keys.dtype()) || norm_weight.shape() != Shape{128} || norm_weight.dtype() != mlx::core::float32 ||
+        positions.ndim() != 1 || positions.dtype() != mlx::core::int32 || begin < 0 || end <= begin || position_offset < 0 ||
+        std::int64_t(end) * 4 > raw_keys.shape(1) || std::int64_t(position_offset) + std::int64_t(end) * 4 > positions.size() ||
+        rotary_dimension <= 0 || rotary_dimension > 128 || rotary_dimension % 2 ||
+        !std::isfinite(rope_theta) || rope_theta <= 0.f || !std::isfinite(eps) || eps <= 0.f)
+        throw std::invalid_argument("QSA index pool geometry disagrees");
+    static const auto kernel = [] {
+        CompileOptions options; options.math_mode = MathMode::Fast;
+        return cached_metal_kernel("mfq_qsa_index_pool", {"raw", "weight", "positions", "params", "scalars"},
+            {"output"}, R"METAL(
+    const uint block = threadgroup_position_in_grid.x, batch = threadgroup_position_in_grid.y;
+    const uint lane = thread_index_in_simdgroup;
+    threadgroup T normalized[128];
+    T means[4];
+    float squares = 0.f;
+    for (uint j = 0; j < 4; ++j) {
+        const uint column = lane * 4 + j;
+        T sum = T(0);
+        for (uint r = 0; r < 4; ++r)
+            sum = T(sum + raw[long(batch) * raw_strides[0] +
+                long(params[0] + block * 4 + r) * raw_strides[1] + long(column) * raw_strides[2]]);
+        means[j] = T(sum * T(.25f));
+        squares += float(means[j]) * float(means[j]);
+    }
+    const float inverse = metal::precise::rsqrt(simd_sum(squares) / 128.f + scalars[1]);
+    for (uint j = 0; j < 4; ++j) {
+        const uint column = lane * 4 + j;
+        normalized[column] = T(float(means[j]) * inverse * weight[column * weight_strides[0]]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int position = positions[long(params[1] + params[0] + block * 4) * positions_strides[0]];
+    for (uint j = 0; j < 4; ++j) {
+        const uint column = lane * 4 + j;
+        float value = float(normalized[column]);
+        if (column < ROTARY) {
+            const uint pair = column % uint(ROTARY / 2);
+            const float angle = float(position) * pow(scalars[0], -2.f * float(pair) / float(ROTARY));
+            const float a = float(normalized[pair]), b = float(normalized[pair + ROTARY / 2]);
+            value = column < ROTARY / 2 ? a * cos(angle) - b * sin(angle) : b * cos(angle) + a * sin(angle);
+        }
+        output[(batch * uint(params[2]) + block) * 128 + column] = T(value);
+    }
+    )METAL", "", false, false, options);
+    }();
+    return kernel({raw_keys, norm_weight, positions, array({begin * 4, position_offset, end - begin}, mlx::core::int32),
+            array({rope_theta, eps}, mlx::core::float32)},
+        {{raw_keys.shape(0), end - begin, 128}}, {mlx::core::float32},
+        {(end - begin) * 32, raw_keys.shape(0), 1}, {32, 1, 1},
+        {{"T", raw_keys.dtype()}, {"ROTARY", rotary_dimension}}, std::nullopt, false, {})[0];
+}
+
+array qwen4_qsa_output_gate(const array& attended, const array& gate,
+    std::optional<mlx::core::Dtype> output_dtype) {
+    const auto dtype = output_dtype.value_or(attended.dtype());
     if (attended.ndim() != 4 || attended.shape() != gate.shape() ||
-        attended.dtype() != gate.dtype() ||
-        (attended.dtype() != mlx::core::float16 &&
-         attended.dtype() != mlx::core::bfloat16 && attended.dtype() != mlx::core::float32) ||
+        !gated_hc_float_dtype(attended.dtype()) || !gated_hc_float_dtype(gate.dtype()) || !gated_hc_float_dtype(dtype) ||
         attended.size() == 0 || attended.size() > std::numeric_limits<std::uint32_t>::max() ||
         static_cast<std::int64_t>(attended.shape(2)) * attended.shape(3) >
             std::numeric_limits<int>::max()) {
-        throw std::invalid_argument("QSA prefill output gate geometry disagrees");
+        throw std::invalid_argument("QSA output gate geometry disagrees");
     }
     return array(Shape{attended.shape(0), attended.shape(1),
-        attended.shape(2) * attended.shape(3)}, attended.dtype(),
-        std::make_shared<QsaPrefillOutputGatePrimitive>(
-            mlx::core::default_stream(mlx::core::default_device()), attended.dtype(),
+        attended.shape(2) * attended.shape(3)}, dtype,
+        std::make_shared<QsaOutputGatePrimitive>(
+            mlx::core::default_stream(mlx::core::default_device()), std::array{attended.dtype(), gate.dtype(), dtype},
             attended.shape(2), attended.shape(3)), {attended, gate});
 }
 

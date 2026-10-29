@@ -21,6 +21,8 @@ public:
         return get_library(name, {}, source);
     }
     MTL::ComputePipelineState* get_kernel(const std::string& name, MTL::Library* library);
+    MTL::ComputePipelineState* get_kernel(const std::string& name, MTL::Library* library,
+        const std::string& key, const mlx::core::metal::MTLFCList& constants);
     MTL::ComputePipelineState* get_kernel(const std::string& name) { return device_.get_kernel(name); }
     const std::string& get_architecture() const { return device_.get_architecture(); }
     int get_architecture_gen() const { return device_.get_architecture_gen(); }

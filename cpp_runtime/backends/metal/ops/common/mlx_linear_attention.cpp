@@ -1,5 +1,6 @@
 #include "mlx_linear_attention.h"
 #include "mlx_kernel_prepare.h"
+#include "mlx_cached_kernel.h"
 #include "../../platform/metal_device_info.h"
 
 #include <algorithm>
@@ -317,7 +318,7 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
                 1.0f / (1.0f + metal::precise::exp(metal::abs(z)));
             const float sigmoid = z < 0.0f ? tail : 1.0f - tail;
             const float gate = OUTPUT_GATE_SILU != 0 ? z * sigmoid : sigmoid;
-            output[output_base + dimension] = normalized * gate;
+            output[output_base + dimension] = OUTPUT_TYPE(normalized * gate);
         }
     }
 #if TYLOINFER_GDN_SEQUENCE
@@ -338,6 +339,7 @@ struct GdnStepConfig {
     std::array<float, 2> eps;
     bool sequence;
     bool tiled_heads;
+    Dtype output_dtype;
 };
 
 std::string gdn_step_source(
@@ -358,6 +360,7 @@ std::string gdn_step_source(
         std::to_string(static_cast<int>(config.silu)) + "\n";
     source += "#define TYLOINFER_GDN_SEQUENCE " + std::to_string(static_cast<int>(config.sequence)) + "\n";
     source += "#define TYLOINFER_GDN_TILED_HEADS " + std::to_string(static_cast<int>(config.tiled_heads)) + "\n";
+    source += "#define OUTPUT_TYPE " + std::string(metal_type(config.output_dtype)) + "\n";
     source += "kernel void " + kernel_name + "(";
     const std::array<const char*, 5> projection_names{
         "qk", "value", "output_gate", "alpha", "beta"};
@@ -375,8 +378,9 @@ std::string gdn_step_source(
             " [[buffer(" + std::to_string(index + 5) + ")]], ";
     }
     source +=
-        "constant float* params [[buffer(11)]], "
-        "device float* output [[buffer(12)]], "
+        "constant float* params [[buffer(11)]], ";
+    source += "device " + std::string(metal_type(config.output_dtype)) + "* output [[buffer(12)]], ";
+    source +=
         "device float* convolution_out [[buffer(13)]], "
         "device float* recurrent_out [[buffer(14)]], ";
     if (config.sequence) source +=
@@ -405,6 +409,8 @@ public:
             "_" + std::to_string(static_cast<int>(config_.silu));
         if (config_.sequence) kernel_name_ += "_sequence";
         if (config_.tiled_heads) kernel_name_ += "_tiled";
+        if (config_.output_dtype != mlx::core::float32)
+            kernel_name_ += "_out_" + mlx::core::type_to_name(config_.output_dtype);
     }
 
     std::string preparation_key() const override { return kernel_name_; }
@@ -1058,12 +1064,18 @@ else run(integral_constant<bool, false>{});
     return kernel;
 }
 
+array projection_contiguous(const array& value) {
+    if (value.ndim() > 0 && value.size() == std::size_t(value.shape(-1)))
+        return mlx_row_contiguous_view(value, mlx::core::default_stream(mlx::core::default_device()));
+    return mlx::core::contiguous(value);
+}
+
 array float32_contiguous(const array& value) {
     auto result = value;
     if (result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float32);
     }
-    return mlx::core::contiguous(result);
+    return projection_contiguous(result);
 }
 
 array floating_contiguous(const array& value) {
@@ -1072,7 +1084,7 @@ array floating_contiguous(const array& value) {
         result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float16);
     }
-    return mlx::core::contiguous(result);
+    return projection_contiguous(result);
 }
 
 array floating_strided(const array& value) {
@@ -1092,7 +1104,7 @@ array real_contiguous(const array& value) {
         result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float16);
     }
-    return mlx::core::contiguous(result);
+    return projection_contiguous(result);
 }
 
 int checked_int(std::int64_t value, const char* name) {
@@ -1339,11 +1351,11 @@ MlxGatedDeltaDecodeResult gated_delta_decode_step(
     int dimension,
     float convolution_eps,
     float norm_eps,
-    bool output_gate_silu, bool tiled_heads) {
+    bool output_gate_silu, bool tiled_heads, Dtype output_dtype) {
     return gated_delta_decode_steps({{qk, value, output_gate, alpha, beta,
         convolution_state, recurrent_state}}, convolution_weight, dt_bias,
         decay_scale, norm_weight, key_heads, value_heads, dimension,
-        convolution_eps, norm_eps, output_gate_silu, tiled_heads).front();
+        convolution_eps, norm_eps, output_gate_silu, tiled_heads, output_dtype).front();
 }
 
 std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
@@ -1351,7 +1363,7 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     const array& convolution_weight, const array& dt_bias,
     const array& decay_scale, const array& norm_weight,
     int key_heads, int value_heads, int dimension,
-    float convolution_eps, float norm_eps, bool output_gate_silu, bool tiled_heads) {
+    float convolution_eps, float norm_eps, bool output_gate_silu, bool tiled_heads, Dtype output_dtype) {
     auto bias_values = float32_contiguous(dt_bias);
     auto decay_values = float32_contiguous(decay_scale);
     auto norm_values = float32_contiguous(norm_weight);
@@ -1359,7 +1371,8 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     if (requests.empty() || key_heads <= 0 || value_heads <= 0 ||
         value_heads % key_heads != 0 || dimension != 128 ||
         !std::isfinite(convolution_eps) || convolution_eps <= 0.0f ||
-        !std::isfinite(norm_eps) || norm_eps <= 0.0f) {
+        !std::isfinite(norm_eps) || norm_eps <= 0.0f ||
+        (output_dtype != mlx::core::float16 && output_dtype != mlx::core::bfloat16 && output_dtype != mlx::core::float32)) {
         throw std::invalid_argument(
             "Gated DeltaNet decode-step geometry is unsupported");
     }
@@ -1393,7 +1406,7 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
         Shape{1, 3, channels}, Shape{1, value_heads, dimension, dimension}};
     GdnStepConfig config{{mlx::core::float32, mlx::core::float32, mlx::core::float32,
         mlx::core::float32, mlx::core::float32}, key_heads, value_heads, output_gate_silu,
-        {convolution_eps, norm_eps}, sequence, tiled_heads};
+        {convolution_eps, norm_eps}, sequence, tiled_heads, output_dtype};
     for (std::size_t row = 0; row < requests.size(); ++row) {
         const auto& request = requests[row];
         std::array<array, 7> values{real_contiguous(request.qk), real_contiguous(request.value),
@@ -1410,8 +1423,9 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
         shapes.insert(shapes.end(), {Shape{1, tokens, value_width}, expected[5], expected[6]});
         if (sequence) shapes.insert(shapes.end(), {Shape{1, value_heads, tokens}, Shape{1, value_heads, tokens}});
     }
-    auto outputs = array::make_arrays(shapes,
-        std::vector<Dtype>(shapes.size(), mlx::core::float32),
+    std::vector<Dtype> output_types(shapes.size(), mlx::core::float32);
+    for (std::size_t row = 0; row < requests.size(); ++row) output_types[row * fields] = output_dtype;
+    auto outputs = array::make_arrays(shapes, output_types,
         std::make_shared<GdnStepPrimitive>(
             mlx::core::default_stream(mlx::core::default_device()), config),
         std::move(inputs));

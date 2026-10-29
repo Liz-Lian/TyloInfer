@@ -251,7 +251,7 @@ void MlxTqExpertWeights::prepare(int top_k, float limit, bool gelu) const {
             preparation->add(down.routed_matmul(hidden, ids));
             preparation->add(down.routed_matmul_reduce(hidden, ids,
                 full({rows, top_k}, 1.f / top_k, float32)));
-            if (rows == 1) preparation->add(routed_ffn(input, ids,
+            if (rows <= 16) preparation->add(routed_ffn(input, ids,
                 full({rows, top_k}, 1.f / top_k, float32), limit, gelu));
             if (rows >= 2 && rows <= 16) {
                 std::vector<int> routes(rows * top_k);
@@ -281,8 +281,15 @@ void MlxTqExpertWeights::prepare(int top_k, float limit, bool gelu) const {
     });
 }
 
+std::optional<array> MlxTqExpertWeights::reuse_plan(const array& ids) const {
+    if (gate.experts() <= 1 || gate.input_size() < 1024 || down.input_size() < 1024) return std::nullopt;
+    return make_tq_reuse_plan(ids, gate.experts());
+}
+
 array MlxTqExpertWeights::routed_ffn(const array& input, const array& ids,
     const array& weights, float limit, bool gelu, const array* reuse) const {
+    const auto device_reuse = reuse ? std::nullopt : reuse_plan(ids);
+    if (device_reuse) reuse = &*device_reuse;
     return down.routed_down(gate.swiglu_for_down(up, down, input, ids, limit, gelu, reuse),
         ids, weights, reuse);
 }
@@ -918,7 +925,8 @@ struct MlxTqExpertCache::Impl {
             && hot_outputs.size() < 256 && hot_routes.size() < 256) {
             try {
                 const auto started = Clock::now();
-                auto output = operation(*layer.weights, nullptr);
+                const auto reuse = layer.weights->reuse_plan(route_ids);
+                auto output = operation(*layer.weights, reuse ? &*reuse : nullptr);
                 hot_outputs.push_back(output);
                 hot_routes.push_back({index, route_ids});
                 graph_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-started).count());

@@ -107,7 +107,7 @@ void check(ggml_type type) {
         if (mlx_native_gguf_supported(type, 64, K)) {
             const auto native = mlx_native_gguf_pack(array(matrix_bytes.begin(), Shape{int(matrix_bytes.size())}, uint8),
                 type, 64, K, int(ggml_row_size(type, K)));
-            for (const int count : {1, 8, 65}) {
+            for (const int count : {1, 2, 3, 4, 8, 65}) {
                 const auto input = astype(reshape(sin(arange(count * K, float32) * .013f), {count, K}), bfloat16);
                 const auto expected = reference_mm(input, matrix.dequantize(float32));
                 const auto actual = mlx_native_gguf_project(std::span(&native, 1), input)[0];
@@ -729,16 +729,76 @@ void check_native_affine_pairs() {
                 " GS=" + std::to_string(group) + " K=" + std::to_string(width));
     }
 }
+void check_native_grid_gate_up(int width = 1024, int inner = 256) {
+    constexpr int experts = 16;
+    MlxKernelPreparation preparation(1, 1);
+    const std::array formats{GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S};
+    for (std::size_t format = 0; format < formats.size(); ++format) {
+        std::vector<MlxNativeGgufWeight> native;
+        std::vector<MlxGgufWeight> reference;
+        for (const bool routed : {true, false}) for (int part = 0; part < 3; ++part) {
+            const auto type = part == 2 ? (inner % 256 ? GGML_TYPE_Q2_0 : GGML_TYPE_Q4_K) : routed ? formats[(format + part) % formats.size()]
+                : part == 0 ? GGML_TYPE_Q5_K : GGML_TYPE_Q6_K;
+            const int k = part == 2 ? inner : width, n = part == 2 ? width : inner;
+            const int rows = n * (routed ? experts : 1);
+            const auto bytes = packed(type, k, rows);
+            auto weight = mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
+                type, rows, k, int(ggml_row_size(type, k)));
+            weight.outputs = n; weight.experts = routed ? experts : 1;
+            native.push_back(std::move(weight));
+            auto name = "GGUF_" + std::string(ggml_type_name(type));
+            for (auto& c : name) c = std::toupper(static_cast<unsigned char>(c));
+            reference.push_back(MlxGgufWeight::from_bytes(name, bytes, routed ? Shape{experts, n, k} : Shape{n, k}));
+        }
+        const auto router = reshape(sin(arange(experts * width, float32) * .019f), {experts, width}) * .03f;
+        const auto scalar = reshape(cos(arange(width, float32) * .017f), {1, width}) * .02f;
+        const auto slots = remainder(arange(experts, uint32) + array(1u), array(uint32_t(experts)));
+        const auto row = astype(reshape(cos(arange(width, float32) * .023f), {1, width}), bfloat16);
+        for (const auto& input : {row, concatenate({row, row}, 0), concatenate({row, -row}, 0),
+                concatenate({row, -row, row}, 0), concatenate({row, row, -row, -row}, 0)}) {
+            const int count = input.shape(0);
+            for (const auto dtype : {float32, bfloat16}) for (const int selected : {1, 2, experts - 1, experts}) {
+                const auto current_router = astype(router, dtype);
+                const auto scores = matmul(astype(input, float32), transpose(astype(current_router, float32)));
+                const auto ids = astype(slice(argsort(-scores, -1), {0, 0}, {count, selected}), int32);
+                const auto physical = astype(take(slots, ids, 0), int32);
+                const auto probability = softmax(take_along_axis(scores, ids, -1), -1);
+                const auto gate = reference[0].routed_matmul(input, physical, true);
+                const auto up = reference[1].routed_matmul(input, physical, true);
+                const auto routed = reference[2].routed_matmul(astype(moe_swiglu_pair(gate, up), bfloat16), physical, false);
+                const auto shared = reference[5].matmul(astype(moe_swiglu_pair(reference[3].matmul(input), reference[4].matmul(input)), bfloat16));
+                const auto expected = astype(sum(astype(routed, float32) * expand_dims(probability, -1), 1) +
+                    astype(shared, float32) * sigmoid(matmul(astype(input, float32), transpose(scalar))), bfloat16);
+                const MlxNativeGgufMoe weights{{native[0], native[1], native[2]}, {native[3], native[4], native[5]},
+                    current_router, scalar, slots, selected};
+                const auto actual = mlx_native_gguf_moe(weights, input);
+                if (count == 1 && dtype == float32 && selected == 1) {
+                    const auto previous = preparation.size();
+                    preparation.collect([&] { preparation.add(actual); });
+                    if (format && preparation.size() == previous)
+                        throw std::runtime_error("native Gate/Up preparation merges different format specializations");
+                }
+                compare(actual, expected, .025f,
+                    "native grid split-K Gate/Up with mixed formats and compact slots");
+            }
+        }
+    }
+    preparation.finish();
+}
+
 void check_native_stack() {
     check_native_affine_pairs();
+    check_native_grid_gate_up();
+    check_native_grid_gate_up(2560, 640);
     constexpr int K = 256, N = 256, E = 8, top_k = 2;
     for (const auto [width, outputs] : std::array{std::pair{512, 768}, std::pair{4096, 64}, std::pair{6144, 2560}}) {
         const auto bytes = packed(GGML_TYPE_IQ4_XS, width, outputs);
         const auto native = mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
             GGML_TYPE_IQ4_XS, outputs, width, int(ggml_row_size(GGML_TYPE_IQ4_XS, width)));
         const auto reference = MlxGgufWeight::from_bytes("GGUF_IQ4_XS", bytes, {outputs, width}).dequantize(float32);
-        for (const auto dtype : {bfloat16, float32}) {
-            const auto input = astype(reshape(sin(arange(width, float32) * .013f), {1, width}), dtype);
+        for (const int count : {1, 2, 3, 4}) for (const auto dtype : {float16, bfloat16, float32}) {
+            const auto backing = astype(reshape(sin(arange(5 * width, float32) * .013f), {5, width}), dtype);
+            const auto input = slice(backing, {1, 0}, {1 + count, width});
             compare(mlx_native_gguf_project(std::span(&native, 1), input)[0],
                 reference_mm(astype(input, bfloat16), reference), .01f, "native IQ4_XS factored projection");
         }
@@ -787,7 +847,7 @@ void check_native_stack() {
     const auto reference_moe = [&](const MlxNativeGgufMoe& weights, const array& input) {
         const int count = int(input.size() / K);
         const auto scores = matmul(astype(input, float32), transpose(weights.router));
-        const auto ids = astype(slice(argsort(-scores, -1), {0, 0}, {count, top_k}), int32);
+        const auto ids = astype(slice(argsort(-scores, -1), {0, 0}, {count, weights.top_k}), int32);
         const auto probabilities = softmax(take_along_axis(scores, ids, -1), -1);
         const auto slots = astype(take(weights.slots, ids, 0), int32);
         const auto gate = routed_reference[0].routed_matmul(input, slots, true);
@@ -799,6 +859,34 @@ void check_native_stack() {
         return astype(sum(astype(routed_out, float32) * expand_dims(probabilities, -1), 1) +
             astype(shared_out, float32) * sigmoid(matmul(astype(input, float32), transpose(weights.scalar_gate))), bfloat16);
     };
+    for (const auto dtype : {float32, bfloat16}) {
+        auto current = moe;
+        current.router = astype(router, dtype);
+        for (const int count : {1, 2, 3, 4, 6}) {
+            const auto input = astype(reshape(cos(arange(count * K, float32) * .023f), {count, K}), bfloat16);
+            for (const int selected : {1, top_k, E}) {
+                current.top_k = selected;
+                compare(mlx_native_gguf_moe(current, input), reference_moe(current, input), .025f,
+                    "native single-row Down/combine and floating router precision");
+            }
+        }
+    }
+    {
+        auto wide = moe;
+        wide.router = tile(router, {4, 1});
+        wide.slots = remainder(arange(E * 4, uint32), array(uint32_t(E)));
+        for (auto& weight : wide.routed) {
+            weight.experts *= 4;
+            for (auto& plane : weight.planes)
+                if (plane.size()) plane = concatenate({plane, plane, plane, plane}, 0);
+        }
+        const auto input = astype(reshape(cos(arange(K, float32) * .029f), {1, K}), bfloat16);
+        for (const int selected : {15, 31, 32}) {
+            wide.top_k = selected;
+            compare(mlx_native_gguf_moe(wide, input), reference_moe(wide, input), .025f,
+                "native Down/combine route-count boundary and compact slot aliases");
+        }
+    }
     for (const int count : {1, 2, 3, 4, 5, 6, 7, 8, 17, 32, 65}) {
         const auto input = astype(reshape(sin(arange(count * K, float32) * .013f), {count, K}), bfloat16);
         const auto expected = reference_moe(moe, input);
@@ -836,7 +924,7 @@ void check_native_stack() {
     for (const auto stream : {initial_stream, new_stream(Device::gpu), initial_stream}) {
         set_default_stream(stream);
         for (int iteration = 0; iteration < 8; ++iteration) {
-            const int count = std::array{1, 7, 8, 17}[iteration % 4];
+            const int count = std::array{1, 2, 3, 4, 8, 17}[iteration % 6];
             const auto input = astype(reshape(sin(arange(count * K, float32) * .013f + iteration * .4f),
                 {count, K}), bfloat16);
             auto current = moe;

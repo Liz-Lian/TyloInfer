@@ -716,6 +716,27 @@ if (expert < 0 || expert >= EXPERTS) {
         threadgroup_position_in_grid.x * 128u, thread_position_in_threadgroup.x, 128u);
     return;
 }
+if constexpr (NAX && SHARED_TILE && BM == 64 && OUT >= K * 2u && K >= 1024u) {
+    if (rows - begin > 16u && rows - begin <= 32u) {
+        if (threadgroup_position_in_grid.x & 1u) return;
+        uint tile = threadgroup_position_in_grid.x * 64u +
+            (thread_position_in_threadgroup.x / 32u) * 32u;
+        auto packed = tq_words<POOLED>(words, descriptors, EXPERTS * OUT, uint(expert));
+        uint cached = tile + uint(mlx::steel::BaseNAXFrag::get_coord().y) +
+            ((__metal_get_thread_index_in_simdgroup(ushort()) & 1u) ? 8u : 0u);
+        ulong first = cached < OUT ? descriptors[uint(expert) * OUT + cached] : 0ul;
+        ulong second = cached + 16u < OUT ? descriptors[uint(expert) * OUT + cached + 16u] : 0ul;
+        auto decode = [&](uint row, uint col) {
+            uint wr = uint(expert) * OUT + row;
+            return tq_decode8<COLUMNS, WIDTH, GS>(packed, row == cached ? first : second,
+                scales, relative, wr, col);
+        };
+        auto input_row = [&](uint row) { return uint(order[row]) / (SHARED_INPUT ? ROUTES : 1u); };
+        auto output_row = [&](uint row) { return uint(order[row]); };
+        tq_nax_matmul<T, K, OUT, 32>(x, y, rows, tile, begin, decode, input_row, output_row);
+        return;
+    }
+}
 auto packed = tq_words<POOLED>(words, descriptors, EXPERTS * OUT, uint(expert));
 ulong row_descriptor = 0ul;
 if constexpr (NAX && SHARED_TILE) {
@@ -753,8 +774,11 @@ if constexpr (!NAX) {
     return kernel;
 }
 
-const fast::CustomKernelFunction& routed_pair_matmul_kernel() {
-    static const auto kernel = indirect_weight_metal_kernel("tyloinfer_tq_routed_pair_matmul",
+const fast::CustomKernelFunction& routed_pair_matmul_kernel(bool nax) {
+    static const auto make_kernel = [](bool nax) {
+        CompileOptions options;
+        options.math_mode = nax ? MathMode::Fast : MathMode::Safe;
+        return indirect_weight_metal_kernel(nax ? "tyloinfer_tq_routed_pair_matmul_nax" : "tyloinfer_tq_routed_pair_matmul",
         {"words_g", "descriptors_g", "scales_g", "words_u", "descriptors_u", "scales_u",
          "relative", "x", "order", "blocks", "block_count", "params"}, {"y"}, R"METAL(
 uint n0 = threadgroup_position_in_grid.x * (NAX ? 64u : 32u), block = thread_position_in_grid.y;
@@ -795,8 +819,10 @@ else if (rows - begin <= 64u)
 else tq_nax_shared_pair<T, K, OUT, BM, 32>(x, y, rows, begin, n0, thread_position_in_threadgroup.x,
     decode_g, decode_u, input_row, output_row, params[0], GELU,
     scratch, scratch + BM * 32u, scratch + BM * 32u + 64u * 32u);
-)METAL", std::string(kTqDecode) + kTqNax, true, false);
-    return kernel;
+)METAL", std::string(kTqDecode) + kTqNax, true, false, options);
+    };
+    static const auto kernel = make_kernel(false), nax_kernel = make_kernel(true);
+    return nax ? nax_kernel : kernel;
 }
 
 MlxTqRoutePlan make_tq_route_plan(const array& ids, const array& order, int experts, int block_rows) {
@@ -1872,7 +1898,7 @@ array MlxTqWeight::project(const array& input, const array& ids,
         if (up && !split && ((nax && block_rows == 128) || (!nax && input_columns_ >= 1024))) {
             record_dispatch(input, out, experts_, nax ? "routed_pair_shared_nax" : "routed_pair_simd");
             const int tile_columns = nax ? 64 : 32;
-            return routed_pair_matmul_kernel()({words_, descriptors_, scales_, u.words_, u.descriptors_, u.scales_,
+            return routed_pair_matmul_kernel(nax)({words_, descriptors_, scales_, u.words_, u.descriptors_, u.scales_,
                 relative_table(), contiguous(reshape(input, {-1, input_columns_})), contiguous(order),
                 plan.block_meta, plan.block_count, array({limit})},
                 {Shape{tokens, routes, out}}, {dtype},
@@ -2043,7 +2069,7 @@ std::optional<array> make_tq_reuse_plan(const array& ids, int experts) {
     if (ids.ndim() != 2 || ids.shape(0) < 1 || ids.shape(1) < 1 || experts < 1
         || (ids.dtype() != int32 && ids.dtype() != uint32))
         throw std::invalid_argument("invalid TQ route reuse geometry");
-    if (ids.shape(0) < 3 || ids.shape(0) > 16 || ids.size() > 512) return std::nullopt;
+    if (ids.shape(0) < 2 || ids.shape(0) > 16 || ids.size() > 512) return std::nullopt;
     static const auto kernel = indirect_weight_metal_kernel("tyloinfer_tq_device_reuse_plan", {"ids"}, {"plan"}, R"METAL(
 uint index = thread_position_in_grid.x, total = uint(ids_shape[0]);
 if (index >= total) return;

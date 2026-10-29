@@ -29,6 +29,23 @@ def test_preparation_defaults_to_available_cpu_concurrency():
     assert "std::jthread" not in source
 
 
+def test_compiled_preparation_preserves_bounded_view_layouts():
+    source = (METAL / "runtime/mlx_kernel_prepare.cpp").read_text()
+    assert "preparation_view_input(input, key)" in source
+    assert 'name == "Transpose" || name == "Reshape" || name == "Slice" || name == "Broadcast"' in source
+    assert "input.inputs().front().nbytes() <= (4u << 20)" in source
+    assert "inputs = std::move(view_inputs)" in source
+    native = (METAL / "tests/mlx_compiled_prepare_test.cpp").read_text()
+    assert "preparation executed original strided-view graphs" in native
+
+
+def test_flash_next_prepares_mtp_float_stream_inputs():
+    model = (METAL / "models/flash_next/mlx_qwen4_causal_lm.cpp").read_text()
+    inputs = model.split("void prepare_inputs(const MlxEmbedding& embedding)", 1)[1].split("std::size_t layer_count()", 1)[0]
+    assert "{preparation->activation_dtype(), mlx::core::float32}" in inputs
+    assert "fuse_inputs(hidden, ids, embedding, false).streams" in inputs
+
+
 def test_custom_kernel_cache_matches_source_and_compile_options():
     source = (METAL / "runtime/mlx_kernel_prepare.cpp").read_text()
     assert "MLX_VERSION_NUMERIC >= 32001" in source

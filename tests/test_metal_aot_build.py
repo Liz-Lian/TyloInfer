@@ -83,3 +83,19 @@ def test_native_gguf_exports_use_metal4_and_source_fingerprints(tmp_path, monkey
     assert len(native) == 1 and native[0]["language"] == 4 << 16
     assert native[0]["file"] == script["fingerprint"](b"native GGUF", 2, 4 << 16) + ".metallib"
     assert any("-mmacosx-version-min=26.0" in command for command in commands)
+
+
+def test_native_gguf_pair_kernel_has_its_own_export():
+    exporter = (METAL / "apps/mfq_metal_source_export.cpp").read_text()
+    header = (METAL / "ops/gguf/native/gguf_sources.h.in").read_text()
+    assert '"tinfer_gguf_moe_pair"' in exporter
+    assert "native_gguf::pair_moe_source" in exporter
+    assert "char pair_moe_source[]" in header
+
+
+def test_native_gguf_vector_kernel_has_its_own_export():
+    exporter = (METAL / "apps/mfq_metal_source_export.cpp").read_text()
+    header = (METAL / "ops/gguf/native/gguf_sources.h.in").read_text()
+    assert '"tinfer_gguf_vector"' in exporter
+    assert "native_gguf::vector_source" in exporter
+    assert "char vector_source[]" in header

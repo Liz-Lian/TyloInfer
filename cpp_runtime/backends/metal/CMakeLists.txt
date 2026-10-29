@@ -507,6 +507,8 @@ if(BUILD_TESTING)
     add_test(NAME tyloinfer-metal-tq-indirect-residency-test COMMAND mfq-metal-tq-test --indirect-residency)
     add_test(NAME tyloinfer-metal-tq-prefill-reduction-test COMMAND mfq-metal-tq-test --prefill-reduction)
     add_test(NAME tyloinfer-metal-tq-projection-cache-test COMMAND mfq-metal-tq-test --projection-cache)
+    add_test(NAME tyloinfer-metal-tq-projection-cache-no-nax-test
+        COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:mfq-metal-tq-test> --projection-cache)
     add_test(NAME tyloinfer-metal-tq-expansion-vector-test COMMAND mfq-metal-tq-test --expansion-vectors)
     add_test(NAME tyloinfer-metal-tq-column-input-test COMMAND mfq-metal-tq-test --column-inputs)
     add_test(NAME tyloinfer-metal-tq-compact-reuse-test COMMAND mfq-metal-tq-test --compact-reuse)
@@ -1544,7 +1546,6 @@ target_compile_features(tyloinfer-metal-dense-hc-test PRIVATE cxx_std_20)
 set_target_properties(tyloinfer-metal-dense-hc-test PROPERTIES BUILD_RPATH "${TYLOINFER_MLX_ROOT}/lib")
 add_test(NAME tyloinfer-metal-dense-hc-test COMMAND tyloinfer-metal-dense-hc-test)
 
-if(TYLOINFER_ENABLE_MFQ_COMPAT)
 add_executable(mfq-metal-qwen-gated-hc-test
     tests/qwen_gated_hc_test.cpp
 )
@@ -1560,8 +1561,9 @@ add_test(
     NAME mfq-metal-qwen-gated-hc-test
     COMMAND mfq-metal-qwen-gated-hc-test
 )
-
-endif()
+add_test(NAME mfq-metal-qwen-gated-hc-no-nax-test COMMAND mfq-metal-qwen-gated-hc-test)
+set_tests_properties(mfq-metal-qwen-gated-hc-no-nax-test PROPERTIES
+    ENVIRONMENT "TYLOINFER_METAL_DISABLE_NAX=1;MFQ_METAL_DISABLE_NAX=1")
 
 add_executable(mfq-metal-grid-vision-test
     tests/mlx_grid_vision_test.cpp

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -56,21 +57,13 @@ void require_bit_exact(
     mlx::core::array expected,
     const char* name) {
     if (actual.shape() != expected.shape() ||
-        actual.dtype() != mlx::core::bfloat16 ||
-        expected.dtype() != mlx::core::bfloat16) {
+        actual.dtype() != expected.dtype()) {
         throw std::runtime_error(
             std::string(name) + " shape/dtype mismatch");
     }
     mlx::core::eval(actual, expected);
-    const auto* actual_bits = actual.data<std::uint16_t>();
-    const auto* expected_bits = expected.data<std::uint16_t>();
-    for (std::size_t index = 0; index < actual.size(); ++index) {
-        if (actual_bits[index] != expected_bits[index]) {
-            throw std::runtime_error(
-                std::string(name) + " changed element " +
-                std::to_string(index));
-        }
-    }
+    if (std::memcmp(actual.data<std::uint8_t>(), expected.data<std::uint8_t>(), actual.nbytes()))
+        throw std::runtime_error(std::string(name) + " changed tensor bytes");
 }
 
 void require_vector_close(
@@ -318,7 +311,8 @@ void test_gdn_decode_step(
     int key_heads,
     int value_heads,
     mlx::core::Dtype projection_dtype,
-    mlx::core::Dtype gate_dtype) {
+    mlx::core::Dtype gate_dtype,
+    bool strided = false) {
     using namespace mlx::core;
     constexpr int dimension = 128;
     const int qk_width = 2 * key_heads * dimension;
@@ -358,26 +352,33 @@ void test_gdn_decode_step(
     for (auto& value : norm_data) value += 1.0f;
     for (auto& value : decay_data) value -= 0.4f;
 
-    const auto qk = astype(
-        array(qk_data.begin(), Shape{1, 1, qk_width}), projection_dtype);
-    const auto value = astype(
-        array(value_data.begin(), Shape{1, 1, value_width}), projection_dtype);
-    const auto output_gate = astype(
-        array(output_gate_data.begin(), Shape{1, 1, value_width}), projection_dtype);
-    const auto alpha = astype(
-        array(alpha_data.begin(), Shape{1, 1, value_heads}), gate_dtype);
-    const auto beta = astype(
-        array(beta_data.begin(), Shape{1, 1, value_heads}), gate_dtype);
+    const auto layout = [strided](const array& input) {
+        if (!strided) return input;
+        auto shape = input.shape(); shape.back() *= 2;
+        auto padded = reshape(stack({input, zeros_like(input)}, -1), shape);
+        Shape strides(shape.size(), 1); strides.back() = 2;
+        return slice(padded, Shape(shape.size(), 0), shape, strides);
+    };
+    const auto qk = layout(astype(
+        array(qk_data.begin(), Shape{1, 1, qk_width}), projection_dtype));
+    const auto value = layout(astype(
+        array(value_data.begin(), Shape{1, 1, value_width}), projection_dtype));
+    const auto output_gate = layout(astype(
+        array(output_gate_data.begin(), Shape{1, 1, value_width}), projection_dtype));
+    const auto alpha = layout(astype(
+        array(alpha_data.begin(), Shape{1, 1, value_heads}), gate_dtype));
+    const auto beta = layout(astype(
+        array(beta_data.begin(), Shape{1, 1, value_heads}), gate_dtype));
     const array convolution_state(
         convolution_state_data.begin(), Shape{1, 3, channels});
     const array recurrent_state(
         recurrent_state_data.begin(),
         Shape{1, value_heads, dimension, dimension});
-    const array convolution_weight(
-        convolution_weight_data.begin(), Shape{channels, 4});
-    const array bias(bias_data.begin(), Shape{value_heads});
-    const array decay(decay_data.begin(), Shape{value_heads});
-    const array norm(norm_data.begin(), Shape{dimension});
+    const auto convolution_weight = layout(array(
+        convolution_weight_data.begin(), Shape{channels, 4}));
+    const auto bias = layout(array(bias_data.begin(), Shape{value_heads}));
+    const auto decay = layout(array(decay_data.begin(), Shape{value_heads}));
+    const auto norm = layout(array(norm_data.begin(), Shape{dimension}));
 
     const auto gates = mfq::metal::gated_delta_gates(
         alpha, beta, bias, decay);
@@ -437,6 +438,14 @@ void test_gdn_decode_step(
                 actual.output,
                 actual.convolution_state,
                 actual.recurrent_state);
+            if (!step) for (const auto output_dtype : {float16, bfloat16}) {
+                auto rounded = mfq::metal::gated_delta_decode_step(qk, value, output_gate, alpha, beta,
+                    actual_conv_state, actual_recurrent_state, convolution_weight, bias, decay, norm,
+                    key_heads, value_heads, dimension, convolution_eps, norm_eps, silu_gate, tiled_heads, output_dtype);
+                require_bit_exact(rounded.output, astype(actual.output, output_dtype), "GDN fused output cast");
+                require_bit_exact(rounded.convolution_state, actual.convolution_state, "GDN typed output convolution state");
+                require_bit_exact(rounded.recurrent_state, actual.recurrent_state, "GDN typed output recurrent state");
+            }
             require_vector_close(
                 actual.output.data<float>(),
                 std::vector<float>(
@@ -527,6 +536,17 @@ void test_gdn_decode_step(
                     recurrent_state * array(.5f)}};
             auto actual = mfq::metal::gated_delta_decode_steps(requests, convolution_weight,
                 bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads);
+            for (const auto output_dtype : {float16, bfloat16}) {
+                auto rounded = mfq::metal::gated_delta_decode_steps(requests, convolution_weight,
+                    bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads, output_dtype);
+                for (std::size_t row = 0; row < requests.size(); ++row) {
+                    require_bit_exact(rounded[row].output, astype(actual[row].output, output_dtype), "GDN sequence fused cast");
+                    require_bit_exact(rounded[row].convolution_state, actual[row].convolution_state, "GDN sequence typed convolution");
+                    require_bit_exact(rounded[row].recurrent_state, actual[row].recurrent_state, "GDN sequence typed recurrence");
+                    require_bit_exact(*rounded[row].gate, *actual[row].gate, "GDN sequence typed gate replay");
+                    require_bit_exact(*rounded[row].beta, *actual[row].beta, "GDN sequence typed beta replay");
+                }
+            }
             for (std::size_t row = 0; row < requests.size(); ++row) {
                 auto conv = requests[row].convolution_state;
                 auto state = requests[row].recurrent_state;
@@ -918,6 +938,7 @@ int main(int argc, char** argv) {
         test_gdn_decode_step(16, 48, float16, float32);
         test_gdn_decode_step(16, 48, float16, bfloat16);
         test_gdn_decode_step(2, 6, bfloat16, bfloat16);
+        test_gdn_decode_step(2, 6, bfloat16, bfloat16, true);
         test_gdn_decode_step(1, 1, float32, float32);
         if (argc == 2 && std::string(argv[1]) == "--benchmark-gates") {
             benchmark_gdn_gates();
