@@ -36,7 +36,7 @@ std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
     mtp.reset(1);
     auto generation = run_mtp_generation(
         model, state, executor, execution.collectives, execution.forward_mode(),
-        execution.stores.weights, metadata, mtp, request, output);
+        execution.weights, metadata, mtp, request, output);
     std::vector<int64_t> tokens;
     std::size_t largest_delta = 0;
     while (auto step = generation.next()) {

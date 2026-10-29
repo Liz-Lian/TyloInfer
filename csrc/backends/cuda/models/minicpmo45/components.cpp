@@ -29,7 +29,7 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load_with_language(mfq::cuda::MiniCPMO45Cau
     mfq::cuda::weight_loader::Loader weights{*language.source, execution.config.weights,
         {placement.primary_device(), false, execution.drop_file_cache,
          execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.stores.weights, execution.tq};
+        execution.weights, execution.tq};
     auto projector = execution.projector();
     return {std::move(language),
             MiniCPMO45VisionEncoder::load(weights),

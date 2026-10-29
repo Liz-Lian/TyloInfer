@@ -34,12 +34,12 @@ inline constexpr auto with_model = []<typename F>(
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             internal::prepare_sampling_runtime(model.vocab_size());
-        mfq::cuda::finalize_kv(execution.stores.kv_memory.get(),
-            execution.stores.weights, execution.stores.qsa_kv_store);
+        mfq::cuda::finalize_kv(execution.kv.get(),
+            execution.weights, execution.offload);
         std::size_t graph_reserve=0;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-            if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
-                    !moe_expert_cache_finalized(execution.stores.weights.moe)) {
+            if (moe_expert_cache_has_sources(execution.weights.moe) &&
+                    !moe_expert_cache_finalized(execution.weights.moe)) {
                 graph_reserve=qwen4_mtp_graph_reserve(model,runtime_components.mtp.get());
                 if(graph_reserve)std::cerr<<"runtime_mtp_flexible_budget maximum_depth="
                     <<runtime_components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve
@@ -47,7 +47,7 @@ inline constexpr auto with_model = []<typename F>(
             }
         }
         const auto loaded_at = mfq::cuda::finish_load(
-            execution.stores.kv_memory.get(), execution.stores.weights,
+            execution.kv.get(), execution.weights,
             graph_reserve, execution.config.report_cuda_memory);
         return run(loaded, started, loaded_at);
     };
@@ -65,7 +65,7 @@ inline constexpr auto with_model = []<typename F>(
         weight_loader::Loader weights{*model.source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.stores.weights, execution.tq};
+            execution.weights, execution.tq};
         auto runtime_components =
             load_runtime_components(model, weights, load_optional_components);
         Loaded<Model> loaded{std::move(owner), std::move(runtime_components), {}, {}};
@@ -76,7 +76,7 @@ inline constexpr auto with_model = []<typename F>(
         weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.stores.weights, execution.tq};
+            execution.weights, execution.tq};
         auto loaded = qwen35::assemble(
             source, weights, execution.layer_placement, execution.yarn,
             execution.dense_cpu_layer_count,
@@ -119,7 +119,7 @@ inline constexpr auto with_model = []<typename F>(
         weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.stores.weights, execution.tq};
+            execution.weights, execution.tq};
         minicpmo45::load(model, weights, execution.layer_placement,
             execution.dense_cpu_layer_count, execution.yarn);
         minicpmo45::State state(model);

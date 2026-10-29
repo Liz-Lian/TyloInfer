@@ -92,7 +92,7 @@ int run_qwen35_mtp_bench(
             mfq::engine::InferenceOutput parsed(request, nullptr, "bench");
             auto result = collect_generation(generate(
                 model, state, executor, execution.collectives, execution.forward_mode(),
-                execution.profiler, execution.stores.weights,
+                execution.profiler, execution.weights,
                 execution.decode_graph_serial_branches, execution.config.report_cuda_memory,
                 execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
                     model_parallel_cuda_graph_enabled(execution),
@@ -161,7 +161,7 @@ int run_qwen_continuous_batching_check(Model& model,
         return collect_generation(generate(
             model, state, executor, execution_context.collectives,
             execution_context.forward_mode(), execution_context.profiler,
-            execution_context.stores.weights, execution_context.decode_graph_serial_branches,
+            execution_context.weights, execution_context.decode_graph_serial_branches,
             execution_context.config.report_cuda_memory,
             execution_context.dsv4_cpu_offload_layers.empty() &&
                 execution_context.dense_cpu_layer_count == 0 &&
@@ -208,7 +208,7 @@ int run_qwen_continuous_batching_check(Model& model,
                     batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution);
                     return make_batch(
                         owner, nullptr, execution.make_executor(), execution.collectives,
-                        execution.forward_mode(), execution.stores.weights.moe,
+                        execution.forward_mode(), execution.weights.moe,
                         std::move(batch_config), 64,
                         runtime_options::kv_vram_preallocated(),
                         execution.dense_cpu_layer_count != 0 ||
@@ -226,7 +226,7 @@ int run_qwen_continuous_batching_check(Model& model,
                 return internal::generate<Model, State, MtpModule>(
                     model, state, executor, execution_context.collectives,
                     execution_context.forward_mode(), execution_context.profiler,
-                    execution_context.stores.weights,
+                    execution_context.weights,
                     execution_context.decode_graph_serial_branches,
                     execution_context.config.report_cuda_memory,
                     execution_context.dsv4_cpu_offload_layers.empty() &&

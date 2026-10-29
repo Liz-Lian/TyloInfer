@@ -375,9 +375,11 @@ void setup_cuda_load(
         const mfq::cuda::CudaLoadOptions& options,
         CudaExecutionContext& execution) {
     execution.reset();
-    execution.stores.reset();
-    execution.stores.weights.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
-    execution.stores.weights.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
+    execution.offload.reset();
+    execution.kv.reset();
+    execution.weights.reset();
+    execution.weights.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
+    execution.weights.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
     if (options.n_gpu_layers_set) execution.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");
@@ -450,12 +452,12 @@ void setup_cuda_load(
             throw std::runtime_error(
                 "--moe-gpu-cache-gb is outside the supported range");
         }
-        execution.stores.weights.device_bytes = static_cast<std::size_t>(bytes);
-        execution.stores.weights.moe =
+        execution.weights.device_bytes = static_cast<std::size_t>(bytes);
+        execution.weights.moe =
             make_moe_expert_cache(
                 static_cast<int64_t>(bytes), MoeCacheOptions{
-                .host_bytes = execution.stores.weights.host_bytes,
-                .host_limit = execution.stores.weights.host_limit,
+                .host_bytes = execution.weights.host_bytes,
+                .host_limit = execution.weights.host_limit,
                 .mapped = execution.config.moe_mapped_gather,
                 .copy_blocks = execution.config.moe_mapped_copy_blocks,
                 .io_workers = execution.config.moe_ssd_io_workers,
@@ -472,8 +474,8 @@ void setup_cuda_load(
                 .ram_fraction = execution.config.moe_ram_pcie_fraction,
                 .two_stage = execution.config.moe_ffn.two_stage,
                 .heterogeneous = execution.config.tasks.projection.moe.heterogeneous});
-        if (!profile_path.empty() && execution.stores.weights.moe) {
-            set_moe_expert_cache_profile(*execution.stores.weights.moe,mfq::load_moe_cache_profile(profile_path));
+        if (!profile_path.empty() && execution.weights.moe) {
+            set_moe_expert_cache_profile(*execution.weights.moe,mfq::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }
@@ -485,8 +487,10 @@ int with_cuda_load(
         const CudaLoadOptions& options,
         const std::function<int(CudaExecutionContext&)>& run) {
     auto tq = std::make_shared<TqExec>();
-    CudaStores stores;
-    CudaExecutionContext execution(stores, tq);
+    std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
+    mfq::cuda::RoutedCache weights;
+    std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
+    CudaExecutionContext execution(weights, kv, offload, tq);
     CudaScope scope(execution);
     setup_cuda_load(options, execution);
     return run(execution);

@@ -999,7 +999,7 @@ int run_kl_eval_streamed(
     mfq::cuda::weight_loader::Loader weights{*model.source, execution.config.weights,
         {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
          execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.stores.weights, execution.tq};
+        execution.weights, execution.tq};
 
     const int64_t hidden_bytes =
         (int64_t)chunks * n_ctx * model.hc_mult() *

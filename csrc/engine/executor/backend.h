@@ -35,7 +35,9 @@ struct Backend {
     using Options = CudaEngineOptions;
     Options options;
     std::shared_ptr<TqExec> tq;
-    CudaStores stores;
+    std::shared_ptr<KvMemoryManager> kv;
+    RoutedCache weights;
+    std::shared_ptr<KvOffloadStore> offload;
     std::unique_ptr<CudaExecutionContext> execution;
     std::optional<State> state;
     ~Backend() {
@@ -58,7 +60,7 @@ struct Backend {
         if (!options.context_size) options.context_size = 32768;
         if (execution) throw std::logic_error("CUDA load requires retired resources");
         tq = std::make_shared<TqExec>();
-        execution = std::make_unique<CudaExecutionContext>(stores, tq);
+        execution = std::make_unique<CudaExecutionContext>(weights, kv, offload, tq);
         CudaScope scope(*execution);
         setup_cuda_load(options, *execution);
         execution->profiler.enabled = false;
@@ -67,25 +69,25 @@ struct Backend {
         mfq_tensor_backend::NoGradGuard no_grad;
         auto config = resolve_cuda_runtime_config(options);
         const auto kv_options = runtime_options::qsa_kv_offload();
-        execution->stores.kv_memory=std::make_shared<KvMemoryManager>();
+        kv=std::make_shared<KvMemoryManager>();
         if (kv_options.gpu_budget_bytes) {
-            execution->stores.kv_memory.reset();
+            kv.reset();
             KvOffloadConfig kv;
             kv.gpu_budget_bytes = kv_options.gpu_budget_bytes;
             kv.ram_budget_bytes = cuda_has_separate_memory() ? kv_options.ram_budget_bytes : 0;
             kv.buffer_bytes = std::min<std::size_t>(kv.buffer_bytes, kv.gpu_budget_bytes / 4);
             kv.directory = kv_options.directory;
-            execution->stores.qsa_kv_store = std::make_shared<KvOffloadStore>(std::move(kv));
+            offload = std::make_shared<KvOffloadStore>(std::move(kv));
         }
         state = Load(*execution, options, true,
             [&](auto& loaded, auto, auto) -> State {
                 using LoadedModel = std::remove_cvref_t<decltype(loaded)>;
                 using Model = typename LoadedModel::Model;
                 if constexpr (!std::is_same_v<Model, Qwen4CausalLm>)
-                    if (execution->stores.qsa_kv_store) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
+                    if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 auto source = loaded.language().source;
                 return std::make_unique<Text<LoadedModel>>(
-                    *execution, std::move(loaded), config,
+                    *execution, weights, kv, offload, std::move(loaded), config,
                     std::move(source), weight_memory);
             });
         return visit([&](auto& state) {
@@ -132,7 +134,9 @@ struct Backend {
                 execution->pipelines.clear();
             }
         }
-        stores.reset();
+        offload.reset();
+        kv.reset();
+        weights.reset();
         execution.reset();
         tq.reset();
         if (failure) std::rethrow_exception(failure);

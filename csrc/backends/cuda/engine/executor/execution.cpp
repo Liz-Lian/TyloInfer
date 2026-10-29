@@ -592,8 +592,12 @@ void mfq_release_host_allocator_cache() noexcept {
 using mfq_tensor_backend::indexing::Slice;
 
 CudaExecutionContext::CudaExecutionContext(
-        CudaStores& borrowed, std::shared_ptr<TqExec>& borrowed_tq)
-    : config(load_cuda_execution_config()), stores(borrowed), tq(borrowed_tq),
+        mfq::cuda::RoutedCache& borrowed_weights,
+        std::shared_ptr<mfq::cuda::KvMemoryManager>& borrowed_kv,
+        std::shared_ptr<mfq::cuda::KvOffloadStore>& borrowed_offload,
+        std::shared_ptr<TqExec>& borrowed_tq)
+    : config(load_cuda_execution_config()), weights(borrowed_weights),
+      kv(borrowed_kv), offload(borrowed_offload), tq(borrowed_tq),
       routes(environment("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
              environment_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)),
       pipelines(profiler, kl_mmq, config.tasks.projection.moe, config.moe_ffn, routes) {
@@ -650,8 +654,8 @@ CudaExecutionContext::~CudaExecutionContext() {
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (native_contexts.empty() && !stores.weights.moe &&
-        !stores.weights.tq && !stores.qsa_kv_store &&
+    if (native_contexts.empty() && !weights.moe &&
+        !weights.tq && !offload &&
         (!tq || tq->empty()) && pipelines.empty() && branches.empty() &&
         attention_scratch.empty() && collectives.streams().empty()) return;
 #endif
@@ -660,10 +664,10 @@ void CudaExecutionContext::drain() {
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
-    finish([&] { drain_moe_expert_cache(stores.weights.moe); });
+    finish([&] { drain_moe_expert_cache(weights.moe); });
     finish([&] { pipelines.drain(); });
     finish([&] { collectives.drain(); });
-    if (stores.qsa_kv_store) finish([&] { stores.qsa_kv_store->flush(); });
+    if (offload) finish([&] { offload->flush(); });
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     for (const auto& [device, context] : native_contexts) finish([&] {
@@ -742,7 +746,7 @@ int model_parallel_primary_device(const CudaExecutionContext& execution) {
 
 bool model_parallel_cuda_graph_enabled(
         const CudaExecutionContext& execution) {
-    if(execution.stores.weights.tq && moe_parallel_config(execution).enabled())return false;
+    if(execution.weights.tq && moe_parallel_config(execution).enabled())return false;
     if (!execution.tensor_parallel.enabled() &&
             !execution.expert_parallel.enabled()) {
         return true;

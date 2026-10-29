@@ -12,6 +12,7 @@
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
+#include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
 #include "mfq_cuda_kv_quantization.h"
@@ -65,6 +66,9 @@ struct Text {
 
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
+    RoutedCache& weights;
+    std::shared_ptr<KvMemoryManager>& kv;
+    std::shared_ptr<KvOffloadStore>& offload;
     CudaRuntimeConfig config;
     std::shared_ptr<const mfq::ModelSource> source;
     LoadedModel loaded;
@@ -86,7 +90,7 @@ struct Text {
     void restore_mtp_expert_space() {
         // These regions hold legacy paged expert fields. TQ retains ordinary
         // compressed tensor images and cannot consume those page addresses.
-        if(execution->stores.weights.tq)return;
+        if(weights.tq)return;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
             if(preparing_graph_depth || !expert_space || expert_space->has_decode() || !components.mtp)return;
             const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
@@ -100,9 +104,9 @@ struct Text {
     }
 
     void restore_graph_expert_space() {
-        if(execution->stores.weights.tq)return;
+        if(weights.tq)return;
         if(preparing_graph_depth)return;
-        prepare_moe_decode_residency(execution->stores.weights.moe);
+        prepare_moe_decode_residency(weights.moe);
         mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
         if(expert_space)
@@ -129,7 +133,7 @@ struct Text {
                 if(expert_space) expert_space->release();
                 graph.invalidate();
                 qwen4_release_decode_graphs(language,components.mtp.get());
-                release_moe_decode_buffers(execution->stores.weights.moe);
+                release_moe_decode_buffers(weights.moe);
                 state.reset(1);components.mtp->reset(1);
                 auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
                 context->reclaim_idle_memory();
@@ -172,11 +176,15 @@ struct Text {
             <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
     }
 
-    Text(CudaExecutionContext& borrowed, LoadedModel loaded_model,
+    Text(CudaExecutionContext& borrowed, RoutedCache& borrowed_weights,
+            std::shared_ptr<KvMemoryManager>& borrowed_kv,
+            std::shared_ptr<KvOffloadStore>& borrowed_offload,
+            LoadedModel loaded_model,
             CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
-            std::shared_ptr<WeightMemoryLedger> weights)
-        : weight_memory(std::move(weights)), execution(&borrowed), config(std::move(runtime_config)),
+            std::shared_ptr<WeightMemoryLedger> ledger)
+        : weight_memory(std::move(ledger)), execution(&borrowed), weights(borrowed_weights),
+          kv(borrowed_kv), offload(borrowed_offload), config(std::move(runtime_config)),
           source(std::move(model_source)),
           loaded(std::move(loaded_model)), components(loaded.components), executor(loaded.executor),
           language(loaded.language()), state(loaded.state()),
@@ -188,11 +196,11 @@ struct Text {
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
         try {
-        budget.emplace(*weight_memory, execution->stores.weights, cache,
+        budget.emplace(*weight_memory, weights, cache,
             execution->layer_placement.primary_device());
-        if (execution->stores.qsa_kv_store)
-            execution->stores.qsa_kv_store->set_ram_reservation([this](std::size_t bytes) {
-                cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
+        if (offload)
+            offload->set_ram_reservation([this](std::size_t bytes) {
+                cache.reserve_ram(bytes);weights.reserve(bytes);
             });
         if (config.continuous_batch.max_sequences) {
             if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
@@ -204,7 +212,7 @@ struct Text {
                 batching = make_batch(
                     std::shared_ptr<const Model>(loaded.model), &state, execution->make_executor(),
                     execution->collectives, execution->forward_mode(),
-                    execution->stores.weights.moe, std::move(batch_config),
+                    weights.moe, std::move(batch_config),
                     config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
                     execution->dense_cpu_layer_count != 0 ||
@@ -213,24 +221,24 @@ struct Text {
             }
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if(execution->stores.weights.moe) {
-            auto expert_loan=execution->stores.kv_memory?execution->stores.kv_memory->expert_loan():nullptr;
-            if(!expert_loan && (components.mtp || moe_expert_cache_ssd_experts(execution->stores.weights.moe))) {
+        if(weights.moe) {
+            auto expert_loan=kv?kv->expert_loan():nullptr;
+            if(!expert_loan && (components.mtp || moe_expert_cache_ssd_experts(weights.moe))) {
                 expert_loan=std::make_shared<KvExpertLoan>();
-                set_moe_kv_expert_loan(execution->stores.weights.moe,expert_loan);
+                set_moe_kv_expert_loan(weights.moe,expert_loan);
             }
             if(expert_loan)
-                expert_space.emplace(execution->stores.weights,
+                expert_space.emplace(weights,
                     execution->layer_placement.primary_device(), std::move(expert_loan));
             restore_decode_workspace=[this]{restore_graph_expert_space();};
             if constexpr (requires(Model& value) {
                               value.restore_decode_workspace = std::function<void()>();
                           })
                 language.restore_decode_workspace = restore_decode_workspace;
-            set_moe_workspace_reservation(execution->stores.weights.moe,
+            set_moe_workspace_reservation(weights.moe,
                 [this](std::size_t bytes) {reclaim_prefix_workspace(bytes);},
                 [this](std::size_t bytes) {
-                    cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
+                    cache.reserve_ram(bytes);weights.reserve(bytes);
                 });
         }
         if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
@@ -254,7 +262,7 @@ struct Text {
                     throw InferenceInputError(InferenceInputErrorCode::ContextLength,
                         "insufficient VRAM for context growth; reduce concurrent requests or prompt length");
             };
-            if(execution->stores.kv_memory)execution->stores.kv_memory->set_reservation(language.reserve_kv_workspace);
+            if(kv)kv->set_reservation(language.reserve_kv_workspace);
         }
 #endif
         if(const auto bytes=runtime_options::resident_budget_bytes()) {
@@ -276,7 +284,7 @@ struct Text {
                     explicit CacheLearningScope(std::shared_ptr<MoeExpertCache> value):cache(std::move(value)),
                         previous(set_moe_reuse_learning(cache,false)) {}
                     ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);}
-                } learning(execution->stores.weights.moe);
+                } learning(weights.moe);
                 auto& predictor=*components.mtp;
                 const auto saved_policy=predictor.policy_state;
                 const auto start=std::chrono::steady_clock::now();
@@ -293,10 +301,10 @@ struct Text {
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->collectives,
-                                                   execution->forward_mode(),execution->stores.weights,metadata,predictor,request,output,16,
+                                                   execution->forward_mode(),weights,metadata,predictor,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
-                finish_moe_expert_exchanges(execution->stores.weights.moe);
+                finish_moe_expert_exchanges(weights.moe);
                 predictor.reset(1);
                 state.reset(1);
                 predictor.policy_state=saved_policy;
@@ -306,7 +314,7 @@ struct Text {
                 std::cerr<<"runtime_qwen4_mtp_warmup tokens="<<output.result.completion_tokens
                     <<" ms="<<std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-start).count()<<'\n';
-                release_moe_prefill_buffers(execution->stores.weights.moe);
+                release_moe_prefill_buffers(weights.moe);
                 mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
             }
         }
@@ -333,9 +341,9 @@ struct Text {
                       })
             language.restore_decode_workspace={};
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) language.reserve_kv_workspace={};
-        if(execution->stores.kv_memory)execution->stores.kv_memory->set_reservation({});
-        set_moe_workspace_reservation(execution->stores.weights.moe,{});
-        if (execution->stores.qsa_kv_store) execution->stores.qsa_kv_store->set_ram_reservation({});
+        if(kv)kv->set_reservation({});
+        set_moe_workspace_reservation(weights.moe,{});
+        if (offload) offload->set_ram_reservation({});
     }
     ~Text() {
         expert_space.reset();
@@ -346,7 +354,7 @@ struct Text {
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
         return budget->set(command, [this] {
             if(expert_space) expert_space->release();
-            finish_moe_expert_exchanges(execution->stores.weights.moe);
+            finish_moe_expert_exchanges(weights.moe);
             graph.invalidate();
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
                 qwen4_release_decode_graphs(language,components.mtp.get());
@@ -366,7 +374,7 @@ struct Text {
             if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
         if (components.grid_vision)
             return components.grid_vision->prepare(language, execution->projector(),
-                execution->stores.weights.moe, execution->collectives,
+                weights.moe, execution->collectives,
                 execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
         if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
             if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
@@ -385,7 +393,7 @@ struct Text {
         if(!batched)prepare_graph_depth(input);
         return internal::generate(
             language, state, executor.get(), execution->collectives,
-            execution->forward_mode(), execution->profiler, execution->stores.weights,
+            execution->forward_mode(), execution->profiler, weights,
             execution->decode_graph_serial_branches, execution->config.report_cuda_memory,
             execution->dsv4_cpu_offload_layers.empty() && execution->dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(*execution),
@@ -430,7 +438,7 @@ struct Text {
                 {"vision_declared", double(capabilities.vision_declared)}, {"vision_supported", double(capabilities.vision_supported)},
                 {"vision_available", double(capabilities.vision_available)}, {"mtp_declared", double(capabilities.mtp_declared)},
                 {"mtp_supported", double(capabilities.mtp_supported)}, {"mtp_available", double(capabilities.mtp_available)}};
-            auto experts = execution->stores.weights.metrics();
+            auto experts = weights.metrics();
             metrics.insert(metrics.end(), experts.begin(), experts.end());
             if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
                 auto phases=qwen4_decode_graph_profile_metrics(language,components.mtp.get());
@@ -444,9 +452,9 @@ struct Text {
                     {"model_io_staging_bytes",double(io.staging_bytes)},{"model_io_cached_staging_bytes",double(io.staging_cached_bytes)},
                     {"model_io_staging_allocations",double(io.staging_allocations)}});
             }
-            if(execution->stores.kv_memory) {
-                auto kv=execution->stores.kv_memory->metrics();
-                metrics.insert(metrics.end(),kv.begin(),kv.end());
+            if(kv) {
+                auto kv_metrics=kv->metrics();
+                metrics.insert(metrics.end(),kv_metrics.begin(),kv_metrics.end());
             }
             std::size_t resident_weights=weight_memory->resident_bytes();
             for(const auto& metric:experts)
@@ -506,16 +514,16 @@ struct Text {
                 {"cuda_allocated_bytes",double(allocated)}, {"cuda_reserved_bytes",double(reserved)}});
             if constexpr(std::is_same_v<Model,Qwen4CausalLm>)metrics.emplace_back("resident_buffer_bytes",double(buffers));
             const auto expert_bytes=metric_bytes("resident_expert_cache_bytes");
-            const auto minimum=moe_expert_cache_minimum_bytes(execution->stores.weights.moe);
+            const auto minimum=moe_expert_cache_minimum_bytes(weights.moe);
             metrics.insert(metrics.end(),{{"resident_memory_dynamic_budget",online_budget_supported()?1.0:0.0},
                 {"resident_weight_dynamic_budget",online_budget_supported()?1.0:0.0},
                 {"resident_memory_budget_bytes",double(budget->resident())}, {"resident_weight_budget_bytes",double(budget->weights())},
                 {"resident_memory_used_bytes",double(std::max(allocated,reserved))},
                 {"resident_reclaimable_weight_bytes",double(expert_bytes>minimum?expert_bytes-minimum:0)}});
             metrics.emplace_back("qsa_kv_offload_supported",std::is_same_v<Model, Qwen4CausalLm> ? 1.0 : 0.0);
-            if (execution->stores.qsa_kv_store) {
-                auto kv = execution->stores.qsa_kv_store->metrics();
-                metrics.insert(metrics.end(), kv.begin(), kv.end());
+            if (offload) {
+                auto offload_metrics = offload->metrics();
+                metrics.insert(metrics.end(), offload_metrics.begin(), offload_metrics.end());
             } else metrics.insert(metrics.end(), {{"qsa_kv_offload_enabled", 0.0},
                 {"qsa_kv_ram_enabled", 0.0}, {"qsa_kv_ram_bytes", 0.0}, {"qsa_kv_ssd_bytes", 0.0}});
             if (components.mtp) {

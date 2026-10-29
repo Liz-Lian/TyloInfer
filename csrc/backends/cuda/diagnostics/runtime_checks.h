@@ -55,7 +55,7 @@ static Model load_diagnostic_reference(CudaExecutionContext& execution,
         mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.stores.weights, execution.tq};
+            execution.weights, execution.tq};
         auto model = mfq::cuda::qwen35::load(
             source, weights, execution.layer_placement, execution.yarn,
             execution.dense_cpu_layer_count,
@@ -326,9 +326,9 @@ static int run_prefill_sweep(
                         TYLOINFER_RUNTIME_CHECK(state.cache_pos==m,"layer-major logical cache did not advance");
                     }
                 }
-                if(phase_sweep && (repeat&1) && execution.stores.moe_expert_cache) {
+                if(phase_sweep && (repeat&1) && execution.weights.moe) {
                     std::ostringstream stats;
-                    print_moe_expert_cache_stats(execution.stores.moe_expert_cache,stats);
+                    print_moe_expert_cache_stats(execution.weights.moe,stats);
                     const auto data=stats.str();
                     const std::string key="pipeline_phased_transfer_serves=";
                     const auto begin=data.find(key);
@@ -411,7 +411,7 @@ static int run_prefill_sweep(
                 const auto engine_started=std::chrono::steady_clock::now();
                 auto result=collect_generation(generate(
                     model, state, executor, execution.collectives,
-                    execution.forward_mode(), execution.profiler, execution.stores.weights,
+                    execution.forward_mode(), execution.profiler, execution.weights,
                     execution.decode_graph_serial_branches, execution.config.report_cuda_memory,
                     execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
                         model_parallel_cuda_graph_enabled(execution),
@@ -1385,7 +1385,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
             auto result=collect_generation(generate(
                 model, model, nullptr, model.execution->collectives,
                 model.execution->forward_mode(), model.execution->profiler,
-                model.execution->stores.weights,
+                model.execution->weights,
                 model.execution->decode_graph_serial_branches,
                 model.execution->config.report_cuda_memory,
                 model.execution->dsv4_cpu_offload_layers.empty() &&
@@ -1915,7 +1915,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
         return collect_generation(generate(
             model, model, nullptr, model.execution->collectives,
             model.execution->forward_mode(), model.execution->profiler,
-            model.execution->stores.weights,
+            model.execution->weights,
             model.execution->decode_graph_serial_branches,
             model.execution->config.report_cuda_memory,
             model.execution->dsv4_cpu_offload_layers.empty() &&

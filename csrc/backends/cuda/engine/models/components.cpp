@@ -133,7 +133,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     weight_loader::Loader tensors{source, execution.config.weights,
         {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
          execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.stores.weights, execution.tq};
+        execution.weights, execution.tq};
     ModelLoader<Model> weights{model, tensors};
     if (load_input_output) {
         model.load_weights(weights, load_blocks);
@@ -143,11 +143,11 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
         model.adapter_prepare_blocks(tensors);
     }
 
-    if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
-        !moe_expert_cache_finalized(execution.stores.weights.moe) && !defer_moe_cache_finalize) {
+    if (moe_expert_cache_has_sources(execution.weights.moe) &&
+        !moe_expert_cache_finalized(execution.weights.moe) && !defer_moe_cache_finalize) {
         if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
             mfq::cuda::internal::prepare_sampling_runtime(model.vocab_size());
-        finalize_moe_expert_cache(execution.stores.weights.moe);
+        finalize_moe_expert_cache(execution.weights.moe);
     }
     return model;
 }

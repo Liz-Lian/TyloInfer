@@ -504,8 +504,10 @@ void run_dspark_self_check() {
     // Seeding only the final window must address the same absolute RoPE and
     // ring slots as a complete target history.
     auto tq = std::make_shared<TqExec>();
-    CudaStores stores;
-    CudaExecutionContext execution(stores, tq);
+    std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
+    mfq::cuda::RoutedCache weights;
+    std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
+    CudaExecutionContext execution(weights, kv, offload, tq);
     CudaScope scope(execution);
     DeepseekV41Dspark predictor;
     predictor.execution = &execution;

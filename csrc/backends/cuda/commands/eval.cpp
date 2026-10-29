@@ -45,8 +45,10 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
         : mfq::cuda::EvalCommandOptions(std::move(options)) {}
     int run() { return with_command_errors([&]() -> int {
         auto tq = std::make_shared<TqExec>();
-        CudaStores stores;
-        CudaExecutionContext execution(stores, tq);
+        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
+        mfq::cuda::RoutedCache weights;
+        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
+        CudaExecutionContext execution(weights, kv, offload, tq);
         CudaScope scope(execution);
         setup_cuda_load(*this, execution);
         if (model_path.empty()) {
@@ -172,7 +174,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 throw std::runtime_error(
                     "--kl-chunks-sequence is unavailable for streamed KL");
             }
-            if (execution.stores.weights.moe) {
+            if (execution.weights.moe) {
                 throw std::runtime_error(
                     "--moe-gpu-cache-gb is unavailable for streamed KL");
             }
@@ -220,8 +222,8 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                     kl_evaluator,
                     kl_n_batch, kl_score_count,
                     kl_reference_contract);
-                if (execution.stores.weights.moe) {
-                    print_moe_expert_cache_stats(execution.stores.weights.moe, std::cout);
+                if (execution.weights.moe) {
+                    print_moe_expert_cache_stats(execution.weights.moe, std::cout);
                 }
                 return status;
             }
@@ -239,8 +241,8 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 std::cout << "cpp_kl_sequence_end index=" << index
                           << " chunks=" << chunks << "\n";
             }
-            if (execution.stores.weights.moe) {
-                print_moe_expert_cache_stats(execution.stores.weights.moe, std::cout);
+            if (execution.weights.moe) {
+                print_moe_expert_cache_stats(execution.weights.moe, std::cout);
             }
             return 0;
         }

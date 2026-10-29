@@ -46,23 +46,6 @@ class MoeExpertCache;
 class TqCache;
 class TqExec;
 
-// One load owner outlives its execution context and every model borrowing it.
-struct CudaStores {
-    CudaStores() = default;
-    CudaStores(const CudaStores&) = delete;
-    CudaStores& operator=(const CudaStores&) = delete;
-    std::shared_ptr<mfq::cuda::KvMemoryManager> kv_memory;
-    mfq::cuda::RoutedCache weights;
-    std::shared_ptr<mfq::cuda::KvOffloadStore> qsa_kv_store;
-
-    // Drain execution before retiring backing; leases may retain individual handles.
-    void reset() noexcept {
-        qsa_kv_store.reset();
-        kv_memory.reset();
-        weights.reset();
-    }
-};
-
 struct CudaExecutionConfig {
     mfq::cuda::weight_loader::Loader::Options weights;
     mfq::cuda::Executor::Options tasks;
@@ -103,7 +86,11 @@ struct CudaExecutionConfig {
 CudaExecutionConfig load_cuda_execution_config();
 
 struct CudaExecutionContext {
-    CudaExecutionContext(CudaStores& stores, std::shared_ptr<TqExec>& tq);
+    CudaExecutionContext(
+        mfq::cuda::RoutedCache& weights,
+        std::shared_ptr<mfq::cuda::KvMemoryManager>& kv,
+        std::shared_ptr<mfq::cuda::KvOffloadStore>& offload,
+        std::shared_ptr<TqExec>& tq);
     ~CudaExecutionContext();
     CudaExecutionContext(const CudaExecutionContext&) = delete;
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
@@ -134,7 +121,9 @@ struct CudaExecutionContext {
     ParallelConfig expert_parallel;
     mfq::cuda::Collectives collectives;
     LayerPlacementConfig layer_placement;
-    CudaStores& stores;
+    mfq::cuda::RoutedCache& weights;
+    std::shared_ptr<mfq::cuda::KvMemoryManager>& kv;
+    std::shared_ptr<mfq::cuda::KvOffloadStore>& offload;
     const std::shared_ptr<TqExec>& tq;
     mfq::cuda::Branches branches;
     // Layer addresses identify reusable workspace; only execution retires it after drain.

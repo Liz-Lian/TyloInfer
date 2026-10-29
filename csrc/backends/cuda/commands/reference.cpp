@@ -34,7 +34,7 @@ Model load_reference_model(CudaExecutionContext& execution,
         mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.stores.weights, execution.tq};
+            execution.weights, execution.tq};
         auto model = mfq::cuda::qwen35::load(
             source, weights, execution.layer_placement, execution.yarn,
             execution.dense_cpu_layer_count,
@@ -47,9 +47,9 @@ Model load_reference_model(CudaExecutionContext& execution,
                 .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars,
                 .load_layers = false,
                 .load_input_output = false});
-        if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
-            !moe_expert_cache_finalized(execution.stores.weights.moe))
-            finalize_moe_expert_cache(execution.stores.weights.moe);
+        if (moe_expert_cache_has_sources(execution.weights.moe) &&
+            !moe_expert_cache_finalized(execution.weights.moe))
+            finalize_moe_expert_cache(execution.weights.moe);
         return model;
     } else {
         return load_causal_lm<Model>(execution, options.model_path, options.config_path,
@@ -268,7 +268,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     mfq::cuda::weight_loader::Loader weights{source_data, execution.config.weights,
         {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
          execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.stores.weights, execution.tq};
+        execution.weights, execution.tq};
     ReferenceLayers<Model> layers{model, execution, weights};
     if (resident) {
         try {
@@ -352,8 +352,10 @@ int run_reference(int argc, char** argv) {
         if (!std::filesystem::is_directory(options.model_path))
             usage_error("native reference requires an original HF model directory");
         auto tq = std::make_shared<TqExec>();
-        CudaStores stores;
-        CudaExecutionContext execution(stores, tq);
+        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
+        mfq::cuda::RoutedCache weights;
+        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
+        CudaExecutionContext execution(weights, kv, offload, tq);
         CudaScope scope(execution);
         internal::setup_cuda_load(options, execution);
         tb::NoGradGuard guard;
