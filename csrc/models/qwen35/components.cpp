@@ -21,6 +21,27 @@ std::optional<KvQuantization> kv_quantization(const Model&) {
     return cuda_kv_quantization();
 }
 
+void Components::describe(mfq::engine::EngineInfo& info) const {
+    const auto component_state = state();
+    info.multimodal = component_state.vision_available;
+    const auto caps = cuda_runtime_capabilities(
+        graph, plan, component_state, info.multimodal, false);
+    info.duplex = caps.full_duplex;
+    info.capabilities = {graph.architecture, caps.text,
+        caps.image_input, caps.video_input, caps.audio_input, caps.audio_output,
+        caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
+}
+
+mfq::StepSequence<PreparedPrompt> Components::prepare(
+    Model& language, Projector projector, std::shared_ptr<MoeExpertCache> cache,
+    Collectives& collectives, int primary, Executor* executor,
+    const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
+    if (grid_vision)
+        return grid_vision->prepare(language, projector, std::move(cache),
+            collectives, primary, executor, tokens, media);
+    throw std::invalid_argument("model has no multimodal component");
+}
+
 Loaded<Model, State, Components> assemble(
     std::shared_ptr<const mfq::ModelSource> source,
     const weight_loader::Loader& weights,

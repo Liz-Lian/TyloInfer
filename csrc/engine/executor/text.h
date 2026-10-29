@@ -8,7 +8,6 @@
 #include "engine/executor/budget.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/generation.h"
-#include "models/minicpmo45/forward.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
@@ -370,17 +369,9 @@ struct Text {
     }
     using Prepared = PreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
-        if constexpr (requires { components.composite; })
-            if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
-        if (components.grid_vision)
-            return components.grid_vision->prepare(language, execution->projector(),
-                weights.moe, execution->collectives,
-                execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
-        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
-            if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
-        if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
-            if (components.radio_vision) return components.radio_vision->prepare(language, execution->projector(), input.prompt, *input.vision);
-        throw std::invalid_argument("model has no multimodal component");
+        return components.prepare(language, execution->projector(), weights.moe,
+            execution->collectives, execution->layer_placement.primary_device(), executor.get(),
+            input.prompt, *input.vision);
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
         PrefillCudaTimer timer;
@@ -535,17 +526,12 @@ struct Text {
             }
             return metrics;
         } else {
-            if constexpr (requires { components.composite; }) {
-                if (!components.composite) throw std::invalid_argument("model has no duplex component");
-                if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) {
-                    components.composite->start(value); duplex_active = true;
-                } else if constexpr (std::is_same_v<T, MfqDuplexStepInput>) {
-                    return components.composite->step(value);
-                } else { components.composite->stop(); duplex_active = false; }
-                return std::monostate{};
-            } else {
-                throw std::invalid_argument("model has no duplex component");
-            }
+            auto result = components.control(value);
+            if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)
+                duplex_active = true;
+            else if constexpr (!std::is_same_v<T, MfqDuplexStepInput>)
+                duplex_active = false;
+            return result;
         }
     }
 };

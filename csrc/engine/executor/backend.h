@@ -98,21 +98,8 @@ struct Backend {
             info.max_context = state.metadata.max_position_embeddings;
             info.vocab_size = static_cast<int32_t>(state.metadata.vocab_size);
             info.model_type = state.metadata.model_type;
-            const auto component_state = state.components.state();
-            const bool composite = [&] {
-                if constexpr (requires { state.components.composite; })
-                    return bool(state.components.composite);
-                else
-                    return false;
-            }();
-            info.multimodal = component_state.vision_available || composite;
+            state.components.describe(info);
             info.reload = true;
-            const auto caps = cuda_runtime_capabilities(state.components.graph, state.components.plan,
-                component_state, info.multimodal, composite);
-            info.duplex = caps.full_duplex;
-            info.capabilities = {state.components.graph.architecture, caps.text,
-                caps.image_input, caps.video_input, caps.audio_input, caps.audio_output,
-                caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
             auto text = TextProcessor::load(*state.source, options.tokenizer_model,
                 info.vocab_size, info.model_type);
             info.stop_token_ids = model_stop_token_ids(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/executor/loaded.h"
+#include "engine/executor/engine.h"
 #include "mfq_cuda_kv_quantization.h"
 #include "models/common/grid_vision.h"
 #include "models/qwen35/model.h"
@@ -10,6 +11,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
+#include <vector>
 
 namespace mfq::cuda::weight_loader {
 struct Loader;
@@ -43,6 +46,18 @@ struct Components {
     CudaComponentState state() const noexcept {
         return cuda_component_state(
             graph, plan, grid_vision.has_value(), bool(mtp));
+    }
+
+    void describe(mfq::engine::EngineInfo& info) const;
+
+    mfq::StepSequence<PreparedPrompt> prepare(
+        Model& language, Projector projector, std::shared_ptr<MoeExpertCache> cache,
+        Collectives& collectives, int primary, Executor* executor,
+        const std::vector<int64_t>& tokens, const MfqMultimodalInput& media);
+
+    template <class T>
+    mfq::engine::ControlResult control(const T&) {
+        throw std::invalid_argument("model has no duplex component");
     }
 };
 
