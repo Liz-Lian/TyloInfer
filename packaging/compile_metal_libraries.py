@@ -49,7 +49,8 @@ def main() -> None:
 
     jobs = [(source, standard, language, minimum) for source in sources
         for standard, language, minimum in [("metal3.2", (3 << 16) + 2, "15.0"),
-            ("metal4.0", 4 << 16, "26.0")]]
+            ("metal4.0", 4 << 16, "26.0")]
+        if not source.stem.startswith("tinfer_gguf_") or language >= 4 << 16]
     with ThreadPoolExecutor(max_workers=worker_count(len(jobs))) as executor:
         libraries = list(executor.map(compile_one, jobs))
     (args.output / "manifest.json").write_text(json.dumps({"libraries": libraries}, indent=2) + "\n")

@@ -682,10 +682,13 @@ MlxDeepseekV41CausalLm::ssd_expert_cache_stats() const {
         result.prepare_seconds = cache.prepare_seconds;
         result.routed_graph_seconds = cache.graph_seconds;
         result.overlapped_read_batches = cache.overlapped_read_batches;
+        result.prefill_read_batches = cache.prefill_read_batches;
+        result.prefill_bytes_read = cache.prefill_bytes_read;
         result.resident_experts = cache.cached_experts;
         result.resident_bytes = cache.allocated_bytes;
         result.cached_payload_bytes = cache.cached_bytes;
         result.cache_metadata_bytes = cache.metadata_bytes;
+        result.pinned_cache_bytes = cache.pinned_bytes;
         return result;
     }
     if (mfq::mfq_compat_enabled && ssd_expert_cache_) {
@@ -977,6 +980,14 @@ array MlxDeepseekV41CausalLm::forward_impl(
             auto* prefetched = routed_pipeline[index % 2].has_value()
                 ? &*routed_pipeline[index % 2]
                 : nullptr;
+            if (tq_expert_cache_ && routed_rows >= 512) {
+                const auto next_rows = replay_decoder && index + 1 >= std::size_t(decoder_begin)
+                    ? std::size_t(batch) * config_.sliding_window : routed_rows;
+                tq_expert_cache_->prefill_lookahead(index,
+                    index + 1 < layer_count && next_rows >= 512
+                        ? std::optional<std::size_t>(index + 1) : std::nullopt);
+            }
+
             auto result = layers_[index].forward(
                 hidden,
                 previous_pre,

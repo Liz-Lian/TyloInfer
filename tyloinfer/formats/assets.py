@@ -53,7 +53,12 @@ class RuntimeAsset:
 
 
 def is_asset_record(name: str) -> bool:
-    return name.startswith(ASSET_PREFIX)
+    return name.startswith((ASSET_PREFIX, "__tinfer_asset__/"))
+
+
+def canonical_asset_record_name(name: str) -> str:
+    prefix = "__tinfer_asset__/"
+    return ASSET_PREFIX + name[len(prefix):] if name.startswith(prefix) else name
 
 
 def model_config_asset(config: dict[str, Any] | bytes | str) -> RuntimeAsset:

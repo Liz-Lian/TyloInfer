@@ -11,7 +11,7 @@
 #include "mlx_qsa_kv_offload.h"
 #include "mlx_grid_vision.h"
 
-#include "tyloinfer/token_constraint.h"
+#include "engine/requests/constraint.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -66,6 +66,7 @@ struct Qwen4Config {
     bool mrope_interleaved = false;
     bool norm_topk_prob = true;
     bool output_gate_silu = true;
+    bool linear_tiled_heads = false;
     bool tie_word_embeddings = false;
     bool mtp_use_dedicated_embeddings = false;
     std::vector<std::int64_t> rope_sections;
@@ -145,6 +146,11 @@ public:
     std::pair<mlx::core::array, mlx::core::array> verify_requests(
         const std::vector<std::shared_ptr<MlxQwen4RequestCache>>& caches,
         const std::vector<std::vector<std::int64_t>>& tokens);
+    static constexpr int maximum_verification_rows = 8;
+    void set_hidden_capture_layers(std::vector<int> layers);
+    std::optional<mlx::core::array> take_hidden_capture();
+    mlx::core::array embed_token_ids(const mlx::core::array& ids) const;
+    mlx::core::array project_hidden_logits(const mlx::core::array& hidden) const;
     std::vector<std::pair<mlx::core::array, mlx::core::array>> forward_request_windows(
         const std::vector<std::shared_ptr<MlxQwen4RequestCache>>& caches,
         const std::vector<std::vector<std::int64_t>>& tokens,
@@ -189,11 +195,13 @@ public:
     std::string_view multimodal_input_contract() const noexcept;
 
     const Qwen4Config& config() const noexcept;
+    int context_capacity() const noexcept;
     std::size_t layer_count() const noexcept;
     int cache_position() const noexcept;
     bool supports_mtp() const noexcept;
     bool supports_batch_mtp() const noexcept;
     const MlxMtpGenerationStats& last_mtp_stats() const noexcept;
+    void record_mtp_stats(MlxMtpGenerationStats stats) noexcept;
     std::size_t expert_cache_limit_bytes() const noexcept;
     std::optional<MlxSsdExpertCacheStats> ssd_expert_cache_stats() const;
     void prewarm_ssd_expert_arena();

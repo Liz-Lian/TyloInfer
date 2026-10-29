@@ -4087,6 +4087,8 @@ bool MlxGroupedLinear::supports(
 
 bool MlxGroupedLinear::supports_single_row_swiglu(
     const array& input) const noexcept {
+    if (input.size() == static_cast<std::size_t>(impl_->input_size) &&
+        MlxMxWeight::supports_projection_pair_swiglu(impl_->mxfp8_block32_projection_weights, input)) return true;
     const bool nint_pair = impl_->has_nint_swiglu_pair();
     return impl_->supports_single_row_swiglu()
         && input.ndim() > 0
@@ -4103,6 +4105,8 @@ bool MlxGroupedLinear::supports_single_row_swiglu(
 
 bool MlxGroupedLinear::supports_small_m_swiglu(
     const array& input) const noexcept {
+    if (input.size() > static_cast<std::size_t>(impl_->input_size) &&
+        MlxMxWeight::supports_projection_pair_swiglu(impl_->mxfp8_block32_projection_weights, input)) return true;
     if (impl_->has_nint_swiglu_pair() &&
         input.ndim() > 0 &&
         input.shape(-1) == impl_->input_size &&
@@ -4141,6 +4145,8 @@ array MlxGroupedLinear::single_row_swiglu(
         throw std::invalid_argument(
             "grouped SwiGLU limit must be finite and non-negative");
     }
+    if (impl_->has_mxfp8_block32_projection_group())
+        return MlxMxWeight::projection_pair_swiglu(impl_->mxfp8_block32_projection_weights, input, limit);
     if (impl_->has_nint_swiglu_pair()) {
         if (limit == 0.0f) {
             return impl_->nint_projection_weights[0].swiglu(
@@ -4210,6 +4216,8 @@ array MlxGroupedLinear::small_m_swiglu(
         throw std::invalid_argument(
             "grouped SwiGLU limit must be finite and non-negative");
     }
+    if (impl_->has_mxfp8_block32_projection_group())
+        return MlxMxWeight::projection_pair_swiglu(impl_->mxfp8_block32_projection_weights, input, limit);
     if (impl_->has_nint_swiglu_pair()) {
         const auto rows = input.size() /
             static_cast<std::size_t>(impl_->input_size);

@@ -1,0 +1,5 @@
+#pragma once
+
+#include "metal/abi/ExecutionGeometry.h"
+#undef SPLASH_PREFILL_TOKEN_BUDGET
+#define SPLASH_PREFILL_TOKEN_BUDGET @TYLOINFER_NATIVE_PREFILL_TOKEN_BUDGET@u

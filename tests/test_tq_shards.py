@@ -16,6 +16,67 @@ from tyloinfer.server.state.catalog import ModelCatalog
 from tyloinfer.tools.split_mfq import split_mfq
 
 
+def test_official_root_file_and_tinfer_assets(tmp_path):
+    import json
+    from tyloinfer.formats.assets import MODEL_CONFIG_ASSET
+
+    first = tmp_path / 'Q3/model-Q3.tq'
+    last = tmp_path / 'Q3/model-Q3-00003-of-00003.tq'
+    shared = tmp_path / 'Engram/model-Engram-MXFP8-00002-of-00003.tq'
+    first.parent.mkdir()
+    shared.parent.mkdir()
+    table = 'model.block.1.associative_memory.embedding.weight'
+    config = b'{"model_type":"test"}'
+    for index, path, records in [
+        (0, first, {'weight.0': np.ones(4, dtype=np.float16), '__tinfer_asset__/model_config.json': config}),
+        (1, shared, {table: np.ones(4, dtype=np.float16)}),
+        (2, last, {'weight.2': np.ones(4, dtype=np.float16)}),
+    ]:
+        save(path, FileHeader(version=2, model_arch='test', extra={
+            'split.no': index, 'split.count': 3,
+            'split.tensors.count': 3, 'split.records.count': 4,
+            'runtime_assets': {'version': 1, 'assets': {'model_config.json': {
+                'record': '__tinfer_asset__/model_config.json', 'bytes': len(config),
+            }}},
+        }), records)
+    for entry in (first, last):
+        with open_mmap(entry) as model:
+            assert set(model.records) == {'weight.0', table, 'weight.2', MODEL_CONFIG_ASSET}
+            assert model[MODEL_CONFIG_ASSET] == config
+            manifest = model.header.extra['runtime_assets']['assets']['model_config.json']
+            assert manifest['record'] == MODEL_CONFIG_ASSET
+            assert json.loads(model[manifest['record']])['model_type'] == 'test'
+
+
+def test_root_entry_rejects_an_ambiguous_first_shard(tmp_path):
+    first = tmp_path / 'model.tq'
+    for index, path in [(0, first), (0, format_shard_path(first, 1, 2)), (1, format_shard_path(first, 2, 2))]:
+        save(path, FileHeader(version=2, model_arch='test', extra={
+            'split.no': index, 'split.count': 2,
+        }), {f'weight.{index}': np.ones(4, dtype=np.float16)})
+    with pytest.raises(ValueError, match='duplicate MFQ shard index 1'):
+        open_mmap(first)
+
+
+def test_unindexed_entry_must_be_the_first_shard(tmp_path):
+    path = tmp_path / 'model.tq'
+    save(path, FileHeader(version=2, model_arch='test', extra={
+        'split.no': 1, 'split.count': 2,
+    }), {'weight': np.ones(4, dtype=np.float16)})
+    with pytest.raises(ValueError, match='lacks -00001-of-00000 suffix'):
+        open_mmap(path)
+
+
+def test_asset_prefix_normalization_rejects_collisions(tmp_path):
+    path = tmp_path / 'model.tq'
+    save(path, FileHeader(version=2, model_arch='test'), {
+        '__tinfer_asset__/model_config.json': b'{}',
+        '__mfq_asset__/model_config.json': b'{}',
+    })
+    with pytest.raises(ValueError, match='duplicate MFQ tensor record'):
+        open_mmap(path)
+
+
 def test_tq_shards_preserve_canonical_shapes_and_row_manifest(tmp_path):
     table = 'model.block.1.associative_memory.embedding.weight'
     names = [f'{table}.tq_row_shard.{index:05d}' for index in range(2)]
@@ -37,9 +98,10 @@ def test_tq_shards_preserve_canonical_shapes_and_row_manifest(tmp_path):
                 assert model[name].to_bytes() == tensor.to_bytes()
 
 
-def test_tq_model_is_discovered_and_missing_shard_stays_incomplete(tmp_path):
+@pytest.mark.parametrize('suffix', ['.tq', '.mfq'])
+def test_tq_model_is_discovered_and_missing_shard_stays_incomplete(tmp_path, suffix):
     for index in (1, 2):
-        save(format_shard_path(tmp_path / 'model.tq', index, 2),
+        save(format_shard_path(tmp_path / f'model{suffix}', index, 2),
              FileHeader(version=2, model_arch='test', extra={
                  'split.no': index - 1, 'split.count': 2,
                  'split.tensors.count': 2, 'split.records.count': 2,
@@ -50,7 +112,7 @@ def test_tq_model_is_discovered_and_missing_shard_stays_incomplete(tmp_path):
         complete = await catalog.list()
         assert len(complete.data) == 1
         assert complete.data[0].complete
-        format_shard_path(tmp_path / 'model.tq', 1, 2).unlink()
+        format_shard_path(tmp_path / f'model{suffix}', 1, 2).unlink()
         incomplete = await catalog.list(refresh=True)
         assert len(incomplete.data) == 1
         assert not incomplete.data[0].complete
@@ -71,9 +133,9 @@ def test_tq_hub_variant_includes_shared_engram_and_has_header_candidates():
     assert HubCatalog._is_official_repo(info.repo_id)
 
 
-@pytest.mark.parametrize('suffix', ['.tq'])
+@pytest.mark.parametrize('suffix', ['.tq', '.mfq'])
 def test_shard_families_do_not_mix_container_suffixes(tmp_path, suffix):
-    other = '.mfq'
+    other = '.mfq' if suffix == '.tq' else '.tq'
     primary = f'Q3/model-Q3-00001-of-00002{suffix}'
     wrong = f'Engram/model-Engram-MXFP8-00002-of-00002{other}'
     assert with_engram_shards([primary], [primary, wrong]) == [primary]
@@ -86,13 +148,14 @@ def test_shard_families_do_not_mix_container_suffixes(tmp_path, suffix):
         open_mmap(format_shard_path(tmp_path / f'model{suffix}', 1, 2))
 
 
-def test_hub_does_not_advertise_legacy_mfq_as_tq():
+def test_hub_keeps_tq_container_suffix_families_separate():
     files = [HubModelFile(name=f'Q3/model-Q3-00001-of-00002{suffix}', byte_size=100)
              for suffix in ('.tq', '.mfq')]
     files.extend(HubModelFile(name=f'Engram/model-Engram-MXFP8-00002-of-00002{suffix}', byte_size=200)
                  for suffix in ('.tq', '.mfq'))
     variants = _model_variants(files, HubSystemProfile(platform='test', machine='test', backend='unknown'))
-    assert len(variants) == 1
+    assert len(variants) == 2
     for variant in variants:
         assert len(variant.files) == 2
-        assert all(name.endswith('.tq') for name in variant.files)
+        suffix = '.mfq' if variant.id.startswith('mfq:') else '.tq'
+        assert all(name.endswith(suffix) for name in variant.files)

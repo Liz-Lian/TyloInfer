@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import re
 import runpy
 
@@ -58,3 +59,43 @@ def test_compile_command_fails_without_a_source_catalog(tmp_path, monkeypatch):
         "--metal", "missing", "--metallib", "missing", "--sdk", "missing"])
     with pytest.raises(SystemExit):
         script["main"]()
+
+
+def test_native_gguf_exports_use_metal4_and_source_fingerprints(tmp_path, monkeypatch):
+    script = runpy.run_path(str(SCRIPT))
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    (sources / "generic.metal").write_text("generic")
+    (sources / "tinfer_gguf_moe.metal").write_text("native GGUF")
+    commands = []
+
+    def compile(command, check):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"compiled test fixture")
+
+    monkeypatch.setattr("subprocess.run", compile)
+    monkeypatch.setattr("sys.argv", [str(SCRIPT), str(sources), str(tmp_path / "out"),
+        "--metal", "metal", "--metallib", "metallib", "--sdk", "sdk"])
+    script["main"]()
+    libraries = json.loads((tmp_path / "out/manifest.json").read_text())["libraries"]
+    assert len(libraries) == 3
+    native = [item for item in libraries if item["name"] == "tinfer_gguf_moe"]
+    assert len(native) == 1 and native[0]["language"] == 4 << 16
+    assert native[0]["file"] == script["fingerprint"](b"native GGUF", 2, 4 << 16) + ".metallib"
+    assert any("-mmacosx-version-min=26.0" in command for command in commands)
+
+
+def test_native_gguf_pair_kernel_has_its_own_export():
+    exporter = (METAL / "apps/mfq_metal_source_export.cpp").read_text()
+    header = (METAL / "ops/gguf/native/gguf_sources.h.in").read_text()
+    assert '"tinfer_gguf_moe_pair"' in exporter
+    assert "native_gguf::pair_moe_source" in exporter
+    assert "char pair_moe_source[]" in header
+
+
+def test_native_gguf_vector_kernel_has_its_own_export():
+    exporter = (METAL / "apps/mfq_metal_source_export.cpp").read_text()
+    header = (METAL / "ops/gguf/native/gguf_sources.h.in").read_text()
+    assert '"tinfer_gguf_vector"' in exporter
+    assert "native_gguf::vector_source" in exporter
+    assert "char vector_source[]" in header

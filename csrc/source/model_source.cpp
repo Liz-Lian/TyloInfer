@@ -2,6 +2,7 @@
 #include "read.h"
 
 #include "hf_model_source.h"
+#include "gguf_model_source.h"
 #include "mfq_model_source.h"
 #include "tq_fixture_source.h"
 #include "compat/mfq_legacy_model_graph.h"
@@ -32,6 +33,7 @@ std::shared_ptr<const ModelSource> open_model_source(
     if (std::filesystem::is_directory(path, error) && !error) {
         return std::make_shared<HfModelSource>(path);
     }
+    if (is_gguf_file(path)) return std::make_shared<GgufModelSource>(path);
     return std::make_shared<MfqModelSource>(path);
 }
 

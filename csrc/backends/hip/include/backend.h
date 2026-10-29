@@ -18,7 +18,7 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 
-#include "tyloinfer/host_parallel.h"
+#include "backends/cpu/native/host_parallel.h"
 #include "../../hip/include/mfq_hip_context.h"
 #include "../../hip/include/mfq_native_tensor.h"
 #include "mfq_hip_compat.h"

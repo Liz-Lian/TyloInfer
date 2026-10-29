@@ -1,5 +1,7 @@
 #include "mlx_linear_attention.h"
 #include "mlx_kernel_prepare.h"
+#include "mlx_cached_kernel.h"
+#include "../../platform/metal_device_info.h"
 
 #include <algorithm>
 #include <array>
@@ -122,7 +124,8 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
     const uint lane = thread_index_in_simdgroup;
     const uint simd_group = simdgroup_index_in_threadgroup;
     const uint value_head = threadgroup_position_in_grid.z;
-    const uint key_head = value_head / uint(HV / HK);
+    const uint key_head = TYLOINFER_GDN_TILED_HEADS
+        ? value_head % uint(HK) : value_head / uint(HV / HK);
 
     threadgroup float query_values[D];
     threadgroup float key_values[D];
@@ -153,7 +156,8 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
                    ? uint(HK * D) + head * uint(D)
                    : uint(2 * HK * D) + head * uint(D));
         const bool write_shared_state =
-            !(is_query || is_key) || value_head % uint(HV / HK) == 0u;
+            !(is_query || is_key) || (TYLOINFER_GDN_TILED_HEADS
+                ? value_head < uint(HK) : value_head % uint(HV / HK) == 0u);
 
         float activated[4];
         float square_sum = 0.0f;
@@ -314,7 +318,7 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
                 1.0f / (1.0f + metal::precise::exp(metal::abs(z)));
             const float sigmoid = z < 0.0f ? tail : 1.0f - tail;
             const float gate = OUTPUT_GATE_SILU != 0 ? z * sigmoid : sigmoid;
-            output[output_base + dimension] = normalized * gate;
+            output[output_base + dimension] = OUTPUT_TYPE(normalized * gate);
         }
     }
 #if TYLOINFER_GDN_SEQUENCE
@@ -334,6 +338,8 @@ struct GdnStepConfig {
     bool silu;
     std::array<float, 2> eps;
     bool sequence;
+    bool tiled_heads;
+    Dtype output_dtype;
 };
 
 std::string gdn_step_source(
@@ -353,6 +359,8 @@ std::string gdn_step_source(
     source += "#define OUTPUT_GATE_SILU " +
         std::to_string(static_cast<int>(config.silu)) + "\n";
     source += "#define TYLOINFER_GDN_SEQUENCE " + std::to_string(static_cast<int>(config.sequence)) + "\n";
+    source += "#define TYLOINFER_GDN_TILED_HEADS " + std::to_string(static_cast<int>(config.tiled_heads)) + "\n";
+    source += "#define OUTPUT_TYPE " + std::string(metal_type(config.output_dtype)) + "\n";
     source += "kernel void " + kernel_name + "(";
     const std::array<const char*, 5> projection_names{
         "qk", "value", "output_gate", "alpha", "beta"};
@@ -370,8 +378,9 @@ std::string gdn_step_source(
             " [[buffer(" + std::to_string(index + 5) + ")]], ";
     }
     source +=
-        "constant float* params [[buffer(11)]], "
-        "device float* output [[buffer(12)]], "
+        "constant float* params [[buffer(11)]], ";
+    source += "device " + std::string(metal_type(config.output_dtype)) + "* output [[buffer(12)]], ";
+    source +=
         "device float* convolution_out [[buffer(13)]], "
         "device float* recurrent_out [[buffer(14)]], ";
     if (config.sequence) source +=
@@ -399,6 +408,9 @@ public:
             "_" + std::to_string(config_.value_heads) +
             "_" + std::to_string(static_cast<int>(config_.silu));
         if (config_.sequence) kernel_name_ += "_sequence";
+        if (config_.tiled_heads) kernel_name_ += "_tiled";
+        if (config_.output_dtype != mlx::core::float32)
+            kernel_name_ += "_out_" + mlx::core::type_to_name(config_.output_dtype);
     }
 
     std::string preparation_key() const override { return kernel_name_; }
@@ -987,12 +999,83 @@ const mlx::core::fast::CustomKernelFunction& linear_conv_kernel() {
     return kernel;
 }
 
+const mlx::core::fast::CustomKernelFunction& linear_conv_head_prefill_kernel() {
+    static const auto kernel = [] {
+        CompileOptions options;
+        options.math_mode = MathMode::Fast;
+        return mlx::core::fast::metal_kernel("tinfer_linear_conv_head_prefill",
+            {"state_in", "qk", "v_in", "weight", "bias", "params"},
+            {"q_out", "k_out", "v_out", "state_out"}, R"METAL(
+const uint tokens = uint(qk_shape[1]), task = threadgroup_position_in_grid.x;
+const uint head = task % NK, token = task / NK % tokens, batch = task / (NK * tokens);
+const uint local = thread_index_in_threadgroup, lane = thread_index_in_simdgroup, sg = simdgroup_index_in_threadgroup;
+auto qrow = qk + int64_t(batch) * qk_strides[0] + int64_t(token) * qk_strides[1];
+auto vrow = v_in + int64_t(batch) * v_in_strides[0] + int64_t(token) * v_in_strides[1];
+threadgroup float sums[8];
+const auto run = [&](auto layout) __attribute__((always_inline)) {
+constexpr bool FEATURE_CONTIGUOUS = decltype(layout)::value;
+const auto convolve = [&](device const T* input, int64_t stride, int64_t feature_stride, uint feature, uint channel) {
+    float value = HAS_BIAS ? bias[channel] : 0.f;
+    const int64_t column = FEATURE_CONTIGUOUS ? int64_t(feature) : int64_t(feature) * feature_stride;
+#pragma clang loop unroll(full)
+    for (uint tap = 0u; tap < 4u; ++tap) {
+        float x;
+        const uint position = token + tap;
+        if (position < 3u) x = state_in[(ulong(batch) * 3u + position) * C + channel];
+        else x = float(input[(int64_t(tap) - 3) * stride + column]);
+        value += x * weight[channel * 4u + tap];
+    }
+    return value / (1.f + fast::exp2(-1.44269504089f * value));
+};
+const uint qc = head * 128u + local, kc = uint(NK) * 128u + qc;
+const float q = convolve(qrow, qk_strides[1], qk_strides[2], qc, qc);
+const float k = convolve(qrow, qk_strides[1], qk_strides[2], kc, kc);
+const float qs = simd_sum(q * q), ks = simd_sum(k * k);
+if (lane == 0u) { sums[sg] = qs; sums[sg + 4u] = ks; }
+threadgroup_barrier(mem_flags::mem_threadgroup);
+if (local == 0u) {
+    sums[0] = 1.f / max(sqrt(sums[0] + sums[1] + sums[2] + sums[3]), params[0]);
+    sums[4] = 1.f / max(sqrt(sums[4] + sums[5] + sums[6] + sums[7]), params[0]);
+}
+threadgroup_barrier(mem_flags::mem_threadgroup);
+const ulong out = ((ulong(batch) * NK + head) * tokens + token) * 128u + local;
+q_out[out] = q * sums[0]; k_out[out] = k * sums[4];
+constexpr uint per_key = NV / NK;
+for (uint i = 0u; i < per_key; ++i) {
+    const uint feature = (head * per_key + i) * 128u + local;
+    v_out[((ulong(batch) * NV + head * per_key + i) * tokens + token) * 128u + local] =
+        convolve(vrow, v_in_strides[1], v_in_strides[2], feature, uint(QKC) + feature);
+}
+if (token == 0u) for (uint row = 0u; row < 3u; ++row) {
+    const ulong destination = (ulong(batch) * 3u + row) * C;
+    const int64_t position = int64_t(tokens - 3u + row);
+    state_out[destination + qc] = float(qrow[position * qk_strides[1] + (FEATURE_CONTIGUOUS ? int64_t(qc) : int64_t(qc) * qk_strides[2])]);
+    state_out[destination + kc] = float(qrow[position * qk_strides[1] + (FEATURE_CONTIGUOUS ? int64_t(kc) : int64_t(kc) * qk_strides[2])]);
+    for (uint i = 0u; i < per_key; ++i) {
+        const uint feature = (head * per_key + i) * 128u + local;
+        state_out[destination + QKC + feature] = float(vrow[position * v_in_strides[1] + (FEATURE_CONTIGUOUS ? int64_t(feature) : int64_t(feature) * v_in_strides[2])]);
+    }
+}
+};
+if (qk_strides[2] == 1 && v_in_strides[2] == 1) run(integral_constant<bool, true>{});
+else run(integral_constant<bool, false>{});
+)METAL", "", false, false, options);
+    }();
+    return kernel;
+}
+
+array projection_contiguous(const array& value) {
+    if (value.ndim() > 0 && value.size() == std::size_t(value.shape(-1)))
+        return mlx_row_contiguous_view(value, mlx::core::default_stream(mlx::core::default_device()));
+    return mlx::core::contiguous(value);
+}
+
 array float32_contiguous(const array& value) {
     auto result = value;
     if (result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float32);
     }
-    return mlx::core::contiguous(result);
+    return projection_contiguous(result);
 }
 
 array floating_contiguous(const array& value) {
@@ -1001,12 +1084,13 @@ array floating_contiguous(const array& value) {
         result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float16);
     }
-    return mlx::core::contiguous(result);
+    return projection_contiguous(result);
 }
 
 array floating_strided(const array& value) {
     auto result = value;
     if (result.dtype() != mlx::core::float16 &&
+        result.dtype() != mlx::core::bfloat16 &&
         result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float16);
     }
@@ -1020,7 +1104,7 @@ array real_contiguous(const array& value) {
         result.dtype() != mlx::core::float32) {
         result = mlx::core::astype(result, mlx::core::float16);
     }
-    return mlx::core::contiguous(result);
+    return projection_contiguous(result);
 }
 
 int checked_int(std::int64_t value, const char* name) {
@@ -1267,11 +1351,11 @@ MlxGatedDeltaDecodeResult gated_delta_decode_step(
     int dimension,
     float convolution_eps,
     float norm_eps,
-    bool output_gate_silu) {
+    bool output_gate_silu, bool tiled_heads, Dtype output_dtype) {
     return gated_delta_decode_steps({{qk, value, output_gate, alpha, beta,
         convolution_state, recurrent_state}}, convolution_weight, dt_bias,
         decay_scale, norm_weight, key_heads, value_heads, dimension,
-        convolution_eps, norm_eps, output_gate_silu).front();
+        convolution_eps, norm_eps, output_gate_silu, tiled_heads, output_dtype).front();
 }
 
 std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
@@ -1279,7 +1363,7 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     const array& convolution_weight, const array& dt_bias,
     const array& decay_scale, const array& norm_weight,
     int key_heads, int value_heads, int dimension,
-    float convolution_eps, float norm_eps, bool output_gate_silu) {
+    float convolution_eps, float norm_eps, bool output_gate_silu, bool tiled_heads, Dtype output_dtype) {
     auto bias_values = float32_contiguous(dt_bias);
     auto decay_values = float32_contiguous(decay_scale);
     auto norm_values = float32_contiguous(norm_weight);
@@ -1287,7 +1371,8 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     if (requests.empty() || key_heads <= 0 || value_heads <= 0 ||
         value_heads % key_heads != 0 || dimension != 128 ||
         !std::isfinite(convolution_eps) || convolution_eps <= 0.0f ||
-        !std::isfinite(norm_eps) || norm_eps <= 0.0f) {
+        !std::isfinite(norm_eps) || norm_eps <= 0.0f ||
+        (output_dtype != mlx::core::float16 && output_dtype != mlx::core::bfloat16 && output_dtype != mlx::core::float32)) {
         throw std::invalid_argument(
             "Gated DeltaNet decode-step geometry is unsupported");
     }
@@ -1311,8 +1396,8 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     inputs.reserve(4 + requests.size() * 7);
     std::vector<Shape> shapes;
     const int tokens = requests.front().qk.ndim() == 3 ? requests.front().qk.shape(1) : 0;
-    if (tokens < 1 || tokens > 6)
-        throw std::invalid_argument("Gated DeltaNet fused decode requires one to six tokens");
+    if (tokens < 1 || tokens > 8)
+        throw std::invalid_argument("Gated DeltaNet fused decode requires one to eight tokens");
     const bool sequence = tokens > 1;
     const int fields = sequence ? 5 : 3;
     shapes.reserve(requests.size() * fields);
@@ -1321,7 +1406,7 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
         Shape{1, 3, channels}, Shape{1, value_heads, dimension, dimension}};
     GdnStepConfig config{{mlx::core::float32, mlx::core::float32, mlx::core::float32,
         mlx::core::float32, mlx::core::float32}, key_heads, value_heads, output_gate_silu,
-        {convolution_eps, norm_eps}, sequence};
+        {convolution_eps, norm_eps}, sequence, tiled_heads, output_dtype};
     for (std::size_t row = 0; row < requests.size(); ++row) {
         const auto& request = requests[row];
         std::array<array, 7> values{real_contiguous(request.qk), real_contiguous(request.value),
@@ -1338,8 +1423,9 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
         shapes.insert(shapes.end(), {Shape{1, tokens, value_width}, expected[5], expected[6]});
         if (sequence) shapes.insert(shapes.end(), {Shape{1, value_heads, tokens}, Shape{1, value_heads, tokens}});
     }
-    auto outputs = array::make_arrays(shapes,
-        std::vector<Dtype>(shapes.size(), mlx::core::float32),
+    std::vector<Dtype> output_types(shapes.size(), mlx::core::float32);
+    for (std::size_t row = 0; row < requests.size(); ++row) output_types[row * fields] = output_dtype;
+    auto outputs = array::make_arrays(shapes, output_types,
         std::make_shared<GdnStepPrimitive>(
             mlx::core::default_stream(mlx::core::default_device()), config),
         std::move(inputs));
@@ -1449,23 +1535,27 @@ MlxGatedDeltaNetResult gated_delta_net_impl(
             ? state_values
             : mlx::core::contiguous(mlx::core::transpose(
                   state_values, {0, 1, 3, 2}));
-        const int value_blocks = dimension / 16;
+        const int cores = metal_apple_gpu_core_count();
+        const int value_rows = cores > 0 &&
+            std::int64_t(batch) * value_heads * (dimension / 32) >= std::int64_t(cores) * 2 ? 32 : 16;
+        const int threads = value_rows * 8, value_blocks = dimension / value_rows;
         auto outputs = gdn_blocked_kernel()(
             {q, k, v, g, beta_values, blocked_state},
             {v.shape(), state_shape},
             {mlx::core::float32, mlx::core::float32},
             {checked_int(
-                 static_cast<std::int64_t>(value_blocks) * 128,
+                 static_cast<std::int64_t>(value_blocks) * threads,
                  "blocked GDN grid"),
              value_heads,
              batch},
-            {128, 1, 1},
+            {threads, 1, 1},
             {
                 {"B", batch},
                 {"HQ", query_heads},
                 {"HV", value_heads},
                 {"D", dimension},
                 {"TILED_HEADS", static_cast<int>(tiled_heads)},
+                {"VALUE_ROWS", value_rows},
             },
             std::nullopt,
             false,
@@ -1752,11 +1842,8 @@ MlxLinearConvQkvResult linear_conv_qkv(
             "linear_conv_qkv projection width mismatch");
     }
     if (value_values.dtype() != qk_values.dtype()) {
-        const auto dtype =
-            value_values.dtype() == mlx::core::float32 ||
-                    qk_values.dtype() == mlx::core::float32
-                ? mlx::core::float32
-                : mlx::core::float16;
+        const auto dtype = mlx::core::promote_types(
+            value_values.dtype(), qk_values.dtype());
         qk_values = mlx::core::astype(qk_values, dtype);
         value_values = mlx::core::astype(value_values, dtype);
     }
@@ -1802,6 +1889,7 @@ MlxLinearConvQkvResult linear_conv_qkv(
     const std::int64_t workgroups =
         (qk_tasks + value_tasks + state_tasks + simd_groups - 1) / simd_groups;
     const array parameters({eps}, Shape{1});
+    const bool head_prefill = tokens >= 64 && kernel == 4 && key_head_dimension == 128 && value_head_dimension == 128;
     std::vector<std::pair<std::string, mlx::core::fast::TemplateArg>>
         templates{
             {"T", qk_values.dtype()},
@@ -1816,7 +1904,7 @@ MlxLinearConvQkvResult linear_conv_qkv(
             {"HAS_BIAS", static_cast<int>(bias_values.present)},
             {"SIMD_GROUPS", simd_groups},
         };
-    auto outputs = linear_conv_kernel()(
+    auto outputs = (head_prefill ? linear_conv_head_prefill_kernel() : linear_conv_kernel())(
         {
             state_values,
             qk_values,
@@ -1837,8 +1925,9 @@ MlxLinearConvQkvResult linear_conv_qkv(
             mlx::core::float32,
             mlx::core::float32,
         },
-        {checked_int(workgroups * threads, "linear_conv_qkv grid"), 1, 1},
-        {threads, 1, 1},
+        {head_prefill ? checked_int(std::int64_t(batch) * tokens * key_heads * 128, "linear_conv_head grid")
+                         : checked_int(workgroups * threads, "linear_conv_qkv grid"), 1, 1},
+        {head_prefill ? 128 : threads, 1, 1},
         std::move(templates),
         std::nullopt,
         false,

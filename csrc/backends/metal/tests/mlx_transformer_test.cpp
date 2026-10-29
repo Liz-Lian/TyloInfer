@@ -252,6 +252,8 @@ int main() {
             array({0.0f, 0.0f}, Shape{2}),
             1e-6f,
             1.0f);
+        if (!norm.weight().is_available())
+            throw std::runtime_error("RMSNorm retained an unevaluated weight conversion");
         auto normalized = norm(array({3.0f, 4.0f}, Shape{1, 2}));
         normalized.eval();
         const auto* normalized_values = normalized.data<float>();

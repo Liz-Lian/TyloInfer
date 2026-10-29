@@ -1,4 +1,5 @@
 #include "mlx_mx.h"
+#include "mlx_moe_ops.h"
 #include "mlx_grouped_linear.h"
 #include "mlx_nint8_zero.h"
 #include "mlx_tensor.h"
@@ -12,11 +13,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <mlx/mlx.h>
+#include <mlx/fast_primitives.h>
 
 namespace {
 
@@ -461,13 +465,60 @@ void test_mxfp8_all_codes() {
     }
 }
 
+void test_block_scaled_mxfp8_dequantize() {
+    using namespace mlx::core;
+    for (int block : {32, 128}) for (int outputs : {129, 257}) {
+        const int inputs = block * 2;
+        std::vector<std::uint8_t> codes(std::size_t(outputs) * inputs);
+        std::vector<std::uint8_t> scales(std::size_t((outputs + block - 1) / block) * 2);
+        for (std::size_t i = 0; i < codes.size(); ++i) codes[i] = std::uint8_t(i * 37 + i / inputs);
+        for (std::size_t i = 0; i < scales.size(); ++i) scales[i] = std::uint8_t(120 + i % 15);
+        std::vector<float> values(codes.size());
+        for (int row = 0; row < outputs; ++row) for (int col = 0; col < inputs; ++col) {
+            const auto at = std::size_t(row) * inputs + col;
+            const auto raw = codes[at];
+            const int magnitude = raw & 127, exponent = magnitude >> 3, mantissa = magnitude & 7;
+            float value = magnitude == 127 ? std::numeric_limits<float>::quiet_NaN()
+                : exponent == 0 ? std::ldexp(float(mantissa), -9)
+                : std::ldexp(1.f + float(mantissa) / 8.f, exponent - 7);
+            value = std::copysign(value, raw & 128 ? -1.f : 1.f);
+            values[at] = std::ldexp(value, int(scales[(row / block) * 2 + col / block]) - 127);
+        }
+        auto weight = mfq::metal::MlxMxWeight::from_arrays("MXFP8",
+            array(codes.begin(), Shape{outputs, inputs}),
+            array(scales.begin(), Shape{(outputs + block - 1) / block, 2}), inputs, outputs);
+        require(weight.scale_row_block_size() == block && weight.scale_column_block_size() == block,
+            "block-scaled dequantization did not retain native metadata");
+        for (auto dtype : {float16, float32}) {
+            auto actual = contiguous(weight.dequantize(dtype));
+            auto expected = astype(array(values.begin(), Shape{outputs, inputs}), dtype);
+            eval(actual, expected);
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (std::isnan(values[i])) {
+                    const bool nan = dtype == float16
+                        ? (actual.data<std::uint16_t>()[i] & 0x7c00u) == 0x7c00u
+                            && (actual.data<std::uint16_t>()[i] & 0x3ffu) != 0
+                        : std::isnan(actual.data<float>()[i]);
+                    require(nan, "block-scaled dequantization lost an FP8 NaN");
+                } else require(dtype == float16
+                    ? actual.data<std::uint16_t>()[i] == expected.data<std::uint16_t>()[i]
+                    : actual.data<std::uint32_t>()[i] == expected.data<std::uint32_t>()[i],
+                    "block-scaled dequantization changed FP8 code/scale bits");
+            }
+        }
+    }
+}
+
 void test_mxfp8_small_m_matches_decode() {
     using namespace mlx::core;
     constexpr int inputs = 512;
-    for (const int outputs : {512, 1024, 2048}) {
-      const auto weight = mfq::metal::MlxMxWeight::from_blob(
-          "MXFP8", make_patterned_mxfp8_blob(outputs, inputs, 3));
-      for (const auto dtype : {float16, bfloat16}) {
+    for (const int outputs : {257, 512, 1024, 2048}) {
+      for (const bool block32 : {false, true}) {
+      const auto weight = block32
+          ? make_patterned_block32_mxfp8_weight(outputs, inputs, 3)
+          : mfq::metal::MlxMxWeight::from_blob(
+                "MXFP8", make_patterned_mxfp8_blob(outputs, inputs, 3));
+      for (const auto dtype : {float16, bfloat16, float32}) {
         for (int rows = 2; rows <= 6; ++rows) {
         std::vector<float> values(
             static_cast<std::size_t>(rows) * inputs);
@@ -493,16 +544,12 @@ void test_mxfp8_small_m_matches_decode() {
         auto reference = contiguous(concatenate(reference_rows, 0));
         eval(actual, reference);
         require(
-            actual.shape() == reference.shape(),
+            actual.shape() == reference.shape() && actual.dtype() == reference.dtype(),
             "MXFP8 exact small-M shape mismatch");
-        const auto* actual_bits = actual.data<std::uint16_t>();
-        const auto* reference_bits = reference.data<std::uint16_t>();
-        for (std::size_t index = 0; index < actual.size(); ++index) {
-            require(
-                actual_bits[index] == reference_bits[index],
-                "MXFP8 exact small-M differs from serial decode");
+        require(std::memcmp(actual.data<char>(), reference.data<char>(), actual.nbytes()) == 0,
+            "MXFP8 exact small-M differs from serial decode");
         }
-        }
+      }
       }
     }
 }
@@ -1182,6 +1229,47 @@ void test_grouped_block32_mxfp8_inverse_rope_matches_native_qmv() {
     }
 }
 
+void test_grouped_block32_mxfp8_fp16_inverse_rope_dispatch() {
+    using namespace mlx::core;
+    constexpr int groups = 2, inputs = 512, output_width = 16;
+    constexpr int head_dimension = 64, rotary_dimension = 16;
+    const auto weight = make_patterned_block32_mxfp8_weight(groups * output_width, inputs, 47);
+    const mfq::metal::MlxLinear operation(weight);
+    for (int tokens = 1; tokens <= 6; ++tokens) {
+        auto input = astype(reshape(sin(arange(tokens * groups * inputs, float32)) * 0.13f,
+            {1, tokens, groups * inputs / head_dimension, head_dimension}), float16);
+        auto angles = reshape(arange(tokens * rotary_dimension / 2, float32) * 0.017f,
+            {tokens, rotary_dimension / 2});
+        auto cosine = cos(angles), sine = sin(angles);
+        auto actual = operation.grouped_row_matmul_inverse_rope(
+            input, groups, cosine, sine, head_dimension, rotary_dimension);
+        bool fused = false, separate_rope = false;
+        std::unordered_set<const Primitive*> seen;
+        const auto inspect = [&](const auto& self, const array& value) -> void {
+            if (!value.has_primitive() || !seen.insert(value.primitive_ptr().get()).second) return;
+            if (std::string_view(value.primitive().name()) == "CustomKernel") {
+                const auto state = static_cast<const fast::CustomKernel&>(value.primitive()).state();
+                const auto& name = std::get<0>(state);
+                fused |= name.find("mxfp8_block32_grouped_inverse_rope") != std::string::npos;
+                separate_rope |= name.find("adjacent_rope") != std::string::npos;
+            }
+            for (const auto& source : value.inputs()) self(self, source);
+        };
+        inspect(inspect, actual);
+        require(fused == (tokens == 1) && separate_rope == (tokens != 1),
+            "FP16 inverse-RoPE production dispatch mismatch");
+        auto reference = weight.grouped_row_matmul(reshape(
+            mfq::metal::mlx_rope_adjacent(input, rotary_dimension, cosine, sine, true),
+            {1, tokens, groups, inputs}), groups);
+        actual = contiguous(actual);
+        reference = contiguous(reference);
+        eval(actual, reference);
+        require(actual.shape() == reference.shape() && actual.dtype() == float16 &&
+                std::memcmp(actual.data<char>(), reference.data<char>(), actual.nbytes()) == 0,
+            "FP16 fused inverse-RoPE differs from the reference graph");
+    }
+}
+
 void benchmark_v41_block32_mxfp8_inverse_rope() {
     const char* enabled = std::getenv("TYLOINFER_METAL_MX_BLOCK32_BENCH");
     if (enabled == nullptr || std::string(enabled) == "0") {
@@ -1566,6 +1654,84 @@ void test_grouped_mxfp8_small_m_matches_decode() {
     }
 }
 
+void test_block32_mxfp8_swiglu_pair() {
+    using namespace mlx::core;
+    using mfq::metal::MlxLinear;
+    using mfq::metal::MlxMxWeight;
+    using mfq::metal::MlxProjectionBatch;
+    for (const auto& [inputs, outputs] : std::vector<std::pair<int, int>>{
+            {32, 7}, {96, 17}, {256, 257}, {5120, 513}}) {
+        for (int gate_rows : {1, 32}) for (int up_rows : {1, 32}) {
+            const auto make_weight = [&](int scale_rows, int salt) {
+                auto blob = make_mxfp8_geometry_blob(
+                    outputs, inputs, (outputs + scale_rows - 1) / scale_rows, inputs / 32);
+                constexpr std::size_t header = 56;
+                const std::size_t values = static_cast<std::size_t>(outputs) * inputs;
+                for (std::size_t i = 0; i < values; ++i)
+                    blob[header + i] = i % 11 == 0 ? 0 :
+                        static_cast<std::uint8_t>(0x18 + (i * 13 + salt) % 64) |
+                        static_cast<std::uint8_t>((i & 1) << 7);
+                for (std::size_t i = header + values; i < blob.size(); ++i)
+                    blob[i] = static_cast<std::uint8_t>(125 + (i + salt) % 5);
+                return MlxMxWeight::from_blob("MXFP8", blob);
+            };
+            std::array<MlxMxWeight, 2> weights{make_weight(gate_rows, 3), make_weight(up_rows, 7)};
+            MlxLinear gate(weights[0]), up(weights[1]);
+            MlxProjectionBatch batch({&gate, &up});
+            for (auto dtype : {float16, bfloat16}) for (int rows = 1; rows <= 6; ++rows) {
+                auto input = astype(reshape(sin(arange(rows * inputs, float32) * .17f),
+                    Shape{1, rows, inputs}), dtype);
+                const bool fused = rows != 5;
+                require(MlxMxWeight::supports_projection_pair_swiglu(weights, input) == fused,
+                    "native block32 SwiGLU pair dispatch mismatch");
+                require(batch.supports_fused_swiglu(input) == fused,
+                    "projection batch did not expose native block32 SwiGLU dispatch");
+                const auto pair = MlxMxWeight::projection_group_matmul(weights, input);
+                for (float limit : {0.f, .25f, 10.f}) {
+                    auto expected = limit > 0.f
+                        ? mfq::metal::moe_limited_swiglu_pair(pair[0], pair[1], limit)
+                        : mfq::metal::moe_swiglu_pair(pair[0], pair[1]);
+                    if (limit == 0.f && dtype == bfloat16) expected = astype(expected, bfloat16);
+                    auto actual = contiguous(batch.swiglu(input, limit));
+                    eval(expected, actual);
+                    require(actual.dtype() == expected.dtype() && actual.shape() == expected.shape() &&
+                        std::memcmp(actual.data<std::uint8_t>(), expected.data<std::uint8_t>(), actual.nbytes()) == 0,
+                        "native block32 SwiGLU changed projection/activation rounding K=" + std::to_string(inputs) +
+                        " N=" + std::to_string(outputs) + " M=" + std::to_string(rows) +
+                        " limit=" + std::to_string(limit) + " dtype=" + (dtype == float16 ? "f16" : "bf16"));
+                    if (fused) {
+                        auto direct = contiguous(MlxMxWeight::projection_pair_swiglu(weights, input, limit));
+                        direct.eval();
+                        require(direct.dtype() == expected.dtype() && direct.shape() == expected.shape() &&
+                            std::memcmp(direct.data<std::uint8_t>(), expected.data<std::uint8_t>(), direct.nbytes()) == 0,
+                            "direct native block32 SwiGLU disagrees with projection batch");
+                    }
+                }
+            }
+            auto input = astype(reshape(sin(arange(2 * inputs, float32)), Shape{inputs, 2}), float16);
+            input = transpose(input);
+            const auto pair = MlxMxWeight::projection_group_matmul(weights, input);
+            auto expected = mfq::metal::moe_limited_swiglu_pair(pair[0], pair[1], 10.f);
+            auto actual = contiguous(batch.swiglu(input, 10.f));
+            eval(expected, actual);
+            require(actual.shape() == Shape{2, outputs} && std::memcmp(actual.data<std::uint8_t>(),
+                expected.data<std::uint8_t>(), actual.nbytes()) == 0,
+                "native block32 SwiGLU did not preserve strided input");
+            require(!MlxMxWeight::supports_projection_pair_swiglu(weights, astype(input, float32)) &&
+                !MlxMxWeight::supports_projection_pair_swiglu(weights, zeros(Shape{7, inputs}, float16)) &&
+                !MlxMxWeight::supports_projection_pair_swiglu(weights, zeros(Shape{0, inputs}, float16)),
+                "native block32 SwiGLU accepted unsupported input");
+            require_invalid([&] { (void)MlxMxWeight::projection_pair_swiglu(weights, input, -1.f); },
+                "native block32 SwiGLU accepted a negative limit");
+            require_invalid([&] { (void)MlxMxWeight::projection_pair_swiglu(weights, input,
+                std::numeric_limits<float>::quiet_NaN()); }, "native block32 SwiGLU accepted a NaN limit");
+            require_invalid([&] { (void)MlxMxWeight::projection_pair_swiglu(
+                std::span<const MlxMxWeight>(weights.data(), 1), input, 0.f); },
+                "native block32 SwiGLU accepted a single weight");
+        }
+    }
+}
+
 void test_block32_mxfp8_projection_batch() {
     using namespace mlx::core;
     constexpr int inputs = 512;
@@ -1684,6 +1850,7 @@ int main() {
         test_matmul("MXFP8", 128, 64);
         test_native_mxfp8_scale_expansion();
         test_mxfp8_all_codes();
+        test_block_scaled_mxfp8_dequantize();
         test_mxfp8_small_m_matches_decode();
         test_native_mxfp8_scale_storage();
         test_embedding("MXFP4", 96);
@@ -1701,6 +1868,7 @@ int main() {
         test_grouped_mxfp8_inverse_rope();
         test_grouped_mxfp8_inverse_rope_small_m_matches_decode();
         test_grouped_block32_mxfp8_inverse_rope_matches_native_qmv();
+        test_grouped_block32_mxfp8_fp16_inverse_rope_dispatch();
         benchmark_v41_block32_mxfp8_inverse_rope();
         test_grouped_row_mxfp8_prefill();
         test_grouped_row_block32_mxfp8_batched_qmm();
@@ -1708,6 +1876,7 @@ int main() {
         test_grouped_row_mxfp8_verify();
         test_grouped_mxfp8_small_m_matches_decode();
         test_block32_mxfp8_projection_batch();
+        test_block32_mxfp8_swiglu_pair();
         std::cout << "MFQ MXFP4/MXFP8 Metal GEMV/MMQ/GEMM/grouped/embedding passed\n";
         return 0;
     } catch (const std::exception& error) {

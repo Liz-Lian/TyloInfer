@@ -298,4 +298,27 @@ array mlx_csa2_attention(const array& query,const array& local,const std::option
         {(heads+3)/4*128,length,1},{128,1,1},{{"D",dim},{"T",query.dtype()}},std::nullopt,false,{}).front();
 }
 
+array mlx_csa2_attention_inverse_rope(const array& query, const array& local,
+    const std::optional<array>& pooled, int pool_length, const array& ids, const array& sinks,
+    int position, int ratio, int window, const array& cosine, const array& sine, int rotary) {
+    if (query.ndim() != 4 || query.shape(0) != 1 || query.shape(1) < 1 || query.shape(1) > 6 ||
+        query.shape(2) < 1 || query.shape(3) < 32 || query.shape(3) > 512 || query.shape(3) % 32 ||
+        query.dtype() != float16 || local.ndim() != 3 || local.shape(0) != 1 || local.dtype() != uint8 ||
+        local.shape(2) != query.shape(3) + query.shape(3) / 32 ||
+        ids.ndim() != 3 || ids.shape(0) != 1 || ids.shape(1) != query.shape(1) ||
+        sinks.shape() != Shape{query.shape(2)} || rotary < 2 || rotary > query.shape(3) || rotary % 2 ||
+        cosine.shape() != Shape{query.shape(1), rotary / 2} || sine.shape() != cosine.shape() ||
+        position < 0 || position > std::numeric_limits<int>::max() - query.shape(1) ||
+        ratio < 1 || window < 1 || pool_length < 0 || (!pooled && pool_length) ||
+        (pooled && (pooled->ndim() != 3 || pooled->shape(0) != 1 || pooled->dtype() != uint8 ||
+            pooled->shape(1) < pool_length || pooled->shape(2) != query.shape(3) / 2 + query.shape(3) / 16)))
+        throw std::invalid_argument("invalid inverse-RoPE packed CSA2 attention geometry");
+    auto pool = pooled ? slice_axis(*pooled, 1, 0, pool_length)
+        : zeros({1, 0, query.shape(3) / 2 + query.shape(3) / 16}, uint8);
+    return array(query.shape(), query.dtype(),
+        std::make_shared<Csa2Short>(to_stream({}), query.shape(3), position, window, false, rotary),
+        {contiguous(query), contiguous(local), contiguous(pool), contiguous(astype(ids, int32)),
+            contiguous(astype(sinks, float32)), contiguous(astype(cosine, float32)), contiguous(astype(sine, float32))});
+}
+
 }

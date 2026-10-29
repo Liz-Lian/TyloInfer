@@ -7,8 +7,8 @@
 #include "mlx_nemotron_h_causal_lm.h"
 #include "mlx_qwen35_causal_lm.h"
 
-#include "mfq_model_graph.h"
-#include "tyloinfer/runtime.h"
+#include "formats/model_graph.h"
+#include "engine/requests/media.h"
 #include "mlx_generation_job.h"
 
 #include <memory>
@@ -28,6 +28,9 @@ struct MlxDuplexComponent {
     explicit operator bool() const { return bool(start) && bool(step) && bool(stop); }
 };
 struct MlxEngineComponents {
+    std::function<bool(const std::vector<std::int64_t>&, const MfqSamplingParams&,
+        MlxGenerationJob&, const MfqTokenConstraintPtr&, int)> speculative_generate;
+    std::function<void()> prepare_speculative;
     std::function<std::int32_t(const std::vector<std::int64_t>&,
         const MfqMultimodalInput&, const MfqSamplingParams&,
         MlxGenerationJob&, const MfqTokenConstraintPtr&)> multimodal_generate;

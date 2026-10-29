@@ -27,6 +27,7 @@ import { RepositoryFiles } from './RepositoryFiles';
 import { estimateCacheBytes, KvCachePlanner, plannedConfiguration, withCacheMemory } from './KvCachePlanner';
 import { useJobStore } from '../../stores/jobStore';
 import { useDownloadReuse, type DownloadReuse } from './useDownloadReuse';
+import { downloadPatterns, isSharedEngram } from './downloadPatterns';
 
 type Translate = (chinese: string, english: string) => string;
 function attentionLabel(profile: ModelAttentionProfile | null | undefined, tr: Translate): string {
@@ -49,17 +50,6 @@ interface ModelBrowserProps {
   downloadDirectoryControl?: ReactNode;
   tr: Translate;
 }
-
-const SUPPORT_FILES = [
-  "*.json",
-  "*.txt",
-  "*.model",
-  "*.tiktoken",
-  "*.jinja",
-  "tokenizer*",
-  "processor*",
-  "preprocessor*",
-];
 
 function formatBytes(value?: number | null): string {
   if (!value) return "—";
@@ -156,10 +146,10 @@ function configurationReasons(status: ModelConfigurationStatus, tr: Translate): 
     if (reason === "The detected runtime memory budget covers at least 70% of the full-residency requirement for the smallest published precision tier.") return tr("当前推理预算已达到最小精度档完整常驻需求的 70%，处于临界区间。", reason);
     if (reason === "The detected runtime memory budget is below 70% of the full-residency requirement for the smallest published precision tier.") return tr("当前推理预算不足最小精度档完整常驻需求的 70%。", reason);
     if (reason === "The catalog is available offline; repository metadata could not be refreshed.") return tr("官方目录仍可离线浏览，但仓库元数据暂未刷新。", reason);
-    if (reason === "GGUF must be converted before the MFQ runtime can load it.") return tr("TyloInfer Runtime 加载前需要先转换 GGUF。", reason.replace('MFQ', 'TyloInfer'));
+    if (reason === "GGUF must be converted before the MFQ runtime can load it." || reason === "GGUF must be converted before the TyloInfer runtime can load it.") return tr("TyloInfer Runtime 加载前需要先转换 GGUF。", "GGUF must be converted before the TyloInfer runtime can load it.");
     if (reason === "The repository can be downloaded, but direct runtime compatibility has not been verified.") return tr("可以下载此仓库，但尚未验证能否由 TyloInfer Runtime 直接加载。", reason);
-    if (reason === "This format is not directly loadable by MFQ.") return tr("TyloInfer 无法直接加载此格式。", reason.replace('MFQ', 'TyloInfer'));
-    if (reason === "This model architecture is not registered in MFQ.") return tr("TyloInfer 尚未注册此模型架构。", reason.replace('MFQ', 'TyloInfer'));
+    if (reason === "This format is not directly loadable by MFQ." || reason === "This format is not directly loadable by TyloInfer.") return tr("TyloInfer 无法直接加载此格式。", "This format is not directly loadable by TyloInfer.");
+    if (reason === "This model architecture is not registered in MFQ." || reason === "This model architecture is not registered in TyloInfer.") return tr("TyloInfer 尚未注册此模型架构。", "This model architecture is not registered in TyloInfer.");
     if (reason === "Runtime compatibility could not be verified from repository metadata.") return tr("无法根据仓库元数据验证 TyloInfer Runtime 兼容性。", reason);
     if (reason === "Tensor payload baseline; excludes streamed PLE, KV cache and runtime repacking.") return tr("按张量载荷计算权重常驻基线，已扣除流式 PLE；不包含 KV 缓存和运行时重排开销。", reason);
     if (reason === "Estimated resident weights include a 10% allowance on packed or unclassified weights; exclude streamed PLE, KV, prefix caches and temporary workspaces.") return tr("量化或未知布局权重暂加 10% 存储余量，已扣除流式 PLE；KV、前缀缓存和临时工作区另计。", reason);
@@ -183,28 +173,8 @@ function safeSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "model";
 }
 
-function isSharedEngram(name: string): boolean {
-  return /(?:^|\/)Engram\/.*\.tq$/i.test(name);
-}
-
 function repositoryDownloadPath(source: Pick<HubModelSummary, 'provider' | 'repo_id'>): string {
   return `models/${source.provider}/${source.repo_id.split('/').map(safeSegment).join('/')}`;
-}
-
-function downloadPatterns(variant: HubModelVariant | null): string[] {
-  if (!variant) return [];
-  if (variant.format === "unknown") return variant.files;
-  const weights = variant.files.length <= 48
-    ? variant.files.filter(name => !isSharedEngram(name))
-    : variant.format === "tq"
-      ? [`${variant.label}*.tq`]
-      : variant.format === "hf"
-        ? ["*.safetensors", "*.bin"]
-        : variant.format === "gguf"
-          ? ["*.gguf"]
-          : variant.files.slice(0, 48);
-  const shared = variant.files.filter(isSharedEngram);
-  return Array.from(new Set([...weights, ...shared, ...SUPPORT_FILES]));
 }
 
 function ConfigurationDetails({ status, planned = false, rows, tr }: { status: ModelConfigurationStatus; planned?: boolean; rows?: PressureRow[]; tr: Translate }) {

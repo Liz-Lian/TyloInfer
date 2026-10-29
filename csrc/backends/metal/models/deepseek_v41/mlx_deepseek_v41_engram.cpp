@@ -709,6 +709,7 @@ array MlxDeepseekV41Engram::forward(
 void MlxDeepseekV41Engram::prefetch(
     DeepseekV41EngramHashBatch& hashes) const {
     if (hash_layer_index_ < 0 || hash_layer_index_ >= hashes.layers ||
+        hashes.layers != static_cast<int>(config_.engram_layer_ids.size()) ||
         hashes.prefetched_rows.size() !=
             static_cast<std::size_t>(hashes.layers)) {
         throw std::invalid_argument(
@@ -723,10 +724,27 @@ void MlxDeepseekV41Engram::prefetch(
     auto rows = std::vector<std::int64_t>(
         hashes.layer(hash_layer_index_).begin(),
         hashes.layer(hash_layer_index_).end());
+    auto read = [table = table_, rows = std::move(rows)] {
+        return table->prepare_rows(rows);
+    };
+    if (hashes.tokens <= 8) {
+        slot = std::async(std::launch::async, std::move(read)).share();
+        return;
+    }
+    std::shared_future<MlxQuantizedRowBatch> previous;
+    std::int64_t previous_layer = -1;
+    for (std::size_t index = 0; index < hashes.prefetched_rows.size(); ++index) {
+        const auto layer = config_.engram_layer_ids[index];
+        if (layer < layer_ && layer > previous_layer && hashes.prefetched_rows[index].valid()) {
+            previous = hashes.prefetched_rows[index];
+            previous_layer = layer;
+        }
+    }
     slot = std::async(
         std::launch::async,
-        [table = table_, rows = std::move(rows)] {
-            return table->prepare_rows(rows);
+        [read = std::move(read), previous = std::move(previous)] {
+            if (previous.valid()) (void)previous.get();
+            return read();
         }).share();
 }
 

@@ -52,7 +52,7 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
           <option value="all">{tr('全部', 'All')}</option>{[...new Set(artifacts.map(item => item.architecture).filter(Boolean))].sort().map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
         <label>{tr('格式', 'Format')}<select aria-label={tr('筛选格式', 'Filter format')} value={format} onChange={event => setFormat(event.target.value)}>
-          <option value="all">{tr('全部', 'All')}</option><option value="tq">TQ</option><option value="hf">HuggingFace</option>
+          <option value="all">{tr('全部', 'All')}</option><option value="tq">TQ</option><option value="hf">HuggingFace / MLX</option><option value="gguf">GGUF</option>
         </select></label>
         <label>{tr('排序', 'Sort')}<select aria-label={tr('检查点排序', 'Checkpoint sort')} value={sort} onChange={event => setSort(event.target.value)}>
           <option value="recent">{tr('最近修改', 'Recently modified')}</option><option value="name">{tr('模型名称', 'Model name')}</option><option value="size">{tr('文件大小', 'File size')}</option>

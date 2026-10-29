@@ -1,0 +1,12 @@
+#pragma once
+static constexpr const char* kGgufDecode = R"GGUFMETAL(
+#define GGML_COMMON_DECL_METAL
+#define GGML_COMMON_IMPL_METAL
+@TYLOINFER_GGUF_COMMON_SOURCE@
+@TYLOINFER_GGUF_DECODE_SOURCE@
+)GGUFMETAL";
+static constexpr const char* kGgufNax = R"GGUFNAX(
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+@TYLOINFER_NAX_FRAGMENT_SOURCE@
+@TYLOINFER_GGUF_MATMUL_SOURCE@
+)GGUFNAX";

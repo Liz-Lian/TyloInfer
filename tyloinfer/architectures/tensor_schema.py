@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tyloinfer.architectures.hf_config import text_section
+from tyloinfer.formats.mlx import source_tensor_name as mlx_source_tensor_name
 from tyloinfer.architectures.nemotron_h import (
     NemotronHConfig,
     layer_mixers_from_config,
@@ -490,11 +491,17 @@ def map_source_tensor_name(
         if require_registered:
             raise ValueError("model architecture has no canonical tensor schema")
         return None
+    normalized = mlx_source_tensor_name(source_name)
+    auxiliary = next((suffix for suffix in (".scales", ".biases") if normalized.endswith(suffix)), None)
     mapped = registration.source_mapper(
-        source_name,
+        normalized if auxiliary is None else normalized[:-len(auxiliary)] + ".weight",
         topology_from_config(config),
         config,
     )
+    if mapped is not None and auxiliary is not None:
+        mapped = TensorNameMapping(
+            mapped.canonical_name.removesuffix(".weight") + auxiliary, mapped.component
+        )
     if mapped is None and require_registered:
         raise KeyError(
             f"{registration.architecture} source tensor has no canonical mapping: {source_name}"
@@ -808,6 +815,9 @@ _QWEN4_LAYER_SUFFIXES: dict[str, str] = {
     "mlp.gate.weight": "mlp.router.weight",
     "mlp.experts.gate_up_proj": "mlp.experts.gate_up.weight",
     "mlp.experts.down_proj": "mlp.experts.down.weight",
+    "mlp.experts.gate_proj.weight": "mlp.experts.gate.weight",
+    "mlp.experts.up_proj.weight": "mlp.experts.up.weight",
+    "mlp.experts.down_proj.weight": "mlp.experts.down.weight",
     "mlp.shared_expert.gate_proj.weight": "mlp.shared_expert.gate.weight",
     "mlp.shared_expert.up_proj.weight": "mlp.shared_expert.up.weight",
     "mlp.shared_expert.down_proj.weight": "mlp.shared_expert.down.weight",
@@ -2159,6 +2169,8 @@ def _nemotron_h_source_mapper(
 ) -> TensorNameMapping | None:
     """Map one Nemotron-H text/omni tensor into the canonical vocabulary."""
 
+    if source_name.startswith(("backbone.", "lm_head.")):
+        source_name = "language_model." + source_name
     canonical = _already_canonical(source_name)
     if canonical is not None:
         return canonical

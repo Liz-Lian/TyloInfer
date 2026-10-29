@@ -61,7 +61,7 @@ def test_studio_uses_one_package_for_web_and_desktop_clients():
 
 
 def test_studio_macos_icons_have_platform_padding():
-    assert "const MACOS_ICON_SCALE: f64 = 0.83;" in BUILD
+    assert "const MACOS_ICON_SCALE: f64 = 0.79;" in BUILD
     assert 'std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")' in BUILD
     assert "render(size, MACOS_ICON_SCALE)" in BUILD
     assert "IconImage::from_rgba_data(size, size, render(size, 1.0))" in BUILD

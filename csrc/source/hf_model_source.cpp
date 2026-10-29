@@ -2,6 +2,8 @@
 
 #include "formats/fp8_sq_blob.h"
 #include "compat/mfq_legacy_tensor_names.h"
+#include "mlx_affine_source.h"
+#include "mlx_tensor_names.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -250,20 +252,28 @@ MfqLegacyTensorAliases source_compatibility(
     const auto config = source.read_asset(kModelConfigAsset);
     std::vector<std::string> names;
     names.reserve(source.tensors().size());
-    for (const auto& tensor : source.tensors()) names.push_back(tensor.name);
+    std::unordered_map<std::string, std::string> normalized_to_source;
+    for (const auto& tensor : source.tensors()) {
+        auto normalized = mlx_hf_tensor_name(tensor.name);
+        if (!normalized_to_source.emplace(normalized, tensor.name).second)
+            throw std::invalid_argument("duplicate normalized HF tensor: " + normalized);
+        names.push_back(std::move(normalized));
+    }
     auto compatibility = make_legacy_tensor_aliases(
         source.architecture(),
         std::string_view(reinterpret_cast<const char*>(config.data()), config.size()),
         names);
+    for (auto& [canonical, stored] : compatibility.canonical_to_stored)
+        stored = normalized_to_source.at(stored);
     std::unordered_set<std::string> claimed;
     for (const auto& [canonical, stored] :
          compatibility.canonical_to_stored) {
         static_cast<void>(canonical);
         claimed.insert(stored);
     }
-    for (const auto& name : names) {
-        if (claimed.find(name) == claimed.end()) {
-            compatibility.canonical_to_stored.emplace(name, name);
+    for (const auto& tensor : source.tensors()) {
+        if (claimed.find(tensor.name) == claimed.end()) {
+            compatibility.canonical_to_stored.emplace(tensor.name, tensor.name);
         }
     }
     return compatibility;
@@ -367,6 +377,13 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
     };
 
     std::unordered_set<std::string> consumed_scales;
+    json mlx_quantization;
+    if (impl_->source.has_asset(kModelConfigAsset)) {
+        const auto config = impl_->source.read_asset(kModelConfigAsset);
+        const auto parsed = json::parse(reinterpret_cast<const char*>(config.data()),
+            reinterpret_cast<const char*>(config.data() + config.size()));
+        mlx_quantization = parsed.value("quantization", json{});
+    }
     std::vector<std::pair<std::string, std::string>> aliases(
         canonical_to_source.begin(), canonical_to_source.end());
     std::sort(aliases.begin(), aliases.end());
@@ -382,14 +399,26 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
         record.metadata.stored_dtype = values->dtype;
         record.metadata.shape = values->shape;
         const auto item_size = dense_item_size(values->dtype);
-        if (item_size != 0) {
+        if (values->dtype == "U32") {
+            const auto binding = mlx_affine_binding(impl_->source, mlx_quantization, *values);
+            const auto& layout = binding.layout;
+            record.metadata.dtype = "MLX-AFFINE";
+            record.metadata.shape = layout.shape;
+            record.segments.push_back({0, binding.prefix, {}, 0, 0});
+            record.segments.push_back({layout.prefix_bytes, {}, source_name, 0, layout.values_bytes});
+            record.segments.push_back({layout.scales_offset(), {}, binding.scales, 0, layout.scales_bytes});
+            record.segments.push_back({layout.biases_offset(), {}, binding.biases, 0, layout.scales_bytes});
+            record.metadata.nbytes = layout.total_bytes();
+            consumed_scales.insert(binding.scales); consumed_scales.insert(binding.biases);
+        } else if (item_size != 0) {
             if (checked_product(*values->shape, item_size, source_name) !=
                 values->nbytes) {
                 throw std::runtime_error(
                     "dense Safetensors byte size mismatch: " + source_name);
             }
             record.metadata.dtype = values->dtype;
-            auto prefix = dense_prefix(*values->shape);
+            record.metadata.shape = mlx_hf_tensor_shape(canonical, *values->shape);
+            auto prefix = dense_prefix(*record.metadata.shape);
             record.segments.push_back({0, std::move(prefix), {}, 0, 0});
             const auto values_offset = record.segments.front().inline_bytes.size();
             record.segments.push_back({
@@ -663,6 +692,23 @@ const TensorMetadata* HfModelSource::find_tensor(
 
 TensorLayout HfModelSource::tensor_layout() const noexcept {
     return impl_->legacy_tensor_compatibility.layout;
+}
+
+std::optional<TensorFileRange> HfModelSource::tensor_file_range_at(std::string_view name,
+    std::uint64_t offset, std::size_t size) const {
+    const auto found = impl_->records.find(std::string(name));
+    if (found == impl_->records.end()) throw std::out_of_range("HF tensor not found: " + std::string(name));
+    const auto& record = found->second;
+    if (offset > record.metadata.nbytes || size > record.metadata.nbytes - offset)
+        throw std::out_of_range("HF tensor file range is out of bounds");
+    for (const auto& segment : record.segments) {
+        if (!segment.inline_bytes.empty() || offset < segment.offset || offset - segment.offset > segment.nbytes ||
+            size > segment.nbytes - (offset - segment.offset)) continue;
+        const auto& location = impl_->source.location(segment.source_name);
+        return TensorFileRange{impl_->source.source_paths().at(location.shard),
+            location.offset + segment.source_offset + offset - segment.offset, size};
+    }
+    return std::nullopt;
 }
 
 void HfModelSource::read_range_into(

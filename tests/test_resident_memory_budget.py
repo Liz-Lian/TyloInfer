@@ -148,14 +148,16 @@ def test_irreducible_budget_failure_does_not_modify_workers(tmp_path):
 
 
 @pytest.mark.parametrize('readers', [0, 3])
-def test_budget_configuration_preserves_process_and_live_context(tmp_path, readers):
+@pytest.mark.parametrize('prefix_enabled', [False, True])
+def test_budget_configuration_preserves_process_and_live_context(tmp_path, readers, prefix_enabled):
     async def run():
         pool = RuntimePool(ModelCatalog([]), tmp_path / 'runtime', max_runtime_memory_bytes=20 * GIB)
         a = instance(tmp_path, 'a', dense=GIB, experts=6 * GIB, prefix=0)
         a.control_leases = a.read_control_leases = readers
+        a.prefix_dynamic_budget = prefix_enabled
         a.artifact = artifact(tmp_path, 'a', 8, 7)
         pool._instances = {a.id: a}
-        pool._load_requests = {'a': ModelLoadRequest(model='a')}
+        pool._load_requests = {'a': ModelLoadRequest(model='a', prefix_cache_enabled=prefix_enabled)}
         context = _TestJobContext()
         context.job_id, context.cancel_requested = uuid4(), False
         result = await pool.configure_memory_policy(context, {'total_limit_bytes': 6 * GIB})

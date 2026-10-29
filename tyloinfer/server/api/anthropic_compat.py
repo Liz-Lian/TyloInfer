@@ -176,7 +176,7 @@ def parse_messages_request(body: Any) -> MessagesRequest:
             budget = thinking.get("budget_tokens")
             if isinstance(budget, bool) or not isinstance(budget, int) or not 1024 <= budget < maximum:
                 raise OpenAIRequestError("thinking.budget_tokens must be at least 1024 and below max_tokens")
-            raise OpenAIRequestError("thinking.budget_tokens is not supported by MFQ; use adaptive or disabled thinking")
+            raise OpenAIRequestError("thinking.budget_tokens is not supported by TyloInfer; use adaptive or disabled thinking")
         converted["enable_thinking"] = thinking["type"] != "disabled"
     for field in ("output_config", "context_management", "container"):
         if body.get(field) is not None:

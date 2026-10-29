@@ -11,7 +11,9 @@ def stage_sources(repository: Path, build_directory: Path) -> Path:
     trees = (
         "tyloinfer/kernels/hip",
         "csrc/backends/hip/include",
-        "csrc/core/include",
+        "csrc/formats",
+        "csrc/components/io",
+        "csrc/backends/cpu/native",
         "csrc/components/ggml/include",
         "csrc/components/ggml/src/ggml-hip",
     )

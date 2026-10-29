@@ -219,6 +219,7 @@ bool MlxGroupedLinear::supports_single_row_swiglu(const array& input) const noex
     return supports_small_m_swiglu(input) && input.size() == static_cast<std::size_t>(impl_->width);
 }
 bool MlxGroupedLinear::supports_small_m_swiglu(const array& input) const noexcept {
+    if (impl_->block32) return MlxMxWeight::supports_projection_pair_swiglu(impl_->mx, input);
     return impl_->mx8 && impl_->outputs.size() == 2 && impl_->outputs[0] == impl_->outputs[1] &&
         supports(input) && input.dtype() != mlx::core::float32;
 }
@@ -229,6 +230,7 @@ array MlxGroupedLinear::single_row_swiglu(const array& input, float limit) const
 array MlxGroupedLinear::small_m_swiglu(const array& input, float limit) const {
     if (!supports_small_m_swiglu(input)) throw MlxGroupedLinearUnsupported("unsupported native SwiGLU input");
     if (!std::isfinite(limit) || limit < 0) throw std::invalid_argument("SwiGLU limit must be finite and non-negative");
+    if (impl_->block32) return MlxMxWeight::projection_pair_swiglu(impl_->mx, input, limit);
     const int rows = checked_int(input.size() / impl_->width, "SwiGLU rows overflow");
     auto inputs = impl_->inputs;
     inputs.push_back(mlx::core::contiguous(mlx::core::reshape(input, Shape{rows, impl_->width})));

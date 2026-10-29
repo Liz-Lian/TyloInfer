@@ -174,8 +174,7 @@ void MlxMtpHistoryBuffer::append(
             hidden.dtype() != mlx::core::float32) ||
         token_ids.size() != static_cast<std::size_t>(hidden.shape(1)) ||
         token_ids_.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) - token_ids.size() ||
-        (!hidden_.empty() && (hidden.shape(2) != hidden_.front().shape(2) ||
-            hidden.dtype() != hidden_.front().dtype())) ||
+        (!hidden_.empty() && hidden.shape(2) != hidden_.front().shape(2)) ||
         std::any_of(token_ids.begin(), token_ids.end(), [](auto id) { return id < 0; })) {
         throw std::invalid_argument("MTP committed history shape or token IDs disagree");
     }
@@ -253,6 +252,8 @@ MlxDsparkDepthController::MlxDsparkDepthController(
     // Without it the controller can never discover that a valid but costly
     // one-token predictor loses to the target model alone.
     warmup_.insert(warmup_.end(), {0, 0, 0});
+    // Refresh speculative cost after the plain baseline has changed residency.
+    warmup_.push_back(current_depth_);
 }
 
 void MlxDsparkDepthController::observe(
@@ -302,6 +303,7 @@ void MlxDsparkDepthController::observe(
     milliseconds_since_explore_ += cycle_ms;
 
     if (!warmup_.empty()) {
+        if (!time_sample || used_depth != warmup_.front()) return;
         warmup_.erase(warmup_.begin());
         if (!warmup_.empty()) {
             current_depth_ = warmup_.front();

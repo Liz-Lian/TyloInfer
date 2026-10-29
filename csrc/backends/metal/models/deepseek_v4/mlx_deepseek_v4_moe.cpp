@@ -1883,16 +1883,10 @@ MlxDeepseekV4Moe::forward_branches(
     };
 #endif
     if (tq_ || tq_expert_cache_) {
-        const auto gate_up = [&](const MlxTqExpertWeights& weights, const array* reuse) {
-            return weights.gate.swiglu(weights.up, source, expert_ids,
-                static_cast<float>(config_.swiglu_limit), false, reuse);
-        };
-        const auto down = [&](const MlxTqExpertWeights& weights, const array& intermediate, const array* reuse) {
-            return weights.down.routed_matmul_reduce(intermediate, expert_ids, expert_weights, reuse);
-        };
         if (tq_expert_cache_) shared.emplace(build_shared());
-        routed = tq_expert_cache_ ? tq_expert_cache_->apply(layer_, expert_ids, gate_up, down, &*shared)
-            : down(*tq_, gate_up(*tq_, nullptr), nullptr);
+        routed = tq_expert_cache_ ? tq_expert_cache_->apply_ffn(layer_, source, expert_ids,
+            expert_weights, static_cast<float>(config_.swiglu_limit), false, &*shared)
+            : tq_->routed_ffn(source, expert_ids, expert_weights, static_cast<float>(config_.swiglu_limit));
     }
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     else if (mfq::mfq_compat_enabled && ssd_expert_cache_) {

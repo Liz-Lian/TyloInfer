@@ -20,7 +20,11 @@ struct MlxQwen4QsaDecodePrologue {
     mlx::core::array output_gate;
     mlx::core::array key;
     mlx::core::array index_query;
+    std::optional<mlx::core::array> cache_value;
+    std::optional<mlx::core::array> cache_index_key;
 };
+
+mlx::core::array qwen4_stream_mean(const mlx::core::array& streams, int hidden, int count);
 
 mlx::core::array qwen4_grouped_rms_norm(
     const mlx::core::array& value,
@@ -86,9 +90,17 @@ mlx::core::array qwen4_qsa_block_scores(
     const mlx::core::array& query,
     const mlx::core::array& pooled_keys);
 
-mlx::core::array qwen4_qsa_prefill_output_gate(
+mlx::core::array qwen4_qsa_output_gate(
     const mlx::core::array& attended,
-    const mlx::core::array& gate);
+    const mlx::core::array& gate,
+    std::optional<mlx::core::Dtype> output_dtype = std::nullopt);
+
+mlx::core::array qwen4_qsa_pool_index_keys(
+    const mlx::core::array& raw_keys,
+    const mlx::core::array& norm_weight,
+    const mlx::core::array& positions,
+    int begin, int end, int position_offset,
+    int rotary_dimension, float rope_theta, float eps);
 
 mlx::core::array qwen4_qsa_select_blocks(
     const mlx::core::array& query,
@@ -114,7 +126,9 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
     int index_dimension,
     int rotary_dimension,
     float rope_theta,
-    float eps);
+    float eps,
+    const mlx::core::array* cache_value = nullptr,
+    bool half_query = false);
 
 mlx::core::array qwen4_dense_gqa_attention(
     const mlx::core::array& query,

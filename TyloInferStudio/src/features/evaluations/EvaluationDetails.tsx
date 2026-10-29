@@ -41,6 +41,6 @@ export function AnswerDetails({ metrics, tr }: { metrics: EvaluationResult['metr
 export function exportEvaluation(item: EvaluationResult) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(item, null, 2)], { type: 'application/json' }));
   const anchor = document.createElement('a');
-  anchor.href = url; anchor.download = `mfq-evaluation-${item.id}.json`; anchor.click();
+  anchor.href = url; anchor.download = `tyloinfer-evaluation-${item.id}.json`; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

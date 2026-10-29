@@ -1,7 +1,7 @@
 #include "mlx_quantized_row_store.h"
 #include "mlx_resource_telemetry.h"
 #include "mlx_nint_rows.h"
-#include "tyloinfer/host_parallel.h"
+#include "backends/cpu/native/host_parallel.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -23,6 +23,7 @@ namespace mfq::metal {
 namespace {
 
 constexpr std::size_t kMxHeaderBytes = 56;
+constexpr std::size_t kMxBatchMinimumRows = 16384;
 
 struct RowReadCounts {
     std::uint64_t bytes = 0, calls = 0;
@@ -253,7 +254,7 @@ struct MlxQuantizedRowStore::Impl {
         const auto source_size = model.record(record).nbytes;
         for (const auto& span : sorted) {
             if (span.offset > source_size || span.size > source_size - span.offset)
-                throw std::out_of_range("NINT row read exceeds its record");
+                throw std::out_of_range("quantized row read exceeds its record");
         }
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
             return a.offset < b.offset;
@@ -303,7 +304,6 @@ struct MlxQuantizedRowStore::Impl {
     void read_mxfp8(
         std::int64_t row,
         RequestedRow& requested) const {
-        auto& output = requested.values;
         std::vector<std::uint8_t> raw(source_row_bytes);
         model.read_range_into(
             record,
@@ -318,6 +318,13 @@ struct MlxQuantizedRowStore::Impl {
             std::as_writable_bytes(std::span<std::uint8_t>(
                 raw.data() + width,
                 static_cast<std::size_t>(scale_columns))));
+        decode_mxfp8(raw, requested);
+    }
+
+    void decode_mxfp8(
+        std::span<const std::uint8_t> raw,
+        RequestedRow& requested) const {
+        auto& output = requested.values;
         output.resize(static_cast<std::size_t>(width));
         for (int group = 0; group < scale_columns; ++group) {
             const auto scale = raw[static_cast<std::size_t>(width + group)];
@@ -337,6 +344,35 @@ struct MlxQuantizedRowStore::Impl {
                     decode_lut[lookup_base | value];
             }
         }
+    }
+
+    void read_mxfp8_batch(
+        std::vector<RequestedRow>& requested,
+        const std::vector<std::size_t>& misses,
+        RowReadCounts& counts) const {
+        if (misses.size() > std::numeric_limits<std::size_t>::max() / source_row_bytes)
+            throw std::overflow_error("MXFP8 row batch exceeds storage limits");
+        std::vector<std::uint8_t> raw(misses.size() * source_row_bytes);
+        std::vector<mfq::ReadSpan> spans;
+        spans.reserve(misses.size() * 2);
+        for (std::size_t item = 0; item < misses.size(); ++item) {
+            const auto row = requested[misses[item]].row;
+            auto* data = reinterpret_cast<std::byte*>(raw.data() + item * source_row_bytes);
+            spans.push_back({values_offset + std::uint64_t(row) * width,
+                data, std::size_t(width)});
+            spans.push_back({scales_offset + std::uint64_t(row) * scale_columns,
+                data + width, std::size_t(scale_columns)});
+        }
+        {
+            RowReadScope observation(counts);
+            read_batch(spans);
+        }
+        workers.run(0, misses.size(), 32, worker_count,
+            [&](std::int64_t begin, std::int64_t end) {
+                for (auto item = begin; item < end; ++item)
+                    decode_mxfp8({raw.data() + item * source_row_bytes, source_row_bytes},
+                        requested[misses[item]]);
+            });
     }
 
     void touch(
@@ -433,6 +469,8 @@ struct MlxQuantizedRowStore::Impl {
             nint->append_rows(selected.data(), selected.size(), packed);
             for (std::size_t item = 0; item < misses.size(); ++item)
                 packed.copy_row(item, requested[misses[item]].packed);
+        } else if (misses.size() >= kMxBatchMinimumRows) {
+            read_mxfp8_batch(requested, misses, read_counts);
         } else {
             workers.run(0, misses.size(), 1, worker_count,
                 [&](std::int64_t begin, std::int64_t end) {
@@ -441,6 +479,8 @@ struct MlxQuantizedRowStore::Impl {
                         read_mxfp8(requested[index].row, requested[index]);
                     }
                 });
+            read_counts.bytes = misses.size() * source_row_bytes;
+            read_counts.calls = misses.size() * 2;
         }
         const auto io_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - io_begin).count();
@@ -468,8 +508,8 @@ struct MlxQuantizedRowStore::Impl {
         }
         {
             std::scoped_lock lock(mutex);
-            counters.bytes_read += nint || tq ? read_counts.bytes : misses.size() * source_row_bytes;
-            counters.read_calls += nint || tq ? read_counts.calls : misses.size() * 2;
+            counters.bytes_read += read_counts.bytes;
+            counters.read_calls += read_counts.calls;
             for (const auto index : misses) {
                 admit(std::move(requested[index]));
             }

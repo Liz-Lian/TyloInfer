@@ -101,6 +101,16 @@ int main() {
                 "case-insensitive shard family sidecar was lost");
     }
 
+    write_text(explicit_profile, R"({"version":1,"chat":{"mtp_max_draft_tokens":7}})");
+    require(resolve_mfq_runtime_profile(model.string(), "qwen4_exp", "qwen4_exp", "test",
+        "", "{}", explicit_profile.string()).chat.mtp_max_draft_tokens.value_or(0) == 7,
+        "block-predictor depth seven was rejected");
+    write_text(explicit_profile, R"({"version":1,"chat":{"mtp_max_draft_tokens":8}})");
+    bool rejected = false;
+    try { (void)resolve_mfq_runtime_profile(model.string(), "qwen4_exp", "qwen4_exp", "test",
+        "", "{}", explicit_profile.string()); }
+    catch (const std::exception&) { rejected = true; }
+    require(rejected, "unsupported block-predictor depth was accepted");
     std::filesystem::remove_all(root);
     return 0;
 }

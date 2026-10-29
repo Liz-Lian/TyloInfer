@@ -220,4 +220,7 @@ def test_loader_only_passes_staged_inputs_to_torch(tmp_path, monkeypatch):
     for path in captured["sources"] + captured["extra_include_paths"]:
         value = Path(path)
         assert value.exists() and value.is_relative_to(tmp_path)
+    staged = next(Path(path) for path in captured["extra_include_paths"] if Path(path).name == "csrc")
+    assert (staged / "formats/fp8_sq_blob.h").is_file()
+    assert (staged / "backends/cpu/native/host_parallel.h").is_file()
     assert captured["build_directory"] == str(tmp_path / "cache")

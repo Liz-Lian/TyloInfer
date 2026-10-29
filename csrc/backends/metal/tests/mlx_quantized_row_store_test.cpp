@@ -1,6 +1,7 @@
 #include "mlx_quantized_row_store.h"
 #include "mlx_tq.h"
 #include "mlx_resource_telemetry.h"
+#include "mlx_deepseek_v41_engram.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -40,9 +41,7 @@ void append_string(std::string& output, const std::string& value) {
     output.append(value);
 }
 
-std::string row_table_payload() {
-    constexpr std::uint64_t rows = 4;
-    constexpr std::uint64_t width = 32;
+std::string row_table_payload(std::uint64_t rows = 4, std::uint64_t width = 32) {
     std::string result{"MXT1", 4};
     result.push_back(1);
     result.push_back(8);
@@ -56,7 +55,7 @@ std::string row_table_payload() {
             static_cast<std::size_t>(width),
             static_cast<char>((row & 1u) == 0 ? 0x38 : 0x40));
     }
-    result.append(static_cast<std::size_t>(rows), static_cast<char>(127));
+    result.append(static_cast<std::size_t>(rows * (width / 32)), static_cast<char>(127));
     return result;
 }
 
@@ -265,12 +264,166 @@ void test_shared_engram_rows(const std::filesystem::path& root) {
 
 } // namespace
 
+void test_large_mxfp8_rows(const std::filesystem::path& root) {
+    using namespace mfq::metal;
+    constexpr int rows = 16385;
+    for (int width : {32, 256}) {
+        const auto path = root / ("large-" + std::to_string(width) + ".mfq");
+        const auto payload = row_table_payload(rows, width);
+        write_fixture(path, "MXFP8", payload);
+        MfqContainer model(path);
+        MlxQuantizedRowStore store(model, "table.weight", rows, width, 17, 2);
+        std::vector<std::int64_t> ids;
+        for (int row = rows - 1; row >= 0; --row) ids.push_back(row);
+        ids.push_back(rows - 1); ids.push_back(0);
+        const auto result = values(store.prepare_rows(ids).decode());
+        for (std::size_t index = 0; index < ids.size(); ++index)
+            for (int column = 0; column < width; ++column)
+                require(result[index * width + column] == (ids[index] % 2 ? 2.f : 1.f),
+                    "batched MXFP8 gather changed row order or values");
+        auto stats = store.stats();
+        require(stats.cache_misses == rows && stats.cache_hits == 2
+            && stats.row_requests == ids.size() && stats.resident_rows == 17
+            && stats.bytes_read == std::uint64_t(rows) * (width + width / 32)
+            && stats.read_calls < rows / 2,
+            "batched MXFP8 reads were not coalesced or counted accurately");
+        const std::array<std::int64_t, 2> cached{0, 1};
+        const auto cached_values = values(store.prepare_rows(cached).decode());
+        require(cached_values.front() == 1.f && cached_values[width] == 2.f
+            && store.stats().read_calls == stats.read_calls,
+            "batched MXFP8 gather did not retain its row cache");
+        for (int count : {16383, 16384}) {
+            MlxQuantizedRowStore boundary(model, "table.weight", rows, width, 0, 2);
+            auto selected = boundary.prepare_rows(std::span<const std::int64_t>(ids.data(), count));
+            require(selected.values.size() == std::size_t(count) * width
+                && boundary.stats().cache_misses == count
+                && (count < 16384 ? boundary.stats().read_calls == 2 * count
+                    : boundary.stats().read_calls < count / 2),
+                "MXFP8 row batching threshold changed the small-read path");
+        }
+        MlxQuantizedRowStore mixed(model, "table.weight", rows, width, 1, 2);
+        const std::array<std::int64_t, 1> warm{0};
+        (void)mixed.prepare_rows(warm);
+        auto mixed_result = mixed.prepare_rows(ids);
+        require(mixed.stats().cache_misses == rows && mixed.stats().cache_hits == 3,
+            "batched MXFP8 gather lost resident or duplicated rows");
+        for (std::size_t index = 0; index < ids.size(); ++index)
+            require(float(mixed_result.values[index * width]) == (ids[index] % 2 ? 2.f : 1.f),
+                "batched MXFP8 gather mixed resident and missing row indices");
+        const auto previous_requests = store.stats().row_requests;
+        const std::array<std::int64_t, 2> invalid{0, rows};
+        bool rejected = false;
+        try { (void)store.prepare_rows(invalid); }
+        catch (const std::out_of_range&) { rejected = true; }
+        require(rejected && store.stats().row_requests == previous_requests,
+            "invalid MXFP8 batch mutated row statistics");
+        for (bool bad_scale : {false, true}) {
+            auto damaged = payload;
+            damaged[bad_scale ? damaged.size() - 1 : 56 + (rows - 1) * width] =
+                static_cast<char>(bad_scale ? 255 : 0x7f);
+            const auto damaged_path = root / (bad_scale ? "bad-scale.mfq" : "bad-value.mfq");
+            write_fixture(damaged_path, "MXFP8", damaged);
+            MlxQuantizedRowStore bad(MfqContainer(damaged_path), "table.weight", rows, width, 17, 2);
+            bool failed = false;
+            try { (void)bad.prepare_rows(ids); }
+            catch (const std::runtime_error& error) {
+                failed = std::string(error.what()) == (bad_scale
+                    ? "native MXFP8 row contains an invalid E8M0 scale"
+                    : "native MXFP8 row contains an E4M3 NaN");
+            }
+            require(failed && bad.stats().rows_loaded == 0 && bad.stats().resident_rows == 0,
+                "failed MXFP8 batch partially entered the cache");
+        }
+    }
+}
+
+void test_engram_prefetch_order(const std::filesystem::path& path) {
+    using namespace mfq::metal;
+    struct Record { std::string name, dtype, payload; };
+    std::vector<Record> records;
+    const auto dense = [&](const std::string& name, int rows, int width) {
+        std::string payload;
+        append_little<std::uint32_t>(payload, 2);
+        append_little<std::int64_t>(payload, rows);
+        append_little<std::int64_t>(payload, width);
+        const std::vector<float> data(rows * width, 0.125f);
+        payload.append(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
+        records.push_back({name, "F32", std::move(payload)});
+    };
+    for (int layer : {1, 14}) {
+        const auto prefix = "model.block." + std::to_string(layer) + ".associative_memory";
+        dense(prefix + ".query.weight", 4, 4);
+        dense(prefix + ".key.weight", 4, 4);
+        dense(prefix + ".projection.weight", 20, 32);
+        records.push_back({prefix + ".embedding.weight", "MXFP8", row_table_payload()});
+    }
+    std::string bytes{"MFQ1", 4};
+    append_little<std::uint32_t>(bytes, 2);
+    append_string(bytes, "unit-test");
+    append_little<std::uint32_t>(bytes, 0);
+    append_little<std::uint32_t>(bytes, records.size());
+    for (const auto& record : records) {
+        append_string(bytes, record.name);
+        append_string(bytes, record.dtype);
+        append_little<std::uint64_t>(bytes, record.payload.size());
+    }
+    for (const auto& record : records) bytes.append(record.payload);
+    { std::ofstream file(path, std::ios::binary);
+      file.write(bytes.data(), bytes.size());require(bool(file), "cannot write Engram fixture"); }
+    DeepseekV41Config config;
+    config.hidden = 4; config.hc_mult = 4;
+    config.engram_layer_ids = {1, 14}; config.engram_num_embeddings = {4, 4};
+    config.engram_head_dim = 32; config.engram_max_ngram_size = 2; config.engram_n_heads = 1;
+    MfqContainer model(path);
+    auto first = MlxDeepseekV41Engram::load(model, config, 1);
+    auto second = MlxDeepseekV41Engram::load(model, config, 14);
+    const auto batch = [](int tokens = 1) {
+        DeepseekV41EngramHashBatch value;
+        value.batch = value.hash_columns = 1; value.tokens = tokens;
+        value.layers = 2; value.values.resize(2 * tokens);
+        std::fill(value.values.begin() + tokens, value.values.end(), 1);
+        value.prefetched_rows.resize(2);
+        return value;
+    };
+    auto normal = batch();
+    first.prefetch(normal); second.prefetch(normal);
+    require_row(values(normal.prefetched_rows[0].get().decode()), 0, 1.f);
+    require_row(values(normal.prefetched_rows[1].get().decode()), 0, 2.f);
+    for (int tokens : {1, 2, 3, 6, 8}) {
+        auto short_input = batch(tokens);
+        std::promise<MlxQuantizedRowBatch> short_failure;
+        short_input.prefetched_rows[0] = short_failure.get_future().share();
+        short_failure.set_exception(std::make_exception_ptr(std::runtime_error("earlier Engram read failed")));
+        second.prefetch(short_input);
+        require_row(values(short_input.prefetched_rows[1].get().decode()), 0, 2.f);
+    }
+    auto failed = batch(16);
+    std::promise<MlxQuantizedRowBatch> failure;
+    failed.prefetched_rows[0] = failure.get_future().share();
+    failure.set_exception(std::make_exception_ptr(std::runtime_error("earlier Engram read failed")));
+    const auto requests = second.ssd_stats().row_requests;
+    second.prefetch(failed);
+    bool propagated = false;
+    try { (void)failed.prefetched_rows[1].get(); }
+    catch (const std::runtime_error& error) { propagated = std::string(error.what()) == "earlier Engram read failed"; }
+    require(propagated && second.ssd_stats().row_requests == requests,
+        "later Engram prefetch ignored its failed predecessor");
+    auto reverse = batch(16);
+    std::promise<MlxQuantizedRowBatch> later_failure;
+    reverse.prefetched_rows[1] = later_failure.get_future().share();
+    later_failure.set_exception(std::make_exception_ptr(std::runtime_error("later Engram read failed")));
+    first.prefetch(reverse);
+    require_row(values(reverse.prefetched_rows[0].get().decode()), 0, 1.f);
+}
+
 int main() {
     const auto root = std::filesystem::temp_directory_path() /
         ("mfq-mxfp8-row-store-" + std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
         std::filesystem::create_directories(root);
+        test_large_mxfp8_rows(root);
+        test_engram_prefetch_order(root / "engram-prefetch.mfq");
         const auto initial = mfq::metal::MlxResourceTelemetry::snapshot();
         test_tq_shards(root / "tq");
         test_shared_engram_rows(root / "shared");
@@ -325,7 +478,9 @@ int main() {
         const auto runtime_stream = mlx::core::new_thread_unsafe_stream(mlx::core::Device::gpu);
         mlx::core::set_default_stream(runtime_stream);
         test_tq_shards(root / "tq-runtime-stream");
+#if !TYLOINFER_ENABLE_MFQ_COMPAT
         test_legacy_table_rejection(root / "legacy.mfq");
+#endif
         mlx::core::synchronize();
         mlx::core::set_default_stream(previous_stream);
 

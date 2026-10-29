@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/executor/execution.h"
+#include "backends/cuda/engine/executor/tq_moe.h"
 #include "backends/cuda/engine/models/load.h"
 #include "engine/executor/ffn.h"
 #include "backends/cuda/engine/weights/load.h"

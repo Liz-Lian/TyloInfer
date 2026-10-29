@@ -74,7 +74,7 @@ def test_sparse_copy_falls_back_when_extent_seek_is_unavailable(
     assert target_path.read_bytes() == b"head-payload"
 
 
-@pytest.mark.parametrize("suffix", [".tq", ".TQ"])
+@pytest.mark.parametrize("suffix", [".tq", ".TQ", ".mfq", ".MFQ"])
 def test_shard_name_round_trip(tmp_path: Path, suffix: str) -> None:
     base = tmp_path / f"model.v1{suffix}"
     shard = format_shard_path(base, 2, 17)
@@ -84,7 +84,7 @@ def test_shard_name_round_trip(tmp_path: Path, suffix: str) -> None:
     assert parse_size("512m") == 512_000_000
 
 
-@pytest.mark.parametrize("suffix", [".tq", ".TQ"])
+@pytest.mark.parametrize("suffix", [".tq", ".TQ", ".mfq", ".MFQ"])
 def test_offline_split_loads_from_any_shard_without_changing_records(
     tmp_path: Path, suffix: str,
 ) -> None:

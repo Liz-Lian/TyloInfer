@@ -204,6 +204,18 @@ void test_basic_container(
                    mapped.view().end()) == "data",
         "mapped payload mismatch");
     const auto random_mapped = model.map_record("weight", true);
+    require(mapped.file_identity() != mfq::metal::MfqMappedBytes::FileIdentity{},
+        "file mapping has no storage identity");
+    require(mapped.file_identity() == random_mapped.file_identity(),
+        "mappings of one file have different storage identities");
+    const auto partial_mapping = model.map_record_range("weight", 1, 2, true);
+    require(partial_mapping.file_identity() == mapped.file_identity(),
+        "partial mapping lost its storage identity");
+    const auto hardlink = path.parent_path() / "valid-hardlink.mfq";
+    std::filesystem::create_hard_link(path, hardlink);
+    const mfq::metal::MfqContainer linked(hardlink);
+    require(linked.map_record("weight").file_identity() == mapped.file_identity(),
+        "hard-linked weights were treated as independent storage");
     require(
         random_mapped.size() == mapped.size()
             && std::equal(random_mapped.view().begin(), random_mapped.view().end(), mapped.view().begin()),

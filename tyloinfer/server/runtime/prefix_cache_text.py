@@ -12,6 +12,9 @@ def _tokenizer(path: str, modified: int, size: int):
     try:
         if source.is_dir():
             return Tokenizer.from_file(str(source / 'tokenizer.json'))
+        if source.suffix.casefold() == '.gguf':
+            from tyloinfer.formats.gguf import gguf_vocabulary_decoder
+            return gguf_vocabulary_decoder(source)
         with open_mmap(source) as store:
             return Tokenizer.from_str(store.read_blob(HF_TOKENIZER_JSON_ASSET).decode('utf-8'))
     except Exception as error:

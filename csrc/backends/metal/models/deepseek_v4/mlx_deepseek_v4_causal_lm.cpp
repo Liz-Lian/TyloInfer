@@ -1817,10 +1817,13 @@ MlxDeepseekV4CausalLm::ssd_expert_cache_stats() const {
         result.prepare_seconds = cache.prepare_seconds;
         result.routed_graph_seconds = cache.graph_seconds;
         result.overlapped_read_batches = cache.overlapped_read_batches;
+        result.prefill_read_batches = cache.prefill_read_batches;
+        result.prefill_bytes_read = cache.prefill_bytes_read;
         result.resident_experts = cache.cached_experts;
         result.resident_bytes = cache.allocated_bytes;
         result.cached_payload_bytes = cache.cached_bytes;
         result.cache_metadata_bytes = cache.metadata_bytes;
+        result.pinned_cache_bytes = cache.pinned_bytes;
         return result;
     }
     return (mfq::mfq_compat_enabled && ssd_expert_cache_)

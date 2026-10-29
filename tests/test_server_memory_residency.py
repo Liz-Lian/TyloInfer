@@ -103,6 +103,54 @@ def test_release_credit_is_spent_by_new_allocations_and_expires(monkeypatch):
     assert credit.update(1, 3) == 0
 
 
+@pytest.mark.parametrize('live_at_retire', [False, True])
+def test_retirement_preserves_headroom_until_host_release_arrives(tmp_path, monkeypatch, live_at_retire):
+    async def run():
+        nonlocal now, snapshot
+        gib = 1 << 30
+        _model(tmp_path / 'retiring.tq')
+        catalog = ModelCatalog([tmp_path], cache_seconds=0)
+        pool = RuntimePool(catalog, tmp_path / 'runtime', max_runtime_memory_bytes=100 * gib)
+        process = SimpleNamespace(pid=123, returncode=None)
+        item = _Runtime(id=uuid4(), artifact=await catalog.resolve('retiring'), process=process,
+            backend=IdleBackend(), port=0, context_size=4096, state=RuntimeInstanceState.READY,
+            resident_bytes=96 * gib, resident_memory_used=96 * gib,
+            memory=RuntimePool._memory_resources({'metal_wired_bytes': 96 * gib}))
+        pool._instances[item.id] = item
+        assert pool._effective_runtime_memory_budget_locked() == 100 * gib
+        now += 10.0
+        if not live_at_retire:
+            process_alive[0] = False
+            process.returncode = 0
+
+        async def stop(candidate):
+            nonlocal now
+            assert candidate is item
+            process.returncode = 0
+            process_alive[0] = False
+            now += .75
+
+        pool._stop_process = stop
+        await pool._retire_instance(item)
+        assert not pool._instances
+        assert pool._effective_runtime_memory_budget_locked() == (100 if live_at_retire else 16) * gib
+        snapshot = replace(snapshot, free=120 * gib, wired=0)
+        assert pool._effective_runtime_memory_budget_locked() == 100 * gib
+        snapshot = replace(snapshot, free=12 * gib, wired=108 * gib)
+        assert pool._effective_runtime_memory_budget_locked() == 4 * gib
+        await pool.aclose()
+
+    now = 100.0
+    snapshot = HostMemorySnapshot(128 << 30, 24 << 30, 0, 0, 96 << 30)
+    monkeypatch.setattr(host_memory.time, 'monotonic', lambda: now)
+    monkeypatch.setattr('tyloinfer.server.runtime.runtime_pool.host_memory_snapshot', lambda: snapshot)
+    monkeypatch.setattr('tyloinfer.server.runtime.runtime_pool.metal_allocation_limit', lambda: 108 << 30)
+    monkeypatch.setattr('tyloinfer.server.runtime.runtime_pool.process_physical_footprint',
+        lambda pid: (96 << 30 if process_alive[0] else None) if pid == 123 else 0)
+    process_alive = [True]
+    asyncio.run(run())
+
+
 def test_kernel_process_footprint_is_used_instead_of_rss(monkeypatch):
     def query(pid, flavor, pointer):
         assert pid == 123 and flavor == 0

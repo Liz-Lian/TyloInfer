@@ -432,6 +432,7 @@ MlxRmsNorm::MlxRmsNorm(
         !std::isfinite(weight_offset)) {
         throw std::runtime_error("invalid RMSNorm parameters");
     }
+    weight_.eval();
 }
 
 array MlxRmsNorm::operator()(const array& input) const {

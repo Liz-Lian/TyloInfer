@@ -59,7 +59,7 @@ class ServerInstanceLock:
         except OSError as error:
             stream.close()
             if error.errno in {errno.EAGAIN, errno.EACCES, errno.EDEADLK}:
-                raise ServerAlreadyRunningError("This MFQ data directory is already managed by another server. "
+                raise ServerAlreadyRunningError("This TyloInfer data directory is already managed by another server. "
                     "Connect to that server or stop it before starting a new one.") from error
             raise
         try:

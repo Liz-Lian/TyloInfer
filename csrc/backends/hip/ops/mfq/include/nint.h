@@ -2,8 +2,8 @@
 #pragma once
 
 #include "../../../include/backend.h"
-#include "tyloinfer/model_source.h"
-#include "tyloinfer/nint_rows.h"
+#include "source/model_source.h"
+#include "formats/quant/nint_rows.h"
 
 #include <cstdint>
 #include <string>
@@ -45,6 +45,7 @@ struct NintWeight {
     int format_version = 2;
     double aggregate_bpw = 0.0;
     double distribution_entropy = 0.0;
+    int uniform_qbits = 0;
     bool q8_zero = false;
     // Proven once from CPU row metadata; false for unclassified/grouped weights.
     bool aligned_q8 = false;

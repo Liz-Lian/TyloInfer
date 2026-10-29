@@ -2,6 +2,11 @@ add_library(mfq-model-source STATIC
     model_source.cpp
     mfq_model_source.cpp
     hf_model_source.cpp
+    mlx_affine_source.cpp
+    gguf_model_source.cpp
+    gguf_model_source.h
+    mlx_affine_source.h
+    mlx_tensor_names.h
     hf_safetensors_source.cpp
     tq_source.cpp
     tq_fixture_source.cpp
@@ -27,7 +32,7 @@ target_include_directories(mfq-model-source PUBLIC
 target_include_directories(mfq-model-source PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(mfq-model-source PUBLIC mfq-model-graph mfq-formats mfq-io mfq-quant-readers
-    PRIVATE mfq-json)
+    PRIVATE mfq-json mfq-ggml)
 target_compile_features(mfq-model-source PUBLIC cxx_std_17)
 set_target_properties(mfq-model-source PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)

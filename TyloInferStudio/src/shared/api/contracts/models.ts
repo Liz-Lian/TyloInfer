@@ -4,7 +4,7 @@ export interface ModelArtifact {
   id: string;
   name: string;
   architecture: string;
-  format: 'tq' | 'hf';
+  format: 'tq' | 'hf' | 'gguf';
   shard_count: number;
   missing_shards?: number;
   total_bytes: number;

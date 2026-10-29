@@ -1,6 +1,6 @@
 #pragma once
 
-#include "continuous_batch.h"
+#include "engine/batch/batch.h"
 #include "mlx_qwen4_causal_lm.h"
 #include "mlx_resident_budget.h"
 #include "mlx_stream_sync.h"
@@ -278,6 +278,7 @@ public:
     void discard_prefill(const std::shared_ptr<Request>& request) { request->cache.reset(); }
     void retire(const std::vector<std::shared_ptr<Request>>& requests, std::int64_t) {
         for (const auto& request : requests) {
+            runtime_.record_mtp_stats(request->mtp_stats);
             if (request->target_result && request->target_work && request->target_work->draft_count) {
                 runtime_.resolve_request(*request->cache, 0);
                 request->cache_length = runtime_.request_cache_position(*request->cache);
@@ -417,6 +418,7 @@ private:
             request->mtp_stats.park_count = request->mtp_parks;
             request->mtp_stats.reentry_probes = request->mtp_reentries;
             const auto& stats = request->mtp_stats;
+            runtime_.record_mtp_stats(stats);
             output.metrics.mtp = {stats.available, stats.used, stats.cycles, stats.drafted_tokens,
                 stats.accepted_tokens, stats.depth_cycles, stats.position_drafted, stats.position_accepted,
                 stats.measured_depth_ms, stats.selected_depth, stats.standard_tokens, stats.park_count,

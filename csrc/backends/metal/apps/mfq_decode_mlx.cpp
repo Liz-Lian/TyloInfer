@@ -17,10 +17,11 @@
 #include "nlohmann/json.hpp"
 
 #ifdef TYLOINFER_METAL_RUNTIME_COMMUNICATION
-#include "mfq_paged_prefix_cache.h"
+#include "backends/cpu/storage/prefix_blocks.h"
 #include "transport.h"
 #include "mlx_paged_session_codec.h"
 #include "mlx_server_components.h"
+#include "mlx_dflash2_serving.h"
 #include "mlx_engine.h"
 #include "mlx_qwen4_batching.h"
 #include "mlx_kernel_prepare.h"
@@ -98,6 +99,7 @@ struct Arguments {
     bool benchmark_swiglu = false;
     bool check_container = false;
     bool list_tensors = false;
+    bool inspect_model_json = false;
     bool self_test_metal = false;
     bool server = false;
     bool stdio = false;
@@ -108,12 +110,15 @@ struct Arguments {
     bool yarn_context_extension = false;
     int prefill_chunk_size = 2048;
     bool prefill_chunk_size_explicit = false;
+    bool generation_warmup = true;
     int continuous_batching = 8;
     std::optional<double> expert_cache_gb;
     std::string model_name;
     std::string api_key;
     std::filesystem::path tokenizer_gguf;
+    std::vector<std::filesystem::path> gguf_companions;
     std::filesystem::path sampling_profile;
+    std::filesystem::path dflash2_draft;
     bool help = false;
 };
 
@@ -137,6 +142,8 @@ Arguments parse_arguments(int argc, char** argv) {
             const auto parsed = std::stoll(require_value("--continuous-batching"));
             if (parsed < 0 || parsed > 256) usage_error("--continuous-batching must be in [0, 256]");
             result.continuous_batching = static_cast<int>(parsed);
+        } else if (value == "--gguf-companion" || value == "--ple-gguf") {
+            result.gguf_companions.emplace_back(require_value(value.c_str()));
         } else if (value == "--model") {
             result.mfq = require_value("--model");
         } else if (value == "--tensor") {
@@ -215,6 +222,8 @@ Arguments parse_arguments(int argc, char** argv) {
             result.check_container = true;
         } else if (value == "--list-tensors") {
             result.list_tensors = true;
+        } else if (value == "--inspect-model-json") {
+            result.inspect_model_json = true;
         } else if (value == "--self-test-metal") {
             result.self_test_metal = true;
         } else if (value == "--transport") {
@@ -292,6 +301,10 @@ Arguments parse_arguments(int argc, char** argv) {
         } else if (value == "--sampling-profile") {
             result.sampling_profile =
                 require_value("--sampling-profile");
+        } else if (value == "--dflash2-draft") {
+            result.dflash2_draft = require_value("--dflash2-draft");
+        } else if (value == "--no-generation-warmup") {
+            result.generation_warmup = false;
         } else if (value == "--help" || value == "-h") {
             result.help = true;
         } else {
@@ -315,9 +328,11 @@ void print_help() {
            "--tokenizer TOKENIZER.gguf\n"
         << "  mfq-decode-metal --self-test-metal\n\n"
         << "Options:\n"
-        << "  --model PATH           MFQ model/shard, or an HF Safetensors directory\n"
+        << "  --model PATH           TQ/MFQ model, GGUF model/shard, or HF directory\n"
+        << "  --gguf-companion PATH  additional GGUF table/component (repeatable)\n"
         << "  --check-mfq-container  validate headers, records, and shard set\n"
         << "  --list-tensors         print record dtype, bytes, and name\n"
+        << "  --inspect-model-json   print model metadata without loading weights\n"
         << "  --tensor NAME          load and execute one supported linear weight\n"
         << "  --benchmark-mfq-moe PREFIX\n"
         << "                          benchmark one native MFQ Qwen MoE block\n"
@@ -351,7 +366,9 @@ void print_help() {
         << "  --model-name NAME      API model name (default model path stem)\n"
         << "  --api-key KEY          optional bearer token\n"
         << "  --tokenizer PATH       external tokenizer GGUF when not embedded\n"
-        << "  --sampling-profile P  explicit runtime sampling profile JSON\n";
+        << "  --sampling-profile P  explicit runtime sampling profile JSON\n"
+        << "  --dflash2-draft PATH  experimental DFlash2 checkpoint for Flash-Next text\n"
+        << "  --no-generation-warmup  skip model-executing load warmup; retain kernel preparation\n";
 }
 
 std::size_t physical_memory_bytes() {
@@ -1812,7 +1829,7 @@ public:
         int chunk_size, std::size_t cache_limit,
         mfq::metal::MlxEngineComponents components,
         mfq::metal::MlxSamplingParams prepare_sampling, int prepare_routes, int prepare_vocab,
-        std::vector<std::int64_t> prepare_prompt, int batch_capacity)
+        std::vector<std::int64_t> prepare_prompt, int batch_capacity, bool execute_warmup)
         : runtime_mutex(std::move(mutex)), runtime_holder(std::move(runtime)),
           session_cache(std::move(cache)), load_runtime(std::move(loader)),
           paged_cache_factory(std::move(factory)), loaded_context(std::move(context)),
@@ -1820,7 +1837,7 @@ public:
           allocator_cache_limit(cache_limit), runtime_components(std::move(components)),
           preparation_sampling(prepare_sampling), preparation_routes(prepare_routes),
           preparation_vocab(prepare_vocab), warmup_prompt(std::move(prepare_prompt)),
-          configured_batch_capacity(batch_capacity) {
+          configured_batch_capacity(batch_capacity), generation_warmup(execute_warmup) {
         capture_weight_residency();
         resident_budget = cache_bytes_from_environment("TYLOINFER_SERVER_RESIDENT_BUDGET_BYTES", 0);
         if (resident_budget) enforce_memory_budget(0);
@@ -1858,6 +1875,7 @@ public:
     std::size_t request_capacity() const override { return batching_capacity; }
     bool can_batch(const mfq::engine::EngineRequest& request) const override {
         return batching && !request.input.media &&
+            !(runtime_components.speculative_generate && request.input.sampling.enable_mtp) &&
             !(request.input.sampling.enable_mtp && runtime_components.mtp_available && !batch_mtp_enabled);
     }
     void execute(const std::vector<mfq::engine::RequestId>& eligible) override {
@@ -1952,6 +1970,12 @@ public:
                 mfq::metal::MlxResidentBudgetScope budget_scope([this](std::size_t bytes) {
                     enforce_memory_budget(bytes);
                 }, [this](std::size_t bytes) { return optional_memory_fits(bytes); });
+                enforce_memory_budget(0);
+                if (runtime_components.speculative_generate && !request.vision &&
+                    runtime_components.speculative_generate(prompt, sampling, job, token_constraint, prefill_chunk_size)) {
+                    mfq::metal::drain_metal_work(runtime_stream);
+                    return;
+                }
                 if constexpr (requires { loaded_runtime.begin_mtp_session(std::string{}); })
                     loaded_runtime.begin_mtp_session(parameters.enable_mtp ? cache_plan.session_id : std::string{});
                 struct EndMtpSession {
@@ -2094,6 +2118,7 @@ public:
             preparation.set_routes(preparation_routes);
             runtime_holder->emplace(
                 load_runtime(requested_context));
+            if (runtime_components.prepare_speculative) runtime_components.prepare_speculative();
             if constexpr (requires(Runtime& value) {
                     value.prewarm_ssd_expert_arena();
                 }) {
@@ -2138,6 +2163,7 @@ public:
                 preparation.set_routes(preparation_routes);
                 runtime_holder->emplace(
                     load_runtime(previous_context));
+                if (runtime_components.prepare_speculative) runtime_components.prepare_speculative();
                 if constexpr (requires(Runtime& value) {
                         value.prewarm_ssd_expert_arena();
                     }) {
@@ -2536,7 +2562,7 @@ private:
             if (lock.owns_lock() && runtime_holder->has_value()) {
                 metrics.emplace_back(
                     "mtp_available",
-                    runtime_holder->value().supports_mtp() ? 1.0 : 0.0);
+                    runtime_components.mtp_available ? 1.0 : 0.0);
             }
         }
         if constexpr (requires(Runtime& value) {
@@ -2642,6 +2668,8 @@ private:
                     metrics.emplace_back("ssd_expert_device_route_hits", stats->device_route_hits);
                     metrics.emplace_back("ssd_expert_device_route_misses", stats->device_route_misses);
                     metrics.emplace_back("ssd_expert_overlapped_read_batches", stats->overlapped_read_batches);
+                    metrics.emplace_back("ssd_expert_prefill_read_batches", stats->prefill_read_batches);
+                    metrics.emplace_back("ssd_expert_prefill_bytes_read", stats->prefill_bytes_read);
                     metrics.emplace_back("ssd_expert_overlapped_read_submissions", stats->overlapped_read_submissions);
                     metrics.emplace_back("ssd_expert_parallel_body_read_batches", stats->parallel_body_read_batches);
                     metrics.emplace_back(
@@ -2657,6 +2685,8 @@ private:
                         metrics.emplace_back("ssd_expert_pool_free_bytes", static_cast<double>(
                             stats->resident_bytes > occupied ? stats->resident_bytes - occupied : 0));
                     }
+                    if (stats->pinned_cache_bytes)
+                        metrics.emplace_back("ssd_expert_pinned_bytes", static_cast<double>(*stats->pinned_cache_bytes));
                     metrics.emplace_back(
                         "ssd_expert_cache_slots",
                         static_cast<double>(stats->cache_slots));
@@ -2734,6 +2764,7 @@ private:
     }
 
     void warm_runtime() {
+        if (!generation_warmup) return;
         mfq::metal::MlxResidentBudgetScope budget_scope([this](std::size_t bytes) {
             enforce_memory_budget(bytes);
         }, [this](std::size_t bytes) { return optional_memory_fits(bytes); });
@@ -2772,9 +2803,11 @@ private:
             }
             release_model_load_staging_memory(runtime_stream);
         };
+        bool warmup_mtp = runtime_components.mtp_available;
+        if constexpr (requires { runtime.supports_mtp(); })
+            if (runtime_components.speculative_generate) warmup_mtp = runtime.supports_mtp();
         mfq::metal::warm_mlx_inference(warmup_prompt, static_cast<int>(*loaded_context),
-            warmup_chunk, preparation_sampling, runtime_components.mtp_available,
-            generate, reset);
+            warmup_chunk, preparation_sampling, warmup_mtp, generate, reset);
     }
 
     std::shared_ptr<std::mutex> runtime_mutex;
@@ -2790,6 +2823,7 @@ private:
     int preparation_routes;
     int preparation_vocab;
     std::vector<std::int64_t> warmup_prompt;
+    bool generation_warmup;
     std::size_t resident_weight_baseline = 0;
     std::size_t resident_dense_weight_baseline = 0;
     std::atomic<std::size_t> resident_budget{0};
@@ -2881,6 +2915,7 @@ int run_loaded_runtime(
         embedded,
         model_config,
         arguments.sampling_profile.string());
+    if (!arguments.dflash2_draft.empty()) transport_config.runtime_profile.chat.mtp_max_draft_tokens = 7;
 
     mfq::metal::MlxSamplingParams preparation_sampling;
     const auto& chat_profile = transport_config.runtime_profile.chat;
@@ -2891,7 +2926,6 @@ int run_loaded_runtime(
     if (auto* preparation = mfq::metal::MlxKernelPreparation::current()) {
         preparation_routes = preparation->routes();
         preparation->collect_sampling(static_cast<int>(vocabulary_size), preparation_sampling);
-        preparation->finish();
     }
 
     auto runtime_mutex = std::make_shared<std::mutex>();
@@ -2917,6 +2951,15 @@ int run_loaded_runtime(
         runtime_mutex,
         runtime_holder,
         runtime_stream);
+    if (!arguments.dflash2_draft.empty()) {
+        if constexpr (std::is_same_v<Runtime, mfq::metal::MlxQwen4CausalLm>) {
+            mfq::metal::configure_mlx_dflash2(runtime_components, runtime_holder, arguments.dflash2_draft, preparation_sampling);
+            runtime_components.prepare_speculative();
+            std::cout << "DFlash2 experimental: unconstrained text without penalties; DFlash2 requests bypass prefix reuse and batching"
+                      << std::endl;
+        } else throw std::invalid_argument("DFlash2 currently requires a Flash-Next target");
+    }
+    if (auto* preparation = mfq::metal::MlxKernelPreparation::current()) preparation->finish();
     {
         MfqModelCapabilities capabilities;
         capabilities.family = model_graph.architecture;
@@ -2976,7 +3019,7 @@ int run_loaded_runtime(
         preparation_routes, static_cast<int>(vocabulary_size),
         text->tokenizer().tokenize("Explain how computers use memory to run language models. "
             "Describe the roles of model weights, attention, and cached context in clear terms.", false),
-        arguments.continuous_batching);
+        arguments.continuous_batching, arguments.generation_warmup);
     auto inference_engine = std::make_unique<mfq::metal::MlxEngine>(
         std::move(engine_model), std::move(text), std::move(info));
     auto transport = arguments.stdio
@@ -3364,7 +3407,27 @@ int main(int argc, char** argv) {
             return EXIT_SUCCESS;
         }
 
-        const mfq::metal::MfqContainer model(arguments.mfq);
+        const mfq::metal::MfqContainer model(arguments.mfq, {}, arguments.gguf_companions);
+        if (arguments.inspect_model_json) {
+            nlohmann::json result{{"architecture", model.header().architecture},
+                {"paths", model.source_paths()}, {"tensors", nlohmann::json::object()}};
+            nlohmann::json shapes = nlohmann::json::object();
+            if (const auto found = model.header().extra_json.find("tensor_shapes"); found != model.header().extra_json.end())
+                shapes = nlohmann::json::parse(found->second);
+            for (const auto& [name, record] : model.records()) {
+                if (name.rfind("__mfq_asset__/", 0) == 0) continue;
+                result["tensors"][name] = {{"dtype", record.dtype}, {"nbytes", record.nbytes}};
+                if (model.is_hf_source()) result["tensors"][name]["shape"] = model.tensor_shape(name);
+                else if (shapes.contains(name)) result["tensors"][name]["shape"] = shapes.at(name);
+            }
+            constexpr const char* config_asset = "__mfq_asset__/model_config.json";
+            if (model.contains(config_asset)) {
+                const auto bytes = model.read(config_asset);
+                result["config"] = nlohmann::json::parse(bytes.begin(), bytes.end());
+            }
+            std::cout << result.dump() << '\n';
+            return EXIT_SUCCESS;
+        }
         if (arguments.check_container) {
             std::cout
                 << "MFQ container OK"

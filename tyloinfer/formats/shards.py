@@ -32,7 +32,8 @@ SPLIT_KEYS = frozenset(
 )
 
 _SHARD_RE = re.compile(
-    r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<count>[0-9]{5})(?P<suffix>\.tq)$",
+    r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<count>[0-9]{5})(?P<suffix>"
+    + "|".join(re.escape(suffix) for suffix in TYLOINFER_SUFFIXES) + r")$",
     re.IGNORECASE,
 )
 
@@ -79,21 +80,31 @@ def shard_paths_from_any(path: str | Path, count: int) -> list[Path]:
 
     parsed = parse_shard_path(path)
     if parsed is None:
-        raise ValueError(f"sharded MFQ path lacks -00001-of-00000 suffix: {path}")
-    base, _, filename_count = parsed
-    if filename_count != count:
+        base = Path(path)
+        if not base.is_file() or base.suffix.lower() not in TYLOINFER_SUFFIXES:
+            raise ValueError(f"sharded MFQ path lacks -00001-of-00000 suffix: {path}")
+    else:
+        base, _, filename_count = parsed
+    if parsed is not None and filename_count != count:
         raise ValueError(
             f"MFQ shard count mismatch in filename/metadata: {filename_count} != {count}: {path}"
         )
     expected = [format_shard_path(base, index, count) for index in range(1, count + 1)]
+    reference = expected[0]
+    if parsed is None:
+        if expected[0].is_file() and not expected[0].samefile(base):
+            raise ValueError(f"duplicate MFQ shard index 1: {base}")
+        expected[0] = base
+    elif not expected[0].is_file() and base.is_file():
+        expected[0] = base
     if Path(path).suffix in TYLOINFER_SUFFIXES and all(candidate.is_file() for candidate in expected):
         return expected
-    available: dict[int, Path] = {}
+    available: dict[int, Path] = {1: base} if expected[0] == base else {}
     for candidate in matching_shard_paths(base):
         _, index, candidate_count = parse_shard_path(candidate)
         if candidate_count != count:
             continue
-        if index in available:
+        if index in available and not candidate.samefile(available[index]):
             raise ValueError(f"duplicate MFQ shard index {index}: {base}")
         available[index] = candidate
     # Shared tables retain their original split indices in a sibling Engram/.
@@ -101,7 +112,7 @@ def shard_paths_from_any(path: str | Path, count: int) -> list[Path]:
     candidates = [candidate for directory in directories if directory.is_dir()
                   for candidate in directory.iterdir() if candidate.is_file()]
     names = [candidate.as_posix() for candidate in candidates]
-    for name in with_engram_shards([Path(path).as_posix()], names):
+    for name in with_engram_shards([reference.as_posix()], names):
         candidate = Path(name)
         entry = parse_shard_path(candidate)
         if entry is not None and entry[1] not in available:

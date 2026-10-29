@@ -40,6 +40,31 @@ def test_inventory_decodes_metadata_without_reading_kv_payloads(tmp_path):
     assert read_prefix_cache_tokens(tmp_path, 'a' * 64, '1' * 64)['tokens'] == list(range(256))
 
 
+def test_native_mfqkv_blocks_share_inventory_text_and_disk_budget(tmp_path):
+    original = block(tmp_path, 'a', '1')
+    native = original.with_suffix('.mfqkv')
+    original.rename(native)
+    text_record(native, 'a', '1', list(range(256)))
+    value = inspect_prefix_cache(tmp_path, 'a' * 64)
+    assert value['total_blocks'] == 1 and value['blocks'][0]['text_available']
+    assert read_prefix_cache_tokens(tmp_path, 'a' * 64, '1' * 64)['tokens'] == list(range(256))
+    assert maintain_prefix_disk_budget(tmp_path, 1 << 30, evict=False)['prefix_cache_total_disk_blocks'] == 1
+    result = purge_prefix_cache(tmp_path, 'a' * 64)
+    assert result['removed_blocks'] == 1 and not native.exists()
+
+
+def test_cli_prefix_directory_is_shared_by_runtime_and_inventory(tmp_path):
+    async def run():
+        configured = tmp_path / 'configured'
+        pool = RuntimePool(ModelCatalog([]), tmp_path / 'runtime', runtime_environment={
+            'TYLOINFER_RUNTIME_PREFIX_CACHE_DIR': str(configured)})
+        assert pool._prefix_cache_directory() == configured
+        pool.memory_policy = RuntimeMemoryPolicy(prefix_directory=str(tmp_path / 'saved'))
+        assert pool._prefix_cache_directory() == tmp_path / 'saved'
+        await pool.aclose()
+    asyncio.run(run())
+
+
 def test_purge_removes_only_selected_owned_blocks_and_text(tmp_path):
     first, other = block(tmp_path, 'a', '1'), block(tmp_path, 'b', '2')
     sidecar = text_record(first, 'a', '1', [42] * 256)

@@ -321,6 +321,46 @@ def _mfq_tensors(artifact: DiscoveredModel) -> tuple[dict[str, Any], dict[str, A
     return config, graph, tensors, experts, warnings
 
 
+def _native_tensors(artifact: DiscoveredModel) -> tuple[dict[str, Any], dict[str, Any], list[AnalysisTensor], list[AnalysisExpert], list[str]]:
+    tensors, experts, warnings = [], [], []
+    for name, record in (artifact.source_tensors or {}).items():
+        dtype = record['dtype']
+        if dtype in {'I32', 'I64', 'U32', 'U64', 'U8', 'I8', 'BOOL'}:
+            continue
+        shape = record.get('shape', [])
+        if not shape or any(not isinstance(axis, int) or axis <= 0 for axis in shape):
+            warnings.append(f'{name}: logical tensor shape is unavailable')
+            continue
+        category, projection, layer = _classify(name)
+        parameters, size = math.prod(shape), int(record['nbytes'])
+        family = dtype.removeprefix('GGUF_')
+        tensors.append(AnalysisTensor(name=name, shape=shape, category=category, projection=projection,
+            layer=layer, parameters=parameters, stored_bytes=size, bpw=8 * size / parameters, format=family))
+        if category != 'routed_experts' or layer is None:
+            continue
+        match = _EXPERT.search(name)
+        if not match:
+            continue
+        if len(shape) == 3:
+            count, width, inner = shape
+            first = 0
+        elif len(shape) == 2 and match[1] is not None:
+            count, (width, inner), first = 1, shape, int(match[1])
+        else:
+            continue
+        parts = ['gate', 'up'] if projection == 'gate_up' else [projection]
+        if width % len(parts):
+            warnings.append(f'{name}: fused projection has an invalid row count')
+            continue
+        per_parameters, per_bytes = width * inner // len(parts), size / (count * len(parts))
+        for expert in range(first, first + count):
+            for part in parts:
+                experts.append(AnalysisExpert(layer=layer, expert=expert, projection=part,
+                    parameters=per_parameters, stored_bytes=per_bytes, bpw=8 * per_bytes / per_parameters,
+                    format=family, granularity='tensor'))
+    return artifact.source_config or {}, {}, tensors, experts, warnings
+
+
 def _hf_tensors(artifact: DiscoveredModel) -> tuple[dict[str, Any], dict[str, Any], list[AnalysisTensor], list[AnalysisExpert], list[str]]:
     path = artifact.path
     config = json.loads((path / "config.json").read_text(encoding="utf-8"))
@@ -350,7 +390,7 @@ def _hf_tensors(artifact: DiscoveredModel) -> tuple[dict[str, Any], dict[str, An
             category, projection, layer = _classify(name)
             shape = item["shape"]
             dtype = item["dtype"]
-            if dtype in {"I32", "I64", "U8", "I8", "BOOL"}:
+            if dtype in {"I32", "I64", "U32", "U64", "U8", "I8", "BOOL"}:
                 warnings.append(f"{name}: packed/integer source storage is not a logical parameter shape")
                 continue
             parameters = math.prod(shape)
@@ -365,7 +405,12 @@ def _hf_tensors(artifact: DiscoveredModel) -> tuple[dict[str, Any], dict[str, An
 def analyze_checkpoint(artifact: DiscoveredModel) -> CheckpointAnalysis:
     if not artifact.resource.complete:
         raise ValueError("checkpoint is incomplete; missing shards must be restored before analysis")
-    config, graph, tensors, experts, warnings = (_mfq_tensors(artifact) if artifact.resource.format == "tq" else _hf_tensors(artifact))
+    if artifact.source_tensors is not None:
+        config, graph, tensors, experts, warnings = _native_tensors(artifact)
+    elif artifact.resource.format == 'gguf':
+        raise ValueError('Native GGUF model metadata is unavailable')
+    else:
+        config, graph, tensors, experts, warnings = (_mfq_tensors(artifact) if artifact.resource.format == "tq" else _hf_tensors(artifact))
     text = config.get("text_config", config)
     if not isinstance(text, dict):
         text = {}

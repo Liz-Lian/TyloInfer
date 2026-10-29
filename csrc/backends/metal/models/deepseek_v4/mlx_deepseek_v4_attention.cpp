@@ -1352,7 +1352,7 @@ void MlxDeepseekV4LayerState::begin_speculative(
             mlx::core::int32),
         array(window, mlx::core::int32));
     MlxDeepseekV4LayerState checkpoint(
-        detached_copy(mlx::core::take(local_, slots, 1)),
+        mlx::core::take(local_, slots, 1),
         main_
             ? std::optional<MlxDeepseekV4PoolState>(
                   main_->speculative_snapshot())
@@ -2627,6 +2627,9 @@ array MlxDeepseekV4Attention::operator()(
         cosine,
         sine);
     state.position_ += tokens;
+    if (pending_local_values)
+        result = mlx::core::depends(std::vector<array>{result},
+            std::vector<array>{state.local_}).front();
     return result;
 }
 

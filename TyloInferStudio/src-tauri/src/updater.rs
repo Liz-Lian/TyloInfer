@@ -293,7 +293,7 @@ fn normalized_release(release: GitHubRelease) -> Option<StudioRelease> {
 fn fetch_releases() -> Result<Vec<StudioRelease>, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent(format!("MFQ-Studio/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("TyloInfer/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
@@ -562,7 +562,7 @@ where
     }
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60 * 60))
-        .user_agent(format!("MFQ-Studio/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("TyloInfer/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let mut response = client

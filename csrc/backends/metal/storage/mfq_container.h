@@ -1,9 +1,9 @@
 #pragma once
 
-#include "tyloinfer/hf_model_source.h"
+#include "source/hf_model_source.h"
 #include "mfq_legacy_tensor_names.h"
 #include "mfq_format_compat.h"
-#include "mfq_model_graph.h"
+#include "formats/model_graph.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -12,12 +12,14 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mfq::metal {
 
 class MfqMappedBytes {
 public:
+    using FileIdentity = std::pair<std::uint64_t, std::uint64_t>;
     MfqMappedBytes() = default;
 
     std::span<const std::uint8_t> view() const noexcept {
@@ -32,20 +34,24 @@ public:
         return size_;
     }
 
+    FileIdentity file_identity() const noexcept { return file_identity_; }
+
 private:
     friend class MfqContainer;
 
     MfqMappedBytes(
         std::shared_ptr<void> mapping,
         const std::uint8_t* data,
-        std::size_t size)
+        std::size_t size,
+        FileIdentity file_identity = {})
         : mapping_(std::move(mapping)),
           data_(data),
-          size_(size) {}
+          size_(size), file_identity_(file_identity) {}
 
     std::shared_ptr<void> mapping_;
     const std::uint8_t* data_ = nullptr;
     std::size_t size_ = 0;
+    FileIdentity file_identity_{};
 };
 
 struct MfqRecord {
@@ -68,7 +74,8 @@ struct MfqHeader {
 
 class MfqContainer {
 public:
-    explicit MfqContainer(std::filesystem::path path, std::string hf_source_prefix = {});
+    explicit MfqContainer(std::filesystem::path path, std::string hf_source_prefix = {},
+        std::vector<std::filesystem::path> gguf_companions = {});
 
     const MfqHeader& header() const noexcept {
         return header_;
@@ -89,6 +96,7 @@ public:
     bool contains(const std::string& name) const;
     const MfqRecord& record(const std::string& name) const;
     std::vector<std::int64_t> tq_shape(const std::string& name) const;
+    std::vector<std::int64_t> tensor_shape(const std::string& name) const;
     void observe_load_records(std::function<void(std::size_t, std::size_t)> callback) const;
     void stop_load_observation() const;
     void record_prepared(const std::string& name) const;
@@ -112,6 +120,8 @@ public:
     // released as soon as the parser has copied the record into its final MLX
     // buffers, so record staging never enters the process malloc depot.
     MfqMappedBytes map_record(const std::string& name, bool random_access = false) const;
+    MfqMappedBytes map_record_range(const std::string& name, std::uint64_t offset,
+        std::size_t size, bool random_access = false) const;
     std::string read_text(const std::string& name) const;
     // Best-effort source cache eviction used by storage benchmarks.
     void drop_source_file_cache() const noexcept;
@@ -139,11 +149,13 @@ private:
     struct LoadProgress;
 
     void load_hf_directory(const std::filesystem::path& path, const std::string& source_prefix);
+    MfqMappedBytes map_file_range(const MfqRecord& record, bool random_access) const;
 
     MfqHeader header_;
     std::vector<std::filesystem::path> source_paths_;
     RecordMap records_;
     std::shared_ptr<mfq::HfModelSource> hf_source_;
+    std::shared_ptr<const mfq::ModelSource> gguf_source_;
     std::unordered_map<std::string, std::string> legacy_aliases_;
     mfq::MfqLegacyTensorLayout legacy_tensor_layout_;
     std::shared_ptr<RandomAccessFiles> random_access_files_;

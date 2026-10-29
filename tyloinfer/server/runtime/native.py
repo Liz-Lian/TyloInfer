@@ -152,6 +152,9 @@ def native_tokenizer_arguments(model: str | Path, backend: str) -> list[str]:
     if model_path.is_dir():
         tokenizer = ensure_hf_tokenizer_gguf(model_path)
     elif model_path.is_file():
+        with model_path.open("rb") as stream:
+            if stream.read(4) == b"GGUF":
+                return ["--tokenizer", str(model_path)]
         with open_mmap(model_path) as store:
             has_embedded_tokenizer = (
                 TOKENIZER_GGUF_ASSET in store.records

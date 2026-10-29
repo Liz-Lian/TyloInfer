@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #include "csrc/backends/hip/include/backend.h"
-#include "tyloinfer/fp8_sq_blob.h"
+#include "formats/fp8_sq_blob.h"
 #include "mfq_hip_compat.h"
 
 // The CPU loader validates the self-describing wire payload and expands the

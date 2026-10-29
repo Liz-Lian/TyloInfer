@@ -70,7 +70,7 @@ minicpmo45 = [
     "transformers==4.51.0",
 ]
 metal = [
-    "mlx>=0.32.3",
+    "mlx>=0.32.4",
 ]
 minicpmo45-realtime = [
     "fastapi>=0.115.0",

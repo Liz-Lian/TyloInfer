@@ -1453,6 +1453,34 @@ void test_restore_routed_rows() {
     }
 }
 
+void test_activation_precision() {
+    using namespace mlx::core;
+    for (const auto dtype : {float16, bfloat16, float32}) {
+        const auto gate = astype(reshape(sin(arange(2 * 3 * 17, float32) * .13f), {2, 3, 17}), dtype);
+        const auto up = astype(cos(astype(gate, float32)), dtype);
+        const auto actual = mfq::metal::moe_swiglu_pair(gate, up);
+        require(actual.dtype() == dtype, "SwiGLU changed the activation precision");
+        const auto g = astype(gate, float32);
+        const auto expected = astype(g * sigmoid(g) * astype(up, float32), dtype);
+        require(max(abs(astype(actual, float32) - astype(expected, float32))).item<float>() < .004f,
+            "SwiGLU activation precision mismatch");
+        const auto weights = full({2, 3}, 1.f / 3.f, float32);
+        const auto reduced = mfq::metal::moe_weighted_reduce(actual, weights);
+        const auto shared = astype(reshape(sin(arange(2 * 17, float32)), {2, 17}), dtype);
+        const auto combined = mfq::metal::moe_weighted_reduce_shared_gate(actual, weights,
+            shared, zeros({2, 1}, dtype));
+        require(reduced.dtype() == dtype && combined.dtype() == dtype,
+            "MoE combination changed the activation precision");
+        const auto reference = astype(sum(astype(actual, float32) * expand_dims(weights, -1), 1)
+            + astype(shared, float32) * .5f, dtype);
+        require(max(abs(astype(combined, float32) - astype(reference, float32))).item<float>() < .008f,
+            "MoE combination precision mismatch");
+        const auto routes = mfq::metal::moe_topk(reshape(gate, {2, 51}), 3);
+        require(routes.ids.shape() == Shape{2, 3}, "native-precision router shape mismatch");
+        eval(routes.ids, routes.weights);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1478,6 +1506,7 @@ int main() {
         test_glu_and_expert_scale();
         test_runtime_row_kernel_reuse();
         test_restore_routed_rows();
+        test_activation_precision();
         std::cout
             << "MFQ C++ routed MoE Metal primitive tests passed\n";
         return 0;

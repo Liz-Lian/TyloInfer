@@ -137,7 +137,7 @@ function LogConsole({ instances }: { instances: ReturnType<typeof useRuntime>['i
     try {
       const url = URL.createObjectURL(new Blob([JSON.stringify(visible, null, 2)], { type: 'application/json' }));
       const anchor = document.createElement('a');
-      anchor.href = url; anchor.download = `mfq-${tab}-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.href = url; anchor.download = `tyloinfer-${tab}-${new Date().toISOString().slice(0, 10)}.json`;
       anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) { toast.error(errorMessage(cause)); }
   }

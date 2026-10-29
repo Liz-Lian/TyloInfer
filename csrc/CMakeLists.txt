@@ -87,7 +87,9 @@ if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
 endif()
 
 add_subdirectory(engine)
-add_subdirectory(scheduler)
+if(TARGET mfq-tokenizer)
+    add_subdirectory(scheduler)
+endif()
 
 if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
     add_subdirectory(transport)

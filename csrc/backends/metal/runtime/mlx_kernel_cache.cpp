@@ -133,6 +133,11 @@ MTL::Library* MlxKernelDevice::get_library(const std::string& name,
 }
 
 MTL::ComputePipelineState* MlxKernelDevice::get_kernel(const std::string& name, MTL::Library* library) {
+    return get_kernel(name, library, name, {});
+}
+
+MTL::ComputePipelineState* MlxKernelDevice::get_kernel(const std::string& name, MTL::Library* library,
+        const std::string& key, const mlx::core::metal::MTLFCList& constants) {
     static auto* mutex = new std::mutex;
     static auto* pipelines = new std::unordered_map<MTL::Library*, std::unique_ptr<Cache<MTL::ComputePipelineState>>>;
     Cache<MTL::ComputePipelineState>* cache;
@@ -142,12 +147,19 @@ MTL::ComputePipelineState* MlxKernelDevice::get_kernel(const std::string& name, 
         if (!entry) entry = std::make_unique<Cache<MTL::ComputePipelineState>>();
         cache = entry.get();
     }
-    return cached(*cache, name, [&] {
+    return cached(*cache, key, [&] {
         auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-        auto function = NS::TransferPtr(library->newFunction(
-            NS::String::string(name.c_str(), NS::UTF8StringEncoding)));
-        if (!function) throw std::runtime_error("Metal function not found: " + name);
         NS::Error* error = nullptr;
+        NS::SharedPtr<MTL::Function> function;
+        const auto entry = NS::String::string(name.c_str(), NS::UTF8StringEncoding);
+        if (constants.empty()) function = NS::TransferPtr(library->newFunction(entry));
+        else {
+            auto values = NS::TransferPtr(MTL::FunctionConstantValues::alloc()->init());
+            for (const auto& [value, type, index] : constants) values->setConstantValue(value, type, index);
+            function = NS::TransferPtr(library->newFunction(entry, values.get(), &error));
+        }
+        if (!function) throw std::runtime_error("Metal function " + name + ": "
+            + (error ? error->localizedDescription()->utf8String() : "not found"));
         auto pipeline = NS::TransferPtr(device_.mtl_device()->newComputePipelineState(function.get(), &error));
         if (!pipeline) throw std::runtime_error("Metal pipeline " + name + ": "
             + (error ? error->localizedDescription()->utf8String() : "compilation failed"));

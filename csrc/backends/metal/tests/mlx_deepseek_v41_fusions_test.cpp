@@ -1,6 +1,7 @@
 #include "mlx_csa2.h"
 #include "mlx_deepseek_v41_engram.h"
 #include "mlx_deepseek_v41_mhc.h"
+#include "mlx_kernel_prepare.h"
 #include "mlx_dsa_cache_ops.h"
 #include "mlx_dsa.h"
 #include "mlx_transformer.h"
@@ -63,6 +64,44 @@ array rms(const array& x, const array& norm) {
 array rotate(const array& x, const array& cosine, const array& sine, int rotary) {
     auto tail = mlx_rope_adjacent(part(x, 2, x.shape(2) - rotary, x.shape(2)), cosine, sine);
     return concatenate({part(x, 2, 0, x.shape(2) - rotary), tail}, 2);
+}
+
+void test_mhc_projection() {
+    for (const int width : {4096, 8192, 20480}) for (Dtype dtype : {float16, bfloat16}) {
+        auto weight = contiguous(sample({24, width}, float32, 1.9f) * .001f);
+        weight.eval();
+        MlxKernelPreparation preparation(16, 16);
+        preparation.collect([&] {
+            for (const int rows : {1, 2, 4}) preparation.add(deepseek_v41_hc_projection(
+                zeros({1, rows, 4, width / 4}, dtype), weight, eps));
+        });
+        preparation.finish();
+        for (const int rows : {1, 2, 3, 4, 5, 6}) {
+            auto input = sample({1, rows, 4, width / 4}, dtype, .4f);
+            auto source = contiguous(astype(input, float32));
+            auto actual = deepseek_v41_hc_projection(input, weight, eps);
+            preparation.collect([&] { preparation.add(actual); });
+            if (preparation.size()) throw std::runtime_error("mHC projection misses a load-time compilation bucket");
+            eval(source, actual);
+            const auto* xs = source.data<float>();
+            const auto* ws = weight.data<float>();
+            const auto* values = actual.data<float>();
+            for (int row = 0; row < rows; ++row) {
+                double square = 0.;
+                for (int k = 0; k < width; ++k) square += double(xs[row * width + k]) * xs[row * width + k];
+                const double inverse = 1. / std::sqrt(square / width + eps);
+                for (int p = 0; p < 24; ++p) {
+                    double product = 0.;
+                    for (int k = 0; k < width; ++k) product += double(xs[row * width + k]) * ws[p * width + k];
+                    const double expected = product * inverse, value = values[row * 24 + p];
+                    if (!std::isfinite(value) || std::abs(value - expected) > 1e-5 + 2e-6 * std::abs(expected))
+                        throw std::runtime_error("mHC projection differs from FP64 CPU oracle: M=" + std::to_string(rows)
+                            + ", K=" + std::to_string(width));
+                }
+            }
+        }
+    }
+    std::cout << "mHC projection FP64-oracle and compilation bucket tests passed\n";
 }
 
 void test_compress() {
@@ -285,6 +324,7 @@ int main(int argc, char** argv) {
         test_pack_store();
         test_engram();
         test_mhc();
+        test_mhc_projection();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

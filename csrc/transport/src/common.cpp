@@ -680,9 +680,9 @@ static MfqRuntimeProfile parse_runtime_profile(const std::string & text,
     }
     if (result.chat.mtp_max_draft_tokens &&
         (*result.chat.mtp_max_draft_tokens < 1 ||
-         *result.chat.mtp_max_draft_tokens > 5)) {
+         *result.chat.mtp_max_draft_tokens > 7)) {
         throw std::runtime_error(
-            "runtime profile chat.mtp_max_draft_tokens must be in [1, 5]");
+            "runtime profile chat.mtp_max_draft_tokens must be in [1, 7]");
     }
     if (result.duplex.top_k && *result.duplex.top_k < 0) {
         throw std::runtime_error("runtime profile duplex.top_k must be non-negative");
@@ -1018,11 +1018,11 @@ RequestInput parse_input(
         throw ApiError(400, "invalid_request_error", "top_k must be in [0, 1024]", "top_k");
     }
     if (work.sampling.mtp_max_draft_tokens < 1 ||
-        work.sampling.mtp_max_draft_tokens > 5) {
+        work.sampling.mtp_max_draft_tokens > 7) {
         throw ApiError(
             400,
             "invalid_request_error",
-            "mtp_max_draft_tokens must be in [1, 5]",
+            "mtp_max_draft_tokens must be in [1, 7]",
             "mtp_max_draft_tokens");
     }
     if (work.sampling.temperature > 0.0 && work.sampling.top_k == 0 && work.sampling.top_p < 1.0) {

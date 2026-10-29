@@ -618,7 +618,29 @@ FILE * ggml_fopen(const char * fname, const char * mode) {
 
 }
 
+static void dequantize_row_q2_0(const void * src, float * dst, int64_t count) {
+    GGML_ASSERT(count % 64 == 0);
+    const uint8_t * block = src;
+    for (int64_t base = 0; base < count; base += 64, block += 18) {
+        ggml_fp16_t bits;
+        memcpy(&bits, block, sizeof(bits));
+        const float scale = GGML_FP16_TO_FP32(bits);
+        for (int byte = 0; byte < 16; ++byte) {
+            const uint8_t packed = block[2 + byte];
+            for (int slot = 0; slot < 4; ++slot)
+                dst[base + 4 * byte + slot] = scale * ((int) ((packed >> (2 * slot)) & 3) - 1);
+        }
+    }
+}
+
 static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+    [GGML_TYPE_Q2_0] = {
+        .type_name                = "q2_0",
+        .blck_size                = 64,
+        .type_size                = 18,
+        .is_quantized             = true,
+        .to_float                 = dequantize_row_q2_0,
+    },
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,

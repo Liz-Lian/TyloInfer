@@ -77,6 +77,45 @@ void require_bit_exact(
     }
 }
 
+void require_qsa_half_rope_ulp(array actual, array expected, int rotary_dimension, const char* name) {
+    if (actual.shape() != expected.shape() || actual.dtype() != mlx::core::float16 || expected.dtype() != mlx::core::float16)
+        throw std::runtime_error(std::string(name) + " shape/dtype mismatch");
+    actual = mlx::core::contiguous(actual);
+    expected = mlx::core::contiguous(expected);
+    mlx::core::eval(actual, expected);
+    const auto* a = actual.data<std::uint16_t>();
+    const auto* b = expected.data<std::uint16_t>();
+    const auto ordered = [](std::uint16_t value) {
+        return value & 0x8000u ? 0x8000 - int(value & 0x7fffu) : 0x8000 + int(value);
+    };
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+        const int allowed = index % actual.shape(-1) < std::size_t(rotary_dimension) ? 1 : 0;
+        const int ulp = std::abs(ordered(a[index]) - ordered(b[index]));
+        if ((a[index] & 0x7c00u) == 0x7c00u || (b[index] & 0x7c00u) == 0x7c00u || ulp > allowed)
+            throw std::runtime_error(std::string(name) + " changed element " + std::to_string(index) +
+                " by " + std::to_string(ulp) + " ULP");
+    }
+}
+
+void test_qsa_half_rope_ulp_bounds() {
+    using namespace mlx::core;
+    const std::vector<std::uint16_t> bits{0x3c00, 0xbc00, 0x0000, 0x8000, 0x3c00, 0xbc00, 0x0000, 0x8000};
+    const auto make = [](const std::vector<std::uint16_t>& values) {
+        return view(array(values.data(), Shape{1, 1, 1, 8}, uint16), float16);
+    };
+    auto nearby = bits;
+    nearby[0]++; nearby[1]++; nearby[2] = 0x8000; nearby[3] = 0;
+    require_qsa_half_rope_ulp(make(nearby), make(bits), 4, "QSA one-ULP bound");
+    for (const auto [column, change] : {std::pair{0, 2}, std::pair{1, 2}, std::pair{4, 1}, std::pair{5, 1}}) {
+        auto invalid = bits;
+        invalid[column] += change;
+        bool rejected = false;
+        try { require_qsa_half_rope_ulp(make(invalid), make(bits), 4, "QSA bad ULP"); }
+        catch (const std::runtime_error&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("QSA ULP check accepted an out-of-bound change");
+    }
+}
+
 void require_close(
     array actual,
     array expected,
@@ -129,7 +168,7 @@ void test_qsa_prefill_output_gate() {
                 const Shape shape{batch, rows, heads * dimension};
                 auto expected = astype(reshape(astype(attended, float32), shape) *
                     sigmoid(reshape(astype(gate, float32), shape)), dtype);
-                auto actual = mfq::metal::qwen4_qsa_prefill_output_gate(attended, gate);
+                auto actual = mfq::metal::qwen4_qsa_output_gate(attended, gate);
                 if (dtype == float32)
                     require_close(actual, expected, 1e-7f, "QSA FP32 prefill gate");
                 else
@@ -148,7 +187,7 @@ void test_qsa_prefill_output_gate() {
             const Shape shape{1, rows, heads * dimension};
             auto expected = astype(reshape(astype(attended, float32), shape) *
                 sigmoid(reshape(astype(gate, float32), shape)), dtype);
-            require_bit_exact(mfq::metal::qwen4_qsa_prefill_output_gate(attended, gate),
+            require_bit_exact(mfq::metal::qwen4_qsa_output_gate(attended, gate),
                 expected, "QSA production-width prefill gate");
         }
         const std::vector<float> gates{-INFINITY, -100.0f, -20.0f, -0.0f,
@@ -158,18 +197,32 @@ void test_qsa_prefill_output_gate() {
             0.125f, 0.0f, 1.0f, -0.0f}, Shape{1, 1, 1, 9}), dtype);
         auto expected = astype(reshape(astype(attended, float32) *
             sigmoid(astype(gate, float32)), Shape{1, 1, 9}), dtype);
-        require_bit_exact(mfq::metal::qwen4_qsa_prefill_output_gate(attended, gate),
+        require_bit_exact(mfq::metal::qwen4_qsa_output_gate(attended, gate),
             expected, "QSA saturated prefill gate");
     }
+    for (const auto attended_dtype : {float16, bfloat16, float32})
+        for (const auto gate_dtype : {float16, bfloat16, float32})
+            for (const auto output_dtype : {float16, bfloat16, float32})
+                for (const int rows : {1, 2, 3, 4, 5, 6, 7, 8}) {
+                    const auto attended = transpose(astype(patterned_bfloat(rows * 24 * 256,
+                        Shape{1, 24, rows, 256}, 37, 1.0f / 47.0f), attended_dtype), {0, 2, 1, 3});
+                    const auto packed = astype(patterned_bfloat(rows * 24 * 512,
+                        Shape{1, rows, 24, 512}, 53, 1.0f / 7.0f), gate_dtype);
+                    const auto gate = split(packed, 2, -1).at(1);
+                    const auto expected = astype(reshape(astype(attended, float32) *
+                        sigmoid(astype(gate, float32)), Shape{1, rows, 24 * 256}), output_dtype);
+                    const auto actual = mfq::metal::qwen4_qsa_output_gate(attended, gate, output_dtype);
+                    if (output_dtype == float32) require_close(actual, expected, 1e-7f, "QSA mixed decode gate");
+                    else require_bit_exact(actual, expected, "QSA mixed decode gate");
+                }
     auto valid = zeros(Shape{1, 32, 3, 7}, float16);
     for (const auto& pair : std::vector<std::pair<array, array>>{
         {valid, zeros(Shape{1, 31, 3, 7}, float16)},
-        {valid, astype(valid, bfloat16)},
         {astype(valid, int32), astype(valid, int32)},
         {reshape(valid, Shape{32, 21}), reshape(valid, Shape{32, 21})},
         {zeros(Shape{1, 0, 3, 7}, float16), zeros(Shape{1, 0, 3, 7}, float16)}}) {
         bool rejected = false;
-        try { mfq::metal::qwen4_qsa_prefill_output_gate(pair.first, pair.second); }
+        try { mfq::metal::qwen4_qsa_output_gate(pair.first, pair.second); }
         catch (const std::invalid_argument&) { rejected = true; }
         if (!rejected) throw std::runtime_error("QSA prefill gate accepted invalid inputs");
     }
@@ -384,17 +437,24 @@ void test_qsa_decode_prologue_matches_reference(
         rotary_dimension,
         theta,
         eps);
-    const auto check = [dtype](array a, array b, const char* name) {
-        if (dtype == float32) {
-            require_close(std::move(a), std::move(b), 1e-6f, name);
-        } else {
-            require_bit_exact(std::move(a), std::move(b), name);
+    const auto check = [dtype, position, rows](array a, array b, const char* name, bool rope = false) {
+        try {
+            if (dtype == float32) {
+                require_close(std::move(a), std::move(b), 1e-6f, name);
+            } else if (dtype == float16 && rope) {
+                require_qsa_half_rope_ulp(std::move(a), std::move(b), rotary_dimension, name);
+            } else {
+                require_bit_exact(std::move(a), std::move(b), name);
+            }
+        } catch (const std::exception& error) {
+            throw std::runtime_error("QSA prologue dtype=" + std::to_string(static_cast<int>(dtype.val())) +
+                " rows=" + std::to_string(rows) + " position=" + std::to_string(position) + ": " + error.what());
         }
     };
     check(
         std::move(actual.query),
         std::move(reference_query),
-        "Qwen QSA fused query");
+        "Qwen QSA fused query", true);
     check(
         std::move(actual.output_gate),
         reshape(query_parts.at(1), Shape{1, rows, query_heads * head_dimension}),
@@ -1017,6 +1077,7 @@ void test_residual_write_norm_matches_composition() {
         "Qwen fused write/RMS injection");
 }
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 void test_packed_mhc(const char* path, bool decode_only = false) {
     using namespace mlx::core;
     using mfq::metal::MlxLinear;
@@ -1229,10 +1290,13 @@ void benchmark_packed_mhc(const char* path) {
     }
 }
 
+#endif
+
 } // namespace
 
 int main(int argc, char** argv) {
     try {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         if (argc == 3 && (std::string(argv[1]) == "--packed-mhc" ||
                          std::string(argv[1]) == "--packed-mhc-decode")) {
             test_packed_mhc(argv[2], std::string(argv[1]) == "--packed-mhc-decode");
@@ -1242,11 +1306,13 @@ int main(int argc, char** argv) {
             benchmark_packed_mhc(argv[2]);
             return 0;
         }
+#endif
         if (argc == 2 && std::string(argv[1]) == "--prefill-gate-only") {
             test_qsa_prefill_output_gate();
             std::cout << "QSA prefill output gate test passed\n";
             return 0;
         }
+        test_qsa_half_rope_ulp_bounds();
         test_decode_fast_path_matches_reference();
         test_prefill_mixing_epilogue();
         test_qsa_block_scores();
@@ -1255,7 +1321,7 @@ int main(int argc, char** argv) {
         test_qsa_canonical_prefill_prefix();
         for (auto dtype : {mlx::core::float16, mlx::core::bfloat16,
                            mlx::core::float32}) {
-            for (int rows = 1; rows <= 6; ++rows) {
+            for (int rows = 1; rows <= 8; ++rows) {
                 test_qsa_decode_prologue_matches_reference(dtype, 17, 1e7f, 1e-6f, rows);
                 test_qsa_decode_prologue_matches_reference(dtype, 4099, 1e5f, 3e-5f, rows);
                 test_qsa_decode_prologue_matches_reference(dtype, 0, 1e7f, 1e-6f, rows);

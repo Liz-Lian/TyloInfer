@@ -332,7 +332,7 @@ void add_qwen4_hf_aliases(
         add(std::string(canonical), std::string(stored));
     }
 
-    static const std::unordered_map<std::string_view, std::string_view> suffixes{
+    static const std::vector<std::pair<std::string_view, std::string_view>> suffixes{
         {"attention.mhc.pre.norm.weight", "attn_hyper_connection.hc_norm.weight"},
         {"attention.mhc.pre.down.weight", "attn_hyper_connection.input_mix_weight_down.weight"},
         {"attention.mhc.pre.up.weight", "attn_hyper_connection.input_mix_weight_up.weight"},
@@ -362,6 +362,9 @@ void add_qwen4_hf_aliases(
         {"mlp.router.weight", "mlp.gate.weight"},
         {"mlp.experts.gate_up.weight", "mlp.experts.gate_up_proj"},
         {"mlp.experts.down.weight", "mlp.experts.down_proj"},
+        {"mlp.experts.gate.weight", "mlp.experts.gate_proj.weight"},
+        {"mlp.experts.up.weight", "mlp.experts.up_proj.weight"},
+        {"mlp.experts.down.weight", "mlp.experts.down_proj.weight"},
         {"mlp.shared_expert.gate.weight", "mlp.shared_expert.gate_proj.weight"},
         {"mlp.shared_expert.up.weight", "mlp.shared_expert.up_proj.weight"},
         {"mlp.shared_expert.down.weight", "mlp.shared_expert.down_proj.weight"},

@@ -1,0 +1,10 @@
+Splash 1.4.0, revision 3135ab45b3da525a8a2dbb8a1aa72ce095dda8a9.
+
+GPU operators and their Linear/MoE/HyperConnection planning code only.
+No Splash server, application, model runner or backend process is included.
+Unmodified upstream sources are kept under runtime/; the MLX buffer and
+command-stream adapter is maintained separately in backends/metal/ops/gguf/native/.
+
+Apache-2.0: LICENSE.
+The GGML-derived format tables and decoders retain their MIT terms in
+THIRD_PARTY_NOTICES.

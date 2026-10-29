@@ -2,7 +2,7 @@
 import { ArrowLeftIcon, HouseIcon } from '@phosphor-icons/react';
 import { useNavigate } from 'react-router';
 import { useSettings } from '../features/settings/SettingsProvider';
-import mfqMark from '../assets/mfq-mark.svg';
+import tyloInferMark from '../assets/tylogi-ai-lab-mark.svg';
 
 
 export function NotFoundPage() {
@@ -38,7 +38,7 @@ export function NotFoundPage() {
         </div>
       </div>
       <div className="failure-page-footer" aria-hidden="true">
-        <img src={mfqMark} alt="" />
+        <img src={tyloInferMark} alt="" />
         <span>TyloInfer</span>
       </div>
     </section>

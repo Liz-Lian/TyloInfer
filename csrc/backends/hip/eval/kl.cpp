@@ -1,3 +1,4 @@
+#include "models/nemotron_h/ops.h"
 #include "hip/hip_runtime.h"
 #include "kl.h"
 
@@ -1122,5 +1123,6 @@ TYLOINFER_INSTANTIATE_KL(mfq::cuda::Glm5CausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::Qwen4CausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV4CausalLm);
 TYLOINFER_INSTANTIATE_KL(mfq::cuda::DeepseekV41CausalLm);
+TYLOINFER_INSTANTIATE_KL(mfq::cuda::NemotronHCausalLm);
 
 #undef TYLOINFER_INSTANTIATE_KL

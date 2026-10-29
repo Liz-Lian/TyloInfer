@@ -7,7 +7,7 @@ import {
 } from '../features/settings/UpdateManager';
 import { useUiStore } from '../stores/uiStore';
 import { Icon } from './display';
-import mfqMark from '../assets/mfq-mark.svg';
+import tyloInferMark from '../assets/tylogi-ai-lab-mark.svg';
 import { formatNumber } from './formatters';
 import { studioBuild } from '../features/settings/releases';
 import { dashboardPath, labPath, resolveStudioLocation, isStudioPath,
@@ -95,8 +95,8 @@ export function StudioSidebar() {
     <>
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`} id="studio-sidebar">
         <div className="brand">
-          <img src={mfqMark} alt="" />
-          <div><strong>TyloInfer</strong><span>Studio</span></div>
+          <img src={tyloInferMark} alt="" />
+          <div><strong>TyloInfer</strong></div>
         </div>
         <div className="sidebar-scroll">
           <nav className="sectioned-nav" aria-label={tr('推理', 'Inference')}>

@@ -1,5 +1,5 @@
-#include "tyloinfer/file_range_reader.h"
-#include "tyloinfer/async_range_reader.h"
+#include "components/io/file_range_reader.h"
+#include "components/io/async_range_reader.h"
 
 #include <algorithm>
 #include <array>
@@ -17,6 +17,36 @@
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+void exercise_scatter(const std::filesystem::path& path, const std::vector<std::byte>& expected,
+    mfq::FileReadMode mode) {
+    mfq::FileRangeReader reader(path, mode);
+    std::vector<std::vector<std::byte>> output(1100, std::vector<std::byte>(9, std::byte{0x5a}));
+    std::vector<mfq::ReadSpan> destinations;
+    std::uint64_t next = 3;
+    for (auto& field : output) {
+        destinations.push_back({next, nullptr, 0});
+        destinations.push_back({next, field.data() + 1, 7}); next += 7;
+    }
+    reader.read_contiguous(destinations);
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        require(output[i].front() == std::byte{0x5a} && output[i].back() == std::byte{0x5a},
+            "scatter read overwrote destination guards");
+        require(std::equal(output[i].begin() + 1, output[i].end() - 1, expected.begin() + 3 + i * 7),
+            "scatter read changed adjacent bytes");
+    }
+    require(reader.stats().logical_bytes == 7700 && !reader.stats().staging_bytes &&
+        reader.stats().mode == mode, "scatter read changed byte/mode accounting");
+    std::array<std::byte, 11> tail{};
+    reader.read_contiguous({{expected.size() - 11, tail.data(), 3},
+        {expected.size() - 8, nullptr, 0}, {expected.size() - 8, tail.data() + 3, 8}});
+    require(std::equal(tail.begin(), tail.end(), expected.end() - 11), "scatter EOF bytes differ");
+    std::byte guard{0x5a};
+    bool invalid = false;
+    try { reader.read_contiguous({{expected.size() - 1, &guard, 1}, {expected.size(), &guard, 1}}); }
+    catch (const std::out_of_range&) { invalid = true; }
+    require(invalid && guard == std::byte{0x5a}, "scatter bounds were checked after an earlier write");
+    reader.read_contiguous({{expected.size(), nullptr, 0}});
+}
 void exercise_large_batches(const std::filesystem::path& base) {
     const auto path=std::filesystem::path(base.string()+"-large-batch");
     struct Cleanup {
@@ -399,6 +429,8 @@ int main() {
         }
 #endif
         exercise_shared_staging(path);
+        exercise_scatter(path, expected, mfq::FileReadMode::Buffered);
+        exercise_scatter(path, expected, mfq::FileReadMode::Direct);
         std::filesystem::remove(path);
         bool rejected=false;
         try { mfq::FileRangeReader missing(path,mfq::FileReadMode::Direct); } catch (const std::system_error&) { rejected=true; }

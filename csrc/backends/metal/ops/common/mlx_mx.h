@@ -18,6 +18,10 @@ mlx::core::array mlx_mxfp8_sim(
     const mlx::core::array& input);
 mlx::core::array mlx_mxfp4_e4m3_scale_sim(
     const mlx::core::array& input);
+mlx::core::array mlx_weighted_rms(
+    const mlx::core::array& input,
+    const mlx::core::array& norm_weight,
+    float eps);
 
 // Weighted RMSNorm, adjacent-pair tail RoPE, and MXFP8 activation simulation.
 // A device-specialized fused kernel is selected by operator geometry; all
@@ -53,6 +57,13 @@ public:
     static std::vector<mlx::core::array> projection_group_matmul(
         std::span<const MlxMxWeight> weights,
         const mlx::core::array& input);
+    static bool supports_projection_pair_swiglu(
+        std::span<const MlxMxWeight> weights,
+        const mlx::core::array& input) noexcept;
+    static mlx::core::array projection_pair_swiglu(
+        std::span<const MlxMxWeight> weights,
+        const mlx::core::array& input,
+        float limit);
     mlx::core::array dequantize(
         mlx::core::Dtype dtype = mlx::core::float16) const;
     mlx::core::array embedding(
