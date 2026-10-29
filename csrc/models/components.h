@@ -7,6 +7,7 @@
 #include "engine/executor/mtp.h"
 #include "engine/executor/engine.h"
 #include "cuda_model_plan.h"
+#include "mfq_cuda_kv_quantization.h"
 
 #include <cstdint>
 #include <memory>
@@ -39,6 +40,26 @@ struct RuntimeComponents {
     mfq::cuda::CudaComponentState state() const noexcept {
         return mfq::cuda::cuda_component_state(
             graph, plan, vision_available, mtp_available);
+    }
+
+    static constexpr bool streamed_kv() noexcept {
+        return std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>;
+    }
+
+    mfq::engine::Metrics metrics() const {
+        std::optional<mfq::cuda::KvQuantization> quantization;
+        if constexpr (streamed_kv()) quantization = mfq::cuda::cuda_kv_quantization();
+        const auto component_state = state();
+        return {
+            {"kv_memory_supported", streamed_kv() ? 1.0 : 0.0},
+            {"kv_quantization_supported", quantization.has_value() ? 1.0 : 0.0},
+            {"kv_quantization_bits", quantization ? quantization->bits : 0.0},
+            {"vision_declared", double(component_state.vision_declared)},
+            {"vision_supported", double(component_state.vision_supported)},
+            {"vision_available", double(component_state.vision_available)},
+            {"mtp_declared", double(component_state.mtp_declared)},
+            {"mtp_supported", double(component_state.mtp_supported)},
+            {"mtp_available", double(component_state.mtp_available)}};
     }
 
     void describe(mfq::engine::EngineInfo& info) const {

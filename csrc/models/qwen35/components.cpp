@@ -6,6 +6,7 @@
 #include "models/qwen35/load.h"
 #include "models/qwen35/mtp.h"
 #include "models/qwen35/state.h"
+#include "mfq_cuda_kv_quantization.h"
 
 #include "native/cuda/collectives.h"
 #include "engine/executor/run.h"
@@ -17,8 +18,19 @@
 
 namespace mfq::cuda::qwen35 {
 
-std::optional<KvQuantization> kv_quantization(const Model&) {
-    return cuda_kv_quantization();
+mfq::engine::Metrics Components::metrics() const {
+    const auto component_state = state();
+    const auto quantization = cuda_kv_quantization();
+    return {
+        {"kv_memory_supported", 0.0},
+        {"kv_quantization_supported", 1.0},
+        {"kv_quantization_bits", quantization.bits},
+        {"vision_declared", double(component_state.vision_declared)},
+        {"vision_supported", double(component_state.vision_supported)},
+        {"vision_available", double(component_state.vision_available)},
+        {"mtp_declared", double(component_state.mtp_declared)},
+        {"mtp_supported", double(component_state.mtp_supported)},
+        {"mtp_available", double(component_state.mtp_available)}};
 }
 
 void Components::describe(mfq::engine::EngineInfo& info) const {

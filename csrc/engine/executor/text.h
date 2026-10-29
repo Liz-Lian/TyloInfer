@@ -14,7 +14,6 @@
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
-#include "mfq_cuda_kv_quantization.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/batch/batch.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
@@ -50,11 +49,6 @@ std::unique_ptr<engine::Batch> make_batch(
     Executor::Mode, std::shared_ptr<MoeExpertCache>, CudaContinuousBatchConfig,
     std::int64_t, bool, bool, int) {
     throw std::invalid_argument("continuous batching is unavailable for this model");
-}
-
-template <class M>
-std::optional<KvQuantization> kv_quantization(const M&) {
-    return std::nullopt;
 }
 
 template <class LoadedModel>
@@ -407,14 +401,7 @@ struct Text {
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {
-            const auto quantization = [&]() -> std::optional<KvQuantization> {
-                if constexpr (std::is_same_v<Model,Qwen4CausalLm>)
-                    return cuda_kv_quantization();
-                else
-                    return kv_quantization(language);
-            }();
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
-            const auto capabilities = components.state();
             const auto workspace_metrics = expert_space ? expert_space->metrics() : ExpertSpace::Metrics{};
             Metrics metrics{
                 {"mtp_graph_prepared_depth",double(graph_draft_depth)},
@@ -422,13 +409,9 @@ struct Text {
                 {"mtp_flexible_expert_used_bytes",double(workspace_metrics.decode_used)},
                 {"prefill_workspace_expert_capacity_bytes",double(workspace_metrics.prefill_capacity)},
                 {"prefill_workspace_expert_used_bytes",double(workspace_metrics.prefill_used)},
-                {"prefill_workspace_expert_reclaimed_used_bytes",double(workspace_metrics.prefill_reclaimed_used)},
-                {"kv_memory_supported",std::is_same_v<Model,Qwen4CausalLm>?1.0:0.0},
-                {"kv_quantization_supported",double(quantization.has_value())},
-                {"kv_quantization_bits",quantization?quantization->bits:0.0},
-                {"vision_declared", double(capabilities.vision_declared)}, {"vision_supported", double(capabilities.vision_supported)},
-                {"vision_available", double(capabilities.vision_available)}, {"mtp_declared", double(capabilities.mtp_declared)},
-                {"mtp_supported", double(capabilities.mtp_supported)}, {"mtp_available", double(capabilities.mtp_available)}};
+                {"prefill_workspace_expert_reclaimed_used_bytes",double(workspace_metrics.prefill_reclaimed_used)}};
+            const auto component_metrics = components.metrics();
+            metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
             auto experts = weights.metrics();
             metrics.insert(metrics.end(), experts.begin(), experts.end());
             if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
@@ -511,7 +494,7 @@ struct Text {
                 {"resident_memory_budget_bytes",double(budget->resident())}, {"resident_weight_budget_bytes",double(budget->weights())},
                 {"resident_memory_used_bytes",double(std::max(allocated,reserved))},
                 {"resident_reclaimable_weight_bytes",double(expert_bytes>minimum?expert_bytes-minimum:0)}});
-            metrics.emplace_back("qsa_kv_offload_supported",std::is_same_v<Model, Qwen4CausalLm> ? 1.0 : 0.0);
+            metrics.emplace_back("qsa_kv_offload_supported",components.streamed_kv() ? 1.0 : 0.0);
             if (offload) {
                 auto offload_metrics = offload->metrics();
                 metrics.insert(metrics.end(), offload_metrics.begin(), offload_metrics.end());

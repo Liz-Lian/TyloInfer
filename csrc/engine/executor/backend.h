@@ -84,9 +84,8 @@ struct Backend {
         state = Load(*execution, options, true,
             [&](auto& loaded, auto, auto) -> State {
                 using LoadedModel = std::remove_cvref_t<decltype(loaded)>;
-                using Model = typename LoadedModel::Model;
-                if constexpr (!std::is_same_v<Model, Qwen4CausalLm>)
-                    if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
+                if (offload && !loaded.components.streamed_kv())
+                    throw std::invalid_argument("CUDA streamed KV requires a QSA model");
                 auto source = loaded.language().source;
                 return std::make_unique<Text<LoadedModel>>(
                     *execution, weights, kv, offload, std::move(loaded), config,

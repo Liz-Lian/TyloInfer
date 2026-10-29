@@ -2,7 +2,6 @@
 
 #include "engine/executor/loaded.h"
 #include "engine/executor/engine.h"
-#include "mfq_cuda_kv_quantization.h"
 #include "models/common/grid_vision.h"
 #include "models/qwen35/model.h"
 #include "models/qwen35/mtp.h"
@@ -34,8 +33,6 @@ namespace mfq::cuda::qwen35 {
 struct LoadOptions;
 class State;
 
-std::optional<KvQuantization> kv_quantization(const Model&);
-
 struct Components {
     mfq::ModelGraph graph;
     CudaModelPlan plan;
@@ -47,6 +44,10 @@ struct Components {
         return cuda_component_state(
             graph, plan, grid_vision.has_value(), bool(mtp));
     }
+
+    static constexpr bool streamed_kv() noexcept { return false; }
+
+    mfq::engine::Metrics metrics() const;
 
     void describe(mfq::engine::EngineInfo& info) const;
 
