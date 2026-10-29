@@ -11,6 +11,7 @@ struct SessionResult;
 namespace mfq::cuda {
 class WeightMemoryLedger;
 struct RoutedCache;
+class ExpertSpace;
 namespace internal {
 class TextSessionCache;
 }
@@ -27,6 +28,7 @@ public:
 
     std::size_t resident() const noexcept { return resident_budget_; }
     std::size_t weights() const noexcept { return weight_budget_; }
+    void reclaim(std::size_t bytes, ExpertSpace* space);
 
 private:
     WeightMemoryLedger& weight_memory_;

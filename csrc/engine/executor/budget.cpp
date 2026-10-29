@@ -5,9 +5,11 @@
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "engine/executor/engine.h"
+#include "engine/weights/workspace.h"
 #include "weight_memory.h"
 
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 
 namespace mfq::cuda {
@@ -17,6 +19,26 @@ Budget::Budget(WeightMemoryLedger& weight_memory, RoutedCache& weights,
     : weight_memory_(weight_memory), weights_(weights), cache_(cache),
       primary_device_(primary_device), initial_expert_budget_(weights.budget()),
       allocation_ceiling_(default_context(primary_device)->memory_stats().limit) {}
+
+void Budget::reclaim(std::size_t bytes, ExpertSpace* space) {
+    auto context=default_context(primary_device_);
+    const auto available=context->available_memory();
+    if(available>=bytes)return;
+    if(space && !space->empty()) {
+        std::cerr<<"runtime_workspace_cache_reclaim reason=workspace requested_bytes="<<bytes
+            <<" available_bytes="<<available<<'\n';
+        space->release(bytes);
+    }
+    if(context->available_memory()>=bytes)return;
+    std::size_t hot=0;
+    for(const auto& [name,value]:cache_.metrics())
+        if(name=="prefix_cache_hot_bytes")hot=std::size_t(value);
+    const auto shortage=bytes-context->available_memory();
+    const auto released=cache_.trim_hot(hot>shortage?hot-shortage:0);
+    context->reclaim_idle_memory();
+    if(released)std::cerr<<"runtime_workspace_reclaim requested_bytes="<<bytes
+        <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
+}
 
 engine::SessionResult Budget::set(
         const engine::SessionCommand& command,

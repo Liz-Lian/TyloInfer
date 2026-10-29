@@ -17,7 +17,7 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/batch/batch.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
-#include "engine/executor/mtp_metrics.h"
+#include "engine/executor/metrics.h"
 #include "engine/requests/table.h"
 #include "engine/executor/flow.h"
 #include "weight_memory.h"
@@ -31,9 +31,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <set>
 #include <stdexcept>
-#include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -130,7 +128,8 @@ struct Text {
                 state.reset(1);components.mtp->reset(1);
                 auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
                 context->reclaim_idle_memory();
-                reclaim_prefix_workspace((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth));
+                budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth),
+                    expert_space ? &*expert_space : nullptr);
                 qwen4_warmup_decode_graphs(language,components.mtp.get(),depth);
                 graph_draft_depth=depth;
                 preparing_graph_depth=false;
@@ -147,26 +146,6 @@ struct Text {
     bool online_budget_supported() const {
         return execution->layer_placement.devices.size()<=1 && !execution->tensor_parallel.enabled()
             && !execution->expert_parallel.enabled();
-    }
-
-    void reclaim_prefix_workspace(std::size_t bytes) {
-        auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
-        const auto available=context->available_memory();
-        if(available>=bytes)return;
-        if(expert_space && !expert_space->empty()) {
-            std::cerr<<"runtime_workspace_cache_reclaim reason=workspace requested_bytes="<<bytes
-                <<" available_bytes="<<available<<'\n';
-            expert_space->release(bytes);
-        }
-        if(context->available_memory()>=bytes)return;
-        std::size_t hot=0;
-        for(const auto& [name,value]:cache.metrics())
-            if(name=="prefix_cache_hot_bytes")hot=std::size_t(value);
-        const auto shortage=bytes-context->available_memory();
-        const auto released=cache.trim_hot(hot>shortage?hot-shortage:0);
-        context->reclaim_idle_memory();
-        if(released)std::cerr<<"runtime_workspace_reclaim requested_bytes="<<bytes
-            <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
     }
 
     Text(CudaExecutionContext& borrowed, RoutedCache& borrowed_weights,
@@ -229,7 +208,9 @@ struct Text {
                           })
                 language.restore_decode_workspace = restore_decode_workspace;
             set_moe_workspace_reservation(weights.moe,
-                [this](std::size_t bytes) {reclaim_prefix_workspace(bytes);},
+                [this](std::size_t bytes) {
+                    budget->reclaim(bytes, expert_space ? &*expert_space : nullptr);
+                },
                 [this](std::size_t bytes) {
                     cache.reserve_ram(bytes);weights.reserve(bytes);
                 });
@@ -401,113 +382,10 @@ struct Text {
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {
-            const auto batch_metrics = batching ? batching->metrics() : Metrics{};
-            const auto workspace_metrics = expert_space ? expert_space->metrics() : ExpertSpace::Metrics{};
-            Metrics metrics{
-                {"mtp_graph_prepared_depth",double(graph_draft_depth)},
-                {"mtp_flexible_expert_capacity_bytes",double(workspace_metrics.decode_capacity)},
-                {"mtp_flexible_expert_used_bytes",double(workspace_metrics.decode_used)},
-                {"prefill_workspace_expert_capacity_bytes",double(workspace_metrics.prefill_capacity)},
-                {"prefill_workspace_expert_used_bytes",double(workspace_metrics.prefill_used)},
-                {"prefill_workspace_expert_reclaimed_used_bytes",double(workspace_metrics.prefill_reclaimed_used)}};
-            const auto component_metrics = components.metrics();
-            metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
-            auto experts = weights.metrics();
-            metrics.insert(metrics.end(), experts.begin(), experts.end());
-            if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
-                auto phases=qwen4_decode_graph_profile_metrics(language,components.mtp.get());
-                metrics.insert(metrics.end(),phases.begin(),phases.end());
-            }
-            if(source) {
-                const auto io=source->file_read_stats();
-                metrics.insert(metrics.end(),{{"model_io_direct",io.mode==mfq::FileReadMode::Direct?1.0:0.0},
-                    {"model_io_read_calls",double(io.calls)},{"model_io_logical_bytes",double(io.logical_bytes)},
-                    {"model_io_physical_bytes",double(io.physical_bytes)},{"model_io_read_ms",double(io.read_nanoseconds)/1e6},
-                    {"model_io_staging_bytes",double(io.staging_bytes)},{"model_io_cached_staging_bytes",double(io.staging_cached_bytes)},
-                    {"model_io_staging_allocations",double(io.staging_allocations)}});
-            }
-            if(kv) {
-                auto kv_metrics=kv->metrics();
-                metrics.insert(metrics.end(),kv_metrics.begin(),kv_metrics.end());
-            }
-            std::size_t resident_weights=weight_memory->resident_bytes();
-            for(const auto& metric:experts)
-                if(metric.first=="resident_expert_cache_bytes")resident_weights+=std::size_t(metric.second);
-            const auto ple=weight_memory->ple_bytes();
-            metrics.insert(metrics.end(),{{"resident_weight_bytes",double(resident_weights)},
-                {"ssd_ple_enabled",ple>0?1.0:0.0},{"ssd_ple_payload_bytes",double(ple)}});
-            if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-                auto cache_memory=qwen4_cache_memory_metrics(language,components.mtp.get());
-                for (auto& [name,value] : cache_memory)
-                    for (const auto& [batch_name,batch_value] : batch_metrics) {
-                        if (name == "kv_cache_bytes" && batch_name == "continuous_batching_request_kv_bytes")
-                            value += batch_value;
-                        if (name == "kv_cache_contexts" && batch_name == "continuous_batching_request_contexts")
-                            value += batch_value;
-                    }
-                metrics.insert(metrics.end(),cache_memory.begin(),cache_memory.end());
-            }
-            const auto metric_bytes = [&](const std::string& key) {
-                for(const auto& [name,value]:metrics)if(name==key)return std::size_t(value);
-                return std::size_t(0);
-            };
-            std::set<int> devices(execution->layer_placement.devices.begin(),execution->layer_placement.devices.end());
-            devices.insert(execution->tensor_parallel.devices.begin(),execution->tensor_parallel.devices.end());
-            devices.insert(execution->expert_parallel.devices.begin(),execution->expert_parallel.devices.end());
-            const auto primary=execution->layer_placement.primary_device();
-            devices.insert(primary);
-            auto prefix_bytes=cache.device_hot_bytes();
-            std::size_t allocated=0,reserved=0,free_bytes=0,total_bytes=0,buffers=0;
-            for(const int device:devices) {
-                MfqCudaGuard guard(device);
-                size_t free=0,total=0;
-                TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&free,&total));
-                const auto memory=mfq_cuda_memory_stats(device);
-                const auto external=device==primary?metric_bytes("kv_memory_vmm_bytes"):0;
-                const auto resident=std::max(memory.reserved_bytes,memory.allocated_bytes)+external;
-                const auto stem="gpu_"+std::to_string(device)+"_";
-                auto weights=weight_memory->resident_bytes(device);
-                if(device==primary)weights+=metric_bytes("resident_expert_cache_bytes");
-                const auto hot=prefix_bytes[device];
-                auto live=metric_bytes(stem+"live_kv_bytes");
-                if(device==primary)for(const auto& [name,value]:batch_metrics)
-                    if(name=="continuous_batching_request_kv_bytes")live+=std::size_t(value);
-                metrics.insert(metrics.end(),{{stem+"resident_bytes",double(resident)},
-                    {stem+"resident_weight_bytes",double(weights)}, {stem+"prefix_cache_bytes",double(hot)},
-                    {stem+"memory_total_bytes",double(total)}, {stem+"memory_available_bytes",double(free)}});
-                if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-                    const auto categorized=weights+live+hot;
-                    const auto buffer=resident>categorized?resident-categorized:0;
-                    metrics.emplace_back(stem+"resident_buffer_bytes",double(buffer));
-                    metrics.emplace_back(stem+"kv_bytes",double(live+hot));
-                    buffers+=buffer;
-                }
-                allocated+=memory.allocated_bytes+external;reserved+=memory.reserved_bytes+external;free_bytes+=free;total_bytes+=total;
-            }
-            metrics.insert(metrics.end(),{{"device_free_bytes",double(free_bytes)}, {"device_total_bytes",double(total_bytes)},
-                {"cuda_allocated_bytes",double(allocated)}, {"cuda_reserved_bytes",double(reserved)}});
-            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)metrics.emplace_back("resident_buffer_bytes",double(buffers));
-            const auto expert_bytes=metric_bytes("resident_expert_cache_bytes");
-            const auto minimum=moe_expert_cache_minimum_bytes(weights.moe);
-            metrics.insert(metrics.end(),{{"resident_memory_dynamic_budget",online_budget_supported()?1.0:0.0},
-                {"resident_weight_dynamic_budget",online_budget_supported()?1.0:0.0},
-                {"resident_memory_budget_bytes",double(budget->resident())}, {"resident_weight_budget_bytes",double(budget->weights())},
-                {"resident_memory_used_bytes",double(std::max(allocated,reserved))},
-                {"resident_reclaimable_weight_bytes",double(expert_bytes>minimum?expert_bytes-minimum:0)}});
-            metrics.emplace_back("qsa_kv_offload_supported",components.streamed_kv() ? 1.0 : 0.0);
-            if (offload) {
-                auto offload_metrics = offload->metrics();
-                metrics.insert(metrics.end(), offload_metrics.begin(), offload_metrics.end());
-            } else metrics.insert(metrics.end(), {{"qsa_kv_offload_enabled", 0.0},
-                {"qsa_kv_ram_enabled", 0.0}, {"qsa_kv_ram_bytes", 0.0}, {"qsa_kv_ssd_bytes", 0.0}});
-            if (components.mtp) {
-                mtp::append_generation_metrics(metrics, components.mtp->last_stats);
-                metrics.emplace_back("mtp_predictor_graph_replays",double(components.mtp->graph_replay_count()));
-            }
-            if (batching) {
-                metrics.insert(metrics.end(), batch_metrics.begin(), batch_metrics.end());
-            }
-            return metrics;
+            return runtime_metrics(language,components,graph_draft_depth,
+                expert_space ? &*expert_space : nullptr,batching.get(),source.get(),
+                *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
+                execution->layer_placement,execution->tensor_parallel,execution->expert_parallel);
         } else {
             auto result = components.control(value);
             if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)

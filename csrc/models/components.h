@@ -3,6 +3,7 @@
 #include "models/deepseek_v41/vision.h"
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/radio_vision.h"
+#include "models/qwen4_exp/ops.h"
 #include "models/common/grid_vision.h"
 #include "engine/executor/mtp.h"
 #include "engine/executor/engine.h"
@@ -60,6 +61,18 @@ struct RuntimeComponents {
             {"mtp_declared", double(component_state.mtp_declared)},
             {"mtp_supported", double(component_state.mtp_supported)},
             {"mtp_available", double(component_state.mtp_available)}};
+    }
+
+    mfq::engine::Metrics profile_metrics(const Model& language) const {
+        if constexpr (std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>)
+            return mfq::cuda::qwen4_decode_graph_profile_metrics(language, mtp.get());
+        return {};
+    }
+
+    std::optional<mfq::engine::Metrics> memory_metrics(const Model& language) const {
+        if constexpr (std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>)
+            return mfq::cuda::qwen4_cache_memory_metrics(language, mtp.get());
+        return std::nullopt;
     }
 
     void describe(mfq::engine::EngineInfo& info) const {
