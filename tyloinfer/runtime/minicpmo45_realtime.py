@@ -827,7 +827,7 @@ def build_app(gateway: RealtimeGateway, web_root: Path | None = None) -> Any:
 
     root = (web_root or DEFAULT_WEB_ROOT).resolve()
     if not (root / "index.html").is_file():
-        raise FileNotFoundError(f"MFQ WebUI was not found at {root}")
+        raise FileNotFoundError(f"TyloInfer WebUI was not found at {root}")
     backend_http = httpx.AsyncClient(timeout=None, trust_env=False)
 
     @asynccontextmanager
@@ -837,7 +837,7 @@ def build_app(gateway: RealtimeGateway, web_root: Path | None = None) -> Any:
         finally:
             await backend_http.aclose()
 
-    app = FastAPI(title="MFQ MiniCPM-o Realtime", lifespan=lifespan)
+    app = FastAPI(title="TyloInfer MiniCPM-o Realtime", lifespan=lifespan)
 
     excluded_request_headers = {"connection", "content-length", "host", "transfer-encoding"}
     excluded_response_headers = {"connection", "content-length", "transfer-encoding"}
@@ -917,7 +917,7 @@ def build_app(gateway: RealtimeGateway, web_root: Path | None = None) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="MiniCPM-o 4.5 realtime audio gateway for an MFQ native worker"
+        description="MiniCPM-o 4.5 realtime audio gateway for a TyloInfer native worker"
     )
     parser.add_argument("--backend", default="http://127.0.0.1:8080")
     parser.add_argument("--host", default="127.0.0.1")

@@ -134,7 +134,7 @@ class VoiceOutputComponent:
                     follow_redirects=True,
                     timeout=timeout,
                     trust_env=True,
-                    headers={"User-Agent": "MFQ-Studio/voice-component"},
+                    headers={"User-Agent": "TyloInfer/voice-component"},
                 ) as client:
                     for item in VOICE_OUTPUT_FILES:
                         context.raise_if_cancelled()

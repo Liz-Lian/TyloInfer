@@ -4,7 +4,7 @@ import { useSettings } from '../features/settings/SettingsProvider';
 import { ApiError, getApiBaseUrl, getApiToken, setApiToken, verifyApiToken } from '../shared/api/client';
 import { saveStudioCredential } from '../studio';
 import { useRuntime } from './RuntimeProvider';
-import mfqMark from '../assets/mfq-mark.svg';
+import tyloInferMark from '../assets/tylogi-ai-lab-mark.svg';
 
 export function LoginPage() {
   const { tr } = useSettings();
@@ -63,7 +63,7 @@ export function LoginPage() {
   return (
     <main className="login-page">
       <section className="login-card" aria-labelledby="login-title">
-        <div className="login-brand"><img src={mfqMark} alt="" /><span>TyloInfer</span></div>
+        <div className="login-brand"><img src={tyloInferMark} alt="" /><span>TyloInfer</span></div>
         <h1 id="login-title">{tr('登录', 'Sign in')}</h1>
         <p className="login-description">{tr('此服务已启用鉴权，请输入 API Key。', 'This service requires authentication. Enter your API key to continue.')}</p>
         <p className="login-endpoint" title={endpoint || window.location.origin}>{endpoint || window.location.origin}</p>

@@ -448,7 +448,7 @@ class ToolJobHandlers:
         request = ContainerValidationPayload.model_validate(payload)
         artifact = await self._model(request.model)
         diagnostics = self._required_executable(
-            self.paths.diagnostics or self.paths.runtime, "MFQ diagnostics"
+            self.paths.diagnostics or self.paths.runtime, "TyloInfer diagnostics"
         )
         output = await self._run(
             context,
@@ -527,7 +527,7 @@ class ToolJobHandlers:
         if not request.layerwise:
             argv.append('--resident')
         if backend == 'cuda':
-            argv.extend(['--runtime', str(self._required_executable(self.paths.runtime, 'MFQ native CUDA runtime'))])
+            argv.extend(['--runtime', str(self._required_executable(self.paths.runtime, 'TyloInfer native CUDA runtime'))])
 
         loading_data = {}
         def progress(line):
@@ -557,7 +557,7 @@ class ToolJobHandlers:
     async def perplexity(self, context: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
         request = PerplexityPayload.model_validate(payload)
         artifact = await self._model(request.model)
-        executable = self._required_executable(self.paths.perplexity, "MFQ perplexity")
+        executable = self._required_executable(self.paths.perplexity, "TyloInfer perplexity")
         dataset = self._input(request.dataset_file)
         argv = [
             str(executable),
@@ -683,7 +683,7 @@ class ToolJobHandlers:
     ) -> dict[str, Any]:
         request = KernelBenchmarkPayload.model_validate(payload)
         artifact = await self._model(request.model)
-        runtime = self._required_executable(self.paths.runtime, "MFQ runtime")
+        runtime = self._required_executable(self.paths.runtime, "TyloInfer runtime")
         argv = [
             str(runtime),
             "--model",

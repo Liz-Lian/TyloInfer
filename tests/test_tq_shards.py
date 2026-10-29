@@ -98,9 +98,10 @@ def test_tq_shards_preserve_canonical_shapes_and_row_manifest(tmp_path):
                 assert model[name].to_bytes() == tensor.to_bytes()
 
 
-def test_tq_model_is_discovered_and_missing_shard_stays_incomplete(tmp_path):
+@pytest.mark.parametrize('suffix', ['.tq', '.mfq'])
+def test_tq_model_is_discovered_and_missing_shard_stays_incomplete(tmp_path, suffix):
     for index in (1, 2):
-        save(format_shard_path(tmp_path / 'model.tq', index, 2),
+        save(format_shard_path(tmp_path / f'model{suffix}', index, 2),
              FileHeader(version=2, model_arch='test', extra={
                  'split.no': index - 1, 'split.count': 2,
                  'split.tensors.count': 2, 'split.records.count': 2,
@@ -111,7 +112,7 @@ def test_tq_model_is_discovered_and_missing_shard_stays_incomplete(tmp_path):
         complete = await catalog.list()
         assert len(complete.data) == 1
         assert complete.data[0].complete
-        format_shard_path(tmp_path / 'model.tq', 1, 2).unlink()
+        format_shard_path(tmp_path / f'model{suffix}', 1, 2).unlink()
         incomplete = await catalog.list(refresh=True)
         assert len(incomplete.data) == 1
         assert not incomplete.data[0].complete
@@ -132,9 +133,9 @@ def test_tq_hub_variant_includes_shared_engram_and_has_header_candidates():
     assert HubCatalog._is_official_repo(info.repo_id)
 
 
-@pytest.mark.parametrize('suffix', ['.tq'])
+@pytest.mark.parametrize('suffix', ['.tq', '.mfq'])
 def test_shard_families_do_not_mix_container_suffixes(tmp_path, suffix):
-    other = '.mfq'
+    other = '.mfq' if suffix == '.tq' else '.tq'
     primary = f'Q3/model-Q3-00001-of-00002{suffix}'
     wrong = f'Engram/model-Engram-MXFP8-00002-of-00002{other}'
     assert with_engram_shards([primary], [primary, wrong]) == [primary]
@@ -147,13 +148,14 @@ def test_shard_families_do_not_mix_container_suffixes(tmp_path, suffix):
         open_mmap(format_shard_path(tmp_path / f'model{suffix}', 1, 2))
 
 
-def test_hub_does_not_advertise_legacy_mfq_as_tq():
+def test_hub_keeps_tq_container_suffix_families_separate():
     files = [HubModelFile(name=f'Q3/model-Q3-00001-of-00002{suffix}', byte_size=100)
              for suffix in ('.tq', '.mfq')]
     files.extend(HubModelFile(name=f'Engram/model-Engram-MXFP8-00002-of-00002{suffix}', byte_size=200)
                  for suffix in ('.tq', '.mfq'))
     variants = _model_variants(files, HubSystemProfile(platform='test', machine='test', backend='unknown'))
-    assert len(variants) == 1
+    assert len(variants) == 2
     for variant in variants:
         assert len(variant.files) == 2
-        assert all(name.endswith('.tq') for name in variant.files)
+        suffix = '.mfq' if variant.id.startswith('mfq:') else '.tq'
+        assert all(name.endswith(suffix) for name in variant.files)

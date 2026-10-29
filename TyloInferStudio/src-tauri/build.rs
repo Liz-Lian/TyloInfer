@@ -4,11 +4,11 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-const MACOS_ICON_SCALE: f64 = 0.83;
+const MACOS_ICON_SCALE: f64 = 0.79;
 
 fn inside_background(x: f64, y: f64, inset: f64) -> bool {
     let half = 20.0 - inset;
-    let radius = 9.375 - inset * 0.5;
+    let radius = 10.5 - inset * 0.5;
     let qx = (x - 20.0).abs() - (half - radius);
     let qy = (y - 20.0).abs() - (half - radius);
     let outside = qx.max(0.0).hypot(qy.max(0.0));
@@ -29,32 +29,47 @@ fn distance_to_segment(x: f64, y: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f6
 }
 
 fn inside_mark(x: f64, y: f64) -> bool {
-    const POINTS: [(f64, f64); 5] = [
-        (10.0, 27.5),
-        (10.0, 12.5),
-        (20.0, 23.125),
-        (30.0, 12.5),
-        (30.0, 27.5),
+    const SEGMENTS: [(f64, f64, f64, f64); 3] = [
+        (10.0, 12.0, 29.0, 12.0),
+        (19.5, 12.0, 19.5, 26.5),
+        (25.5, 32.0, 28.0, 32.0),
     ];
-    POINTS
-        .windows(2)
-        .any(|pair| distance_to_segment(x, y, pair[0].0, pair[0].1, pair[1].0, pair[1].1) <= 1.875)
+    if SEGMENTS.iter().any(|&(ax, ay, bx, by)| distance_to_segment(x, y, ax, ay, bx, by) <= 1.75) {
+        return true;
+    }
+    if !(17.75..=27.25).contains(&x) || !(24.75..=33.75).contains(&y) {
+        return false;
+    }
+    let mut previous = (19.5, 26.5);
+    for step in 1..=24 {
+        let t = step as f64 / 24.0;
+        let u = 1.0 - t;
+        let next = (
+            u * u * u * 19.5 + 3.0 * u * u * t * 19.5 + 3.0 * u * t * t * 21.75 + t * t * t * 25.5,
+            u * u * u * 26.5 + 3.0 * u * u * t * 30.0 + 3.0 * u * t * t * 32.0 + t * t * t * 32.0,
+        );
+        if distance_to_segment(x, y, previous.0, previous.1, next.0, next.1) <= 1.75 {
+            return true;
+        }
+        previous = next;
+    }
+    false
 }
 
 fn sample(x: f64, y: f64) -> [u8; 4] {
-    if !inside_background(x, y, 0.625) {
+    if !inside_background(x, y, 0.0) {
         return [0, 0, 0, 0];
     }
-    if !inside_background(x, y, 0.9375) {
-        return [222, 223, 218, 255];
+    if !inside_background(x, y, 0.75) {
+        return [57, 58, 56, 255];
     }
-    if (x - 30.0).hypot(y - 27.5) <= 1.875 {
-        return [184, 115, 67, 255];
+    if (x - 31.5).hypot(y - 32.0) <= 2.25 {
+        return [185, 133, 76, 255];
     }
     if inside_mark(x, y) {
-        return [32, 34, 35, 255];
+        return [243, 241, 236, 255];
     }
-    [244, 244, 240, 255]
+    [17, 19, 19, 255]
 }
 
 fn render(size: u32, scale: f64) -> Vec<u8> {
@@ -139,9 +154,9 @@ fn write_icons(directory: &Path) {
 fn main() {
     let server_version_path = Path::new("../../tyloinfer/_version.py");
     println!("cargo:rerun-if-changed={}", server_version_path.display());
-    let server_source = fs::read_to_string(server_version_path).expect("missing MFQ server version");
+    let server_source = fs::read_to_string(server_version_path).expect("missing TyloInfer server version");
     let server_version = server_source.lines().find_map(|line| line.strip_prefix("__version__ = "))
-        .expect("missing MFQ server version declaration").trim_matches('"');
+        .expect("missing TyloInfer server version declaration").trim_matches('"');
     println!("cargo:rustc-env=TYLOINFER_SERVER_VERSION={server_version}");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=../src");

@@ -4,7 +4,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { CopySimpleIcon, MinusIcon, SquareIcon, XIcon } from '@phosphor-icons/react';
 import { useSettings } from '../features/settings/SettingsProvider';
 import { studioCustomTitlebar } from '../shared/platform/studio';
-import mfqMark from '../assets/mfq-mark.svg';
+import tyloInferMark from '../assets/tylogi-ai-lab-mark.svg';
 import './desktop-window.css';
 
 
@@ -57,7 +57,7 @@ export function DesktopWindowFrame({ children }: { children: ReactNode }) {
     <div className={enabled ? 'desktop-window' : 'desktop-window-browser'} data-window-focused={focused}>
       {enabled && <header key="titlebar" className="desktop-titlebar" aria-label={tr('窗口标题栏', 'Window title bar')}>
         <div className="desktop-titlebar-drag" data-tauri-drag-region>
-          <img src={mfqMark} alt="" draggable={false} />
+          <img src={tyloInferMark} alt="" draggable={false} />
           <span>TyloInfer</span>
         </div>
         <div className="desktop-window-controls">

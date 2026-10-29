@@ -96,7 +96,7 @@ def parse_chat_request(body: Any) -> OpenAIChatRequest:
         messages.append(dict(message))
 
     if _value(body, "n", 1) != 1:
-        raise OpenAIRequestError("MFQ currently supports n=1", param="n")
+        raise OpenAIRequestError("TyloInfer currently supports n=1", param="n")
 
     template_kwargs = body.get("chat_template_kwargs")
     if template_kwargs is not None and not isinstance(template_kwargs, dict):

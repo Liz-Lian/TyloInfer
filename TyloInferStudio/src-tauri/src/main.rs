@@ -765,7 +765,7 @@ fn studio_open_external(url: String) -> Result<(), String> {
                 | "openclaw.ai"
         )
     {
-        return Err("external links are limited to trusted MFQ model and release hosts".into());
+        return Err("external links are limited to trusted TyloInfer model and release hosts".into());
     }
     #[cfg(target_os = "macos")]
     let mut command = Command::new("/usr/bin/open");

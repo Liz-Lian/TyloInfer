@@ -53,10 +53,15 @@ HubProvider = Literal["huggingface", "modelscope"]
 
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _TYLOINFER_SHARD_PATTERN = re.compile(
-    r"^(?P<name>.+?)(?:-\d{5}-of-\d{5})?\.tq$", re.IGNORECASE
+    r"^(?P<name>.+?)(?:-\d{5}-of-\d{5})?(?P<suffix>"
+    + "|".join(re.escape(suffix) for suffix in TYLOINFER_SUFFIXES) + r")$", re.IGNORECASE
 )
 _PRECISION_PATTERN = re.compile(
-    r"(?:^|[-_.])((?:S|V|Q|NINT|NVQ)\d+(?:\.\d+)?(?:[-_][A-Za-z0-9]+)?)",
+    r"(?:^|[-_.])((?:TQ|S|V|IQ|Q|NINT|NVQ)\d+(?:\.\d+)?(?:[-_][A-Za-z0-9]+)?)",
+    re.IGNORECASE,
+)
+_PRECISION_FOLDER_PATTERN = re.compile(
+    r"^(?:UD[-_])?((?:TQ|S|V|IQ|Q|NINT|NVQ)\d+(?:\.\d+)?(?:[-_][A-Za-z0-9]+)*)$",
     re.IGNORECASE,
 )
 _METADATA_TIMEOUT = 8.0
@@ -250,7 +255,7 @@ def _configuration_status(
     capacity = profile.runtime_memory_budget_bytes or profile.physical_memory_bytes
     reasons: list[str] = []
     if supported is False:
-        reasons.append(unsupported_reason or "This format is not directly loadable by MFQ.")
+        reasons.append(unsupported_reason or "This format is not directly loadable by TyloInfer.")
         status: Literal["recommended", "warning", "unknown"] = "warning"
         recommendation = "not_recommended"
     elif supported is None:
@@ -369,8 +374,11 @@ def _model_configuration_status(
 
 
 def _precision_from_name(name: str) -> str | None:
+    for parent in reversed(name.split('/')[:-1]):
+        if match := _PRECISION_FOLDER_PATTERN.fullmatch(parent):
+            return parent
     matches = list(_PRECISION_PATTERN.finditer(name))
-    return matches[-1].group(1).replace("_", "-").upper() if matches else None
+    return matches[-1].group(1) if matches else None
 
 
 def _model_variants(
@@ -393,7 +401,7 @@ def _model_variants(
                 label = parent
             else:
                 label = f"{parent}/{stem}"
-            suffix = '.tq'
+            suffix = match.group('suffix').lower()
             mfq_groups.setdefault((label, suffix), []).append(item)
         elif basename.lower().endswith(".gguf"):
             configuration = _configuration_status(

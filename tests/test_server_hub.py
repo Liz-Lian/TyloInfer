@@ -615,6 +615,43 @@ def test_mfq_variants_keep_subdirectories_and_use_the_quantization_suffix() -> N
     assert variants[0].byte_size == 22
 
 
+@pytest.mark.parametrize('suffix', ['.mfq', '.tq', '.MFQ'])
+def test_tq_variants_recognize_container_suffixes_and_large_shard_sets(suffix) -> None:
+    files = [HubModelFile(name=f'{tier}/model-{index:05d}-of-00065{suffix}',
+        byte_size=100, weight_bytes=60, ssd_ple_bytes=40, weight_bytes_by_dtype={'TQ': 60})
+        for tier in ('TQ2.5', 'TQ3', 'TQ3.5') for index in range(1, 66)]
+    variants = _model_variants(files, system_profile(backend='metal', runtime_memory_budget_bytes=64 << 30))
+    assert len(variants) == 3
+    assert {variant.precision for variant in variants} == {'TQ2.5', 'TQ3', 'TQ3.5'}
+    for variant in variants:
+        assert variant.format == 'tq'
+        assert variant.id.startswith(suffix.lower()[1:] + ':')
+        assert len(variant.files) == 65
+        assert all(name.startswith(variant.label.rsplit('/', 1)[0] + '/') for name in variant.files)
+        assert variant.byte_size == 6500
+        assert variant.resident_weight_bytes == 3900
+        assert variant.ssd_ple_bytes == 2600
+
+
+def test_tq_dense_tiers_recognize_ud_precision_folders() -> None:
+    tiers = ['IQ2_M', 'IQ2_XXS', 'IQ3_XXS', 'Q2_K_XL', 'Q3_K_XL',
+        'Q4_K_XL', 'Q5_K_XL', 'Q6_K_XL', 'Q8_K_XL']
+    files = [HubModelFile(name=f'UD-{tier}/Qwen3.5-9B-TQ-UD-{tier}-GateUpJoint.mfq', byte_size=1024)
+        for tier in tiers]
+    variants = _model_variants(files, system_profile(backend='metal', runtime_memory_budget_bytes=64 << 30))
+    assert len(variants) == len(tiers)
+    assert {variant.precision for variant in variants} == {f'UD-{tier}' for tier in tiers}
+    assert all(variant.format == 'tq' and len(variant.files) == 1 for variant in variants)
+    assert all(variant.label != 'Complete repository' for variant in variants)
+
+
+def test_tq_and_mfq_suffix_groups_do_not_merge_distinct_files() -> None:
+    files = [HubModelFile(name='TQ3/model' + suffix, byte_size=1024) for suffix in ('.tq', '.mfq')]
+    variants = _model_variants(files, system_profile(backend='metal', runtime_memory_budget_bytes=64 << 30))
+    assert {variant.id for variant in variants} == {'tq:TQ3/model', 'mfq:TQ3/model'}
+    assert all(len(variant.files) == 1 for variant in variants)
+
+
 def test_streamable_official_model_uses_each_tiers_full_residency_size() -> None:
     gib = 1 << 30
     catalog = HubCatalog()

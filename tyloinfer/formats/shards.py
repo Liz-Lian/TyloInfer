@@ -32,7 +32,8 @@ SPLIT_KEYS = frozenset(
 )
 
 _SHARD_RE = re.compile(
-    r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<count>[0-9]{5})(?P<suffix>\.tq)$",
+    r"^(?P<stem>.+)-(?P<index>[0-9]{5})-of-(?P<count>[0-9]{5})(?P<suffix>"
+    + "|".join(re.escape(suffix) for suffix in TYLOINFER_SUFFIXES) + r")$",
     re.IGNORECASE,
 )
 

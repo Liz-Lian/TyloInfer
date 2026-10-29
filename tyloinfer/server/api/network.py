@@ -104,7 +104,7 @@ def network_auth_error(host: str, api_key: str | None) -> str | None:
     if isinstance(api_key, str) and api_key.strip():
         return None
     return (
-        f"an API key is required when binding MFQ Server to {host!r}; "
+        f"an API key is required when binding TyloInfer Server to {host!r}; "
         "configure the selected API-key environment variable or bind to "
         "127.0.0.1"
     )
