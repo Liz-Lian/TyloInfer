@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/executor/loaded.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/models/load.h"
@@ -18,29 +19,6 @@
 #include <utility>
 
 namespace mfq::cuda::internal {
-
-template <class M, class S = M, class P = RuntimeComponents<M>>
-struct Loaded {
-    using Model = M;
-    using State = S;
-    using Parts = P;
-
-    std::shared_ptr<Model> model;
-    Parts components;
-    std::unique_ptr<State> owned_state;
-    std::unique_ptr<Executor> executor;
-
-    Model& language() {
-        if constexpr (requires { components.language(*model); })
-            return components.language(*model);
-        else
-            return *model;
-    }
-    State& state() {
-        if constexpr (std::is_same_v<Model, State>) return language();
-        else return *owned_state;
-    }
-};
 
 template <typename F>
 auto with_loaded_cuda_model(
@@ -105,7 +83,7 @@ auto with_loaded_cuda_model(
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
             execution.stores.weights, execution.tq};
-        auto owner = std::make_shared<qwen35::Model>(mfq::cuda::qwen35::load(
+        auto loaded = qwen35::assemble(
             source, weights, execution.layer_placement, execution.yarn,
             execution.dense_cpu_layer_count,
             mfq::cuda::qwen35::LoadOptions{
@@ -114,21 +92,13 @@ auto with_loaded_cuda_model(
                 .gpu_layers = execution.n_gpu_layers,
                 .extend_yarn = execution.yarn_context_extension,
                 .expert_parallel = execution.expert_parallel.enabled(),
-                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars}));
-        auto executor = execution.make_executor();
-        auto state = std::make_unique<qwen35::State>(
-            *owner, execution.config.gdn_transposed_state);
-        const bool preallocate = runtime_options::kv_vram_preallocated();
-        if (preallocate) state->preallocate();
-        auto components = qwen35::load_components(
-            *owner, weights, *executor, execution.collectives,
+                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars},
+            execution.make_executor(), execution.collectives,
+            execution.config.gdn_transposed_state,
             execution.kl_mmq.kv_cache_capacity, execution.gemma_stage_trace,
             execution.gemma_trace_layer, load_optional_components,
-            execution.layer_placement, execution.dense_cpu_layer_count,
-            !execution.dsv4_cpu_offload_layers.empty(), preallocate);
-        Loaded<qwen35::Model, qwen35::State, qwen35::Components> loaded{
-            std::move(owner), std::move(components), std::move(state),
-            std::move(executor)};
+            !execution.dsv4_cpu_offload_layers.empty(),
+            runtime_options::kv_vram_preallocated());
         return finish(loaded, started);
     };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/executor/loaded.h"
 #include "models/common/grid_vision.h"
 #include "models/qwen35/model.h"
 #include "models/qwen35/mtp.h"
@@ -18,9 +19,16 @@ class Collectives;
 class Executor;
 }
 
+namespace mfq::models {
+struct YarnScaling;
+}
+
 struct LayerPlacementConfig;
 
 namespace mfq::cuda::qwen35 {
+
+struct LoadOptions;
+class State;
 
 struct Components {
     mfq::ModelGraph graph;
@@ -35,17 +43,20 @@ struct Components {
     }
 };
 
-Components load_components(
-    const Model& model,
+Loaded<Model, State, Components> assemble(
+    std::shared_ptr<const mfq::ModelSource> source,
     const weight_loader::Loader& weights,
-    const Executor& executor,
+    LayerPlacementConfig& placement,
+    mfq::models::YarnScaling& yarn,
+    int& cpu_layers,
+    const LoadOptions& options,
+    std::unique_ptr<Executor> executor,
     Collectives& copies,
+    const bool& transposed,
     const int64_t& kv_capacity,
     Trace* const& trace,
     const int& trace_scope,
     bool optional,
-    const LayerPlacementConfig& placement,
-    int cpu_layers,
     bool cpu_offload,
     bool preallocate);
 
