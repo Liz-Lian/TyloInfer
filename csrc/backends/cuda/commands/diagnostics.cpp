@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/weights/load.h"
 #include "cli.h"
 #include "diagnostics/token_generation.h"
-#include "backends/cuda/engine/executor/load.h"
+#include "models/load.h"
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"
 #include "diagnostics/runtime_checks.h"
@@ -591,7 +591,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         }
         execution.profiler.enabled = false;
         mfq_tensor_backend::NoGradGuard no_grad;
-        return with_loaded_cuda_model(execution, *this,
+        return mfq::cuda::with_model(execution, *this,
             check_qwen35_mtp || check_flash_next_mtp || check_nemotron_h_mtp ||
                 check_nemotron_h_vision ||
                 !bench_qwen35_mtp.empty() || (check_qwen4_decode_hidden && profile),

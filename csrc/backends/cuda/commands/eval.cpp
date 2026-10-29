@@ -1,6 +1,6 @@
 #include "env.h"
 #include "cli.h"
-#include "backends/cuda/engine/executor/load.h"
+#include "models/load.h"
 #include "eval/kl.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
@@ -182,7 +182,7 @@ struct EvalCommand : mfq::cuda::EvalCommandOptions {
                 kl_stream_layers, kl_stream_batch,
                 kl_score_count, kl_reference_contract);
         }
-        return with_loaded_cuda_model(execution, *this, false,
+        return mfq::cuda::with_model(execution, *this, false,
             [&](auto& runtime, auto, auto) -> int {
         auto& model = *runtime.model;
         auto& state = runtime.state();

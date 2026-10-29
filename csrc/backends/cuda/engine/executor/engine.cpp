@@ -6,7 +6,7 @@
 #include "engine/executor/budget.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/generation.h"
-#include "backends/cuda/engine/executor/load.h"
+#include "models/load.h"
 #include "models/minicpmo45/forward.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
@@ -580,7 +580,7 @@ struct CudaBackend {
             kv.directory = kv_options.directory;
             execution->stores.qsa_kv_store = std::make_shared<KvOffloadStore>(std::move(kv));
         }
-        state = with_loaded_cuda_model(*execution, options, true,
+        state = mfq::cuda::with_model(*execution, options, true,
             [&](auto& loaded, auto, auto) -> State {
                 using LoadedModel = std::remove_cvref_t<decltype(loaded)>;
                 using Model = typename LoadedModel::Model;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/executor/loaded.h"
+#include "engine/executor/load.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/components.h"
 #include "backends/cuda/engine/models/load.h"
@@ -18,10 +19,10 @@
 #include <type_traits>
 #include <utility>
 
-namespace mfq::cuda::internal {
+namespace mfq::cuda {
 
 template <typename F>
-auto with_loaded_cuda_model(
+auto with_model(
         CudaExecutionContext& execution,
         const CudaLoadOptions& options,
         bool load_optional_components,
@@ -33,28 +34,22 @@ auto with_loaded_cuda_model(
         auto& runtime_components = loaded.components;
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
-            prepare_sampling_runtime(model.vocab_size());
-        if(execution.stores.kv_memory) {
-            execution.stores.kv_memory->finalize(moe_expert_cache_minimum_bytes(execution.stores.weights.moe));
-            set_moe_kv_expert_loan(execution.stores.weights.moe,execution.stores.kv_memory->expert_loan());
-            if(auto offload=execution.stores.kv_memory->offload())execution.stores.qsa_kv_store=std::move(offload);
-        }
-        if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
-                !moe_expert_cache_finalized(execution.stores.weights.moe)) {
-            std::size_t graph_reserve=0;
-            if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+            internal::prepare_sampling_runtime(model.vocab_size());
+        mfq::cuda::finalize_kv(execution.stores.kv_memory.get(),
+            execution.stores.weights, execution.stores.qsa_kv_store);
+        std::size_t graph_reserve=0;
+        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+            if (moe_expert_cache_has_sources(execution.stores.weights.moe) &&
+                    !moe_expert_cache_finalized(execution.stores.weights.moe)) {
                 graph_reserve=qwen4_mtp_graph_reserve(model,runtime_components.mtp.get());
                 if(graph_reserve)std::cerr<<"runtime_mtp_flexible_budget maximum_depth="
                     <<runtime_components.mtp->maximum_draft_depth()<<" bytes="<<graph_reserve
                     <<" initial_depth=3 lend_unused_to_experts=1\n";
             }
-            finalize_moe_expert_cache(execution.stores.weights.moe,
-                (execution.stores.kv_memory?execution.stores.kv_memory->growth_reserve():0)+graph_reserve,
-                execution.stores.kv_memory?execution.stores.kv_memory->expert_budget_charge():0);
         }
-        mfq_cuda_synchronize();
-        const auto loaded_at = std::chrono::steady_clock::now();
-        report_cuda_memory(execution.config.report_cuda_memory, "loaded");
+        const auto loaded_at = mfq::cuda::finish_load(
+            execution.stores.kv_memory.get(), execution.stores.weights,
+            graph_reserve, execution.config.report_cuda_memory);
         return run(loaded, started, loaded_at);
     };
     auto load = [&]<typename Model>() {
@@ -166,4 +161,4 @@ auto with_loaded_cuda_model(
     throw std::runtime_error("invalid CUDA model backbone");
 }
 
-} // namespace mfq::cuda::internal
+} // namespace mfq::cuda
