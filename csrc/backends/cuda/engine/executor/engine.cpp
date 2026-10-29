@@ -13,7 +13,8 @@
 #include "backends/cuda/engine/state/kv_offload.h"
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
-#include "models/qwen35/runtime.h"
+#include "models/qwen35/forward.h"
+#include "mfq_cuda_kv_quantization.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "models/batch.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
@@ -35,17 +36,17 @@ using namespace mfq::engine;
 using namespace mfq::cuda::internal;
 
 namespace engine_detail {
-template <typename Runtime>
+template <typename LoadedModel>
 struct CudaEngineState {
-    using Model = typename Runtime::Model;
-    using State = typename Runtime::State;
-    using Parts = typename Runtime::Parts;
+    using Model = typename LoadedModel::Model;
+    using State = typename LoadedModel::State;
+    using Parts = typename LoadedModel::Parts;
 
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
     CudaRuntimeConfig config;
     std::shared_ptr<const mfq::ModelSource> source;
-    Runtime runtime;
+    LoadedModel loaded;
     Parts& components;
     std::unique_ptr<Executor>& executor;
     Model& language;
@@ -150,14 +151,14 @@ struct CudaEngineState {
             <<" available_bytes="<<context->available_memory()<<" prefix_released_bytes="<<released<<'\n';
     }
 
-    CudaEngineState(CudaExecutionContext& borrowed, Runtime loaded,
+    CudaEngineState(CudaExecutionContext& borrowed, LoadedModel loaded_model,
             CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
             std::shared_ptr<WeightMemoryLedger> weights)
         : weight_memory(std::move(weights)), execution(&borrowed), config(std::move(runtime_config)),
           source(std::move(model_source)),
-          runtime(std::move(loaded)), components(runtime.components), executor(runtime.executor),
-          language(runtime.language()), state(runtime.state()),
+          loaded(std::move(loaded_model)), components(loaded.components), executor(loaded.executor),
+          language(loaded.language()), state(loaded.state()),
           metadata(language.metadata),
           graph(language.metadata.max_position_embeddings),
           cache(config.session_cache, config.prefix_cache,
@@ -173,13 +174,14 @@ struct CudaEngineState {
                 cache.reserve_ram(bytes);execution->stores.weights.reserve(bytes);
             });
         if (config.continuous_batch.max_sequences) {
-            if constexpr (requires { &Runtime::batch; }) {
+            if constexpr (std::is_same_v<Model,qwen35::Model>) {
                 auto batch_config = config.continuous_batch;
                 batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
-                batching = runtime.batch(
-                    execution->make_executor(), execution->collectives,
-                    execution->forward_mode(), execution->stores.weights.moe,
-                    std::move(batch_config), config.generation.prefill_chunk_size,
+                batching = mfq::cuda::make_batch(
+                    loaded.model, &state, execution->make_executor(),
+                    execution->collectives, execution->forward_mode(),
+                    execution->stores.weights.moe, std::move(batch_config),
+                    config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
                     execution->dense_cpu_layer_count != 0 ||
                         !execution->dsv4_cpu_offload_layers.empty(),
@@ -339,22 +341,17 @@ struct CudaEngineState {
     }
     using Prepared = PreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
-        if constexpr (requires { &Runtime::prepare; }) {
-            return runtime.prepare(input, execution->projector(), execution->stores.weights.moe,
-                execution->collectives, execution->layer_placement.primary_device());
-        } else {
-            if constexpr (requires { components.composite; })
-                if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
-            if (components.grid_vision)
-                return components.grid_vision->prepare(language, execution->projector(),
-                    execution->stores.weights.moe, execution->collectives,
-                    execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
-            if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
-                if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
-            if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
-                if (components.radio_vision) return components.radio_vision->prepare(language, execution->projector(), input.prompt, *input.vision);
-            throw std::invalid_argument("model has no multimodal component");
-        }
+        if constexpr (requires { components.composite; })
+            if (components.composite) return components.composite->prepare(input.prompt, *input.vision);
+        if (components.grid_vision)
+            return components.grid_vision->prepare(language, execution->projector(),
+                execution->stores.weights.moe, execution->collectives,
+                execution->layer_placement.primary_device(), executor.get(), input.prompt, *input.vision);
+        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
+            if(components.deepseek_vision)return components.deepseek_vision->prepare(language,execution->projector(),input.prompt,*input.vision);
+        if constexpr(std::is_same_v<Model,NemotronHCausalLm>)
+            if (components.radio_vision) return components.radio_vision->prepare(language, execution->projector(), input.prompt, *input.vision);
+        throw std::invalid_argument("model has no multimodal component");
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
         PrefillCudaTimer timer;
@@ -390,7 +387,13 @@ struct CudaEngineState {
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {
-            const auto quantization = runtime.kv_quantization();
+            const auto quantization = [&]() -> std::optional<KvQuantization> {
+                if constexpr (std::is_same_v<Model,qwen35::Model> ||
+                              std::is_same_v<Model,Qwen4CausalLm>)
+                    return cuda_kv_quantization();
+                else
+                    return std::nullopt;
+            }();
             const auto batch_metrics = batching ? batching->metrics() : Metrics{};
             const auto capabilities = components.state();
             const auto workspace_metrics = expert_space ? expert_space->metrics() : ExpertSpace::Metrics{};
@@ -520,7 +523,7 @@ struct CudaEngineState {
 
 };
 using State = std::variant<
-    std::unique_ptr<CudaEngineState<mfq::cuda::qwen35::Runtime>>,
+    std::unique_ptr<CudaEngineState<Loaded<qwen35::Model,qwen35::State,qwen35::Components>>>,
     std::unique_ptr<CudaEngineState<Loaded<MiniCPMO45CausalLm>>>,
     std::unique_ptr<CudaEngineState<Loaded<minicpmo45::Model, minicpmo45::State>>>,
     std::unique_ptr<CudaEngineState<Loaded<Gemma4CausalLm>>>,
@@ -578,14 +581,14 @@ struct CudaBackend {
             execution->stores.qsa_kv_store = std::make_shared<KvOffloadStore>(std::move(kv));
         }
         state = with_loaded_cuda_model(*execution, options, true,
-            [&](auto& runtime, auto, auto) -> State {
-                using Runtime = std::remove_cvref_t<decltype(runtime)>;
-                using Model = typename Runtime::Model;
+            [&](auto& loaded, auto, auto) -> State {
+                using LoadedModel = std::remove_cvref_t<decltype(loaded)>;
+                using Model = typename LoadedModel::Model;
                 if constexpr (!std::is_same_v<Model, Qwen4CausalLm>)
                     if (execution->stores.qsa_kv_store) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
-                auto source = runtime.language().source;
-                return std::make_unique<CudaEngineState<Runtime>>(
-                    *execution, std::move(runtime), config,
+                auto source = loaded.language().source;
+                return std::make_unique<CudaEngineState<LoadedModel>>(
+                    *execution, std::move(loaded), config,
                     std::move(source), weight_memory);
             });
         return visit([&](auto& state) {

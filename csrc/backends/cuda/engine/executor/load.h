@@ -8,39 +8,37 @@
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "models/qwen35/components.h"
-#include "models/qwen35/runtime.h"
 #include "models/qwen35/state.h"
 #include "models/minicpmo45/state.h"
 #include "cuda_runtime_config.h"
-#include "mfq_cuda_kv_quantization.h"
 
 #include <chrono>
 #include <iostream>
-#include <optional>
 #include <type_traits>
 #include <utility>
 
 namespace mfq::cuda::internal {
 
-template <class M, class S = M>
+template <class M, class S = M, class P = RuntimeComponents<M>>
 struct Loaded {
     using Model = M;
     using State = S;
-    using Parts = RuntimeComponents<M>;
+    using Parts = P;
 
     std::shared_ptr<Model> model;
     Parts components;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
 
-    Model& language() { return components.language(*model); }
+    Model& language() {
+        if constexpr (requires { components.language(*model); })
+            return components.language(*model);
+        else
+            return *model;
+    }
     State& state() {
         if constexpr (std::is_same_v<Model, State>) return language();
         else return *owned_state;
-    }
-    std::optional<KvQuantization> kv_quantization() const {
-        if constexpr (std::is_same_v<Model, Qwen4CausalLm>) return cuda_kv_quantization();
-        else return std::nullopt;
     }
 };
 
@@ -52,9 +50,9 @@ auto with_loaded_cuda_model(
         F&& run) {
     CudaScope scope(execution);
     auto source = mfq::open_model_source(options.model_path);
-    auto finish = [&](auto& runtime, auto started) {
-        auto& model = *runtime.model;
-        auto& runtime_components = runtime.components;
+    auto finish = [&](auto& loaded, auto started) {
+        auto& model = *loaded.model;
+        auto& runtime_components = loaded.components;
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             prepare_sampling_runtime(model.vocab_size());
@@ -77,9 +75,9 @@ auto with_loaded_cuda_model(
                 execution.stores.kv_memory?execution.stores.kv_memory->expert_budget_charge():0);
         }
         mfq_cuda_synchronize();
-        const auto loaded = std::chrono::steady_clock::now();
+        const auto loaded_at = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config.report_cuda_memory, "loaded");
-        return run(runtime, started, loaded);
+        return run(loaded, started, loaded_at);
     };
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();
@@ -98,8 +96,8 @@ auto with_loaded_cuda_model(
             execution.stores.weights, execution.tq};
         auto runtime_components =
             load_runtime_components(model, weights, load_optional_components);
-        Loaded<Model> runtime{std::move(owner), std::move(runtime_components), {}, {}};
-        return finish(runtime, started);
+        Loaded<Model> loaded{std::move(owner), std::move(runtime_components), {}, {}};
+        return finish(loaded, started);
     };
     auto load_qwen = [&] {
         auto started = std::chrono::steady_clock::now();
@@ -107,7 +105,7 @@ auto with_loaded_cuda_model(
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
             execution.stores.weights, execution.tq};
-        auto model = mfq::cuda::qwen35::load(
+        auto owner = std::make_shared<qwen35::Model>(mfq::cuda::qwen35::load(
             source, weights, execution.layer_placement, execution.yarn,
             execution.dense_cpu_layer_count,
             mfq::cuda::qwen35::LoadOptions{
@@ -116,19 +114,22 @@ auto with_loaded_cuda_model(
                 .gpu_layers = execution.n_gpu_layers,
                 .extend_yarn = execution.yarn_context_extension,
                 .expert_parallel = execution.expert_parallel.enabled(),
-                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars});
-        const bool mtp_allowed =
-            !execution.layer_placement.enabled() &&
-            execution.dense_cpu_layer_count == 0 &&
-            execution.dsv4_cpu_offload_layers.empty() &&
-            !execution.stores.weights.moe;
-        mfq::cuda::qwen35::Runtime runtime(
-            std::move(model), weights, execution.make_executor(),
-            execution.collectives, execution.config.gdn_transposed_state,
+                .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars}));
+        auto executor = execution.make_executor();
+        auto state = std::make_unique<qwen35::State>(
+            *owner, execution.config.gdn_transposed_state);
+        const bool preallocate = runtime_options::kv_vram_preallocated();
+        if (preallocate) state->preallocate();
+        auto components = qwen35::load_components(
+            *owner, weights, *executor, execution.collectives,
             execution.kl_mmq.kv_cache_capacity, execution.gemma_stage_trace,
-            execution.gemma_trace_layer, load_optional_components, mtp_allowed,
-            mfq::cuda::runtime_options::kv_vram_preallocated());
-        return finish(runtime, started);
+            execution.gemma_trace_layer, load_optional_components,
+            execution.layer_placement, execution.dense_cpu_layer_count,
+            !execution.dsv4_cpu_offload_layers.empty(), preallocate);
+        Loaded<qwen35::Model, qwen35::State, qwen35::Components> loaded{
+            std::move(owner), std::move(components), std::move(state),
+            std::move(executor)};
+        return finish(loaded, started);
     };
 
     auto load_tts = [&] {
@@ -161,11 +162,11 @@ auto with_loaded_cuda_model(
         if (runtime_options::kv_vram_preallocated()) state.preallocate();
         auto executor = execution.make_executor();
         auto components = load_runtime_components(model, weights, load_optional_components);
-        Loaded<minicpmo45::Model, minicpmo45::State> runtime{
+        Loaded<minicpmo45::Model, minicpmo45::State> loaded{
             std::move(owner), std::move(components),
             std::make_unique<minicpmo45::State>(std::move(state)),
             std::move(executor)};
-        return finish(runtime, started);
+        return finish(loaded, started);
     };
 
     switch (cuda_backbone(source->resolved_model_graph().backbone)) {

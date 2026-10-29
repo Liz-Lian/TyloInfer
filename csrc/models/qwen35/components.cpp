@@ -8,6 +8,7 @@
 
 #include "native/cuda/collectives.h"
 #include "engine/executor/run.h"
+#include "backends/cuda/engine/weights/placement.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -24,10 +25,15 @@ Components load_components(
     Trace* const& trace,
     const int& trace_scope,
     bool optional,
-    bool mtp_allowed,
+    const LayerPlacementConfig& placement,
+    int cpu_layers,
+    bool cpu_offload,
     bool preallocate) {
     Components result{model.graph, model.plan};
     if (!optional) return result;
+    const bool mtp_allowed =
+        !placement.enabled() && cpu_layers == 0 && !cpu_offload &&
+        !weights.cache.moe;
 
     if (result.plan.vision == CudaVisionAdapter::grid_vit) {
         const auto* component = result.graph.component("vision");

@@ -18,6 +18,8 @@ class Collectives;
 class Executor;
 }
 
+struct LayerPlacementConfig;
+
 namespace mfq::cuda::qwen35 {
 
 struct Components {
@@ -42,7 +44,9 @@ Components load_components(
     Trace* const& trace,
     const int& trace_scope,
     bool optional,
-    bool mtp_allowed,
+    const LayerPlacementConfig& placement,
+    int cpu_layers,
+    bool cpu_offload,
     bool preallocate);
 
 } // namespace mfq::cuda::qwen35
