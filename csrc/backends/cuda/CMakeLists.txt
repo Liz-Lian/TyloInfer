@@ -414,8 +414,8 @@ function(mfq_configure_cuda_backend_target target)
     endif()
 endfunction()
 
-# Shared Engine/model templates are instantiated only by backend runtime/loading
-# units. Kernel/quant ops have no Engine, model-family, scheduler or transport link.
+# Remaining backend bindings use the legacy runtime include roots. Kernel/quant
+# ops have no Engine, model-family, scheduler or transport link.
 function(mfq_configure_cuda_runtime_target target)
     mfq_configure_cuda_backend_target(${target})
     target_include_directories(${target} PRIVATE
@@ -566,13 +566,12 @@ set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(${PROJECT_SOURCE_DIR}/models ${CMAKE_CURRENT_BINARY_DIR}/models)
 
-# Concrete Engine/model bindings stay in this source group for both native and
-# optional Torch builds. Extra targets do not reduce their header dependencies.
+# Remaining legacy bindings are shared by native and optional Torch builds.
+# Concrete Engine selection is compiled from models/engine.cpp.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/components.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/engine.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp

@@ -17,6 +17,10 @@
 
 namespace mfq::cuda::qwen35 {
 
+std::optional<KvQuantization> kv_quantization(const Model&) {
+    return cuda_kv_quantization();
+}
+
 Loaded<Model, State, Components> assemble(
     std::shared_ptr<const mfq::ModelSource> source,
     const weight_loader::Loader& weights,

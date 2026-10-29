@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/executor/loaded.h"
+#include "mfq_cuda_kv_quantization.h"
 #include "models/common/grid_vision.h"
 #include "models/qwen35/model.h"
 #include "models/qwen35/mtp.h"
@@ -29,6 +30,8 @@ namespace mfq::cuda::qwen35 {
 
 struct LoadOptions;
 class State;
+
+std::optional<KvQuantization> kv_quantization(const Model&);
 
 struct Components {
     mfq::ModelGraph graph;

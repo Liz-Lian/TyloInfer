@@ -21,12 +21,11 @@
 
 namespace mfq::cuda {
 
-template <typename F>
-auto with_model(
+inline constexpr auto with_model = []<typename F>(
         CudaExecutionContext& execution,
         const CudaLoadOptions& options,
         bool load_optional_components,
-        F&& run) {
+        F&& run) -> auto {
     CudaScope scope(execution);
     auto source = mfq::open_model_source(options.model_path);
     auto finish = [&](auto& loaded, auto started) {
@@ -159,6 +158,6 @@ auto with_model(
             throw std::runtime_error("unsupported CUDA model backbone");
     }
     throw std::runtime_error("invalid CUDA model backbone");
-}
+};
 
 } // namespace mfq::cuda

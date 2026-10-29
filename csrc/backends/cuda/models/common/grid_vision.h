@@ -2,7 +2,6 @@
 #include "backends/cuda/engine/requests/prompt.h"
 
 #include "backends/cuda/engine/weights/vision.h"
-#include "models/qwen35/forward.h"
 #include "ops/vision/vision.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"
@@ -17,6 +16,11 @@
 #include <vector>
 
 namespace mfq::cuda::weight_loader { struct Loader; }
+
+namespace mfq::cuda {
+class Collectives;
+class Executor;
+}
 
 namespace mfq::cuda::grid_vision_runtime {
 
