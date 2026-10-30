@@ -2,7 +2,7 @@
 
 #include "backends/cuda/engine/weights/moe/load.h"
 
-#include "mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache_internal.h"
 #include "engine/weights/dispatch_plan.h"
 

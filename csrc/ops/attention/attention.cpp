@@ -1,7 +1,7 @@
 #include "ops/attention/attention.h"
 
-#include "mfq_cuda_attention_ops.h"
-#include "mfq_cuda_paged_kv.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
 
 #include <algorithm>
 #include <cmath>

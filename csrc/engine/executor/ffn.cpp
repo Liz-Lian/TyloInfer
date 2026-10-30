@@ -8,9 +8,9 @@
 #include "ops/ffn/dense.h"
 #include "ops/ffn/residual.h"
 #include "engine/models/common/moe.h"
-#include "mfq_cuda_activation_ops.h"
-#include "mfq_cuda_moe_ops.h"
-#include "mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
 #include <algorithm>
 #include <array>

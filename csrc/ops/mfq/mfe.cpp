@@ -1,5 +1,5 @@
 #include "mfe.h"
-#include "mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 
 #include <stdexcept>
 #include <unordered_set>

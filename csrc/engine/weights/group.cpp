@@ -1,7 +1,7 @@
 #include "engine/weights/group.h"
 
 #include "native/cuda/collectives.h"
-#include "mfq_cuda_quant_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "weight_memory.h"
 
 #include <algorithm>

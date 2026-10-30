@@ -6,7 +6,7 @@
 #include "models/qwen35/load.h"
 #include "models/qwen35/mtp.h"
 #include "models/qwen35/state.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include "native/cuda/collectives.h"
 #include "engine/executor/run.h"

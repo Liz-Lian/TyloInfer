@@ -2,7 +2,7 @@
 
 #include "backend.h"
 #include "backends/cuda/engine/state/kv_offload.h"
-#include "mfq_cuda_kv_hot_cache.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_hot_cache.h"
 #include <functional>
 #include <memory>
 #include <string>

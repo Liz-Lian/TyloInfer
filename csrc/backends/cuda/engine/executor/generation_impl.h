@@ -12,7 +12,7 @@
 #include "models/common/prompt.h"
 #include "engine/executor/sampler.h"
 #include "backends/cuda/engine/state/session/text_cache.h"
-#include "mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/batch/prefill_budget.h"

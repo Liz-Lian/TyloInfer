@@ -1,7 +1,7 @@
 #include "models/qwen35/batch_ops.h"
 #include "models/batch.h"
 
-#include "mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "native/error.h"

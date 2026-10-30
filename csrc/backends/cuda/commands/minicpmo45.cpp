@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/executor/execution.h"
-#include "mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "minicpmo45.h"
 
 #include "models/minicpmo45/runtime.h"

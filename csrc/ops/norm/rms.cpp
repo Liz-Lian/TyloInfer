@@ -1,5 +1,5 @@
 #include "ops/norm/rms.h"
-#include "mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
 mfq_tensor_backend::Tensor qwen_rms_norm(mfq_tensor_backend::Tensor x,
                                          mfq_tensor_backend::Tensor weight, double eps,

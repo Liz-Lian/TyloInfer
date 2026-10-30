@@ -2,8 +2,8 @@
 #include "backends/cuda/engine/executor/options.h"
 #pragma once
 #include "resident_allocations.h"
-#include "mfq_cuda_linear_attention_ops.h"
-#include "mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/models/qwen4_exp/ngram.h"
 #include "models/common/attention_ops.h"
@@ -15,7 +15,7 @@
 #include "backends/cuda/engine/state/kv_offload.h"
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/executor/decode_window.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "backends/cuda/engine/state/session/state.h"
 #include <array>
 #include <cstdlib>

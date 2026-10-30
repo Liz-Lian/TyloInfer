@@ -1,7 +1,7 @@
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/quant.h"
-#include "mfq_cuda_moe_ops.h"
-#include "mfq_cuda_quant_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 
 #include <algorithm>
 #include <climits>

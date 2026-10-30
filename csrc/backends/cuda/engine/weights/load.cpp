@@ -9,7 +9,7 @@
 #include "engine/weights/quant.h"
 #include "formats/dense_blob.h"
 #include "weight_memory.h"
-#include "mfq_cuda_quant_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>

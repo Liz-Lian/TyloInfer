@@ -3,9 +3,9 @@
 #include "ops/norm/rms.h"
 #include "engine/models/common/attention.h"
 #include "engine/models/common/transformer_layer.h"
-#include "mfq_cuda_activation_ops.h"
-#include "mfq_cuda_attention_ops.h"
-#include "mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
 #include <optional>
 #include <stdexcept>

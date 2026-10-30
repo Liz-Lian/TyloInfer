@@ -3,9 +3,9 @@
 #include "native/cuda/branches.h"
 #include "native/cuda/collectives.h"
 #include "engine/executor/tq.h"
-#include "mfq_cuda_activation_ops.h"
-#include "mfq_cuda_quant_ops.h"
-#include "mfq_cuda_nint_route_hint.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
 
 #include <algorithm>
 #include <utility>

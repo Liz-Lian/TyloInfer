@@ -1,8 +1,8 @@
 #pragma once
 
 #include "projection.h"
-#include "mfq_cuda_attention_ops.h"
-#include "mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/transformer_layer.h"
 

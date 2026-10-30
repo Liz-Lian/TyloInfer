@@ -8,7 +8,7 @@
 #include "mfe_ffn_token_groups.h"
 #include "mfe_ffn_shared.h"
 #include "mfe_nvq_dense_bounds.h"
-#include "mfq_cuda_nint_route_hint.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
 #include "decode_window.h"
 #include <algorithm>
 #include <atomic>

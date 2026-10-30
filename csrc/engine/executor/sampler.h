@@ -2,7 +2,7 @@
 
 #include "engine/executor/sampling.h"
 #include "engine/requests/sampling.h"
-#include "mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 
 #include <cstddef>
 #include <cstdint>

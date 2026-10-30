@@ -9,7 +9,7 @@
 #include "backends/cuda/engine/weights/load.h"
 
 #include "engine/requests/media.h"
-#include "mfq_cuda_activation_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "formats/model_graph.h"
 #include "engine/state/prefix_cache.h"
 

@@ -2,7 +2,7 @@
 #include "tq.h"
 #include "detail.h"
 #include "native/cuda/blas.h"
-#include "mfq_cuda_activation_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>

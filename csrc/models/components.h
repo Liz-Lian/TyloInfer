@@ -8,7 +8,7 @@
 #include "engine/executor/mtp.h"
 #include "engine/executor/engine.h"
 #include "cuda_model_plan.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include <cstdint>
 #include <memory>

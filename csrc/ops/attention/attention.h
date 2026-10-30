@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "native/cuda/profile.h"
 #include "ops/attention/scratch.h"
 

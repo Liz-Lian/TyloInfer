@@ -1,5 +1,5 @@
 #pragma once
-#include "mfq_cuda_norm_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/executor/ffn.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/transformer_layer.h"

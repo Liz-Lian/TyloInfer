@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/executor/execution.h"
-#include "mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/weights/load.h"
 #include "models/common/causal_model_ops.h"
 #include "models/common/full_block.h"

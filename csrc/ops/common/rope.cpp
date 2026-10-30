@@ -1,6 +1,6 @@
 #include "ops/common/include/rope.h"
 
-#include "mfq_cuda_attention_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 
 #include <algorithm>
 #include <array>

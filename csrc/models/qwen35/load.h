@@ -3,7 +3,7 @@
 #include "models/qwen35/model.h"
 #include "models/qwen35/predictor.h"
 #include "engine/models/common/yarn.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include <cstdint>
 #include <memory>

@@ -1,4 +1,4 @@
-#include "mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "ops.h"
 #include "model.h"

@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/state/session/state.h"
 #include "engine/state/kv_cache.h"
 #include "engine/state/recurrent.h"
-#include "mfq_cuda_kv_quantization.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "ops/attention/linear.h"
 
 #include <cstdint>

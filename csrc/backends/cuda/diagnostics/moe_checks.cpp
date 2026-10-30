@@ -12,7 +12,7 @@
 #include "quant_linear.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 
 #include <cuda_runtime_api.h>
 

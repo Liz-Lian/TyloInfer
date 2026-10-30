@@ -7,7 +7,7 @@
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
 #include "backend.h"
-#include "mfq_cuda_sampling_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/kernels/gr_prefill_blas.h"
 #include "quant_linear.h"
 #include "engine/weights/tensor_parallel.h"
