@@ -13,7 +13,7 @@
 #include "engine/executor/mtp_metrics.h"
 #include "engine/weights/workspace.h"
 #include "native/cuda/tensor/backend.h"
-#include "native/cuda/weight_memory.h"
+#include "engine/weights/memory.h"
 #include "source/model_source.h"
 
 #include <algorithm>

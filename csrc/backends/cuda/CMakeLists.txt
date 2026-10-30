@@ -540,6 +540,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/workspace.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/memory.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)

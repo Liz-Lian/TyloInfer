@@ -11,7 +11,6 @@
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "ops/common/include/moe.h"
 #include "quant_linear.h"
-#include "weight_memory.h"
 
 #include <algorithm>
 #include <array>

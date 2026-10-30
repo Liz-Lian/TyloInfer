@@ -14,7 +14,7 @@
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "engine/executor/engine.h"
 #include "engine/requests/processor.h"
-#include "weight_memory.h"
+#include "engine/weights/memory.h"
 
 #include <algorithm>
 #include <exception>

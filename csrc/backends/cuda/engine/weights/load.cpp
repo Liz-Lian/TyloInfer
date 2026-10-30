@@ -8,7 +8,7 @@
 #include "engine/weights/group.h"
 #include "engine/weights/quant.h"
 #include "formats/dense_blob.h"
-#include "weight_memory.h"
+#include "engine/weights/memory.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include <algorithm>
 #include <cstring>
@@ -58,7 +58,7 @@ static std::vector<std::uint8_t> read_weight(
 
 mfq_tensor_backend::Tensor mfq::cuda::weight_loader::Loader::tensor(const std::string& name) const {
     const auto& mfq = source;
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
     MfqCudaGuard guard(placement.device);
     const auto & rec = require_tensor(mfq, name);
@@ -193,7 +193,7 @@ QuantLinear mfq::cuda::weight_loader::Loader::projection(const std::string & nam
         const std::vector<mfq::TensorParallelSlice> *
             slices_override) const {
     const auto& mfq = source;
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     const bool cpu_layer = placement.cpu;
     const auto & dtype = require_tensor(mfq, name).dtype;
     QuantLinear result;
@@ -732,7 +732,7 @@ mfq::cuda::Experts mfq::cuda::weight_loader::Loader::experts(const std::string &
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     const auto& quant = options.quant;
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     auto& cache = this->cache.moe;
     if (cache && cacheable &&
             !placement.experts.enabled() &&
@@ -870,7 +870,7 @@ Linear Loader::linear(const std::string& name) const {
 
 Tensor Loader::dense(const std::string& name) const {
     const auto& file = source;
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     const auto& dtype=require_tensor(file, name).dtype;
     const bool dense_storage = dtype=="F32" || dtype=="F16" || dtype=="BF16";
     const bool quantized_storage = mfq::mfq_compat_enabled &&
@@ -978,7 +978,7 @@ mfq_tensor_backend::Tensor mfq::cuda::weight_loader::Loader::host(const std::str
 }
 
 mfq_tensor_backend::Tensor mfq::cuda::weight_loader::Loader::native(const std::string &name) const {
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     MfqCudaGuard guard(placement.device);
     return host(name).to(mfq_tensor_backend::kCUDA).contiguous();
 }
@@ -994,7 +994,7 @@ QuantLinear mfq::cuda::weight_loader::Loader::embedding(const std::string& name,
             !placement.tensor.enabled() && !placement.cpu &&
             (dtype=="BF16" || dtype=="F16" || dtype=="F32" || nint)) {
         try {
-            const mfq::cuda::WeightAllocationScope weight_memory;
+            const mfq::cuda::AllocationScope weight_memory;
             if(nint) {
                 auto cpu = for_layer(placement.device, true).projection(name);
                 auto result=map_nint_embedding(std::move(cpu),placement.device,mapped_control);

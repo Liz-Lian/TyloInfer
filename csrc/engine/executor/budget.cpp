@@ -6,7 +6,7 @@
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "engine/executor/engine.h"
 #include "engine/weights/workspace.h"
-#include "weight_memory.h"
+#include "engine/weights/memory.h"
 
 #include <algorithm>
 #include <iostream>

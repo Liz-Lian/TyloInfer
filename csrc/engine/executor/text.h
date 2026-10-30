@@ -20,7 +20,7 @@
 #include "engine/executor/metrics.h"
 #include "engine/requests/table.h"
 #include "engine/executor/flow.h"
-#include "weight_memory.h"
+#include "engine/weights/memory.h"
 
 #include <cuda_runtime_api.h>
 #include <algorithm>

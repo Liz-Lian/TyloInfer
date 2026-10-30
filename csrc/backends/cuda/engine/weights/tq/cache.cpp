@@ -6,7 +6,6 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/graph_registry.h"
 #include "env.h"
-#include "weight_memory.h"
 #include "backends/cpu/native/host_memory.h"
 
 #include <algorithm>

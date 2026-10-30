@@ -4,7 +4,7 @@
 #include "projection.h"
 #include "selected_attention.h"
 #include "native/cuda/profile.h"
-#include "native/cuda/weight_memory.h"
+#include "native/cuda/allocation.h"
 #include "gated_residual_fused.h"
 #include "float_projection.h"
 #include "engine/executor/options.h"
@@ -20,7 +20,7 @@ GatedResidual::Projection GatedResidual::projection(
         std::shared_ptr<const QuantLinear> weight, Projector project, CudaProfiler& profiler,
         const Options& options, Part part) {
     using Projection = GatedResidual::Projection;
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     TYLOINFER_RUNTIME_CHECK(weight->is_dense() || weight->is_nint() || weight->is_tq(),
         "unsupported floating residual projection");
     if(weight->is_tq()) {

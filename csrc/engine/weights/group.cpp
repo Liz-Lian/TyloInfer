@@ -2,7 +2,7 @@
 
 #include "native/cuda/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
-#include "weight_memory.h"
+#include "native/cuda/allocation.h"
 
 #include <algorithm>
 #include <numeric>
@@ -132,7 +132,7 @@ QuantLinearGroup make_quant_group(
         bool group_nint,
         bool cpu_layer,
         bool preserve_projection_boundaries) {
-    const mfq::cuda::WeightAllocationScope weight_memory;
+    const mfq::cuda::AllocationScope weight_memory;
     if (layers.empty()) throw std::runtime_error("empty quantized linear group");
     QuantLinearGroup result;
     result.decode_branch_parallel = !preserve_projection_boundaries;

@@ -22,7 +22,7 @@
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "cuda_runtime_config.h"
 #include "native/cuda/env.h"
-#include "native/cuda/weight_memory.h"
+#include "engine/weights/memory.h"
 #include "source/model_source.h"
 
 #include <algorithm>
