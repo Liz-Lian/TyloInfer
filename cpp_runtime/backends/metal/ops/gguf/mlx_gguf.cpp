@@ -785,10 +785,18 @@ array MlxGgufWeight::matmul(const array& input) const {
     if (rotation_) { auto plain = *this; plain.rotation_.reset(); return plain.matmul(rotate_input(input)); }
     if (native_) return mlx_native_gguf_project(std::span(native_.get(), 1), input)[0];
     const auto x = contiguous(input);
+    const auto dense_prefill_fits = [&] {
+        if (m < 64 || !use_nax()) return false;
+        const auto bytes = std::size_t(input_size()) * output_size() * sizeof(float16_t);
+        const auto active = get_active_memory(), limit = get_memory_limit();
+        return bytes <= (256u << 20) && active < limit && bytes <= (limit - active) / 2;
+    };
     if (planes_) {
         if (m >= 7 && m <= 8 && use_nax() && MlxGgufStagedPrefill::prefers_small_matrix(*this))
             return MlxGgufStagedPrefill::dense_small(*this, x);
         if (m <= 8) return MlxGgufStagedPrefill::project(*this, x);
+        if (format_ >= 144 && format_ <= 151 && dense_prefill_fits())
+            return gguf_dense_prefill(x, dequantize(float16));
         if (input_size() % 64 == 0) return MlxGgufStagedPrefill::dense(*this, x);
         auto expert = *this;
         expert.shape_.insert(expert.shape_.begin(), 1);
@@ -799,12 +807,9 @@ array MlxGgufWeight::matmul(const array& input) const {
         std::array<std::uint32_t, 7>{uint32_t(input_size()), uint32_t(output_size()), uint32_t(m), uint32_t(row_bytes_), 1, 1, 0},
         format_, input.dtype(), projection_values(format_), projection_lanes(format_, input_size(), output_size()), false, false, bytes_),
         std::vector<array>{bytes_, x});
-    const auto expanded_bytes = std::size_t(input_size()) * output_size() * sizeof(float16_t);
-    const auto active = get_active_memory(), limit = get_memory_limit();
     if (m >= 64 && use_nax() && input_size() % 64 == 0 && MlxGgufStagedPrefill::supports(*this))
         return MlxGgufStagedPrefill::dense(*this, x);
-    if (m >= 64 && use_nax() && expanded_bytes <= (256u << 20) &&
-        active < limit && expanded_bytes <= (limit - active) / 2)
+    if (dense_prefill_fits())
         return gguf_dense_prefill(x, dequantize(float16));
     const auto params = parameters(input_size(), output_size(), m, row_bytes_, 1);
     if (use_nax()) {
@@ -875,9 +880,12 @@ array MlxGgufWeight::grouped_row_matmul(const array& input, int groups) const {
         input.ndim() < 2 || input.shape(-2) != groups)
         throw std::invalid_argument("GGUF grouped-row projection geometry differs");
     const int rows = checked_int(input.size() / input_size() / groups);
+    auto shape = input.shape(); shape.back() = output_size() / groups;
+    if (!rows) return zeros(shape, input.dtype());
     if (rotation_) { auto plain = *this; plain.rotation_.reset(); return plain.grouped_row_matmul(rotate_input(input), groups); }
+    if (planes_ && (rows <= 8 || (output_size() / groups) % 64))
+        return MlxGgufStagedPrefill::project(*this, input, groups);
     if (rows <= 8 && !planes_) {
-        auto shape = input.shape(); shape.back() = output_size() / groups;
         return array(shape, input.dtype(), std::make_shared<GgufProjection>(default_stream(Device::gpu),
             std::array<std::uint32_t, 7>{uint32_t(input_size()), uint32_t(output_size() / groups), uint32_t(rows),
                 uint32_t(row_bytes_), uint32_t(groups), 1, 0}, format_, input.dtype(), projection_values(format_),
@@ -888,7 +896,6 @@ array MlxGgufWeight::grouped_row_matmul(const array& input, int groups) const {
     grouped.shape_ = Shape{groups, output_size() / groups, input_size()};
     const auto ids = broadcast_to(arange(groups, int32), {rows, groups});
     auto output = grouped.routed_matmul(reshape(input, {rows, groups, input_size()}), ids, false);
-    auto shape = input.shape(); shape.back() = output_size() / groups;
     return reshape(output, shape);
 }
 array MlxGgufWeight::routed_matmul(const array& input, const array& expert_ids, bool shared_input,

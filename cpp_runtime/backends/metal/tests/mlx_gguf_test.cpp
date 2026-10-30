@@ -1625,6 +1625,57 @@ void check_row_preparation() {
     }
     std::cout << "GGUF row preparation avoids source reads, deduplicates and preserves decode\n";
 }
+void check_gyro_dense_projections() {
+    constexpr int K = 256, N = 128;
+    std::vector<MlxLinear> linears;
+    std::vector<array> references;
+    const bool staged = gguf_expert_prefill_available(zeros({65, K}, float16));
+    for (const auto type : {GGML_TYPE_TQ2_T, GGML_TYPE_TQK4, GGML_TYPE_TQK5, GGML_TYPE_TQK6,
+            GGML_TYPE_TQK7, GGML_TYPE_TQP5, GGML_TYPE_TQP6, GGML_TYPE_TQP7, GGML_TYPE_IQ3_XXS}) {
+        auto bytes = packed(type, K, N);
+        auto name = "GGUF_" + std::string(ggml_type_name(type));
+        for (auto& c : name) c = std::toupper(static_cast<unsigned char>(c));
+        const auto weight = MlxGgufWeight::from_bytes(name, bytes, {N, K});
+        if (staged && (!weight.has_staged_planes() || weight.packed_nbytes() != bytes.size() + (type >= GGML_TYPE_TQ2_T ? 1 : 0)))
+            throw std::runtime_error("dense compressed layout changed the weight byte count");
+        std::vector<float> decoded(N * K);
+        ggml_get_type_traits(type)->to_float(bytes.data(), decoded.data(), decoded.size());
+        const array reference(decoded.begin(), {N, K});
+        compare(weight.dequantize(float32), reference, 2e-6f, name + " dense decoded weights");
+        for (auto dtype : {float16, bfloat16, float32}) for (int groups : {2, 4, 8}) {
+            const auto empty = weight.grouped_row_matmul(zeros({0, groups, K}, dtype), groups);
+            if (empty.shape() != Shape{0, groups, N / groups})
+                throw std::runtime_error("empty grouped projection lost its shape");
+            for (int rows : {1, 2, 6, 7, 8, 9, 33, 65}) {
+                const auto input = astype(reshape(sin(arange(rows * groups * K, float32) * .013f) * .1f,
+                    {rows, groups, K}), dtype);
+                std::vector<array> expected;
+                for (int group = 0; group < groups; ++group) {
+                    auto x = reshape(slice(input, {0, group, 0}, {rows, group + 1, K}), {rows, K});
+                    auto w = slice(reference, {group * (N / groups), 0}, {(group + 1) * (N / groups), K});
+                    expected.push_back(astype(reference_mm(x, w), dtype));
+                }
+                compare(weight.grouped_row_matmul(input, groups), stack(expected, 1),
+                    dtype == bfloat16 ? .01f : .002f, name + " grouped dense precision/tail");
+            }
+        }
+        bool rejected = false;
+        try { (void)weight.grouped_row_matmul(zeros({1, 3, K}), 3); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("invalid dense projection grouping accepted");
+        if (type == GGML_TYPE_TQK4 || type == GGML_TYPE_TQP6 || type == GGML_TYPE_TQP7 || type == GGML_TYPE_IQ3_XXS) {
+            linears.emplace_back(weight); references.push_back(reference);
+        }
+    }
+    const MlxProjectionBatch batch(std::vector<const MlxLinear*>{&linears[0], &linears[1], &linears[2], &linears[3]});
+    for (auto dtype : {float16, bfloat16, float32}) for (int rows : {1, 2, 3, 4, 5, 6, 7, 8, 65}) {
+        const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f) * .1f, {rows, K}), dtype);
+        const auto actual = batch(input);
+        for (std::size_t i = 0; i < actual.size(); ++i)
+            compare(actual[i], astype(reference_mm(input, references[i]), dtype),
+                dtype == bfloat16 ? .01f : .002f, "heterogeneous dense projection batch");
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1633,6 +1684,7 @@ int main(int argc, char** argv) {
         auto* ctx = ggml_init({1024 * 1024, nullptr, true});
         ggml_free(ctx);
         if (argc > 1) {
+            if (std::string_view(argv[1]) == "gyro-dense") { check_gyro_dense_projections(); return 0; }
             if (std::string_view(argv[1]) == "prefill-transfers") {
                 check_prefill_restore();
                 if (gguf_expert_prefill_available(zeros({65, 512}, float16))) check_mixed_prefill_formats();

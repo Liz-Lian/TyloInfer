@@ -745,6 +745,9 @@ const fast::CustomKernelFunction& projection_kernel() {
 const uint lane = thread_index_in_simdgroup, part = lane % L;
 const uint column = (threadgroup_position_in_grid.x * 2u + simdgroup_index_in_threadgroup) * (32u / L) + lane / L;
 const uint k = params[0], n = params[1], m = params[2], groups = k / 32u;
+const uint input_groups = GROUPED ? params[3] : 1u;
+const uint input_group = GROUPED ? column / (n / input_groups) : 0u;
+const uint first_row = GROUPED ? threadgroup_position_in_grid.y * MR : 0u;
 threadgroup uint table[PlaneLayout<F>::table_words];
 load_staged_lookup<F>(table, thread_index_in_threadgroup, 64u);
 threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -757,8 +760,8 @@ for (uint g = part; g < groups; g += L) {
         [&](uint c, float4 low, float4 high) __attribute__((always_inline)) {
 #pragma clang loop unroll(full)
             for (uint row = 0u; row < uint(MR); ++row) {
-                if (row >= m) break;
-                auto input = x + ulong(row) * k + g * 32u + c * 4u;
+                if (first_row + row >= m) break;
+                auto input = x + (ulong(first_row + row) * input_groups + input_group) * k + g * 32u + c * 4u;
                 const float4 a(input[0], input[1], input[2], input[3]);
                 const float4 b(input[16], input[17], input[18], input[19]);
                 sums[row] += dot(low, a) + dot(high, b);
@@ -769,11 +772,11 @@ for (uint g = part; g < groups; g += L) {
 }
 #pragma clang loop unroll(full)
 for (uint row = 0u; row < uint(MR); ++row) {
-    if (row >= m) break;
+    if (first_row + row >= m) break;
     float sum = sums[row];
 #pragma clang loop unroll(full)
     for (uint offset = L / 2u; offset > 0u; offset /= 2u) sum += simd_shuffle_down(sum, offset);
-    if (part == 0u) out[ulong(row) * n + column] = T(sum);
+    if (part == 0u) out[ulong(first_row + row) * n + column] = T(sum);
 }
 )METAL", header());
     return kernel;
@@ -1041,7 +1044,7 @@ const std::string& MlxGgufStagedPrefill::scalar_decoder_header() { return scalar
 
 bool MlxGgufStagedPrefill::supports(const MlxGgufWeight& weight) noexcept {
     const bool gyro = weight.format_ >= 144 && weight.format_ <= 151;
-    return (!weight.rotation_ || gyro) && !weight.indirect_ && (weight.shape_.size() == 3 || (!gyro && weight.shape_.size() == 2)) && weight.output_size() % 64 == 0 &&
+    return (!weight.rotation_ || gyro) && !weight.indirect_ && (weight.shape_.size() == 3 || weight.shape_.size() == 2) && weight.output_size() % 64 == 0 &&
         weight.expert_count() <= 512 && weight.expert_count() <= INT_MAX / weight.output_size() &&
         layout(weight.format_).payload != 0 && (!gyro || std::size_t(weight.expert_count()) * weight.output_size() *
             (weight.input_size() / 32) * layout(weight.format_).payload <= INT_MAX - 127);
@@ -1085,17 +1088,22 @@ array MlxGgufStagedPrefill::embedding(const MlxGgufWeight& weight, const array& 
         {{"F", weight.format_}, {"T", dtype}}, std::nullopt, false, {}).front();
 }
 
-array MlxGgufStagedPrefill::project(const MlxGgufWeight& weight, const array& input) {
-    const auto m = input.size() / weight.input_size();
-    if (!weight.planes_ || weight.shape_.size() != 2 || m < 1 || m > 8)
+array MlxGgufStagedPrefill::project(const MlxGgufWeight& weight, const array& input, int groups) {
+    if (groups < 1 || weight.output_size() % groups || input.size() / weight.input_size() % groups)
+        throw std::invalid_argument("GGUF compressed projection group geometry mismatch");
+    const auto m = input.size() / weight.input_size() / groups;
+    if (!weight.planes_ || weight.shape_.size() != 2 || m < 1 || (groups == 1 && m > 8))
         throw std::invalid_argument("GGUF compressed projection geometry mismatch");
-    if (auto output = project_split_many(std::span(&weight, 1), input)) return std::move(output->front());
-    const int lanes = weight.output_size() >= 16384 ? 1 : 4;
-    auto shape = input.shape(); shape.back() = weight.output_size();
+    if (groups == 1)
+        if (auto output = project_split_many(std::span(&weight, 1), input)) return std::move(output->front());
+    const int lanes = groups > 1 ? (weight.input_size() > weight.output_size() / groups ? 8 : 4)
+        : weight.output_size() >= 16384 ? 1 : 4;
+    const int tile_rows = m <= 6 ? 6 : 8;
+    auto shape = input.shape(); shape.back() = weight.output_size() / groups;
     return projection_kernel()({weight.bytes_, (*weight.planes_)[0], (*weight.planes_)[1], contiguous(input),
-        array({uint32_t(weight.input_size()), uint32_t(weight.output_size()), uint32_t(m)})},
-        {shape}, {input.dtype()}, {weight.output_size() / (64 / lanes) * 64, 1, 1}, {64, 1, 1},
-        {{"F", weight.format_}, {"T", input.dtype()}, {"L", lanes}, {"MR", m <= 6 ? 6 : 8}}, std::nullopt, false, {}).front();
+        array({uint32_t(weight.input_size()), uint32_t(weight.output_size()), uint32_t(m), uint32_t(groups)})},
+        {shape}, {input.dtype()}, {weight.output_size() / (64 / lanes) * 64, int((m + tile_rows - 1) / tile_rows), 1}, {64, 1, 1},
+        {{"F", weight.format_}, {"T", input.dtype()}, {"L", lanes}, {"MR", tile_rows}, {"GROUPED", groups > 1}}, std::nullopt, false, {}).front();
 }
 
 std::vector<array> MlxGgufStagedPrefill::project_many(std::span<const MlxGgufWeight> weights, const array& input) {
@@ -1105,6 +1113,23 @@ std::vector<array> MlxGgufStagedPrefill::project_many(std::span<const MlxGgufWei
     const int k = input.shape(-1);
     const auto rows = input.size() / k;
     if (rows < 1 || rows > 8) throw std::invalid_argument("GGUF projection batch requires one through eight rows");
+    if (std::any_of(weights.begin(), weights.end(), [](const auto& weight) { return weight.has_hadamard(); })) {
+        std::vector<array> outputs;
+        for (std::size_t begin = 0; begin < weights.size();) {
+            auto end = begin + 1;
+            while (end < weights.size() && weights[begin].same_rotation(weights[end])) ++end;
+            auto source = weights[begin].has_hadamard() ? weights[begin].rotate_input(input) : input;
+            std::vector<MlxGgufWeight> plain(weights.begin() + begin, weights.begin() + end);
+            for (auto& weight : plain) weight.rotation_.reset();
+            if (plain.size() == 1) outputs.push_back(project(plain.front(), source));
+            else {
+                auto group = project_many(plain, source);
+                outputs.insert(outputs.end(), group.begin(), group.end());
+            }
+            begin = end;
+        }
+        return outputs;
+    }
     if (rows >= 7 && k % 64 == 0 && gguf_expert_prefill_available(input) &&
         std::any_of(weights.begin(), weights.end(), [](const auto& weight) { return prefers_small_matrix(weight); })) {
         for (const auto& weight : weights)

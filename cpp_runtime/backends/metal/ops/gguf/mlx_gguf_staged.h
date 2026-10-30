@@ -13,7 +13,7 @@ public:
     static void prepare(MlxGgufWeight& weight);
     static mlx::core::array dequantize(const MlxGgufWeight& weight, mlx::core::Dtype dtype);
     static mlx::core::array embedding(const MlxGgufWeight& weight, const mlx::core::array& ids, mlx::core::Dtype dtype);
-    static mlx::core::array project(const MlxGgufWeight& weight, const mlx::core::array& input);
+    static mlx::core::array project(const MlxGgufWeight& weight, const mlx::core::array& input, int groups = 1);
     static std::vector<mlx::core::array> project_many(std::span<const MlxGgufWeight> weights,
         const mlx::core::array& input);
     static std::optional<std::vector<mlx::core::array>> project_split_many(

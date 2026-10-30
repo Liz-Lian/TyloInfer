@@ -3,6 +3,7 @@
 #include "mlx_gguf_prefill.h"
 #include "mlx_moe_ops.h"
 #include "mlx_kernel_prepare.h"
+#include "mlx_tensor.h"
 #include "mfq_container.h"
 #include "gguf.h"
 #include <mlx/primitives.h>
@@ -64,14 +65,14 @@ int main() {
         for (const auto width : widths) for (int c = 0; c < width; ++c) signs.push_back(c % (width == 256 ? 3 : 5) == 0 ? -1 : 1);
         gguf_set_arr_data(file, "prism.hadamard.sign_widths", GGUF_TYPE_INT32, widths, 2);
         gguf_set_arr_data(file, "prism.hadamard.sign_values", GGUF_TYPE_INT32, signs.data(), signs.size());
-        const char* names[]{"blk.0.ffn_gate_exps.weight", "blk.0.ffn_up_exps.weight", "blk.0.ffn_down_exps.weight", "blk.0.attn_q.weight"};
-        gguf_set_arr_str(file, "prism.hadamard.weight_names", names, 4);
+        const char* names[]{"blk.0.ffn_gate_exps.weight", "blk.0.ffn_up_exps.weight", "blk.0.ffn_down_exps.weight", "blk.0.attn_q.weight", "blk.0.attn_k.weight"};
+        gguf_set_arr_str(file, "prism.hadamard.weight_names", names, 5);
         std::vector<array> original;
         std::size_t largest = 0;
         const auto page = std::size_t(getpagesize());
-        for (int p = 0; p < 4; ++p) {
-            const int experts = p == 3 ? 1 : 64, n = p == 2 ? 256 : p == 3 ? 64 : 128, k = p == 2 ? 128 : 256;
-            const auto type = std::array{GGML_TYPE_TQK4, GGML_TYPE_TQP5, GGML_TYPE_TQK6, GGML_TYPE_Q8_0}[p];
+        for (int p = 0; p < 5; ++p) {
+            const int experts = p >= 3 ? 1 : 64, n = p == 2 ? 256 : p >= 3 ? 64 : 128, k = p == 2 ? 128 : 256;
+            const auto type = std::array{GGML_TYPE_TQK4, GGML_TYPE_TQP5, GGML_TYPE_TQK6, GGML_TYPE_Q8_0, GGML_TYPE_TQP6}[p];
             auto* tensor = experts == 1 ? ggml_new_tensor_2d(tensors, type, k, n) : ggml_new_tensor_3d(tensors, type, k, n, experts);
             ggml_set_name(tensor, names[p]);
             auto* bytes = static_cast<uint8_t*>(tensor->data);
@@ -113,17 +114,28 @@ int main() {
         const auto up = MlxGgufWeight::load(model, "model.block.0.mlp.experts.up.weight");
         const auto down = MlxGgufWeight::load(model, "model.block.0.mlp.experts.down.weight");
         const auto query = MlxGgufWeight::load(model, "model.block.0.attention.query.weight", true);
+        const auto key = MlxGgufWeight::load(model, "model.block.0.attention.key.weight", true);
         require(query.has_hadamard() && !query.native_weight_ref() && !query.has_staged_planes(), "native projection bypassed Hadamard");
+        require(key.has_hadamard() && !key.native_weight_ref() &&
+            key.has_staged_planes() == gguf_expert_prefill_available(zeros({65, 256}, float16)),
+            "Gyro dense projection did not preserve its compressed transform");
+        compare(key.dequantize(float32), original[4], 2e-6f, "Gyro dense key inverse rotation differs");
         compare(gate.dequantize(float32), original[0], 2e-6f, "Gyro Gate inverse rotation differs");
         compare(up.dequantize(float32), original[1], 2e-6f, "Gyro Up inverse rotation differs");
         compare(down.dequantize(float32), original[2], 2e-6f, "Gyro Down inverse rotation differs");
         compare(query.dequantize(float32), original[3], 2e-6f, "plain GGUF inverse rotation differs");
         const MfqContainer identity_model(identity_path);
         const auto identity_query = MlxGgufWeight::load(identity_model, "model.block.0.attention.query.weight");
+        const auto identity_key = MlxGgufWeight::load(identity_model, "model.block.0.attention.key.weight", true);
         std::vector<float> query_signs;
         for (int col = 0; col < 256; ++col) query_signs.push_back(col % 3 == 0 ? -1.f : 1.f);
         const auto identity_reference = original[3] * array(query_signs.begin(), Shape{256});
+        const auto identity_key_reference = original[4] * array(query_signs.begin(), Shape{256});
         compare(identity_query.dequantize(float32), identity_reference, 2e-6f, "identity Gyro inverse rotation differs");
+        compare(identity_key.dequantize(float32), identity_key_reference, 2e-6f, "identity Gyro dense key inverse rotation differs");
+        const MlxLinear key_linear(key), identity_key_linear(identity_key);
+        const MlxProjectionBatch repeated_keys(std::vector<const MlxLinear*>{&key_linear, &key_linear});
+        const MlxProjectionBatch different_keys(std::vector<const MlxLinear*>{&key_linear, &identity_key_linear});
         {
             MlxKernelPreparation preparation(4096, 4096);
             const auto first = query.embedding(array({0}, int32), float32);
@@ -151,6 +163,19 @@ int main() {
             const auto input = reshape(sin(arange(rows * 256, float32) * .013f), {rows, 256});
             compare(query.matmul(input), matmul(input, transpose(original[3])), .003f, "rotated dense projection differs");
             compare(identity_query.matmul(input), matmul(input, transpose(identity_reference)), .003f, "identity rotated dense projection differs");
+            compare(key.matmul(input), matmul(input, transpose(original[4])), .003f, "Gyro dense key projection differs");
+            for (const auto& output : repeated_keys(input))
+                compare(output, matmul(input, transpose(original[4])), .003f, "Gyro shared batch rotation differs");
+            const auto different = different_keys(input);
+            compare(different[0], matmul(input, transpose(original[4])), .003f, "Gyro mixed batch first rotation differs");
+            compare(different[1], matmul(input, transpose(identity_key_reference)), .003f, "Gyro mixed batch second rotation differs");
+            const auto grouped_input = reshape(sin(arange(rows * 2 * 256, float32) * .013f), {rows, 2, 256});
+            std::vector<array> grouped_reference;
+            for (int group = 0; group < 2; ++group)
+                grouped_reference.push_back(matmul(reshape(slice(grouped_input, {0, group, 0}, {rows, group + 1, 256}), {rows, 256}),
+                    transpose(slice(original[4], {group * 32, 0}, {(group + 1) * 32, 256}))));
+            compare(key.grouped_row_matmul(grouped_input, 2), stack(grouped_reference, 1), .003f,
+                "Gyro grouped key projection rotation differs");
             const auto ids = reshape(remainder(arange(rows * 2, int32), array(4, int32)), {rows, 2});
             const auto hidden = gate.routed_swiglu(up, astype(input, float16), ids);
             compare(hidden, moe_swiglu_pair(gate.routed_matmul(astype(input, float16), ids, true),

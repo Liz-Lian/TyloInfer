@@ -393,6 +393,9 @@ set_target_properties(tyloinfer-metal-gguf-test PROPERTIES BUILD_RPATH "${TYLOIN
 add_test(NAME tyloinfer-metal-gguf-test COMMAND tyloinfer-metal-gguf-test)
 add_test(NAME tyloinfer-metal-gguf-heterogeneous-test COMMAND tyloinfer-metal-gguf-test heterogeneous)
 add_test(NAME tyloinfer-metal-gguf-gyro-test COMMAND tyloinfer-metal-gguf-test gyro)
+add_test(NAME tyloinfer-metal-gguf-gyro-dense-test COMMAND tyloinfer-metal-gguf-test gyro-dense)
+add_test(NAME tyloinfer-metal-gguf-gyro-dense-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test> gyro-dense)
 add_test(NAME tyloinfer-metal-gguf-gyro-no-nax-test
     COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test> gyro)
 add_test(NAME tyloinfer-metal-gguf-heterogeneous-no-nax-test
