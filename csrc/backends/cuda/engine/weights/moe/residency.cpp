@@ -1,7 +1,7 @@
 #include "env.h"
 #include "backends/cuda/engine/weights/moe/residency.h"
 #include "backends/cuda/engine/executor/decode_window.h"
-#include "kernels/cuda/moe/pipeline.h"
+#include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "backends/cuda/engine/weights/moe/native_dma_batch.h"
 #include "backends/cuda/engine/weights/moe/cached_source_internal.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"

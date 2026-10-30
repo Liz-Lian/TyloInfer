@@ -5,7 +5,7 @@
 #include "moe.h"
 
 #include "quant_linear.h"
-#include "kernels/cuda/moe/pipeline.h"
+#include "engine/backends/cuda/kernels/moe/pipeline.h"
 
 #include <algorithm>
 #include <unordered_set>

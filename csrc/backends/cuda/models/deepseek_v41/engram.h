@@ -9,7 +9,7 @@
 #include "quant_linear.h"
 #include "ops/common/include/projection.h"
 #include "native/cuda/profile.h"
-#include "csrc/backends/cuda/kernels/deepseek_v41.h"
+#include "engine/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>
 #include <array>

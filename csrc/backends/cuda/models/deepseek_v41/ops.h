@@ -9,9 +9,9 @@
 #include "../deepseek_v4/ops.h"
 #include "dspark.h"
 #include "engram.h"
-#include "csrc/backends/cuda/kernels/deepseek_v41.h"
-#include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
-#include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "engine/backends/cuda/kernels/deepseek_v41.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/models/deepseek_v41/config.h"
 #include "engine/models/ffn.h"
 

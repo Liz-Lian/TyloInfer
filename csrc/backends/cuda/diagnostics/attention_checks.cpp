@@ -1,9 +1,9 @@
 #include "model_checks.h"
 
 #include "models/deepseek_v4/ops.h"
-#include "csrc/backends/cuda/kernels/deepseek_v4_attention.h"
-#include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
-#include "csrc/backends/cuda/kernels/deepseek_v41.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "engine/backends/cuda/kernels/deepseek_v41.h"
 #include "mfq_cuda_attention_ops.h"
 #include "mfq_cuda_moe_ops.h"
 #include "mfq_cuda_norm_ops.h"

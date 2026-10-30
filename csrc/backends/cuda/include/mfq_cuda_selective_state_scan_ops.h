@@ -5,7 +5,7 @@
 #include <vector>
 
 // Selective state scan (SSD recurrence) shared by linear-attention mixers.
-// See mfq/kernels/cuda/selective_state_scan.cu for the recurrence and for the
+// See engine/backends/cuda/kernels/selective_state_scan.cu for the recurrence and for the
 // dtype contract: the recurrent state, parameters and outputs are float32,
 // while x/dt/B/C may be f32, f16 or bf16 (all four sharing one dtype).
 

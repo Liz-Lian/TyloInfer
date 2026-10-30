@@ -1,6 +1,6 @@
 #pragma once
 #include "backend.h"
-#include "kernels/cuda/tq_ops.h"
+#include "engine/backends/cuda/kernels/tq_ops.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>

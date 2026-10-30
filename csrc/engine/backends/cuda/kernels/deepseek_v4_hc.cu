@@ -1,6 +1,6 @@
 #include <cuda_fp16.h>
-#include "csrc/backends/cuda/kernels/deepseek_v4_hc.h"
-#include "csrc/backends/cuda/kernels/deepseek_v41.h"
+#include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
+#include "engine/backends/cuda/kernels/deepseek_v41.h"
 #include "backend.h"
 #include <cuda_runtime.h>
 

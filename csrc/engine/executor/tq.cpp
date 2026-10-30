@@ -2,7 +2,7 @@
 
 #include "native/cuda/tensor/backend.h"
 #include "context.h"
-#include "kernels/cuda/moe/pipeline.h"
+#include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 
 #include <atomic>

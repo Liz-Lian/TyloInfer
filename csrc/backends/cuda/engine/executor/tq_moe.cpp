@@ -8,7 +8,7 @@
 #include "ops/tq/include/moe.h"
 #include "context.h"
 #include "env.h"
-#include "kernels/cuda/moe/pipeline.h"
+#include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "ops/common/include/moe.h"
 #include "quant_linear.h"
 #include "weight_memory.h"

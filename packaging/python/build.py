@@ -21,7 +21,7 @@ def build_wheel(output_dir: Path) -> Path:
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
         )
 
-        kernels = repository / "csrc/kernels/cuda"
+        kernels = repository / "csrc/engine/backends/cuda/kernels"
         resources = project / "tyloinfer/kernels/cuda"
         for source in (kernels / "tq_ops.cu", kernels / "tq_ops.h",
                        *sorted(kernels.glob("tq_*.cuh"))):

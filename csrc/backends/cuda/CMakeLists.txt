@@ -3,7 +3,7 @@
 
 set(TYLOINFER_CUDA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # Single source of the shared CUDA kernels; the Python extension builds the same files.
-set(TYLOINFER_CUDA_KERNEL_ROOT "${PROJECT_SOURCE_DIR}/kernels/cuda")
+set(TYLOINFER_CUDA_KERNEL_ROOT "${PROJECT_SOURCE_DIR}/engine/backends/cuda/kernels")
 
 set(TYLOINFER_CUDA_ARCHITECTURES "" CACHE STRING
     "Optional CUDA architecture override; otherwise use CMAKE_CUDA_ARCHITECTURES, CUDAARCHS or native")

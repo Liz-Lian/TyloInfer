@@ -19,7 +19,7 @@
 #include "backends/cuda/engine/state/session/text_cache.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "models/qwen35/load.h"
-#include "csrc/backends/cuda/kernels/deepseek_v41.h"
+#include "engine/backends/cuda/kernels/deepseek_v41.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>

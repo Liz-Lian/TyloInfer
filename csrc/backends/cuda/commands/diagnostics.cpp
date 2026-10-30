@@ -16,7 +16,7 @@
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "csrc/backends/cuda/kernels/deepseek_v41.h"
+#include "engine/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>
 #include <chrono>
