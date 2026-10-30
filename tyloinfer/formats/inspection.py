@@ -44,7 +44,7 @@ def _tq(blob: memoryview, rows: bool, logical_shape: tuple[int, ...] | None) -> 
                 raise ValueError('invalid TQ expert span')
             child = blob[offset:offset + size]
             try:
-                if bytes(child[:8]) != b'RTRELL05':
+                if bytes(child[:8]) not in (b'RTRELL05', b'RTRELL06'):
                     raise ValueError('nested TQ expert containers are not supported')
                 item = _tq(child, rows, (outputs, width))
                 if rows:
@@ -55,7 +55,11 @@ def _tq(blob: memoryview, rows: bool, logical_shape: tuple[int, ...] | None) -> 
         if end != len(blob):
             raise ValueError('TQ expert payload length differs')
         return TensorInspection(shape, 'TQ', np.concatenate(storage) if rows else None, 'row')
-    if (magic != b'RTRELL05' or version != 5 or not outputs or not width or width % 256
+    compact = magic == b'RTRELL06' and version == 6
+    if (not (compact or (magic == b'RTRELL05' and version == 5))
+            or not outputs or not width or width % 32
+            or (compact and (not columns or width % 256 == 0))
+            or (not compact and width % 256)
             or columns not in (0, 1) or any(blob[32:64]) or packed % 4
             or (not columns and (gs < 16 or gs > 2**20 or gs & (gs - 1)))):
         raise ValueError('invalid TQ row geometry')
@@ -71,8 +75,12 @@ def _tq(blob: memoryview, rows: bool, logical_shape: tuple[int, ...] | None) -> 
         descriptors = np.frombuffer(blob, '<u8', outputs, 64)
         bits = ((descriptors >> 32) & 7) + 1
         words = width * bits // 32
-        offsets = descriptors & np.uint64(0xffffffff)
-        if (np.any(descriptors & np.uint64(0xff0000f800000000))
+        offsets = descriptors & np.uint64(0x7ffffffe if compact else 0xffffffff)
+        seed = (((descriptors >> 35) & 31) | (((descriptors >> 56) & 255) << 5)
+                | ((descriptors & 1) << 13) | (((descriptors >> 31) & 1) << 14))
+        if ((not compact and np.any(descriptors & np.uint64(0xff0000f800000000)))
+                or (compact and (np.any(words & 1) or int(words.sum()) >= 2**31
+                                 or np.any(seed >= (1 << (16 - bits)))))
                 or np.any(((descriptors >> 40) & 65535) > 0x7bff)
                 or not np.array_equal(offsets, np.r_[np.uint64(0), np.cumsum(words[:-1])])
                 or int(words.sum()) * 4 != packed):
