@@ -603,6 +603,7 @@ class ModelLoadContextSettings(ProtocolModel):
 class ModelLoadRequest(ProtocolModel):
     model: str = Field(min_length=1, max_length=255)
     artifact_uri: str | None = Field(default=None, min_length=1)
+    gguf_companions: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list, max_length=16)
     device_ids: list[str] = Field(default_factory=list)
     idle_ttl_seconds: int | None = Field(default=None, ge=0)
     pin: bool = False
@@ -920,6 +921,7 @@ class ModelArtifactResource(ProtocolModel):
     name: str = Field(min_length=1, max_length=255)
     architecture: str = Field(min_length=1, max_length=128)
     format: Literal["tq", "hf", "gguf"] = "tq"
+    gguf_companion_required: bool = False
     shard_count: int = Field(ge=1)
     missing_shards: int = Field(default=0, ge=0)
     total_bytes: int = Field(ge=0)

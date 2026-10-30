@@ -7,7 +7,7 @@ namespace mfq::metal {
 using namespace mlx::core;
 MlxGgufGroupedRoutes gguf_group_routes(const array& ids, int experts, int tile_rows, bool shared) {
     if (ids.ndim() != 2 || ids.size() == 0 || ids.size() > INT_MAX || experts < 1 || experts > 512 ||
-        (ids.dtype() != int32 && ids.dtype() != uint32) || tile_rows < 1 || tile_rows > 32)
+        (ids.dtype() != int32 && ids.dtype() != uint32) || tile_rows < 1 || (tile_rows > 32 && tile_rows != 48))
         throw std::invalid_argument("invalid GGUF grouped route geometry");
     if (shared && ids.size() > std::size_t(INT_MAX - ids.shape(0)))
         throw std::overflow_error("GGUF shared routes are too large");

@@ -277,10 +277,12 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${TYLOINFER_REPOSITORY_ROOT}/tyloinfer/kernels/metal/tq_matmul.h")
 configure_file(kernels/tq/mfq_tq_embedded.h.in mfq_tq_embedded.h @ONLY)
 file(READ "${PROJECT_SOURCE_DIR}/components/ggml/src/ggml-common.h" TYLOINFER_GGUF_COMMON_SOURCE)
+file(READ "${PROJECT_SOURCE_DIR}/third_party/agention-gyro/codebook_f16.inc" TYLOINFER_GYRO_CODEBOOK_SOURCE)
 file(READ "${TYLOINFER_METAL_ROOT}/kernels/gguf/gguf_decode.h" TYLOINFER_GGUF_DECODE_SOURCE)
 file(READ "${TYLOINFER_METAL_ROOT}/kernels/gguf/gguf_matmul.h" TYLOINFER_GGUF_MATMUL_SOURCE)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/components/ggml/src/ggml-common.h"
+    "${PROJECT_SOURCE_DIR}/third_party/agention-gyro/codebook_f16.inc"
     "${TYLOINFER_METAL_ROOT}/kernels/gguf/gguf_decode.h"
     "${TYLOINFER_METAL_ROOT}/kernels/gguf/gguf_matmul.h")
 configure_file(kernels/gguf/gguf_embedded.h.in gguf_embedded.h @ONLY)
@@ -389,6 +391,12 @@ target_include_directories(tyloinfer-metal-gguf-test PRIVATE "${PROJECT_SOURCE_D
 target_compile_features(tyloinfer-metal-gguf-test PRIVATE cxx_std_20)
 set_target_properties(tyloinfer-metal-gguf-test PROPERTIES BUILD_RPATH "${TYLOINFER_MLX_ROOT}/lib")
 add_test(NAME tyloinfer-metal-gguf-test COMMAND tyloinfer-metal-gguf-test)
+add_test(NAME tyloinfer-metal-gguf-heterogeneous-test COMMAND tyloinfer-metal-gguf-test heterogeneous)
+add_test(NAME tyloinfer-metal-gguf-gyro-test COMMAND tyloinfer-metal-gguf-test gyro)
+add_test(NAME tyloinfer-metal-gguf-gyro-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test> gyro)
+add_test(NAME tyloinfer-metal-gguf-heterogeneous-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test> heterogeneous)
 add_test(NAME tyloinfer-metal-gguf-native-stack-test COMMAND tyloinfer-metal-gguf-test native-stack)
 add_test(NAME tyloinfer-metal-gguf-native-hyper-test COMMAND tyloinfer-metal-gguf-test native-hyper)
 add_test(NAME tyloinfer-metal-gguf-native-stack-no-nax-test
@@ -398,6 +406,21 @@ add_test(NAME tyloinfer-metal-gguf-native-hyper-no-nax-test
 add_test(NAME tyloinfer-metal-gguf-no-nax-test
     COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-test>)
 add_executable(tyloinfer-metal-gguf-cache-test tests/mlx_gguf_expert_cache_test.cpp)
+add_executable(tyloinfer-metal-gguf-deepseek41-test tests/mlx_gguf_deepseek41_test.cpp)
+target_link_libraries(tyloinfer-metal-gguf-deepseek41-test PRIVATE mfq-metal-runtime mfq-ggml)
+target_include_directories(tyloinfer-metal-gguf-deepseek41-test PRIVATE "${PROJECT_SOURCE_DIR}/components/ggml/src")
+target_compile_features(tyloinfer-metal-gguf-deepseek41-test PRIVATE cxx_std_20)
+set_target_properties(tyloinfer-metal-gguf-deepseek41-test PROPERTIES BUILD_RPATH "${TYLOINFER_MLX_ROOT}/lib")
+add_test(NAME tyloinfer-metal-gguf-deepseek41-test COMMAND tyloinfer-metal-gguf-deepseek41-test)
+add_test(NAME tyloinfer-metal-gguf-deepseek41-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-deepseek41-test>)
+add_executable(tyloinfer-metal-gguf-gyro-rotation-test tests/mlx_gguf_gyro_test.cpp)
+target_link_libraries(tyloinfer-metal-gguf-gyro-rotation-test PRIVATE mfq-metal-runtime mfq-ggml)
+target_compile_features(tyloinfer-metal-gguf-gyro-rotation-test PRIVATE cxx_std_20)
+set_target_properties(tyloinfer-metal-gguf-gyro-rotation-test PROPERTIES BUILD_RPATH "${TYLOINFER_MLX_ROOT}/lib")
+add_test(NAME tyloinfer-metal-gguf-gyro-rotation-test COMMAND tyloinfer-metal-gguf-gyro-rotation-test)
+add_test(NAME tyloinfer-metal-gguf-gyro-rotation-no-nax-test
+    COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:tyloinfer-metal-gguf-gyro-rotation-test>)
 target_link_libraries(tyloinfer-metal-gguf-cache-test PRIVATE mfq-metal-runtime mfq-ggml)
 target_include_directories(tyloinfer-metal-gguf-cache-test PRIVATE "${PROJECT_SOURCE_DIR}/components/ggml/src")
 target_compile_features(tyloinfer-metal-gguf-cache-test PRIVATE cxx_std_20)
@@ -466,6 +489,8 @@ target_sources(mfq-metal-runtime PRIVATE $<TARGET_OBJECTS:tyloinfer-metal-gguf-p
 tyloinfer_add_metal_format(tyloinfer-metal-gguf-ops
     ops/gguf/native/mlx_native_gguf.cpp
     ops/gguf/mlx_gguf.cpp
+    ops/gguf/mlx_gguf_mixed.cpp
+    ops/gguf/mlx_gguf_rotation.cpp
     ops/gguf/mlx_gguf_prefill.cpp
     ops/gguf/mlx_gguf_routes.cpp
     ops/gguf/mlx_gguf_staged.cpp
@@ -511,6 +536,9 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:mfq-metal-tq-test> --projection-cache)
     add_test(NAME tyloinfer-metal-tq-expansion-vector-test COMMAND mfq-metal-tq-test --expansion-vectors)
     add_test(NAME tyloinfer-metal-tq-column-input-test COMMAND mfq-metal-tq-test --column-inputs)
+    add_test(NAME tyloinfer-metal-tq-gated-residual-test COMMAND mfq-metal-tq-test --gated-residual)
+    add_test(NAME tyloinfer-metal-tq-gated-residual-no-nax-test
+        COMMAND ${CMAKE_COMMAND} -E env TYLOINFER_METAL_DISABLE_NAX=1 $<TARGET_FILE:mfq-metal-tq-test> --gated-residual)
     add_test(NAME tyloinfer-metal-tq-compact-reuse-test COMMAND mfq-metal-tq-test --compact-reuse)
 endif()
 

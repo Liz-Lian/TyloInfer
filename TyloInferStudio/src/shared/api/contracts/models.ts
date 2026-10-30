@@ -5,6 +5,7 @@ export interface ModelArtifact {
   name: string;
   architecture: string;
   format: 'tq' | 'hf' | 'gguf';
+  gguf_companion_required?: boolean;
   shard_count: number;
   missing_shards?: number;
   total_bytes: number;

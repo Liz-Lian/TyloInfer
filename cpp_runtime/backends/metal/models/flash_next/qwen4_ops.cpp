@@ -315,7 +315,7 @@ constexpr const char* kQsaDecodePrologueSource = R"METAL(
         : uint(INDEX_DIM);
     long column_stride = projected_strides[is_query ? 4 : is_key ? 5 : 6];
     long source_base = is_query
-        ? token * projected_strides[0] + head * uint(2 * HEAD_DIM) * column_stride
+        ? token * projected_strides[0] + head * uint((SEPARATE_GATE ? 1 : 2) * HEAD_DIM) * column_stride
         : (is_key
             ? token * projected_strides[1] + head * uint(HEAD_DIM) * column_stride
             : token * projected_strides[2] + head * uint(INDEX_DIM) * column_stride);
@@ -386,8 +386,13 @@ constexpr const char* kQsaDecodePrologueSource = R"METAL(
         uint output_index = (head * rows + token) * width + column;
         if (is_query) {
             query_output[output_index] = Q(T(normalized));
+#if SEPARATE_GATE
+            output_gate[(token * uint(QUERY_HEADS) + head) * width + column] = gate_input[
+                token * projected_strides[8] + (head * width + column) * projected_strides[9]];
+#else
             output_gate[(token * uint(QUERY_HEADS) + head) * width + column] = query_gate_input[
                 source_base + (uint(HEAD_DIM) + column) * column_stride];
+#endif
         } else if (is_key) {
             key_output[output_index] = C(T(normalized));
 #if CACHE_OUTPUTS
@@ -1088,6 +1093,7 @@ struct QsaPrologueConfig {
     std::array<float, 2> params;
     bool cache_outputs;
     bool half_query;
+    bool separate_gate;
 };
 
 class QsaProloguePrimitive final : public mlx::core::Primitive, public MlxPreparableKernel {
@@ -1101,6 +1107,7 @@ public:
         }
         if (config_.cache_outputs) kernel_name_ += "_cache";
         if (config_.half_query) kernel_name_ += "_qhalf";
+        if (config_.separate_gate) kernel_name_ += "_gate";
     }
 
     std::string preparation_key() const override { return kernel_name_; }
@@ -1135,12 +1142,15 @@ public:
         encoder.set_bytes(config_.params, 7);
         const int rows = inputs[0].shape(1);
         encoder.set_bytes(rows, 12);
-        const std::array<std::int64_t, 8> strides{
+        const auto* gate = config_.separate_gate ? &inputs[7 + int(config_.cache_outputs)] : nullptr;
+        const std::array<std::int64_t, 10> strides{
             inputs[0].strides()[1], inputs[1].strides()[1],
             inputs[2].strides()[1], config_.cache_outputs ? inputs[7].strides()[1] : 0u,
             inputs[0].strides()[2], inputs[1].strides()[2],
-            inputs[2].strides()[2], config_.cache_outputs ? inputs[7].strides()[2] : 0u};
+            inputs[2].strides()[2], config_.cache_outputs ? inputs[7].strides()[2] : 0u,
+            gate ? gate->strides()[1] : 0u, gate ? gate->strides()[2] : 0u};
         encoder.set_bytes(strides, 16);
+        if (gate) encoder.set_input_array(*gate, 17);
         for (int index = 0; index < 4; ++index) {
             encoder.set_output_array(outputs[index], index + 8);
         }
@@ -1167,6 +1177,7 @@ private:
         code += "using C = " + std::string(config_.cache_outputs ? "half" : type) + ";\n";
         code += "using Q = " + std::string(config_.half_query ? "half" : type) + ";\n";
         code += "#define CACHE_OUTPUTS " + std::to_string(int(config_.cache_outputs)) + "\n";
+        code += "#define SEPARATE_GATE " + std::to_string(int(config_.separate_gate)) + "\n";
         const std::array<const char*, 6> names{
             "QUERY_HEADS", "KEY_HEADS", "INDEX_HEADS",
             "HEAD_DIM", "INDEX_DIM", "ROTARY_DIM"};
@@ -1189,6 +1200,7 @@ private:
             "device T* index_query_output [[buffer(11)]], "
             "constant int* token_count [[buffer(12)]], "
             "constant long* projected_strides [[buffer(16)]], ";
+        if (config_.separate_gate) code += "device const T* gate_input [[buffer(17)]], ";
         if (config_.cache_outputs) code +=
             "device const T* value_input [[buffer(13)]], "
             "device half* value_output [[buffer(14)]], "
@@ -1976,6 +1988,12 @@ MlxQwen4GatedResidualPre gated_hc_from_normalized(
     const auto* dense_down = down_weight.dense_weight_ref();
     const auto* dense_up = up_weight.dense_weight_ref();
     const auto* dense_inject = inject_weight ? inject_weight->dense_weight_ref() : nullptr;
+    if (const auto* down = down_weight.tq_weight_ref(); down && inject_weight) {
+        const auto* up = up_weight.tq_weight_ref();
+        const auto* inject = inject_weight->tq_weight_ref();
+        if (up && inject) if (auto values = down->gated_projections(*inject, normalized, hc_count))
+            return {up->gated_mix((*values)[0], normalized, hc_count), std::move(residual), std::move((*values)[1])};
+    }
     const auto projection_input = dense_down && dense_inject && normalized.size() / width >= 64 &&
         dense_down->dtype() == dense_inject->dtype()
         ? mlx::core::astype(normalized, dense_down->dtype()) : normalized;
@@ -2444,7 +2462,8 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
     float rope_theta,
     float eps,
     const array* cache_value,
-    bool half_query) {
+    bool half_query,
+    const array* separate_gate) {
     const auto dtype = query_gate.dtype();
     half_query = half_query && dtype != mlx::core::float16;
     const int rows = query_gate.ndim() == 3 ? query_gate.shape(1) : 0;
@@ -2454,6 +2473,8 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
         key.dtype() != dtype || index_query_key.dtype() != dtype ||
         (cache_value && (cache_value->dtype() != dtype ||
             cache_value->shape() != Shape{1, rows, key_heads * head_dimension})) ||
+        (separate_gate && (separate_gate->dtype() != dtype ||
+            separate_gate->shape() != Shape{1, rows, query_heads * head_dimension})) ||
         query_heads <= 0 || key_heads <= 0 || index_heads <= 0 ||
         head_dimension <= 0 || index_dimension <= 0 ||
         head_dimension > 256 || index_dimension > 256 ||
@@ -2462,7 +2483,7 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
         !std::isfinite(rope_theta) || rope_theta <= 0.0f ||
         !std::isfinite(eps) || eps <= 0.0f ||
         rows < 1 || rows > 8 ||
-        query_gate.shape() != Shape{1, rows, query_heads * 2 * head_dimension} ||
+        query_gate.shape() != Shape{1, rows, query_heads * (separate_gate ? 1 : 2) * head_dimension} ||
         key.shape() != Shape{1, rows, key_heads * head_dimension} ||
         index_query_key.shape() !=
             Shape{1, rows, (index_heads + 1) * index_dimension} ||
@@ -2481,7 +2502,7 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
         dtype,
         {query_heads, key_heads, index_heads,
          head_dimension, index_dimension, rotary_dimension},
-        {eps, rope_theta}, cache_value != nullptr, half_query};
+        {eps, rope_theta}, cache_value != nullptr, half_query, separate_gate != nullptr};
     std::vector<Shape> shapes{
         Shape{1, query_heads, rows, head_dimension},
         Shape{1, rows, query_heads * head_dimension},
@@ -2503,6 +2524,7 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
         types.insert(types.end(), {mlx::core::float16, mlx::core::float16});
         inputs.push_back(*cache_value);
     }
+    if (separate_gate) inputs.push_back(*separate_gate);
     auto outputs = array::make_arrays(shapes, types,
         std::make_shared<QsaProloguePrimitive>(mlx::core::default_stream(mlx::core::default_device()), config), std::move(inputs));
     return {

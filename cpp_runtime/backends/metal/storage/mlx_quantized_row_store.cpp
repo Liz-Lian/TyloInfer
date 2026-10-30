@@ -171,6 +171,16 @@ struct MlxQuantizedRowStore::Impl {
             decoded_row_bytes = std::max(static_cast<std::size_t>(width) *
                 sizeof(mlx::core::float16_t), nint->selected_row_nbytes_bound() + 27);
             index_bytes = nint->index_nbytes();
+        } else if (entry->dtype == "GGUF_ENGRAM_MXFP8") {
+            if (expected_rows <= 0 || expected_width != 256 ||
+                std::uint64_t(expected_rows) > UINT64_MAX / 264 ||
+                entry->nbytes != std::uint64_t(expected_rows) * 264)
+                throw std::runtime_error("GGUF Engram row-store geometry disagrees: " + record);
+            rows = expected_rows; width = expected_width;
+            scale_columns = 8; source_row_bytes = 264;
+            decoded_row_bytes = std::size_t(width) * sizeof(mlx::core::float16_t);
+            interleaved_rows = true;
+            initialize_mxfp8_lut();
         } else if (entry->dtype != "MXFP8") {
             throw std::runtime_error(
                 "unsupported quantized row-store format: " +
@@ -237,6 +247,10 @@ struct MlxQuantizedRowStore::Impl {
         source_row_bytes = static_cast<std::size_t>(width + scale_columns);
         decoded_row_bytes = static_cast<std::size_t>(width) *
             sizeof(mlx::core::float16_t);
+        initialize_mxfp8_lut();
+    }
+
+    void initialize_mxfp8_lut() {
         for (std::size_t scale = 0; scale < 256; ++scale) {
             const auto scale_value = decode_e8m0(
                 static_cast<std::uint8_t>(scale));
@@ -305,6 +319,12 @@ struct MlxQuantizedRowStore::Impl {
         std::int64_t row,
         RequestedRow& requested) const {
         std::vector<std::uint8_t> raw(source_row_bytes);
+        if (interleaved_rows) {
+            model.read_range_into(record, std::uint64_t(row) * source_row_bytes,
+                std::as_writable_bytes(std::span(raw)));
+            decode_mxfp8(raw, requested);
+            return;
+        }
         model.read_range_into(
             record,
             values_offset + static_cast<std::uint64_t>(row) *
@@ -358,6 +378,10 @@ struct MlxQuantizedRowStore::Impl {
         for (std::size_t item = 0; item < misses.size(); ++item) {
             const auto row = requested[misses[item]].row;
             auto* data = reinterpret_cast<std::byte*>(raw.data() + item * source_row_bytes);
+            if (interleaved_rows) {
+                spans.push_back({std::uint64_t(row) * source_row_bytes, data, source_row_bytes});
+                continue;
+            }
             spans.push_back({values_offset + std::uint64_t(row) * width,
                 data, std::size_t(width)});
             spans.push_back({scales_offset + std::uint64_t(row) * scale_columns,
@@ -480,7 +504,7 @@ struct MlxQuantizedRowStore::Impl {
                     }
                 });
             read_counts.bytes = misses.size() * source_row_bytes;
-            read_counts.calls = misses.size() * 2;
+            read_counts.calls = misses.size() * (interleaved_rows ? 1 : 2);
         }
         const auto io_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - io_begin).count();
@@ -529,6 +553,7 @@ struct MlxQuantizedRowStore::Impl {
     int scale_columns = 0;
     std::uint64_t values_offset = 0;
     std::uint64_t scales_offset = 0;
+    bool interleaved_rows = false;
     std::size_t source_row_bytes = 0;
     std::size_t decoded_row_bytes = 0;
     std::size_t cache_capacity = 0;

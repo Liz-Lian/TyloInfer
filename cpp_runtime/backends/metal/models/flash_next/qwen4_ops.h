@@ -128,7 +128,8 @@ MlxQwen4QsaDecodePrologue qwen4_qsa_decode_prologue(
     float rope_theta,
     float eps,
     const mlx::core::array* cache_value = nullptr,
-    bool half_query = false);
+    bool half_query = false,
+    const mlx::core::array* separate_gate = nullptr);
 
 mlx::core::array qwen4_dense_gqa_attention(
     const mlx::core::array& query,

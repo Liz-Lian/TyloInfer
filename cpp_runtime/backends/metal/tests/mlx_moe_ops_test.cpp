@@ -1481,6 +1481,34 @@ void test_activation_precision() {
     }
 }
 
+void test_shared_gate_native_precision() {
+    using namespace mlx::core;
+    for (auto dtype : {float16, bfloat16, float32}) for (int tokens : {1, 2, 8, 65}) {
+        const auto pairs = astype(reshape(sin(arange(tokens * 3 * 17, float32) * .13f), {tokens, 3, 17}), dtype);
+        const auto weights = full({tokens, 3}, 1.f / 3.f, float32);
+        const auto shared = astype(reshape(cos(arange(tokens * 17, float32)), {tokens, 17}), dtype);
+        const auto reduced = mfq::metal::moe_weighted_reduce(pairs, weights);
+        const auto order = arange(tokens * 3 - 1, -1, -1, int32);
+        const auto inverse = mfq::metal::moe_inverse_permutation(order);
+        const auto sorted = take(reshape(pairs, {tokens * 3, 17}), order, 0);
+        for (auto gate_dtype : {float16, bfloat16, float32}) {
+            const auto gates = slice(astype(reshape(sin(arange(tokens * 2, float32) + .17f) * 30.f,
+                {tokens, 2}), gate_dtype), {0, 0}, {tokens, 1});
+            const auto converted = astype(gates, float32);
+            const std::vector<array> actual{
+                mfq::metal::moe_add_shared_gate(reduced, shared, gates),
+                mfq::metal::moe_weighted_reduce_shared_gate(pairs, weights, shared, gates),
+                mfq::metal::moe_weighted_reduce_shared_gate_sorted(sorted, inverse, weights, shared, gates)};
+            const std::vector<array> expected{
+                mfq::metal::moe_add_shared_gate(reduced, shared, converted),
+                mfq::metal::moe_weighted_reduce_shared_gate(pairs, weights, shared, converted),
+                mfq::metal::moe_weighted_reduce_shared_gate_sorted(sorted, inverse, weights, shared, converted)};
+            for (int i = 0; i < 3; ++i)
+                require(array_equal(actual[i], expected[i]).item<bool>(), "native shared gate changed output bits");
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1507,6 +1535,7 @@ int main() {
         test_runtime_row_kernel_reuse();
         test_restore_routed_rows();
         test_activation_precision();
+        test_shared_gate_native_precision();
         std::cout
             << "MFQ C++ routed MoE Metal primitive tests passed\n";
         return 0;

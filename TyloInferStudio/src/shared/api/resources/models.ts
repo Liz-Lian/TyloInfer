@@ -112,7 +112,7 @@ export const modelsApi = {
     model: string,
     contextSize: number | null = null,
     prefillChunkSize: number | 'auto' = 'auto',
-    policy: { pin?: boolean; idle_ttl_seconds?: number | null; device_ids?: string[]; context_management?: ModelLoadContextSettings } = {},
+    policy: { pin?: boolean; idle_ttl_seconds?: number | null; device_ids?: string[]; context_management?: ModelLoadContextSettings; gguf_companions?: string[] } = {},
   ): Promise<{ operation_id: string; status: 'accepted' }> {
     return request('/api/v1/models/load', {
       method: 'POST',
@@ -127,6 +127,7 @@ export const modelsApi = {
           kv_quantization: policy.context_management.kv_quantization,
         } } : {}),
         ...(policy.device_ids?.length ? { device_ids: policy.device_ids } : {}),
+        ...(policy.gguf_companions?.length ? { gguf_companions: policy.gguf_companions } : {}),
         idle_ttl_seconds: policy.pin ? null : (policy.idle_ttl_seconds ?? null),
       }),
     });

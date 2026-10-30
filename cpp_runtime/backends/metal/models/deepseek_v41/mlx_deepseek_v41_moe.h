@@ -5,6 +5,7 @@
 #include "mlx_moe.h"
 #include "mlx_ssd_expert_cache.h"
 #include "mlx_tq_expert_cache.h"
+#include "mlx_gguf_expert_cache.h"
 #include "mlx_tensor.h"
 
 #include <cstddef>
@@ -34,7 +35,8 @@ public:
         std::shared_ptr<MlxMoeSsdExpertCache> ssd_expert_cache = nullptr,
         std::shared_ptr<MlxMfeOffloadCache> mfe_offload_cache = nullptr,
         std::size_t expert_cache_layer = 0,
-        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr);
+        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr,
+        std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache = nullptr);
 
     MlxDeepseekV41MoeResult forward(
         const mlx::core::array& input,
@@ -51,10 +53,13 @@ public:
     void use_offload(const std::shared_ptr<MlxMfeOffloadCache>& cache);
     void validate_tq_offload(const std::shared_ptr<MlxTqExpertCache>& cache) const;
     void use_tq_offload(const std::shared_ptr<MlxTqExpertCache>& cache);
+    void validate_gguf_offload(const std::shared_ptr<MlxGgufExpertCache>& cache) const;
+    void use_gguf_offload(const std::shared_ptr<MlxGgufExpertCache>& cache);
     std::optional<MlxMfeCachedRoute> cached_route() const;
 
 private:
     using TqWeights = MlxTqExpertWeights;
+    using GgufWeights = std::array<MlxGgufWeight, 3>;
     MlxDeepseekV41Moe(
         int hidden,
         int intermediate,
@@ -80,7 +85,9 @@ private:
         std::string streamed_down_name,
         std::size_t expert_cache_layer,
         std::optional<TqWeights> tq = std::nullopt,
-        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr);
+        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr,
+        std::optional<GgufWeights> gguf = std::nullopt,
+        std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache = nullptr);
 
     int hidden_;
     int intermediate_;
@@ -106,6 +113,8 @@ private:
     std::optional<MlxRoutedLinear> routed_down_;
     std::optional<TqWeights> tq_;
     std::shared_ptr<MlxTqExpertCache> tq_expert_cache_;
+    std::optional<GgufWeights> gguf_;
+    std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache_;
     std::shared_ptr<MlxMoeSsdExpertCache> ssd_expert_cache_;
     std::shared_ptr<MlxMfeOffloadCache> mfe_offload_cache_;
     std::string streamed_gate_up_name_;

@@ -290,6 +290,19 @@ static void check_projection_cache() {
                     throw std::runtime_error("TQ grouped projection cache differs from decoded reference");
         }
     }
+    for (int layout : {0, 1, 2}) {
+        const auto query = MlxTqWeight::from_blob(random_blob(33, 1025, 711, layout == 0 ? 16 : 512, layout == 2), 1025);
+        const auto key = MlxTqWeight::from_blob(random_blob(33, 1025, 712, layout == 0 ? 16 : 512, layout == 2), 1025);
+        const auto value = random_weight(65, 1025, 713);
+        const auto joined = MlxTqWeight::concatenate_projections({query, key});
+        for (int tokens : {1, 2, 3, 4, 6, 8, 65}) for (auto dtype : {float16, bfloat16, float32}) {
+            const auto input = reshape(astype(sin(arange(tokens * 1025, float32)) * .1f, dtype), {1, tokens, 1025});
+            const auto original = MlxTqWeight::matmul_many({query, key, value}, input);
+            const auto coalesced = MlxTqWeight::matmul_many({joined, value}, input);
+            check(coalesced[0], concatenate({original[0], original[1]}, -1), 0.f);
+            check(coalesced[1], original[2], 0.f);
+        }
+    }
     std::cout << "TQ mixed grouped projection cache checks passed\n";
 }
 
@@ -814,10 +827,76 @@ static void check_gated_residual() {
             auto branch = mean(reshape(sigmoid(projected), {1, tokens, 4, 2560})
                 * reshape(normalized, {1, tokens, 4, 2560}), -2);
             auto injection_reference = array(2.f, dtype) * sigmoid(parts[1] / array(4.f, dtype));
+            const auto fused = down.gated_projections(injection, normalized, 4);
+            if (dtype == float16 && tokens <= 6) {
+                if (!fused) throw std::runtime_error("TQ gated epilogue was not selected");
+                check((*fused)[0], low, 0.f);
+                check((*fused)[1], injection_reference, 0.f);
+                if (!(*fused)[0].flags().row_contiguous || !(*fused)[1].flags().row_contiguous)
+                    throw std::runtime_error("TQ gated outputs require layout copies");
+                if (tokens == 1) {
+                    MlxKernelPreparation preparation(16, 16);
+                    preparation.collect([&] {
+                        const auto ready = down.gated_projections(injection, zeros({1, 10240}, float16), 4);
+                        for (const auto& value : *ready) preparation.add(value);
+                    });
+                    if (preparation.size() != 1) throw std::runtime_error("TQ gated epilogue was not one prepared kernel");
+                    preparation.finish();
+                    if (!preparation.unsupported().empty()) throw std::runtime_error("TQ gated epilogue was not prepared");
+                }
+            } else if (fused) throw std::runtime_error("TQ gated epilogue selected an unsupported geometry");
             auto result = qwen4_gated_residual_pre(typed, norm, MlxLinear(down), MlxLinear(up),
                 MlxLinear(injection), 2560, 4, 1e-6f);
             check(result.branch, branch, dtype == bfloat16 ? .008f : .001f);
             check(*result.injection, injection_reference, 0.f);
+        }
+    }
+}
+
+static void check_gated_projection_layouts() {
+    CompileOptions options;
+    options.math_mode = MathMode::Safe;
+    const auto activation = fast::metal_kernel("test_tq_gated_activation_reference",
+        {"down", "inject"}, {"low", "injection"}, R"METAL(
+uint index = thread_position_in_grid.x;
+if (index < uint(down_shape[0])) {
+    T scaled = down[index] / T(GROUPS);
+    low[index] = scaled * gr_sigmoid(scaled);
+}
+if (index < uint(inject_shape[0])) {
+    T scaled = inject[index] / T(GROUPS);
+    injection[index] = T(2.f) * gr_sigmoid(scaled);
+}
+)METAL", R"METAL(
+template<typename T> T gr_sigmoid(T value) {
+    auto tail = 1 / (1 + metal::precise::exp(metal::abs(value)));
+    return value < 0 ? tail : 1 - tail;
+}
+)METAL", true, false, options);
+    constexpr int width = 4097, outputs = 257;
+    for (int groups : {3, 7}) for (int layout : {0, 1, 2}) {
+        const auto down_blob = random_blob(outputs, width, 1931 + layout, layout == 0 ? 16 : 512, layout == 2);
+        const auto injection_blob = random_blob(groups, width, 1941 + layout, layout == 1 ? 16 : 512, layout == 0);
+        const auto down = MlxTqWeight::from_blob(down_blob, width);
+        const auto injection = MlxTqWeight::from_blob(injection_blob, width);
+        const auto pooled_down = pooled_weight(down_blob, width, 1);
+        const auto pooled_injection = pooled_weight(injection_blob, width, 1);
+        for (int tokens : {1, 3, 6}) {
+            auto input = transpose(astype(reshape(sin(arange(tokens * width, float32) * .017f)
+                * (tokens == 3 ? 128.f : 1.f), {1, width, tokens}), float16), {0, 2, 1});
+            const auto parts = MlxTqWeight::matmul_many({down, injection}, input);
+            const auto reference = activation({reshape(parts[0], {-1}), reshape(parts[1], {-1})},
+                {parts[0].shape(), parts[1].shape()}, {float16, float16},
+                {int(std::max(parts[0].size(), parts[1].size())), 1, 1}, {128, 1, 1},
+                {{"T", float16}, {"GROUPS", groups}}, std::nullopt, false, {});
+            for (const auto* weight : {&down, &pooled_down}) {
+                const auto actual = weight->gated_projections(pooled_injection, input, groups);
+                if (!actual) throw std::runtime_error("TQ gated layout was not selected");
+                check((*actual)[0], reference[0], 0.f);
+                check((*actual)[1], reference[1], 0.f);
+                if (!(*actual)[0].flags().row_contiguous || !(*actual)[1].flags().row_contiguous)
+                    throw std::runtime_error("TQ gated layout outputs were not contiguous");
+            }
         }
     }
 }
@@ -2394,6 +2473,9 @@ static void check_deepseek_v4_tq_moe(const MfqContainer& model) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--gated-residual") {
+            check_gated_residual(); check_gated_projection_layouts(); return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--indirect-residency") {
             check_indirect_residency_boundary(); return 0;
         }
@@ -2712,6 +2794,7 @@ int main(int argc, char** argv) {
             for (std::size_t p = 0; p < linears.size(); ++p) check(actual[p], linears[p](x), 0.f);
         }
         check_gated_residual();
+        check_gated_projection_layouts();
         check_gated_mix_dispatch();
         check_shared_routes();
         check_wide_routes();

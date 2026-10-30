@@ -988,7 +988,7 @@ y[index] = T(value);
 enum class TqBatchMode { Vector, Reuse, Nax, NaxSplit, SharedNax, SplitK, SplitReuse, FusedSplitReuse, StageWeights };
 
 const fast::CustomKernelFunction& batch_kernel(std::size_t count, TqBatchMode mode,
-    bool select_decode = false, bool fixed_sources = false) {
+    bool select_decode = false, bool fixed_sources = false, bool gated = false) {
     const bool shared = mode == TqBatchMode::SharedNax;
     const bool fused_split = mode == TqBatchMode::FusedSplitReuse;
     const bool nax = shared || mode == TqBatchMode::Nax || mode == TqBatchMode::NaxSplit;
@@ -997,9 +997,9 @@ const fast::CustomKernelFunction& batch_kernel(std::size_t count, TqBatchMode mo
     const bool staging = mode == TqBatchMode::StageWeights;
     const bool cache_rows = nax && !shared;
     static std::mutex mutex;
-    static std::map<std::tuple<std::size_t, TqBatchMode, bool, bool>, fast::CustomKernelFunction> kernels;
+    static std::map<std::tuple<std::size_t, TqBatchMode, bool, bool, bool>, fast::CustomKernelFunction> kernels;
     std::lock_guard lock(mutex);
-    const auto key = std::tuple{count, mode, select_decode, fixed_sources};
+    const auto key = std::tuple{count, mode, select_decode, fixed_sources, gated};
     const auto found = kernels.find(key);
     if (found != kernels.end()) return found->second;
     std::vector<std::string> names{"x", "relative"};
@@ -1123,7 +1123,7 @@ auto destination = [&](uint row) { return thread_position_in_grid.z * rows + row
 tq_nax_matmul<T, K, TOTAL, BM>(x, y, rows, n0, m0, decode, identity, destination,
     begin, min(uint(K), begin + CHUNK));
 )METAL" : "tq_nax_matmul<T, K, TOTAL, BM>(x, y, rows, n0, m0, decode, identity, identity);\n")
-    : fused_split ? R"METAL(
+    : fused_split ? std::string(R"METAL(
 threadgroup float partial[SPLITS * BM];
 #pragma unroll
 for (uint i = 0u; i < BM; ++i) {
@@ -1135,7 +1135,15 @@ threadgroup_barrier(mem_flags::mem_threadgroup);
 if (local_thread < BM) {
     float value = 0.f;
     for (uint p = 0u; p < SPLITS; ++p) value += partial[p * BM + local_thread];
+)METAL") + (gated ? R"METAL(
+    T projected = T(value), scaled = projected / T(GROUPS);
+    auto tail = 1 / (1 + metal::precise::exp(metal::abs(scaled)));
+    T gate = scaled < 0 ? tail : 1 - tail;
+    if (row < END0) low[local_thread * END0 + row] = scaled * gate;
+    else injection[local_thread * (TOTAL - END0) + row - END0] = T(2.f) * gate;
+)METAL" : R"METAL(
     y[local_thread * TOTAL + row] = T(value);
+)METAL") + R"METAL(
 }
 )METAL" : small ? std::string(R"METAL(
 float value[BM];
@@ -1157,8 +1165,8 @@ if (lane == 0) y[token * TOTAL + row] = T(value);
     if (nax) header += kTqNax;
     return kernels.emplace(key, indirect_weight_metal_kernel("mfq_cpp_tq_batch_" + std::to_string(count)
         + (select_decode ? "_select" : staging ? "_stage" : shared ? "_nax_shared" : nax ? split ? "_nax_split" : "_nax" : fused_split ? "_split_fused" : small && split ? "_split_reuse"
-            : small ? "_small" : split ? "_split" : "") + (fixed_sources ? "_fixed" : ""),
-        names, {"y"}, source, header, true, false)).first->second;
+            : small ? "_small" : split ? "_split" : "") + (fixed_sources ? "_fixed" : "") + (gated ? "_gated" : ""),
+        names, gated ? std::vector<std::string>{"low", "injection"} : std::vector<std::string>{"y"}, source, header, true, false)).first->second;
 }
 
 const fast::CustomKernelFunction& grouped_kernel(bool nax) {
@@ -1626,7 +1634,17 @@ std::vector<array> MlxTqWeight::prepare_column_pair_inputs(const MlxTqWeight& up
          {"ROUTES", routes}, {"SHARED_INPUT", source.shape(0) == tokens}}, std::nullopt, false, {});
 }
 
-std::vector<array> MlxTqWeight::matmul_many_impl(std::span<const MlxTqWeight> weights, const array& input) {
+std::optional<std::vector<array>> MlxTqWeight::gated_projections(const MlxTqWeight& injection,
+    const array& input, int groups) const {
+    if (groups < 2 || injection.output_size() != groups || input_size() != injection.input_size())
+        throw std::invalid_argument("TQ gated projection geometry differs");
+    const std::array weights{*this, injection};
+    auto values = matmul_many_impl(weights, input, groups);
+    if (values.empty()) return std::nullopt;
+    return values;
+}
+
+std::vector<array> MlxTqWeight::matmul_many_impl(std::span<const MlxTqWeight> weights, const array& input, int gated_groups) {
     if (weights.empty() || weights.size() > 8 || input.ndim() == 0 || input.size() == 0
         || input.shape(-1) != weights.front().input_size())
         throw std::invalid_argument("invalid TQ projection batch");
@@ -1640,6 +1658,9 @@ std::vector<array> MlxTqWeight::matmul_many_impl(std::span<const MlxTqWeight> we
     std::int64_t output_sum = 0;
     for (const auto& weight : weights) output_sum += weight.output_size();
     if (output_sum > INT_MAX) throw std::invalid_argument("TQ projection batch is too large");
+    const bool fused_split = input.dtype() == float16 && tokens <= 6 && width >= 2048
+        && output_sum >= 256 && output_sum * 4 < width && (tokens > 1 || output_sum <= 1024);
+    if (gated_groups && !fused_split) return {};
     const bool column_batch = weights.size() > 1 && tokens == 1 && input.dtype() == float16
         && output_sum >= 1024 && output_sum * 4 >= width
         && output_sum <= INT_MAX / 16 - 7
@@ -1682,8 +1703,6 @@ std::vector<array> MlxTqWeight::matmul_many_impl(std::span<const MlxTqWeight> we
     }
     const bool staging = stage_weights(input, output_sum);
     const auto dtype = input.dtype();
-    const bool fused_split = dtype == float16 && tokens <= 6 && width >= 2048
-        && output_sum >= 256 && output_sum * 4 < width && (tokens > 1 || output_sum <= 1024);
     const int split_rows = staging ? 1 : fused_split ? tokens : split_batch_rows(tokens, output_sum, width);
     int splits = staging ? 1 : split_count(tokens, output_sum, width, split_rows, fused_split);
     const bool nax = use_nax(input) && splits == 1;
@@ -1744,6 +1763,14 @@ std::vector<array> MlxTqWeight::matmul_many_impl(std::span<const MlxTqWeight> we
                 && weight.group_size_ == first.group_size_ && weight.scales_.dtype() == first.scales_.dtype()
                 && weight.words_.size() >= 8 && weight.descriptors_.size() >= 8 && weight.scales_.size() >= 8;
         });
+    if (gated_groups) {
+        templates.emplace_back("GROUPS", gated_groups);
+        auto low_shape = input.shape(), injection_shape = input.shape();
+        low_shape.back() = weights[0].output_size(); injection_shape.back() = weights[1].output_size();
+        return batch_kernel(weights.size(), mode, false, fixed_sources, true)(inputs,
+            {low_shape, injection_shape}, {dtype, dtype}, {total * threads, 1, 1}, {threads, 1, 1},
+            std::move(templates), std::nullopt, false, {});
+    }
     auto values = batch_kernel(weights.size(), mode, select_decode, fixed_sources)(inputs,
         {staging ? Shape{total, width} : splits > 1 && !fused_split ? Shape{splits, tokens, total} : Shape{tokens, total}},
         {staging ? (dtype == float16 ? float16 : float32) : splits > 1 && !fused_split ? float32 : dtype},

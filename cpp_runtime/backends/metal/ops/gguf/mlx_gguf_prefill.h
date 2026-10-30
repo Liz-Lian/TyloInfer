@@ -4,6 +4,7 @@
 
 namespace mfq::metal {
 bool gguf_expert_prefill_available(const mlx::core::array& input);
+bool gguf_short_sparse_routes(const mlx::core::array& ids, int experts);
 mlx::core::array gguf_dense_prefill(const mlx::core::array& input, const mlx::core::array& weight);
 int gguf_prefill_tile_rows(const MlxGgufWeight& gate, const MlxGgufWeight& up,
     const MlxGgufWeight& down, const mlx::core::array& ids);
@@ -26,6 +27,13 @@ private:
         int tile_rows, bool shared_input, bool include_shared, bool unique_per_token);
     std::optional<MlxExpertRouteTiles> routes_;
     std::optional<MlxGgufGroupedRoutes> grouped_;
+    struct Gather {
+        mlx::core::array slots, offsets, params;
+        int tiles;
+    };
+    std::optional<Gather> gather_;
+    mlx::core::array gather_input(const mlx::core::array& input) const;
+    mlx::core::array source_;
     mlx::core::array positions_, input_;
     mlx::core::Dtype dtype_;
     int tokens_, selected_, padded_rows_;

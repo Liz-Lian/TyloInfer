@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSettings } from '../settings/SettingsProvider';
 import { ListToolbar } from '../../shared/ui/ListToolbar';
 import { Icon, SectionLabel, TMPanel, EmptyPanel } from '../../app/display';
@@ -19,6 +19,8 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
   const [architecture, setArchitecture] = useState('all');
   const [format, setFormat] = useState('all');
   const [sort, setSort] = useState('recent');
+  const [companions, setCompanions] = useState<Record<string, string>>({});
+  useEffect(() => { setCompanions({}); }, [catalog.connectionRevision]);
   const isLoaded = (name: string) => instances.some(item => item.model === name && item.state !== 'failed') || name === runtime?.model;
   const visibleArtifacts = filteredArtifacts.filter(item =>
     (architecture === 'all' || item.architecture === architecture) && (format === 'all' || item.format === format) &&
@@ -80,6 +82,13 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
                     <small>{tr('预计常驻内存', 'Estimated resident memory')} {gib(item.estimated_resident_weight_bytes)}
                       {(item.ssd_ple_bytes ?? 0) > 0 && ` · SSD PLE ${gib(item.ssd_ple_bytes)}`}</small>
                     <ModelLoadProgress model={item.name} />
+                    {!loaded && item.gguf_companion_required && <details className="model-companion-picker">
+                      <summary>{tr('Engram 配套文件', 'Engram companion')}</summary>
+                      <input aria-label={tr(`Engram 路径：${item.name}`, `Engram path: ${item.name}`)}
+                        disabled={busy} value={companions[item.id] ?? ''}
+                        placeholder={tr('服务端的 GGUF 表文件或 Safetensors 文件夹', 'Server-side GGUF table file or Safetensors folder')}
+                        onChange={event => setCompanions(previous => ({ ...previous, [item.id]: event.target.value }))} />
+                    </details>}
                   </div>
                   <div className="local-checkpoint-memory">
                     {!separate && <small>{tr('剩余可用内存', 'Remaining available memory')} {gib(available)}</small>}
@@ -102,8 +111,9 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
                           ? tr('分片不全', 'Incomplete shards') : tr('不可用', 'Invalid')}
                     </em>
                   ) : (
-                    <button disabled={busy} aria-describedby={streamsExperts ? `expert-streaming-${item.id}` : undefined}
-                      onClick={() => void loadArtifact(item.name)} type="button">
+                    <button disabled={busy || (item.gguf_companion_required && !companions[item.id]?.trim())} aria-describedby={streamsExperts ? `expert-streaming-${item.id}` : undefined}
+                      onClick={() => void (companions[item.id]?.trim()
+                        ? loadArtifact(item.name, [companions[item.id].trim()]) : loadArtifact(item.name))} type="button">
                       {tr('加载', 'Load')}
                     </button>
                   )}<button className="model-delete-action" aria-label={tr(`删除模型：${item.name}`, `Delete model: ${item.name}`)}

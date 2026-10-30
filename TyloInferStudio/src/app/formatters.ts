@@ -17,6 +17,8 @@ export function errorMessage(error: unknown, tr?: (chinese: string, english: str
         authentication_required: ['对外监听的服务必须启用鉴权，不能设置为无。', 'Authentication is required for a network listener and cannot be disabled.'],
         authentication_save_failed: ['鉴权设置未能保存，原设置保持不变。请检查配置目录是否可写。', 'Authentication settings could not be saved. The previous settings are unchanged. Check that the configuration folder is writable.'],
         invalid_download_directory: ['下载目录不可用，请选择一个存在且可写的文件夹。', 'The download folder is unavailable. Choose an existing writable folder.'],
+        invalid_gguf_companion: ['配套文件不可用。请选择完整的 GGUF 表文件或包含 Safetensors 的 Engram 文件夹；此功能目前需要 Metal 后端。', 'The companion is unavailable. Select a complete GGUF table file or an Engram folder containing Safetensors. This currently requires the Metal backend.'],
+        gguf_companion_required: ['此模型的 Engram 单独存放，请先选择配套表文件或文件夹。', 'This model stores Engram separately. Select its companion table file or folder first.'],
         download_directory_save_failed: ['下载目录未能保存，原目录保持不变。请检查配置目录是否可写。', 'The download folder could not be saved. The previous folder is unchanged. Check that the configuration folder is writable.'],
         insufficient_disk_space: ['可用磁盘空间不足，或已被其它下载预留。可勾选“驱逐 SSD Prefix 预算”回收前缀缓存，或更换下载目录。', 'Available disk space is insufficient or reserved by other downloads. Enable “Reclaim SSD prefix budget” or choose another download folder.'],
         download_size_unknown: ['尚未获取完整文件大小，请刷新模型文件列表后再下载。', 'File sizes are not available yet. Refresh the model file list before downloading.'],

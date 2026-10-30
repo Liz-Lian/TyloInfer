@@ -2,6 +2,7 @@
 #include "mlx_tq.h"
 #include "mlx_resource_telemetry.h"
 #include "mlx_deepseek_v41_engram.h"
+#include "gguf.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -337,6 +338,69 @@ void test_large_mxfp8_rows(const std::filesystem::path& root) {
     }
 }
 
+void test_interleaved_mxfp8_rows(const std::filesystem::path& root) {
+    using namespace mfq::metal;
+    constexpr int rows = 257, width = 256;
+    std::string payload;
+    for (int row = 0; row < rows; ++row) {
+        payload.append(width, char(row % 2 ? 0x40 : 0x38));
+        for (int group = 0; group < 8; ++group) payload.push_back(char(125 + (row + group) % 5));
+    }
+    const auto write = [&](const std::filesystem::path& path, const std::string& bytes) {
+        auto* tensors = ggml_init({1 << 20, nullptr, false});
+        auto* file = gguf_init_empty();
+        gguf_set_val_str(file, "general.architecture", "deepseek41");
+        const nlohmann::json config{{"model_type", "deepseek_v41"}, {"text_config", {
+            {"model_type", "deepseek_v41_text"}, {"hidden_size", 256}, {"vocab_size", 3},
+            {"num_hidden_layers", 2}, {"engram_layer_ids", nlohmann::json::array()}}}};
+        gguf_set_val_str(file, "deepseek41.config", config.dump().c_str());
+        gguf_set_val_str(file, "deepseek41.engram.encoding", "e4m3_e8m0_32_row264");
+        auto* tensor = ggml_new_tensor_2d(tensors, GGML_TYPE_I8, 264, rows);
+        ggml_set_name(tensor, "blk.1.engram_embd.weight");
+        std::memcpy(tensor->data, bytes.data(), bytes.size());
+        gguf_add_tensor(file, tensor);
+        require(gguf_write_to_file(file, path.string().c_str(), false), "interleaved Engram fixture write failed");
+        gguf_free(file); ggml_free(tensors);
+    };
+    const auto path = root / "interleaved.gguf";
+    const auto name = "model.block.1.associative_memory.embedding.weight";
+    write(path, payload);
+    const MfqContainer model(path);
+    for (const int capacity : {0, 2, 17}) {
+        MlxQuantizedRowStore store(model, name, rows, width, capacity, 2);
+        for (const auto& ids : std::vector<std::vector<int64_t>>{{256, 0, 256, 1, 0}, {2}, {1, 256}}) {
+            const auto actual = values(store.prepare_rows(ids).decode());
+            for (std::size_t i = 0; i < actual.size(); ++i) {
+                const auto row = ids[i / width];
+                const auto expected = std::ldexp(row % 2 ? 2.f : 1.f, -2 + (row + int(i % width / 32)) % 5);
+                require(actual[i] == expected, "interleaved Engram scalar or cached rows differ");
+            }
+        }
+        store.clear();
+        std::vector<int64_t> ids;
+        for (int row = rows - 1; row >= 0; --row) ids.push_back(row);
+        const auto actual = values(store.prepare_rows(ids).decode());
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            const auto row = ids[i / width];
+            const auto expected = std::ldexp(row % 2 ? 2.f : 1.f, -2 + (row + int(i % width / 32)) % 5);
+            require(actual[i] == expected, "interleaved Engram batched rows differ");
+        }
+        require(store.cached_rows() <= std::size_t(capacity), "interleaved Engram exceeded its row budget");
+    }
+    auto invalid = payload;
+    invalid[256] = char(255);
+    const auto invalid_path = root / "interleaved-invalid.gguf";
+    write(invalid_path, invalid);
+    bool rejected = false;
+    try {
+        const MfqContainer bad(invalid_path);
+        MlxQuantizedRowStore store(bad, name, rows, width, 0, 1);
+        const std::array<int64_t, 1> ids{0};
+        store.prepare_rows(ids);
+    } catch (const std::runtime_error&) { rejected = true; }
+    require(rejected, "interleaved Engram accepted a nonfinite scale");
+}
+
 void test_engram_prefetch_order(const std::filesystem::path& path) {
     using namespace mfq::metal;
     struct Record { std::string name, dtype, payload; };
@@ -423,6 +487,7 @@ int main() {
     try {
         std::filesystem::create_directories(root);
         test_large_mxfp8_rows(root);
+        test_interleaved_mxfp8_rows(root);
         test_engram_prefetch_order(root / "engram-prefetch.mfq");
         const auto initial = mfq::metal::MlxResourceTelemetry::snapshot();
         test_tq_shards(root / "tq");

@@ -19,8 +19,11 @@ def model_deletion_plan(artifact: DiscoveredModel) -> ModelDeletionPlan:
     source = artifact.path
     root = source if artifact.resource.format == "hf" else source.parent
     if artifact.resource.format == 'gguf':
-        parsed = parse_gguf_shard_path(source)
-        files = [path for path in matching_gguf_shard_paths(parsed[0])
+        try:
+            parsed = parse_gguf_shard_path(source)
+        except ValueError:
+            parsed = None
+        files = [path for path in matching_gguf_shard_paths(source)
             if parse_gguf_shard_path(path)[2] == parsed[2]] if parsed else [source]
     elif artifact.resource.format == "tq":
         try:

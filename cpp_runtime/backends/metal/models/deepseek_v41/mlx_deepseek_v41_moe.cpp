@@ -1,6 +1,7 @@
 #include "mlx_deepseek_v41_moe.h"
 
 #include "mlx_eval_timing.h"
+#include "mlx_kernel_prepare.h"
 #include "mlx_moe_ops.h"
 
 #include <algorithm>
@@ -59,7 +60,8 @@ MlxDeepseekV41Moe MlxDeepseekV41Moe::load(
     std::shared_ptr<MlxMoeSsdExpertCache> ssd_expert_cache,
     std::shared_ptr<MlxMfeOffloadCache> mfe_offload_cache,
     std::size_t expert_cache_layer,
-    std::shared_ptr<MlxTqExpertCache> tq_expert_cache) {
+    std::shared_ptr<MlxTqExpertCache> tq_expert_cache,
+    std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache) {
     const int experts = checked_int(
         predictor ? config.dspark_n_experts : config.n_experts,
         "expert count");
@@ -96,7 +98,21 @@ MlxDeepseekV41Moe MlxDeepseekV41Moe::load(
     std::optional<MlxRoutedLinear> up;
     std::optional<MlxRoutedLinear> down;
     std::optional<TqWeights> tq;
-    if (model.record(gate_up_name).dtype == "TQ") {
+    std::optional<GgufWeights> gguf;
+    if (is_gguf_dtype(model.record(gate_up_name).dtype)) {
+        if (!up_name || !is_gguf_dtype(model.record(*up_name).dtype) ||
+            !is_gguf_dtype(model.record(down_name).dtype) || ssd_expert_cache || mfe_offload_cache || tq_expert_cache)
+            throw std::invalid_argument("GGUF MoE requires native split Gate, Up and Down tensors");
+        if (gguf_expert_cache) {
+            gguf_expert_cache->validate_layer(expert_cache_layer, experts,
+                checked_int(config.hidden, "hidden size"), checked_int(config.moe_inter, "expert intermediate size"));
+        } else {
+            gguf.emplace(GgufWeights{MlxGgufWeight::load(model, gate_up_name),
+                MlxGgufWeight::load(model, *up_name), MlxGgufWeight::load(model, down_name)});
+        }
+    } else if (gguf_expert_cache) {
+        throw std::invalid_argument("GGUF cache cannot load non-GGUF experts");
+    } else if (model.record(gate_up_name).dtype == "TQ") {
         if (!up_name || model.record(*up_name).dtype != "TQ" || model.record(down_name).dtype != "TQ")
             throw std::runtime_error("TQ MoE requires separate Gate, Up and Down tensors");
         if (ssd_expert_cache || mfe_offload_cache)
@@ -147,7 +163,7 @@ MlxDeepseekV41Moe MlxDeepseekV41Moe::load(
         gate_up_name,
         std::move(up_name),
         down_name,
-        expert_cache_layer, std::move(tq), std::move(tq_expert_cache));
+        expert_cache_layer, std::move(tq), std::move(tq_expert_cache), std::move(gguf), std::move(gguf_expert_cache));
 }
 
 MlxDeepseekV41Moe::MlxDeepseekV41Moe(
@@ -175,7 +191,9 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
     std::string streamed_down_name,
     std::size_t expert_cache_layer,
     std::optional<TqWeights> tq,
-    std::shared_ptr<MlxTqExpertCache> tq_expert_cache)
+    std::shared_ptr<MlxTqExpertCache> tq_expert_cache,
+    std::optional<GgufWeights> gguf,
+    std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache)
     : hidden_(hidden),
       intermediate_(intermediate),
       experts_(experts),
@@ -196,6 +214,8 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
       routed_down_(std::move(routed_down)),
       tq_(std::move(tq)),
       tq_expert_cache_(std::move(tq_expert_cache)),
+      gguf_(std::move(gguf)),
+      gguf_expert_cache_(std::move(gguf_expert_cache)),
       ssd_expert_cache_(std::move(ssd_expert_cache)),
       mfe_offload_cache_(std::move(mfe_offload_cache)),
       streamed_gate_up_name_(std::move(streamed_gate_up_name)),
@@ -203,7 +223,7 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
       streamed_down_name_(std::move(streamed_down_name)),
       expert_cache_layer_(expert_cache_layer) {
     const bool cached = static_cast<bool>(ssd_expert_cache_)
-        || static_cast<bool>(mfe_offload_cache_) || static_cast<bool>(tq_expert_cache_);
+        || static_cast<bool>(mfe_offload_cache_) || static_cast<bool>(tq_expert_cache_) || static_cast<bool>(gguf_expert_cache_);
     const bool split_resident = routed_gate_.has_value()
         && routed_up_.has_value();
     const bool combined_resident = routed_gate_up_.has_value();
@@ -235,8 +255,8 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
         (combined_resident && split_resident) ||
         routed_down_.has_value() !=
             (combined_resident || split_resident) ||
-        (combined_resident || split_resident || tq_.has_value()) == cached ||
-        (int(bool(ssd_expert_cache_)) + int(bool(mfe_offload_cache_)) + int(bool(tq_expert_cache_)) > 1) ||
+        (combined_resident || split_resident || tq_.has_value() || gguf_.has_value()) == cached ||
+        (int(bool(ssd_expert_cache_)) + int(bool(mfe_offload_cache_)) + int(bool(tq_expert_cache_)) + int(bool(gguf_expert_cache_)) > 1) ||
         !routed_geometry ||
         (mfq::mfq_compat_enabled && routed_down_ && (
         routed_down_->weight().experts() != experts_ ||
@@ -256,6 +276,30 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
         tq_->prepare(top_k_, swiglu_limit_);
     }
     if (tq_expert_cache_) tq_expert_cache_->prepare_layer(expert_cache_layer_, top_k_, swiglu_limit_);
+    if (gguf_) {
+        for (int p = 0; p < 3; ++p) {
+            const auto& weight = gguf_->at(p);
+            if (weight.expert_count() != experts_ || weight.input_size() != (p == 2 ? intermediate_ : hidden_) ||
+                weight.output_size() != (p == 2 ? hidden_ : intermediate_))
+                throw std::runtime_error("DeepSeek GGUF expert geometry differs");
+        }
+        if (auto* preparation = MlxKernelPreparation::current()) {
+            preparation->collect([&] {
+                for (const auto rows : preparation->row_buckets()) {
+                    const auto input = mlx::core::zeros({rows, hidden_}, preparation->activation_dtype());
+                    const auto ids = mlx::core::zeros({rows, top_k_}, mlx::core::int32);
+                    std::optional<MlxGgufRoutePlan> plan;
+                    if (rows > 8) plan = gguf_route_plan(ids, experts_, gguf_->at(0).has_mixed_formats() &&
+                        gguf_->at(1).has_mixed_formats() && gguf_->at(2).has_mixed_formats());
+                    const auto hidden = gguf_->at(0).routed_swiglu(gguf_->at(1), input, ids,
+                        plan ? &*plan : nullptr, swiglu_limit_);
+                    preparation->add(gguf_->at(2).routed_weighted_matmul(hidden, ids,
+                        mlx::core::zeros({rows, top_k_}, mlx::core::float32), plan ? &*plan : nullptr));
+                }
+            });
+        }
+    }
+    if (gguf_expert_cache_) gguf_expert_cache_->prepare_layer(expert_cache_layer_, top_k_, swiglu_limit_);
     if (mfq::mfq_compat_enabled && mfe_offload_cache_) {
         const auto gate = mfe_offload_cache_->projection_info(
             streamed_gate_up_name_);
@@ -303,6 +347,7 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
 }
 
 std::size_t MlxDeepseekV41Moe::resident_routed_bytes() const noexcept {
+    if (gguf_) return gguf_->at(0).packed_nbytes() + gguf_->at(1).packed_nbytes() + gguf_->at(2).packed_nbytes();
     if (tq_) return tq_->gate.packed_nbytes() + tq_->up.packed_nbytes() + tq_->down.packed_nbytes();
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     std::size_t bytes = routed_gate_up_ ? routed_gate_up_->packed_nbytes() : 0;
@@ -375,6 +420,17 @@ void MlxDeepseekV41Moe::use_tq_offload(const std::shared_ptr<MlxTqExpertCache>& 
     validate_tq_offload(cache);
     tq_.reset();
     tq_expert_cache_ = cache;
+}
+
+void MlxDeepseekV41Moe::validate_gguf_offload(const std::shared_ptr<MlxGgufExpertCache>& cache) const {
+    if (!gguf_ && !gguf_expert_cache_) throw std::invalid_argument("GGUF cache cannot replace non-GGUF experts");
+    cache->validate_layer(expert_cache_layer_, experts_, hidden_, intermediate_);
+}
+
+void MlxDeepseekV41Moe::use_gguf_offload(const std::shared_ptr<MlxGgufExpertCache>& cache) {
+    validate_gguf_offload(cache);
+    gguf_.reset();
+    gguf_expert_cache_ = cache;
 }
 
 std::optional<MlxMfeCachedRoute> MlxDeepseekV41Moe::cached_route() const {
@@ -686,7 +742,15 @@ MlxDeepseekV41MoeResult MlxDeepseekV41Moe::forward(
         }
     } else
 #endif
-    if (tq_expert_cache_) {
+    if (gguf_expert_cache_) {
+        routed = gguf_expert_cache_->apply_ffn(expert_cache_layer_, source, routes.ids, routes.weights, &shared, swiglu_limit_);
+    } else if (gguf_) {
+        std::optional<MlxGgufRoutePlan> plan;
+        if (rows > 8) plan = gguf_route_plan(routes.ids, experts_, gguf_->at(0).has_mixed_formats() &&
+            gguf_->at(1).has_mixed_formats() && gguf_->at(2).has_mixed_formats());
+        auto hidden = gguf_->at(0).routed_swiglu(gguf_->at(1), source, routes.ids, plan ? &*plan : nullptr, swiglu_limit_);
+        routed = gguf_->at(2).routed_weighted_matmul(hidden, routes.ids, routes.weights, plan ? &*plan : nullptr);
+    } else if (tq_expert_cache_) {
         routed = tq_expert_cache_->apply_ffn(expert_cache_layer_, source, routes.ids,
             routes.weights, swiglu_limit_, false, &shared);
     } else if (tq_) {

@@ -168,7 +168,7 @@ export function useModelCatalog() {
       ),
     [artifacts, modelFilter],
   );
-  async function loadArtifact(name: string) {
+  async function loadArtifact(name: string, companions?: string[]) {
     const current = connectionScope();
     if (busy) return;
     setBusy(true);
@@ -178,6 +178,7 @@ export function useModelCatalog() {
         device_ids: loadDeviceIds,
         idle_ttl_seconds: loadIdleTtl,
         context_management: loadContext,
+        ...(companions?.length ? { gguf_companions: companions } : {}),
       });
       if (!current()) return;
       navigate(STUDIO_PATHS.models);
@@ -220,7 +221,7 @@ export function useModelCatalog() {
       const loaded =
         instances.some((item) => item.model === artifact.name && item.state !== 'failed') ||
         runtime?.model === artifact.name;
-      if (!loaded) {
+      if (!loaded && !artifact.gguf_companion_required) {
         await modelsApi.loadModel(artifact.name, loadContext.context_size ?? 32768, 'auto', {
           pin: loadPinned,
           device_ids: loadDeviceIds,
@@ -234,7 +235,7 @@ export function useModelCatalog() {
     navigate(STUDIO_PATHS.models);
     await refreshRuntime(false);
     if (!current()) return;
-    if (registered.length === 1) setSelectedModel(registered[0].name);
+    if (registered.length === 1 && !registered[0].gguf_companion_required) setSelectedModel(registered[0].name);
   }
 
   async function openModelDirectory(directoryId?: string | null, path?: string | null) {

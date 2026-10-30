@@ -61,7 +61,8 @@ public:
         std::pair<mlx::core::array, mlx::core::array> rope_compressed,
         std::shared_ptr<MlxMoeSsdExpertCache> ssd_expert_cache = nullptr,
         std::shared_ptr<MlxMfeOffloadCache> mfe_offload_cache = nullptr,
-        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr);
+        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr,
+        std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache = nullptr);
 
     MlxDeepseekV41LayerResult forward(
         const mlx::core::array& hidden,
@@ -125,6 +126,8 @@ public:
     }
     void validate_tq_offload(const std::shared_ptr<MlxTqExpertCache>& cache) const { moe_.validate_tq_offload(cache); }
     void use_tq_offload(const std::shared_ptr<MlxTqExpertCache>& cache) { moe_.use_tq_offload(cache); }
+    void validate_gguf_offload(const std::shared_ptr<MlxGgufExpertCache>& cache) const { moe_.validate_gguf_offload(cache); }
+    void use_gguf_offload(const std::shared_ptr<MlxGgufExpertCache>& cache) { moe_.use_gguf_offload(cache); }
 
 private:
     MlxDeepseekV41Layer(
@@ -168,7 +171,8 @@ public:
         std::optional<MlxDeepseekV41Vision> vision = std::nullopt,
         std::optional<MlxDeepseekV41DSpark> dspark = std::nullopt,
         std::shared_ptr<MfqContainer> source = nullptr,
-        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr);
+        std::shared_ptr<MlxTqExpertCache> tq_expert_cache = nullptr,
+        std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache = nullptr);
 
     // Accept [tokens] or [batch,tokens]. use_cache=false resets the native
     // cache first and, like the other MFQ runtimes, leaves it ready to decode.
@@ -299,6 +303,7 @@ private:
     std::shared_ptr<MlxMoeSsdExpertCache> ssd_expert_cache_;
     std::shared_ptr<MlxMfeOffloadCache> mfe_offload_cache_;
     std::shared_ptr<MlxTqExpertCache> tq_expert_cache_;
+    std::shared_ptr<MlxGgufExpertCache> gguf_expert_cache_;
     std::shared_ptr<MfqContainer> source_;
     std::optional<MlxDeepseekV41Vision> vision_;
     std::optional<MlxDeepseekV41DSpark> dspark_;

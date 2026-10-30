@@ -37,6 +37,8 @@ public:
     static MlxTqWeight concatenate_experts(const std::vector<MlxTqWeight>& weights);
     static std::vector<mlx::core::array> matmul_many(
         const std::vector<MlxTqWeight>& weights, const mlx::core::array& input);
+    std::optional<std::vector<mlx::core::array>> gated_projections(const MlxTqWeight& injection,
+        const mlx::core::array& input, int groups) const;
     MlxTqWeight expert_view(int expert) const;
     mlx::core::array matmul(const mlx::core::array& input) const;
     mlx::core::array rms_matmul(const mlx::core::array& input, float eps) const;
@@ -84,7 +86,7 @@ private:
         const mlx::core::array* words, std::span<const std::uint64_t> expert_offsets);
     void set_expert_word_offset(int expert, std::uint64_t word_offset);
     static std::vector<mlx::core::array> matmul_many_impl(
-        std::span<const MlxTqWeight> weights, const mlx::core::array& input);
+        std::span<const MlxTqWeight> weights, const mlx::core::array& input, int gated_groups = 0);
     bool use_column_inputs(const mlx::core::array& input, int tokens, int routes) const;
     mlx::core::array prepare_column_inputs(const mlx::core::array& input,
         const mlx::core::array& ids) const;

@@ -669,7 +669,7 @@ array MlxLinear::moe_shared(
 }
 
 void MlxLinear::prepare_grouped_row_matmul(int group_count) const {
-    if (!tq_weight_ref()) return;
+    if (!tq_weight_ref() && !gguf_weight_ref()) return;
     if (auto* preparation = MlxKernelPreparation::current()) preparation->collect([&] {
         for (const auto rows : preparation->row_buckets())
             for (auto dtype : {mlx::core::float16, mlx::core::float32})
@@ -696,6 +696,7 @@ array MlxLinear::grouped_row_matmul(
     if (const auto* weight = std::get_if<MlxNint8ZeroWeight>(&weight_)) return weight->grouped_row_matmul(input, group_count);
 #endif
     if (const auto* tq = std::get_if<MlxTqWeight>(&weight_)) return tq->grouped_row_matmul(input, group_count);
+    if (const auto* gguf = std::get_if<MlxGgufWeight>(&weight_)) return gguf->grouped_row_matmul(input, group_count);
     if (mlx_reference_enabled()) {
         if (auto dense = unpack_quantized_weight(
                 weight_, output_size_)) {
@@ -1155,7 +1156,9 @@ array MlxProjectionBatch::swiglu(
     if (const auto* gate = impl_->linears[0].tq_weight_ref()) {
         if (const auto* up = impl_->linears[1].tq_weight_ref()) {
             const int tokens = input.size() / gate->input_size();
-            auto result = gate->swiglu(*up, input, mlx::core::zeros(Shape{tokens, 1}, mlx::core::int32), limit);
+            static const auto single_expert = array({0}, Shape{1, 1}, mlx::core::int32);
+            const auto ids = tokens == 1 ? single_expert : mlx::core::zeros(Shape{tokens, 1}, mlx::core::int32);
+            auto result = gate->swiglu(*up, input, ids, limit);
             auto shape = input.shape(); shape.back() = gate->output_size();
             return mlx::core::reshape(result, shape);
         }

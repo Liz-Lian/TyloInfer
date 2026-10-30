@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -290,6 +291,23 @@ def test_native_cuda_worker_is_private_and_uses_a_loopback_port(tmp_path: Path) 
     assert command[command.index("--port") + 1] == "43123"
     assert command[command.index("--ctx-size") + 1] == "32768"
     assert "--prefill-chunk-size" not in command
+
+
+@pytest.mark.parametrize('backend', ['metal', 'cuda', 'hip'])
+def test_native_worker_readiness_uses_runtime_health_route(tmp_path, monkeypatch, backend):
+    runtime = NativeRuntime(tmp_path / 'worker', tmp_path / 'model.tq', 'model', backend)
+    runtime.port = 43123
+    runtime.process = SimpleNamespace(poll=lambda: None)
+    requests = []
+
+    def open_health(url, *, timeout):
+        requests.append((url, timeout))
+        return BytesIO(b'{"status":"ok","model":"model"}')
+
+    monkeypatch.setattr('tyloinfer.server.runtime.native.urllib.request.build_opener',
+        lambda *_: SimpleNamespace(open=open_health))
+    runtime._wait_until_ready()
+    assert requests == [('http://127.0.0.1:43123/runtime/health', 1.0)]
 
 
 def test_native_cuda_worker_forwards_explicit_continuous_batching(

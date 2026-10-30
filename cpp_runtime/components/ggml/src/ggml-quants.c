@@ -5340,6 +5340,10 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         return false;
     }
 
+    if (ggml_type_size(type) == 0) {
+        fprintf(stderr, "%s: unsupported type %d\n", __func__, type);
+        return false;
+    }
     if (nbytes % ggml_type_size(type) != 0) {
         fprintf(stderr, "%s: invalid size %zu for type %s (type size = %zu)\n", __func__, nbytes, ggml_type_name(type), ggml_type_size(type));
         return false;
@@ -5348,6 +5352,24 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
     const size_t nb = nbytes/ggml_type_size(type);
 
     switch (type) {
+        case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PTQ1_0:
+        case GGML_TYPE_TQ2_T:
+        case GGML_TYPE_TQK6:
+        case GGML_TYPE_TQK7:
+        case GGML_TYPE_TQP5:
+        case GGML_TYPE_TQP6:
+        case GGML_TYPE_TQP7:
+        case GGML_TYPE_TQK5:
+        case GGML_TYPE_TQK4:
+            {
+                const uint8_t * blocks = data;
+                for (size_t i = 0; i < nb; ++i) {
+                    ggml_half scale;
+                    memcpy(&scale, blocks + i * ggml_type_size(type) + (type == GGML_TYPE_PTQ1_0 ? 26 : 0), sizeof(scale));
+                    if (!validate_fp16(scale, i)) return false;
+                }
+            } break;
         case GGML_TYPE_BF16:
             {
                 int nans = 0;

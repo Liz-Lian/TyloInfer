@@ -76,6 +76,31 @@ beforeEach(() => {
 });
 
 describe('useModelCatalog', () => {
+  it('forwards explicitly selected GGUF companions with the model load request', async () => {
+    const load = vi.spyOn(modelsApi, 'loadModel').mockResolvedValue({ operation_id: 'load', status: 'accepted' });
+    const { result } = renderHook(useModelCatalog, { wrapper: Wrapper });
+    await act(async () => result.current.loadArtifact('XQ', ['/models/engram']));
+    expect(load).toHaveBeenCalledExactlyOnceWith('XQ', 32768, 'auto', expect.objectContaining({
+      gguf_companions: ['/models/engram'],
+    }));
+  });
+
+  it('registers a model requiring external Engram without starting an incomplete load', async () => {
+    const external = { ...artifact, format: 'gguf' as const, gguf_companion_required: true };
+    vi.mocked(modelsApi.modelArtifacts).mockResolvedValue([external]);
+    vi.spyOn(modelsApi, 'modelDirectories').mockResolvedValue({ current_id: 'folder', current_name: 'models',
+      current_path: '/models', parent_id: null, model_file_count: 1, data: [] });
+    vi.spyOn(modelsApi, 'registerModelDirectory').mockResolvedValue([external]);
+    const load = vi.spyOn(modelsApi, 'loadModel');
+    const { result } = renderHook(useModelCatalog, { wrapper: Wrapper });
+    await act(async () => result.current.chooseModelDirectory());
+    await act(async () => result.current.registerCurrentModelDirectory());
+    expect(result.current.artifacts).toEqual([external]);
+    expect(result.current.modelBrowserOpen).toBe(false);
+    expect(load).not.toHaveBeenCalled();
+    expect(state.setSelectedModel).not.toHaveBeenCalled();
+  });
+
   it('prepares deletion without removing files and requires explicit confirmation', async () => {
     state.ready = true;
     const plan = { model_id: artifact.id, name: artifact.name, files: ['/models/model.tq'], total_bytes: 128, token: 'a'.repeat(64) };

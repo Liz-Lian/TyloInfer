@@ -1,8 +1,11 @@
 #include "mlx_gguf_expert_cache.h"
 #include "mfq_container.h"
 #include "mlx_moe_ops.h"
+#include "mlx_deepseek_v41_moe.h"
+#include "mlx_kernel_prepare.h"
 #include "gguf.h"
 #include "ggml-quants.h"
+#include "nlohmann/json.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -26,7 +29,7 @@ int main() {
         ("tinfer-gguf-cache-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".gguf");
     try {
         set_default_device(Device::gpu);
-        auto* context = ggml_init({4 << 20, nullptr, false});
+        auto* context = ggml_init({8 << 20, nullptr, false});
         auto* gguf = gguf_init_empty();
         gguf_set_val_str(gguf, "general.architecture", "qwen35");
         gguf_set_val_u32(gguf, "qwen35.embedding_length", 256);
@@ -43,6 +46,49 @@ int main() {
             if (type == GGML_TYPE_Q8_0) quantize_row_q8_0_ref(source.data(), static_cast<block_q8_0*>(tensor->data), source.size());
             else if (type == GGML_TYPE_Q4_0) quantize_row_q4_0_ref(source.data(), static_cast<block_q4_0*>(tensor->data), source.size());
             else quantize_row_q5_1_ref(source.data(), static_cast<block_q5_1*>(tensor->data), source.size());
+            gguf_add_tensor(gguf, tensor);
+        }
+        for (int layer : {6, 7}) {
+            const std::vector<int32_t> gu{143, 42, 39, 11}, down{42, 39, 11, 143};
+            const auto root = "blk." + std::to_string(layer) + ".";
+            for (const auto* role : {"gate", "up", "down"}) {
+                const auto& types = std::string_view(role) == "down" ? down : gu;
+                for (const auto type : {GGML_TYPE_PTQ1_0, GGML_TYPE_Q2_0, GGML_TYPE_MXFP4, GGML_TYPE_Q3_K}) {
+                    const auto count = std::count(types.begin(), types.end(), int32_t(type));
+                    auto* tensor = ggml_new_tensor_3d(context, type, 256, 256, count);
+                    auto suffix = std::string(ggml_type_name(type));
+                    for (auto& c : suffix) c = std::tolower(static_cast<unsigned char>(c));
+                    const auto name = root + "ffn_" + role + "_exps." + suffix + ".weight";
+                    ggml_set_name(tensor, name.c_str());
+                    auto* bytes = static_cast<uint8_t*>(tensor->data);
+                    for (std::size_t i = 0; i < ggml_nbytes(tensor); ++i) bytes[i] = uint8_t(i * 17 + 6);
+                    const auto scale = ggml_fp32_to_fp16(.01f);
+                    const auto offset = type == GGML_TYPE_PTQ1_0 ? 26 : type == GGML_TYPE_Q3_K ? 108 : 0;
+                    for (std::size_t b = 0; b < ggml_nbytes(tensor); b += ggml_type_size(type)) {
+                        if (type == GGML_TYPE_MXFP4) bytes[b] = 117;
+                        else std::memcpy(bytes + b + offset, &scale, 2);
+                    }
+                    gguf_add_tensor(gguf, tensor);
+                }
+            }
+            for (const auto* kind : {"gu", "down"}) {
+                auto* map = ggml_new_tensor_1d(context, GGML_TYPE_I32, 4);
+                const auto name = root + "ffn_exps_" + kind + "_type";
+                ggml_set_name(map, name.c_str());
+                const auto& values = std::string_view(kind) == "gu" ? gu : down;
+                std::memcpy(map->data, values.data(), 16); gguf_add_tensor(gguf, map);
+            }
+        }
+        for (const auto* role : {"gate", "up", "down", "router", "bias"}) {
+            const bool router = std::string_view(role) == "router";
+            const bool bias = std::string_view(role) == "bias";
+            auto* tensor = bias ? ggml_new_tensor_1d(context, GGML_TYPE_F32, 4)
+                : ggml_new_tensor_2d(context, GGML_TYPE_F32, 256, router ? 4 : 256);
+            const auto name = bias ? std::string("blk.6.exp_probs_b.bias") : router ? std::string("blk.6.ffn_gate_inp.weight")
+                : std::string("blk.6.ffn_") + role + "_shexp.weight";
+            ggml_set_name(tensor, name.c_str());
+            auto* values = static_cast<float*>(tensor->data);
+            for (int64_t i = 0; i < ggml_nelements(tensor); ++i) values[i] = .02f * std::sin(i * .019f + (bias ? .7f : .1f));
             gguf_add_tensor(gguf, tensor);
         }
         require(gguf_write_to_file(gguf, path.string().c_str(), false), "cannot write GGUF cache fixture");
@@ -189,6 +235,132 @@ int main() {
             check(retained.apply_ffn(0, x, ids, weights), reference(ids));
             retained.clear();
             require(retained.resident_bytes() == 0, "prefill-tail clear retained memory");
+        }
+        {
+            const auto g = MlxGgufWeight::load(model, "model.block.6.mlp.experts.gate.weight");
+            const auto u = MlxGgufWeight::load(model, "model.block.6.mlp.experts.up.weight");
+            const auto d = MlxGgufWeight::load(model, "model.block.6.mlp.experts.down.weight");
+            const auto layouts = nlohmann::json::parse(model.header().extra_json.at("gguf_mixed_experts"));
+            std::size_t maximum = 0, backing = 0;
+            for (int e = 0; e < 4; ++e) {
+                std::size_t bytes = 0;
+                for (const auto* role : {"gate", "up", "down"}) {
+                    const auto extent = layouts.at(std::string("model.block.6.mlp.experts.") + role + ".weight")[e]["nbytes"].get<std::size_t>();
+                    bytes += (extent + page - 1) / page * page; backing += extent;
+                }
+                maximum = std::max(maximum, bytes);
+            }
+            MlxGgufExpertCache mixed(model, {"model.block.6", "model.block.7"}, maximum * 8, 4);
+            require(mixed.backing_bytes() == backing * 2, "mixed GGUF backing bytes used a fixed expert stride");
+            {
+                MlxKernelPreparation preparation(128, 65);
+                mixed.prepare_layer(0, 2, .7f);
+                mixed.prepare_layer(1, 2, .7f);
+                require(preparation.size() > 0, "fresh mixed GGUF cache did not prepare its kernels");
+                preparation.finish();
+                require(preparation.unsupported().empty(), "fresh mixed GGUF cache preparation was incomplete");
+                require(mixed.resident_bytes() == 0 && mixed.stats().bytes_read == 0,
+                    "fresh mixed GGUF preparation allocated or read expert weights");
+            }
+            for (const int rows : {1, 8, 65}) for (const int capacity : {1, 2, 8}) for (const float limit : {0.f, .7f}) {
+                mixed.clear(); mixed.set_limit(maximum * capacity);
+                const auto input = astype(reshape(cos(arange(rows * 256, float32) * .017f), {rows, 256}), float16);
+                const auto routes = reshape(remainder(arange(rows * 4, int32), array(4, int32)), {rows, 4});
+                const auto p = full({rows, 4}, .25f);
+                const auto hidden = limit > 0.f
+                    ? moe_limited_swiglu_pair(g.routed_matmul(input, routes, true), u.routed_matmul(input, routes, true), limit)
+                    : g.routed_swiglu(u, input, routes);
+                const auto expected = moe_weighted_reduce(d.routed_matmul(hidden, routes, false), p);
+                check(mixed.apply_ffn(0, input, routes, p, nullptr, limit), expected);
+                require(mixed.resident_bytes() <= mixed.limit_bytes(), "mixed expert cache exceeded its byte budget");
+                if (capacity == 8) {
+                    require(mixed.stats().cached_payload_bytes.value() == backing,
+                        "mixed GGUF resident payload was counted at the largest expert precision");
+                    check(mixed.apply_ffn(1, input, routes, p, nullptr, limit), expected);
+                    require(mixed.stats().cached_payload_bytes.value() == backing * 2,
+                        "mixed GGUF prefetched payload accounting differs from stored bytes");
+                    if (rows == 65) require(mixed.stats().prefill_expert_reads >= 4,
+                        "mixed expert cache did not consume its variable-size prefetch");
+                }
+            }
+            mixed.clear();
+            require(mixed.resident_bytes() == 0, "mixed GGUF cache retained stale reservations");
+            {
+                const auto reads = mixed.stats().bytes_read;
+                MlxKernelPreparation preparation(4096, 4096);
+                mixed.prepare_layer(0, 2, .7f);
+                const auto jobs = preparation.size();
+                mixed.prepare_layer(0, 2, .7f);
+                require(jobs > 0 && preparation.size() == jobs, "mixed GGUF preparation duplicated its kernel families");
+                preparation.collect([&] {
+                    for (const auto rows : preparation.row_buckets()) {
+                        const auto input = zeros({rows, 256}, float16);
+                        const auto ids = zeros({rows, 2}, int32);
+                        std::optional<MlxGgufRoutePlan> plan;
+                        if (rows > 6) plan = gguf_route_plan(ids, 4);
+                        const auto hidden = g.routed_swiglu(u, input, ids, plan ? &*plan : nullptr, .7f);
+                        const auto pairs = d.routed_matmul(hidden, ids, false, plan ? &*plan : nullptr);
+                        preparation.add(moe_weighted_reduce(astype(pairs, float32), zeros({rows, 2}, float32)));
+                    }
+                });
+                require(preparation.size() == jobs, "partial GGUF cache reduction was not prepared at load time");
+                preparation.finish();
+                require(preparation.unsupported().empty(), "mixed GGUF prefill kernels were not prepared at load time");
+                require(mixed.resident_bytes() == 0 && mixed.stats().bytes_read == reads,
+                    "mixed GGUF preparation read expert weights");
+            }
+            DeepseekV41Config config;
+            config.hidden = 256; config.moe_inter = 256; config.n_experts = 4; config.top_k = 2;
+            config.norm_topk_prob = true; config.routed_scaling = 1.2; config.swiglu_limit = .7;
+            const auto root = std::string("model.block.6.mlp");
+            auto resident = [&] {
+                MlxKernelPreparation preparation(128, 65);
+                auto loaded = MlxDeepseekV41Moe::load(model, config, root);
+                const auto jobs = preparation.size();
+                preparation.collect([&] {
+                    for (const auto rows : preparation.row_buckets()) {
+                        const auto input = zeros({rows, 256}, float16);
+                        const auto ids = zeros({rows, 2}, int32);
+                        std::optional<MlxGgufRoutePlan> plan;
+                        if (rows > 8) plan = gguf_route_plan(ids, 4);
+                        const auto hidden = g.routed_swiglu(u, input, ids, plan ? &*plan : nullptr, .7f);
+                        preparation.add(d.routed_weighted_matmul(hidden, ids, zeros({rows, 2}, float32),
+                            plan ? &*plan : nullptr));
+                    }
+                });
+                require(jobs > 0 && preparation.size() == jobs,
+                    "resident mixed GGUF experts were not prepared at load time");
+                preparation.finish();
+                return loaded;
+            }();
+            auto streamed_cache = std::make_shared<MlxGgufExpertCache>(model,
+                std::vector<std::string>{"model.block.6"}, maximum, 4);
+            auto streamed = MlxDeepseekV41Moe::load(model, config, root, false,
+                nullptr, nullptr, 0, nullptr, streamed_cache);
+            const auto router = MlxLinear::load(model, root + ".router.weight");
+            const auto shared_g = MlxLinear::load(model, root + ".shared_expert.gate.weight");
+            const auto shared_u = MlxLinear::load(model, root + ".shared_expert.up.weight");
+            const auto shared_d = MlxLinear::load(model, root + ".shared_expert.down.weight");
+            const auto bias = load_dense_array(model.record(root + ".router.bias").dtype,
+                model.map_record(root + ".router.bias").view());
+            for (const int rows : {1, 2, 8, 65}) {
+                const auto input = astype(reshape(cos(arange(rows * 256, float32) * .017f), {rows, 256}), float16);
+                const auto routes = moe_topk(router(input), 2, false, true, true, false, bias, std::nullopt, 1e-20f, 1.2f);
+                const auto hidden = moe_limited_swiglu_pair(g.routed_matmul(input, routes.ids, true),
+                    u.routed_matmul(input, routes.ids, true), .7f);
+                const auto expected = moe_weighted_reduce(d.routed_matmul(hidden, routes.ids, false), routes.weights);
+                const auto expected_shared = shared_d(moe_limited_swiglu_pair(shared_g(input), shared_u(input), .7f));
+                for (auto* moe : {&resident, &streamed}) {
+                    auto output = moe->forward(input);
+                    check(output.routed, expected);
+                    check(output.shared, expected_shared);
+                }
+                require(streamed_cache->resident_bytes() <= maximum, "DeepSeek mixed GGUF cache exceeded budget");
+            }
+            resident.validate_gguf_offload(streamed_cache);
+            resident.use_gguf_offload(streamed_cache);
+            require(resident.resident_routed_bytes() == 0, "DeepSeek GGUF offload retained its resident bank");
+            check(resident.forward(x).routed, streamed.forward(x).routed);
         }
         const auto truncated_offset = model.record("model.block.1.mlp.experts.gate.weight").offset;
         require(truncated_offset > 0, "GGUF failure fixture has no physical next-layer offset");

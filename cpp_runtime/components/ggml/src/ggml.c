@@ -633,7 +633,58 @@ static void dequantize_row_q2_0(const void * src, float * dst, int64_t count) {
     }
 }
 
+static void dequantize_row_ptq1_0(const void * src, float * dst, int64_t count) {
+    GGML_ASSERT(count % 128 == 0);
+    const uint8_t * block = src;
+    const unsigned powers[] = { 1, 3, 9, 27, 81 };
+    for (int64_t base = 0; base < count; base += 128, block += 28) {
+        ggml_fp16_t bits;
+        memcpy(&bits, block + 26, sizeof(bits));
+        const float scale = GGML_FP16_TO_FP32(bits);
+        int output = 0;
+        for (int tile = 0; tile < 2; ++tile) {
+            const int width = tile == 0 ? 16 : 8;
+            const int offset = tile == 0 ? 0 : 16;
+            for (int digit = 0; digit < 5; ++digit)
+                for (int byte = 0; byte < width; ++byte) {
+                    const uint8_t shifted = block[offset + byte] * powers[digit];
+                    dst[base + output++] = scale * ((int) ((unsigned) shifted * 3 >> 8) - 1);
+                }
+        }
+        for (int digit = 0; digit < 4; ++digit)
+            for (int byte = 0; byte < 2; ++byte) {
+                const uint8_t shifted = block[24 + byte] * powers[digit];
+                dst[base + output++] = scale * ((int) ((unsigned) shifted * 3 >> 8) - 1);
+            }
+    }
+}
+
+#include "gyro_decode.h"
+
 static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+    [GGML_TYPE_TQ2_T] = { .type_name = "tq2_t", .blck_size = 128, .type_size = 34,
+        .is_quantized = true, .to_float = dequantize_row_tq2_t },
+    [GGML_TYPE_TQK6] = { .type_name = "tqk6", .blck_size = 128, .type_size = 26,
+        .is_quantized = true, .to_float = dequantize_row_tqk6 },
+    [GGML_TYPE_TQK7] = { .type_name = "tqk7", .blck_size = 128, .type_size = 30,
+        .is_quantized = true, .to_float = dequantize_row_tqk7 },
+    [GGML_TYPE_TQP5] = { .type_name = "tqp5", .blck_size = 128, .type_size = 42,
+        .is_quantized = true, .to_float = dequantize_row_tqp5 },
+    [GGML_TYPE_TQP6] = { .type_name = "tqp6", .blck_size = 128, .type_size = 50,
+        .is_quantized = true, .to_float = dequantize_row_tqp6 },
+    [GGML_TYPE_TQP7] = { .type_name = "tqp7", .blck_size = 128, .type_size = 58,
+        .is_quantized = true, .to_float = dequantize_row_tqp7 },
+    [GGML_TYPE_TQK5] = { .type_name = "tqk5", .blck_size = 128, .type_size = 22,
+        .is_quantized = true, .to_float = dequantize_row_tqk5 },
+    [GGML_TYPE_TQK4] = { .type_name = "tqk4", .blck_size = 128, .type_size = 18,
+        .is_quantized = true, .to_float = dequantize_row_tqk4 },
+    [GGML_TYPE_PTQ1_0] = {
+        .type_name                = "ptq1_0",
+        .blck_size                = 128,
+        .type_size                = 28,
+        .is_quantized             = true,
+        .to_float                 = dequantize_row_ptq1_0,
+    },
     [GGML_TYPE_Q2_0] = {
         .type_name                = "q2_0",
         .blck_size                = 64,

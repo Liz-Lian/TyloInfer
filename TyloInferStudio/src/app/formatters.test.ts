@@ -4,7 +4,7 @@ import { errorMessage } from './formatters';
 
 const apiError = (code: string, message = '[Errno 48] address already in use', details: Record<string, unknown> = {}) => new ApiError(409, { error: { code, message, details, retryable: false } });
 
-it.each(['listener_port_conflict', 'listener_port_in_use', 'invalid_download_directory', 'invalid_model_alias', 'model_alias_conflict', 'resident_budget_exhausted', 'resident_budget_unsupported', 'authentication_required', 'qsa_kv_configuration_invalid'])('localizes expected input errors without exposing %s or system diagnostics', code => {
+it.each(['listener_port_conflict', 'listener_port_in_use', 'invalid_download_directory', 'invalid_gguf_companion', 'gguf_companion_required', 'invalid_model_alias', 'model_alias_conflict', 'resident_budget_exhausted', 'resident_budget_unsupported', 'authentication_required', 'qsa_kv_configuration_invalid'])('localizes expected input errors without exposing %s or system diagnostics', code => {
   const error = apiError(code);
   for (const tr of [(zh: string, _en: string) => zh, (_zh: string, en: string) => en]) {
     const message = errorMessage(error, tr);

@@ -17,8 +17,12 @@ public:
     mlx::core::array apply_ffn(std::size_t layer, const mlx::core::array& input,
         const mlx::core::array& ids, const mlx::core::array& weights,
         const mlx::core::array* parallel = nullptr) override;
+    mlx::core::array apply_ffn(std::size_t layer, const mlx::core::array& input,
+        const mlx::core::array& ids, const mlx::core::array& weights,
+        const mlx::core::array* parallel, float swiglu_limit);
     void validate_layer(std::size_t layer, int experts, int input, int intermediate) const override;
     void prepare_layer(std::size_t layer, int top_k) const override;
+    void prepare_layer(std::size_t layer, int top_k, float swiglu_limit) const;
     std::size_t limit_bytes() const noexcept override;
     std::size_t backing_bytes() const noexcept override;
     std::size_t resident_bytes() const noexcept override;

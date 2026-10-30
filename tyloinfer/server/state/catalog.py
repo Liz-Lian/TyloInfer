@@ -26,7 +26,7 @@ from tyloinfer.formats.compat import canonical_dtype
 from tyloinfer.formats.header import TYLOINFER_SUFFIXES
 from tyloinfer.formats.io import open_mmap
 from tyloinfer.formats.shards import matching_shard_paths as _matching_tq_shards, parse_shard_path as _parse_tq_shard
-from tyloinfer.formats.gguf import gguf_is_table_component, matching_gguf_shard_paths, parse_gguf_shard_path
+from tyloinfer.formats.gguf import gguf_is_table_component, gguf_part_paths, is_gguf_path, matching_gguf_shard_paths, parse_gguf_shard_path
 from tyloinfer.server.protocol.models import (
     ModelArtifactList,
     ModelArtifactResource,
@@ -79,11 +79,30 @@ class DiscoveredModel:
 
 
 def parse_shard_path(path: Path):
-    return parse_gguf_shard_path(path) if path.suffix.casefold() == '.gguf' else _parse_tq_shard(path)
+    return parse_gguf_shard_path(path) if is_gguf_path(path) else _parse_tq_shard(path)
 
 
 def matching_shard_paths(path: Path):
-    return matching_gguf_shard_paths(path) if path.suffix.casefold() == '.gguf' else _matching_tq_shards(path)
+    if is_gguf_path(path):
+        return matching_gguf_shard_paths(path)
+    parsed = _parse_tq_shard(path)
+    return _matching_tq_shards(parsed[0] if parsed else path)
+
+
+def _is_model_path(path: Path) -> bool:
+    return path.suffix.casefold() in _MODEL_SUFFIXES or is_gguf_path(path)
+
+
+def _is_gguf_table(path: Path, cache: dict[Path, bool]) -> bool:
+    if not is_gguf_path(path):
+        return False
+    try:
+        first = gguf_part_paths(path, require_complete=False)[0]
+        if first not in cache:
+            cache[first] = gguf_is_table_component(path)
+        return cache[first]
+    except (OSError, ValueError):
+        return False
 
 
 def _is_routed_expert_tensor(name: str) -> bool:
@@ -216,7 +235,7 @@ class ModelCatalog:
                     first = next(
                         (
                             candidate
-                            for candidate in matching_shard_paths(parsed[0])
+                            for candidate in matching_shard_paths(requested)
                             if parse_shard_path(candidate)[1] == 1
                         ),
                         None,
@@ -224,7 +243,7 @@ class ModelCatalog:
                     if first is not None:
                         inspect_path = first
             supported_path = (
-                inspect_path.is_file() and inspect_path.suffix.casefold() in _MODEL_SUFFIXES
+                inspect_path.is_file() and _is_model_path(inspect_path)
             ) or (inspect_path.is_dir() and self._is_hf_model_directory(inspect_path))
             if supported_path:
                 direct = await asyncio.to_thread(self._inspect_source, privacy_root, inspect_path)
@@ -347,13 +366,12 @@ class ModelCatalog:
     def _immediate_model_count(path: Path) -> int:
         try:
             mfq_models: set[Path] = set()
+            tables: dict[Path, bool] = {}
             for item in path.iterdir():
-                if not item.is_file() or item.suffix.casefold() not in _MODEL_SUFFIXES:
+                if not item.is_file() or not _is_model_path(item):
                     continue
-                if item.suffix.casefold() == '.gguf':
-                    with contextlib.suppress(OSError, ValueError):
-                        if gguf_is_table_component(item):
-                            continue
+                if _is_gguf_table(item, tables):
+                    continue
                 try:
                     parsed = parse_shard_path(item)
                 except ValueError:
@@ -403,7 +421,7 @@ class ModelCatalog:
         files = []
         for item in entries:
             with contextlib.suppress(OSError):
-                if item.is_file() and item.suffix.casefold() in _MODEL_SUFFIXES:
+                if item.is_file() and _is_model_path(item):
                     files.append(ModelDirectoryFile(name=item.name, byte_size=item.stat().st_size))
         files.sort(key=lambda item: (item.name.casefold(), item.name))
         parent = current.parent if current.parent != current else None
@@ -422,17 +440,16 @@ class ModelCatalog:
     @staticmethod
     def _registration_paths(directory: Path) -> list[Path]:
         grouped: dict[Path, list[Path]] = {}
+        tables: dict[Path, bool] = {}
         try:
-            candidates = sorted(path for path in directory.rglob("*") if path.suffix.casefold() in _MODEL_SUFFIXES)
+            candidates = sorted(path for path in directory.rglob("*") if _is_model_path(path))
         except OSError as error:
             raise ModelRegistrationError("cannot scan selected model directory") from error
         for candidate in candidates:
             if not candidate.is_file():
                 continue
-            if candidate.suffix.casefold() == '.gguf':
-                with contextlib.suppress(OSError, ValueError):
-                    if gguf_is_table_component(candidate):
-                        continue
+            if _is_gguf_table(candidate, tables):
+                continue
             try:
                 parsed = parse_shard_path(candidate)
             except ValueError as error:
@@ -614,11 +631,12 @@ class ModelCatalog:
         result: dict[str, DiscoveredModel] = {}
         model_paths: dict[str, Path] = {}
         models_by_name: dict[str, DiscoveredModel] = {}
+        tables: dict[Path, bool] = {}
         for root in self.roots:
             if not root.is_dir():
                 continue
             grouped: dict[Path, list[Path]] = {}
-            paths = {path for path in root.rglob("*") if path.suffix.casefold() in _MODEL_SUFFIXES}
+            paths = {path for path in root.rglob("*") if _is_model_path(path)}
             paths.update(self._registered_paths(root))
             paths.update(
                 config.parent
@@ -628,26 +646,23 @@ class ModelCatalog:
             if self._is_hf_model_directory(root):
                 paths.add(root)
             for path in sorted(paths):
-                if path.suffix.casefold() == '.gguf':
-                    try:
-                        if gguf_is_table_component(path):
-                            continue
-                    except (OSError, ValueError):
-                        pass
+                if _is_gguf_table(path, tables):
+                    continue
                 try:
                     parsed = parse_shard_path(path)
                 except ValueError:
                     parsed = None
                 grouped.setdefault(parsed[0] if parsed is not None else path, []).append(path)
             for paths in grouped.values():
-                path = next(
-                    (
-                        item
-                        for item in paths
-                        if (parsed := parse_shard_path(item)) is None or parsed[1] == 1
-                    ),
-                    paths[0],
-                )
+                path = paths[0]
+                for item in paths:
+                    try:
+                        parsed = parse_shard_path(item)
+                    except ValueError:
+                        continue
+                    if parsed is None or parsed[1] == 1:
+                        path = item
+                        break
                 privacy_root = root if path.is_relative_to(root) else path.parent
                 discovered = self._inspect_source(privacy_root, path)
                 canonical_path = self._canonical_model_path(discovered.path)
@@ -701,7 +716,7 @@ class ModelCatalog:
             if resolved.is_dir() and ModelCatalog._is_hf_model_directory(resolved):
                 result.add(resolved)
                 continue
-            if resolved.suffix.casefold() not in _MODEL_SUFFIXES:
+            if not _is_model_path(resolved):
                 continue
             if resolved.is_file():
                 try:
@@ -711,11 +726,11 @@ class ModelCatalog:
                 if parsed is None:
                     result.add(resolved)
                 else:
-                    result.update(matching_shard_paths(parsed[0]))
+                    result.update(matching_shard_paths(resolved))
         return result
 
     def _inspect_source(self, root: Path, path: Path) -> DiscoveredModel:
-        if path.suffix.casefold() != '.gguf':
+        if not is_gguf_path(path):
             artifact = self._inspect(root, path)
             if artifact.resource.format != 'hf' or not artifact.resource.complete or 'U32' not in artifact.resource.dtypes:
                 return artifact
@@ -749,8 +764,12 @@ class ModelCatalog:
                 return replace(artifact, resource=artifact.resource.model_copy(update={
                     'loadable': False, 'error': str(failure).replace(str(root), '<model-root>'),
                 }))
-        parsed = parse_gguf_shard_path(path)
-        paths = tuple(candidate for candidate in matching_shard_paths(parsed[0])
+        parse_error = None
+        try:
+            parsed = parse_gguf_shard_path(path)
+        except ValueError as failure:
+            parsed, parse_error = None, failure
+        paths = tuple(candidate for candidate in matching_shard_paths(path)
             if parse_shard_path(candidate)[2] == parsed[2]) if parsed else (path,)
         stats = tuple(candidate.stat() for candidate in paths)
         count = parsed[2] if parsed else 1
@@ -767,6 +786,8 @@ class ModelCatalog:
         roles = {role: 0 for role in ('dense', 'experts', 'embedding')}
         experts = streamed = 0
         try:
+            if parse_error is not None:
+                raise parse_error
             if missing:
                 raise ValueError(f'GGUF checkpoint is missing {missing} shard(s)')
             if gguf_is_table_component(path):
@@ -776,7 +797,9 @@ class ModelCatalog:
             tensors = metadata['tensors']
             architecture = _native_architecture(metadata)
             supported = {'Q4_0', 'Q4_1', 'Q5_0', 'Q5_1', 'Q8_0', 'Q2_K', 'Q3_K', 'Q4_K', 'Q5_K', 'Q6_K',
-                'Q8_K', 'IQ2_XXS', 'IQ2_XS', 'IQ2_S', 'IQ3_XXS', 'IQ3_S', 'IQ4_NL', 'IQ4_XS', 'Q2_0'}
+                'Q8_K', 'IQ2_XXS', 'IQ2_XS', 'IQ2_S', 'IQ3_XXS', 'IQ3_S', 'IQ4_NL', 'IQ4_XS', 'Q2_0',
+                'PTQ1_0', 'TQ2_T', 'TQK4', 'TQK5', 'TQK6', 'TQK7', 'TQP5', 'TQP6', 'TQP7',
+                'MXFP4', 'MIXED', 'ENGRAM_MXFP8'}
             unsupported = set()
             for tensor, record in tensors.items():
                 dtype, size = record['dtype'], int(record['nbytes'])
@@ -795,7 +818,12 @@ class ModelCatalog:
         except Exception as failure:
             error = str(failure).replace(str(root), '<model-root>')
         capacity, yarn_capacity, yarn_factor = yarn_context_limits(config, architecture)
+        text = config.get('text_config', config)
+        companion_required = isinstance(text, dict) and any(
+            f'model.block.{layer}.associative_memory.embedding.weight' not in tensors
+            for layer in text.get('engram_layer_ids', []) or [])
         resource = ModelArtifactResource(id=identifier, name=name, architecture=architecture, format='gguf',
+            gguf_companion_required=companion_required,
             shard_count=count, missing_shards=missing, total_bytes=sum(stat.st_size for stat in stats),
             estimated_resident_weight_bytes=sum(roles.values()) if tensors else None,
             estimated_weight_bytes_by_role=roles if tensors else {}, ssd_ple_bytes=streamed if tensors else None,

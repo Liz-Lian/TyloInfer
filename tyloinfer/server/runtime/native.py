@@ -152,6 +152,9 @@ def native_tokenizer_arguments(model: str | Path, backend: str) -> list[str]:
     if model_path.is_dir():
         tokenizer = ensure_hf_tokenizer_gguf(model_path)
     elif model_path.is_file():
+        from tyloinfer.formats.gguf import gguf_part_paths, is_gguf_path
+        if is_gguf_path(model_path) and len(gguf_part_paths(model_path)) > 1:
+            return []
         with model_path.open("rb") as stream:
             if stream.read(4) == b"GGUF":
                 return ["--tokenizer", str(model_path)]
@@ -175,6 +178,31 @@ def native_tokenizer_arguments(model: str | Path, backend: str) -> list[str]:
     return ["--tokenizer", str(tokenizer)]
 
 
+def native_gguf_companion_arguments(model: str | Path, companions: list[str], backend: str) -> list[str]:
+    if not companions:
+        return []
+    from tyloinfer.formats.gguf import gguf_is_table_component, gguf_part_paths, is_gguf_path
+    if backend != "metal" or not is_gguf_path(model):
+        raise NativeRuntimeError("External GGUF tables currently require a GGUF model on Metal")
+    arguments, seen = [], set()
+    for value in companions:
+        try:
+            path = Path(value).expanduser().resolve(strict=True)
+            if path.is_dir():
+                if not any(item.is_file() for item in path.glob("*.safetensors")):
+                    raise ValueError("The Engram folder contains no Safetensors files")
+            elif is_gguf_path(path) and gguf_is_table_component(path):
+                path = gguf_part_paths(path)[0]
+            else:
+                raise ValueError("Select a GGUF table file or an Engram Safetensors folder")
+        except (OSError, ValueError) as error:
+            raise NativeRuntimeError(f"Invalid GGUF companion: {error}") from error
+        if path not in seen:
+            seen.add(path)
+            arguments.extend(["--gguf-companion", str(path)])
+    return arguments
+
+
 @dataclass
 class NativeRuntime:
     executable: Path
@@ -188,6 +216,7 @@ class NativeRuntime:
     moe_gpu_cache_gb: float | None = None
     startup_timeout: float = 1800.0
     environment: Mapping[str, str] | None = None
+    gguf_companions: list[str] | None = None
     process: subprocess.Popen[bytes] | None = None
     port: int | None = None
 
@@ -234,6 +263,7 @@ class NativeRuntime:
         if self.moe_gpu_cache_gb is not None:
             command.extend(["--moe-gpu-cache-gb", str(self.moe_gpu_cache_gb)])
         command.extend(native_tokenizer_arguments(self.model, self.backend))
+        command.extend(native_gguf_companion_arguments(self.model, self.gguf_companions or [], self.backend))
         return command
 
     def start(self) -> None:
@@ -277,7 +307,7 @@ class NativeRuntime:
                     f"native inference worker exited during startup with status {status}"
                 )
             try:
-                with opener.open(f"{self.base_url}/health", timeout=1.0) as response:
+                with opener.open(f"{self.base_url}/runtime/health", timeout=1.0) as response:
                     payload = json.loads(response.read())
                 if isinstance(payload, dict) and payload.get("model"):
                     return

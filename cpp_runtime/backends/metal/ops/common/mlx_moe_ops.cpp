@@ -747,7 +747,7 @@ constexpr const char* kSharedGateSource = R"METAL(
         return;
     }
     uint token = index / uint(WIDTH);
-    float gate = 1.0f / (1.0f + exp(-gate_logits[token]));
+    float gate = 1.0f / (1.0f + exp(-float(gate_logits[token])));
     output[index] =
         T(float(routed[index]) + gate * float(shared[index]));
 )METAL";
@@ -767,7 +767,7 @@ constexpr const char* kReduceSharedGateSource = R"METAL(
         ]) * weights[token * uint(ROUTES) + route];
     }
     T routed_value = T(value);
-    float gate = 1.0f / (1.0f + exp(-gate_logits[token]));
+    float gate = 1.0f / (1.0f + exp(-float(gate_logits[token])));
     output[index] =
         T(float(routed_value) + gate * float(shared[index]));
 )METAL";
@@ -789,7 +789,7 @@ constexpr const char* kReduceSharedGateSortedSource = R"METAL(
         ]) * weights[original_row];
     }
     T routed_value = T(value);
-    float gate = 1.0f / (1.0f + exp(-gate_logits[token]));
+    float gate = 1.0f / (1.0f + exp(-float(gate_logits[token])));
     output[index] =
         T(float(routed_value) + gate * float(shared[index]));
 )METAL";
@@ -1152,7 +1152,8 @@ array int32_contiguous(const array& input) {
 }
 
 array reshape_gate_logits(const array& input, int tokens) {
-    auto result = float32_contiguous(input);
+    auto result = input.dtype() == mlx::core::float16 || input.dtype() == mlx::core::bfloat16
+        ? mlx::core::contiguous(input) : float32_contiguous(input);
     if (result.size() != static_cast<std::size_t>(tokens)) {
         throw std::invalid_argument(
             "shared gate logits must contain one value per token");

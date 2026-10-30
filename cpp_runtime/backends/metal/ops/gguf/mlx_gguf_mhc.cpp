@@ -141,6 +141,7 @@ const fast::CustomKernelFunction& mix_kernel() {
 std::optional<std::vector<array>> MlxGgufWeight::gated_residual(const array& normalized,
     const MlxGgufWeight& up, const array* injection, int streams) const {
     const auto dtype = normalized.dtype();
+    if (rotation_ || up.rotation_) return std::nullopt;
     if (format_ != 8 || up.format_ != 8 || indirect_ || up.indirect_ || shape_.size() != 2 || up.shape_.size() != 2 ||
         normalized.ndim() < 2 || (dtype != float16 && dtype != bfloat16 && dtype != float32) ||
         streams < 2 || streams > 8 || input_size() % streams || normalized.shape(-1) != input_size() ||

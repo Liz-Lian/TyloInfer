@@ -8,6 +8,26 @@ import userEvent from '@testing-library/user-event';
 vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (_zh: string, en: string) => en }) }));
 vi.mock('./ModelLoadProgress', () => ({ ModelLoadProgress: () => null }));
 
+it('passes an explicit external Engram path only for the selected GGUF model', async () => {
+  const artifact = { id: 'xq', name: 'XQ', architecture: 'deepseek_v41', format: 'gguf', shard_count: 16,
+    gguf_companion_required: true,
+    total_bytes: 100, tensor_count: 1, record_count: 1, dtypes: [], complete: true, loadable: true, modified_at: '' } as ModelArtifact;
+  const loadArtifact = vi.fn();
+  const catalog = { runtime: null, artifacts: [artifact], filteredArtifacts: [artifact], instances: [], busy: false,
+    modelFilter: '', setModelFilter: vi.fn(), unloadInstance: vi.fn(), loadArtifact,
+    chooseModelDirectory: vi.fn(), openModelFiles: vi.fn() } as unknown as ReturnType<typeof useModelCatalog>;
+  const view = render(<LocalCheckpoints catalog={catalog} />);
+  expect(screen.getByRole('button', { name: 'Load' })).toBeDisabled();
+  await userEvent.click(screen.getByText('Engram companion'));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Engram path: XQ' }), '/models/engram');
+  await userEvent.click(screen.getByRole('button', { name: 'Load' }));
+  expect(loadArtifact).toHaveBeenCalledExactlyOnceWith('XQ', ['/models/engram']);
+  catalog.connectionRevision = 1;
+  view.rerender(<LocalCheckpoints catalog={catalog} />);
+  expect(screen.getByRole('textbox', { name: 'Engram path: XQ' })).toHaveValue('');
+  expect(screen.getByRole('button', { name: 'Load' })).toBeDisabled();
+});
+
 it('opens deletion confirmation by ID and prevents deleting loaded models', async () => {
   const artifact = { id: 'a', name: 'Model', architecture: 'qwen35', format: 'tq', shard_count: 1,
     total_bytes: 100, tensor_count: 1, record_count: 1, dtypes: [], complete: true, loadable: true, modified_at: '' } as ModelArtifact;

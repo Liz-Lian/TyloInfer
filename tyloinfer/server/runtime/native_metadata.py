@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from tyloinfer.server.runtime.native import native_runtime_environment
+from tyloinfer.server.runtime.native import native_gguf_companion_arguments, native_runtime_environment
 
 
 class NativeModelInspector:
@@ -12,10 +12,12 @@ class NativeModelInspector:
         self.executable = Path(executable)
         self.backend = backend
 
-    def __call__(self, model: Path) -> dict:
+    def __call__(self, model: Path, companions: list[str] | None = None) -> dict:
         if self.backend != 'metal':
             raise ValueError('This model format is not available on the selected backend')
-        result = subprocess.run([str(self.executable), '--model', str(model), '--inspect-model-json'],
+        command = [str(self.executable), '--model', str(model), '--inspect-model-json']
+        command.extend(native_gguf_companion_arguments(model, companions or [], self.backend))
+        result = subprocess.run(command,
             env=native_runtime_environment(self.executable, self.backend), capture_output=True, timeout=30, check=False)
         if result.returncode:
             message = result.stderr.decode('utf-8', errors='replace').strip().splitlines()

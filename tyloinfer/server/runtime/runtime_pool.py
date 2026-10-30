@@ -72,11 +72,13 @@ from tyloinfer.server.runtime.prefix_cache_text import decode_prefix_cache_token
 from tyloinfer.server.runtime.qsa_kv_policy import QSA_KV_BUFFER_BYTES, qsa_index_requirement
 from tyloinfer.server.runtime.kv_budget import checkpoint_kv_budget, check_ssd_capacity
 from tyloinfer.server.runtime.native import (
+    NativeRuntimeError,
     append_native_prefill_chunk_override,
     find_native_runtime_resource,
     native_request_capacity,
     native_runtime_environment,
     native_tokenizer_arguments,
+    native_gguf_companion_arguments,
     supports_cuda_ram_expert_pipeline,
 )
 from tyloinfer.server.services.hardware import (
@@ -598,6 +600,16 @@ class RuntimePool:
                 ),
                 artifact.resource.error or "model artifact is incomplete",
             )
+        if artifact.resource.gguf_companion_required and not request.gguf_companions:
+            raise _job_error("gguf_companion_required", "Select the external Engram tables before loading this GGUF model")
+        try:
+            native_gguf_companion_arguments(artifact.path, request.gguf_companions, self.backend)
+            if request.gguf_companions:
+                from tyloinfer.server.runtime.native_metadata import NativeModelInspector
+                await asyncio.to_thread(NativeModelInspector(self.executable, self.backend), artifact.path,
+                    request.gguf_companions)
+        except (NativeRuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+            raise _job_error("invalid_gguf_companion", str(error)) from error
         from tyloinfer.server.runtime.load_context import apply_load_context
         try:
             request = apply_load_context(request, artifact.resource.architecture, self.backend)
@@ -4695,6 +4707,7 @@ class RuntimePool:
                 ]
             )
         command.extend(native_tokenizer_arguments(artifact.path, self.backend))
+        command.extend(native_gguf_companion_arguments(artifact.path, request.gguf_companions, self.backend))
         if request.moe_gpu_cache_gb is not None:
             command.extend(["--moe-gpu-cache-gb", str(request.moe_gpu_cache_gb)])
 

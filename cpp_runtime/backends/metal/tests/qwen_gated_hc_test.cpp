@@ -437,6 +437,32 @@ void test_qsa_decode_prologue_matches_reference(
         rotary_dimension,
         theta,
         eps);
+    const auto separate_query = reshape(query_parts[0], {1, rows, query_heads * head_dimension});
+    const auto separate_gate = reshape(query_parts[1], {1, rows, query_heads * head_dimension});
+    const auto exact = [](array actual, array expected, const char* name) {
+        if (actual.shape() != expected.shape() || actual.dtype() != expected.dtype())
+            throw std::runtime_error(std::string(name) + " shape/dtype mismatch");
+        if (!array_equal(view(contiguous(actual), uint8), view(contiguous(expected), uint8)).item<bool>())
+            throw std::runtime_error(std::string(name) + " changed output bits");
+    };
+    for (bool cache : {false, true}) for (bool half_query : {false, true}) {
+        const auto combined = mfq::metal::qwen4_qsa_decode_prologue(query_gate, key_input, index_input,
+            query_norm.weight(), key_norm.weight(), index_norm.weight(), positions, query_heads, key_heads,
+            index_heads, head_dimension, index_dimension, rotary_dimension, theta, eps,
+            cache ? &key_input : nullptr, half_query);
+        const auto separated = mfq::metal::qwen4_qsa_decode_prologue(separate_query, key_input, index_input,
+            query_norm.weight(), key_norm.weight(), index_norm.weight(), positions, query_heads, key_heads,
+            index_heads, head_dimension, index_dimension, rotary_dimension, theta, eps,
+            cache ? &key_input : nullptr, half_query, &separate_gate);
+        exact(separated.query, combined.query, "QSA separate query");
+        exact(separated.output_gate, combined.output_gate, "QSA separate gate");
+        exact(separated.key, combined.key, "QSA separate key");
+        exact(separated.index_query, combined.index_query, "QSA separate index query");
+        if (cache) {
+            exact(*separated.cache_value, *combined.cache_value, "QSA separate cache value");
+            exact(*separated.cache_index_key, *combined.cache_index_key, "QSA separate index cache");
+        }
+    }
     const auto check = [dtype, position, rows](array a, array b, const char* name, bool rope = false) {
         try {
             if (dtype == float32) {

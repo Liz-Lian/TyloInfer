@@ -14,6 +14,11 @@ using namespace mlx::core;
 
 struct Layout { int payload, auxiliary, meta_groups, meta_halfs; };
 Layout layout(int format) {
+    if (format >= 144 && format <= 151) {
+        const int bits = format == 144 ? 8 : format == 145 || format == 148 ? 6
+            : format == 146 || format == 149 ? 7 : format == 151 ? 4 : 5;
+        return {bits * (format >= 147 && format <= 149 ? 2 : 1), 0, 4, 1};
+    }
     switch (format) {
         case 12: return {16, 0, 8, 8};
         case 13: return {16, 4, 8, 8};
@@ -30,14 +35,18 @@ Layout layout(int format) {
     }
 }
 
-const std::string& header() {
+const std::string& scalar_header() {
     static const auto source = std::string("#pragma clang fp reassociate(off)\n") + kGgufDecode + R"METAL(
-#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-using namespace mpp::tensor_ops;
+template<int F> struct GyroLayout {
+    enum { bits = F == 144 ? 8 : F == 145 || F == 148 ? 6 : F == 146 || F == 149 ? 7 : F == 151 ? 4 : 5,
+        values = F >= 147 && F <= 149 ? 2 : 4, payload = bits * 4 / values,
+        words = (15 + (32 / values - 1) * bits + 31) / 32 };
+};
 template<int F> struct PlaneLayout {
-    enum { payload = F == 16 || F == 17 || F == 18 || F == 22 || F == 42 ? 8 : 16,
+    enum { payload = F >= 144 && F <= 151 ? GyroLayout<F>::payload
+            : F == 16 || F == 17 || F == 18 || F == 22 || F == 42 ? 8 : 16,
         auxiliary = F == 14 ? 8 : F == 13 || F == 18 ? 4 : F == 17 ? 1 : F == 22 ? 2 : 0,
-        meta_groups = F == 20 ? 1 : F == 42 ? 2 : 8,
+        meta_groups = F == 20 || F == 39 ? 1 : F == 42 ? 2 : F >= 143 && F <= 151 ? 4 : 8,
         meta_halfs = F == 12 || F == 13 ? 8 : F == 14 ? 10 : F == 23 ? 4 : 1,
         table_words = F == 20 || F == 23 ? 256 : 1 };
 };
@@ -54,6 +63,13 @@ auto staged_lookup(threadgroup uint* table) {
     else return GgufConstantLookup<F>{};
 }
 struct GroupPayload { uint4 a; uint b, extra; ushort scale; uint4 header; };
+uint gguf_group_word(device const uchar* bytes) {
+    return uint(bytes[0]) | (uint(bytes[1]) << 8u) | (uint(bytes[2]) << 16u) | (uint(bytes[3]) << 24u);
+}
+template<int F> constexpr bool gguf_group_format() {
+    return F == 11 || F == 12 || F == 13 || F == 14 || F == 16 || F == 17 || F == 18 ||
+        F == 20 || F == 21 || F == 22 || F == 23 || F == 39 || F == 42 || (F >= 143 && F <= 151);
+}
 uint iq4_pair_indices(uint q) {
     const uint a = (q & 15u) | ((q >> 4u) & 240u), b = ((q >> 16u) & 15u) | ((q >> 20u) & 240u);
     const uint c = ((q >> 4u) & 15u) | ((q >> 8u) & 240u), d = ((q >> 20u) & 15u) | ((q >> 24u) & 240u);
@@ -62,6 +78,54 @@ uint iq4_pair_indices(uint q) {
 template<int F>
 void fetch_raw_group(thread GroupPayload& value, device const uchar* p0,
     uint row, uint groups, uint group, bool metadata) {
+    if constexpr (F >= 144 && F <= 151) {
+        constexpr uint bits = F == 144 ? 8u : F == 145 || F == 148 ? 6u : F == 146 || F == 149 ? 7u : F == 151 ? 4u : 5u;
+        constexpr uint values = F >= 147 && F <= 149 ? 2u : 4u, steps = 128u / values, bytes = steps * bits / 8u;
+        auto block = p0 + (ulong(row) * groups / 4u + group / 4u) * (bytes + 2u);
+        auto stream = block + 2u;
+        const uint start = F == 144 ? ((group % 4u) * 8u + 31u) % 32u
+            : (steps - (group % 4u + 1u) * (32u / values)) * bits / 8u;
+        for (uint i = 0u; i < 4u; ++i) {
+            uint word = 0u;
+            for (uint j = 0u; j < 4u; ++j) word |= uint(stream[(start + i * 4u + j) % bytes]) << (j * 8u);
+            value.a[i] = word;
+        }
+        if (metadata) value.scale = *reinterpret_cast<device const ushort*>(block);
+        return;
+    } else if constexpr (F == 39) {
+        auto block = p0 + (ulong(row) * groups + group) * 17u;
+        for (uint i = 0u; i < 4u; ++i) value.a[i] = gguf_group_word(block + 1u + i * 4u);
+        value.scale = block[0];
+        return;
+    } else if constexpr (F == 143) {
+        if (metadata) {
+            auto block = p0 + (ulong(row) * groups / 4u + group / 4u) * 28u;
+            for (uint i = 0u; i < 4u; ++i) value.a[i] = gguf_read_u32(block + i * 4u);
+            for (uint i = 0u; i < 3u; ++i) value.header[i] = gguf_read_u32(block + 16u + i * 4u);
+            value.scale = ushort(value.header.z >> 16u);
+        }
+        return;
+    } else if constexpr (F == 11) {
+        auto block = reinterpret_cast<device const block_q3_K*>(p0) + ulong(row) * groups / 8u + group / 8u;
+        const uint g = group % 8u;
+        for (uint i = 0u; i < 4u; ++i) {
+            auto source = block->qs + (g / 4u) * 32u + i * 4u;
+            uint low = (gguf_read_u32(source) >> (2u * (g % 4u))) & 0x03030303u;
+            uint high = (gguf_read_u32(source + 16u) >> (2u * (g % 4u))) & 0x03030303u;
+            low |= ((gguf_read_u32(block->hmask + i * 4u) >> g) & 0x01010101u) << 2u;
+            high |= ((gguf_read_u32(block->hmask + 16u + i * 4u) >> g) & 0x01010101u) << 2u;
+            value.a[i] = low | (high << 4u);
+        }
+        value.b = 0u;
+        for (uint part = 0u; part < 2u; ++part) {
+            const uint index = g * 2u + part;
+            const uint lo = (block->scales[index % 8u] >> (4u * (index / 8u))) & 15u;
+            const uint hi = (block->scales[8u + index % 4u] >> (2u * (index / 4u))) & 3u;
+            value.b |= (lo | (hi << 4u)) << (part * 8u);
+        }
+        if (metadata) value.scale = as_type<ushort>(block->d);
+        return;
+    }
     constexpr uint block_bytes = F == 12 ? 144u : F == 13 ? 176u : F == 14 ? 210u : F == 23 ? 136u
         : F == 16 ? 66u : F == 17 ? 74u : F == 18 ? 98u : F == 21 ? 110u : 82u;
     const uint stride = F == 20 ? groups * 18u : F == 42 ? groups / 2u * 18u : groups / 8u * block_bytes;
@@ -131,6 +195,32 @@ template<int F, class Auxiliary, class Scales>
 void fetch_group(thread GroupPayload& value, device const uchar* p0, Auxiliary p1,
     Scales scales, uint row, uint groups, uint group, bool metadata) {
     const ulong at = (ulong(row / 64u) * groups + group) * 64u + row % 64u;
+    if constexpr (F >= 144 && F <= 151) {
+        constexpr uint bytes = GyroLayout<F>::payload;
+        const uint context = group / 4u * 4u + (group + (F == 144 ? 1u : 3u)) % 4u;
+        const ulong next = (ulong(row / 64u) * groups + context) * 64u + row % 64u;
+        auto source = p0 + at * bytes, tail = p0 + next * bytes;
+        value.a = uint4(0u);
+        for (uint i = 0u; i < GyroLayout<F>::words; ++i) {
+            if constexpr (bytes % 4u == 0u) {
+                value.a[i] = gguf_read_u32(i * 4u < bytes ? source + i * 4u : tail);
+            } else if constexpr (bytes % 2u == 0u) {
+                const uint index = i * 4u;
+                const uint low = *reinterpret_cast<device const ushort*>(index < bytes ? source + index : tail + index - bytes);
+                const uint high = *reinterpret_cast<device const ushort*>(index + 2u < bytes ? source + index + 2u : tail + index + 2u - bytes);
+                value.a[i] = low | (high << 16u);
+            } else {
+                uint word = 0u;
+                for (uint j = 0u; j < 4u; ++j) {
+                    const uint index = i * 4u + j;
+                    word |= uint(index < bytes ? source[index] : tail[index - bytes]) << (j * 8u);
+                }
+                value.a[i] = word;
+            }
+        }
+        if (metadata) value.scale = scales[(ulong(row / 64u) * (groups / 4u) + group / 4u) * 64u + row % 64u];
+        return;
+    }
     const auto words = reinterpret_cast<device const uint*>(p0 + at * PlaneLayout<F>::payload);
     if constexpr (PlaneLayout<F>::payload == 16) value.a = *reinterpret_cast<device const uint4*>(words);
     else value.a.xy = *reinterpret_cast<device const uint2*>(words);
@@ -165,13 +255,75 @@ vec<O, 4> plane_linear(uint4 codes, float scale, float bias = 0.f) {
     if constexpr (Zero != 0) return vec<O, 4>(float4(values) * scale);
     else return vec<O, 4>(fma(float4(values), float4(scale), float4(bias)));
 }
+template<int F>
+uint gyro_lookup_word(GgufConstantLookup<F> lookup, uint index) {
+    return reinterpret_cast<constant const uint*>(gguf_gyro_codebook)[index];
+}
+template<int F, class Lookup>
+float4 gguf_gyro_group_values(GroupPayload value, uint p, Lookup lookup) {
+    constexpr uint bits = F == 144 ? 8u : F == 145 || F == 148 ? 6u : F == 146 || F == 149 ? 7u : F == 151 ? 4u : 5u;
+    constexpr uint values = F >= 147 && F <= 149 ? 2u : 4u;
+    const auto hash = [&](uint step) {
+        uint state;
+        if constexpr (F == 144) {
+            const uint previous = (value.a[step / 4u] >> (step % 4u * 8u)) & 255u;
+            const uint next = (value.a[(step + 1u) / 4u] >> ((step + 1u) % 4u * 8u)) & 255u;
+            state = (previous << 8u) | next;
+        } else {
+            const uint offset = (32u / values - 1u - step) * bits, index = offset / 32u, shift = offset % 32u;
+            state = value.a[index] >> shift;
+            if (shift && index < 3u) state |= value.a[index + 1u] << (32u - shift);
+        }
+        return (state & 32767u) * 0x9e3779b1u;
+    };
+    const uint first_hash = hash(p / values), second_hash = values == 2u ? hash(p / values + 1u) : first_hash;
+    const uint first = first_hash >> 21u, second = values == 2u ? second_hash >> 21u : (first_hash >> 10u) & 2047u;
+    return float4(float2(as_type<half2>(gyro_lookup_word(lookup, first))), float2(as_type<half2>(gyro_lookup_word(lookup, second))))
+        * float(as_type<half>(value.scale));
+}
 template<int F, typename O, class Lookup, class Sink>
 void decode_group_chunks(GroupPayload value, Lookup lookup, uint group, Sink sink) {
     const float d = float(as_type<half>(value.scale));
 #pragma clang loop unroll(full)
     for (uint c = 0; c < 4u; ++c) {
         vec<O, 4> low, high;
-        if constexpr (F == 16 || F == 18) {
+        if constexpr (F >= 144 && F <= 151) {
+            low = vec<O, 4>(gguf_gyro_group_values<F>(value, c * 4u, lookup));
+            high = vec<O, 4>(gguf_gyro_group_values<F>(value, 16u + c * 4u, lookup));
+        } else if constexpr (F == 143) {
+            constexpr uint powers[5] = {1u, 3u, 9u, 27u, 81u};
+            for (uint part = 0u; part < 2u; ++part) {
+                const uint p = (group % 4u) * 32u + c * 4u + part * 16u;
+                uint4 codes, power;
+                if (p < 80u) {
+                    codes = uint4(as_type<uchar4>(value.a[(p % 16u) / 4u]));
+                    power = uint4(powers[p / 16u]);
+                } else if (p < 120u) {
+                    const uint word = (p - 80u) % 8u / 4u;
+                    codes = uint4(as_type<uchar4>(value.header[word]));
+                    power = uint4(powers[(p - 80u) / 8u]);
+                } else {
+                    codes = uint4(value.header.z & 255u, (value.header.z >> 8u) & 255u,
+                        value.header.z & 255u, (value.header.z >> 8u) & 255u);
+                    const uint digit = (p - 120u) / 2u;
+                    power = uint4(powers[digit], powers[digit], powers[digit + 1u], powers[digit + 1u]);
+                }
+                const auto decoded = vec<O, 4>((float4((((codes * power) & 255u) * 3u) >> 8u) - 1.f) * d);
+                if (part) high = decoded; else low = decoded;
+            }
+        } else if constexpr (F == 39) {
+            const uint4 packed = uint4(as_type<uchar4>(value.a[c]));
+            const auto a = packed & 15u, b = packed >> 4u;
+            const float scale = gguf_mxfp4_scale(value.scale);
+            low = vec<O, 4>(float4(gguf_mxfp4_code(a.x), gguf_mxfp4_code(a.y),
+                gguf_mxfp4_code(a.z), gguf_mxfp4_code(a.w)) * scale);
+            high = vec<O, 4>(float4(gguf_mxfp4_code(b.x), gguf_mxfp4_code(b.y),
+                gguf_mxfp4_code(b.z), gguf_mxfp4_code(b.w)) * scale);
+        } else if constexpr (F == 11) {
+            const auto bytes = as_type<uchar4>(value.a[c]);
+            low = plane_linear<4, O>(uint4(bytes) & 15u, d * float(int(value.b & 255u) - 32));
+            high = plane_linear<4, O>(uint4(bytes) >> 4u, d * float(int((value.b >> 8u) & 255u) - 32));
+        } else if constexpr (F == 16 || F == 18) {
             const uint aux = F == 16 ? value.a.y : value.b;
             const uint sub = c / 2u, shift = (c % 2u) * 4u;
             uint a, b;
@@ -255,6 +407,14 @@ void decode_group(GroupPayload value, threadgroup half* output, Lookup lookup, u
         *reinterpret_cast<threadgroup half4*>(output + 16u + c * 4u) = high;
     });
 }
+)METAL";
+    return source;
+}
+
+const std::string& header() {
+    static const auto source = scalar_header() + R"METAL(
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace mpp::tensor_ops;
 template<int F, int Rows, bool Packed, class Auxiliary, class Scales, class Acc>
 void staged_dot(device const half* x, device const uchar* p0, Auxiliary p1, Scales meta,
     uint row, uint k, uint padded, uint first_token,
@@ -364,6 +524,18 @@ if (at >= groups * rows) return;
 uint group = at % groups, row = at / groups;
 auto source = packed + ulong(row) * params[2];
 ulong position = (ulong(row / 64u) * groups + group) * 64u + row % 64u;
+if constexpr (F >= 144 && F <= 151) {
+    constexpr uint bytes = GyroLayout<F>::payload, block_bytes = bytes * 4u + 2u;
+    auto block = source + ulong(group / 4u) * block_bytes;
+    const uint start = F == 144 ? ((group % 4u) * bytes + bytes * 4u - 1u) % (bytes * 4u)
+        : (3u - group % 4u) * bytes;
+    for (uint i = 0u; i < bytes; ++i)
+        payload[position * bytes + i] = block[2u + (start + i) % (bytes * 4u)];
+    if (group % 4u == 0u)
+        metadata[(ulong(row / 64u) * (groups / 4u) + group / 4u) * 64u + row % 64u] =
+            ushort(block[0]) | (ushort(block[1]) << 8u);
+    return;
+}
 auto output = reinterpret_cast<device uint*>(payload + position * PlaneLayout<F>::payload);
 auto block = source + ulong(group / 8u) * (F == 12 ? 144u : F == 13 ? 176u : F == 14 ? 210u : F == 23 ? 136u
     : F == 16 ? 66u : F == 17 ? 74u : F == 18 ? 98u : F == 21 ? 110u : 82u);
@@ -544,6 +716,7 @@ if (shared) {
         same_table ? gate_table : up_table, sum);
 }
 auto gate_values = reinterpret_cast<threadgroup T*>(stages);
+if constexpr (R * 32u * sizeof(T) > 2048u * sizeof(half)) threadgroup_barrier(mem_flags::mem_threadgroup);
 if (sg == 0u) for (ushort i = 0; i < sum.get_capacity(); ++i) if (sum.is_valid_element(i)) {
     auto at = sum.get_multidimensional_index(i); gate_values[at[1] * 32u + at[0]] = T(sum[i]);
 }
@@ -558,6 +731,7 @@ if constexpr (MAX_ROWS == 8) run(integral_constant<ushort, 8>{});
 else {
     if (live <= 8u) run(integral_constant<ushort, 8>{});
     else if (live <= 16u) run(integral_constant<ushort, 16>{});
+    else if (MAX_ROWS > 32 && live <= 32u) run(integral_constant<ushort, 32>{});
     else run(integral_constant<ushort, MAX_ROWS>{});
 }
 }
@@ -716,8 +890,42 @@ if constexpr (MAX_ROWS == 8) run(integral_constant<ushort, 8>{});
 else {
     if (live <= 8u) run(integral_constant<ushort, 8>{});
     else if (live <= 16u) run(integral_constant<ushort, 16>{});
+    else if (MAX_ROWS > 32 && live <= 32u) run(integral_constant<ushort, 32>{});
     else run(integral_constant<ushort, MAX_ROWS>{});
 }
+}
+)METAL", header());
+    return kernel;
+}
+
+const fast::CustomKernelFunction& weighted_down_kernel() {
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_planes_down_reduce",
+        {"packed", "aux", "meta", "x", "ids", "probabilities", "params"}, {"y"}, R"METAL(
+uint lane = thread_index_in_simdgroup, sg = simdgroup_index_in_threadgroup;
+uint k = params[0], n = params[1], experts = params[2], routes = params[3], groups = params[4];
+uint column = threadgroup_position_in_grid.x * 32u + lane;
+threadgroup uint table[PlaneLayout<F>::table_words];
+threadgroup float partial[8 * 32];
+load_staged_lookup<F>(table, thread_index_in_threadgroup, groups * 32u);
+threadgroup_barrier(mem_flags::mem_threadgroup);
+float result = 0.f;
+for (uint route = sg; route < routes; route += groups) {
+    int expert = ids[route];
+    float value = 0.f;
+    if (expert >= 0 && uint(expert) < experts) {
+        float sums[2];
+        column_dot<F, true>(x + ulong(route) * k, 1u, k, packed, aux, meta,
+            uint(expert) * n + column, table, sums);
+        value = float(T(sums[0]));
+    }
+    result += value * probabilities[route];
+}
+partial[sg * 32u + lane] = result;
+threadgroup_barrier(mem_flags::mem_threadgroup);
+if (sg == 0u) {
+    float total = 0.f;
+    for (uint group = 0u; group < groups; ++group) total += partial[group * 32u + lane];
+    y[column] = T(total);
 }
 )METAL", header());
     return kernel;
@@ -829,11 +1037,20 @@ if (row0 < m) {
 } // namespace
 
 const std::string& MlxGgufStagedPrefill::decoder_header() { return header(); }
+const std::string& MlxGgufStagedPrefill::scalar_decoder_header() { return scalar_header(); }
 
 bool MlxGgufStagedPrefill::supports(const MlxGgufWeight& weight) noexcept {
-    return !weight.indirect_ && (weight.shape_.size() == 2 || weight.shape_.size() == 3) && weight.output_size() % 64 == 0 &&
+    const bool gyro = weight.format_ >= 144 && weight.format_ <= 151;
+    return (!weight.rotation_ || gyro) && !weight.indirect_ && (weight.shape_.size() == 3 || (!gyro && weight.shape_.size() == 2)) && weight.output_size() % 64 == 0 &&
         weight.expert_count() <= 512 && weight.expert_count() <= INT_MAX / weight.output_size() &&
-        layout(weight.format_).payload != 0;
+        layout(weight.format_).payload != 0 && (!gyro || std::size_t(weight.expert_count()) * weight.output_size() *
+            (weight.input_size() / 32) * layout(weight.format_).payload <= INT_MAX - 127);
+}
+
+bool MlxGgufStagedPrefill::supports_grouped(const MlxGgufWeight& weight) noexcept {
+    return supports(weight) || (weight.format_ >= 144 && weight.format_ <= 151 && !weight.indirect_ &&
+        (weight.shape_.size() == 2 || weight.shape_.size() == 3) && weight.output_size() % 64 == 0 &&
+        weight.expert_count() <= 512 && weight.expert_count() <= INT_MAX / weight.output_size());
 }
 
 void MlxGgufStagedPrefill::prepare(MlxGgufWeight& weight) {
@@ -997,7 +1214,7 @@ array MlxGgufStagedPrefill::gate_up(const MlxGgufWeight& gate, const MlxGgufWeig
         (!shared_gate->planes_ || !shared_up->planes_ || shared_gate->shape_ != Shape{n, gate.input_size()} ||
          shared_up->shape_ != shared_gate->shape_))) throw std::invalid_argument("GGUF shared Gate/Up geometry mismatch");
     if (!shared) { shared_gate = &gate; shared_up = &up; }
-    const auto empty_meta = array(uint16_t(0), uint16);
+    const auto empty_meta = array({uint16_t(0)}, uint16);
     const auto aux = [](const MlxGgufWeight& w) { return w.planes_ ? (*w.planes_)[0] : w.bytes_; };
     const auto meta = [&](const MlxGgufWeight& w) { return w.planes_ ? (*w.planes_)[1] : empty_meta; };
     return gate_up_kernel()({gate.bytes_, up.bytes_, input, routes.descriptors, routes.count,
@@ -1019,7 +1236,7 @@ array MlxGgufStagedPrefill::down(const MlxGgufWeight& weight, const array& input
     if (shared && (!shared->planes_ || shared->shape_ != Shape{n, weight.input_size()}))
         throw std::invalid_argument("GGUF shared Down geometry mismatch");
     if (!shared) shared = &weight;
-    const auto empty_meta = array(uint16_t(0), uint16);
+    const auto empty_meta = array({uint16_t(0)}, uint16);
     return down_kernel()({weight.bytes_, contiguous(astype(input, float16)), routes.descriptors, routes.count,
         array({uint32_t(weight.input_size()), uint32_t(n), uint32_t(input.shape(0)), uint32_t(weight.expert_count()),
             uint32_t(routes.tile_rows == 1 ? routes.descriptors.size() : 0)}),
@@ -1031,5 +1248,23 @@ array MlxGgufStagedPrefill::down(const MlxGgufWeight& weight, const array& input
             {"COLUMN_ONLY", routes.maximum_live_rows > 0 && routes.maximum_live_rows <= 2},
             {"BROADCAST", routes.tile_rows == 1 && input.shape(0) == 1}},
         std::nullopt, false, {}).front();
+}
+
+array MlxGgufStagedPrefill::weighted_down(const MlxGgufWeight& weight, const array& input,
+    const array& ids, const array& probabilities, Dtype dtype) {
+    const int n = weight.output_size();
+    int groups = 1;
+    while (groups < 8 && groups < ids.shape(1)) groups *= 2;
+    const int threads = groups * 32;
+    return weighted_down_kernel()({weight.bytes_, (*weight.planes_)[0], (*weight.planes_)[1],
+        contiguous(astype(input, float16)), contiguous(reshape(astype(ids, int32), {-1})),
+        contiguous(reshape(astype(probabilities, float32), {-1})),
+        array({uint32_t(weight.input_size()), uint32_t(n), uint32_t(weight.expert_count()), uint32_t(ids.shape(1)), uint32_t(groups)})},
+        {{1, n}}, {dtype}, {n / 32 * threads, 1, 1}, {threads, 1, 1},
+        {{"F", weight.format_}, {"T", dtype}}, std::nullopt, false, {}).front();
+}
+
+bool MlxGgufStagedPrefill::prefers_weighted_down(const MlxGgufWeight& weight) noexcept {
+    return weight.planes_ && weight.format_ >= 144 && weight.format_ <= 151 && weight.format_ != 150;
 }
 } // namespace mfq::metal
