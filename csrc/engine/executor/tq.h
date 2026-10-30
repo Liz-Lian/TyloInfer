@@ -1,8 +1,8 @@
 #pragma once
 
-#include "native/cuda/tensor/backend.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "context.h"
-#include "native/cuda/blas.h"
+#include "engine/backends/cuda/native/blas.h"
 
 #include <cstdint>
 #include <memory>

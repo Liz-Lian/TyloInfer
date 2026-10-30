@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "engine/batch/batch.h"
 #include "engine/requests/result.h"
-#include "native/cuda/tensor/backend.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 
 #include <cstddef>
 #include <cstdint>

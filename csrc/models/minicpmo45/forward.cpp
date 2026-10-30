@@ -1,5 +1,5 @@
 #include "models/minicpmo45/forward.h"
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 
 #include <algorithm>
 #include <stdexcept>

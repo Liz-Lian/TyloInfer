@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 
 #include <algorithm>
 

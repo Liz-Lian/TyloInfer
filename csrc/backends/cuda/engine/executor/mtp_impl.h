@@ -15,7 +15,7 @@
 #include "models/qwen4_exp/ops.h"
 #include "models/qwen4_exp/mtp.h"
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "native/cuda/profile.h"
+#include "engine/backends/cuda/native/profile.h"
 
 #include <cuda_runtime_api.h>
 

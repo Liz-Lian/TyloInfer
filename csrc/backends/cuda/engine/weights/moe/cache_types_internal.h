@@ -3,7 +3,7 @@
 
 #include "backends/cuda/engine/weights/moe/expert_cache.h"
 
-#include "native/cuda/profile.h"
+#include "engine/backends/cuda/native/profile.h"
 #include "moe.h"
 #include "backends/cuda/engine/weights/moe/expert_store.h"
 #include "backends/cuda/engine/weights/moe/quant_range_source.h"

@@ -8,7 +8,7 @@
 #include "models/qwen35/state.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 #include "engine/executor/run.h"
 #include "backends/cuda/engine/weights/placement.h"
 

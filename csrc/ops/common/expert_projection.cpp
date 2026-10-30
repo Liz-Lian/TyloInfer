@@ -2,7 +2,7 @@
 #include "engine/weights/moe/experts.h"
 #include "engine/executor/tq_moe.h"
 #include "engine/executor/options.h"
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/moe/cached_source_internal.h"

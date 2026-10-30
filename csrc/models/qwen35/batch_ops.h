@@ -5,7 +5,7 @@
 #include "engine/batch/batch.h"
 #include "engine/executor/sampler.h"
 #include "models/qwen35/batch.h"
-#include "native/cuda/profile.h"
+#include "engine/backends/cuda/native/profile.h"
 
 #include <cstdint>
 #include <memory>

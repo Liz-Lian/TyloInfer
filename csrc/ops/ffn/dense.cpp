@@ -1,7 +1,7 @@
 #include "dense.h"
 #include "residual.h"
-#include "native/cuda/branches.h"
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/branches.h"
+#include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
 namespace mfq::cuda {

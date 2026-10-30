@@ -1,6 +1,6 @@
 #include "engine/weights/quant.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "native/cuda/resident_allocations.h"
+#include "engine/backends/cuda/native/resident_allocations.h"
 #include "ops/common/include/format.h"
 #include "parallel.h"
 #include "nvq_group.h"

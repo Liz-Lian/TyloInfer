@@ -1,7 +1,7 @@
 #pragma once
 
-#include "native/cuda/tensor/backend.h"
-#include "native/cuda/context.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/backends/cuda/native/context.h"
 
 struct CudaScope {
     MfqCudaGuard device;

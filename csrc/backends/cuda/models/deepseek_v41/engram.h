@@ -8,7 +8,7 @@
 #include "engine/models/deepseek_v41/causal_lm.h"
 #include "quant_linear.h"
 #include "ops/common/include/projection.h"
-#include "native/cuda/profile.h"
+#include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
 
 #include <algorithm>

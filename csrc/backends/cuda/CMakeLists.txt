@@ -50,24 +50,24 @@ else()
 endif()
 
 add_library(mfq-cuda-core STATIC
-    ${PROJECT_SOURCE_DIR}/native/cuda/env.cpp
-    ${PROJECT_SOURCE_DIR}/native/cuda/context.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/tensor.cpp
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/tensor.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/blas.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/creation.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/indexing.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/ops.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/reduction.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/signal.cu
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor/sort.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/env.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/context.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/tensor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/tensor.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/blas.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/creation.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/indexing.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/ops.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/reduction.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/signal.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/sort.cu
 )
 add_library(mfq::cuda-core ALIAS mfq-cuda-core)
 # The native context/tensor units only need their own headers plus the CUDA SDK;
-# the high-level kernel op declarations in include/ stay out of the interface.
+# the kernel declarations stay out of the interface.
 target_include_directories(mfq-cuda-core PUBLIC
-    ${PROJECT_SOURCE_DIR}/native/cuda
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
     ${CUDAToolkit_INCLUDE_DIRS}
 )
 target_include_directories(mfq-cuda-core PRIVATE
@@ -193,8 +193,8 @@ target_include_directories(mfq-cuda-native-kernels PRIVATE
     ${TYLOINFER_CUDA_ROOT}
     ${TYLOINFER_REPOSITORY_ROOT}
     ${TYLOINFER_CUDA_ROOT}/include
-    ${PROJECT_SOURCE_DIR}/native/cuda
-    ${PROJECT_SOURCE_DIR}/native/cuda/tensor
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
     ${TYLOINFER_CUDA_KERNEL_ROOT}
     ${CUDAToolkit_INCLUDE_DIRS}
 )
@@ -389,8 +389,8 @@ function(mfq_configure_cuda_backend_target target)
         ${TYLOINFER_REPOSITORY_ROOT}
         ${TYLOINFER_CUDA_ROOT}
         ${TYLOINFER_CUDA_ROOT}/include
-        ${PROJECT_SOURCE_DIR}/native/cuda
-        ${PROJECT_SOURCE_DIR}/native/cuda/tensor
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
         ${PROJECT_SOURCE_DIR}/ops/common/include
         ${PROJECT_SOURCE_DIR}/ops/tq/include
         ${PROJECT_SOURCE_DIR}/ops/mfq/include
@@ -462,9 +462,9 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/ops/ffn/mlp.cpp
     ${PROJECT_SOURCE_DIR}/ops/ffn/dense.cpp
     ${PROJECT_SOURCE_DIR}/ops/ffn/residual.cpp
-    ${PROJECT_SOURCE_DIR}/native/cuda/profile.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/profile.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/route_stats.cpp
-    ${PROJECT_SOURCE_DIR}/native/cuda/collectives.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/collectives.cpp
     ${PROJECT_SOURCE_DIR}/ops/attention/attention.cpp
     ${PROJECT_SOURCE_DIR}/ops/attention/full.cpp
     ${PROJECT_SOURCE_DIR}/ops/attention/kv.cpp

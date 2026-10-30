@@ -1,6 +1,6 @@
 #include "engine/weights/memory.h"
 
-#include "native/cuda/tensor/tensor.h"
+#include "engine/backends/cuda/native/tensor/tensor.h"
 
 namespace mfq::cuda {
 namespace {

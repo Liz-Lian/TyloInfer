@@ -1,7 +1,7 @@
 #include "env.h"
 #include "tq.h"
 #include "detail.h"
-#include "native/cuda/blas.h"
+#include "engine/backends/cuda/native/blas.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include <algorithm>
 #include <cstring>

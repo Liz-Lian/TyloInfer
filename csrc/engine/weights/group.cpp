@@ -1,8 +1,8 @@
 #include "engine/weights/group.h"
 
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
-#include "native/cuda/allocation.h"
+#include "engine/backends/cuda/native/allocation.h"
 
 #include <algorithm>
 #include <numeric>

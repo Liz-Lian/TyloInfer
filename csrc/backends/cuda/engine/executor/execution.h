@@ -10,9 +10,9 @@
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
-#include "native/cuda/branches.h"
-#include "native/cuda/collectives.h"
-#include "native/cuda/profile.h"
+#include "engine/backends/cuda/native/branches.h"
+#include "engine/backends/cuda/native/collectives.h"
+#include "engine/backends/cuda/native/profile.h"
 #include "diagnostics/route_stats.h"
 #include "ops/common/include/mmq.h"
 #include "ops/common/include/parallel.h"

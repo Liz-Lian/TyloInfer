@@ -20,7 +20,7 @@
 #include "native/error.h"
 #include "engine/executor/moe_batch.h"
 #include "ops/common/include/projection.h"
-#include "native/cuda/profile.h"
+#include "engine/backends/cuda/native/profile.h"
 #include <cuda.h>
 #include <array>
 #include <algorithm>

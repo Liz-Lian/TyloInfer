@@ -21,7 +21,7 @@
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "backends/cuda/engine/weights/routed_cache.h"
 #include "cuda_runtime_config.h"
-#include "native/cuda/env.h"
+#include "engine/backends/cuda/native/env.h"
 #include "engine/weights/memory.h"
 #include "source/model_source.h"
 

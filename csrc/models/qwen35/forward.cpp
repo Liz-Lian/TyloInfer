@@ -1,6 +1,6 @@
 #include "models/qwen35/forward.h"
 
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 
 #include <algorithm>
 #include <array>

@@ -1,7 +1,7 @@
 #include "models/qwen35/mtp.h"
 
 #include "models/qwen35/state.h"
-#include "native/cuda/collectives.h"
+#include "engine/backends/cuda/native/collectives.h"
 
 #include <exception>
 #include <optional>
