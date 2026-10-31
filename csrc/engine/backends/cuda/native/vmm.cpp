@@ -1,5 +1,5 @@
 // Adapted from Strata (MIT); see LICENSES/Strata-MIT.txt.
-#include "backends/cuda/engine/state/kv_vmm.h"
+#include "engine/backends/cuda/native/vmm.h"
 
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <cuda.h>
@@ -7,7 +7,7 @@
 
 #include <mutex>
 
-namespace mfq::cuda::kv_vmm {
+namespace mfq::cuda::vmm {
 namespace {
 
 struct Api {
@@ -150,11 +150,11 @@ VmmChunk VmmRange::unmap(int64_t i) {
     return h;
 }
 
-}  // namespace mfq::cuda::kv_vmm
+}  // namespace mfq::cuda::vmm
 
 #else  // HIP: no virtual memory here; the elastic K/V stays off
 
-namespace mfq::cuda::kv_vmm {
+namespace mfq::cuda::vmm {
 bool vmm_available() { return false; }
 uint64_t vmm_granularity() { return 0; }
 VmmChunk vmm_chunk_new() { return 0; }
@@ -166,6 +166,6 @@ bool VmmRange::map_one(int64_t, VmmChunk) { return false; }
 bool VmmRange::set_access(int64_t, int64_t) { return false; }
 bool VmmRange::commit_run(int64_t, int64_t) { return false; }
 VmmChunk VmmRange::unmap(int64_t) { return 0; }
-}  // namespace mfq::cuda::kv_vmm
+}  // namespace mfq::cuda::vmm
 
 #endif

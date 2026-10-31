@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "backends/cuda/engine/state/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "engine/state/sessions.h"
 
 #include <cstddef>

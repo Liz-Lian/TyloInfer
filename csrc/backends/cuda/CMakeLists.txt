@@ -451,9 +451,6 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/dspark.cpp
     ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/vision.cpp
     ${TYLOINFER_CUDA_ROOT}/models/qwen4_exp/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_offload.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_memory.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/state/kv_vmm.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm5_next/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/gemma4/ops.cpp
     ${TYLOINFER_CUDA_ROOT}/models/glm_dsa/ops.cpp
@@ -467,6 +464,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/ops/ffn/dense.cpp
     ${PROJECT_SOURCE_DIR}/ops/ffn/residual.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/profile.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/vmm.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/route_stats.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/collectives.cpp
     ${PROJECT_SOURCE_DIR}/ops/attention/attention.cpp
@@ -534,6 +532,8 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/state/kv_cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/recurrent.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/paged_kv.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/kv_offload.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/kv_memory.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/image.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/cache.cpp
@@ -578,8 +578,8 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/models/components.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/state/session/text_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/state/session/deepseek_v41_paged.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp

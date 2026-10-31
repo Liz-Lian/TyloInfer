@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::cuda::kv_vmm {
+namespace mfq::cuda::vmm {
 
 /// A physical chunk: the driver's allocation handle (CUmemGenericAllocationHandle); 0 = none.
 using VmmChunk = unsigned long long;
@@ -74,4 +74,4 @@ template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take
     return run < 0 || commit_run(run, hi);
 }
 
-}  // namespace mfq::cuda::kv_vmm
+}  // namespace mfq::cuda::vmm

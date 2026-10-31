@@ -11,7 +11,7 @@
 #include "models/qwen4_exp/ops.h"
 #include "models/common/prompt.h"
 #include "engine/executor/sampler.h"
-#include "backends/cuda/engine/state/session/text_cache.h"
+#include "engine/models/common/session/cache.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"

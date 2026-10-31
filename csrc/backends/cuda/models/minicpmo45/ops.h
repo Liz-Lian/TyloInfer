@@ -3,7 +3,7 @@
 #include "engine/executor/sequence.h"
 
 #include "models/common/causal_model_ops.h"
-#include "backends/cuda/engine/state/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "engine/requests/inference.h"
 #include "models/common/block.h"
 #include "engine/models/minicpmo45/causal_lm.h"

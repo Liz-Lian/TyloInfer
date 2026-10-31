@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/engine/state/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/executor/mtp_policy.h"
 

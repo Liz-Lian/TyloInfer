@@ -1,7 +1,7 @@
 #include "env.h"
-#include "backends/cuda/engine/state/kv_memory.h"
-#include "backends/cuda/engine/state/kv_vmm.h"
-#include "backends/cuda/engine/state/kv_budget.h"
+#include "engine/state/kv_memory.h"
+#include "engine/backends/cuda/native/vmm.h"
+#include "engine/state/kv_budget.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "context.h"
@@ -79,7 +79,7 @@ tb::Tensor host_tensor(const std::vector<int64_t>& shape, const tb::TensorOption
 }
 
 struct KvMemoryAllocation::Virtual {
-    kv_vmm::VmmRange range;
+    vmm::VmmRange range;
     int64_t maximum, heads, width, committed = 0;
     std::size_t element;
     Virtual(int64_t maximum, int64_t heads, int64_t width, std::size_t element)
@@ -92,7 +92,7 @@ struct KvMemoryAllocation::Virtual {
         std::set<int64_t> result;
         tokens=std::min(maximum,((tokens+8191)/8192)*8192);
         if (tokens <= committed) return result;
-        const auto g = kv_vmm::vmm_granularity();
+        const auto g = vmm::vmm_granularity();
         for (int64_t head=0; head<heads; ++head) {
             const auto begin = std::size_t(head)*maximum*width*element;
             const auto end = begin + std::size_t(tokens)*width*element;
@@ -106,10 +106,10 @@ struct KvMemoryAllocation::Virtual {
         const auto fresh = missing(tokens);
         if (!fresh.empty()) TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(current_stream().stream()));
         for (const auto page : fresh) {
-            if (!range.map_range(page,page+1,[]{return kv_vmm::VmmChunk(0);}))
+            if (!range.map_range(page,page+1,[]{return vmm::VmmChunk(0);}))
                 throw std::runtime_error(insufficient);
-            TYLOINFER_NATIVE_CUDA_CHECK(cudaMemsetAsync(range.base()+page*kv_vmm::vmm_granularity(),0,
-                kv_vmm::vmm_granularity(),current_stream().stream()));
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaMemsetAsync(range.base()+page*vmm::vmm_granularity(),0,
+                vmm::vmm_granularity(),current_stream().stream()));
         }
         committed = std::max(committed,tokens);
     }
@@ -143,7 +143,7 @@ std::size_t KvMemoryAllocation::raw_bytes() const {return std::size_t(maximum)*h
 std::size_t KvMemoryAllocation::index_bytes() const {return std::size_t(maximum+(maximum+pool-1)/pool)*index_width*2;}
 std::size_t KvMemoryAllocation::gpu_bytes() const {
     if (!ready) return 0;
-    if (virtual_keys) return index_bytes() + std::size_t(virtual_keys->range.mapped_count()+virtual_values->range.mapped_count())*kv_vmm::vmm_granularity();
+    if (virtual_keys) return index_bytes() + std::size_t(virtual_keys->range.mapped_count()+virtual_values->range.mapped_count())*vmm::vmm_granularity();
     return index_bytes() + hot.bytes() + (host || offload ? 0 : raw_bytes());
 }
 std::size_t KvMemoryAllocation::ram_bytes() const {
@@ -153,7 +153,7 @@ std::size_t KvMemoryAllocation::ram_bytes() const {
 }
 std::size_t KvMemoryAllocation::growth_bytes(int64_t tokens) const {
     tokens=std::min(maximum,tokens);
-    return virtual_keys ? (virtual_keys->missing(tokens).size()+virtual_values->missing(tokens).size())*kv_vmm::vmm_granularity() : 0;
+    return virtual_keys ? (virtual_keys->missing(tokens).size()+virtual_values->missing(tokens).size())*vmm::vmm_granularity() : 0;
 }
 void KvMemoryAllocation::ensure(int64_t tokens) {
     if (tokens<0 || tokens>maximum) throw std::invalid_argument("KV growth exceeds configured context");
@@ -266,7 +266,7 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
     if(options_.placement=="vram" && raw>gpu)throw std::runtime_error("kv_vram_insufficient: configured KV cache does not fit in available VRAM");
     if(options_.placement=="ram" && raw>ram)throw std::runtime_error(insufficient);
     if(options_.placement=="auto" && (raw>gpu && raw-gpu>ram))throw std::runtime_error(insufficient);
-    if(options_.dynamic && !kv_vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
+    if(options_.dynamic && !vmm::vmm_available())throw std::runtime_error("kv_dynamic_unavailable: CUDA virtual memory management is unavailable");
     if(options_.dynamic && raw>gpu)throw std::runtime_error("kv_dynamic_unavailable: experimental dynamic KV currently requires a GPU-resident cache");
     if(!tiered_budget && !automatic_ram_ && !options_.dynamic && options_.placement!="ram" && raw>gpu) {
         KvOffloadConfig config;

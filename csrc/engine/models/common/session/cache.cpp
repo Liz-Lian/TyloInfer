@@ -1,11 +1,11 @@
-#include "backends/cuda/engine/state/session/text_cache.h"
+#include "engine/models/common/session/cache.h"
 #include "engine/state/kv_cache.h"
 #include <array>
 #include <cstring>
 
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/state/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "engine/state/prefix_cache.h"
 #include "engine/state/paged.h"
 #include "engine/state/sessions.h"

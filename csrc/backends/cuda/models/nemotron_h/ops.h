@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/causal_model_ops.h"
-#include "backends/cuda/engine/state/session/state.h"
+#include "engine/models/common/session/state.h"
 #include "engine/models/nemotron_h/causal_lm.h"
 #include "engine/models/nemotron_h/config.h"
 

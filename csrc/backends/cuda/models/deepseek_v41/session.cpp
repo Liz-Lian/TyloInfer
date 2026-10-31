@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "ops.h"
-#include "backends/cuda/engine/state/session/state.h"
+#include "engine/models/common/session/state.h"
 
 namespace mfq::cuda {
 namespace {

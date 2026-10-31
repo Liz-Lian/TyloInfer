@@ -1,7 +1,7 @@
 #include "engine/executor/budget.h"
 
 #include "engine/backends/cuda/native/tensor/backend.h"
-#include "backends/cuda/engine/state/session/text_cache.h"
+#include "engine/models/common/session/cache.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/executor/engine.h"
