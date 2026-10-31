@@ -4,6 +4,7 @@
 #include "storage/model_source.h"
 #include "tyloinfer/model_source.h"
 #include "transport.h"
+#include "nlohmann/json.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,8 @@ void print_help() {
            "--minicpmo-duplex-output-prefix PREFIX [OPTIONS]\n\n"
         << "Runtime options:\n"
         << "  --model PATH                    model or split-model shard\n"
+        << "  --dflash2-draft PATH            DFlash2 checkpoint for Flash-Next text\n"
+        << "  --inspect-model-json            inspect metadata without loading GPU weights\n"
         << "  --config PATH                   external model config\n"
         << "  --transport TYPE                stdio or http\n"
         << "  --host HOST                     HTTP bind host (default 127.0.0.1)\n"
@@ -61,6 +64,7 @@ struct RuntimeOptions : CudaEngineOptions {
     int transport_port = 8080;
     bool transport_mode = false;
     bool stdio_mode = false;
+    bool inspect_model_json = false;
 };
 
 struct RuntimeCommandOptions
@@ -81,7 +85,10 @@ RuntimeCommandOptions parse_runtime(ArgCursor& args) {
                 option, args, result)) {
             continue;
         }
-        if (option == "--transport") {
+        if (option == "--inspect-model-json") {
+            result.inspect_model_json = true;
+        }
+        else if (option == "--transport") {
             if (result.transport_mode) {
                 usage_error("runtime transport was specified more than once");
             }
@@ -136,10 +143,11 @@ RuntimeCommandOptions parse_runtime(ArgCursor& args) {
     if (result.model_path.empty()) usage_error("--model is required");
     mfq::cuda::minicpmo45::validate_command_options(result);
     const int modes = static_cast<int>(result.transport_mode) +
+        static_cast<int>(result.inspect_model_json) +
         static_cast<int>(!result.input_prefix.empty()) +
         static_cast<int>(!result.duplex_input_prefix.empty());
     if (modes != 1) {
-        usage_error("select exactly one execution mode: --transport, "
+        usage_error("select exactly one execution mode: --inspect-model-json, --transport, "
                     "MiniCPM-o composite, or MiniCPM-o duplex");
     }
     if (transport_option && !result.transport_mode) {
@@ -212,6 +220,24 @@ int run_transport_runtime(RuntimeOptions& options) {
 
 int execute_runtime(RuntimeCommandOptions options) {
     return mfq::cuda::internal::with_command_errors([&]() -> int {
+        if (options.inspect_model_json) {
+            const auto source = mfq::open_model_source(options.model_path);
+            nlohmann::json result{{"architecture", source->architecture()},
+                {"config", nlohmann::json::parse(source->model_config_json())},
+                {"paths", nlohmann::json::array()}, {"tensors", nlohmann::json::object()}};
+            for (const auto& path : source->source_paths()) {
+                const auto value = path.generic_u8string();
+                result["paths"].push_back(std::string(value.begin(), value.end()));
+            }
+            for (const auto& tensor : source->tensors()) {
+                if (tensor.name.starts_with("__mfq_asset__/")) continue;
+                auto& record = result["tensors"][tensor.name];
+                record = {{"dtype", tensor.dtype}, {"nbytes", tensor.nbytes}};
+                if (tensor.shape) record["shape"] = *tensor.shape;
+            }
+            std::cout << result.dump() << '\n';
+            return 0;
+        }
         if (options.stdio_mode) prepare_mfq_stdio_transport();
         if (options.duplex_input_prefix.empty() &&
                 options.input_prefix.empty()) {

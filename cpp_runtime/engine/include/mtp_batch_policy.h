@@ -1,4 +1,5 @@
 #pragma once
+#include "mtp_limits.h"
 
 #include <algorithm>
 #include <array>
@@ -26,7 +27,7 @@ public:
     using Clock = std::chrono::steady_clock;
     BatchDepthPolicy(std::vector<std::string> requests, int maximum, std::size_t ordinary_requests = 0)
         : requests_(std::move(requests)), ordinary_requests_(ordinary_requests),
-          maximum_(std::clamp(maximum, 1, 5)), current_(maximum_) {}
+          maximum_(std::clamp(maximum, 1, kMaximumReportedDraftDepth)), current_(maximum_) {}
     const auto& requests() const noexcept { return requests_; }
     std::size_t ordinary_requests() const noexcept { return ordinary_requests_; }
     int maximum() const noexcept { return maximum_; }
@@ -184,11 +185,11 @@ private:
     std::vector<std::string> requests_;
     std::size_t ordinary_requests_;
     int maximum_, current_, standard_warmup_ = 2, losing_ = 0, clear_losing_ = 0, last_depth_ = -1;
-    std::array<std::optional<double>, 5> acceptance_{.6};
-    std::array<double, 5> acceptance_weight_{};
-    std::array<std::deque<double>, 6> costs_;
+    std::array<std::optional<double>, kMaximumReportedDraftDepth> acceptance_{.6};
+    std::array<double, kMaximumReportedDraftDepth> acceptance_weight_{};
+    std::array<std::deque<double>, kMaximumReportedDraftDepth + 1> costs_;
     std::deque<double> standard_;
-    std::array<double, 6> last_seen_{};
+    std::array<double, kMaximumReportedDraftDepth + 1> last_seen_{};
     double elapsed_ms_ = 0, last_probe_ms_ = 0;
     bool baseline_probe_ = false, baseline_verified_ = false;
     std::size_t parked_samples_ = 0;

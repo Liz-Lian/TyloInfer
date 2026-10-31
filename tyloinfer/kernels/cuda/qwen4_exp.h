@@ -21,6 +21,10 @@ std::vector<Tensor> gated_residual_pre(
     int64_t hc_count, double eps);
 Tensor gated_residual_post(
     const Tensor&, const Tensor&, const Tensor&, int64_t hc_count);
+// Writes a compatible FP16/FP32 output directly; exact residual aliasing is
+// supported. Unsupported views/types/overlap return false without writing.
+bool try_gated_residual_post_out(const Tensor& branch,const Tensor& residual,
+    const Tensor& injection,const Tensor& output,int64_t hc_count);
 std::vector<Tensor> gated_residual_post_norm(
     const Tensor& branch, const Tensor& residual, const Tensor& injection,
     const Tensor& norm, int64_t hc_count, double eps);
@@ -31,6 +35,8 @@ std::vector<Tensor> live_index_pool(const Tensor& index, const Tensor& positions
     const Tensor& cache_positions, int64_t pool, int64_t maximum);
 Tensor live_topk_blocks(const Tensor& scores, const Tensor& cache_positions,
     int64_t pool, int64_t count);
+Tensor live_topk_selected_tokens(const Tensor& scores, const Tensor& cache_positions,
+    int64_t pool, int64_t count, int64_t budget);
 std::vector<Tensor> ple_dilated_conv_silu(
     const Tensor&, const Tensor&, const std::optional<Tensor>& state,
     int64_t dilation);

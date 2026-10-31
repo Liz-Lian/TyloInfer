@@ -133,7 +133,7 @@ void FFN::prefetch_moe(CudaExecutionContext& execution,const mfq_tensor_backend:
         ids=ids.narrow(1,0,std::min(candidates_per_row,ids.size(1))).to(tb::kInt32).contiguous();
     }else {
         auto row=x.reshape({-1,x.size(-1)}).to(tb::kFloat32);
-        auto logits=moe_router_projection?moe_router_projection->forward(execution,row).contiguous():
+        auto logits=moe_router_projection?moe_router_projection->forward(execution,row).to(tb::kFloat32).contiguous():
             tb::matmul(row,moe_router.transpose(0,1)).contiguous();
         ids=moe_topk_cuda(logits,std::min({int64_t(moe_top_k),logits.size(-1),candidates_per_row}),moe_use_sigmoid,
             moe_use_sqrt_softplus,moe_normalize,moe_delayed_softmax,
@@ -509,7 +509,7 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
         return mfq::models::mixture_of_experts(
             [&] {
                 return profiler.measure("moe.router", [&]() {
-                    return moe_router_projection?moe_router_projection->forward(execution,xf32):
+                    return moe_router_projection?moe_router_projection->forward(execution,xf32).to(mfq_tensor_backend::kFloat32):
                         mfq_tensor_backend::matmul(xf32, moe_router.transpose(0, 1));
                 });
             },
@@ -645,6 +645,24 @@ mfq_tensor_backend::Tensor FFN::forward_impl(CudaExecutionContext &execution,
                     auto pairs=moe_tq->down->forward(hidden,selected.at(0));
                     auto reduced=moe_weighted_reduce_cuda(pairs,selected.at(1));
                     return {finish_latent(std::move(reduced)),true};
+                }
+                if (moe_gguf) {
+                    TYLOINFER_RUNTIME_CHECK(moe_gguf->up && moe_gguf->down &&
+                        (moe_ungated_experts || moe_gguf->gate), "incomplete GGUF routed expert banks");
+                    if (!moe_ungated_experts && activation == ActivationKind::silu_gated) {
+                        auto reduced = profiler.measure("moe.gguf", [&] {
+                            return moe_gguf->forward(routed_input, selected.at(0), selected.at(1),
+                                static_cast<float>(swiglu_limit));
+                        });
+                        return {finish_latent(std::move(reduced)), true};
+                    }
+                    Tensor gate;
+                    if (!moe_ungated_experts) gate = moe_gguf->gate->forward(routed_input, selected.at(0));
+                    auto up = moe_gguf->up->forward(routed_input, selected.at(0));
+                    auto hidden = dense_expert_activation(activation, std::move(gate), std::move(up), swiglu_limit);
+                    auto pairs = moe_gguf->down->forward(hidden, selected.at(0));
+                    auto reduced = moe_weighted_reduce_cuda(pairs, selected.at(1));
+                    return {finish_latent(std::move(reduced)), true};
                 }
                 if (dense_routed) {
                     if (moe_ungated_experts &&

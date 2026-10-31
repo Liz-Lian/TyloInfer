@@ -118,6 +118,7 @@ struct Routed {
     Function function;
     std::vector<std::shared_ptr<MfeWeight>> projections;
     std::vector<std::shared_ptr<TqRoutedWeight>> tq_projections;
+    std::vector<std::shared_ptr<GgufRoutedWeight>> gguf_projections;
     Routed()=default;
     template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>
     Routed(Callable&& call):function(std::forward<Callable>(call)) {}
@@ -132,8 +133,10 @@ std::shared_ptr<const QuantLinear> linear_weight(const Linear& function);
 using LinearGroup = std::function<std::vector<Tensor>(CudaExecutionContext&, const Tensor&)>;
 // Fuse compatible projections while retaining independent TQ storage and
 // individual boundaries for GEMM. Unquantized auxiliaries keep their outputs.
+// combine_rows=false shares GGUF activation quantization using the existing
+// weight images; use it for subsets so an earlier joined image is not copied.
 LinearGroup grouped_linear(CudaExecutionContext&, std::vector<Linear>& functions,
-                           std::size_t joined_prefix=1);
+                           std::size_t joined_prefix=1,bool combine_rows=true);
 
 // GR projections retain floating activation math for dense and quantized input.
 ResidualLinear residual_linear(CudaExecutionContext&, const mfq::ModelSource&, const std::string& name);

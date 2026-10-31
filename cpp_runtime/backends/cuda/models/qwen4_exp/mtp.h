@@ -16,6 +16,8 @@ struct Qwen4ExpMtp final : MtpModule {
     mfq::models::qwen4_exp::Config config;
     Tensor embedding_norm, hidden_norm;
     Linear embedding_fusion, hidden_fusion;
+    Linear draft_output;
+    Tensor draft_token_ids;
     std::unique_ptr<Gr> final_mixer;
     std::vector<std::unique_ptr<Qwen4Block>> layers;
     std::vector<Tensor> positions;
@@ -26,11 +28,14 @@ struct Qwen4ExpMtp final : MtpModule {
     bool reuse_decode_graphs=false;
     uint64_t graph_captures=0;
     uint64_t graph_replays = 0;
+    uint64_t history_tail_replays = 0;
+    int64_t dense_attention_window = -1;
     bool graph_initialized = false;
     bool compact_graph_sampling = true;
     Tensor graph_compact_topk() const;
     bool take_graph_initialization() noexcept override { return std::exchange(graph_initialized,false); }
     uint64_t graph_replay_count() const noexcept override { return graph_replays; }
+    std::optional<std::size_t> extra_decode_workspace_bytes(int) const override;
 
     Qwen4ExpMtp();
     ~Qwen4ExpMtp() override;
@@ -50,11 +55,16 @@ struct Qwen4ExpMtp final : MtpModule {
                                        bool history_only = false);
 
     Tensor forward(const MtpTarget &target, Tensor hidden, Tensor ids) override;
+    Tensor logits_for(const MtpTarget &target, Tensor hidden) const;
+    bool supports_graph_window(int64_t tokens) const;
 
     MtpStep step(const MtpTarget &target, Tensor hidden, Tensor ids) override;
     MtpStep step_positioned(const MtpTarget &target, Tensor hidden, Tensor ids, Tensor positions) override;
     void history_step(const MtpTarget &target, Tensor hidden, Tensor ids, Tensor positions = {},
                       bool scalar_chain = false);
+    std::optional<MtpStep> history_tail_step(const MtpTarget&,Tensor hidden,Tensor ids,Tensor positions = {});
+    std::optional<std::vector<int32_t>> queued_greedy_chain(const MtpTarget&,Tensor hidden,Tensor ids,
+        Tensor positions,int depth,const std::function<void(const std::vector<int32_t>&)>& publish = {});
 
     int64_t cache_position() const noexcept override;
 

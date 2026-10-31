@@ -3,31 +3,33 @@
 class GdnColumnsScope {
     std::string previous_;
     bool present_;
+    const char* key_;
 public:
-    explicit GdnColumnsScope(int columns):present_(std::getenv("TYLOINFER_GDN_PREFILL_COLUMNS")!=nullptr) {
-        if(present_)previous_=std::getenv("TYLOINFER_GDN_PREFILL_COLUMNS");
-        set(columns);
+    explicit GdnColumnsScope(int columns,const char* key="TYLOINFER_GDN_PREFILL_COLUMNS"):present_(std::getenv(key)!=nullptr),key_(key) {
+        if(present_)previous_=std::getenv(key_);
+        set(columns,key_);
     }
-    static void set(int columns) {
+    static void set(int columns,const char* key="TYLOINFER_GDN_PREFILL_COLUMNS") {
         const auto value=columns<0?std::string():std::to_string(columns);
 #ifdef _WIN32
-        if(_putenv_s("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str()))throw std::runtime_error("GDN columns option");
+        if(_putenv_s(key,value.c_str()))throw std::runtime_error("GDN columns option");
 #else
-        if(value.empty()?unsetenv("TYLOINFER_GDN_PREFILL_COLUMNS"):setenv("TYLOINFER_GDN_PREFILL_COLUMNS",value.c_str(),1))
+        if(value.empty()?unsetenv(key):setenv(key,value.c_str(),1))
             throw std::runtime_error("GDN columns option");
 #endif
     }
     ~GdnColumnsScope() {
 #ifdef _WIN32
-        _putenv_s("TYLOINFER_GDN_PREFILL_COLUMNS",present_?previous_.c_str():"");
+        _putenv_s(key_,present_?previous_.c_str():"");
 #else
-        if(present_)setenv("TYLOINFER_GDN_PREFILL_COLUMNS",previous_.c_str(),1);
-        else unsetenv("TYLOINFER_GDN_PREFILL_COLUMNS");
+        if(present_)setenv(key_,previous_.c_str(),1);
+        else unsetenv(key_);
 #endif
     }
 };
 
 void gdn_prefill_columns_case() {
+    GdnColumnsScope keyhead(0,"TYLOINFER_GDN_PREFILL_KEYHEAD");
     GdnColumnsScope option(0);
     const auto bits=[](const Tensor& a,const Tensor& b,const char* label) {
         auto x=a.cpu().contiguous(),y=b.cpu().contiguous();

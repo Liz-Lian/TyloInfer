@@ -10,12 +10,19 @@ cudaError_t moe_mapped_copy_launch_geometry(int* blocks,int* threads);
 void moe_snapshot_mapped(const void* host_table,const uint32_t* cancelled,void* device_table,
     uint64_t capacity,cudaStream_t);
 void moe_copy_mapped(const void* table,const uint32_t* cancelled,int blocks,int threads,cudaStream_t);
+// GGUF packets retain the byte boundary after Gate/Up in header word 3.
+// Both phases use the original descriptor offsets; cancellation stays in word 2.
+void moe_copy_mapped_phase(const void* table,const uint32_t* cancelled,int blocks,int threads,int phase,cudaStream_t);
 void moe_publish_routes(const void* half_input,const int32_t* ids,float* mapped_input,
     int32_t* mapped_ids,uint32_t* sequence,int input_elements,int route_entries,cudaStream_t);
-void wait_mapped_flag(const uint32_t* flag,cudaStream_t);
+// Optional GPU-domain CPU completion time: zero when ready on entry. A
+// blocking wait publishes its entry timestamp, then its completion timestamp.
+// Consumers use the final value only after the stream finishes.
+void wait_mapped_flag(const uint32_t* flag,cudaStream_t,std::uint64_t* waited_until=nullptr);
 void wait_mapped_plan(const uint32_t* flag,const int32_t* host_kind,int32_t* device_kind,
     int experts,const uint32_t* host_abort,uint32_t* device_abort,cudaStream_t);
 void signal_mapped_flag(uint32_t* flag,cudaStream_t);
+void moe_stamp_clock(std::uint64_t* clock,cudaStream_t);
 void moe_update_dispatch_maps(const uint64_t* pointers,int maps,int experts,
     const int32_t* kind,const uint32_t* abort,cudaStream_t);
 void moe_classify_resident(const uint64_t* dispatch_pointers,int gate_maps,int up_maps,int down_maps,

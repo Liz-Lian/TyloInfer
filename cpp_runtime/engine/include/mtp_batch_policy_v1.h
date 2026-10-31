@@ -1,6 +1,9 @@
 #pragma once
+#include "mtp_limits.h"
 
-// CUDA keeps the measured pre-7d57bd30 policy until the updated scheduler is validated.
+// CUDA retains v1 exploration and parking. Each width learns its own actual
+// committed-token yield and complete cycle cost. Ordinary timing is refreshed
+// after cache warmup so drafts are compared with current ordinary execution.
 
 #include <algorithm>
 #include <array>
@@ -8,6 +11,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -22,7 +26,7 @@ public:
     using Clock = std::chrono::steady_clock;
     BatchDepthPolicy(std::vector<std::string> requests, int maximum, std::size_t ordinary_requests = 0)
         : requests_(std::move(requests)), ordinary_requests_(ordinary_requests),
-          maximum_(std::clamp(maximum, 1, 5)), current_(maximum_) {}
+          maximum_(std::clamp(maximum, 1, kMaximumReportedDraftDepth)), current_(maximum_) { committed_mean_.fill(1.); }
     const auto& requests() const noexcept { return requests_; }
     std::size_t ordinary_requests() const noexcept { return ordinary_requests_; }
     int maximum() const noexcept { return maximum_; }
@@ -33,10 +37,11 @@ public:
     std::optional<double> cost(int depth) const {
         const auto& values = depth ? costs_.at(depth) : standard_;
         if (values.empty()) return std::nullopt;
-        std::vector<double> sorted(values.begin(), values.end());
-        std::sort(sorted.begin(), sorted.end());
-        const auto middle = sorted.size() / 2;
-        return sorted.size() % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) * .5;
+        // Cache exchange and CPU/DMA scheduling can make every few windows
+        // expensive. Those windows still consume generation time; a median
+        // would price a depth using only its inexpensive windows. Keep the
+        // bounded recent history, including every eligible complete cycle.
+        return std::accumulate(values.begin(), values.end(), 0.) / values.size();
     }
     void observe(int depth, std::span<const int> accepted, Clock::time_point started,
         Clock::time_point finished, bool stable, bool interrupted) {
@@ -52,20 +57,24 @@ public:
             if (remaining_ && !--remaining_) {
                 costs_ = {};
                 last_seen_ = {};
-                acceptance_.fill(.6);
+                committed_mean_.fill(1.);
+                committed_weight_.fill(0.);
                 current_ = maximum_;
                 losing_ = clear_losing_ = 0;
             }
             return;
         }
-        for (int position = 0; position < depth; ++position) {
-            int reached = 0, hits = 0;
-            for (int count : accepted) {
-                reached += count >= position;
-                hits += count > position;
-            }
-            if (!reached) break;
-            acceptance_[position] += .08 * (double(hits) / reached - acceptance_[position]);
+        if (!accepted.empty()) {
+            // Different widths visit different committed contexts and may
+            // use different numerical kernels. Pooling their position hit
+            // rates can misprice a wide window from shallow-window failures.
+            // Learn the measured outcome of this width, as Strata does for
+            // MTP windows, with the same debiased EMA used for acceptance.
+            const double committed = 1. +
+                std::accumulate(accepted.begin(), accepted.end(), 0.) / accepted.size();
+            auto& weight = committed_weight_[depth];
+            weight += .08 * (1. - weight);
+            committed_mean_[depth] += .08 / weight * (committed - committed_mean_[depth]);
         }
         elapsed_ms_ += ms;
         if (!same_depth) return;
@@ -73,6 +82,16 @@ public:
         last_seen_[depth] = elapsed_ms_;
         for (int candidate = maximum_; candidate > 0; --candidate) if (costs_[candidate].size() < 3) {
             current_ = candidate;
+            return;
+        }
+        // The initial ordinary samples precede speculative cache warming.
+        // Refresh once after a second of useful measurements, then sparsely
+        // (the same five-second age used for stale draft alternatives). Keep
+        // the measured draft costs and acceptance through this short probe.
+        if(elapsed_ms_ >= next_baseline_refresh_ms_) {
+            next_baseline_refresh_ms_=elapsed_ms_+5000.;
+            standard_.clear();standard_warmup_=2;
+            losing_=clear_losing_=0;
             return;
         }
         ++decisions_;
@@ -83,11 +102,15 @@ public:
         losing_ = score(best) <= score(0) * 1.03 ? losing_ + 1 : 0;
         clear_losing_ = score(best) < score(0) * .9 ? clear_losing_ + 1 : 0;
         if (elapsed_ms_ - last_probe_ms_ >= 1000) {
-            int rival = 1;
-            for (int candidate = 2; candidate <= maximum_; ++candidate)
-                if (last_seen_[candidate] < last_seen_[rival]) rival = candidate;
-            if (rival != current_ && (score(rival) * 1.15 >= score(best) ||
-                elapsed_ms_ - last_seen_[rival] >= 5000)) {
+            // An old, clearly unprofitable width must not block every other
+            // rival's refresh until the five-second stale-width deadline.
+            int rival = 0;
+            for (int candidate = 1; candidate <= maximum_; ++candidate) {
+                if (candidate == current_ || (score(candidate) * 1.15 < score(best) &&
+                    elapsed_ms_ - last_seen_[candidate] < 5000)) continue;
+                if (!rival || last_seen_[candidate] < last_seen_[rival]) rival = candidate;
+            }
+            if (rival) {
                 current_ = rival;
                 last_probe_ms_ = elapsed_ms_;
             }
@@ -117,21 +140,18 @@ private:
     double score(int depth) const {
         const auto milliseconds = cost(depth);
         if (!milliseconds) return 0;
-        double expected = 1, reach = 1;
-        for (int position = 0; position < depth; ++position) {
-            reach *= acceptance_[position];
-            expected += reach;
-        }
-        return requests_.size() * expected / *milliseconds;
+        const double expected = depth ? committed_mean_[depth] : 1.;
+        return (ordinary_requests_ + requests_.size() * expected) / *milliseconds;
     }
     std::vector<std::string> requests_;
     std::size_t ordinary_requests_;
     int maximum_, current_, standard_warmup_ = 2, losing_ = 0, clear_losing_ = 0, last_depth_ = -1;
-    std::array<double, 5> acceptance_{.6, .6, .6, .6, .6};
-    std::array<std::deque<double>, 6> costs_;
+    std::array<double, kMaximumReportedDraftDepth + 1> committed_mean_{};
+    std::array<double, kMaximumReportedDraftDepth + 1> committed_weight_{};
+    std::array<std::deque<double>, kMaximumReportedDraftDepth + 1> costs_;
     std::deque<double> standard_;
-    std::array<double, 6> last_seen_{};
-    double elapsed_ms_ = 0, last_probe_ms_ = 0;
+    std::array<double, kMaximumReportedDraftDepth + 1> last_seen_{};
+    double elapsed_ms_ = 0, last_probe_ms_ = 0, next_baseline_refresh_ms_ = 1000;
     std::optional<Clock::time_point> finished_;
     std::uint64_t remaining_ = 0, cooldown_ = 128, decisions_ = 0, parks_ = 0;
 };

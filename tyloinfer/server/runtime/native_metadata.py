@@ -13,7 +13,7 @@ class NativeModelInspector:
         self.backend = backend
 
     def __call__(self, model: Path, companions: list[str] | None = None) -> dict:
-        if self.backend != 'metal':
+        if self.backend not in {'metal', 'cuda'}:
             raise ValueError('This model format is not available on the selected backend')
         command = [str(self.executable), '--model', str(model), '--inspect-model-json']
         command.extend(native_gguf_companion_arguments(model, companions or [], self.backend))

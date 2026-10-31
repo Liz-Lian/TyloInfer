@@ -20,7 +20,8 @@ struct HostParallelProfile {
 // Independent worker groups let file reads overlap CPU expert computation.
 class HostParallelPool {
 public:
-    explicit HostParallelPool(std::function<void(std::size_t)> initialize = {},bool wait_idle_workers=true);
+    explicit HostParallelPool(std::function<void(std::size_t)> initialize = {},bool wait_idle_workers=true,
+                              std::uint64_t idle_spin_ns=0);
     ~HostParallelPool();
     HostParallelPool(const HostParallelPool&) = delete;
     HostParallelPool& operator=(const HostParallelPool&) = delete;

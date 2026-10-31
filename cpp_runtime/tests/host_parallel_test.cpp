@@ -284,6 +284,22 @@ void staged_checks() {
 
 int main(int argc, char**) {
     try {
+        for(bool wait_idle:{true,false}) {
+            mfq::HostParallelPool spinning({},wait_idle,1000000);
+            for(int threads:{2,4,1,3,2}) {
+                std::vector<std::atomic<int>> visits(137);
+                for(auto& v:visits)v=0;
+                spinning.run(0,visits.size(),3,threads,[&](auto begin,auto end){for(auto i=begin;i<end;++i)++visits[i];});
+                for(const auto& v:visits)require(v==1,"spinning host pool lost or repeated rows");
+            }
+            bool failed=false;
+            try{spinning.run(0,137,3,4,[](auto,auto){throw std::runtime_error("spin failure");});}
+            catch(const std::runtime_error&){failed=true;}
+            require(failed,"spinning host pool lost worker failure");
+            std::atomic<int> recovered=0;
+            spinning.run(0,137,3,4,[&](auto begin,auto end){recovered+=int(end-begin);});
+            require(recovered==137,"spinning host pool did not recover after failure");
+        }
         profile_checks();
         callback_lifetime_checks();
         staged_checks();

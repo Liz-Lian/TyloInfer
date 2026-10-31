@@ -12,6 +12,15 @@
 #include <algorithm>
 #include <utility>
 #include <vector>
+#include <cstdlib>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <tuple>
+#include <type_traits>
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "../../../cpp_runtime/backends/cuda/kernels/kernel_dispatch_trace.h"
+#endif
 
 constexpr int ROPE_BD = 256;
 
@@ -22,6 +31,23 @@ struct RotaryProjectionLayout {
 __device__ int64_t rotary_position(const void* positions, bool wide, int64_t index) {
     return wide ? static_cast<const int64_t*>(positions)[index]
                 : static_cast<const int32_t*>(positions)[index];
+}
+
+__device__ float2 normalized_rotary_angles(const void* positions,bool wide_positions,
+    const float* frequencies,const int32_t* selected_axes,int column,int token,int64_t batch,
+    int tokens,int axes,int batches,int maximum) {
+    int axis=selected_axes[column];
+    if(axis>=axes)axis=0;
+    const int64_t index=(int64_t(axis)*batches+(batches==1?0:batch))*tokens+token;
+    const int64_t raw_position=rotary_position(positions,wide_positions,index);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    int position=wide_positions?__double2int_rz(double(raw_position)):int(raw_position);
+#else
+    int position=static_cast<int32_t>(raw_position);
+#endif
+    position=max(0,min(maximum-1,position));
+    const float angle=__fmul_rn(float(position),frequencies[column]);
+    return make_float2(float(::cos(double(angle))),float(::sin(double(angle))));
 }
 
 template<class Value>
@@ -106,7 +132,7 @@ void qsa_pool_rotary_cache_cuda(const mfq_tensor_backend::Tensor& index,const mf
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template<class Value>
+template<class Value,bool FusedReduction>
 __device__ __forceinline__ void rotary_normalized_row(
     const Value* input, const float* weight, const void* positions, bool wide_positions,
     const float* frequencies, const int32_t* selected_axes, Value* output,
@@ -114,7 +140,7 @@ __device__ __forceinline__ void rotary_normalized_row(
     float eps, RotaryProjectionLayout layout, __half* key_cache,
     const void* cache_positions, bool wide_cache_positions, int64_t capacity,
     const void* projected_value, bool float_value, RotaryProjectionLayout value_layout,
-    __half* value_cache, int64_t row, int active_threads) {
+    __half* value_cache, int64_t row, int active_threads,const float2* rotations) {
     const int64_t batch = row / (int64_t(heads) * tokens);
     const int head = int((row / tokens) % heads), token = int(row % tokens);
     const int64_t source = batch * layout.batch + token * layout.token + head * layout.head;
@@ -126,13 +152,43 @@ __device__ __forceinline__ void rotary_normalized_row(
     __shared__ float partial[256];
     partial[threadIdx.x] = sum;
     __syncthreads();
-    for (int stride = active_threads / 2; stride > 0; stride /= 2) {
-        if (threadIdx.x < stride)
-            partial[threadIdx.x] = __fadd_rn(partial[threadIdx.x], partial[threadIdx.x + stride]);
+    float inverse;
+    if constexpr(FusedReduction) {
+        if(threadIdx.x<32) {
+            const int lane=threadIdx.x;
+            float merged;
+            // Preserve the original descending pairwise tree across warps,
+            // then finish within one warp. Compute the inverse only once.
+            if(active_threads==256) {
+                const float a=__fadd_rn(partial[lane],partial[lane+128]);
+                const float b=__fadd_rn(partial[lane+32],partial[lane+160]);
+                const float c=__fadd_rn(partial[lane+64],partial[lane+192]);
+                const float d=__fadd_rn(partial[lane+96],partial[lane+224]);
+                merged=__fadd_rn(__fadd_rn(a,c),__fadd_rn(b,d));
+            }else if(active_threads==128) {
+                merged=__fadd_rn(__fadd_rn(partial[lane],partial[lane+64]),
+                    __fadd_rn(partial[lane+32],partial[lane+96]));
+            }else if(active_threads==64)merged=__fadd_rn(partial[lane],partial[lane+32]);
+            else merged=partial[lane];
+            #pragma unroll
+            for(int offset=16;offset;offset>>=1)
+                merged=__fadd_rn(merged,__shfl_down_sync(0xffffffffu,merged,offset));
+            if(!lane) {
+                const float mean=__fdiv_rn(merged,float(width));
+                partial[0]=__fdiv_rn(1.f,__fsqrt_rn(__fadd_rn(mean,eps)));
+            }
+        }
         __syncthreads();
+        inverse=partial[0];
+    }else {
+        for (int stride = active_threads / 2; stride > 0; stride /= 2) {
+            if (threadIdx.x < stride)
+                partial[threadIdx.x] = __fadd_rn(partial[threadIdx.x], partial[threadIdx.x + stride]);
+            __syncthreads();
+        }
+        const float mean = __fdiv_rn(partial[0], float(width));
+        inverse = __fdiv_rn(1.f, __fsqrt_rn(__fadd_rn(mean, eps)));
     }
-    const float mean = __fdiv_rn(partial[0], float(width));
-    const float inverse = __fdiv_rn(1.f, __fsqrt_rn(__fadd_rn(mean, eps)));
     const auto normalized = [&](int column) {
         const float scaled = __fmul_rn(float(input[source + int64_t(column) * layout.column]), inverse);
         return Value(__fmul_rn(scaled, __fadd_rn(weight[column], 1.f)));
@@ -151,19 +207,10 @@ __device__ __forceinline__ void rotary_normalized_row(
             store(column + pairs, normalized(column + pairs));
             continue;
         }
-        int axis = selected_axes[column];
-        if (axis >= axes) axis = 0;
-        const int64_t position_index = (int64_t(axis) * batches + (batches == 1 ? 0 : batch)) * tokens + token;
-        const int64_t raw_position = rotary_position(positions, wide_positions, position_index);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        // Preserve native tensor conversion through double, including overflow.
-        int position = wide_positions ? __double2int_rz(double(raw_position)) : int(raw_position);
-#else
-        int position = static_cast<int32_t>(raw_position);
-#endif
-        position = max(0, min(maximum - 1, position));
-        const float angle = __fmul_rn(float(position), frequencies[column]);
-        const float cosine = float(::cos(double(angle))), sine = float(::sin(double(angle)));
+        const auto rotation=rotations?rotations[((batches==1?0:batch)*tokens+token)*pairs+column]:
+            normalized_rotary_angles(positions,wide_positions,frequencies,selected_axes,column,token,batch,
+                tokens,axes,batches,maximum);
+        const float cosine=rotation.x,sine=rotation.y;
         const float first = float(normalized(column)), second = float(normalized(column + pairs));
         store(column, Value(__fsub_rn(__fmul_rn(first, cosine), __fmul_rn(second, sine))));
         store(column + pairs, Value(__fadd_rn(__fmul_rn(second, cosine), __fmul_rn(first, sine))));
@@ -179,7 +226,7 @@ __device__ __forceinline__ void rotary_normalized_row(
     }
 }
 
-template<class Value>
+template<class Value,bool FusedReduction>
 __global__ void rotary_normalized_cached_kernel(
     const Value* input, const float* weight, const void* positions, bool wide_positions,
     const float* frequencies, const int32_t* selected_axes, Value* output,
@@ -187,10 +234,10 @@ __global__ void rotary_normalized_cached_kernel(
     float eps, RotaryProjectionLayout layout, __half* key_cache,
     const void* cache_positions, bool wide_cache_positions, int64_t capacity,
     const void* projected_value, bool float_value, RotaryProjectionLayout value_layout,
-    __half* value_cache) {
-    rotary_normalized_row<Value>(input,weight,positions,wide_positions,frequencies,selected_axes,output,
+    __half* value_cache,const float2* rotations) {
+    rotary_normalized_row<Value,FusedReduction>(input,weight,positions,wide_positions,frequencies,selected_axes,output,
         heads,tokens,width,pairs,axes,batches,maximum,eps,layout,key_cache,
-        cache_positions,wide_cache_positions,capacity,projected_value,float_value,value_layout,value_cache,blockIdx.x,blockDim.x);
+        cache_positions,wide_cache_positions,capacity,projected_value,float_value,value_layout,value_cache,blockIdx.x,blockDim.x,rotations);
 }
 
 struct RotaryNormalizedProjection {
@@ -213,28 +260,128 @@ struct RotaryNormalizedProjection {
     RotaryProjectionLayout value_layout;
     __half* value_cache;
     int64_t rows;
+    const float2* rotations=nullptr;
 };
 struct RotaryNormalizedGroup { RotaryNormalizedProjection entries[3]; int count; };
-template<class Value>
+
+__global__ void rotary_shared_angles_kernel(RotaryNormalizedProjection p,float2* output,int64_t count) {
+    for(int64_t index=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;index<count;
+            index+=int64_t(gridDim.x)*blockDim.x) {
+        const int column=int(index%p.pairs),token=int(index/p.pairs%p.tokens);
+        const int64_t batch=index/p.pairs/p.tokens;
+        output[index]=normalized_rotary_angles(p.positions,p.wide_positions,p.frequencies,p.selected_axes,
+            column,token,batch,p.tokens,p.axes,p.batches,p.maximum);
+    }
+}
+
+bool fused_rotary_reduction_enabled() {
+    const auto* option=std::getenv("TYLOINFER_ROTARY_FUSED_REDUCTION");
+    return !option || option[0]!='0';
+}
+
+bool shared_rotary_angles_enabled(const void* function,int threads,int64_t rows) {
+    const auto* option=std::getenv("TYLOINFER_ROTARY_SHARED_ANGLES");
+    if(option && option[0]=='0')return false;
+    if(option && option[0]=='1')return true;
+    if(!function)return false;
+    // Small windows execute duplicated angles in parallel. Amortize a
+    // separate angle launch only beyond two fully resident waves, using the
+    // actual kernel's register/shared-memory occupancy on the current device.
+    static std::mutex mutex;
+    static std::map<std::tuple<int,int,std::uintptr_t>,int64_t> capacities;
+    int device=0;TYLOINFER_CUDA_CHECK(cudaGetDevice(&device));
+    const auto key=std::make_tuple(device,threads,reinterpret_cast<std::uintptr_t>(function));
+    std::lock_guard<std::mutex> lock(mutex);
+    auto found=capacities.find(key);
+    if(found==capacities.end()) {
+        int blocks=0,sms=0;
+        TYLOINFER_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,function,threads,0));
+        TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,device));
+        found=capacities.emplace(key,int64_t(blocks)*sms).first;
+    }
+    return rows>2*found->second;
+}
+
+mfq_tensor_backend::Tensor prepare_rotary_shared_angles(const RotaryNormalizedProjection& p,
+        const mfq_tensor_backend::Tensor& like) {
+    namespace tb=mfq_tensor_backend;
+    auto angles=tb::empty({int64_t(p.batches),int64_t(p.tokens),int64_t(p.pairs),2},like.options().dtype(tb::kFloat32));
+    const auto count=angles.numel()/2;
+    // One warp per block distributes the expensive double-precision functions
+    // across SMs even for short decode windows. Bound a grid-stride launch.
+    const auto blocks=unsigned(std::min<int64_t>((count+31)/32,65535));
+    rotary_shared_angles_kernel<<<blocks,32,0,mfq_current_cuda_stream()>>>(p,
+        reinterpret_cast<float2*>(angles.data_ptr<float>()),count);
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
+        "rotary_shared_angles",reinterpret_cast<const void*>(rotary_shared_angles_kernel),
+        "tokens="+std::to_string(p.tokens)+" batches="+std::to_string(p.batches)+" pairs="+std::to_string(p.pairs));
+#endif
+    return angles;
+}
+
+bool same_rotary_angles(const RotaryNormalizedProjection& a,const RotaryNormalizedProjection& b) {
+    return a.positions==b.positions && a.wide_positions==b.wide_positions &&
+        a.frequencies==b.frequencies && a.selected_axes==b.selected_axes &&
+        a.tokens==b.tokens && a.pairs==b.pairs && a.axes==b.axes &&
+        a.batches==b.batches && a.maximum==b.maximum;
+}
+template<class Value,bool FusedReduction>
 __global__ void rotary_normalized_grouped_kernel(RotaryNormalizedGroup group) {
     int64_t row=blockIdx.x;int selected=0;
     while(selected+1<group.count && row>=group.entries[selected].rows) {
         row-=group.entries[selected].rows;++selected;
     }
     const auto& p=group.entries[selected];
-    rotary_normalized_row<Value>(static_cast<const Value*>(p.input),p.weight,p.positions,p.wide_positions,
+    rotary_normalized_row<Value,FusedReduction>(static_cast<const Value*>(p.input),p.weight,p.positions,p.wide_positions,
         p.frequencies,p.selected_axes,static_cast<Value*>(p.output),p.heads,p.tokens,p.width,p.pairs,
         p.axes,p.batches,p.maximum,p.eps,p.layout,p.key_cache,p.cache_positions,p.wide_cache_positions,
-        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,row,p.threads);
+        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,row,p.threads,p.rotations);
 }
 template<class Value>
 void launch_rotary_normalized(const RotaryNormalizedProjection& p) {
-    rotary_normalized_cached_kernel<Value><<<unsigned(p.rows),p.threads,0,mfq_current_cuda_stream()>>>(
+    const auto launch=[&](auto fused) {
+        constexpr bool Fused=decltype(fused)::value;
+        const auto function=rotary_normalized_cached_kernel<Value,Fused>;
+        function<<<unsigned(p.rows),p.threads,0,mfq_current_cuda_stream()>>>(
         static_cast<const Value*>(p.input),p.weight,p.positions,p.wide_positions,
         p.frequencies,p.selected_axes,static_cast<Value*>(p.output),p.heads,p.tokens,p.width,p.pairs,
         p.axes,p.batches,p.maximum,p.eps,p.layout,p.key_cache,p.cache_positions,p.wide_cache_positions,
-        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache);
-    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+        p.capacity,p.projected_value,p.float_value,p.value_layout,p.value_cache,p.rotations);
+        TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
+            "rotary_normalized_cached",reinterpret_cast<const void*>(function),
+            "fused_reduction="+std::to_string(Fused)+" width="+std::to_string(p.width));
+#endif
+    };
+    if(fused_rotary_reduction_enabled())launch(std::true_type{});else launch(std::false_type{});
+}
+
+template<class Value>
+void launch_rotary_normalized_grouped(const RotaryNormalizedGroup& group,unsigned rows,int threads) {
+    const auto launch=[&](auto fused) {
+        constexpr bool Fused=decltype(fused)::value;
+        const auto function=rotary_normalized_grouped_kernel<Value,Fused>;
+        function<<<rows,threads,0,mfq_current_cuda_stream()>>>(group);
+        TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
+            "rotary_normalized_grouped",reinterpret_cast<const void*>(function),
+            "fused_reduction="+std::to_string(Fused)+" rows="+std::to_string(rows));
+#endif
+    };
+    if(fused_rotary_reduction_enabled())launch(std::true_type{});else launch(std::false_type{});
+}
+
+template<class Value>
+const void* rotary_normalized_function(bool grouped) {
+    if(fused_rotary_reduction_enabled())return grouped?
+        reinterpret_cast<const void*>(rotary_normalized_grouped_kernel<Value,true>):
+        reinterpret_cast<const void*>(rotary_normalized_cached_kernel<Value,true>);
+    return grouped?reinterpret_cast<const void*>(rotary_normalized_grouped_kernel<Value,false>):
+        reinterpret_cast<const void*>(rotary_normalized_cached_kernel<Value,false>);
 }
 
 static std::pair<mfq_tensor_backend::Tensor,RotaryNormalizedProjection> prepare_rotary_normalized(
@@ -314,6 +461,13 @@ mfq_tensor_backend::Tensor rotary_normalized_cached_cuda(
     auto prepared=prepare_rotary_normalized(input,weight,positions,frequencies,axes,maximum,eps,
         key_cache,cache_positions,projected_value,value_cache);
     MfqCudaGuard guard(input.device());
+    mfq_tensor_backend::Tensor angles;
+    const auto function=input.scalar_type()==mfq_tensor_backend::kFloat32?
+        rotary_normalized_function<float>(false):rotary_normalized_function<__half>(false);
+    if(prepared.second.heads>1 && shared_rotary_angles_enabled(function,prepared.second.threads,prepared.second.rows)) {
+        angles=prepare_rotary_shared_angles(prepared.second,input);
+        prepared.second.rotations=reinterpret_cast<const float2*>(angles.data_ptr<float>());
+    }
     if(input.scalar_type()==mfq_tensor_backend::kFloat32)launch_rotary_normalized<float>(prepared.second);
     else launch_rotary_normalized<__half>(prepared.second);
     return prepared.first;
@@ -325,10 +479,13 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     mfq_tensor_backend::Tensor positions,mfq_tensor_backend::Tensor frequencies,
     mfq_tensor_backend::Tensor axes,int64_t maximum,double eps,int cache_entry,
     mfq_tensor_backend::Tensor key_cache,mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache) {
+    mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache,
+    const std::vector<mfq_tensor_backend::Tensor>& entry_positions) {
     namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(!inputs.empty() && inputs.size()<=3 && weights.size()==inputs.size(),
         "normalized rotary group must contain one to three input/weight pairs");
+    TYLOINFER_RUNTIME_CHECK(entry_positions.empty() || entry_positions.size()==inputs.size(),
+        "normalized rotary positions must match the input group");
     TYLOINFER_RUNTIME_CHECK((cache_entry>=0 && cache_entry<int(inputs.size())) ||
         (!key_cache.defined() && !cache_positions.defined() && !projected_value.defined() && !value_cache.defined()),
         "normalized rotary cache entry is outside the group");
@@ -336,7 +493,7 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     std::vector<tb::Tensor> outputs;outputs.reserve(inputs.size());
     int64_t rows=0;int threads=32;bool uniform=true;
     for(size_t i=0;i<inputs.size();++i) {
-        auto prepared=prepare_rotary_normalized(inputs[i],weights[i],positions,frequencies,axes,maximum,eps,
+        auto prepared=prepare_rotary_normalized(inputs[i],weights[i],entry_positions.empty()?positions:entry_positions[i],frequencies,axes,maximum,eps,
             int(i)==cache_entry?key_cache:tb::Tensor{},int(i)==cache_entry?cache_positions:tb::Tensor{},
             int(i)==cache_entry?projected_value:tb::Tensor{},int(i)==cache_entry?value_cache:tb::Tensor{});
         TYLOINFER_RUNTIME_CHECK(inputs[i].device()==inputs[0].device(),"normalized rotary group device mismatch");
@@ -345,16 +502,29 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
         rows+=prepared.second.rows;threads=std::max(threads,prepared.second.threads);
     }
     MfqCudaGuard guard(inputs[0].device());
+    std::vector<tb::Tensor> angles(inputs.size());
+    const auto function=!uniform?nullptr:inputs[0].scalar_type()==tb::kFloat32?
+        rotary_normalized_function<float>(true):rotary_normalized_function<__half>(true);
+    if(shared_rotary_angles_enabled(function,threads,rows))for(int i=0;i<group.count;++i) {
+        auto& p=group.entries[i];
+        int64_t sharing_heads=0;
+        for(int j=0;j<group.count;++j)if(same_rotary_angles(p,group.entries[j])) {
+            sharing_heads+=group.entries[j].heads;
+            if(j<i && group.entries[j].rotations)p.rotations=group.entries[j].rotations;
+        }
+        if(!p.rotations && sharing_heads>1) {
+            angles[i]=prepare_rotary_shared_angles(p,inputs[i]);
+            p.rotations=reinterpret_cast<const float2*>(angles[i].data_ptr<float>());
+        }
+    }
     if(!uniform || rows>INT_MAX) {
         for(size_t i=0;i<inputs.size();++i) {
             if(inputs[i].scalar_type()==tb::kFloat32)launch_rotary_normalized<float>(group.entries[i]);
             else launch_rotary_normalized<__half>(group.entries[i]);
         }
     } else {
-        if(inputs[0].scalar_type()==tb::kFloat32)
-            rotary_normalized_grouped_kernel<float><<<unsigned(rows),threads,0,mfq_current_cuda_stream()>>>(group);
-        else rotary_normalized_grouped_kernel<__half><<<unsigned(rows),threads,0,mfq_current_cuda_stream()>>>(group);
-        TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+        if(inputs[0].scalar_type()==tb::kFloat32)launch_rotary_normalized_grouped<float>(group,unsigned(rows),threads);
+        else launch_rotary_normalized_grouped<__half>(group,unsigned(rows),threads);
     }
     return outputs;
 }

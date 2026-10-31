@@ -137,7 +137,7 @@ struct TensorStorage {
     std::size_t bytes = 0;
     Device device{};
     bool pinned = false;
-    std::function<void(std::uintptr_t)> record_stream;
+    std::function<void(std::uintptr_t,std::shared_ptr<void>)> record_stream;
 };
 
 class IntArrayRef {
@@ -250,8 +250,8 @@ public:
 
     const TensorView& view_descriptor() const noexcept { return view_; }
     std::size_t byte_offset() const noexcept { return byte_offset_; }
-    void record_stream(std::uintptr_t stream) const {
-        if (storage_ && storage_->record_stream) storage_->record_stream(stream);
+    void record_stream(std::uintptr_t stream,std::shared_ptr<void> lifetime={}) const {
+        if (storage_ && storage_->record_stream) storage_->record_stream(stream,std::move(lifetime));
     }
 
     template <typename T>

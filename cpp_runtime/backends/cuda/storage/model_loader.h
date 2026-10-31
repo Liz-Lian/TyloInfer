@@ -11,6 +11,8 @@
 #include "models/qwen35/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "core/mtp.h"
+#include "tyloinfer/gguf_model_source.h"
+#include <cstdlib>
 #include "core/grid_vision_component.h"
 #include "models/nemotron_h/radio_vision.h"
 #include "cuda_runtime_config.h"
@@ -45,8 +47,12 @@ struct RuntimeComponents {
     }
 
     mfq::cuda::CudaComponentState state() const noexcept {
-        return mfq::cuda::cuda_component_state(
+        auto result = mfq::cuda::cuda_component_state(
             graph, plan, vision_available, mtp_available);
+        // A separately loaded draft model need not be declared in the target
+        // checkpoint. Its actual loaded module determines runtime support.
+        if (mtp) { result.mtp_supported = true; result.mtp_available = mtp_available; }
+        return result;
     }
 };
 
@@ -109,7 +115,21 @@ auto with_loaded_cuda_model(
         const CudaLoadOptions& options,
         bool load_optional_components,
         F&& run) {
-    auto source = mfq::open_model_source(options.model_path);
+    std::shared_ptr<const mfq::ModelSource> source;
+    const auto* native_mtp=std::getenv("TYLOINFER_MTP_NATIVE_GGUF");
+    if(native_mtp && *native_mtp) {
+        if(!execution.dflash2_draft_path.empty())
+            throw std::invalid_argument("native MTP and DFlash2 drafts cannot both be selected");
+        if(!mfq::is_gguf_file(options.model_path))
+            throw std::invalid_argument("an external MTP GGUF requires a GGUF target");
+        source=std::make_shared<mfq::GgufModelSource>(options.model_path,
+            std::vector<std::filesystem::path>{std::filesystem::path(native_mtp)});
+        if(!source->find_tensor("predictor.embedding_norm.weight"))
+            throw std::invalid_argument("the MTP GGUF companion has no canonical predictor tensors");
+    } else source=mfq::open_model_source(options.model_path);
+    if(!execution.dflash2_draft_path.empty() &&
+            cuda_backbone(source->resolved_model_graph().backbone)!=CudaBackbone::qwen4_exp)
+        throw std::invalid_argument("DFlash2 requires a Flash-Next target model");
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();
         Model model = load_causal_lm<Model>(
@@ -142,6 +162,8 @@ auto with_loaded_cuda_model(
                 (execution.kv_memory?execution.kv_memory->growth_reserve():0)+graph_reserve,
                 execution.kv_memory?execution.kv_memory->expert_budget_charge():0);
         }
+        finalize_gguf_expert_cache(execution.gguf_expert_cache,
+            execution.kv_memory ? execution.kv_memory->growth_reserve() : 0);
         mfq_cuda_synchronize();
         auto loaded = std::chrono::steady_clock::now();
         report_cuda_memory(execution.config, "loaded");

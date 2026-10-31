@@ -1,4 +1,5 @@
 #pragma once
+#include "mtp_probability_policy.h"
 
 #include "generation_step.h"
 #include "execution_check.h"
@@ -22,6 +23,11 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     using Tensor = typename Ops::Tensor;
     auto &model = ops.model;
     auto &mtp = ops.mtp;
+    const auto append_blockwise_context=[&](Tensor context,int64_t start) {
+        if constexpr(requires {mtp.append_target_context_for_draft(context,start);})
+            mtp.append_target_context_for_draft(std::move(context),start);
+        else mtp.append_target_context(std::move(context),start);
+    };
     const auto *prepared = ops.prepared;
     using Clock = std::chrono::steady_clock;
     namespace policy = mfq::engine::mtp;
@@ -74,6 +80,11 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     auto &sampler = ops.sampler();
     const bool penalties = ops.penalties;
     const bool greedy = sampler.greedy();
+    const auto probability_options=[&] {
+        if constexpr(requires {ops.mtp_probability_options();})return ops.mtp_probability_options();
+        return policy::DraftProbabilityOptions{};
+    }();
+    probability_options.validate(mtp.blockwise_drafting(),greedy);
     int32_t generated = 0;
     auto accept = [&](const TokenOutput &delta) {
         for (const auto token : delta.token_ids) {
@@ -90,6 +101,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         std::vector<int32_t> tokens;
         std::vector<std::vector<float>> probabilities;
         std::vector<CompactDistribution> compact_probabilities;
+        std::vector<float> greedy_probabilities;
     };
     const bool compact_stochastic = !greedy && sampling.top_k > 0 && sampling.top_k <= 64;
     auto draft_sampling = sampling;
@@ -100,7 +112,8 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     const int maximum_depth = std::min(mtp.maximum_draft_depth(),
         (!greedy && !compact_stochastic)
             ? 1
-            : std::clamp<int>(sampling.mtp_max_draft_tokens, 1, policy::kMaximumDraftDepth));
+            : std::clamp<int>(sampling.mtp_max_draft_tokens, 1, mtp.blockwise_drafting()
+                ? policy::kMaximumBlockwiseDraftDepth : policy::kMaximumDraftDepth));
     policy::GenerationPolicy<policy::DsparkDepthController> depth_controller(
         maximum_depth, mtp.dspark_policy(), &mtp.policy_state,[&] {
             if constexpr(requires {ops.gradual_mtp_warmup();})return ops.gradual_mtp_warmup();
@@ -108,7 +121,16 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         }(),[&] {
             if constexpr(requires {ops.metal_mtp_policy();})return ops.metal_mtp_policy();
             return false;
+        }(),[&] {
+            if(probability_options.enabled())return maximum_depth;
+            if constexpr(requires {ops.fixed_mtp_draft_depth();})
+                return std::min(ops.fixed_mtp_draft_depth(),maximum_depth);
+            return 0;
         }());
+    policy::ProbabilityDepthPolicy probability_policy(maximum_depth);
+    if(probability_options.enabled())std::fprintf(stderr,
+        "runtime_mtp_probability_policy min_p=%.6f chain_confidence=%.6f cost_aware=%d maximum_depth=%d default_controller=0\n",
+        probability_options.minimum_probability,probability_options.chain_confidence,int(probability_options.cost_aware),maximum_depth);
     mtp.last_stats.park_count=depth_controller.parks();
 
     {
@@ -382,12 +404,15 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if (pending_ids.empty()) return;
             auto rows = pending_hidden.size() == 1 ? pending_hidden.front()
                 : ops.concatenate(pending_hidden, 1);
-            auto ids=ops.ids_for(pending_ids);
-            auto positions=positioned_prompt ? ops.decode_positions(predictor_history_position + 1,
-                static_cast<int64_t>(pending_ids.size())) : Tensor{};
-            if constexpr(requires {ops.predictor_history_step(rows,ids,positions);})
-                ops.predictor_history_step(std::move(rows),std::move(ids),std::move(positions));
-            else (void)ops.predictor_step(std::move(rows),std::move(ids),std::move(positions));
+            if(mtp.blockwise_drafting())append_blockwise_context(std::move(rows),predictor_history_position);
+            else {
+                auto ids=ops.ids_for(pending_ids);
+                auto positions=positioned_prompt ? ops.decode_positions(predictor_history_position + 1,
+                    static_cast<int64_t>(pending_ids.size())) : Tensor{};
+                if constexpr(requires {ops.predictor_history_step(rows,ids,positions);})
+                    ops.predictor_history_step(std::move(rows),std::move(ids),std::move(positions));
+                else (void)ops.predictor_step(std::move(rows),std::move(ids),std::move(positions));
+            }
             predictor_history_position += static_cast<int64_t>(pending_ids.size());
             pending_hidden.clear();
             pending_ids.clear();
@@ -410,11 +435,22 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             result.tokens.reserve(static_cast<size_t>(requested_depth));
             result.probabilities.reserve(static_cast<size_t>(requested_depth));
             result.compact_probabilities.reserve(static_cast<size_t>(requested_depth));
+            policy::ProbabilityDepthPolicy::Chain cost_chain;
             auto select_draft = [&](Tensor draft_logits) {
                 draft_logits = ops.reshape(draft_logits, {1, -1});
                 int32_t token = -1;
                 if (greedy) {
-                    token = ops.sample_normal(draft_logits, prospective_counts);
+                    if(probability_options.enabled()) {
+                        if constexpr(requires {ops.greedy_probability(draft_logits,prospective_counts);}) {
+                            auto proposal=ops.greedy_probability(draft_logits,prospective_counts);
+                            token=proposal.first;result.greedy_probabilities.push_back(proposal.second);
+                        } else {
+                            token=ops.sample_normal(draft_logits,prospective_counts);
+                            auto parameters=draft_sampling;parameters.temperature=1.;parameters.top_k=0;parameters.top_p=1.;
+                            const auto probabilities=ops.probabilities(draft_logits,prospective_counts,parameters);
+                            result.greedy_probabilities.push_back(probabilities.at(std::size_t(token)));
+                        }
+                    } else token = ops.sample_normal(draft_logits, prospective_counts);
                 } else if (compact_stochastic) {
                     auto proposal =
                         ops.compact_probabilities(draft_logits, prospective_counts, draft_sampling);
@@ -434,20 +470,55 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             };
             if (mtp.blockwise_drafting()) {
                 if (!initial) {
-                    mtp.append_target_context(hidden_rows, predictor_history_position);
-                    predictor_history_position += static_cast<int64_t>(next_ids.size());
+                    // Native target graph outputs are overwritten by replay.
+                    // Own queued features until the block predictor consumes them.
+                    pending_hidden.push_back(requested_depth>0 && pending_ids.empty()?hidden_rows:ops.clone(hidden_rows));
+                    pending_ids.insert(pending_ids.end(),next_ids.begin(),next_ids.end());
                 }
+                const int update_batch=[&] {
+                    if constexpr(requires {mtp.preferred_context_update_batch_size();})
+                        return std::max(1,mtp.preferred_context_update_batch_size());
+                    return 1;
+                }();
+                if(requested_depth>0 || pending_ids.size()>=std::size_t(update_batch))flush_history();
                 require_execution(mtp.cache_position() == predictor_history_position,
                     "block predictor cache did not advance");
                 if (requested_depth > 0) {
-                    auto block = mtp.draft_block(
-                        ops.target, ops.ids_for({next_ids.back()}), requested_depth);
+                    auto anchor=ops.ids_for({next_ids.back()});
+                    auto block = mtp.draft_block(ops.target,anchor,requested_depth);
                     require_execution(ops.size(block, 1) == requested_depth,
                         "block predictor returned an incomplete draft");
-                    auto previous = ops.ids_for({next_ids.back()});
+                    if(greedy && !penalties) {
+                        if(probability_options.enabled()) {
+                            if constexpr(requires {mtp.draft_greedy_chain(anchor,true);}) {
+                                auto chain=mtp.draft_greedy_chain(anchor,true);
+                                if(!chain.tokens.empty()) {
+                                    require_execution(chain.tokens.size()==std::size_t(requested_depth) &&
+                                        chain.probabilities.size()==chain.tokens.size(),"block predictor returned incomplete confidence");
+                                    const int kept=probability_options.prefix(chain.probabilities);
+                                    result.tokens.assign(chain.tokens.begin(),chain.tokens.begin()+kept);
+                                    result.greedy_probabilities.assign(chain.probabilities.begin(),chain.probabilities.begin()+kept);
+                                    return result;
+                                }
+                            }
+                        } else {
+                        if constexpr(requires {mtp.draft_greedy_tokens(anchor);}) {
+                            auto tokens=mtp.draft_greedy_tokens(anchor);
+                            if(!tokens.empty()) {
+                                require_execution(tokens.size()==std::size_t(requested_depth),
+                                    "block predictor returned an incomplete greedy chain");
+                                result.tokens=std::move(tokens);return result;
+                            }
+                        }
+                        }
+                    }
+                    auto previous = std::move(anchor);
                     for (int position = 0; position < requested_depth; ++position) {
                         const auto token = select_draft(
                             mtp.draft_next(ops.slice(block, 1, position, 1), previous));
+                        if(probability_options.enabled() && probability_options.prefix(result.greedy_probabilities)<int(result.tokens.size())) {
+                            result.tokens.pop_back();result.greedy_probabilities.pop_back();break;
+                        }
                         previous = ops.ids_for({token});
                     }
                 }
@@ -478,11 +549,25 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 } else flush_history();
             }
             const auto history_rows=static_cast<int64_t>(shifted.size());
-            auto head = ops.predictor_step(std::move(hidden_rows),
-                ops.ids_for(std::move(shifted)),
-                positioned_prompt ? ops.decode_positions(predictor_history_position + 1,
-                                         history_rows)
-                                   : Tensor{});
+            auto history_ids=ops.ids_for(std::move(shifted));
+            auto history_positions=positioned_prompt
+                ? ops.decode_positions(predictor_history_position+1,history_rows) : Tensor{};
+            if constexpr(requires {ops.predictor_greedy_chain(hidden_rows,history_ids,history_positions,requested_depth,next_ids.back());}) {
+                // Queue only when every proposal can be decided on the device.
+                // Probability policies and penalties retain their per-step decisions.
+                if(greedy && !penalties && !probability_options.enabled() && requested_depth>1) {
+                    auto chain=ops.predictor_greedy_chain(hidden_rows,history_ids,history_positions,requested_depth,next_ids.back());
+                    if(chain) {
+                        require_execution(chain->size()==std::size_t(requested_depth),
+                            "queued predictor returned an incomplete greedy chain");
+                        predictor_history_position+=history_rows;
+                        require_execution(mtp.cache_position()==predictor_history_position+requested_depth-1,
+                            "queued predictor cache did not advance");
+                        result.tokens=std::move(*chain);return result;
+                    }
+                }
+            }
+            auto head=ops.predictor_step(std::move(hidden_rows),std::move(history_ids),std::move(history_positions));
             predictor_history_position += history_rows;
             require_execution(mtp.cache_position() == predictor_history_position,
                 "MTP predictor cache did not advance");
@@ -493,6 +578,17 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             for (int position = 0; position < requested_depth; ++position) {
                 auto draft_logits = ops.reshape(ops.logits_for(sample_hidden), {1, -1});
                 const int32_t token = select_draft(draft_logits);
+                if(probability_options.cost_aware) {
+                    const bool more=probability_policy.keep_draft(cost_chain,position,
+                        result.greedy_probabilities.back(),requested_depth);
+                    if(!more || position+1==requested_depth) {
+                        result.tokens.resize(std::size_t(cost_chain.kept));
+                        result.greedy_probabilities.resize(std::size_t(cost_chain.kept));break;
+                    }
+                } else if(probability_options.minimum_probability>0. &&
+                        result.greedy_probabilities.back()<probability_options.minimum_probability) {
+                    result.tokens.pop_back();result.greedy_probabilities.pop_back();break;
+                }
                 if (position + 1 < requested_depth) {
                     if constexpr(requires(Ops& value,const std::vector<int32_t>& ids) {
                         value.prefetch_target_prefix(int32_t{},ids);
@@ -512,7 +608,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
 
         auto cycle_started = Clock::now();
         auto draft =
-            prepare_draft(initial_hidden, {pending}, bounded_depth(depth_controller.depth()), true);
+            prepare_draft(initial_hidden, {pending}, probability_options.cost_aware?0:bounded_depth(depth_controller.depth()), true);
         double draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
         mtp.last_stats.head_ms+=draft_ms;
         while (generated < limit) {
@@ -731,7 +827,9 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                             return ops.retains_partial_target_prefix(emitted_accepted);
                         return mtp.retains_partial_target_prefix();
                     }();
-                    model.rollback_speculative(retained ? emitted_accepted : 0);
+                    if constexpr(requires { ops.rollback_target(int64_t{}); })
+                        ops.rollback_target(retained ? emitted_accepted : 0);
+                    else model.rollback_speculative(retained ? emitted_accepted : 0);
                     // A fallback replay observes the accepted rows itself.
                     // Publish only pending here so those rows count once.
                     resolve_routes(retained?emitted_accepted+1:1);
@@ -746,6 +844,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             mtp.last_stats.rollback_ms+=std::chrono::duration<double,std::milli>(Clock::now()-resolve_started).count();
             if (output.stopped()) {
                 if (mtp.blockwise_drafting()) {
+                    flush_history();
                     // Block predictors retain the committed target rows rather
                     // than shifted input/hidden pairs. EOS can truncate an
                     // accepted draft, so use the target's actual cache boundary.
@@ -753,7 +852,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                     require_execution(rows>=0 && rows<=ops.size(verified_raw,1),
                         "block predictor final target boundary is incompatible");
                     if(rows>0) {
-                        mtp.append_target_context(ops.slice(verified_raw,1,0,rows),predictor_history_position);
+                        append_blockwise_context(ops.slice(verified_raw,1,0,rows),predictor_history_position);
                         predictor_history_position+=rows;
                     }
                 } else if (mtp.teacher_forced_prompt_prime() && !delta.token_ids.empty()) {
@@ -782,8 +881,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 const bool initialized=ops.take_target_maintenance();time_sample=time_sample && !initialized;
             }
             depth_controller.observe_window(draft_count,accepted,cycle_started,cycle_finished,time_sample);
+            if(probability_options.cost_aware)
+                probability_policy.observe(draft_count,accepted,draft.greedy_probabilities,cycle_ms,time_sample);
             mtp.last_stats.park_count = depth_controller.parks();
-            mtp.last_stats.selected_depth = depth_controller.depth();
+            mtp.last_stats.selected_depth = probability_options.enabled()?draft_count:depth_controller.depth();
             for (int depth = 0; depth <= depth_controller.maximum_depth(); ++depth) {
                 if (const auto measured = depth_controller.measured_cycle_ms(depth)) {
                     mtp.last_stats.measured_depth_ms.at(static_cast<size_t>(depth)) = *measured;

@@ -631,6 +631,30 @@ int main(int argc,char** argv) try {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(usage_stream.stream()));
     require_close(host_values(consumed)[5], 1296.0f, 0.0f, "cross-stream lifetime");
 
+    // Weights may outlive a short-lived branch executor. Its stream must
+    // remain valid until the storage's deferred consumer fence is recorded.
+    auto retained_consumer=input.square();
+    std::weak_ptr<void> retained_stream_lifetime;
+    {
+        auto short_lived=stream_from_pool(false,input.get_device());
+        retained_stream_lifetime=short_lived.lifetime();
+        Event ready;ready.record(current_stream(input.get_device()).stream());
+        {
+            StreamGuard selected(short_lived);
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(short_lived.stream(),ready.get(),0));
+            retained_consumer.record_stream(reinterpret_cast<std::uintptr_t>(short_lived.stream()),short_lived.lifetime());
+            // A later raw registration must preserve existing ownership.
+            retained_consumer.record_stream(reinterpret_cast<std::uintptr_t>(short_lived.stream()));
+            auto result=retained_consumer.square();
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(short_lived.stream()));
+            require_close(host_values(result)[5],1296.0f,0.0f,"owned consumer stream result");
+        }
+    }
+    require(!retained_stream_lifetime.expired(),"consumer stream was destroyed before its tensor storage");
+    retained_consumer={};
+    require(retained_stream_lifetime.expired(),"consumer stream ownership leaked after storage release");
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
+
     if (default_context(0)->supports_async_allocations()) {
         auto graph_stream = stream_from_pool(false, 0);
         StreamGuard graph_guard(graph_stream);

@@ -4,6 +4,7 @@
 #include "mfq_cuda_nint_route_hint.h"
 #include "storage/weight_loader.h"
 #include "quant_linear.h"
+#include "float_projection.h"
 #include "tyloinfer/format_features.h"
 #include "mfq_weight_memory.h"
 
@@ -222,6 +223,13 @@ mfq_tensor_backend::Tensor load_dense_gpu(
 #include "../mfq/linear_dispatch.inc"
 #endif
 
+bool decode_branch_parallel_enabled(const CudaExecutionConfig& config,
+        bool serial_branches, int64_t rows) {
+    // Captured branch buffers must remain on the graph pool's allocating
+    // stream; independent eager one-token branches may overlap.
+    return rows == 1 && !serial_branches && config.decode_branch_parallel;
+}
+
 mfq_tensor_backend::Tensor run_quant_linear_shard(
         CudaProfiler& profiler,
         KlMmqState& kl_mmq,
@@ -230,6 +238,15 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
         MfqOptional<mfq_tensor_backend::Tensor> gate,
         int gate_mode) {
     MfqCudaGuard guard(shard.device);
+    if (shard.kind == QuantLinearKind::Gguf) {
+        if (gate.has_value()) {
+            TYLOINFER_RUNTIME_CHECK(gate_mode == 1 || gate_mode == 2, "GGUF input gate mode");
+            auto local_gate = gate.value().to(x.scalar_type());
+            x = x * (gate_mode == 1 ? mfq_tensor_backend::sigmoid(local_gate)
+                                    : mfq_tensor_backend::silu(local_gate));
+        }
+        return shard.gguf.forward(std::move(x));
+    }
     if (shard.kind == QuantLinearKind::Tq) {
         if (gate.has_value()) {
             TYLOINFER_RUNTIME_CHECK(gate_mode == 1 || gate_mode == 2,
@@ -557,6 +574,7 @@ mfq_tensor_backend::Tensor quant_embedding_lookup(
             0, token_ids.reshape({-1})).reshape(output_shape);
     }
     if (embedding.is_tq()) return embedding.tq.embedding(token_ids);
+    if (embedding.is_gguf()) return embedding.gguf.embedding(token_ids).to(mfq_tensor_backend::kFloat16);
     if ((mfq::mfq_compat_enabled && embedding.is_nvq())) {
         return nvq_embedding(embedding.nvq, token_ids);
     }
@@ -851,6 +869,29 @@ QuantLinear load_quant_linear(
         return slices;
     };
     result.tensor_parallel_axis = axis;
+    if (mfq::gguf::is_quantized(dtype)) {
+        result.kind = QuantLinearKind::Gguf;
+        const auto& record = require_tensor(mfq, name);
+        TYLOINFER_RUNTIME_CHECK(record.shape && record.shape->size() == 2, "GGUF projection requires a matrix");
+        const auto& shape = *record.shape;
+        result.logical_out = shape[0]; result.logical_neuron_len = shape[1];
+        if (execution.tensor_parallel.enabled() && axis != TensorParallelAxis::Mirrored) {
+            const auto block = ggml_blck_size(mfq::gguf::quant_type(dtype));
+            const auto extent = axis == TensorParallelAxis::Output ? shape[0] : shape[1] / block;
+            for (const auto& slice : select_slices(extent, axis == TensorParallelAxis::Output ? 128 : 1)) {
+                QuantLinearShard shard;
+                shard.device = slice.device; shard.kind = QuantLinearKind::Gguf;
+                shard.output_begin = axis == TensorParallelAxis::Output ? slice.begin : 0;
+                shard.output_end = axis == TensorParallelAxis::Output ? slice.end : shape[0];
+                shard.input_begin = axis == TensorParallelAxis::Input ? slice.begin * block : 0;
+                shard.input_end = axis == TensorParallelAxis::Input ? slice.end * block : shape[1];
+                shard.gguf = load_gguf_weight(mfq, name, slice.device, !cpu_layer,
+                    shard.output_begin, shard.output_end, shard.input_begin, shard.input_end);
+                result.tensor_parallel_shards.push_back(std::move(shard));
+            }
+        } else result.gguf = load_gguf_weight(mfq, name, active_weight_load_device(execution), !cpu_layer);
+        return result;
+    }
     if(dtype=="TQ") {
         result.kind=QuantLinearKind::Tq;
         const auto shape=tq_projection_shape(mfq,name);
@@ -1239,7 +1280,7 @@ QuantLinear load_quant_linear(
 }
 
 bool is_quant_dtype(const std::string & dtype) {
-    return dtype == "TQ" || is_nint_linear_dtype(dtype) ||
+    return mfq::gguf::is_quantized(dtype) || dtype == "TQ" || is_nint_linear_dtype(dtype) ||
         is_nvq_linear_dtype(dtype) || dtype == "MXFP4-SQ" ||
         mfq::fp8sq::is_dtype(dtype) ||
         dtype == "MXFP4" || dtype == "MXFP8";
@@ -1727,6 +1768,15 @@ mfq_tensor_backend::Tensor QuantLinear::forward_tensor_parallel_flat(
 
 mfq_tensor_backend::Tensor dense_projection(
         mfq_tensor_backend::Tensor input, const mfq_tensor_backend::Tensor& weight) {
+    const auto activation_dtype = input.scalar_type();
+    const auto native_output = [activation_dtype](mfq_tensor_backend::Tensor value) {
+        // BF16 is valid weight storage. CUDA's fused PLE/router/sampling
+        // operators exchange FP16/FP32 activations, including GGUF auxiliaries.
+        return value.scalar_type() == mfq_tensor_backend::kBFloat16 ?
+            value.to(activation_dtype == mfq_tensor_backend::kFloat32 ?
+                mfq_tensor_backend::kFloat32 : mfq_tensor_backend::kFloat16) : value;
+    };
+    if(auto projected=try_dense_bf16_projection_cuda(input,weight);projected.defined())return projected;
     input = input.to(weight.scalar_type());
     const int64_t rows = input.numel() / input.size(-1);
     if (rows > 1 && rows <= 6) {
@@ -1740,9 +1790,9 @@ mfq_tensor_backend::Tensor dense_projection(
         // ponytail: at most six launches; fuse only with decode-equivalent accumulation.
         for (int64_t row = 0; row < rows; ++row)
             outputs.push_back(mfq_tensor_backend::matmul(flat.narrow(0, row, 1), weight.transpose(0, 1)));
-        return mfq_tensor_backend::cat(outputs, 0).reshape(shape);
+        return native_output(mfq_tensor_backend::cat(outputs, 0).reshape(shape));
     }
-    return mfq_tensor_backend::matmul(input, weight.transpose(0, 1));
+    return native_output(mfq_tensor_backend::matmul(input, weight.transpose(0, 1)));
 }
 
 mfq_tensor_backend::Tensor QuantLinear::forward_dense(mfq_tensor_backend::Tensor x) const {
@@ -1753,6 +1803,14 @@ mfq_tensor_backend::Tensor QuantLinear::forward(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x) const {
     if(is_tq() && !tensor_parallel())return execution.profiler.measure("tq.linear",[&] {return tq.forward(std::move(x));});
+    if(is_gguf() && !tensor_parallel()) {
+        if(!execution.profiler.enabled)return gguf.forward(std::move(x));
+        return execution.profiler.measure("gguf.linear",[&] {
+            const auto* name=x.numel()/x.size(-1)<=32?"gguf.linear.decode":
+                (x.scalar_type()==mfq_tensor_backend::kFloat32?"gguf.linear.prefill_f32":"gguf.linear.prefill_f16");
+            return execution.profiler.measure(name,[&] {return gguf.forward(std::move(x));});
+        });
+    }
     if (tensor_parallel() || (mfq::mfq_compat_enabled && is_nint()) || (mfq::mfq_compat_enabled && is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -1884,6 +1942,7 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul_f32_kld(
 int64_t QuantLinear::out() const {
     if (tensor_parallel()) return logical_out;
     if(is_tq())return tq.out;
+    if(is_gguf())return gguf.out;
     if ((mfq::mfq_compat_enabled && is_nint())) return nint.out;
     if ((mfq::mfq_compat_enabled && is_nvq())) return nvq.out;
     if (is_mxfp4()) return mxfp4.weight.out;
@@ -1896,6 +1955,7 @@ int64_t QuantLinear::out() const {
 int64_t QuantLinear::neuron_len() const {
     if (tensor_parallel()) return logical_neuron_len;
     if(is_tq())return tq.neuron_len;
+    if(is_gguf())return gguf.neuron_len;
     if ((mfq::mfq_compat_enabled && is_nint())) return nint.neuron_len;
     if ((mfq::mfq_compat_enabled && is_nvq())) return nvq.neuron_len;
     if (is_mxfp4()) return mxfp4.weight.neuron_len;
@@ -1948,7 +2008,8 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
             tensor_parallel_output_compatible()) {
         return forward_tensor_parallel_output_group(execution, x);
     }
-    if (mfq::mfq_compat_enabled && nint_grouped) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+    if (nint_grouped) {
         return nint.forward(
             execution.profiler, execution.kl_mmq,
             execution.config, execution.decode_graph_serial_branches, x);
@@ -1995,6 +2056,7 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
         }
         return result;
     }
+#endif
     std::vector<mfq_tensor_backend::Tensor> result;
     if (default_mmq && decode_branch_parallel &&
             decode_branch_parallel_enabled(

@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -14,6 +17,22 @@
 
 namespace {
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+struct MirrorSetting {
+    std::string previous;bool present=false;
+    explicit MirrorSetting(const std::filesystem::path& directory) {
+        if(const auto* value=std::getenv("TYLOINFER_MODEL_MIRROR_DIRS")){present=true;previous=value;}
+        set(directory.string().c_str());
+    }
+    static void set(const char* value) {
+#if defined(_WIN32)
+        _putenv_s("TYLOINFER_MODEL_MIRROR_DIRS",value?value:"");
+#else
+        if(value)setenv("TYLOINFER_MODEL_MIRROR_DIRS",value,1);else unsetenv("TYLOINFER_MODEL_MIRROR_DIRS");
+#endif
+    }
+    ~MirrorSetting(){set(present?previous.c_str():nullptr);}
+};
+
 
 void raw_part_source(const std::filesystem::path& path, const std::vector<std::filesystem::path>& companions = {},
         std::size_t first_cut = 37, int count = 4, int width = 2) {
@@ -69,6 +88,8 @@ void raw_part_source(const std::filesystem::path& path, const std::vector<std::f
     require(actual == expected, "retained raw part reader expired");
     const auto hidden = parts[1].string() + ".missing";
     std::filesystem::rename(parts[1], hidden);
+    retained(0, actual.data(), actual.size());
+    require(actual == expected, "retained raw part reader changed after rename");
     bool missing = false;
     try { mfq::GgufModelSource invalid(parts.front(), companions); } catch (const std::runtime_error&) { missing = true; }
     require(missing, "incomplete raw GGUF parts accepted");
@@ -490,6 +511,43 @@ void qwen4_source(const std::filesystem::path& directory) {
     std::memcpy(&original_norm, predictor_norm.data() + 12, 4);
     require(original_norm == .25f, "raw MTP companion norm was converted as a folded main-model norm");
     require(with_predictor.read(packed_down->name) == packed_bytes, "MTP companion changed backbone weights");
+    {
+        auto* canonical_tensors = ggml_init({3 << 20, nullptr, false});
+        auto* canonical = gguf_init_empty();
+        gguf_set_val_str(canonical, "general.architecture", "qwen4exp-mtp");
+        const auto add = [&](const char* name, ggml_type type, std::vector<int64_t> shape) {
+            std::reverse(shape.begin(), shape.end());
+            auto* tensor = ggml_new_tensor(canonical_tensors, type, int(shape.size()), shape.data());
+            ggml_set_name(tensor, name);
+            std::memset(tensor->data, 0, ggml_nbytes(tensor));
+            if (type == GGML_TYPE_F32)
+                for (int64_t i = 0; i < ggml_nelements(tensor); ++i) static_cast<float*>(tensor->data)[i] = 1.25f;
+            gguf_add_tensor(canonical, tensor);
+        };
+        add("predictor.embedding_norm.weight", GGML_TYPE_F32, {256});
+        add("predictor.hidden_norm.weight", GGML_TYPE_F32, {512});
+        add("predictor.fusion.embedding.weight", GGML_TYPE_BF16, {256, 256});
+        add("predictor.fusion.hidden.weight", GGML_TYPE_BF16, {256, 256});
+        add("predictor.block.0.attention.query.weight", GGML_TYPE_BF16, {512, 256});
+        add("predictor.block.0.mlp.router.weight", GGML_TYPE_F32, {4, 256});
+        add("predictor.block.0.mlp.experts.gate.weight", GGML_TYPE_Q2_0, {4, 128, 256});
+        add("predictor.block.0.mlp.experts.up.weight", GGML_TYPE_Q2_0, {4, 128, 256});
+        add("predictor.block.0.mlp.experts.down.weight", GGML_TYPE_Q2_0, {4, 256, 128});
+        add("predictor.output.weight", GGML_TYPE_Q6_K, {32, 256});
+        add("predictor.output.token_ids", GGML_TYPE_I64, {32});
+        const auto canonical_path = directory / "canonical-predictor.gguf";
+        require(gguf_write_to_file(canonical, canonical_path.string().c_str(), false), "canonical MTP write failed");
+        const mfq::GgufModelSource canonical_source(main_path, {table_path, canonical_path});
+        const auto canonical_config = nlohmann::json::parse(canonical_source.model_config_json());
+        require(canonical_config["mtp_num_hidden_layers"] == 1, "canonical MTP layer count differs");
+        require(canonical_source.find_tensor("predictor.block.0.mlp.experts.gate.weight") &&
+            canonical_source.find_tensor("predictor.block.0.mlp.experts.up.weight") &&
+            canonical_source.find_tensor("predictor.output.token_ids"), "canonical MTP tensors were discarded");
+        const auto norm = canonical_source.read("predictor.embedding_norm.weight");
+        float delta = 0; std::memcpy(&delta, norm.data() + 12, 4);
+        require(delta == .25f, "canonical MTP norm no longer uses the backbone convention");
+        gguf_free(canonical); ggml_free(canonical_tensors);
+    }
     add_predictor("mtp.unsupported.weight", GGML_TYPE_F32, {1});
     require(gguf_write_to_file(predictor, predictor_path.string().c_str(), false), "GGUF invalid predictor write failed");
     bool unsupported_predictor = false;
@@ -507,6 +565,105 @@ void qwen4_source(const std::filesystem::path& directory) {
     truncated = false;
     try { mixed_batch({{0, &target, 1}}); } catch (const std::runtime_error&) { truncated = true; }
     require(truncated, "mixed batch reader accepted a truncated backing file");
+}
+}
+
+namespace {
+void compact_formats(const std::filesystem::path& directory) {
+    auto* tensors = ggml_init({2 << 20, nullptr, false});
+    auto* header = gguf_init_empty();
+    gguf_set_val_str(header, "general.architecture", "qwen35");
+    gguf_set_val_u32(header, "qwen35.embedding_length", 128);
+    gguf_set_val_u32(header, "qwen35.block_count", 1);
+    gguf_set_val_u32(header, "qwen35.attention.head_count", 1);
+    gguf_set_val_u32(header, "qwen35.attention.head_count_kv", 1);
+    gguf_set_val_u32(header, "qwen35.context_length", 32768);
+    gguf_set_val_f32(header, "qwen35.rope.freq_base", 10000.f);
+    gguf_set_val_u32(header, "agention.trellis.state_bits", 15);
+    std::vector<std::vector<std::byte>> payloads;
+    for (int type = GGML_TYPE_PTQ1_0; type <= GGML_TYPE_TQK4; ++type) {
+        auto* matrix = ggml_new_tensor_2d(tensors, ggml_type(type), 128, 7);
+        const auto name = "compact." + std::to_string(type) + ".weight";
+        ggml_set_name(matrix, name.c_str());
+        auto* bytes = static_cast<std::byte*>(matrix->data);
+        for (std::size_t i = 0; i < ggml_nbytes(matrix); ++i) bytes[i] = std::byte((i * 37 + type) % 256);
+        payloads.emplace_back(bytes, bytes + ggml_nbytes(matrix));
+        gguf_add_tensor(header, matrix);
+    }
+    const auto path = directory / "compact-formats.gguf";
+    require(gguf_write_to_file(header, path.string().c_str(), false), "compact GGUF write failed");
+    {
+        mfq::GgufModelSource source(path);
+        for (int type = GGML_TYPE_PTQ1_0; type <= GGML_TYPE_TQK4; ++type) {
+            const auto name = "compact." + std::to_string(type) + ".weight";
+            const auto* tensor = source.find_tensor(name);
+            auto dtype = std::string("GGUF_") + ggml_type_name(ggml_type(type));
+            std::transform(dtype.begin(), dtype.end(), dtype.begin(), [](unsigned char c) { return std::toupper(c); });
+            require(tensor && tensor->dtype == dtype && *tensor->shape == std::vector<int64_t>({7, 128}),
+                "compact GGUF type/shape changed");
+            require(source.read(name) == payloads[type - GGML_TYPE_PTQ1_0], "compact GGUF changed original bytes");
+        }
+    }
+    gguf_set_val_u32(header, "prism.hadamard.version", 2);
+    gguf_set_val_u32(header, "prism.hadamard.block_size", 128);
+    gguf_set_val_str(header, "prism.hadamard.transform", "normalized-sylvester-walsh-hadamard");
+    gguf_set_val_str(header, "prism.hadamard.axis", "input-last-dimension");
+    gguf_set_val_str(header, "prism.hadamard.sign_mode", "explicit");
+    const int64_t widths[]{128};
+    std::array<int8_t, 128> signs{};
+    for (int i = 0; i < 128; ++i) signs[i] = (i * 17 + i / 7) % 3 ? -1 : 1;
+    gguf_set_arr_data(header, "prism.hadamard.sign_widths", GGUF_TYPE_INT64, widths, 1);
+    gguf_set_arr_data(header, "prism.hadamard.sign_values", GGUF_TYPE_INT8, signs.data(), signs.size());
+    std::vector<std::string> names;
+    for (int type = GGML_TYPE_PTQ1_0; type <= GGML_TYPE_TQK4; ++type)
+        names.push_back("compact." + std::to_string(type) + ".weight");
+    std::vector<const char*> name_pointers;
+    for (const auto& name : names) name_pointers.push_back(name.c_str());
+    gguf_set_arr_str(header, "prism.hadamard.weight_names", name_pointers.data(), name_pointers.size());
+    const auto rotated = directory / "compact-hadamard.gguf";
+    require(gguf_write_to_file(header, rotated.string().c_str(), false), "Hadamard metadata write failed");
+    {
+        mfq::GgufModelSource source(rotated);
+        const auto transforms = nlohmann::json::parse(source.metadata().at("gguf_hadamard"));
+        require(transforms.size() == names.size() && source.metadata().at("gguf_requires_hadamard") == "true",
+            "Hadamard metadata/capability requirement missing");
+        const auto* parsed=source.hadamard_transforms();
+        require(parsed && parsed==source.hadamard_transforms() && parsed->size()==names.size(),
+            "Hadamard source did not retain one immutable parsed map");
+        for (const auto& name : names) require(transforms.at(name).at("block_size") == 128 &&
+            transforms.at(name).at("signs").get<std::vector<int8_t>>() == std::vector<int8_t>(signs.begin(), signs.end()),
+            "Hadamard signs or block size changed");
+        for(const auto& name:names)require(parsed->at(name).block_size==128 &&
+            parsed->at(name).signs==transforms.at(name).at("signs").get<std::vector<int8_t>>(),
+            "Typed Hadamard map differs from normalized metadata");
+    }
+    signs[3] = 0;
+    gguf_set_arr_data(header, "prism.hadamard.sign_values", GGUF_TYPE_INT8, signs.data(), signs.size());
+    const auto bad_sign = directory / "compact-invalid-sign.gguf";
+    require(gguf_write_to_file(header, bad_sign.string().c_str(), false), "invalid-sign fixture write failed");
+    bool sign_rejected = false;
+    try { mfq::GgufModelSource source(bad_sign); }
+    catch (const std::runtime_error& error) { sign_rejected = std::string(error.what()).find("sign value") != std::string::npos; }
+    require(sign_rejected, "Hadamard accepted a non-sign value");
+    gguf_set_val_u32(header, "prism.hadamard.version", 1);
+    gguf_set_val_str(header, "prism.hadamard.sign_mode", "identity");
+    const auto identity = directory / "compact-hadamard-identity.gguf";
+    require(gguf_write_to_file(header, identity.string().c_str(), false), "identity-Hadamard fixture write failed");
+    {
+        mfq::GgufModelSource source(identity);
+        const auto transforms = nlohmann::json::parse(source.metadata().at("gguf_hadamard"));
+        for (const auto& name : names) require(transforms.at(name).at("signs").empty(), "Identity Hadamard acquired signs");
+        for(const auto& name:names)require(source.hadamard_transforms()->at(name).signs.empty(),
+            "Typed identity Hadamard acquired signs");
+    }
+    gguf_set_val_u32(header, "agention.trellis.state_bits", 14);
+    const auto invalid = directory / "compact-invalid-state.gguf";
+    require(gguf_write_to_file(header, invalid.string().c_str(), false), "invalid-state fixture write failed");
+    bool rejected = false;
+    try { mfq::GgufModelSource source(invalid); }
+    catch (const std::runtime_error& error) { rejected = std::string(error.what()).find("state_bits=15") != std::string::npos; }
+    require(rejected, "unsupported Gyro state width accepted");
+    gguf_free(header); ggml_free(tensors);
 }
 }
 
@@ -574,6 +731,18 @@ int main() {
         require(table && table->dtype == "GGUF_Q4_K" && *table->shape == std::vector<int64_t>({3, 256}), "GGUF quantized metadata wrong");
         const auto data = source->read(table->name);
         require(data.size() == 3 * 144 && data.front() == std::byte{17}, "packed GGUF data changed");
+        {
+            const auto mirror=directory/"mirror";std::filesystem::create_directory(mirror);
+            std::filesystem::copy_file(path,mirror/path.filename());
+            MirrorSetting setting(mirror);
+            mfq::GgufModelSource mirrored(path);
+            const auto read=mirrored.tensor_reader(table->name);
+            const auto batch=mirrored.tensor_batch_reader(table->name);
+            std::array<std::byte,19> first{},last{};
+            read(0,first.data(),first.size());batch({{13,last.data(),last.size()}});
+            require(std::equal(first.begin(),first.end(),data.begin()) &&
+                std::equal(last.begin(),last.end(),data.begin()+13),"GGUF mirror integration changed original quantized bytes");
+        }
         const auto dense = source->read("model.output_norm.weight");
         require(dense.size() == 12 + 256 * 4 && dense[0] == std::byte{1}, "dense prefix missing");
         float end = 0;
@@ -598,6 +767,7 @@ int main() {
         try { mfq::GgufModelSource invalid(path); } catch (const std::runtime_error&) { truncated = true; }
         require(truncated, "truncated GGUF accepted");
         qwen4_source(directory);
+        compact_formats(directory);
         deepseek_source(directory);
         std::filesystem::remove_all(directory);
         return 0;

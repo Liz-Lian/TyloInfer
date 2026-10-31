@@ -17,8 +17,184 @@ template<class F> void rejects(F&& fn) {
 }
 }
 
+#include "mtp_probability_policy_test.h"
+
 int main() {
+    check_probability_depth_policy();
     using namespace mfq::engine::mtp;
+    {
+        for(bool batch:{false,true}) {
+            PolicyState state;
+            GenerationPolicy<DsparkDepthController> fixed(3,false,&state,true,batch,3);
+            for(int i=0;i<40;++i) {
+                fixed.observe(3,0,1000.0);
+                fixed.observe_plain(1.0);
+                require(fixed.depth()==3 && fixed.maximum_depth()==3 && !fixed.parked());
+                require(fixed.parks()==0 && fixed.reentries()==0);
+                require(fixed.measured_cycle_ms(3).value_or(0)==1000.0);
+            }
+        }
+    }
+    {
+        // An eight-row block verifies seven drafts. Exercise high-index cost,
+        // acceptance and smoothing storage through real policy transitions.
+        DepthController scalar(7);
+        require(scalar.maximum_depth()==7);
+        for(int cycle=0;cycle<150;++cycle) {
+            const int depth=scalar.depth();
+            scalar.observe(depth,depth,20.0+2.0*depth);
+        }
+        require(scalar.measured_cycle_ms(7).has_value());
+        v1::BatchDepthPolicy batch({"block"},7);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};
+        bool used_widest=false;
+        for(int cycle=0;cycle<150;++cycle) {
+            const int depth=batch.depth();used_widest|=depth==7;
+            const auto started=now;
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(20.0+2.0*depth));
+            const std::array<int,1> accepted{depth};
+            batch.observe(depth,accepted,started,now,true,false);
+        }
+        require(batch.maximum()==7 && used_widest && batch.cost(7).has_value());
+        BatchDepthPolicy current({"block"},7);
+        require(current.maximum()==7);
+    }
+    {
+        // Only the first draft has any acceptance. A few deep failures must
+        // replace the initial prior rather than making unused rows look free.
+        v1::BatchDepthPolicy policy({"one"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};
+        std::array<int,6> trials{};
+        const std::array<double,4> milliseconds{20.,22.,24.,25.};
+        for(int step=0;step<30;++step) {
+            const int depth=policy.depth();
+            const int hits=depth?(trials[depth]++%2):0;
+            const auto started=now;
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(milliseconds[depth]));
+            const std::array<int,1> accepted{hits};
+            policy.observe(depth,accepted,started,now,true,false);
+        }
+        require(policy.depth()==1);
+    }
+    {
+        // The first ordinary samples include a cold expert cache. After the
+        // cache warms, a losing draft must not keep winning against that old
+        // baseline forever. All durations are synthetic and deterministic.
+        v1::BatchDepthPolicy policy({"warming-cache"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};int probes=0,attempts=0;
+        for(int step=0;step<140;++step) {
+            const int depth=policy.depth();
+            const auto started=now;
+            const double ms=depth?27.+(depth-1)*6.:(step<8?25.:15.);
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+            if(!depth && step>=8)++probes;
+            const std::array<int,1> accepted{depth?(attempts++%2):0};
+            policy.observe(depth,accepted,started,now,true,false);
+        }
+        require(probes>=3 && policy.cost(0).value_or(100.)<16. && policy.parks()>0);
+    }
+    {
+        // Refreshing the ordinary baseline must retain a profitable high-
+        // acceptance depth and spend only a bounded number of control steps.
+        v1::BatchDepthPolicy policy({"profitable-draft"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};int ordinary=0;
+        for(int step=0;step<600;++step) {
+            const int depth=policy.depth();ordinary+=depth==0;
+            const auto started=now;
+            const double ms=depth?8.+2.*depth:15.;
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+            const std::array<int,1> accepted{depth};
+            policy.observe(depth,accepted,started,now,true,false);
+        }
+        require(policy.depth()==3 && !policy.parks() && ordinary>5 && ordinary<20);
+    }
+    {
+        // Two slow exchanges in eight complete cycles belong to the cost of
+        // that width. A median would discard both and report only 10 ms.
+        v1::BatchDepthPolicy policy({"periodic-exchange"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};
+        for(int cycle=0;cycle<9;++cycle) {
+            const auto started=now;
+            const double ms=cycle%4==0?90.:10.;
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+            const std::array<int,1> accepted{3};
+            policy.observe(3,accepted,started,now,true,false);
+        }
+        require(std::abs(policy.cost(3).value_or(0.)-30.)<1e-6);
+        // A maintenance window is excluded and breaks the continuity of the
+        // next sample, without removing already measured exchange costs.
+        const std::array<int,1> accepted{3};
+        policy.observe(3,accepted,now,now+std::chrono::seconds(5),false,false);
+        require(std::abs(policy.cost(3).value_or(0.)-30.)<1e-6);
+    }
+    {
+        // A four-row window has the cheapest common case but its periodic
+        // exchange makes three rows faster overall. Exercise every exchange
+        // phase, including transitions, periodic baseline probes and retries.
+        for(int phase=0;phase<4;++phase) {
+            v1::BatchDepthPolicy policy({"periodic-width"},3);
+            using Clock=v1::BatchDepthPolicy::Clock;
+            Clock::time_point now{};
+            std::array<int,4> trials{};
+            int selected_three_rows=0;
+            for(int cycle=0;cycle<1500;++cycle) {
+                const int depth=policy.depth();
+                const auto started=now;
+                double ms=depth==0?10.:depth==1?12.:depth==2?14.:18.;
+                if(depth==3 && (trials[3]++ + phase)%4==0)ms=56.;
+                now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+                const std::array<int,1> accepted{depth};
+                policy.observe(depth,accepted,started,now,true,false);
+                if(cycle>=500 && depth==2)++selected_three_rows;
+            }
+            require(selected_three_rows>850 && !policy.parks());
+            require(policy.cost(3).value_or(0.)>20.);
+        }
+    }
+    {
+        // Widths can encounter different acceptance distributions. A shallow
+        // window's failed second draft must not price out a wider window
+        // whose measured committed tokens per millisecond are better.
+        v1::BatchDepthPolicy policy({"different-width-yields"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};
+        int selected_four_rows=0;
+        for(int cycle=0;cycle<1200;++cycle) {
+            const int depth=policy.depth();
+            const auto started=now;
+            const double ms=depth==0?10.:depth==1?13.5:depth==2?14.:25.;
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+            const std::array<int,1> accepted{depth==3?3:depth?1:0};
+            policy.observe(depth,accepted,started,now,true,false);
+            if(cycle>=200 && depth==3)++selected_four_rows;
+        }
+        require(selected_four_rows>850 && !policy.parks());
+    }
+    {
+        // The oldest alternative is clearly too slow. A second alternative
+        // is competitive and needs a fresh sample before the five-second
+        // forced exploration; the poor alternative must not block its probe.
+        v1::BatchDepthPolicy policy({"eligible-rival"},3);
+        using Clock=v1::BatchDepthPolicy::Clock;
+        Clock::time_point now{};
+        bool refreshed_competitor=false;
+        for(int cycle=0;cycle<180;++cycle) {
+            const int depth=policy.depth();
+            const auto started=now;
+            const double ms=depth==0?15.:depth==1?20.:depth==2?22.:25.;
+            now+=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double,std::milli>(ms));
+            const std::array<int,1> accepted{depth==1?0:std::min(depth,2)};
+            policy.observe(depth,accepted,started,now,true,false);
+            if(depth==3 && now>Clock::time_point{}+std::chrono::seconds(2))
+                refreshed_competitor=true;
+        }
+        require(refreshed_competitor && !policy.parks());
+    }
     {
         GenerationStats stats;
         stats.available = stats.used = true;

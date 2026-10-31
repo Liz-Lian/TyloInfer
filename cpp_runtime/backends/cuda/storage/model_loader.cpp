@@ -8,6 +8,7 @@
 #include "models/qwen35/mtp.h"
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
+#include "models/dflash2/dflash2.h"
 
 #include "cuda_execution.h"
 #include "mfq_cuda_sampling_ops.h"
@@ -377,6 +378,11 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
                  mfq::cuda::CudaPredictorAdapter::flash_next) {
         throw std::runtime_error(
             "unsupported Qwen4 CUDA component adapter");
+    }
+    if (!model.execution->dflash2_draft_path.empty()) {
+        result.mtp = mfq::cuda::dflash2::load(*model.execution, model, model.execution->dflash2_draft_path);
+        result.mtp_available = true;
+        return result;
     }
     if (result.plan.predictor ==
             mfq::cuda::CudaPredictorAdapter::none) return result;

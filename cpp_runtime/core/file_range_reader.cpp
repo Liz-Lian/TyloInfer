@@ -218,7 +218,10 @@ FileRangeReader::FileRangeReader(const std::filesystem::path& path, FileReadMode
 #if defined(_WIN32)
     const DWORD flags = FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS |
         (mode == FileReadMode::Direct ? FILE_FLAG_NO_BUFFERING : 0);
-    impl_->handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, flags, nullptr);
+    // Match positional-read semantics on POSIX: an existing reader retains
+    // its file object while a checkpoint is renamed, replaced or removed.
+    impl_->handle = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, flags, nullptr);
     if (impl_->handle == INVALID_HANDLE_VALUE)
         throw std::system_error(GetLastError(), std::system_category(), "open model file");
     // Every operation owns an explicit OVERLAPPED event. The shared file-object

@@ -1,4 +1,6 @@
 #include "tyloinfer/gguf_model_source.h"
+#include "tyloinfer/mapped_tensor_reader.h"
+#include "tyloinfer/mirrored_file_reader.h"
 #include "tyloinfer/hf_model_source.h"
 #include "tyloinfer/mfq_model_source.h"
 
@@ -7,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <exception>
@@ -57,7 +60,7 @@ std::vector<std::filesystem::path> raw_parts(const std::filesystem::path& path) 
 class GgufFile {
     struct Part {
         uint64_t begin, size;
-        std::shared_ptr<FileRangeReader> file;
+        std::shared_ptr<MirroredFileReader> file;
     };
 public:
     explicit GgufFile(const std::filesystem::path& path) : paths_(raw_parts(path)) {
@@ -65,8 +68,18 @@ public:
             if (!std::filesystem::is_regular_file(part)) throw std::runtime_error("missing GGUF part: " + part.filename().string());
             const auto bytes = std::filesystem::file_size(part);
             if (!bytes || bytes > UINT64_MAX - size_) throw std::runtime_error("invalid GGUF part size");
-            parts_.push_back({size_, bytes, std::make_shared<FileRangeReader>(part, model_file_read_mode())});
+            parts_.push_back({size_, bytes, std::make_shared<MirroredFileReader>(std::vector<std::filesystem::path>{part}, model_file_read_mode())});
             size_ += bytes;
+        }
+    }
+    void enable_mirrors(uint64_t header_bytes) {
+        if (header_bytes > size_) throw std::out_of_range("GGUF header exceeds multipart file");
+        for (std::size_t i = 0; i < parts_.size(); ++i) {
+            auto replicas = model_read_replica_paths(paths_[i]);
+            if (replicas.size() <= 1) continue;
+            const auto header = parts_[i].begin < header_bytes ?
+                std::min<uint64_t>(parts_[i].size, header_bytes - parts_[i].begin) : 0;
+            parts_[i].file = std::make_shared<MirroredFileReader>(std::move(replicas), model_file_read_mode(), header);
         }
     }
     const std::vector<std::filesystem::path>& paths() const noexcept { return paths_; }
@@ -77,16 +90,17 @@ public:
             part.file->read(span.offset, span.destination, span.size);
         });
     }
-    void read_contiguous(const std::vector<ReadSpan>& spans) const {
-        if (parts_.size() == 1) { parts_.front().file->read_contiguous(spans); return; }
+    void read_contiguous(const std::vector<ReadSpan>& spans) const { read_coalesced(spans); }
+    void read_coalesced(const std::vector<ReadSpan>& spans) const {
+        if (parts_.size() == 1) { parts_.front().file->read_coalesced(spans); return; }
         std::vector<ReadSpan> group;
         const Part* previous = nullptr;
         for (const auto& span : spans) visit(span.offset, span.destination, span.size, [&](const Part& part, const ReadSpan& slice) {
-            if (previous != &part && !group.empty()) { previous->file->read_contiguous(group); group.clear(); }
+            if (previous != &part && !group.empty()) { previous->file->read_coalesced(group); group.clear(); }
             previous = &part;
             group.push_back(slice);
         });
-        if (!group.empty()) previous->file->read_contiguous(group);
+        if (!group.empty()) previous->file->read_coalesced(group);
     }
     Gguf load(ggml_context** tensors) const {
         if (parts_.size() == 1) {
@@ -389,6 +403,7 @@ json model_config(const json& meta, const json& shapes, const std::string& arch)
             config["hidden_act"] = "silu";
             config["output_gate_type"] = "sigmoid";
             config["norm_topk_prob"] = true;
+            config["mtp_num_hidden_layers"] = 0;
             const auto predictor = shapes.find("predictor.embedding_norm.weight");
             bool has_predictor = false;
             for (auto item = shapes.begin(); item != shapes.end(); ++item)
@@ -407,8 +422,11 @@ json model_config(const json& meta, const json& shapes, const std::string& arch)
                     const auto root = "predictor.block." + std::to_string(layers) + ".mlp.";
                     const auto experts = config.at("num_experts").get<int64_t>();
                     const auto width = config.at("moe_intermediate_size").get<int64_t>();
+                    const bool joined = matches(root + "experts.gate_up.weight", {experts, 2 * width, hidden});
+                    const bool separate = matches(root + "experts.gate.weight", {experts, width, hidden}) &&
+                        matches(root + "experts.up.weight", {experts, width, hidden});
                     if (!matches(root + "router.weight", {experts, hidden}) ||
-                        !matches(root + "experts.gate_up.weight", {experts, 2 * width, hidden}) ||
+                        (!joined && !separate) ||
                         !matches(root + "experts.down.weight", {experts, hidden, width}))
                         throw std::runtime_error("GGUF predictor expert geometry differs from the backbone");
                     ++layers;
@@ -501,6 +519,7 @@ struct GgufModelSource::Impl {
     std::vector<std::filesystem::path> paths;
     std::string arch;
     std::unordered_map<std::string, std::string> metadata;
+    HadamardTransforms hadamard;
     std::vector<TensorMetadata> tensors;
     std::unordered_map<std::string, Record> records;
     std::unordered_map<std::string, std::vector<std::byte>> asset_data;
@@ -575,6 +594,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
                 throw std::runtime_error("inconsistent GGUF shard metadata");
         }
         const auto file_size = file->size();
+        file->enable_mirrors(gguf_get_data_offset(ctx.get()));
         if (shard == 0) {
             for (int64_t i = 0; i < gguf_get_n_kv(ctx.get()); ++i) {
                 const std::string name = gguf_get_key(ctx.get(), i);
@@ -604,6 +624,8 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
                 json{{"model_type", "qwen4_exp_text"}, {"num_hidden_layers", meta.at("qwen4exp.block_count")}}.dump(), names);
             for (const auto& [canonical, stored] : aliases.canonical_to_stored)
                 if (canonical.rfind("predictor.", 0) == 0) predictor_names.emplace(stored, canonical);
+            for (const auto& name : names)
+                if (name.rfind("predictor.", 0) == 0) predictor_names.emplace(name, name);
             if (predictor_names.size() != names.size())
                 throw std::runtime_error("GGUF MTP companion contains unsupported predictor tensors");
         }
@@ -657,7 +679,10 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             std::transform(dtype.begin(), dtype.end(), dtype.begin(), [](unsigned char c) { return std::toupper(c); });
             if (!ggml_is_quantized(type) && !engram) record.prefix = dense_prefix(shape);
             record.tensor = {name, dtype, dtype, shape, size + record.prefix.size()};
-            const bool norm_delta = impl_->arch == "qwen4exp" && !raw_predictor && name.find("norm.weight") != std::string::npos &&
+            // Canonical GGUF predictors use the backbone's RMS weight
+            // convention. Legacy mtp.* companions already store norm deltas.
+            const bool canonical_predictor = std::string_view(original).rfind("predictor.", 0) == 0;
+            const bool norm_delta = impl_->arch == "qwen4exp" && (!raw_predictor || canonical_predictor) && name.find("norm.weight") != std::string::npos &&
                 name.find(".linear_attention.norm.weight") == std::string::npos;
             const bool decay_log = impl_->arch == "qwen4exp" && name.find(".linear_attention.a") != std::string::npos &&
                 name.size() >= 2 && name.substr(name.size() - 2) == ".a";
@@ -963,12 +988,61 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
     impl_->metadata["source_format"] = "\"gguf\"";
     impl_->metadata["tensor_shapes"] = shapes.dump();
     impl_->metadata["gguf_metadata"] = meta.dump();
+    if (meta.contains("prism.hadamard.version")) {
+        const auto version = meta.at("prism.hadamard.version").get<int>();
+        const auto block = meta.value("prism.hadamard.block_size", int64_t{0});
+        const auto mode = meta.value("prism.hadamard.sign_mode", std::string{});
+        if ((version != 1 && version != 2) || block < 1 || (block & (block - 1)) || block > INT32_MAX ||
+            meta.value("prism.hadamard.transform", std::string{}) != "normalized-sylvester-walsh-hadamard" ||
+            meta.value("prism.hadamard.axis", std::string{}) != "input-last-dimension" ||
+            (mode != "explicit" && mode != "identity"))
+            throw std::runtime_error("unsupported GGUF Hadamard transform metadata");
+        if (!meta.value("prism.hadamard.inverse_weight_names", json::array()).empty() ||
+            meta.value("prism.hadamard.tied_output", false) || meta.value("prism.hadamard.gdn_v_grouped", false))
+            throw std::runtime_error("GGUF inverse embedding or grouped GDN Hadamard layout is unsupported");
+        std::map<int64_t, std::vector<int8_t>> signs;
+        if (mode == "explicit") {
+            const auto widths = meta.at("prism.hadamard.sign_widths").get<std::vector<int64_t>>();
+            const auto values = meta.at("prism.hadamard.sign_values").get<std::vector<int>>();
+            std::size_t offset = 0;
+            for (const auto width : widths) {
+                if (width < 1 || width % block || uint64_t(width) > values.size() - offset || signs.count(width))
+                    throw std::runtime_error("invalid GGUF Hadamard sign widths");
+                std::vector<int8_t> pattern;
+                for (int64_t i = 0; i < width; ++i) {
+                    const int value = values[offset++];
+                    if (value != 1 && value != -1) throw std::runtime_error("invalid GGUF Hadamard sign value");
+                    pattern.push_back(int8_t(value));
+                }
+                signs.emplace(width, std::move(pattern));
+            }
+            if (widths.empty() || offset != values.size()) throw std::runtime_error("GGUF Hadamard sign vector lengths differ");
+        }
+        json transforms = json::object();
+        const auto weights = meta.at("prism.hadamard.weight_names").get<std::vector<std::string>>();
+        if (weights.empty()) throw std::runtime_error("GGUF Hadamard weight list is empty");
+        for (const auto& original : weights) {
+            const auto name = canonical_name(original);
+            const auto record = impl_->records.find(name);
+            if (record == impl_->records.end() || !record->second.tensor.shape || record->second.tensor.shape->size() < 2 ||
+                record->second.tensor.dtype.rfind("GGUF_", 0) != 0 || transforms.contains(name))
+                throw std::runtime_error("invalid or unsupported GGUF Hadamard weight");
+            const auto width = record->second.tensor.shape->back();
+            if (width % block || (mode == "explicit" && !signs.count(width)))
+                throw std::runtime_error("GGUF Hadamard weight has no compatible sign vector");
+            transforms[name] = {{"block_size", block}, {"signs", mode == "explicit" ? json(signs.at(width)) : json::array()}};
+            impl_->hadamard.emplace(name,HadamardTransform{block,mode=="explicit"?signs.at(width):std::vector<int8_t>{}});
+        }
+        impl_->metadata["gguf_hadamard"] = transforms.dump();
+        impl_->metadata["gguf_requires_hadamard"] = "true";
+    }
 }
 
 GgufModelSource::~GgufModelSource() = default;
 const std::vector<std::filesystem::path>& GgufModelSource::source_paths() const noexcept { return impl_->paths; }
 std::string_view GgufModelSource::architecture() const noexcept { return impl_->arch; }
 const std::unordered_map<std::string, std::string>& GgufModelSource::metadata() const noexcept { return impl_->metadata; }
+const HadamardTransforms* GgufModelSource::hadamard_transforms() const noexcept { return &impl_->hadamard; }
 const std::vector<TensorMetadata>& GgufModelSource::tensors() const noexcept { return impl_->tensors; }
 const TensorMetadata* GgufModelSource::find_tensor(std::string_view name) const noexcept {
     const auto it = impl_->records.find(std::string(name));
@@ -1014,6 +1088,13 @@ ModelSource::TensorReader GgufModelSource::tensor_reader(std::string_view name) 
         }
         if (size) record.file->read(record.offset + offset - record.prefix.size(), destination, size);
     };
+}
+ModelSource::TensorReader GgufModelSource::mapped_tensor_reader(std::string_view name) const {
+    if(!find_tensor(name))throw std::out_of_range("GGUF tensor not found: "+std::string(name));
+    const auto range=tensor_file_range(name);
+    // Synthesized dense headers and joined tensors are not contiguous byte
+    // ranges in the file. Their ordinary retained reader remains available.
+    return range?mapped_file_tensor_reader(*range):TensorReader{};
 }
 std::optional<TensorFileRange> GgufModelSource::tensor_file_range(std::string_view name) const {
     const auto it = impl_->records.find(std::string(name));
@@ -1096,17 +1177,9 @@ ModelSource::TensorBatchReader GgufModelSource::tensor_batch_reader(std::string_
             return;
         }
         std::vector<ReadSpan> destinations;
-        for (std::size_t begin = 0; begin < spans.size();) {
-            destinations.clear();
-            auto end = begin;
-            auto next = spans[begin].offset;
-            while (end < spans.size() && spans[end].offset == next) {
-                destinations.push_back({record.offset + spans[end].offset, spans[end].destination, spans[end].size});
-                next += spans[end++].size;
-            }
-            record.file->read_contiguous(destinations);
-            begin = end;
-        }
+        destinations.reserve(spans.size());
+        for(const auto& span:spans)destinations.push_back({record.offset+span.offset,span.destination,span.size});
+        record.file->read_coalesced(destinations);
     };
 }
 void GgufModelSource::read_range_into(std::string_view name, uint64_t offset, std::byte* destination, std::size_t size) const {

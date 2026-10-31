@@ -233,6 +233,7 @@ QwenBatchOperations::Sample QwenBatchOperations::prefill(
     }
     request->prefill_timers.clear();
     request->prefill_ids = Tensor();
+    if(model_.restore_decode_workspace)model_.restore_decode_workspace();
     return {std::move(next), token, {request->prompt.size(), prefill_ms, 0.0, prefill_ms}};
 }
 
@@ -558,6 +559,9 @@ FlashNextBatchOperations::Sample FlashNextBatchOperations::finish_prefill(
     double milliseconds=request->packed_prefill_ms;
     for (const auto& measured:request->prefill_timers) milliseconds+=measured->elapsed_ms();
     request->prefill_timers.clear(); request->prefill_ids={}; request->packed_prefill_ms=0;
+    // Keep expert-cache restoration before token publication, outside the
+    // completed prompt-compute timers, just like the single-request path.
+    if(model_.restore_decode_workspace)model_.restore_decode_workspace();
     return {std::move(next),token,{request->prompt.size(),milliseconds,0.0,milliseconds}};
 }
 FlashNextBatchOperations::Sample FlashNextBatchOperations::prefill(

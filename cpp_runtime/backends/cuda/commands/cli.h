@@ -129,6 +129,7 @@ inline bool parse_cuda_load_option(
         ArgCursor& args,
         CudaLoadOptions& result) {
     if (option == "--model") result.model_path = args.value(option);
+    else if (option == "--dflash2-draft") result.dflash2_draft_path = args.value(option);
     else if (option == "--config") result.config_path = args.value(option);
     else if (option == "--yarn-context-extension") result.yarn_context_extension = true;
     else if (option == "--threads" || option == "-t") {

@@ -79,7 +79,8 @@ public:
         const mfq_tensor_backend::Tensor& key_cache={},
         const mfq_tensor_backend::Tensor& cache_positions={},
         const mfq_tensor_backend::Tensor& projected_value={},
-        const mfq_tensor_backend::Tensor& value_cache={}) const;
+        const mfq_tensor_backend::Tensor& value_cache={},
+        const std::vector<mfq_tensor_backend::Tensor>& entry_positions={}) const;
 private:
     int64_t dimension_, maximum_;
     double base_;

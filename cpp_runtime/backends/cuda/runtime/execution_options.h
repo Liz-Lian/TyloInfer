@@ -129,6 +129,8 @@ std::optional<bool> gdn_prefill_layer_batch();
 std::optional<bool> gr_prefill_layer_batch();
 std::optional<bool> gr_chain_ffn_post();
 std::optional<bool> mtp_predictor_graph();
+// Unset preserves QSA; zero selects full-context dense draft attention.
+std::optional<std::int64_t> mtp_attention_window();
 std::optional<std::int64_t> continuous_ffn_tile();
 std::optional<bool> gdn_packed_qkv();
 std::optional<int> moe_prefill_shared_chain_streams();

@@ -1,8 +1,12 @@
 #include "../ops/common/include/float_projection.h"
+#include "mfq_cuda_context.h"
+#include <cublas_v2.h>
 #include "../ops/mfq/include/nint.h"
 #include "qwen4_exp.h"
+#include "../ops/common/include/gated_residual.h"
 
 #include <limits>
+#include <climits>
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -10,6 +14,8 @@
 #include <cstdlib>
 #include <array>
 #include <cstdio>
+#include <cuda_bf16.h>
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "gr_prefill_tf32.cuh"
 #include "gr_prefill_half2.cuh"
 #include "gr_prefill_decode.cuh"
@@ -17,9 +23,52 @@
 #include "gr_prefill_blas.h"
 #include "gr_prefill_matmul.cuh"
 #include "gr_prefill_mix.cuh"
+#endif
 #include "kernel_dispatch_trace.h"
+#include "gr_bf16_prefill_mix.cuh"
+#include "gr_bf16_prefill_read.cuh"
 
 namespace {
+template<class Input>
+__device__ __forceinline__ float dense_bf16_input(Input value) {
+    if constexpr(std::is_same_v<Input,uint16_t>)return __uint_as_float(uint32_t(value)<<16);
+    else return __bfloat162float(__float2bfloat16_rn(float(value)));
+}
+// Weight-pair traversal and token reuse follow Strata native_bf16.cu (MIT,
+// ../../../third_party/strata.LICENSE). Each token has the singleton's sum tree.
+template<int Rows,class Input,class Output>
+__global__ void __launch_bounds__(128) dense_bf16_projection_kernel(
+        const Input* input,const uint16_t* weight,Output* output,int width,int outputs,int rows) {
+    const int row=blockIdx.x,tid=threadIdx.x,lane=tid&31,warp=tid>>5;
+    float sums[Rows]{};
+    const auto* weights=weight+size_t(row)*width;
+    for(int pair=tid;pair<(width+1)/2;pair+=128) {
+        const int column=pair*2;
+        const float w0=__uint_as_float(uint32_t(weights[column])<<16);
+        const float w1=column+1<width?__uint_as_float(uint32_t(weights[column+1])<<16):0.f;
+        #pragma unroll
+        for(int m=0;m<Rows;++m)if(m<rows) {
+            const auto* source=input+size_t(m)*width+column;
+            sums[m]=__fmaf_rn(w0,dense_bf16_input(source[0]),sums[m]);
+            if(column+1<width)sums[m]=__fmaf_rn(w1,dense_bf16_input(source[1]),sums[m]);
+        }
+    }
+    __shared__ float partial[Rows][4];
+    #pragma unroll
+    for(int m=0;m<Rows;++m)if(m<rows) {
+        #pragma unroll
+        for(int step=16;step;step>>=1)sums[m]+=__shfl_down_sync(0xffffffffu,sums[m],step);
+        if(!lane)partial[m][warp]=sums[m];
+    }
+    __syncthreads();
+    if(tid<rows) {
+        const float sum=(partial[tid][0]+partial[tid][2])+(partial[tid][1]+partial[tid][3]);
+        const float rounded=__bfloat162float(__float2bfloat16_rn(sum));
+        if constexpr(std::is_same_v<Output,float>)output[size_t(tid)*outputs+row]=rounded;
+        else output[size_t(tid)*outputs+row]=__float2half_rn(rounded);
+    }
+}
+
 template<class Input>
 __device__ __forceinline__ float4 gr_dense_input4(const Input* input) {
     if constexpr(std::is_same_v<Input,float>)return *reinterpret_cast<const float4*>(input);
@@ -39,18 +88,28 @@ __device__ __forceinline__ float gr_dense_dot4(float sum,float4 w,float4 x) {
     sum=fmaf(w.z,x.z,sum);return fmaf(w.w,x.w,sum);
 }
 template<int Rows,class Input>
-__global__ void __launch_bounds__(128) gr_bf16_down_kernel(
-        const Input* input,const uint16_t* weight,float* output) {
-    constexpr int Width=10240,Rank=320;
-    const int row=blockIdx.x,tid=threadIdx.x,lane=tid&31,warp=tid>>5;
+__global__ void __launch_bounds__(Rows==1?128:256) gr_bf16_down_kernel(
+        const Input* input,const uint16_t* weight,float* output,int width,int rank,int streams,
+        const uint16_t* injection,float* injection_output) {
+    const bool injecting=int(blockIdx.x)>=rank;
+    const int row=injecting?int(blockIdx.x)-rank:int(blockIdx.x),tid=threadIdx.x,lane=tid&31,warp=tid>>5;
+    const auto* matrix=injecting?injection:weight;
+    // Preserve the singleton's accumulation order. Multiple independent rows
+    // use more warps to shorten each thread's serial projection loop.
+    constexpr int threads=Rows==1?128:256,warps=threads/32;
     float sums[Rows]{};
-    for(int column=tid*4;column<Width;column+=128*4) {
-        const float4 w=gr_dense_weight4(weight+size_t(row)*Width+column);
+    if(width%4==0 && reinterpret_cast<std::uintptr_t>(input)%(4*sizeof(Input))==0 &&
+            reinterpret_cast<std::uintptr_t>(matrix)%8==0)for(int column=tid*4;column<width;column+=threads*4) {
+        const float4 w=gr_dense_weight4(matrix+size_t(row)*width+column);
         #pragma unroll
         for(int m=0;m<Rows;++m)sums[m]=gr_dense_dot4(sums[m],w,
-            gr_dense_input4(input+size_t(m)*Width+column));
+            gr_dense_input4(input+size_t(m)*width+column));
+    }else for(int column=tid;column<width;column+=threads) {
+        const float w=__uint_as_float(uint32_t(matrix[size_t(row)*width+column])<<16);
+        #pragma unroll
+        for(int m=0;m<Rows;++m)sums[m]=fmaf(w,float(input[size_t(m)*width+column]),sums[m]);
     }
-    __shared__ float partial[Rows][4];
+    __shared__ float partial[Rows][warps];
     #pragma unroll
     for(int m=0;m<Rows;++m) {
         #pragma unroll
@@ -59,41 +118,72 @@ __global__ void __launch_bounds__(128) gr_bf16_down_kernel(
     }
     __syncthreads();
     if(tid<Rows) {
-        const float sum=(partial[tid][0]+partial[tid][2])+(partial[tid][1]+partial[tid][3]);
-        const float low=__fdiv_rn(sum,4.f);
+        float sum;
+        if constexpr(warps==4)sum=(partial[tid][0]+partial[tid][2])+(partial[tid][1]+partial[tid][3]);
+        else {
+            const float s0=partial[tid][0]+partial[tid][4],s1=partial[tid][1]+partial[tid][5];
+            const float s2=partial[tid][2]+partial[tid][6],s3=partial[tid][3]+partial[tid][7];
+            sum=(s0+s2)+(s1+s3);
+        }
+        const float low=__fdiv_rn(sum,float(streams));
         const float gate=1.f/(1.f+expf(-low));
-        output[size_t(tid)*Rank+row]=__fmul_rn(low,gate);
+        if(injecting)injection_output[size_t(tid)*streams+row]=__fmul_rn(2.f,gate);
+        else output[size_t(tid)*rank+row]=__fmul_rn(low,gate);
     }
 }
 template<int Rows,class Normalized>
-__global__ void __launch_bounds__(128) gr_bf16_up_mix_kernel(
-        const float* input,const Normalized* normalized,const uint16_t* weight,float* output) {
-    constexpr int Rank=320,Hidden=2560,Streams=4;
-    const int column=blockIdx.x,tid=threadIdx.x,lane=tid&31,stream=tid>>5;
-    const int row=stream*Hidden+column;
-    float sums[Rows]{};
-    for(int begin=lane*4;begin<Rank;begin+=128) {
-        const float4 w=gr_dense_weight4(weight+size_t(row)*Rank+begin);
+__global__ void __launch_bounds__(256) gr_bf16_up_mix_kernel(
+        const float* input,const Normalized* normalized,const uint16_t* weight,float* output,
+        int rank,int hidden,int streams) {
+    // One warp owns a coordinate, with four 8-lane groups evaluating four
+    // streams concurrently. Eight BF16 values per lane give contiguous 128B
+    // transactions within each group; every loaded weight serves all tokens.
+    const int column=blockIdx.x*8+(threadIdx.x>>5),lane=threadIdx.x&31;
+    if(column>=hidden)return;
+    const int group=lane/8,part=lane%8;
+    float result[Rows]{};
+    for(int base=0;base<streams;base+=4) {
+        const int stream=base+group;
+        const int row=stream*hidden+column;
+        float sums[Rows]{};
+        if(stream<streams) {
+            if(rank%8==0 && reinterpret_cast<std::uintptr_t>(input)%16==0 &&
+                    reinterpret_cast<std::uintptr_t>(weight)%16==0)for(int begin=part*8;begin<rank;begin+=64) {
+                const uint4 packed=*reinterpret_cast<const uint4*>(weight+size_t(row)*rank+begin);
+                const float4 w0=make_float4(__uint_as_float(packed.x<<16),__uint_as_float(packed.x&0xffff0000u),
+                    __uint_as_float(packed.y<<16),__uint_as_float(packed.y&0xffff0000u));
+                const float4 w1=make_float4(__uint_as_float(packed.z<<16),__uint_as_float(packed.z&0xffff0000u),
+                    __uint_as_float(packed.w<<16),__uint_as_float(packed.w&0xffff0000u));
+                #pragma unroll
+                for(int m=0;m<Rows;++m) {
+                    sums[m]=gr_dense_dot4(sums[m],w0,gr_dense_input4(input+size_t(m)*rank+begin));
+                    sums[m]=gr_dense_dot4(sums[m],w1,gr_dense_input4(input+size_t(m)*rank+begin+4));
+                }
+            }else for(int k=part;k<rank;k+=8) {
+                const float w=__uint_as_float(uint32_t(weight[size_t(row)*rank+k])<<16);
+                #pragma unroll
+                for(int m=0;m<Rows;++m)sums[m]=fmaf(w,input[size_t(m)*rank+k],sums[m]);
+            }
+        }
         #pragma unroll
-        for(int m=0;m<Rows;++m)sums[m]=gr_dense_dot4(sums[m],w,
-            gr_dense_input4(input+size_t(m)*Rank+begin));
-    }
-    __shared__ float products[Rows][Streams];
-    #pragma unroll
-    for(int m=0;m<Rows;++m) {
-        #pragma unroll
-        for(int offset=16;offset>0;offset>>=1)sums[m]+=__shfl_down_sync(0xffffffffu,sums[m],offset);
-        if(lane==0) {
-            const float gate=1.f/(1.f+expf(-sums[m]));
-            products[m][stream]=__fmul_rn(gate,static_cast<float>(normalized[size_t(m)*Hidden*Streams+row]));
+        for(int m=0;m<Rows;++m) {
+            #pragma unroll
+            for(int offset=4;offset>0;offset>>=1)sums[m]+=__shfl_down_sync(0xffffffffu,sums[m],offset,8);
+            float product=0;
+            if(part==0 && stream<streams)product=__fmul_rn(1.f/(1.f+expf(-sums[m])),
+                float(normalized[size_t(m)*hidden*streams+row]));
+            // Every lane participates in each shuffle, including inactive
+            // stream groups. Add in stream order as the ordinary mix does.
+            #pragma unroll
+            for(int s=0;s<4;++s) {
+                const float value=__shfl_sync(0xffffffffu,product,s*8);
+                if(lane==0 && base+s<streams)result[m]=__fadd_rn(result[m],value);
+            }
         }
     }
-    __syncthreads();
-    if(tid<Rows) {
-        float sum=0.f;
+    if(lane==0) {
         #pragma unroll
-        for(int s=0;s<Streams;++s)sum=__fadd_rn(sum,products[tid][s]);
-        output[size_t(tid)*Hidden+column]=sum/float(Streams);
+        for(int m=0;m<Rows;++m)output[size_t(m)*hidden+column]=result[m]/float(streams);
     }
 }
 
@@ -398,25 +488,115 @@ mfq_tensor_backend::Tensor float_projection_impl(
 
 #endif
 
-mfq_tensor_backend::Tensor try_gr_bf16_down_cuda(const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& weight,int64_t streams) {
+mfq_tensor_backend::Tensor try_gr_bf16_prefill_projection_cuda(const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight) {
     namespace tb=mfq_tensor_backend;
-    if(streams!=4 || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
-            input.size(-1)!=10240 || input.numel()/10240<1 || input.numel()/10240>6 ||
+    const auto* setting=std::getenv("TYLOINFER_GR_PREFILL_BF16");
+    if(setting && setting[0]=='0')return {};
+    // BF16 MMA has a 16-column output tile; smaller projections stay on
+    // the existing path rather than paying a tensor-core staging round trip.
+    if(!input.defined() || !weight.defined() || !input.is_cuda() || !weight.is_cuda() ||
+            input.device()!=weight.device() || weight.scalar_type()!=tb::kBFloat16 || weight.dim()!=2 ||
+            input.dim()<1 || input.size(-1)<=0 || weight.size(1)!=input.size(-1) ||
+            weight.size(0)<16 || weight.size(0)>INT_MAX || weight.size(1)>INT_MAX ||
+            (input.scalar_type()!=tb::kFloat32 && input.scalar_type()!=tb::kBFloat16))return {};
+    const auto rows=input.numel()/input.size(-1);
+    if(rows<=32 || rows>INT_MAX)return {};
+    const MfqCudaGuard guard(input.get_device());
+    int major=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,input.get_device()));
+    // Native BF16 tensor-core GEMM starts at compute capability 8.0.
+    if(major<8)return {};
+    auto x=input.to(tb::kBFloat16).contiguous(),w=weight.contiguous();
+    // GEMM may select vectorized global loads; retain arbitrary input views.
+    if(reinterpret_cast<std::uintptr_t>(x.data_ptr())%16)x=x.clone();
+    if(reinterpret_cast<std::uintptr_t>(w.data_ptr())%16)w=w.clone();
+    auto shape=input.sizes().vec();shape.back()=weight.size(0);
+    auto output=tb::empty(shape,input.options().dtype(tb::kFloat32));
+    const auto stream=mfq_current_cuda_stream();
+    for(const auto& tensor:{x,w,output})tensor.record_stream(reinterpret_cast<std::uintptr_t>(stream));
+    auto& blas=mfq::cuda::default_context(input.get_device())->blas();blas.set_stream(stream);
+    const float alpha=1.f,beta=0.f;
+    const auto status=cublasGemmEx(blas.get(),CUBLAS_OP_T,CUBLAS_OP_N,int(weight.size(0)),int(rows),int(weight.size(1)),
+        &alpha,w.data_ptr(),CUDA_R_16BF,int(weight.size(1)),x.data_ptr(),CUDA_R_16BF,int(weight.size(1)),
+        &beta,output.data_ptr<float>(),CUDA_R_32F,int(weight.size(0)),CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if(status==CUBLAS_STATUS_NOT_SUPPORTED || status==CUBLAS_STATUS_ARCH_MISMATCH)return {};
+    if(status!=CUBLAS_STATUS_SUCCESS)throw std::runtime_error("BF16 residual prefill GEMM failed");
+    static std::once_flag traced;
+    if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1')std::call_once(traced,[&] {
+        std::fprintf(stderr,"native_gr_prefill_bf16 actual_match=1 tokens=%lld rows=%lld columns=%lld fp32_accumulation=1\n",
+            static_cast<long long>(rows),static_cast<long long>(weight.size(0)),static_cast<long long>(weight.size(1)));
+    });
+    return output;
+}
+
+mfq_tensor_backend::Tensor try_dense_bf16_projection_cuda(const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight) {
+    namespace tb=mfq_tensor_backend;
+    if(!input.defined() || !weight.defined() || !input.is_cuda() || !weight.is_cuda() ||
+            input.device()!=weight.device() || !input.is_contiguous() || !weight.is_contiguous() ||
+            weight.scalar_type()!=tb::kBFloat16 || weight.dim()!=2 || input.dim()<1 || input.size(-1)<1 ||
+            input.size(-1)!=weight.size(1) || weight.size(0)<1 || weight.size(0)>INT_MAX || weight.size(1)>=INT_MAX ||
+            (input.scalar_type()!=tb::kFloat16 && input.scalar_type()!=tb::kFloat32 && input.scalar_type()!=tb::kBFloat16))return {};
+    const auto rows=input.numel()/input.size(-1);
+    // The common adapter already uses one full GEMM from seven rows onward;
+    // keep that tensor-core path instead of replacing it with a scalar dot.
+    if(rows<1 || rows>6)return {};
+    auto shape=input.sizes().vec();shape.back()=weight.size(0);
+    auto output=tb::empty(shape,input.options().dtype(input.scalar_type()==tb::kFloat32?tb::kFloat32:tb::kFloat16));
+    const MfqCudaGuard guard(input.get_device());
+    const auto stream_handle=mfq_get_current_cuda_stream(input.get_device());
+    const auto stream=stream_handle.stream();
+    for(const auto& tensor:{input,weight,output})mfq_cuda_record_stream(tensor,stream_handle);
+    const auto launch=[&](auto capacity,auto input_tag,auto output_tag) {
+        using Input=decltype(input_tag);using Output=decltype(output_tag);
+        dense_bf16_projection_kernel<decltype(capacity)::value,Input,Output><<<unsigned(weight.size(0)),128,0,stream>>>(
+            static_cast<const Input*>(input.data_ptr()),static_cast<const uint16_t*>(weight.data_ptr()),
+            static_cast<Output*>(output.data_ptr()),int(weight.size(1)),int(weight.size(0)),int(rows));
+        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,"dense_bf16_projection",
+            reinterpret_cast<const void*>(dense_bf16_projection_kernel<decltype(capacity)::value,Input,Output>),
+            "M="+std::to_string(rows)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(weight.size(1)));
+    };
+    const auto dispatch=[&](auto input_tag,auto output_tag) {
+        if(rows==1)launch(std::integral_constant<int,1>{},input_tag,output_tag);
+        else if(rows==2)launch(std::integral_constant<int,2>{},input_tag,output_tag);
+        else if(rows==3)launch(std::integral_constant<int,3>{},input_tag,output_tag);
+        else if(rows==4)launch(std::integral_constant<int,4>{},input_tag,output_tag);
+        else launch(std::integral_constant<int,8>{},input_tag,output_tag);
+    };
+    if(input.scalar_type()==tb::kFloat32)dispatch(float{},float{});
+    else if(input.scalar_type()==tb::kFloat16)dispatch(__half{},__half{});
+    else dispatch(uint16_t{},__half{});
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
+}
+
+std::vector<mfq_tensor_backend::Tensor> try_gr_bf16_down_injection_cuda(const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight,const mfq_tensor_backend::Tensor& injection,int64_t streams) {
+    namespace tb=mfq_tensor_backend;
+    if(streams<1 || streams>INT_MAX || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 || input.size(-1)<1 ||
+            input.size(-1)>INT_MAX || input.numel()/input.size(-1)<1 || input.numel()/input.size(-1)>6 ||
             (input.scalar_type()!=tb::kFloat16 && input.scalar_type()!=tb::kFloat32) ||
             !weight.is_cuda() || !weight.is_contiguous() || weight.device()!=input.device() ||
-            weight.scalar_type()!=tb::kBFloat16 || weight.sizes().vec()!=std::vector<int64_t>({320,10240}))return {};
+            weight.scalar_type()!=tb::kBFloat16 || weight.dim()!=2 || weight.size(0)<1 || weight.size(0)>INT_MAX ||
+            weight.size(1)!=input.size(-1))return {};
+    if(injection.defined() && (!injection.is_cuda() || !injection.is_contiguous() || injection.device()!=input.device() ||
+            injection.scalar_type()!=tb::kBFloat16 || injection.dim()!=2 || injection.size(0)!=streams ||
+            injection.size(1)!=input.size(-1) || weight.size(0)>INT_MAX-streams))return {};
     const MfqCudaGuard guard(input.device());
-    const int rows=int(input.numel()/10240);
-    auto shape=input.sizes().vec();shape.back()=320;
+    const int width=int(weight.size(1)),rank=int(weight.size(0)),rows=int(input.numel()/width);
+    auto shape=input.sizes().vec();shape.back()=rank;
     auto output=tb::empty(shape,input.options().dtype(tb::kFloat32));
+    tb::Tensor gates;
+    if(injection.defined()) {shape.back()=streams;gates=tb::empty(shape,output.options());}
     const auto launch=[&](auto capacity,auto type) {
         using Input=decltype(type);
-        gr_bf16_down_kernel<decltype(capacity)::value,Input><<<320,128,0,mfq_current_cuda_stream()>>>(
-            input.data_ptr<Input>(),static_cast<const uint16_t*>(weight.data_ptr()),output.data_ptr<float>());
+        constexpr int threads=decltype(capacity)::value==1?128:256;
+        gr_bf16_down_kernel<decltype(capacity)::value,Input><<<rank+(gates.defined()?int(streams):0),threads,0,mfq_current_cuda_stream()>>>(
+            input.data_ptr<Input>(),static_cast<const uint16_t*>(weight.data_ptr()),output.data_ptr<float>(),width,rank,int(streams),
+            gates.defined()?static_cast<const uint16_t*>(injection.data_ptr()):nullptr,gates.defined()?gates.data_ptr<float>():nullptr);
         if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
-            "gr_bf16_down_silu",reinterpret_cast<const void*>(gr_bf16_down_kernel<decltype(capacity)::value,Input>),
-            "M="+std::to_string(rows)+" N=320 K=10240");
+            gates.defined()?"gr_bf16_down_silu_injection":"gr_bf16_down_silu",
+            reinterpret_cast<const void*>(gr_bf16_down_kernel<decltype(capacity)::value,Input>),
+            "M="+std::to_string(rows)+" N="+std::to_string(rank)+" K="+std::to_string(width));
     };
     const auto types=[&](auto capacity) {
         if(input.scalar_type()==tb::kFloat16)launch(capacity,__half{});else launch(capacity,float{});
@@ -429,32 +609,40 @@ mfq_tensor_backend::Tensor try_gr_bf16_down_cuda(const mfq_tensor_backend::Tenso
         case 5:types(std::integral_constant<int,5>{});break;
         case 6:types(std::integral_constant<int,6>{});break;
     }
-    TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());return {output,gates};
+}
+
+mfq_tensor_backend::Tensor try_gr_bf16_down_cuda(const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight,int64_t streams) {
+    auto result=try_gr_bf16_down_injection_cuda(input,weight,{},streams);
+    return result.empty()?mfq_tensor_backend::Tensor{}:result[0];
 }
 
 mfq_tensor_backend::Tensor try_gr_bf16_up_mix_cuda(const mfq_tensor_backend::Tensor& input,
         const mfq_tensor_backend::Tensor& normalized,const mfq_tensor_backend::Tensor& weight,int64_t streams) {
+    if(auto output=try_gr_bf16_prefill_mix(input,normalized,weight,streams);output.defined())return output;
     namespace tb=mfq_tensor_backend;
-    if(streams!=4 || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
-            input.size(-1)!=320 || input.numel()/320<1 || input.numel()/320>6 ||
+    if(streams<1 || streams>INT_MAX || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 || input.size(-1)<1 ||
+            input.size(-1)>INT_MAX || input.numel()/input.size(-1)<1 || input.numel()/input.size(-1)>6 ||
             input.scalar_type()!=tb::kFloat32 || !normalized.is_cuda() || !normalized.is_contiguous() ||
             normalized.device()!=input.device() ||
             (normalized.scalar_type()!=tb::kFloat16 && normalized.scalar_type()!=tb::kFloat32) ||
             !weight.is_cuda() || !weight.is_contiguous() || weight.device()!=input.device() ||
-            weight.scalar_type()!=tb::kBFloat16 || weight.sizes().vec()!=std::vector<int64_t>({10240,320}))return {};
-    auto expected=input.sizes().vec();expected.back()=10240;
+            weight.scalar_type()!=tb::kBFloat16 || weight.dim()!=2 || weight.size(0)<streams || weight.size(0)>INT_MAX ||
+            weight.size(0)%streams || weight.size(1)!=input.size(-1))return {};
+    const int rank=int(weight.size(1)),hidden=int(weight.size(0)/streams),rows=int(input.numel()/rank);
+    auto expected=input.sizes().vec();expected.back()=weight.size(0);
     if(normalized.sizes().vec()!=expected)return {};
     const MfqCudaGuard guard(input.device());
-    const int rows=int(input.numel()/320);
-    auto shape=input.sizes().vec();shape.back()=2560;
+    auto shape=input.sizes().vec();shape.back()=hidden;
     auto output=tb::empty(shape,input.options());
     const auto launch=[&](auto capacity,auto type) {
         using Normalized=decltype(type);
-        gr_bf16_up_mix_kernel<decltype(capacity)::value,Normalized><<<2560,128,0,mfq_current_cuda_stream()>>>(
-            input.data_ptr<float>(),normalized.data_ptr<Normalized>(),static_cast<const uint16_t*>(weight.data_ptr()),output.data_ptr<float>());
+        gr_bf16_up_mix_kernel<decltype(capacity)::value,Normalized><<<(hidden+7)/8,256,0,mfq_current_cuda_stream()>>>(
+            input.data_ptr<float>(),normalized.data_ptr<Normalized>(),static_cast<const uint16_t*>(weight.data_ptr()),output.data_ptr<float>(),rank,hidden,int(streams));
         if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
             "gr_bf16_up_mix",reinterpret_cast<const void*>(gr_bf16_up_mix_kernel<decltype(capacity)::value,Normalized>),
-            "M="+std::to_string(rows)+" N=10240 K=320");
+            "M="+std::to_string(rows)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(rank));
     };
     const auto types=[&](auto capacity) {
         if(normalized.scalar_type()==tb::kFloat16)launch(capacity,__half{});else launch(capacity,float{});

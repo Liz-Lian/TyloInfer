@@ -39,6 +39,8 @@ set_target_properties(mfq-model-graph PROPERTIES
 
 add_library(mfq-model-source STATIC
     file_range_reader.cpp
+    mirrored_file_reader.cpp
+    include/tyloinfer/mirrored_file_reader.h
     async_range_reader.cpp
     include/tyloinfer/file_range_reader.h
     mfe_quant_expert_store.cpp

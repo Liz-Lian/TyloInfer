@@ -1085,6 +1085,9 @@ public:
     std::size_t reserve_host(std::size_t bytes) {
         std::lock_guard<std::mutex> guard(mutex_);return reserve_host_locked(bytes);
     }
+    std::uint64_t streamed_bytes() {
+        std::lock_guard<std::mutex> guard(mutex_); return transfer_bytes_;
+    }
     std::vector<std::pair<std::string,double>> memory_metrics() {
         std::lock_guard<std::mutex> guard(mutex_);
         std::size_t covered=0,staging=0;
@@ -1322,6 +1325,9 @@ std::size_t reserve_tq_expert_host(const std::shared_ptr<TqExpertCache>& cache,s
 }
 std::vector<std::pair<std::string,double>> tq_expert_memory_metrics(const std::shared_ptr<TqExpertCache>& cache) {
     return cache?cache->memory_metrics():std::vector<std::pair<std::string,double>>{};
+}
+std::uint64_t tq_expert_streamed_bytes(const std::shared_ptr<TqExpertCache>& cache) {
+    return cache?cache->streamed_bytes():0;
 }
 
 TqRoutedWeight::TqRoutedWeight(CudaExecutionContext& execution,const mfq::ModelSource& source,

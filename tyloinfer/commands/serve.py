@@ -60,6 +60,36 @@ def _nonnegative_float(value: str) -> float:
     return parsed
 
 
+def _probability(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or not 0 <= parsed <= 1:
+        raise argparse.ArgumentTypeError("probability must be in [0, 1]")
+    return parsed
+
+
+def _mtp_runtime_environment(args: argparse.Namespace, backend: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for attribute, variable in (
+        ("mtp_spec_min_p", "TYLOINFER_MTP_SPEC_MIN_P"),
+        ("mtp_draft_conf", "TYLOINFER_DFLASH2_DRAFT_CONF"),
+        ("mtp_cost_aware", "TYLOINFER_MTP_SPEC_COST"),
+    ):
+        value = getattr(args, attribute, None)
+        if value is not None:
+            if backend != "cuda":
+                raise ValueError("explicit MTP probability and cost policies require the CUDA runtime")
+            result[variable] = str(int(value)) if isinstance(value, bool) else str(value)
+    native = getattr(args, "mtp_native_draft", None)
+    if native is not None:
+        if backend != "cuda":
+            raise ValueError("--mtp-native-draft requires the CUDA runtime")
+        native = native.expanduser().resolve()
+        if not native.is_file():
+            raise FileNotFoundError(native)
+        result["TYLOINFER_MTP_NATIVE_GGUF"] = str(native)
+    return result
+
+
 def _byte_size(value: str) -> int:
     text = value.strip().lower()
     multipliers = {
@@ -283,7 +313,14 @@ def _run_locked(args: argparse.Namespace, identity: dict[str, str | int]) -> int
     web_root = _prepare_web_root(args.web_root, disabled=args.no_web_ui)
     selected_backend = _select_backend(args.backend, args.running_executable)
     executable = _resolve_runtime_executable(selected_backend, args.running_executable)
-    runtime_environment: dict[str, str] = {}
+    runtime_environment = _mtp_runtime_environment(args, selected_backend)
+    if args.dflash2_draft is not None:
+        if selected_backend != "cuda":
+            raise ValueError("--dflash2-draft requires the CUDA runtime")
+        draft = args.dflash2_draft.expanduser().resolve()
+        if not draft.is_dir():
+            raise FileNotFoundError(draft)
+        runtime_environment["TYLOINFER_DFLASH2_DRAFT"] = str(draft)
     if args.no_prefix_cache:
         runtime_environment["TYLOINFER_RUNTIME_DISABLE_PREFIX_CACHE"] = "1"
     if args.prefix_cache_dir is not None:
@@ -425,6 +462,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     parser.add_argument("--model", type=Path, help="optional TyloInfer model to load at startup")
+    draft = parser.add_mutually_exclusive_group()
+    draft.add_argument("--dflash2-draft", type=Path, help="DFlash2 checkpoint directory for CUDA Flash-Next generation")
+    draft.add_argument("--mtp-native-draft", type=Path, help="native MTP GGUF companion for a CUDA GGUF target")
+    parser.add_argument("--spec-min-p", "--mtp-min-probability", dest="mtp_spec_min_p", type=_probability,
+                        help="CUDA greedy draft probability threshold; 0 disables it")
+    parser.add_argument("--draft-conf", "--dflash2-draft-confidence", dest="mtp_draft_conf", type=_probability,
+                        help="CUDA greedy DFlash2 cumulative draft confidence; overrides --spec-min-p when nonzero")
+    parser.add_argument("--mtp-cost-aware", action=argparse.BooleanOptionalAction, default=None,
+                        help="choose native CUDA greedy MTP depth from measured cost and calibrated draft probabilities")
     parser.add_argument("--exit-on-stdin-close", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--studio-instance-id", help=argparse.SUPPRESS)
     parser.add_argument(

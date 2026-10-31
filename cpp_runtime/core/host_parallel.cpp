@@ -1,4 +1,5 @@
 #include "tyloinfer/host_parallel.h"
+#include "tyloinfer/cpu_wait.h"
 
 #include <algorithm>
 #include <atomic>
@@ -32,12 +33,12 @@ private:
 
 struct HostParallelPool::Impl {
 public:
-    explicit Impl(std::function<void(std::size_t)> initialize,bool wait_idle)
-        : initialize_(std::move(initialize)),wait_idle_workers_(wait_idle) {}
+    explicit Impl(std::function<void(std::size_t)> initialize,bool wait_idle,std::uint64_t idle_spin_ns)
+        : initialize_(std::move(initialize)),wait_idle_workers_(wait_idle),idle_spin_ns_(idle_spin_ns) {}
     ~Impl() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
+            stopping_ = true;published_epoch_.fetch_add(1,std::memory_order_release);
         }
         ready_.notify_all();
         for (auto& worker : workers_) worker.join();
@@ -90,6 +91,7 @@ public:
                 published_=ProfileClock::now();
             }
             ++epoch_;
+            if(idle_spin_ns_)published_epoch_.store(epoch_,std::memory_order_release);
         }
         const auto setup_ns=profile ? elapsed_ns(setup_started) : 0;
         ready_.notify_all();
@@ -118,6 +120,13 @@ public:
             // still asleep; only callbacks already running own the function.
             active_workers_=0;
             remaining_=running_workers_;
+        }
+        if(idle_spin_ns_ && remaining_) {
+            pending_workers_.store(remaining_,std::memory_order_release);
+            lock.unlock();const auto spin_begin=ProfileClock::now();
+            while(pending_workers_.load(std::memory_order_acquire) &&
+                    std::uint64_t(elapsed_ns(spin_begin))<idle_spin_ns_)cpu::spin_pause();
+            lock.lock();
         }
         done_.wait(lock, [&] { return remaining_ == 0; });
         function_ = nullptr;
@@ -188,6 +197,12 @@ private:
         if(initialization_error && !initialization_failure_)initialization_failure_=initialization_error;
         ++initialized_workers_;initialized_.notify_one();
         for (;;) {
+            if(idle_spin_ns_ && !stopping_ && observed==epoch_) {
+                lock.unlock();const auto begin=ProfileClock::now();
+                while(published_epoch_.load(std::memory_order_acquire)==observed &&
+                        std::uint64_t(elapsed_ns(begin))<idle_spin_ns_)cpu::spin_pause();
+                lock.lock();
+            }
             ready_.wait(lock, [&] { return stopping_ || observed != epoch_; });
             if (stopping_) return;
             observed = epoch_;
@@ -210,7 +225,9 @@ private:
                 lock.lock();
                 --running_workers_;
             }
-            if (--remaining_ == 0) done_.notify_one();
+            --remaining_;
+            if(idle_spin_ns_)pending_workers_.store(remaining_,std::memory_order_release);
+            if (remaining_ == 0) done_.notify_one();
         }
     }
 
@@ -225,6 +242,8 @@ private:
     std::atomic<std::int64_t> stage_remaining_{0};
     bool staged_ = false;
     std::uint64_t epoch_ = 0;
+    std::atomic<std::uint64_t> published_epoch_{0};
+    std::atomic<int> pending_workers_{0};
     int active_workers_ = 0, remaining_ = 0;
     int running_workers_=0;
     std::size_t initialized_workers_=0;
@@ -237,10 +256,11 @@ private:
     std::exception_ptr failure_;
     std::function<void(std::size_t)> initialize_;
     bool wait_idle_workers_=true;
+    std::uint64_t idle_spin_ns_=0;
 };
 
-HostParallelPool::HostParallelPool(std::function<void(std::size_t)> initialize,bool wait_idle)
-    : impl_(std::make_unique<Impl>(std::move(initialize),wait_idle)) {}
+HostParallelPool::HostParallelPool(std::function<void(std::size_t)> initialize,bool wait_idle,std::uint64_t idle_spin_ns)
+    : impl_(std::make_unique<Impl>(std::move(initialize),wait_idle,idle_spin_ns)) {}
 HostParallelPool::~HostParallelPool() = default;
 
 void HostParallelPool::run_staged(std::int64_t end, std::int64_t ready_end, int threads,

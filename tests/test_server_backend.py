@@ -70,10 +70,16 @@ def test_backend_stream_parses_cpp_sse_and_preserves_request_fields() -> None:
                     "decode_tps": 1500.0,
                     "generation_ms": 14.0,
                     "generation_tps": 214.0,
-                    "mtp_selected_depth": 5.0,
+                    "mtp_selected_depth": 7.0,
                     "mtp_depth_5_cycles": 3.0,
                     "mtp_position_5_acceptance_rate": 0.5,
                     "mtp_depth_5_cycle_ms": 2.1,
+                    "mtp_depth_6_cycles": 2.0,
+                    "mtp_depth_7_cycles": 1.0,
+                    "mtp_position_6_acceptance_rate": 0.4,
+                    "mtp_position_7_acceptance_rate": 0.25,
+                    "mtp_depth_6_cycle_ms": 2.5,
+                    "mtp_depth_7_cycle_ms": 3.0,
                     "future_runtime_metric": 123.0,
                     "sampling": {
                         "max_tokens": 12,
@@ -163,10 +169,16 @@ def test_backend_stream_parses_cpp_sse_and_preserves_request_fields() -> None:
         assert deltas[2].performance is not None
         assert deltas[2].performance.multimodal_ms == 3.0
         assert deltas[2].performance.model_prefill_ms == 7.0
-        assert deltas[2].performance.mtp_selected_depth == 5
+        assert deltas[2].performance.mtp_selected_depth == 7
         assert deltas[2].performance.mtp_depth_5_cycles == 3
         assert deltas[2].performance.mtp_position_5_acceptance_rate == 0.5
         assert deltas[2].performance.mtp_depth_5_cycle_ms == 2.1
+        assert deltas[2].performance.mtp_depth_6_cycles == 2
+        assert deltas[2].performance.mtp_depth_7_cycles == 1
+        assert deltas[2].performance.mtp_position_6_acceptance_rate == 0.4
+        assert deltas[2].performance.mtp_position_7_acceptance_rate == 0.25
+        assert deltas[2].performance.mtp_depth_6_cycle_ms == 2.5
+        assert deltas[2].performance.mtp_depth_7_cycle_ms == 3.0
         assert deltas[2].performance.model_dump()["future_runtime_metric"] == 123.0
 
     asyncio.run(run())

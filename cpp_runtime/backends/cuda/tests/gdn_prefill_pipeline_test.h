@@ -26,6 +26,7 @@ public:
     }
 };
 void gdn_prefill_pipeline_case(bool defaults=false,bool prepared_decay=false) {
+    GdnPipelineScope keyhead(0,"TYLOINFER_GDN_PREFILL_KEYHEAD");
     GdnPipelineScope pipeline(1);
     const char* option_key=prepared_decay?"TYLOINFER_GDN_PREFILL_PREPARED_DECAY":"TYLOINFER_GDN_PREFILL_PIPELINED";
     GdnPipelineScope option(1,option_key);
@@ -64,6 +65,7 @@ void gdn_prefill_pipeline_case(bool defaults=false,bool prepared_decay=false) {
 }
 
 void gdn_prefill_staged_case(bool benchmark) {
+    GdnPipelineScope keyhead(0,"TYLOINFER_GDN_PREFILL_KEYHEAD");
     GdnPipelineScope staged(0,"TYLOINFER_GDN_PREFILL_STAGED");
     GdnPipelineScope pipeline(1);
     GdnColumnsScope columns(4);
@@ -121,6 +123,7 @@ void gdn_prefill_staged_case(bool benchmark) {
 }
 
 void gdn_prefill_staged_graph_case() {
+    GdnPipelineScope keyhead(0,"TYLOINFER_GDN_PREFILL_KEYHEAD");
     GdnPipelineScope staged(0,"TYLOINFER_GDN_PREFILL_STAGED");
     GdnColumnsScope columns(4);
     const auto bits=[](const Tensor& actual,const Tensor& expected) {
@@ -155,4 +158,67 @@ void gdn_prefill_staged_graph_case() {
         }
     }
     std::cout<<"GDN staged changing graph/default/inplace exact replays="<<replays<<" PASS\n";
+}
+
+void gdn_prefill_keyhead_case(bool benchmark,bool focused=false) {
+    GdnPipelineScope option(0,"TYLOINFER_GDN_PREFILL_KEYHEAD");
+    GdnColumnsScope columns(4);
+    const auto check=[](const Tensor& actual,const Tensor& expected) {
+        const auto error=(actual-expected).abs().max().item<float>();
+        const auto maximum=expected.abs().max().item<float>();
+        if(!std::isfinite(error) || error>2e-6f+maximum*2e-5f)
+            throw std::runtime_error("GDN key-head reuse changed output/state recurrence");
+    };
+    int cases=0;
+    for(int batch:focused?std::vector<int>{2}:std::vector<int>{1,2})
+    for(int ratio:focused?std::vector<int>{3,5}:std::vector<int>{1,2,3,4,5})
+    for(int tokens:focused?std::vector<int>{129}:std::vector<int>{128,129,257})
+    for(bool transposed:{false,true})for(bool tiled:{false,true}) {
+        constexpr int nk=2,D=128;const int nv=nk*ratio;
+        auto q=data({batch,nk,tokens,D},431,.04f).to(tb::kFloat32),k=data({batch,nk,tokens,D},432,.04f).to(tb::kFloat32);
+        auto v=data({batch,nv,tokens,D},433,.19f).to(tb::kFloat32);
+        auto g=data({batch,nv,tokens},434,.3f).to(tb::kFloat32)-.5f;
+        auto beta=data({batch,nv,tokens},435,.3f).to(tb::kFloat32)+.5f;
+        auto initial=data({batch,nv,D,D},436,.03f).to(tb::kFloat32);
+        const auto call=[&] {
+            if(tiled) {
+                auto state=initial.clone();
+                return (transposed?gdn_inplace_transposed_tiled_cuda:gdn_inplace_tiled_cuda)(q,k,v,g,beta,state);
+            }
+            return (transposed?gdn_transposed_cuda:gdn_cuda)(q,k,v,g,beta,initial);
+        };
+        GdnPipelineScope::set(0,"TYLOINFER_GDN_PREFILL_KEYHEAD");const auto expected=call();
+        GdnPipelineScope::set(1,"TYLOINFER_GDN_PREFILL_KEYHEAD");const auto actual=call();
+        check(actual[0],expected[0]);check(actual[1],expected[1]);
+        GdnPipelineScope::set(-1,"TYLOINFER_GDN_PREFILL_KEYHEAD");const auto defaults=call();
+        for(int i=0;i<2;++i) {
+            const auto x=actual[i].cpu().contiguous(),y=defaults[i].cpu().contiguous();
+            if(x.nbytes()!=y.nbytes() || std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes()))
+                throw std::runtime_error("GDN key-head default and explicit dispatch differ");
+        }
+        ++cases;
+        if(focused)std::cout<<"GDN focused keyhead case="<<cases<<" output/state/default PASS"<<std::endl;
+    }
+    if(benchmark)for(int tokens:{4096,8192}) {
+        constexpr int nk=16,nv=48,D=128;
+        auto q=data({1,nk,tokens,D},441,.04f).to(tb::kFloat32),k=data({1,nk,tokens,D},442,.04f).to(tb::kFloat32);
+        auto v=data({1,nv,tokens,D},443,.19f).to(tb::kFloat32);
+        auto g=data({1,nv,tokens},444,.3f).to(tb::kFloat32)-.5f;
+        auto beta=data({1,nv,tokens},445,.3f).to(tb::kFloat32)+.5f;
+        auto state=data({1,nv,D,D},446,.03f).to(tb::kFloat32);
+        std::vector<Tensor> reference;float elapsed[2]={};
+        for(int mode:{0,1}) {
+            GdnPipelineScope::set(mode,"TYLOINFER_GDN_PREFILL_KEYHEAD");
+            auto result=gdn_transposed_cuda(q,k,v,g,beta,state);mfq_cuda_synchronize();
+            cudaEvent_t begin,end;TYLOINFER_CUDA_CHECK(cudaEventCreate(&begin));TYLOINFER_CUDA_CHECK(cudaEventCreate(&end));
+            TYLOINFER_CUDA_CHECK(cudaEventRecord(begin,mfq_current_cuda_stream()));
+            for(int i=0;i<6;++i)result=gdn_transposed_cuda(q,k,v,g,beta,state);
+            TYLOINFER_CUDA_CHECK(cudaEventRecord(end,mfq_current_cuda_stream()));TYLOINFER_CUDA_CHECK(cudaEventSynchronize(end));
+            TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&elapsed[mode],begin,end));elapsed[mode]/=6;
+            cudaEventDestroy(begin);cudaEventDestroy(end);
+            if(mode==0)reference=result;else {check(result[0],reference[0]);check(result[1],reference[1]);}
+        }
+        std::cout<<"gdn_keyhead_bench tokens="<<tokens<<" baseline_ms="<<elapsed[0]<<" keyhead_ms="<<elapsed[1]<<std::endl;
+    }
+    std::cout<<"GDN key-head recurrence cases="<<cases<<" PASS"<<std::endl;
 }

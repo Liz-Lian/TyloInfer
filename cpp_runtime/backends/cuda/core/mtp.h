@@ -9,6 +9,9 @@
 #include <variant>
 #include <stdexcept>
 #include <utility>
+#include <vector>
+#include <functional>
+#include <optional>
 
 struct RopeCache;
 
@@ -30,6 +33,12 @@ struct MtpStep {
     // Optional last-row vocabulary projection computed in the predictor graph.
     mfq_tensor_backend::Tensor sample_logits;
     int32_t greedy_token=-1;
+    float greedy_probability=-1.f;
+};
+
+struct MtpGreedyChain {
+    std::vector<int32_t> tokens;
+    std::vector<float> probabilities;
 };
 
 // Architecture-specific predictors implement device math and cache state only.
@@ -67,6 +76,14 @@ struct MtpModule {
         return mfq::engine::mtp::kMaximumDraftDepth;
     }
     virtual bool blockwise_drafting() const noexcept { return false; }
+    // Additional transient work beyond the target's sampling/history budget.
+    // KV, weights and captured buffers are already charged. An unprepared or
+    // unpriced predictor keeps the engine's conservative capture allowance.
+    virtual std::optional<std::size_t> extra_decode_workspace_bytes(int) const { return {}; }
+    std::function<void()> decode_workspace_changed;
+    // Preferred committed-context batch during ordinary decoding. The engine
+    // flushes pending rows before drafting or publishing a final checkpoint.
+    virtual int preferred_context_update_batch_size() const noexcept { return 1; }
     virtual bool dspark_policy() const noexcept { return false; }
     virtual bool split_target_verification() const noexcept { return false; }
     virtual bool retains_partial_target_prefix() const noexcept {
@@ -94,12 +111,24 @@ struct MtpModule {
         throw std::runtime_error(
             "this CUDA MTP predictor has no target-context adapter");
     }
+    // Decode commits may combine projection with the next draft. Prompt
+    // priming uses append_target_context so its work stays in prefill timing.
+    virtual void append_target_context_for_draft(mfq_tensor_backend::Tensor hidden,std::int64_t start) {
+        append_target_context(std::move(hidden),start);
+    }
     virtual mfq_tensor_backend::Tensor draft_block(
         const MtpTarget&,
         mfq_tensor_backend::Tensor,
         int) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no block-draft adapter");
+    }
+    // An optional greedy walk over the block's compact candidate rows.
+    // Empty keeps the generic per-row sampler (including its penalties).
+    virtual std::vector<int32_t> draft_greedy_tokens(mfq_tensor_backend::Tensor) { return {}; }
+    virtual MtpGreedyChain draft_greedy_chain(mfq_tensor_backend::Tensor anchor,bool probabilities) {
+        if(probabilities)return {};
+        return {draft_greedy_tokens(std::move(anchor)),{}};
     }
     virtual mfq_tensor_backend::Tensor draft_next(
         mfq_tensor_backend::Tensor,

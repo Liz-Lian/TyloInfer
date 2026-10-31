@@ -1,0 +1,4 @@
+#include "@_tyloinfer_tab_header@"
+namespace mfq::cuda::gguf::mmq {
+template bool mul_mat_q_tab_case<GGML_TYPE_@_type@>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+}

@@ -795,6 +795,7 @@ int run_dsv4_output_a_check(
         const std::string & name,
         int batch,
         int reps) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
     constexpr int64_t kGroups = 8;
     TYLOINFER_RUNTIME_CHECK(batch > 0 && reps > 0, "DSV4 output_a check requires positive batch and reps");
     auto model_source = mfq::open_model_source(model_path);
@@ -899,6 +900,9 @@ int run_dsv4_output_a_check(
             "legacy path");
     }
     return 0;
+#else
+    throw std::runtime_error("the DSV4 NINT/MXFP8 output_a diagnostic requires legacy MFQ format support");
+#endif
 }
 
 int run_gemma_geglu_check(

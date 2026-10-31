@@ -27,6 +27,7 @@ mfq_tensor_backend::Tensor output_projection(CudaExecutionContext &execution,
             return output_b.forward(execution,low_rank).reshape({batch,tokens,output_b.out()});
         });
     }
+#if TYLOINFER_ENABLE_MFQ_COMPAT
     if (groupwise && output_a.is_nint() && output_a.nint.bits == 8 && output_a.nint.gs == 48 &&
         output_a.nint.out == groups * rank) {
         auto low_rank = measure("dsv4.output_a", [&]() {
@@ -36,6 +37,7 @@ mfq_tensor_backend::Tensor output_projection(CudaExecutionContext &execution,
             return output_b.forward(execution, low_rank).reshape({batch, tokens, output_b.out()});
         });
     }
+#endif
     if (groupwise && output_a.is_mxfp8() && output_a.out() == groups * rank) {
         auto low_rank = measure("dsv4.output_a", [&]() {
             return output_a.forward_mxfp8_groupwise(execution, grouped, groups);

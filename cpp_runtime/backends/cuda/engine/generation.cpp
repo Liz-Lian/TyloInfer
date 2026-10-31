@@ -424,10 +424,14 @@ template <class Model> struct CudaGenerationContext {
         }
 #endif
     }
-    void reserve_workspace(std::size_t bytes) {
+    void reserve_workspace(std::size_t bytes,bool allow_prefill_loan = false) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         {
-            reserve_moe_workspace(model.execution->moe_expert_cache,bytes);
+            if(allow_prefill_loan && model.execution->gguf_expert_cache) {
+                const auto lendable=gguf_prefill_lendable_bytes(model.execution->gguf_expert_cache);
+                bytes=bytes>lendable?bytes-lendable:0;
+            }
+            reserve_routed_workspace(*model.execution,bytes);
             auto context=mfq::cuda::default_context(mfq_current_cuda_device());
             auto available=context->available_memory();
             if(available>=bytes)return;
@@ -460,7 +464,7 @@ template <class Model> struct CudaGenerationContext {
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             allow_borrow=qwen4_layer_major_prefill_eligible(model,std::min<std::size_t>(tokens,8192)) &&
                 (!prepared || !prepared->transformed());
-        auto budget=moe_prefill_workspace_budget(model.execution->moe_expert_cache,allow_borrow);
+        auto budget=mfq::cuda::routed_prefill_workspace_budget(*model.execution,allow_borrow);
         const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
         auto available=mfq::engine::prefill_budget_add(
             mfq::engine::prefill_budget_add(context->available_memory(),context->workspace_available()),
@@ -478,7 +482,7 @@ template <class Model> struct CudaGenerationContext {
             // Expert overflow in the unused KV budget is revocable too. Ask
             // its existing owner to return pages before reducing the tile.
             reserve_workspace(required>budget.lendable_bytes?required-budget.lendable_bytes:0);
-            budget=moe_prefill_workspace_budget(model.execution->moe_expert_cache,allow_borrow);
+            budget=mfq::cuda::routed_prefill_workspace_budget(*model.execution,allow_borrow);
             available=mfq::engine::prefill_budget_add(
                 context->available_memory()+context->workspace_available(),budget.lendable_bytes);
         }
@@ -517,8 +521,15 @@ template <class Model> struct CudaGenerationContext {
             }
         }
 #endif
-        if(tokens>1024 || moe_expert_cache_ssd_experts(model.execution->moe_expert_cache))
-            reserve_workspace(mfq::cuda::runtime_options::workspace_reserve_bytes());
+        if(tokens>1024 || moe_expert_cache_ssd_experts(model.execution->moe_expert_cache)) {
+            bool allow_loan=false;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
+                allow_loan=qwen4_layer_major_prefill_eligible(model,std::min<std::size_t>(tokens,8192)) &&
+                    (!prepared || !prepared->transformed());
+#endif
+            reserve_workspace(mfq::cuda::runtime_options::workspace_reserve_bytes(),allow_loan);
+        }
     }
     bool prepare_snapshot() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

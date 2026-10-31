@@ -45,8 +45,8 @@ class NativeDmaBatch {
     }
 public:
     static bool available(){return entry()!=nullptr;}
-    // Every source has a live pinned owner; callers translate its registered
-    // base to the device-visible alias once, before the consumer graph starts.
+    // Owners outlive submission. Host sources use their registered device
+    // alias; device sources already provide a device-visible address.
     template<class Alias>
     static bool submit(const std::vector<DmaCopy>& copies,cudaStream_t stream,int mode,Alias&& alias) {
         if(!mode || copies.empty() || !entry())return false;

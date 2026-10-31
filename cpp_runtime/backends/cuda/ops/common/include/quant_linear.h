@@ -7,6 +7,7 @@
 #include "nint.h"
 #include "vq.h"
 #include "tq.h"
+#include "gguf_weight.h"
 #include "tyloinfer/format_features.h"
 
 #include "cuda_execution.h"
@@ -88,6 +89,7 @@ enum class QuantLinearKind {
     Mxfp8,
     Dense,
     Tq,
+    Gguf,
 };
 
 
@@ -106,6 +108,7 @@ struct QuantLinearShard {
     Mxfp8Weight mxfp8;
     mfq_tensor_backend::Tensor dense;
     TqWeight tq;
+    GgufWeight gguf;
 };
 
 struct QuantLinear {
@@ -118,6 +121,7 @@ struct QuantLinear {
     Mxfp8Linear mxfp8;
     mfq_tensor_backend::Tensor dense;
     TqWeight tq;
+    GgufWeight gguf;
     TensorParallelAxis tensor_parallel_axis =
         TensorParallelAxis::Mirrored;
     std::vector<QuantLinearShard> tensor_parallel_shards;
@@ -136,6 +140,7 @@ struct QuantLinear {
     bool is_mxfp8() const { return kind == QuantLinearKind::Mxfp8; }
     bool is_dense() const { return kind == QuantLinearKind::Dense; }
     bool is_tq() const { return kind == QuantLinearKind::Tq; }
+    bool is_gguf() const { return kind == QuantLinearKind::Gguf; }
 
     mfq_tensor_backend::Tensor forward_tensor_parallel_flat(
             CudaExecutionContext& execution,

@@ -8,10 +8,12 @@
 #include "runtime/kv_offload.h"
 #include "runtime/kv_expert_loan.h"
 #include "mfq_cuda_resident_allocations.h"
+#include "mfq_cuda_process_memory.h"
 #include "runtime/execution_options.h"
 #include "cuda_batching.h"
 #include "storage/text_session_cache.h"
 #include "mtp_metrics.h"
+#include "mtp_probability_policy.h"
 #include "request_executor.h"
 #include "generation_flow.h"
 #include "mfq_weight_memory.h"
@@ -84,9 +86,9 @@ struct CudaEngineState {
     }
 
     void restore_mtp_expert_space() {
-        // These regions hold legacy paged expert fields. TQ retains ordinary
+        // These regions hold legacy paged expert fields. TQ and GGUF retain ordinary
         // compressed tensor images and cannot consume those page addresses.
-        if(execution->tq_expert_cache)return;
+        if(execution->tq_expert_cache || execution->gguf_expert_cache)return;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
             if(preparing_graph_depth || graph_expert_region || !graph_expert_loan || !components.mtp)return;
             const auto maximum=qwen4_mtp_graph_reserve(language,components.mtp.get());
@@ -115,8 +117,28 @@ struct CudaEngineState {
     }
 
     void restore_graph_expert_space() {
-        if(execution->tq_expert_cache)return;
         if(preparing_graph_depth)return;
+        if(execution->gguf_expert_cache) {
+            std::optional<std::size_t> transient;
+            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
+                if(!batching)transient=qwen4_decode_transient_reserve(language,components.mtp.get(),graph_draft_depth);
+            restore_gguf_decode_workspace(execution->gguf_expert_cache,
+                execution->kv_memory?execution->kv_memory->growth_reserve():0,transient);
+            if(runtime_options::layer_timings()) {
+                std::cerr<<"runtime_gguf_decode_ready";
+                for(const auto& [name,value]:gguf_expert_memory_metrics(execution->gguf_expert_cache))
+                    if(name=="expert_logical_transfer_bytes" || name=="expert_host_fetch_ms" ||
+                        name=="expert_batched_cpu_copy_ms" || name=="expert_batched_stage_wait_ms" ||
+                        name=="expert_allocation_ms" || name=="expert_writeback_bytes" ||
+                        name=="resident_expert_cache_bytes" || name=="expert_cache_budget_bytes" ||
+                        name=="expert_batched_upload_packets" || name=="gguf_grouped_prefill_calls" ||
+                        name=="gguf_prefill_resident_experts" || name=="gguf_prefill_rebalance_ms")
+                        std::cerr<<' '<<name<<'='<<value;
+                std::cerr<<'\n';
+            }
+            return;
+        }
+        if(execution->tq_expert_cache)return;
         prepare_moe_decode_residency(execution->moe_expert_cache);
         mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
@@ -221,6 +243,7 @@ struct CudaEngineState {
     }
 
     void reclaim_prefix_workspace(std::size_t bytes) {
+        reserve_routed_workspace(*execution,bytes);
         auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
         const auto available=context->available_memory();
         if(available>=bytes)return;
@@ -265,13 +288,16 @@ struct CudaEngineState {
             else throw std::invalid_argument("continuous batching is unavailable for this model");
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if(execution->moe_expert_cache || execution->gguf_expert_cache)
+            language.restore_decode_workspace=[this]{restore_graph_expert_space();};
+        if(execution->gguf_expert_cache && components.mtp)
+            components.mtp->decode_workspace_changed=[this]{restore_graph_expert_space();};
         if(execution->moe_expert_cache) {
             graph_expert_loan=execution->kv_memory?execution->kv_memory->expert_loan():nullptr;
             if(!graph_expert_loan && (components.mtp || moe_expert_cache_ssd_experts(execution->moe_expert_cache))) {
                 graph_expert_loan=std::make_shared<KvExpertLoan>();
                 set_moe_kv_expert_loan(execution->moe_expert_cache,graph_expert_loan);
             }
-            language.restore_decode_workspace=[this]{restore_graph_expert_space();};
             set_moe_workspace_reservation(execution->moe_expert_cache,
                 [this](std::size_t bytes) {reclaim_prefix_workspace(bytes);},
                 [this](std::size_t bytes) {
@@ -280,6 +306,7 @@ struct CudaEngineState {
         }
         if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
+                reserve_routed_workspace(*execution,bytes);
                 const auto device = execution->layer_placement.primary_device();
                 auto context = mfq::cuda::default_context(device);
                 if (context->available_memory() >= bytes) return;
@@ -309,6 +336,15 @@ struct CudaEngineState {
             session(command);
         }
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
+            struct CacheLearningScope {
+                std::shared_ptr<MoeExpertCache> cache;
+                std::shared_ptr<GgufExpertCache> gguf;
+                bool previous,previous_gguf;
+                CacheLearningScope(std::shared_ptr<MoeExpertCache> value,std::shared_ptr<GgufExpertCache> row)
+                    :cache(std::move(value)),gguf(std::move(row)),previous(set_moe_reuse_learning(cache,false)),
+                     previous_gguf(set_gguf_reuse_learning(gguf,false)) {}
+                ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);set_gguf_reuse_learning(gguf,previous_gguf);}
+            } learning(execution->moe_expert_cache,execution->gguf_expert_cache);
             qwen4_warmup_decode_graphs(language,components.mtp.get());
             // Exercise the same draft/verify/commit loop as a real request.
             // Graph-only warmup cannot cover its history replay, sampling and
@@ -316,12 +352,6 @@ struct CudaEngineState {
             const auto* warmup=std::getenv("TYLOINFER_QWEN4_WARMUP_MTP");
             if(language.graph_registry && components.mtp &&
                     language.max_position_embeddings()>=48 && (!warmup || warmup[0]!='0')) {
-                struct CacheLearningScope {
-                    std::shared_ptr<MoeExpertCache> cache;bool previous;
-                    explicit CacheLearningScope(std::shared_ptr<MoeExpertCache> value):cache(std::move(value)),
-                        previous(set_moe_reuse_learning(cache,false)) {}
-                    ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);}
-                } learning(execution->moe_expert_cache);
                 auto& predictor=*components.mtp;
                 const auto saved_policy=predictor.policy_state;
                 const auto start=std::chrono::steady_clock::now();
@@ -330,6 +360,14 @@ struct CudaEngineState {
                 request.sampling.temperature=0.7;
                 request.sampling.top_p=0.8;
                 request.sampling.top_k=20;
+                // Explicit confidence policies consume the greedy proposal's
+                // probability. Warm that requested path instead of rejecting
+                // its settings during the internal stochastic warmup.
+                if(mfq::engine::mtp::DraftProbabilityOptions::from_environment().enabled()) {
+                    request.sampling.temperature=0.;
+                    request.sampling.top_p=1.;
+                    request.sampling.top_k=0;
+                }
                 request.sampling.seed=1234;
                 request.sampling.max_tokens=static_cast<int32_t>(
                     std::min<int64_t>(64,language.max_position_embeddings()-16));
@@ -364,6 +402,7 @@ struct CudaEngineState {
     }
     ~CudaEngineState() {
         language.restore_decode_workspace={};
+        if(components.mtp)components.mtp->decode_workspace_changed={};
         try {release_graph_expert_space();}
         catch(const std::exception& error) {std::cerr<<"runtime_mtp_workspace_cache cleanup_error="<<error.what()<<'\n';}
         if(execution->kv_memory)execution->kv_memory->set_reservation({});
@@ -549,6 +588,16 @@ struct CudaEngineState {
                 metrics.insert(metrics.end(),{{stem+"resident_bytes",double(resident)},
                     {stem+"resident_weight_bytes",double(weights)}, {stem+"prefix_cache_bytes",double(hot)},
                     {stem+"memory_total_bytes",double(total)}, {stem+"memory_available_bytes",double(free)}});
+                if(const auto physical=mfq::cuda::physical_device_memory_stats(device))
+                    metrics.insert(metrics.end(),{{stem+"physical_memory_total_bytes",double(physical->total)},
+                        {stem+"physical_memory_available_bytes",double(physical->free)},
+                        {stem+"physical_memory_used_bytes",double(physical->used)}});
+                if(const auto process=mfq::cuda::process_device_memory_stats(device))
+                    metrics.insert(metrics.end(),{{stem+"process_memory_budget_bytes",double(process->budget)},
+                        {stem+"process_memory_usage_bytes",double(process->usage)},
+                        {stem+"process_memory_reservation_bytes",double(process->reservation)},
+                        {stem+"process_shared_memory_budget_bytes",double(process->shared_budget)},
+                        {stem+"process_shared_memory_usage_bytes",double(process->shared_usage)}});
                 if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
                     const auto categorized=weights+live+hot;
                     const auto buffer=resident>categorized?resident-categorized:0;

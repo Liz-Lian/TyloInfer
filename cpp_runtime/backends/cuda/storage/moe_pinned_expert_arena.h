@@ -14,11 +14,13 @@ class MoePinnedExpertArena {
     using Fits=std::set<std::pair<std::size_t,std::size_t>>;
     struct State {
         mfq::cuda::HostBuffer storage;
+        void* mapped=nullptr;
         std::mutex mutex;
         Free free;
         Fits fits;
         std::size_t used=0;
         explicit State(std::size_t bytes):storage(bytes,true) {
+            TYLOINFER_NATIVE_CUDA_CHECK(cudaHostGetDevicePointer(&mapped,storage.data(),0));
             free.emplace(0,bytes);fits.emplace(bytes,0);mfq::cuda::charge_tensor_host_bytes(bytes);
         }
         ~State(){mfq::cuda::tensor_host_bytes.fetch_sub(storage.size());}
@@ -49,19 +51,25 @@ public:
             state->free.insert(std::move(interval));state->fits.insert(std::move(size_interval));
         }
         std::uint8_t* data() const {return static_cast<std::uint8_t*>(state->storage.data())+interval.key();}
+        std::uint8_t* mapped_data() const {return static_cast<std::uint8_t*>(state->mapped)+interval.key();}
         std::size_t bytes() const {return interval.mapped();}
+        const void* allocation_id() const {return state.get();}
     };
     explicit MoePinnedExpertArena(std::size_t bytes):state_(std::make_shared<State>(bytes)) {}
     std::shared_ptr<Block> allocate(std::size_t bytes) {
         if(!bytes || bytes>SIZE_MAX-15)return {};
         bytes=(bytes+15)&~std::size_t(15);
+        std::lock_guard lock(state_->mutex);
+        const auto fit=state_->fits.lower_bound({bytes,0});
+        if(fit==state_->fits.end())return {};
+        // A full arena is a common probe under the host pinning limit. Do
+        // not allocate three temporary heap nodes just to reject that probe.
         auto block=std::make_shared<Block>();
         Free node;node.emplace(0,bytes);block->interval=node.extract(node.begin());
         Fits size_node;size_node.emplace(bytes,0);block->size_interval=size_node.extract(size_node.begin());
-        std::lock_guard lock(state_->mutex);
         // The size index avoids scanning fragmented intervals and preserves
         // larger holes for the next, larger expert format.
-        if(auto fit=state_->fits.lower_bound({bytes,0});fit!=state_->fits.end()) {
+        {
             auto it=state_->free.find(fit->second);
             const auto offset=it->first;
             if(it->second==bytes) {state_->free.erase(it);state_->fits.erase(fit);}
@@ -72,7 +80,6 @@ public:
             }
             block->interval.key()=offset;block->state=state_;state_->used+=bytes;return block;
         }
-        return {};
     }
     void* data() const {return state_->storage.data();}
     std::size_t bytes() const {return state_->storage.size();}

@@ -47,6 +47,7 @@ static double mfe_weight_bytes(const MfeWeight & weight) {
     return bytes;
 }
 
+#if TYLOINFER_ENABLE_MFQ_COMPAT
 int run_expert_parallel_moe_check(
         CudaExecutionContext& execution,
         const std::string & model_path,
@@ -786,6 +787,21 @@ static int run_gemma_moe_check(
     }
     return 0;
 }
+
+#else
+int run_expert_parallel_moe_check(CudaExecutionContext&,const std::string&,
+        const std::string&,int,int) {
+    throw std::runtime_error("--check-ep-moe requires legacy MFQ format support");
+}
+int run_mfe_tensor_check(CudaExecutionContext&,const std::string&,
+        const std::string&,int,int,int,int,bool,bool) {
+    throw std::runtime_error("--check-mfe-tensor requires legacy MFQ format support");
+}
+static int run_gemma_moe_check(CudaExecutionContext&,const mfq::ModelSource&,
+        const mfq::models::gemma4::Config&,int,const std::vector<int64_t>&,int) {
+    throw std::runtime_error("the Gemma MFE diagnostic requires legacy MFQ format support");
+}
+#endif
 
 int run_moe_check(
         CudaExecutionContext& execution,

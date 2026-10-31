@@ -37,6 +37,7 @@ struct Fp8SqLinear {
 
     mfq_tensor_backend::Tensor forward(
             mfq_tensor_backend::Tensor x) const {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
         if (!weight.blob.is_cuda()) return sq_matmul_cpu(weight, x);
         auto shape = x.sizes().vec();
         const auto original_dtype = x.scalar_type();
@@ -72,6 +73,9 @@ struct Fp8SqLinear {
         }
         shape.back() = output.size(-1);
         return output.reshape(shape);
+#else
+        throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
+#endif
     }
 };
 

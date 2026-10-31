@@ -5,6 +5,7 @@
 #include "mfq_tensor_backend.h"
 #include <cuda_bf16.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -19,7 +20,7 @@ constexpr int NORM_BD = 256;
 template<class Gate,class Output,int Threads,bool WarpTail=false>
 __global__ void gdn_rms_norm_gate_kernel(const float* attended,const Gate* projection,
     const float* weight,Output* output,int heads,int tokens,int width,double eps,
-    bool silu_gate,bool double_sigmoid,int64_t gate_batch_stride,int64_t gate_token_stride) {
+    bool silu_gate,int64_t gate_batch_stride,int64_t gate_token_stride) {
     const int64_t row=blockIdx.x,base=row*width;
     const int64_t batch=row/(int64_t(heads)*tokens),head=(row/tokens)%heads,token=row%tokens;
     const int64_t destination=((batch*tokens+token)*heads+head)*width;
@@ -53,9 +54,53 @@ __global__ void gdn_rms_norm_gate_kernel(const float* attended,const Gate* proje
     const float inverse=__fdiv_rn(1.0f,__fsqrt_rn(variance));
     for(int column=threadIdx.x;column<width;column+=Threads) {
         const float z=static_cast<float>(projection[batch*gate_batch_stride+token*gate_token_stride+head*width+column]);
-        const float sigmoid=double_sigmoid
-            ? static_cast<float>(1.0/(1.0+::exp(-static_cast<double>(z))))
-            : __fdiv_rn(1.0f,__fadd_rn(1.0f,::expf(-z)));
+        // The GDN operands and output are FP32. Keep sigmoid in that
+        // precision, as in Strata; FP64 exp is unnecessary for this operator.
+        const float sigmoid=__fdiv_rn(1.0f,__fadd_rn(1.0f,::expf(-z)));
+        const float gate=silu_gate?__fmul_rn(z,sigmoid):sigmoid;
+        const float scaled=__fmul_rn(__fmul_rn(attended[base+column],inverse),weight[column]);
+        output[destination+column]=static_cast<Output>(__fmul_rn(scaled,gate));
+    }
+}
+
+// One warp owns a row; its lanes reproduce the existing Threads-wide binary
+// tree before the warp tail. Four rows share a CTA, with no CTA barriers. The
+// per-thread accumulation and every RN operation are unchanged, including when
+// width exceeds Threads. Use only when there are enough rows to fill the device.
+template<class Gate,class Output,int Threads>
+__global__ void gdn_rms_norm_gate_warp_rows_kernel(const float* attended,const Gate* projection,
+    const float* weight,Output* output,int heads,int tokens,int width,double eps,
+    bool silu_gate,int64_t gate_batch_stride,int64_t gate_token_stride,int64_t rows) {
+    constexpr int Chunks=Threads/32;
+    const int lane=threadIdx.x&31;
+    const int64_t row=int64_t(blockIdx.x)*4+(threadIdx.x>>5);
+    if(row>=rows)return;
+    const int64_t base=row*width,batch=row/(int64_t(heads)*tokens);
+    const int64_t head=(row/tokens)%heads,token=row%tokens;
+    float sums[Chunks]={};
+    #pragma unroll
+    for(int p=0;p<Chunks;++p)for(int column=lane+p*32;column<width;column+=Threads) {
+        const float x=attended[base+column];
+        sums[p]=__fadd_rn(sums[p],__fmul_rn(x,x));
+    }
+    #pragma unroll
+    for(int stride=Chunks/2;stride>0;stride/=2)
+        #pragma unroll
+        for(int p=0;p<stride;++p)sums[p]=__fadd_rn(sums[p],sums[p+stride]);
+    float value=sums[0];
+    #pragma unroll
+    for(int stride=16;stride>0;stride/=2) {
+        const float other=__shfl_down_sync(0xffffffffu,value,stride);
+        if(lane<stride)value=__fadd_rn(value,other);
+    }
+    const float sum=__shfl_sync(0xffffffffu,value,0);
+    const float mean=__fdiv_rn(sum,static_cast<float>(width));
+    const float variance=static_cast<float>(static_cast<double>(mean)+eps);
+    const float inverse=__fdiv_rn(1.f,__fsqrt_rn(variance));
+    const int64_t destination=((batch*tokens+token)*heads+head)*width;
+    for(int column=lane;column<width;column+=32) {
+        const float z=static_cast<float>(projection[batch*gate_batch_stride+token*gate_token_stride+head*width+column]);
+        const float sigmoid=__fdiv_rn(1.f,__fadd_rn(1.f,::expf(-z)));
         const float gate=silu_gate?__fmul_rn(z,sigmoid):sigmoid;
         const float scaled=__fmul_rn(__fmul_rn(attended[base+column],inverse),weight[column]);
         output[destination+column]=static_cast<Output>(__fmul_rn(scaled,gate));
@@ -511,16 +556,40 @@ mfq_tensor_backend::Tensor gdn_rms_norm_gate_cuda(mfq_tensor_backend::Tensor att
         "gdn_rms_norm_gate: expected CUDA f32 width-vector weight");
     MfqCudaGuard guard(attended.device());
     auto output=tb::empty({batch,tokens,heads*width},attended.options().dtype(output_half?tb::kFloat16:tb::kFloat32));
-    // Match the arithmetic selected after the old mandatory contiguous copy.
-    const bool double_sigmoid=gate.scalar_type()==tb::kFloat32 && tokens>1 && heads>1;
     const auto* warp_setting=std::getenv("TYLOINFER_GDN_NORM_WARP_REDUCTION");
     const bool warp_tail=warp_setting?warp_setting[0]=='1':width==128 && tokens>=2 && tokens<=8;
+    static thread_local int cached_device=-1,cached_sms=0;
+    const int device=mfq_current_cuda_device();
+    if(cached_device!=device) {
+        TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&cached_sms,cudaDevAttrMultiProcessorCount,device));
+        cached_device=device;
+    }
+    // Four complete row warps per CTA. Keep the existing schedule for short
+    // inputs that would leave SMs empty, and honor the explicit reduction switch.
+    const bool warp_rows=(!warp_setting || warp_setting[0]=='1') && rows>=int64_t(cached_sms)*4;
     const auto launch=[&]<class Gate,class Output,int Threads>() {
+        if(warp_rows) {
+            if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1' && tokens>8) {
+                static std::atomic<bool> reported{false};
+                if(!reported.exchange(true)) {
+                    cudaFuncAttributes attributes{};
+                    TYLOINFER_CUDA_CHECK(cudaFuncGetAttributes(&attributes,gdn_rms_norm_gate_warp_rows_kernel<Gate,Output,Threads>));
+                    std::fprintf(stderr,"native_gdn_output_warp_rows actual_match=1 tokens=%lld width=%lld rows=%lld rows_per_block=4 original_tree=%d registers=%d local_bytes=%zu\n",
+                        static_cast<long long>(tokens),static_cast<long long>(width),static_cast<long long>(rows),Threads,
+                        attributes.numRegs,attributes.localSizeBytes);
+                }
+            }
+            gdn_rms_norm_gate_warp_rows_kernel<Gate,Output,Threads><<<static_cast<unsigned int>((rows+3)/4),128,0,mfq_current_cuda_stream()>>>(
+                attended.data_ptr<float>(),gate.data_ptr<Gate>(),weight.data_ptr<float>(),output.data_ptr<Output>(),
+                static_cast<int>(heads),static_cast<int>(tokens),static_cast<int>(width),eps,
+                silu_gate,gate.stride(0),gate.stride(1),rows);
+            return;
+        }
         const auto select=[&](auto tail) {
         gdn_rms_norm_gate_kernel<Gate,Output,Threads,decltype(tail)::value><<<static_cast<unsigned int>(rows),Threads,0,mfq_current_cuda_stream()>>>(
             attended.data_ptr<float>(),gate.data_ptr<Gate>(),weight.data_ptr<float>(),output.data_ptr<Output>(),
             static_cast<int>(heads),static_cast<int>(tokens),static_cast<int>(width),eps,
-            silu_gate,double_sigmoid,gate.stride(0),gate.stride(1));
+            silu_gate,gate.stride(0),gate.stride(1));
         };
         if(warp_tail)select(std::true_type{});else select(std::false_type{});
     };

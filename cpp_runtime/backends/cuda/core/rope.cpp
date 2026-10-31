@@ -348,7 +348,8 @@ Tensor RotaryEmbedding::forward_normalized(const Tensor& value, const Tensor& we
 std::vector<Tensor> RotaryEmbedding::forward_normalized_grouped(
         const std::vector<Tensor>& values,const std::vector<Tensor>& weights,
         const Tensor& positions,double eps,int cache_entry,const Tensor& key_cache,
-        const Tensor& cache_positions,const Tensor& projected_value,const Tensor& value_cache) const {
+        const Tensor& cache_positions,const Tensor& projected_value,const Tensor& value_cache,
+        const std::vector<Tensor>& entry_positions) const {
     TYLOINFER_RUNTIME_CHECK(fused_ && !values.empty() && values.size()<=3 && weights.size()==values.size(),
         "normalized rotary requires a fused input/weight group");
     std::vector<Tensor> active_weights;active_weights.reserve(weights.size());
@@ -360,8 +361,14 @@ std::vector<Tensor> RotaryEmbedding::forward_normalized_grouped(
     const auto prepared=prepare_parameters(values[0]);
     auto active_positions=positions.scalar_type()==tb::kInt32 || positions.scalar_type()==tb::kInt64
         ? positions.contiguous():positions.to(tb::kInt32).contiguous();
+    TYLOINFER_RUNTIME_CHECK(entry_positions.empty() || entry_positions.size()==values.size(),
+        "normalized rotary entry positions must match the input group");
+    std::vector<Tensor> active_entries;active_entries.reserve(entry_positions.size());
+    for(const auto& entry:entry_positions)
+        active_entries.push_back(entry.scalar_type()==tb::kInt32 || entry.scalar_type()==tb::kInt64
+            ?entry.contiguous():entry.to(tb::kInt32).contiguous());
     return rotary_normalized_grouped_cuda(values,active_weights,active_positions,prepared.frequencies,
-        prepared.axes,maximum_,eps,cache_entry,key_cache,cache_positions,projected_value,value_cache);
+        prepared.axes,maximum_,eps,cache_entry,key_cache,cache_positions,projected_value,value_cache,active_entries);
 }
 
 mfq_tensor_backend::Tensor RotaryEmbedding::forward(const Tensor &value, const Tensor &positions) const {

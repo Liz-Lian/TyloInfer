@@ -101,6 +101,7 @@ __global__ void gdn_prefill_columns_kernel(
 }
 
 #include "gdn_prefill_staged.inc"
+#include "gdn_prefill_keyhead.inc"
 
 template<bool TRANSPOSED_STATE, bool TILED_HEADS>
 void launch_gdn_prefill_columns(int columns, int B, int Hq, int Hv, int T,
@@ -108,15 +109,13 @@ void launch_gdn_prefill_columns(int columns, int B, int Hq, int Hv, int T,
     const float* state, float* out, float* next_state, cudaStream_t stream,bool prepared_decay=false) {
     const dim3 block(32, 4);
     const auto* pipeline_option=std::getenv("TYLOINFER_GDN_PREFILL_PIPELINED");
-    // The verified single-sequence 48/64-head grids do not lose resident
-    // blocks from the extra q/k registers. Other shapes retain the old kernel.
-    const bool pipelined=pipeline_option?std::atoi(pipeline_option)!=0:
-        B==1 && (Hv==48 || Hv==64);
+    // Register prefetch is independent of batch size and head count.
+    const bool pipelined=pipeline_option?std::atoi(pipeline_option)!=0:true;
     const auto* staged_option=std::getenv("TYLOINFER_GDN_PREFILL_STAGED");
     bool staged=false;
     if(columns==4 && T>8) {
         if(staged_option)staged=std::atoi(staged_option)!=0;
-        else if(pipelined && T>=128 && B==1 && (Hv==48 || Hv==64)) {
+        else if(pipelined && T>=128) {
             static thread_local int cached_device=-1,cached_major=0;
             const int device=mfq_current_cuda_device();
             if(device!=cached_device) {
@@ -128,6 +127,8 @@ void launch_gdn_prefill_columns(int columns, int B, int Hq, int Hv, int T,
     }
     const auto launch=[&](auto prepared) {
     constexpr bool cached=decltype(prepared)::value;
+    if(columns==4 && launch_gdn_prefill_keyhead<TRANSPOSED_STATE,TILED_HEADS,cached>(
+            B,Hq,Hv,T,q,k,v,g,beta,state,out,next_state,stream))return;
     if(staged) {
         gdn_prefill_staged_kernel<TRANSPOSED_STATE,TILED_HEADS,cached>
             <<<dim3(B*Hv,8),block,0,stream>>>(q,k,v,g,beta,state,out,next_state,Hq,Hv,T);

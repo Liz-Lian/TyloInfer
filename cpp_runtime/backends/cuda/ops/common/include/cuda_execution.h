@@ -1,10 +1,14 @@
 #pragma once
 #include "tyloinfer/format_features.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
+struct CudaIndependentBranchExecutor;
 
 #include "mfq_tensor_backend.h"
 #include "tensor_parallel.h"
 #include "tyloinfer/yarn.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "runtime/decode_window.h"
+#endif
 
 #include <cuda_runtime_api.h>
 #ifdef TYLOINFER_HAVE_NCCL
@@ -14,6 +18,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -44,6 +49,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 class MoeExpertCache;
 class TqExpertCache;
+class GgufExpertCache;
 
 namespace mfq::cuda::internal {
 
@@ -343,6 +349,7 @@ struct MoeRouteLayerStats {
 struct CudaExecutionContext {
     CudaExecutionContext();
     bool yarn_context_extension=false;
+    std::string dflash2_draft_path;
     mfq::models::YarnScaling yarn;
 
     CudaProfiler profiler;
@@ -374,6 +381,13 @@ struct CudaExecutionContext {
     // Engine-owned load resource; cached model/MTP weights share its lifetime.
     std::shared_ptr<MoeExpertCache> moe_expert_cache;
     std::shared_ptr<TqExpertCache> tq_expert_cache;
+    std::shared_ptr<GgufExpertCache> gguf_expert_cache;
+    // Share side streams across projection groups rather than creating
+    // a separate set of graph memory pools for every model layer.
+    std::unordered_map<int,std::shared_ptr<CudaIndependentBranchExecutor>> projection_executors;
+    // Layers join this branch before advancing, so one shared-expert stream
+    // per device suffices. Keep it separate from nested projection branches.
+    std::unordered_map<int,std::shared_ptr<CudaIndependentBranchExecutor>> shared_expert_executors;
     std::shared_ptr<mfq::cuda::KvOffloadStore> qsa_kv_store;
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv_memory;
     std::unordered_map<int, MoeRouteLayerStats> moe_route_stats;
@@ -465,6 +479,7 @@ struct CudaIndependentBranchExecutor {
     cudaEvent_t ready = nullptr;
     std::vector<Stream> streams;
     std::vector<cudaEvent_t> completed;
+    std::vector<std::shared_ptr<void>> graph_pools;
 
     ~CudaIndependentBranchExecutor() {
         for (cudaEvent_t event : completed) {
@@ -504,6 +519,7 @@ struct CudaIndependentBranchExecutor {
             TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(
                 &event, cudaEventDisableTiming));
             completed.push_back(event);
+            graph_pools.emplace_back();
         }
         return true;
     }
@@ -521,6 +537,11 @@ struct CudaIndependentBranchExecutor {
         if (!ensure(branches, parent)) {
             return false;
         }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if(auto* window=mfq::cuda::DecodeWindow::recording())
+            for(size_t index=0;index<branches;++index)
+                window->prepare_branch_stream(streams[index],graph_pools[index]);
+#endif
 
         outputs.resize(branches);
         TYLOINFER_CUDA_CHECK(cudaEventRecord(

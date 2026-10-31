@@ -21,6 +21,7 @@ struct Config {
         predictor_layers, eos;
     double eps, rope_base;
     bool interleaved, normalize_routes, silu_gate, tied_embeddings, dedicated_predictor_embeddings;
+    bool linear_tiled_heads = false;
     std::vector<int64_t> sections, ple_layers;
     std::vector<std::string> layer_types;
     bool linear_layer(int64_t layer, bool predictor = false) const {
@@ -93,6 +94,7 @@ struct Config {
             c.rope_base <= 0)
             throw std::runtime_error("Qwen4 rotary geometry mismatch");
         c.key_heads = positive("linear_num_key_heads");
+        c.linear_tiled_heads = text.value("linear_tiled_heads", false);
         c.value_heads = positive("linear_num_value_heads");
         c.linear_width = positive("linear_key_head_dim");
         c.kernel = positive("linear_conv_kernel_dim");

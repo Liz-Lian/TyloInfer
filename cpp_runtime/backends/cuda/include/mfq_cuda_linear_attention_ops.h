@@ -13,6 +13,17 @@ std::vector<mfq_tensor_backend::Tensor> gdn_cuda(mfq_tensor_backend::Tensor q, m
 std::vector<mfq_tensor_backend::Tensor> gdn_transposed_cuda(
     mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
     mfq_tensor_backend::Tensor g, mfq_tensor_backend::Tensor beta, MfqOptional<mfq_tensor_backend::Tensor> state);
+std::vector<mfq_tensor_backend::Tensor> gdn_tiled_cuda(
+    mfq_tensor_backend::Tensor q,mfq_tensor_backend::Tensor k,mfq_tensor_backend::Tensor v,
+    mfq_tensor_backend::Tensor g,mfq_tensor_backend::Tensor beta,MfqOptional<mfq_tensor_backend::Tensor> state);
+std::vector<mfq_tensor_backend::Tensor> gdn_transposed_tiled_cuda(
+    mfq_tensor_backend::Tensor q,mfq_tensor_backend::Tensor k,mfq_tensor_backend::Tensor v,
+    mfq_tensor_backend::Tensor g,mfq_tensor_backend::Tensor beta,MfqOptional<mfq_tensor_backend::Tensor> state);
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
+    mfq_tensor_backend::Tensor beta,mfq_tensor_backend::Tensor dt_bias,
+    mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps);
 std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_short_cuda(
     mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
     mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
@@ -59,7 +70,9 @@ std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_cuda(
     double convolution_eps, double norm_eps, bool silu_gate, bool output_half,
     bool transposed_state,
     mfq_tensor_backend::Tensor workspace={},bool inplace_state=false,
-    mfq_tensor_backend::Tensor state_addresses={});
+    mfq_tensor_backend::Tensor state_addresses={},bool tiled_heads=false,bool quantize_output=false);
+// quantize_output returns flat native GGUF Q8_1 bytes, after the same output
+// rounding, for a directly connected quantized projection.
 // Write speculative prefix snapshots with the producing core; no state-copy launches.
 // Batch one speculative sequence (2..8 rows, width128/taps4). The recurrence
 // stays in registers; prefix snapshots retain the existing rollback contract.
@@ -74,7 +87,7 @@ std::vector<mfq_tensor_backend::Tensor> gdn_decode_window_cuda(
     int key_heads,int value_heads,int confirmed,double convolution_eps,double norm_eps,
     bool silu_gate,bool output_half,bool transposed_state,
     const std::vector<mfq_tensor_backend::Tensor>& checkpoint_convolution,
-    const std::vector<mfq_tensor_backend::Tensor>& checkpoint_recurrent);
+    const std::vector<mfq_tensor_backend::Tensor>& checkpoint_recurrent,bool tiled_heads=false,bool quantize_output=false,bool position_major=false);
 
 std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_checkpoint_cuda(
     mfq_tensor_backend::Tensor qkv, mfq_tensor_backend::Tensor output_gate,
@@ -87,4 +100,4 @@ std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_checkpoint_cuda(
     bool transposed_state,
     mfq_tensor_backend::Tensor workspace,bool inplace_state,
     mfq_tensor_backend::Tensor checkpoint_convolution,
-    mfq_tensor_backend::Tensor checkpoint_recurrent);
+    mfq_tensor_backend::Tensor checkpoint_recurrent,bool tiled_heads=false,bool quantize_output=false);

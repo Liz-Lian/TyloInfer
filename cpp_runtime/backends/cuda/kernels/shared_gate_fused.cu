@@ -1,8 +1,73 @@
 #include "mfq_cuda_shared_gate.h"
 #include "mfq_cuda_context.h"
 #include "shared_gate_fused.cuh"
+#include "kernel_dispatch_trace.h"
 #include "../ops/mfq/include/nint.h"
 #include <cstdlib>
+
+namespace {
+template<class Input,class Output>
+__global__ void shared_gate_multiply_f32(const Input* input,const float* weight,const Output* expert,
+        float* output,int64_t width,int64_t output_width) {
+    __shared__ float partial[4];
+    const int lane=threadIdx.x%32,warp=threadIdx.x/32;
+    const auto* x=input+int64_t(blockIdx.x)*width;
+    float sum=0.f;
+    for(int64_t i=threadIdx.x;i<width;i+=128)sum=__fmaf_rn(weight[i],float(x[i]),sum);
+    for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffffu,sum,offset);
+    if(!lane)partial[warp]=sum;
+    __syncthreads();
+    if(!warp) {
+        sum=lane<4?partial[lane]:0.f;
+        for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffffu,sum,offset);
+        if(!lane)partial[0]=1.f/(1.f+expf(-sum));
+    }
+    __syncthreads();
+    const auto first=int64_t(blockIdx.x)*output_width;
+    for(int64_t i=threadIdx.x;i<output_width;i+=128)
+        output[first+i]=__fmul_rn(partial[0],float(expert[first+i]));
+}
+}
+
+std::optional<mfq_tensor_backend::Tensor> try_shared_gate_multiply_cuda(
+        const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& weight,
+        const mfq_tensor_backend::Tensor& expert_output) {
+    namespace tb=mfq_tensor_backend;
+    const auto supported=[](const auto& value) {
+        return value.defined() && value.is_cuda() && value.is_contiguous() && value.dim()==2;
+    };
+    if(!supported(input) || !supported(weight) || !supported(expert_output) ||
+            input.device()!=weight.device() || input.device()!=expert_output.device() ||
+            weight.scalar_type()!=tb::kFloat32 || weight.size(0)!=1 || input.size(1)<1 ||
+            weight.size(1)!=input.size(1) || input.size(0)<1 || input.size(0)>6 ||
+            expert_output.size(0)!=input.size(0) || expert_output.size(1)<1 ||
+            (input.scalar_type()!=tb::kFloat16 && input.scalar_type()!=tb::kFloat32) ||
+            (expert_output.scalar_type()!=tb::kFloat16 && expert_output.scalar_type()!=tb::kFloat32))return std::nullopt;
+    // dense_projection executes independent FP32 dots for these short
+    // windows. Only the FP32 addition tree changes; all values stay FP32.
+    mfq::cuda::DeviceGuard guard(input.get_device());
+    auto output=tb::empty(expert_output.sizes(),expert_output.options().dtype(tb::kFloat32));
+    const auto stream_handle=mfq::cuda::current_stream(input.get_device());
+    const auto stream=stream_handle.stream();
+    for(const auto& tensor:{input,weight,expert_output,output})mfq_cuda_record_stream(tensor,stream_handle);
+    const auto launch=[&](auto* source,auto* expert) {
+        using Input=std::remove_cv_t<std::remove_pointer_t<decltype(source)>>;
+        using Expert=std::remove_cv_t<std::remove_pointer_t<decltype(expert)>>;
+        const auto function=shared_gate_multiply_f32<Input,Expert>;
+        function<<<unsigned(input.size(0)),128,0,stream>>>(source,weight.data_ptr<float>(),expert,
+            output.data_ptr<float>(),input.size(1),expert_output.size(1));
+        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,"shared_gate_multiply_f32",
+            reinterpret_cast<const void*>(function),"rows="+std::to_string(input.size(0))+" K="+
+            std::to_string(input.size(1))+" output_width="+std::to_string(expert_output.size(1))+" output_float=1");
+    };
+    const auto choose_output=[&](auto* source) {
+        if(expert_output.scalar_type()==tb::kFloat16)launch(source,static_cast<const __half*>(expert_output.data_ptr()));
+        else launch(source,expert_output.data_ptr<float>());
+    };
+    if(input.scalar_type()==tb::kFloat16)choose_output(static_cast<const __half*>(input.data_ptr()));
+    else choose_output(input.data_ptr<float>());
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());return output;
+}
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace {
@@ -192,16 +257,22 @@ std::optional<mfq_tensor_backend::Tensor> try_shared_gate_sigmoid_cuda(
         input.get_device()!=weight.get_device() || !input.is_contiguous() || !weight.is_contiguous() ||
         input.scalar_type()!=tb::kFloat16 || weight.scalar_type()!=tb::kBFloat16 ||
         input.dim()!=2 || weight.dim()!=2 || weight.size(0)!=1 ||
-        input.size(0)<1 || input.size(0)>8 || input.size(1)<1 || input.size(1)>4096 ||
+        input.size(0)<1 || input.size(1)<1 ||
         input.size(1)!=weight.size(1))return std::nullopt;
-    auto output=tb::empty({input.size(0),1},weight.options());
     mfq::cuda::DeviceGuard guard(input.get_device());
+    int maximum_grid=0;
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&maximum_grid,cudaDevAttrMaxGridDimX,input.get_device()));
+    if(input.size(0)>maximum_grid)return std::nullopt;
+    auto output=tb::empty({input.size(0),1},input.options());
     const auto stream=mfq::cuda::current_stream(input.get_device()).stream();
-    mfq::cuda::shared_gate_detail::project_sigmoid<128,true,false>
+    mfq::cuda::shared_gate_detail::project_sigmoid<128,true,false,true>
         <<<int(input.size(0)),128,0,stream>>>(
             static_cast<const __half*>(input.data_ptr()),
             static_cast<const __nv_bfloat16*>(weight.data_ptr()),nullptr,
-            static_cast<__nv_bfloat16*>(output.data_ptr()),int(input.size(1)));
+            static_cast<__half*>(output.data_ptr()),input.size(1));
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
+    if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,"shared_gate_sigmoid",
+        reinterpret_cast<const void*>(mfq::cuda::shared_gate_detail::project_sigmoid<128,true,false,true>),
+        "rows="+std::to_string(input.size(0))+" K="+std::to_string(input.size(1))+" output_half=1");
     return output;
 }

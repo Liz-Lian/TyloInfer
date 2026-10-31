@@ -1,4 +1,5 @@
 #include "tyloinfer/mfq_model_source.h"
+#include "tyloinfer/mapped_tensor_reader.h"
 #include "tyloinfer/tensor_dtype.h"
 #include "tyloinfer/async_range_reader.h"
 #include "tyloinfer/mapped_read_profile.h"
@@ -83,7 +84,7 @@ class MappedTensorRange {
 #endif
     }
 public:
-    explicit MappedTensorRange(const MfqStoredRecord& record):bytes_(record.tensor.nbytes) {
+    explicit MappedTensorRange(const TensorFileRange& record):bytes_(record.nbytes) {
         const auto* profile=std::getenv("TYLOINFER_PROFILE_SSD_EXPERTS");
         profile_=profile && profile[0]=='1';
         const auto* prefetch=std::getenv("TYLOINFER_MAPPED_BATCH_PREFETCH");
@@ -92,7 +93,7 @@ public:
         try {
             std::uint64_t granularity=0,file_bytes=0;
 #ifdef _WIN32
-            file_=CreateFileW(record.source_path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_FLAG_RANDOM_ACCESS,nullptr);
+            file_=CreateFileW(record.path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_FLAG_RANDOM_ACCESS,nullptr);
             if(file_==INVALID_HANDLE_VALUE)throw std::system_error(GetLastError(),std::system_category(),"open mapped tensor");
             LARGE_INTEGER size{};
             if(!GetFileSizeEx(file_,&size) || size.QuadPart<0)throw std::runtime_error("mapped tensor file size unavailable");
@@ -100,7 +101,7 @@ public:
             SYSTEM_INFO info{};GetSystemInfo(&info);granularity=info.dwAllocationGranularity;
             page_bytes_=info.dwPageSize;
 #else
-            file_=::open(record.source_path.c_str(),O_RDONLY);
+            file_=::open(record.path.c_str(),O_RDONLY);
             if(file_<0)throw std::system_error(errno,std::generic_category(),"open mapped tensor");
             struct stat size{};
             if(::fstat(file_,&size) || size.st_size<0)throw std::runtime_error("mapped tensor file size unavailable");
@@ -232,10 +233,13 @@ public:
 
 std::mutex mapped_ranges_mutex;
 std::vector<std::weak_ptr<MappedTensorRange>> mapped_ranges;
-std::shared_ptr<MappedTensorRange> map_tensor_range(const MfqStoredRecord& record) {
+std::shared_ptr<MappedTensorRange> map_tensor_range(const TensorFileRange& record) {
     auto range=std::make_shared<MappedTensorRange>(record);
     std::lock_guard lock(mapped_ranges_mutex);mapped_ranges.push_back(range);
     return range;
+}
+std::shared_ptr<MappedTensorRange> map_tensor_range(const MfqStoredRecord& record) {
+    return map_tensor_range(TensorFileRange{record.source_path,record.offset,record.tensor.nbytes});
 }
 
 std::filesystem::path stable_path(const std::filesystem::path& path) {
@@ -615,6 +619,11 @@ std::size_t release_mapped_tensor_pages() {
         else item=mapped_ranges.erase(item);
     }
     return views;
+}
+
+ModelSource::TensorReader mapped_file_tensor_reader(const TensorFileRange& file) {
+    auto range=map_tensor_range(file);
+    return [range](std::uint64_t offset,std::byte* destination,std::size_t size){range->read(offset,destination,size);};
 }
 
 MappedPrefetchScope::MappedPrefetchScope(bool enabled,bool release_after_read)

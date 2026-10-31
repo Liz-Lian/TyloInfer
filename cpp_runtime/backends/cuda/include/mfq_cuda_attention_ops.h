@@ -28,7 +28,8 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     mfq_tensor_backend::Tensor positions,mfq_tensor_backend::Tensor frequencies,
     mfq_tensor_backend::Tensor axes,int64_t maximum,double eps,int cache_entry,
     mfq_tensor_backend::Tensor key_cache,mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache);
+    mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache,
+    const std::vector<mfq_tensor_backend::Tensor>& entry_positions = {});
 
 mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
     mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,

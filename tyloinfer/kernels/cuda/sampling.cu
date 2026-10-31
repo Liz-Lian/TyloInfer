@@ -3,19 +3,178 @@
 // random uniforms are passed as a small GPU tensor.
 
 #include <cuda_runtime.h>
+#include <math_constants.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include "mfq_tensor_backend.h"
+#include "cpp_runtime/backends/cuda/kernels/kernel_dispatch_trace.h"
 #include <cub/block/block_radix_sort.cuh>
 #include <float.h>
 #include <climits>
 #include <cstdlib>
 #include <cstdint>
 #include <utility>
+#include <cuda/atomic>
 
 constexpr int SAMPLE_BD = 256;
 constexpr int SAMPLE_MAX_TOP_K = 1024;
 constexpr int SAMPLE_RADIX_MAX_TOP_K = 64;
+
+__global__ void sample_publish_packets(const int64_t* packets,int64_t* mapped,int64_t count) {
+    for(auto i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;i<count;i+=int64_t(gridDim.x)*blockDim.x) {
+        ::cuda::atomic_ref<int64_t,::cuda::thread_scope_system> published(mapped[i]);
+        published.store(packets[i],::cuda::std::memory_order_release);
+    }
+}
+void sample_publish_packets_cuda(mfq_tensor_backend::Tensor packets,int64_t* mapped_packets) {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(packets.is_cuda() && packets.scalar_type()==tb::kInt64 && packets.is_contiguous(),
+        "packet publication requires contiguous int64 CUDA packets");
+    const auto count=packets.numel();if(!count)return;
+    TYLOINFER_RUNTIME_CHECK(mapped_packets && reinterpret_cast<std::uintptr_t>(mapped_packets)%alignof(int64_t)==0,
+        "packet publication requires an aligned mapped output alias");
+    const MfqCudaGuard guard(packets.get_device());
+    const auto stream=mfq_current_cuda_stream();packets.record_stream(reinterpret_cast<std::uintptr_t>(stream));
+    const int threads=count<=32?32:128;
+    const auto blocks=unsigned(std::min<int64_t>(65535,(count+threads-1)/threads));
+    sample_publish_packets<<<blocks,threads,0,stream>>>(packets.data_ptr<int64_t>(),mapped_packets,count);
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());
+    if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
+        "sample_publish_packets",reinterpret_cast<const void*>(sample_publish_packets),
+        "words="+std::to_string(count));
+}
+
+__global__ void sample_export_greedy_ids(const int64_t* packets,int64_t* ids,int32_t* mapped,int64_t count) {
+    for(auto i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;i<count;i+=int64_t(gridDim.x)*blockDim.x) {
+        const auto token=int32_t(uint32_t(packets[i]));
+        ids[i]=int64_t(token);
+        if(mapped) {
+            ::cuda::atomic_ref<int32_t,::cuda::thread_scope_system> published(mapped[i]);
+            published.store(token,::cuda::std::memory_order_release);
+        }
+    }
+}
+void sample_export_greedy_ids_cuda(mfq_tensor_backend::Tensor packets,mfq_tensor_backend::Tensor ids,int32_t* mapped) {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(packets.is_cuda() && ids.is_cuda() && packets.device()==ids.device() &&
+        packets.scalar_type()==tb::kInt64 && ids.scalar_type()==tb::kInt64 &&
+        packets.is_contiguous() && ids.is_contiguous() && packets.numel()==ids.numel(),
+        "greedy packet export requires contiguous int64 packets and IDs on one CUDA device");
+    const auto count=packets.numel();if(!count)return;
+    const MfqCudaGuard guard(packets.get_device());
+    const auto stream=mfq_current_cuda_stream();
+    for(const auto& tensor:{packets,ids})tensor.record_stream(reinterpret_cast<std::uintptr_t>(stream));
+    const int threads=count<=32?32:256;
+    const auto blocks=unsigned(std::min<int64_t>(65535,(count+threads-1)/threads));
+    sample_export_greedy_ids<<<blocks,threads,0,stream>>>(packets.data_ptr<int64_t>(),ids.data_ptr<int64_t>(),mapped,count);
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());
+}
+
+struct alignas(16) SampleProbabilityStats {float maximum,mass;int index,padding;};
+static_assert(sizeof(SampleProbabilityStats)==2*sizeof(int64_t));
+__device__ __forceinline__ SampleProbabilityStats sample_probability_empty() {
+    return {-CUDART_INF_F,0.f,INT_MAX,0};
+}
+template<bool Probability=true>
+__device__ __forceinline__ SampleProbabilityStats sample_probability_merge(
+        SampleProbabilityStats a,SampleProbabilityStats b) {
+    if(a.mass==0.f)return b;
+    if(b.mass==0.f)return a;
+    const float maximum=fmaxf(a.maximum,b.maximum);
+    const int index=a.maximum>b.maximum?a.index:b.maximum>a.maximum?b.index:min(a.index,b.index);
+    if constexpr(!Probability)return {maximum,1.f,index,0};
+    const float left=a.maximum==maximum?1.f:__expf(a.maximum-maximum);
+    const float right=b.maximum==maximum?1.f:__expf(b.maximum-maximum);
+    return {maximum,a.mass*left+b.mass*right,index,0};
+}
+template<bool Probability=true>
+__device__ __forceinline__ SampleProbabilityStats sample_probability_warp(SampleProbabilityStats value) {
+    const int lane=threadIdx.x%32;
+    for(int step=16;step;step>>=1) {
+        SampleProbabilityStats next{__shfl_down_sync(0xffffffffu,value.maximum,step),
+            __shfl_down_sync(0xffffffffu,value.mass,step),__shfl_down_sync(0xffffffffu,value.index,step),0};
+        if(lane+step<32)value=sample_probability_merge<Probability>(value,next);
+    }
+    return value;
+}
+template<bool Probability=true>
+__device__ __forceinline__ SampleProbabilityStats sample_probability_block(SampleProbabilityStats value) {
+    __shared__ SampleProbabilityStats partial[SAMPLE_BD/32];
+    value=sample_probability_warp<Probability>(value);
+    if(threadIdx.x%32==0)partial[threadIdx.x/32]=value;
+    __syncthreads();
+    if(threadIdx.x<32) {
+        value=threadIdx.x<SAMPLE_BD/32?partial[threadIdx.x]:sample_probability_empty();
+        value=sample_probability_warp<Probability>(value);
+    }
+    return value;
+}
+template<typename T,bool Probability>
+__device__ void sample_probability_chunks_body(const T* logits,SampleProbabilityStats* partial,int vocabulary,int chunks) {
+    const int row=int(blockIdx.x)/chunks,chunk=int(blockIdx.x)%chunks;
+    SampleProbabilityStats value=sample_probability_empty();
+    const int begin=chunk*4096,end=begin+min(4096,vocabulary-begin);
+    for(int64_t token=int64_t(begin)+threadIdx.x;token<end;token+=SAMPLE_BD) {
+        const float score=float(logits[int64_t(row)*vocabulary+token]);
+        if(!isnan(score) && score!=-CUDART_INF_F)
+            value=sample_probability_merge<Probability>(value,{score,1.f,int(token),0});
+    }
+    value=sample_probability_block<Probability>(value);
+    if(!threadIdx.x)partial[int64_t(row)*chunks+chunk]=value;
+}
+template<typename T>
+__global__ void sample_probability_chunks(const T* logits,SampleProbabilityStats* partial,int vocabulary,int chunks,
+        const volatile int32_t* probability_enabled) {
+    if(!probability_enabled || *probability_enabled)
+        sample_probability_chunks_body<T,true>(logits,partial,vocabulary,chunks);
+    else sample_probability_chunks_body<T,false>(logits,partial,vocabulary,chunks);
+}
+template<bool Probability>
+__device__ void sample_probability_finish_body(const SampleProbabilityStats* partial,int chunks,int64_t* output) {
+    SampleProbabilityStats value=sample_probability_empty();
+    for(int i=threadIdx.x;i<chunks;i+=SAMPLE_BD)
+        value=sample_probability_merge<Probability>(value,partial[int64_t(blockIdx.x)*chunks+i]);
+    value=sample_probability_block<Probability>(value);
+    if(!threadIdx.x) {
+        const float probability=Probability?(value.mass>0.f?1.f/value.mass:0.f):-1.f;
+        const int token=value.index==INT_MAX?0:value.index;
+        output[blockIdx.x]=int64_t((uint64_t(__float_as_uint(probability))<<32)|uint32_t(token));
+    }
+}
+__global__ void sample_probability_finish(const SampleProbabilityStats* partial,int chunks,int64_t* output,
+        const volatile int32_t* probability_enabled) {
+    if(!probability_enabled || *probability_enabled)sample_probability_finish_body<true>(partial,chunks,output);
+    else sample_probability_finish_body<false>(partial,chunks,output);
+}
+mfq_tensor_backend::Tensor sample_greedy_probability_cuda(mfq_tensor_backend::Tensor logits,mfq_tensor_backend::Tensor output,
+        const volatile int32_t* probability_enabled) {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim()==2 &&
+        logits.size(0)<=INT_MAX && logits.size(1)>0 && logits.size(1)<=INT_MAX,
+        "greedy probability requires contiguous CUDA [B,V] logits within launch limits");
+    TYLOINFER_RUNTIME_CHECK(logits.scalar_type()==tb::kFloat32 || logits.scalar_type()==tb::kFloat16 ||
+        logits.scalar_type()==tb::kBFloat16,"greedy probability requires f32, f16 or bf16 logits");
+    const int batch=int(logits.size(0)),vocabulary=int(logits.size(1)),chunks=(vocabulary-1)/4096+1;
+    TYLOINFER_RUNTIME_CHECK(batch<=INT_MAX/chunks,"greedy probability grid exceeds CUDA launch limits");
+    const MfqCudaGuard guard(logits.get_device());
+    if(!output.defined())output=tb::empty({batch},logits.options().dtype(tb::kInt64));
+    TYLOINFER_RUNTIME_CHECK(output.is_cuda() && output.device()==logits.device() && output.is_contiguous() &&
+        output.scalar_type()==tb::kInt64 && output.dim()==1 && output.size(0)==batch,
+        "greedy probability output must be contiguous int64 CUDA [B] on the logit device");
+    if(!batch)return output;
+    auto partial=tb::empty({batch,chunks,2},logits.options().dtype(tb::kInt64));
+    const auto stream=mfq_current_cuda_stream();
+    for(const auto& tensor:{logits,partial,output})tensor.record_stream(reinterpret_cast<std::uintptr_t>(stream));
+    TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(mfq_dispatch_half,mfq_dispatch_bfloat16,
+        logits.scalar_type(),"sample_greedy_probability",[&] {
+        sample_probability_chunks<scalar_t><<<batch*chunks,SAMPLE_BD,0,stream>>>(logits.data_ptr<scalar_t>(),
+            reinterpret_cast<SampleProbabilityStats*>(partial.data_ptr<int64_t>()),vocabulary,chunks,probability_enabled);
+    });
+    sample_probability_finish<<<batch,SAMPLE_BD,0,stream>>>(
+        reinterpret_cast<const SampleProbabilityStats*>(partial.data_ptr<int64_t>()),chunks,output.data_ptr<int64_t>(),probability_enabled);
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());
+    return output;
+}
 
 __device__ __forceinline__ uint64_t sample_make_sort_key(float value, int index)
 {
@@ -621,7 +780,8 @@ mfq_tensor_backend::Tensor sample_softmax_cuda(mfq_tensor_backend::Tensor logits
 
 template<bool Conditional>
 static mfq_tensor_backend::Tensor sample_top_k_compact_impl(
-    mfq_tensor_backend::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
+    mfq_tensor_backend::Tensor logits,int64_t top_k,const volatile int32_t* enabled,
+    mfq_tensor_backend::Tensor out = {}) {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim()==2,
         "sample_top_k_compact: logits must be contiguous CUDA [B,V]");
     TYLOINFER_RUNTIME_CHECK(logits.scalar_type()==mfq_tensor_backend::kFloat32 ||
@@ -633,7 +793,10 @@ static mfq_tensor_backend::Tensor sample_top_k_compact_impl(
     const int items=V<=8192?1:V<=65536?4:8;
     const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
     // Explicit types keep these non-dependent for nvcc's MSVC-mode front end.
-    mfq_tensor_backend::Tensor out=mfq_tensor_backend::empty({B,top_k},logits.options().dtype(mfq_tensor_backend::kInt64));
+    if(!out.defined())out=mfq_tensor_backend::empty({B,top_k},logits.options().dtype(mfq_tensor_backend::kInt64));
+    TYLOINFER_RUNTIME_CHECK(out.is_cuda() && out.device()==logits.device() && out.is_contiguous() &&
+        out.scalar_type()==mfq_tensor_backend::kInt64 && out.dim()==2 && out.size(0)==B && out.size(1)==top_k,
+        "sample_top_k_compact: output must be contiguous int64 CUDA [B,K] on the logit device");
     mfq_tensor_backend::Tensor a=mfq_tensor_backend::empty({int64_t(B)*blocks*top_k},out.options());
     mfq_tensor_backend::Tensor b=mfq_tensor_backend::empty(a.sizes(),a.options());
     auto* first=reinterpret_cast<uint64_t*>(a.data_ptr<int64_t>());
@@ -664,9 +827,9 @@ mfq_tensor_backend::Tensor sample_top_k_compact_cuda(mfq_tensor_backend::Tensor 
     return sample_top_k_compact_impl<false>(std::move(logits),top_k,nullptr);
 }
 mfq_tensor_backend::Tensor sample_top_k_compact_if_cuda(
-        mfq_tensor_backend::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
+        mfq_tensor_backend::Tensor logits,int64_t top_k,const volatile int32_t* enabled,mfq_tensor_backend::Tensor output) {
     TYLOINFER_RUNTIME_CHECK(enabled,"sample_top_k_compact_if: null replay flag");
-    return sample_top_k_compact_impl<true>(std::move(logits),top_k,enabled);
+    return sample_top_k_compact_impl<true>(std::move(logits),top_k,enabled,std::move(output));
 }
 
 mfq_tensor_backend::Tensor sample_top_k_top_p_cuda(

@@ -371,6 +371,9 @@ void setup_cuda_load(
         const mfq::cuda::CudaLoadOptions& options,
         CudaExecutionContext& execution) {
     execution.reset();
+    execution.dflash2_draft_path = options.dflash2_draft_path;
+    if (execution.dflash2_draft_path.empty())
+        if (const auto* path = std::getenv("TYLOINFER_DFLASH2_DRAFT")) execution.dflash2_draft_path = path;
     if (options.n_gpu_layers_set) execution.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");

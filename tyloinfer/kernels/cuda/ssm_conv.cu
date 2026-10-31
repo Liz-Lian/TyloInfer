@@ -4,6 +4,9 @@
 #include <cuda_runtime.h>
 #include "mfq_tensor_backend.h"
 #include <cuda_fp16.h>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "reduce.cuh"
@@ -442,10 +445,10 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_decode_cuda(
     return {q, k, vo};
 }
 
-template <int BD, bool Packed = false>
+template <int BD, bool Packed = false, class Input = __half>
 __global__ void linear_conv_qk_norm_prefill_kernel(
     const float* __restrict__ state,
-    const __half* __restrict__ qk,
+    const Input* __restrict__ qk,
     const float* __restrict__ w,
     const float* __restrict__ bias,
     float* __restrict__ q,
@@ -474,7 +477,7 @@ __global__ void linear_conv_qk_norm_prefill_kernel(
             if (token < 0) {
                 xv = state[((size_t)b * (K - 1) + (token + K - 1)) * C + c];
             } else {
-                xv = __half2float(qk[Packed && ps1?int64_t(b)*ps0+int64_t(token)*ps1+c:
+                xv = static_cast<float>(qk[Packed && ps1?int64_t(b)*ps0+int64_t(token)*ps1+c:
                     ((size_t)b * T + token) * (Packed ? C : qkC) + c]);
             }
             float wv = weight_layout == 0 ? w[(size_t)c * K + j] : w[(size_t)j * C + c];
@@ -491,10 +494,10 @@ __global__ void linear_conv_qk_norm_prefill_kernel(
     }
 }
 
-template <bool Packed = false, class Gate = float>
+template <bool Packed = false, class Gate = float, class Input = __half>
 __global__ void linear_conv_v_prefill_kernel(
     const float* __restrict__ state,
-    const __half* __restrict__ v_in,
+    const Input* __restrict__ v_in,
     const float* __restrict__ w,
     const float* __restrict__ bias,
     float* __restrict__ v_out,
@@ -522,7 +525,7 @@ __global__ void linear_conv_v_prefill_kernel(
         if (token < 0) {
             xv = state[((size_t)b * (K - 1) + (token + K - 1)) * C + c];
         } else {
-            xv = __half2float(v_in[Packed && ps1?int64_t(b)*ps0+int64_t(token)*ps1+vi:
+            xv = static_cast<float>(v_in[Packed && ps1?int64_t(b)*ps0+int64_t(token)*ps1+vi:
                 ((size_t)b * T + token) * (Packed ? C : vsz) + vi]);
         }
         float wv = weight_layout == 0 ? w[(size_t)c * K + j] : w[(size_t)j * C + c];
@@ -544,22 +547,22 @@ __global__ void linear_conv_v_prefill_kernel(
     }
 }
 
-template <bool Packed = false>
+template <bool Packed = false, class Input = __half>
 __device__ __forceinline__ float linear_prefill_input(
-    const __half* qk, const __half* v, int b, int t, int c,
+    const Input* qk, const Input* v, int b, int t, int c,
     int T, int qkC, int vsz,int64_t ps0=0,int64_t ps1=0)
 {
-    if (c < qkC) return __half2float(qk[Packed && ps1?int64_t(b)*ps0+int64_t(t)*ps1+c:
+    if (c < qkC) return static_cast<float>(qk[Packed && ps1?int64_t(b)*ps0+int64_t(t)*ps1+c:
         ((size_t)b * T + t) * (Packed ? qkC+vsz : qkC) + c]);
-    return __half2float(v[Packed && ps1?int64_t(b)*ps0+int64_t(t)*ps1+(c-qkC):
+    return static_cast<float>(v[Packed && ps1?int64_t(b)*ps0+int64_t(t)*ps1+(c-qkC):
         ((size_t)b * T + t) * (Packed ? qkC+vsz : vsz) + (c - qkC)]);
 }
 
-template <bool Packed = false>
+template <bool Packed = false, class Input = __half>
 __global__ void linear_conv_state_prefill_kernel(
     const float* __restrict__ old_state,
-    const __half* __restrict__ qk,
-    const __half* __restrict__ v,
+    const Input* __restrict__ qk,
+    const Input* __restrict__ v,
     float* __restrict__ new_state,
     int B, int T, int qkC, int vsz, int C, int K,int64_t ps0=0,int64_t ps1=0)
 {
@@ -575,7 +578,7 @@ __global__ void linear_conv_state_prefill_kernel(
             new_state[idx] = old_state[((size_t)b * (K - 1) + combined) * C + c];
         } else {
             int token = combined - (K - 1);
-            new_state[idx] = linear_prefill_input<Packed>(qk, v, b, token, c, T, qkC, vsz,ps0,ps1);
+            new_state[idx] = linear_prefill_input<Packed,Input>(qk, v, b, token, c, T, qkC, vsz,ps0,ps1);
         }
     }
 }
@@ -594,10 +597,10 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_prefill_cuda(
 {
     TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type() == mfq_tensor_backend::kFloat32,
                 "linear_conv_qkv_prefill: state must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(qk.is_cuda() && qk.is_contiguous() && qk.scalar_type() == mfq_tensor_backend::kHalf,
-                "linear_conv_qkv_prefill: qk must be contiguous CUDA f16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == mfq_tensor_backend::kHalf,
-                "linear_conv_qkv_prefill: v must be contiguous CUDA f16");
+    TYLOINFER_RUNTIME_CHECK(qk.is_cuda() && qk.is_contiguous() && (qk.scalar_type() == mfq_tensor_backend::kHalf || qk.scalar_type() == mfq_tensor_backend::kFloat32),
+                "linear_conv_qkv_prefill: qk must be contiguous CUDA f16/f32");
+    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == qk.scalar_type(),
+                "linear_conv_qkv_prefill: v must match contiguous CUDA qk dtype");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == mfq_tensor_backend::kFloat32,
                 "linear_conv_qkv_prefill: weight must be contiguous CUDA f32");
     TYLOINFER_RUNTIME_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == mfq_tensor_backend::kFloat32,
@@ -632,36 +635,46 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_prefill_cuda(
     auto vo = mfq_tensor_backend::empty({B, (int)nv, T, (int)dv}, opts);
     auto new_state = mfq_tensor_backend::empty_like(state);
     cudaStream_t stream = mfq_current_cuda_stream();
-    linear_conv_qk_norm_prefill_kernel<256><<<B * T * 2 * (int)nk, 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
+    const auto launch=[&]<class Input>() {
+    linear_conv_qk_norm_prefill_kernel<256,false,Input><<<B * T * 2 * (int)nk, 256, 0, stream>>>(
+        state.data_ptr<float>(), static_cast<const Input*>(qk.data_ptr()),
         weight.data_ptr<float>(), bias.data_ptr<float>(), qo.data_ptr<float>(), ko.data_ptr<float>(),
         B, T, (int)nk, (int)dk, C, K, layout, has_bias, (float)eps);
-    linear_conv_v_prefill_kernel<><<<dim3(B * T, (vsz + 255) / 256), 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()),
+    linear_conv_v_prefill_kernel<false,float,Input><<<dim3(B * T, (vsz + 255) / 256), 256, 0, stream>>>(
+        state.data_ptr<float>(), static_cast<const Input*>(v.data_ptr()),
         weight.data_ptr<float>(), bias.data_ptr<float>(), vo.data_ptr<float>(),
         B, T, (int)nk, (int)nv, (int)dk, (int)dv, C, K, layout, has_bias);
     int state_total = B * (K - 1) * C;
-    linear_conv_state_prefill_kernel<><<<(state_total + 255) / 256, 256, 0, stream>>>(
-        state.data_ptr<float>(), reinterpret_cast<const __half*>(qk.data_ptr<mfq_half>()),
-        reinterpret_cast<const __half*>(v.data_ptr<mfq_half>()), new_state.data_ptr<float>(),
+    linear_conv_state_prefill_kernel<false,Input><<<(state_total + 255) / 256, 256, 0, stream>>>(
+        state.data_ptr<float>(), static_cast<const Input*>(qk.data_ptr()),
+        static_cast<const Input*>(v.data_ptr()), new_state.data_ptr<float>(),
         B, T, qkC, vsz, C, K);
+    };
+    if(qk.scalar_type()==mfq_tensor_backend::kFloat32)launch.template operator()<float>();
+    else launch.template operator()<__half>();
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());
+    if(qk.scalar_type()==mfq_tensor_backend::kFloat32) {
+        static std::atomic<bool> reported{false};
+        if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1' && !reported.exchange(true))
+            std::fprintf(stderr,"native_gdn_prefill_conv_f32 actual_match=1 tokens=%d\n",T);
+    }
     return {qo, ko, vo, new_state};
 }
 
-// Short verification windows keep the projected Q/K/V together. Their V
-// convolution also prepares the recurrent gates, with the original FP order.
-std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_short_cuda(
+// Keep projected Q/K/V together for prefill and short verification windows.
+// The V convolution also prepares recurrent gates, preserving FP32 operands.
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
     mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
     mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
     mfq_tensor_backend::Tensor beta,mfq_tensor_backend::Tensor dt_bias,
     mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps)
 {
     namespace tb=mfq_tensor_backend;
-    TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.scalar_type()==tb::kFloat16 &&
-        qkv.dim()==3 && qkv.size(1)>=2 && qkv.size(1)<=8 && nk>0 && nv>0 && nv%nk==0 &&
+    TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && (qkv.scalar_type()==tb::kFloat16 || qkv.scalar_type()==tb::kFloat32) &&
+        qkv.dim()==3 && qkv.size(1)>=2 && qkv.size(1)<=INT_MAX && nk>0 && nv>0 && nv%nk==0 &&
         width>0 && width<=256 && qkv.stride(2)==1 && qkv.stride(1)>=qkv.size(2) &&
         (qkv.size(0)==1 || qkv.stride(0)>=qkv.size(1)*qkv.stride(1)),
-        "short GDN requires row-strided half QKV and 2-8 tokens");
+        "GDN fused preparation requires row-strided f16/f32 QKV and at least 2 tokens");
     const int B=int(qkv.size(0)),T=int(qkv.size(1)),K=int(state.size(1))+1;
     const int qkC=int(2*nk*width),vsz=int(nv*width),C=qkC+vsz;
     TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type()==tb::kFloat32 &&
@@ -684,22 +697,39 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_short_cuda(
     auto options=state.options();
     auto q=tb::empty({B,nk,T,width},options),k=tb::empty_like(q),v=tb::empty({B,nv,T,width},options);
     auto next=tb::empty_like(state),decay=tb::empty({B,nv,T},options),bt=tb::empty_like(decay);
-    auto* projected=reinterpret_cast<const __half*>(qkv.data_ptr<mfq_half>());
-    auto stream=mfq_current_cuda_stream();
-    linear_conv_qk_norm_prefill_kernel<256,true><<<B*T*2*int(nk),256,0,stream>>>(
-        state.data_ptr<float>(),projected,weight.data_ptr<float>(),nullptr,q.data_ptr<float>(),k.data_ptr<float>(),
-        B,T,int(nk),int(width),C,K,layout,0,float(eps),qkv.stride(0),qkv.stride(1));
-    const auto launch=[&]<class Gate>() {
-        linear_conv_v_prefill_kernel<true,Gate><<<dim3(B*T,(vsz+255)/256),256,0,stream>>>(
-            state.data_ptr<float>(),projected+qkC,weight.data_ptr<float>(),nullptr,v.data_ptr<float>(),
-            B,T,int(nk),int(nv),int(width),int(width),C,K,layout,0,
-            reinterpret_cast<const Gate*>(alpha.data_ptr()),reinterpret_cast<const Gate*>(beta.data_ptr()),
-            dt_bias.data_ptr<float>(),a_log.data_ptr<float>(),decay.data_ptr<float>(),bt.data_ptr<float>(),
-            qkv.stride(0),qkv.stride(1),alpha.stride(0),alpha.stride(1),beta.stride(0),beta.stride(1));
+    const auto stream=mfq_current_cuda_stream();
+    const auto launch_input=[&]<class Input>() {
+        const auto* projected=static_cast<const Input*>(qkv.data_ptr());
+        const auto launch_qk=[&]<int Threads>() {
+            linear_conv_qk_norm_prefill_kernel<Threads,true,Input><<<B*T*2*int(nk),Threads,0,stream>>>(
+                state.data_ptr<float>(),projected,weight.data_ptr<float>(),nullptr,q.data_ptr<float>(),k.data_ptr<float>(),
+                B,T,int(nk),int(width),C,K,layout,0,float(eps),qkv.stride(0),qkv.stride(1));
+        };
+        if(width<=32)launch_qk.template operator()<32>();
+        else if(width<=64)launch_qk.template operator()<64>();
+        else if(width<=128)launch_qk.template operator()<128>();
+        else launch_qk.template operator()<256>();
+        const auto launch_gate=[&]<class Gate>() {
+            linear_conv_v_prefill_kernel<true,Gate,Input><<<dim3(B*T,(vsz+255)/256),256,0,stream>>>(
+                state.data_ptr<float>(),projected+qkC,weight.data_ptr<float>(),nullptr,v.data_ptr<float>(),
+                B,T,int(nk),int(nv),int(width),int(width),C,K,layout,0,
+                static_cast<const Gate*>(alpha.data_ptr()),static_cast<const Gate*>(beta.data_ptr()),
+                dt_bias.data_ptr<float>(),a_log.data_ptr<float>(),decay.data_ptr<float>(),bt.data_ptr<float>(),
+                qkv.stride(0),qkv.stride(1),alpha.stride(0),alpha.stride(1),beta.stride(0),beta.stride(1));
+        };
+        if(alpha.scalar_type()==tb::kFloat16)launch_gate.template operator()<__half>();else launch_gate.template operator()<float>();
+        const int elements=B*(K-1)*C;
+        linear_conv_state_prefill_kernel<true,Input><<<(elements+255)/256,256,0,stream>>>(
+            state.data_ptr<float>(),projected,projected+qkC,next.data_ptr<float>(),B,T,qkC,vsz,C,K,qkv.stride(0),qkv.stride(1));
     };
-    if(alpha.scalar_type()==tb::kFloat16)launch.template operator()<__half>();else launch.template operator()<float>();
-    const int elements=B*(K-1)*C;
-    linear_conv_state_prefill_kernel<true><<<(elements+255)/256,256,0,stream>>>(
-        state.data_ptr<float>(),projected,projected+qkC,next.data_ptr<float>(),B,T,qkC,vsz,C,K,qkv.stride(0),qkv.stride(1));
+    if(qkv.scalar_type()==tb::kFloat16)launch_input.template operator()<__half>();else launch_input.template operator()<float>();
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());
     return {q,k,v,next,decay,bt};
+}
+
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_short_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,mfq_tensor_backend::Tensor beta,
+    mfq_tensor_backend::Tensor dt_bias,mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps) {
+    return linear_conv_qkv_gate_prefill_cuda(state,qkv,weight,alpha,beta,dt_bias,a_log,nk,nv,width,eps);
 }

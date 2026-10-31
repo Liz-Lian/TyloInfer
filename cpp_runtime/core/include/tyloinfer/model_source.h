@@ -39,6 +39,12 @@ struct TensorFileRange {
     std::uint64_t nbytes = 0;
 };
 
+struct HadamardTransform {
+    std::int64_t block_size = 1;
+    std::vector<std::int8_t> signs;
+};
+using HadamardTransforms = std::unordered_map<std::string, HadamardTransform>;
+
 // A capability refusal, distinct from invalid metadata or a failed read.
 class TensorReaderUnsupported : public std::runtime_error {
 public:
@@ -60,6 +66,10 @@ public:
     virtual std::string_view architecture() const noexcept = 0;
     virtual const std::unordered_map<std::string, std::string>& metadata()
         const noexcept = 0;
+    // Parsed once by providers that expose normalized input transforms.
+    // A null pointer retains compatibility with metadata-only providers;
+    // a non-null empty map means no weight requires a transform.
+    virtual const HadamardTransforms* hadamard_transforms() const noexcept { return nullptr; }
     virtual const std::vector<TensorMetadata>& tensors() const noexcept = 0;
     virtual const TensorMetadata* find_tensor(
         std::string_view name) const noexcept = 0;

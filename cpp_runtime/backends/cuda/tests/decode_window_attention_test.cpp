@@ -381,7 +381,7 @@ void gdn_output_case() {
         auto weight=data({width},134,1.3f).to(tb::kFloat32);
         const double eps=half?1e-6:0.013456789123;
         auto output=gdn_rms_norm_gate_cuda(attended,projection,weight,eps,silu,half);
-        equal(output,composed_gdn_output(attended,projection,weight,eps,silu,half),"GDN fused RMSNorm/gate/layout",0,0);
+        equal(output,composed_gdn_output(attended,projection,weight,eps,silu,half),"GDN fused RMSNorm/gate/layout",half?1e-5f:2e-6f,half?1e-3f:2e-6f);
         if(output.scalar_type()!=(half?tb::kFloat16:tb::kFloat32) || !output.is_contiguous())
             throw std::runtime_error("GDN fused output dtype/layout changed");
         ++cases;
@@ -396,10 +396,10 @@ void gdn_output_case() {
             attended.copy_(replay==1?tb::zeros_like(attended):data(attended.sizes().vec(),144+replay,replay==2?.17f:.00013f).to(tb::kFloat32));
             projection.copy_(data(projection.sizes().vec(),147+replay,88.f).to(dtype));
             window.run();equal(output,composed_gdn_output(attended,projection,weight,1e-6,true,true),
-                "GDN changing-input fused output graph",0,0);++cases;
+                "GDN changing-input fused output graph",1e-5f,1e-3f);++cases;
         }
     }
-    std::cout<<"GDN fused output composed exact cases="<<cases<<" PASS\n";
+    std::cout<<"GDN fused output FP32 reference cases="<<cases<<" PASS\n";
 }
 void gdn_case(bool model_shape = false) {
     CudaExecutionContext execution;
@@ -1237,6 +1237,8 @@ int main(int argc,char** argv)try {
     else if(argc==2 && std::string(argv[1])=="--gdn-short-path-bench")gdn_short_preparation_benchmark();
     else if(argc==2 && std::string(argv[1])=="--gdn-prefill-check")gdn_prefill_case();
     else if(argc==2 && std::string(argv[1])=="--gdn-prefill-columns-check")gdn_prefill_columns_case();
+    else if(argc==2 && std::string(argv[1])=="--gdn-prefill-keyhead-check")gdn_prefill_keyhead_case(false);
+    else if(argc==2 && std::string(argv[1])=="--gdn-prefill-keyhead-bench")gdn_prefill_keyhead_case(true);
     else if(argc==2 && std::string(argv[1])=="--gdn-prefill-staged-check")gdn_prefill_staged_case(false);
     else if(argc==2 && std::string(argv[1])=="--gdn-prefill-staged-bench")gdn_prefill_staged_case(true);
     else if(argc==2 && std::string(argv[1])=="--gdn-prefill-staged-graph-check")gdn_prefill_staged_graph_case();

@@ -681,8 +681,57 @@ void CudaProfiler::report(const std::string& title) {
     if (!pending.empty()) cudaEventSynchronize(pending.back().stop);
     const auto* timeline_setting=std::getenv("TYLOINFER_PREFILL_LAYER_TIMELINE");
     if(!pending.empty() && timeline_setting && std::atoi(timeline_setting)!=0) {
+        if(std::atoi(timeline_setting)>=2) {
+            using Interval=std::pair<float,float>;
+            std::vector<Interval> copies,gemms,covered,envelopes;
+            for(const auto& event:pending) {
+                const bool copy=event.name=="gguf.pp.acquire",gemm=event.name=="gguf.pp.mmq.gemm";
+                if(!copy && !gemm && event.name!="gguf.moe" && !event.name.starts_with("gguf.pp."))continue;
+                float begin=0,end=0;
+                TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&begin,pending.front().start,event.start));
+                TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&end,pending.front().start,event.stop));
+                if(end<=begin)continue;
+                if(copy)copies.emplace_back(begin,end);
+                if(gemm)gemms.emplace_back(begin,end);
+                if(event.name=="gguf.moe")envelopes.emplace_back(begin,end);
+                else covered.emplace_back(begin,end);
+            }
+            const auto duration=[](std::vector<Interval> ranges) {
+                std::sort(ranges.begin(),ranges.end());
+                double total=0;float first=0,last=0;bool active=false;
+                for(const auto& [begin,end]:ranges) {
+                    if(!active || begin>last) {
+                        if(active)total+=last-first;
+                        first=begin;last=end;active=true;
+                    } else last=std::max(last,end);
+                }
+                return total+(active?last-first:0);
+            };
+            if(!copies.empty()) {
+                auto joined=copies;joined.insert(joined.end(),gemms.begin(),gemms.end());
+                const auto copy=duration(copies),gemm=duration(gemms),envelope=duration(envelopes);
+                std::cerr<<"profile_prefill_overlap copy_ms="<<copy<<" gemm_ms="<<gemm
+                    <<" copy_gemm_overlap_ms="<<std::max(0.,copy+gemm-duration(joined))
+                    <<" expert_envelope_ms="<<envelope
+                    <<" other_or_idle_ms="<<std::max(0.,envelope-duration(covered))<<'\n';
+            }
+        }
         std::ostringstream trace;
         trace<<"profile_timeline_begin "<<title<<'\n';
+        if(std::atoi(timeline_setting)>=3) {
+            int layer=0,group=-1;
+            for(const auto& event:pending) {
+                if(layer>=2)break; // A bounded diagnostic sample, not a compute limit.
+                if(event.name=="gguf.pp.acquire")++group;
+                if(!event.name.starts_with("gguf.pp.") && event.name!="gguf.moe")continue;
+                float begin=0,end=0;
+                TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&begin,pending.front().start,event.start));
+                TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&end,pending.front().start,event.stop));
+                trace<<"profile_transfer_timeline layer="<<layer<<" group="<<group<<" name="<<event.name
+                    <<" start_ms="<<begin<<" end_ms="<<end<<'\n';
+                if(event.name=="gguf.moe"){++layer;group=-1;}
+            }
+        }
         for(const auto& event:pending)if(event.name.starts_with("prefill.")) {
             float begin=0,end=0;
             TYLOINFER_CUDA_CHECK(cudaEventElapsedTime(&begin,pending.front().start,event.start));
@@ -864,6 +913,10 @@ void CudaExecutionContext::reset() noexcept {
     profiler.reset();
     moe_expert_cache.reset();
     tq_expert_cache.reset();
+    gguf_expert_cache.reset();
+    projection_executors.clear();
+    shared_expert_executors.clear();
+    dflash2_draft_path.clear();
     model_parallel_collectives.reset();
     tensor_parallel = {};
     expert_parallel = {};
@@ -1213,6 +1266,15 @@ std::optional<bool> gr_chain_ffn_post() {
 std::optional<bool> mtp_predictor_graph() {
     if (const auto* value = std::getenv("TYLOINFER_MTP_PREDICTOR_GRAPH")) return value[0] != '0';
     return std::nullopt;
+}
+std::optional<std::int64_t> mtp_attention_window() {
+    const auto* value=std::getenv("TYLOINFER_MTP_ATTENTION_WINDOW");
+    if(!value || !*value)return std::nullopt;
+    std::int64_t window=0;const auto end=value+std::strlen(value);
+    const auto parsed=std::from_chars(value,end,window);
+    if(parsed.ec!=std::errc{} || parsed.ptr!=end || window<0)
+        throw std::invalid_argument("TYLOINFER_MTP_ATTENTION_WINDOW requires a nonnegative integer");
+    return window;
 }
 std::optional<std::int64_t> continuous_ffn_tile() {
     if (const auto* value = std::getenv("TYLOINFER_CONTINUOUS_FFN_TILE")) return std::atoll(value);

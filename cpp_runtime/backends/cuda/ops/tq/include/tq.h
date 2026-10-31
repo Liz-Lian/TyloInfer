@@ -76,6 +76,7 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(CudaExecutionContext&,
 bool prepare_tq_graph_pool(const std::shared_ptr<TqExpertCache>&);
 bool tq_graph_supports_tokens(std::int64_t tokens)noexcept;
 std::size_t tq_expert_cache_budget_bytes(const std::shared_ptr<TqExpertCache>&);
+std::uint64_t tq_expert_streamed_bytes(const std::shared_ptr<TqExpertCache>&);
 void resize_tq_expert_cache(const std::shared_ptr<TqExpertCache>&,std::size_t bytes);
 std::size_t reclaim_tq_expert_host(const std::shared_ptr<TqExpertCache>&,std::size_t bytes);
 std::size_t reserve_tq_expert_host(const std::shared_ptr<TqExpertCache>&,std::size_t allocation_bytes);

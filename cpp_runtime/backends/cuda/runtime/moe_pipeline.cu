@@ -1,9 +1,11 @@
+#include "cpp_runtime/backends/cuda/kernels/kernel_dispatch_trace.h"
 #include "moe_pipeline.h"
 #include "shared_storage.cuh"
 #include <cuda_fp16.h>
 #include <cuda/atomic>
 #include <cstdlib>
 #include <algorithm>
+#include <stdexcept>
 
 namespace mfq::cuda {
 namespace {
@@ -25,14 +27,29 @@ __global__ void export_routes(const __half* input, const std::int32_t* routes,
     __syncthreads();
     if (!threadIdx.x) publish_host_flag(ready);
 }
-__global__ void await_host(const std::uint32_t* ready) {
+template<bool Timed=false>
+__global__ void await_host(const std::uint32_t* ready,std::uint64_t* waited_until=nullptr) {
     auto* observed = reinterpret_cast<const volatile std::uint32_t*>(ready);
+    if constexpr(Timed) {
+        const bool pending=!*observed;
+        unsigned long long now=0;
+        if(pending)asm volatile("mov.u64 %0, %%globaltimer;":"=l"(now));
+        *reinterpret_cast<volatile std::uint64_t*>(waited_until)=now;
+        __threadfence_system();
+        if(!pending)return;
+    }
     while (!*observed) {
 #if __CUDA_ARCH__ >= 700
         __nanosleep(64);
 #endif
     }
     __threadfence_system();
+    if constexpr(Timed) {
+        unsigned long long now;
+        asm volatile("mov.u64 %0, %%globaltimer;":"=l"(now));
+        *reinterpret_cast<volatile std::uint64_t*>(waited_until)=now;
+        __threadfence_system();
+    }
 }
 __global__ void notify_host(std::uint32_t* ready) {
     __threadfence_system();
@@ -153,20 +170,26 @@ __global__ void snapshot_mapped(const uint64_t* source,const uint32_t* cancelled
     for(uint64_t word=threadIdx.x;word<count*4;word+=blockDim.x)
         destination[4+word]=source[4+word];
 }
+template<int Phase=-1>
 __global__ void copy_mapped(const uint64_t* header,const uint32_t* cancelled) {
     // Host control reads cost a PCIe transaction. Share one snapshot per block
     // instead of issuing a volatile mapped read from every copy thread.
     __shared__ uint32_t abort;
-    __shared__ uint64_t count,total;
+    __shared__ uint64_t count,total,split;
     if(!threadIdx.x) {
         abort=*reinterpret_cast<const volatile uint32_t*>(cancelled);
         count=header[0];total=header[1];
+        if constexpr(Phase>=0){split=min(header[3],total);if constexpr(Phase==0)total=split;}
     }
     __syncthreads();
     if(abort || !count)return;
     const auto* fields=reinterpret_cast<const MoeMappedCopyDescriptor*>(header+4);
     const auto stride=uint64_t(blockDim.x)*gridDim.x*16;
-    for(auto offset=(uint64_t(blockIdx.x)*blockDim.x+threadIdx.x)*16;offset<total;offset+=stride) {
+    const auto phase_begin=Phase==1?split:0;
+    // Keep the descriptor-aligned copy grid when a split falls inside a
+    // vector. The first vector masks its already-copied Gate/Up bytes.
+    const auto grid_begin=phase_begin&~uint64_t(15);
+    for(auto offset=grid_begin+(uint64_t(blockIdx.x)*blockDim.x+threadIdx.x)*16;offset<total;offset+=stride) {
         uint64_t low=0,high=count;
         while(low<high) {
             const auto middle=(low+high)/2;
@@ -178,7 +201,7 @@ __global__ void copy_mapped(const uint64_t* header,const uint32_t* cancelled) {
         auto* output=reinterpret_cast<uint8_t*>(field.destination)+within;
         const auto* input=reinterpret_cast<const uint8_t*>(field.source)+within;
         const auto address=reinterpret_cast<uint64_t>(output);
-        if(field.bytes-within>=16 && (reinterpret_cast<uint64_t>(input)&15)==0 && (address&3)==0) {
+        if(offset>=phase_begin && field.bytes-within>=16 && total-offset>=16 && (reinterpret_cast<uint64_t>(input)&15)==0 && (address&3)==0) {
             const auto value=*reinterpret_cast<const uint4*>(input);
             if((address&15)==0)*reinterpret_cast<uint4*>(output)=value;
             else if((address&7)==0) {
@@ -188,7 +211,8 @@ __global__ void copy_mapped(const uint64_t* header,const uint32_t* cancelled) {
                 auto* words=reinterpret_cast<uint32_t*>(output);
                 words[0]=value.x;words[1]=value.y;words[2]=value.z;words[3]=value.w;
             }
-        } else for(uint64_t byte=0;byte<16 && within+byte<field.bytes;++byte)output[byte]=input[byte];
+        } else for(uint64_t byte=0;byte<16 && within+byte<field.bytes && offset+byte<total;++byte)
+            if(offset+byte>=phase_begin)output[byte]=input[byte];
     }
 }
 __global__ void await_plan_snapshot(const uint32_t* ready,const uint32_t* host_abort,uint32_t* device_abort,
@@ -268,12 +292,14 @@ __global__ void scatter_wire_and_loan(const uint8_t* wire,const uint64_t* loan,u
         __syncthreads();
     }
 }
+template<int Phase=-1>
 __global__ void copy_mapped_ranges(const uint64_t* header,const uint32_t* cancelled) {
     __shared__ uint32_t abort;
-    __shared__ uint64_t count,total;
+    __shared__ uint64_t count,total,split;
     if(!threadIdx.x) {
         abort=*reinterpret_cast<const volatile uint32_t*>(cancelled);
         count=header[0];total=header[1];
+        if constexpr(Phase>=0){split=min(header[3],total);if constexpr(Phase==0)total=split;}
     }
     __syncthreads();if(abort || !count)return;
     const auto* fields=reinterpret_cast<const MoeMappedCopyDescriptor*>(header+4);
@@ -281,8 +307,9 @@ __global__ void copy_mapped_ranges(const uint64_t* header,const uint32_t* cancel
     // and its pointers stay in registers throughout the copy loop. Descriptor
     // offsets are 16-byte aligned by both the expert and KV producers.
     const auto tile_bytes=uint64_t(blockDim.x)*16;
-    const auto range_bytes=(total+tile_bytes*gridDim.x-1)/(tile_bytes*gridDim.x)*tile_bytes;
-    const auto begin=uint64_t(blockIdx.x)*range_bytes;
+    const auto phase_begin=Phase==1?split:0;
+    const auto range_bytes=(total-phase_begin+tile_bytes*gridDim.x-1)/(tile_bytes*gridDim.x)*tile_bytes;
+    const auto begin=phase_begin+uint64_t(blockIdx.x)*range_bytes;
     const auto end=begin+range_bytes<total?begin+range_bytes:total;
     if(begin>=end)return;
     uint64_t low=0,high=count;
@@ -297,7 +324,7 @@ __global__ void copy_mapped_ranges(const uint64_t* header,const uint32_t* cancel
                 auto* output=reinterpret_cast<uint8_t*>(field.destination)+within;
                 const auto* input=reinterpret_cast<const uint8_t*>(field.source)+within;
                 const auto address=reinterpret_cast<uint64_t>(output);
-                if(field.bytes-within>=16 && (reinterpret_cast<uint64_t>(input)&15)==0 && (address&3)==0) {
+                if(field.bytes-within>=16 && limit-offset>=16 && (reinterpret_cast<uint64_t>(input)&15)==0 && (address&3)==0) {
                     const auto value=*reinterpret_cast<const uint4*>(input);
                     if((address&15)==0)*reinterpret_cast<uint4*>(output)=value;
                     else if((address&7)==0) {
@@ -307,9 +334,16 @@ __global__ void copy_mapped_ranges(const uint64_t* header,const uint32_t* cancel
                         auto* words=reinterpret_cast<uint32_t*>(output);
                         words[0]=value.x;words[1]=value.y;words[2]=value.z;words[3]=value.w;
                     }
-                }else for(uint64_t byte=0;byte<16 && within+byte<field.bytes;++byte)output[byte]=input[byte];
+                }else for(uint64_t byte=0;byte<16 && within+byte<field.bytes && offset+byte<limit;++byte)output[byte]=input[byte];
         }
     }
+}
+// %globaltimer is a device-wide nanosecond clock (PTX SM 3.0+). The CUDA
+// backend's supported targets meet that instruction requirement.
+__global__ void stamp_clock(std::uint64_t* clock) {
+    unsigned long long value;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(value));
+    *clock=value;
 }
 __global__ void plan_nvq_routes(const std::uint64_t* pointers,int pools,int experts,
         const std::int32_t* ids,int pairs,std::int32_t* plan) {
@@ -359,8 +393,9 @@ void moe_publish_routes(const void* input, const std::int32_t* ids, float* host_
     export_routes<<<1, threads, 0, stream>>>(static_cast<const __half*>(input), ids,
         host_input, host_ids, ready, n, k);
 }
-void wait_mapped_flag(const std::uint32_t* flag, cudaStream_t stream) {
-    await_host<<<1, 1, 0, stream>>>(flag);
+void wait_mapped_flag(const std::uint32_t* flag,cudaStream_t stream,std::uint64_t* waited_until) {
+    if(waited_until)await_host<true><<<1,1,0,stream>>>(flag,waited_until);
+    else await_host<false><<<1,1,0,stream>>>(flag);
 }
 void wait_mapped_plan(const std::uint32_t* flag,const std::int32_t* host_kind,std::int32_t* device_kind,
         int experts,const std::uint32_t* host_abort,std::uint32_t* device_abort,cudaStream_t stream) {
@@ -368,6 +403,9 @@ void wait_mapped_plan(const std::uint32_t* flag,const std::int32_t* host_kind,st
 }
 void signal_mapped_flag(std::uint32_t* flag, cudaStream_t stream) {
     notify_host<<<1, 1, 0, stream>>>(flag);
+}
+void moe_stamp_clock(std::uint64_t* clock,cudaStream_t stream) {
+    stamp_clock<<<1,1,0,stream>>>(clock);
 }
 void moe_update_dispatch_maps(const std::uint64_t* pointers,int maps,int experts,
         const std::int32_t* kind,const std::uint32_t* abort,cudaStream_t stream) {
@@ -392,7 +430,7 @@ cudaError_t moe_wire_launch_geometry(int* blocks,int* threads) {
     return cudaOccupancyMaxPotentialBlockSize(blocks,threads,scatter_wire,0,0);
 }
 cudaError_t moe_mapped_copy_launch_geometry(int* blocks,int* threads) {
-    return cudaOccupancyMaxPotentialBlockSize(blocks,threads,copy_mapped,0,0);
+    return cudaOccupancyMaxPotentialBlockSize(blocks,threads,copy_mapped<-1>,0,0);
 }
 void moe_snapshot_mapped(const void* table,const uint32_t* cancelled,void* snapshot,
         uint64_t capacity,cudaStream_t stream) {
@@ -401,8 +439,26 @@ void moe_snapshot_mapped(const void* table,const uint32_t* cancelled,void* snaps
 }
 void moe_copy_mapped(const void* table,const uint32_t* cancelled,int blocks,int threads,cudaStream_t stream) {
     const auto* option=std::getenv("TYLOINFER_MOE_COPY_RANGES");
-    if(option && option[0]=='1')copy_mapped_ranges<<<blocks,std::min(threads,256),0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
-    else copy_mapped<<<blocks,threads,0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
+    if(option && option[0]=='1')copy_mapped_ranges<-1><<<blocks,std::min(threads,256),0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
+    else copy_mapped<-1><<<blocks,threads,0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
+}
+void moe_copy_mapped_phase(const void* table,const uint32_t* cancelled,int blocks,int threads,int phase,cudaStream_t stream) {
+    const auto* option=std::getenv("TYLOINFER_MOE_COPY_RANGES");
+    const auto launch=[&]<int Phase>() {
+        const void* function=nullptr;
+        if(option && option[0]=='1') {
+            copy_mapped_ranges<Phase><<<blocks,std::min(threads,256),0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
+            function=reinterpret_cast<const void*>(copy_mapped_ranges<Phase>);
+        }else {
+            copy_mapped<Phase><<<blocks,threads,0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
+            function=reinterpret_cast<const void*>(copy_mapped<Phase>);
+        }
+        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,
+            "gguf_expert_copy_phase",function,"phase="+std::to_string(Phase)+" blocks="+std::to_string(blocks));
+    };
+    if(phase==0)launch.template operator()<0>();
+    else if(phase==1)launch.template operator()<1>();
+    else throw std::invalid_argument("mapped expert copy phase must be Gate/Up or Down");
 }
 void moe_scatter_wire_phase(const void* wire,const std::uint32_t* cancelled,int blocks,int threads,int phase,cudaStream_t stream) {
     scatter_wire<<<blocks,threads,0,stream>>>(static_cast<const std::uint8_t*>(wire),cancelled,phase);

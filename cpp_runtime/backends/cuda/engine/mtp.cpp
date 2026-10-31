@@ -1,7 +1,9 @@
 #include "runtime/routed_cache_resources.h"
+#include "runtime/recurrent_copy_batch.h"
 #include "generation.h"
 #include "token_row_prefetch.h"
 #include "speculative_sequence.h"
+#include "mtp_probability_policy.h"
 
 #include "cuda_execution.h"
 #include "cuda_sampling.h"
@@ -71,6 +73,7 @@ template <class Model> struct CudaMtpOps {
   Tensor projected_target_compact,projected_predictor_compact;
   int graph_sampling_reuses=0;
   int32_t projected_predictor_greedy=-1;
+  float projected_predictor_probability=-1.f;
   std::vector<int32_t> projected_target_greedy;
   std::optional<mfq::cuda::Sampler> sampler_;
   bool penalties = false;
@@ -78,7 +81,17 @@ template <class Model> struct CudaMtpOps {
   std::uint64_t target_graph_captures = 0;
   std::uint64_t target_transfer_bytes=0;
   std::array<double,6> target_profile{};
+  std::array<double,3> resolve_profile{};
+  std::uint64_t resolve_rounds=0,rollback_rounds=0;
+  static bool profile_resolve() {
+    static const bool enabled=[] {
+      const auto* option=std::getenv("TYLOINFER_PROFILE_TARGET_RESOLVE");
+      return option && option[0]=='1';
+    }();
+    return enabled;
+  }
   std::shared_ptr<MoeExpertCache> target_route_cache;
+  std::shared_ptr<GgufExpertCache> target_gguf_route_cache;
   static bool profile_target() {
     static const bool enabled=[] {
       const auto* option=std::getenv("TYLOINFER_PROFILE_MTP");
@@ -88,7 +101,11 @@ template <class Model> struct CudaMtpOps {
   }
   std::array<double,6> target_costs() const {
     std::array<double,6> result{};
-    for(const auto& [name,value]:mfq::cuda::routed_expert_memory_metrics(*model.execution)) {
+    // Profiling a window must not scan every cached RAM/GPU weight merely
+    // to read one counter. The other GGUF timing fields are not reported.
+    if(model.execution->gguf_expert_cache)
+      result[1]=gguf_expert_fetch_ms(model.execution->gguf_expert_cache);
+    else for(const auto& [name,value]:mfq::cuda::routed_expert_memory_metrics(*model.execution)) {
       if(name=="expert_route_wait_ms")result[0]=value;
       else if(name=="expert_host_fetch_ms")result[1]=value;
       else if(name=="expert_host_copy_ms")result[2]=value;
@@ -103,17 +120,52 @@ template <class Model> struct CudaMtpOps {
   }
   CudaMtpOps(CudaMtpOps&&)=default;
   ~CudaMtpOps() {
+    if(profile_resolve() && resolve_rounds)std::cerr<<"runtime_target_resolve rounds="<<resolve_rounds
+        <<" rollback_rounds="<<rollback_rounds<<" rollback_model_ms="<<resolve_profile[0]
+        <<" rollback_submit_ms="<<resolve_profile[1]<<" routes_ms="<<resolve_profile[2]<<'\n';
     if(target_route_cache)discard_moe_speculative_routes(target_route_cache);
+    discard_gguf_speculative_routes(target_gguf_route_cache);
   }
   void begin_target_routes(int rows) {
     begin_moe_speculative_routes(model.execution->moe_expert_cache,rows);
     target_route_cache=model.execution->moe_expert_cache;
+    begin_gguf_speculative_routes(model.execution->gguf_expert_cache,rows);
+    target_gguf_route_cache=model.execution->gguf_expert_cache;
   }
   void resolve_target_routes(int rows,bool cancelled) {
-    if(!target_route_cache)return;
-    if(cancelled)discard_moe_speculative_routes(target_route_cache);
-    else commit_moe_speculative_routes(target_route_cache,rows);
+    const auto started=profile_resolve()?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+    if(target_route_cache) {
+      if(cancelled)discard_moe_speculative_routes(target_route_cache);
+      else commit_moe_speculative_routes(target_route_cache,rows);
+    }
+    if(cancelled)discard_gguf_speculative_routes(target_gguf_route_cache);
+    else commit_gguf_speculative_routes(target_gguf_route_cache,rows);
     target_route_cache.reset();
+    if(profile_resolve()) {
+      resolve_profile[2]+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+      ++resolve_rounds;
+    }
+  }
+  void rollback_target(int64_t keep) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::cuda::RecurrentCopyBatch copies;
+    const auto started=profile_resolve()?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+    model.rollback_speculative(keep);
+    const auto restored=profile_resolve()?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+    copies.flush();
+    if(profile_resolve()) {
+      resolve_profile[0]+=std::chrono::duration<double,std::milli>(restored-started).count();
+      resolve_profile[1]+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-restored).count();
+      ++rollback_rounds;
+    }
+    if(copies.batched_copies()) {
+      static bool reported=false;
+      if(!std::exchange(reported,true))std::cerr<<"runtime_recurrent_copy_batch copies="
+          <<copies.batched_copies()<<'\n';
+    }
+#else
+    model.rollback_speculative(keep);
+#endif
   }
   bool take_target_maintenance() {
     const auto captures=moe_expert_graph_captures(model.execution->moe_expert_cache);
@@ -122,6 +174,18 @@ template <class Model> struct CudaMtpOps {
     return std::exchange(target_maintenance,false) || initialized;
   }
   bool gradual_mtp_warmup() const {return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>;}
+  mfq::engine::mtp::DraftProbabilityOptions mtp_probability_options() const {
+    return mfq::engine::mtp::DraftProbabilityOptions::from_environment();
+  }
+  int fixed_mtp_draft_depth() const {
+    const auto* setting=std::getenv("TYLOINFER_MTP_FIXED_DRAFT_DEPTH");
+    if(!setting || !*setting)return 0;
+    char* end=nullptr;
+    const long depth=std::strtol(setting,&end,10);
+    if(*end || depth<1 || depth>mfq::engine::mtp::kMaximumReportedDraftDepth)
+      throw std::invalid_argument("TYLOINFER_MTP_FIXED_DRAFT_DEPTH requires a supported positive draft depth");
+    return int(depth);
+  }
   bool metal_mtp_policy() const {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       const auto* option=std::getenv("TYLOINFER_MTP_METAL_POLICY");
@@ -293,7 +357,7 @@ template <class Model> struct CudaMtpOps {
     projected_target_compact={};
     projected_target_greedy.clear();
     target_transfer_bytes = 0;
-    const auto transfer_before=moe_expert_streamed_bytes(model.execution->moe_expert_cache);
+    const auto transfer_before=mfq::cuda::routed_expert_streamed_bytes(*model.execution);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     const auto finish_profile=[&] {
       if(!profile_target())return;
@@ -308,7 +372,7 @@ template <class Model> struct CudaMtpOps {
             ? known_ids_host : Tensor{};
         Tensor logits;
         if(auto hidden=mfq::cuda::qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&projected_target_greedy,captured_compact_requested())) {
-          target_transfer_bytes=moe_expert_streamed_bytes(model.execution->moe_expert_cache)-transfer_before;
+          target_transfer_bytes=mfq::cuda::routed_expert_streamed_bytes(*model.execution)-transfer_before;
           target_maintenance=target_maintenance || initialized;
           projected_target_hidden = *hidden; projected_target_logits = std::move(logits);
           projected_target_compact=mfq::cuda::qwen4_decode_graph_compact_topk(model);
@@ -319,7 +383,7 @@ template <class Model> struct CudaMtpOps {
     }
     auto hidden=model.hidden_forward(ids, mfq_nullopt, mfq_nullopt, nullptr,
                                      mfq_nullopt, raw, confirmed);
-    target_transfer_bytes=moe_expert_streamed_bytes(model.execution->moe_expert_cache)-transfer_before;
+    target_transfer_bytes=mfq::cuda::routed_expert_streamed_bytes(*model.execution)-transfer_before;
     finish_profile();
     return hidden;
   }
@@ -327,10 +391,10 @@ template <class Model> struct CudaMtpOps {
     projected_target_hidden = {}; projected_target_logits = {};
     projected_target_compact={};
     projected_target_greedy.clear();
-    const auto transfer_before=moe_expert_streamed_bytes(model.execution->moe_expert_cache);
+    const auto transfer_before=mfq::cuda::routed_expert_streamed_bytes(*model.execution);
     const auto costs_before=profile_target()?target_costs():std::array<double,6>{};
     auto hidden=model.hidden_forward_speculative_suffix(ids, raw);
-    target_transfer_bytes+=moe_expert_streamed_bytes(model.execution->moe_expert_cache)-transfer_before;
+    target_transfer_bytes+=mfq::cuda::routed_expert_streamed_bytes(*model.execution)-transfer_before;
     if(profile_target()) {
       const auto costs_after=target_costs();
       for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]+=costs_after[i]-costs_before[i];
@@ -450,11 +514,30 @@ template <class Model> struct CudaMtpOps {
                ? result.reshape({1, tokens}).expand({3, tokens}).contiguous()
                : result;
   }
+  std::optional<std::vector<int32_t>> predictor_greedy_chain(Tensor hidden,Tensor ids,Tensor positions,int depth,int32_t anchor) {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
+      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
+          predictor && predictor->layers.size()==1 && model.reuse_decode_graphs && model.graph_registry) {
+        auto result=predictor->queued_greedy_chain(target,std::move(hidden),std::move(ids),std::move(positions),depth,
+            [this,anchor](const std::vector<int32_t>& tokens){prefetch_target_prefix(anchor,tokens);});
+        if(result) {
+          projected_predictor_hidden={};projected_predictor_logits={};projected_predictor_compact={};
+          projected_predictor_greedy=-1;projected_predictor_probability=-1.f;
+          const bool initialized=mtp.take_graph_initialization();
+          target_maintenance=target_maintenance || initialized;
+        }
+        return result;
+      }
+    }
+    return {};
+  }
   MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
           predictor && predictor->layers.size()==1 && model.reuse_decode_graphs &&
           model.graph_registry && ids.size(1)>1 && ids.size(1)<=128) {
+        if(auto tail=predictor->history_tail_step(target,hidden,ids,positions))
+          return remember_predictor_step(std::move(*tail));
         const auto prefix=ids.size(1)-1;
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
         static thread_local std::array<bool,129> checked{};
@@ -537,6 +620,9 @@ template <class Model> struct CudaMtpOps {
                ? mtp.step_positioned(target, std::move(hidden), std::move(ids),
                                      std::move(positions))
                : mtp.step(target, std::move(hidden), std::move(ids));
+    return remember_predictor_step(std::move(result));
+  }
+  MtpStep remember_predictor_step(MtpStep result) {
     const bool initialized=mtp.take_graph_initialization();
     target_maintenance=target_maintenance || initialized;
     projected_predictor_logits = result.sample_logits;
@@ -545,6 +631,7 @@ template <class Model> struct CudaMtpOps {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);predictor && result.sample_logits.defined())
         projected_predictor_compact=predictor->graph_compact_topk();
     projected_predictor_greedy = result.greedy_token;
+    projected_predictor_probability = result.greedy_probability;
     projected_predictor_hidden = result.sample_logits.defined()
         ? result.sample_hidden.narrow(1, result.sample_hidden.size(1)-1, 1).contiguous() : Tensor{};
     return result;
@@ -685,6 +772,24 @@ template <class Model> struct CudaMtpOps {
     return mfq::engine::mtp::distribution(
         std::span<const float>(host.template data_ptr<float>(), host.numel()),
         parameters.temperature, parameters.top_k, parameters.top_p);
+  }
+  std::pair<int32_t,float> greedy_probability(Tensor logits,Tensor token_counts) {
+    if(!penalties && projected_predictor_greedy>=0 && projected_predictor_probability>=0.f &&
+        projected_predictor_logits.defined() && logits.data_ptr()==projected_predictor_logits.data_ptr() &&
+        logits.numel()==projected_predictor_logits.numel())
+      return {projected_predictor_greedy,projected_predictor_probability};
+    logits=logits.contiguous().reshape({1,-1});
+    if(penalties) {
+      logits=logits.clone();
+      const auto& parameters=sampler().params();
+      sample_apply_penalties_cuda(logits,token_counts,parameters.presence_penalty,
+          parameters.frequency_penalty,parameters.repetition_penalty);
+    }
+    const auto host=sample_greedy_probability_cuda(logits).cpu().contiguous();
+    const auto packet=uint64_t(*host.template data_ptr<int64_t>());
+    const uint32_t bits=uint32_t(packet>>32);float probability;
+    std::memcpy(&probability,&bits,sizeof(bits));
+    return {int32_t(uint32_t(packet)),probability};
   }
   bool compact_radix_enabled(const Tensor& logits) const {
     const auto* option=std::getenv("TYLOINFER_MTP_RADIX_TOPK");

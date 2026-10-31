@@ -1,6 +1,7 @@
 #pragma once
 
 #include "prefill_activity.h"
+#include "mtp_limits.h"
 #include "mtp_batch_policy.h"
 #include "mtp_batch_policy_v1.h"
 
@@ -24,7 +25,7 @@ public:
             const DepthController* seed = nullptr,
             double marginal_ms = 7.0, double exit_margin = 1.15,
             bool gradual_warmup = false, double cold_window_ms = 0.0)
-        : maximum_depth_(std::clamp(maximum_depth, 1, 5)),
+        : maximum_depth_(std::clamp(maximum_depth, 1, kMaximumReportedDraftDepth)),
           current_depth_(maximum_depth_),
           gradual_warmup_(gradual_warmup),
           marginal_ms_(marginal_ms > 0.0 ? marginal_ms : 7.0),
@@ -400,9 +401,9 @@ private:
     std::vector<int> warmup_;
     std::vector<int> measurement_order_;
     std::array<double,4> baseline_warmup_ms_{};
-    std::array<double,6> width_baseline_ms_{};
-    std::array<std::array<double,4>,6> width_cost_ms_{};
-    std::array<std::size_t,6> width_cost_count_{},width_cost_next_{};
+    std::array<double,kMaximumReportedDraftDepth+1> width_baseline_ms_{};
+    std::array<std::array<double,4>,kMaximumReportedDraftDepth+1> width_cost_ms_{};
+    std::array<std::size_t,kMaximumReportedDraftDepth+1> width_cost_count_{},width_cost_next_{};
     bool cost_window_reported_=false;
     bool cost_window_=[] {
         const auto* option=std::getenv("TYLOINFER_MTP_COST_WINDOW");return !option || option[0]!='0';
@@ -506,8 +507,14 @@ class GenerationPolicy {
 public:
     using Clock = BatchDepthPolicy::Clock;
     GenerationPolicy(int maximum_depth, bool dspark, PolicyState* state = nullptr,bool gradual_warmup=false,
-            bool metal_batch_policy=false)
-        : state_(state ? *state : local_state_),gradual_warmup_(gradual_warmup) {
+            bool metal_batch_policy=false,int fixed_depth=0)
+        : state_(state ? *state : local_state_),gradual_warmup_(gradual_warmup),fixed_depth_(fixed_depth) {
+        if(fixed_depth_<0 || fixed_depth_>maximum_depth)
+            throw std::invalid_argument("fixed MTP draft depth exceeds the request limit");
+        if(fixed_depth_) {
+            std::fprintf(stderr,"runtime_mtp_fixed_depth selected=%d maximum=%d\n",fixed_depth_,maximum_depth);
+            return;
+        }
         if (dspark) dspark_.emplace(maximum_depth);
         else if(metal_batch_policy) {
             batch_.emplace(std::vector<std::string>{"cuda-mtp"},maximum_depth);
@@ -524,26 +531,45 @@ public:
         if (batch_) state_.retire_batch(*batch_);
     }
     int depth() const noexcept {
+        if(fixed_depth_)return fixed_depth_;
         return batch_ ? batch_->depth() : dspark_ ? dspark_->depth() : park_.parked ? 0 : controller_->depth();
     }
     int maximum_depth() const noexcept {
+        if(fixed_depth_)return fixed_depth_;
         return batch_ ? batch_->maximum() : dspark_ ? dspark_->maximum_depth() : controller_->maximum_depth();
     }
-    bool parked() const noexcept { return batch_ ? batch_->remaining()!=0 : !dspark_ && park_.parked; }
+    bool parked() const noexcept { return !fixed_depth_ && (batch_ ? batch_->remaining()!=0 : !dspark_ && park_.parked); }
     bool dspark() const noexcept { return dspark_.has_value(); }
     std::optional<double> measured_cycle_ms(int depth) const {
+        if(fixed_depth_)return depth>=0 && depth<=fixed_depth_ && fixed_samples_[depth]
+            ?std::optional<double>(fixed_total_ms_[depth]/fixed_samples_[depth]):std::nullopt;
         return batch_ ? batch_->cost(depth) : dspark_ ? dspark_->measured_cycle_ms(depth) : controller_->measured_cycle_ms(depth);
     }
     void observe_window(int used,int accepted,Clock::time_point started,Clock::time_point finished,
             bool time_sample=true) {
+        if(fixed_depth_) {
+            observe(used,accepted,std::chrono::duration<double,std::milli>(finished-started).count(),time_sample);
+            return;
+        }
         if(batch_)observe_batch(used,accepted,started,finished,time_sample);
         else observe(used,accepted,std::chrono::duration<double,std::milli>(finished-started).count(),time_sample);
     }
     void observe_plain_window(Clock::time_point started,Clock::time_point finished,bool time_sample=true) {
+        if(fixed_depth_) {
+            observe(0,0,std::chrono::duration<double,std::milli>(finished-started).count(),time_sample);
+            return;
+        }
         if(batch_)observe_batch(0,0,started,finished,time_sample);
         else observe_plain(std::chrono::duration<double,std::milli>(finished-started).count(),time_sample);
     }
     void observe(int used, int accepted, double elapsed_ms, bool time_sample = true) {
+        if(fixed_depth_) {
+            if(time_sample && used>=0 && used<=fixed_depth_ && std::isfinite(elapsed_ms) && elapsed_ms>0) {
+                fixed_total_ms_[used]+=elapsed_ms;
+                ++fixed_samples_[used];
+            }
+            return;
+        }
         if(batch_) {
             const auto finished=Clock::now();
             observe_window(used,accepted,finished-std::chrono::duration_cast<Clock::duration>(
@@ -563,6 +589,7 @@ public:
         }
     }
     void observe_plain(double elapsed_ms, bool time_sample = true) {
+        if(fixed_depth_) { observe(0,0,elapsed_ms,time_sample);return; }
         if(batch_) {
             const auto finished=Clock::now();
             observe_plain_window(finished-std::chrono::duration_cast<Clock::duration>(
@@ -608,7 +635,7 @@ private:
         ++trace_observations_;
         if(!force && trace_observations_>12 && depth==trace_depth_ && warm==trace_warm_ && !c.should_exit())return;
         trace_depth_=depth;trace_warm_=warm;
-        std::array<double,6> costs{};std::array<double,5> acceptance{};
+        std::array<double,kMaximumReportedDraftDepth+1> costs{};std::array<double,kMaximumReportedDraftDepth> acceptance{};
         for(int i=0;i<=c.maximum_depth();++i)costs[i]=c.measured_cycle_ms(i).value_or(0.0);
         for(int i=0;i<c.maximum_depth();++i)acceptance[i]=c.conditional_acceptance(i);
         std::fprintf(stderr,"runtime_mtp_policy_decision event=%s used=%d accepted=%d cycle_ms=%.4f valid=%d depth=%d warm=%d losing=%d exit=%d gain=%.4f ms0=%.4f ms1=%.4f ms2=%.4f ms3=%.4f ms4=%.4f ms5=%.4f a1=%.5f a2=%.5f a3=%.5f a4=%.5f a5=%.5f\n",
@@ -620,6 +647,9 @@ private:
     PolicyState local_state_;
     PolicyState& state_;
     bool gradual_warmup_=false;
+    int fixed_depth_=0;
+    std::array<double,kMaximumReportedDraftDepth+1> fixed_total_ms_{};
+    std::array<std::uint64_t,kMaximumReportedDraftDepth+1> fixed_samples_{};
     std::optional<DepthController> controller_;
     std::optional<DsparkController> dspark_;
     std::optional<v1::BatchDepthPolicy> batch_;

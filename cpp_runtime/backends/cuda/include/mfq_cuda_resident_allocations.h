@@ -16,4 +16,15 @@ public:
 private:
     bool previous_,active_=true;
 };
+// Evictable routed images must not share allocator pages with model weights.
+class RoutedWeightAllocationScope {
+public:
+    explicit RoutedWeightAllocationScope(bool enabled=true) noexcept;
+    ~RoutedWeightAllocationScope() noexcept;
+    RoutedWeightAllocationScope(const RoutedWeightAllocationScope&)=delete;
+    RoutedWeightAllocationScope& operator=(const RoutedWeightAllocationScope&)=delete;
+private:
+    ResidentAllocationScope resident_;
+    bool previous_;
+};
 }

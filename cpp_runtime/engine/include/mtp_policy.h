@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mtp_limits.h"
 #include "mtp_depth_controller.h"
 
 // Host-side MTP depth selection and chain verification shared by engines.
@@ -19,8 +20,6 @@
 
 namespace mfq::engine::mtp {
 
-inline constexpr int kMaximumDraftDepth = 5;
-inline constexpr int kMaximumReportedDraftDepth = 7;
 
 struct ChainVerification {
     std::size_t accepted_drafts = 0;

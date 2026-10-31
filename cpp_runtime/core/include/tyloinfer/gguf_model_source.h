@@ -14,11 +14,13 @@ public:
     const std::vector<std::filesystem::path>& source_paths() const noexcept override;
     std::string_view architecture() const noexcept override;
     const std::unordered_map<std::string, std::string>& metadata() const noexcept override;
+    const HadamardTransforms* hadamard_transforms() const noexcept override;
     const std::vector<TensorMetadata>& tensors() const noexcept override;
     const TensorMetadata* find_tensor(std::string_view name) const noexcept override;
     void read_range_into(std::string_view name, std::uint64_t offset,
                          std::byte* destination, std::size_t size) const override;
     TensorReader tensor_reader(std::string_view name) const override;
+    TensorReader mapped_tensor_reader(std::string_view name) const override;
     TensorBatchReader tensor_batch_reader(std::string_view name) const override;
     std::optional<TensorFileRange> tensor_file_range(std::string_view name) const override;
     bool supports_parallel_tensor_reads() const noexcept override { return true; }

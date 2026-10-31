@@ -11,6 +11,7 @@ import pytest
 from tyloinfer.cli import _build_parser
 from tyloinfer.commands.serve import (
     _prepare_web_root,
+    _mtp_runtime_environment,
     _resolve_runtime_executable,
     _run,
     _select_backend,
@@ -123,6 +124,41 @@ def test_serve_accepts_an_explicit_expert_cache_budget() -> None:
     args = _build_parser().parse_args(["serve", "--moe-gpu-cache-gb", "3.5"])
 
     assert args.moe_gpu_cache_gb == 3.5
+
+
+def test_serve_accepts_an_explicit_dflash2_checkpoint(tmp_path: Path) -> None:
+    assert _build_parser().parse_args(["serve"]).dflash2_draft is None
+    draft = tmp_path / "draft"
+    args = _build_parser().parse_args(["serve", "--dflash2-draft", str(draft)])
+    assert args.dflash2_draft == draft
+
+
+def test_serve_mtp_options_preserve_defaults_and_forward_explicit_values(tmp_path: Path) -> None:
+    parser = _build_parser()
+    assert _mtp_runtime_environment(parser.parse_args(["serve"]), "cuda") == {}
+    args = parser.parse_args(["serve", "--spec-min-p", "0.5", "--draft-conf", "0.7", "--no-mtp-cost-aware"])
+    assert _mtp_runtime_environment(args, "cuda") == {
+        "TYLOINFER_MTP_SPEC_MIN_P": "0.5",
+        "TYLOINFER_DFLASH2_DRAFT_CONF": "0.7",
+        "TYLOINFER_MTP_SPEC_COST": "0",
+    }
+    with pytest.raises(ValueError, match="CUDA"):
+        _mtp_runtime_environment(args, "metal")
+    native = tmp_path / "native.gguf"
+    native.write_bytes(b"GGUF")
+    args = parser.parse_args(["serve", "--mtp-native-draft", str(native), "--mtp-cost-aware"])
+    assert _mtp_runtime_environment(args, "cuda") == {
+        "TYLOINFER_MTP_NATIVE_GGUF": str(native.resolve()), "TYLOINFER_MTP_SPEC_COST": "1",
+    }
+    with pytest.raises(SystemExit):
+        parser.parse_args(["serve", "--mtp-native-draft", str(native), "--dflash2-draft", str(tmp_path)])
+
+
+@pytest.mark.parametrize("option", ["--spec-min-p", "--draft-conf"])
+@pytest.mark.parametrize("value", ["-0.01", "1.01", "nan", "inf"])
+def test_serve_rejects_invalid_mtp_probabilities(option: str, value: str) -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["serve", option, value])
 
 
 @pytest.mark.parametrize(

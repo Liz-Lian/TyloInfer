@@ -15,6 +15,16 @@ namespace mfq::cuda::qwen4_exp { struct Gr; struct Qwen4Block; }
 struct MtpModule;
 
 namespace mfq::cuda {
+struct Qwen4HiddenCapture {
+    std::vector<int64_t> layers;
+    std::vector<mfq_tensor_backend::Tensor> values;
+    bool active = false;
+    void begin(bool capture);
+    bool contains(int64_t layer) const;
+    void capture(int64_t layer, const mfq_tensor_backend::Tensor& hidden, int64_t streams);
+    mfq_tensor_backend::Tensor result(const mfq_tensor_backend::Tensor& fallback) const;
+};
+void qwen4_set_hidden_capture_layers(Qwen4CausalLm&, const std::vector<int64_t>&);
 struct Qwen4DecodeGraph;
 class Qwen4BatchDecodeGraph;
 // A request owns recurrent, positional and attention state; weights stay shared.
@@ -76,6 +86,7 @@ mfq_tensor_backend::Tensor qwen4_decode_graph_compact_topk(const Qwen4CausalLm&)
 void qwen4_release_decode_graphs(Qwen4CausalLm&,MtpModule*);
 void qwen4_warmup_decode_graphs(Qwen4CausalLm&,MtpModule*,int maximum_draft_depth=3);
 std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm&,const MtpModule*,int maximum_draft_depth=5);
+std::optional<std::size_t> qwen4_decode_transient_reserve(const Qwen4CausalLm&,const MtpModule*,int maximum_draft_depth);
 std::size_t qwen4_prefix_snapshot_bytes(const Qwen4CausalLm&,const MtpModule*);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const Qwen4CausalLm&,const MtpModule*);
 bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm&, int64_t tokens);
@@ -103,6 +114,7 @@ struct Qwen4Model : CausalResources {
     int64_t batch = 0;
     std::optional<bool> router_lookahead;
     std::unique_ptr<Qwen4DecodeGraph> graph_registry;
+    std::shared_ptr<Qwen4HiddenCapture> hidden_capture;
     bool reuse_decode_graphs=false;
     uint64_t decode_graph_captures=0;
     // Bounded request lookahead, independent of the configured context ceiling.
@@ -131,6 +143,8 @@ struct Qwen4Model : CausalResources {
 
     void adapter_reset(int64_t batch);
     void adapter_begin_forward(bool capture_raw_hidden);
+    mfq_tensor_backend::Tensor adapter_raw_hidden(const mfq_tensor_backend::Tensor& hidden,
+        const mfq_tensor_backend::Tensor& finalized) const;
 
     mfq_tensor_backend::Tensor
     adapter_block_positions(const mfq_tensor_backend::Tensor &full_positions,

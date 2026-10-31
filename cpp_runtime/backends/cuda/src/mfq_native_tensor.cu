@@ -2,6 +2,7 @@
 #include "mfq_weight_memory.h"
 
 #include "mfq_cuda_context.h"
+#include "../runtime/recurrent_copy_kernel.h"
 #include "tyloinfer/runtime.h"
 
 #include <cuda_bf16.h>
@@ -20,8 +21,56 @@
 
 namespace mfq::cuda {
 namespace {
+struct StateCopyDescriptor {
+    void* destination;
+    const void* source;
+    std::size_t bytes,first_tile;
+};
+// Stay within the 4 KiB kernel argument limit of older CUDA devices too.
+struct StateCopyPacket {
+    static constexpr int capacity=(4096-16)/sizeof(StateCopyDescriptor);
+    StateCopyDescriptor copies[capacity];
+    std::size_t tiles;
+    int count;
+};
+static_assert(sizeof(StateCopyPacket)<=4096);
+constexpr std::size_t state_copy_tile_bytes=64u<<10;
+__global__ void copy_recurrent_state_kernel(const StateCopyPacket packet) {
+    for(std::size_t tile=blockIdx.x;tile<packet.tiles;tile+=gridDim.x) {
+        int low=0,high=packet.count;
+        while(low+1<high) {
+            const int middle=(low+high)/2;
+            if(packet.copies[middle].first_tile<=tile)low=middle;else high=middle;
+        }
+        const auto& copy=packet.copies[low];
+        const auto begin=(tile-copy.first_tile)*state_copy_tile_bytes;
+        const auto end=begin+min(state_copy_tile_bytes,copy.bytes-begin);
+        auto* destination=static_cast<unsigned char*>(copy.destination);
+        const auto* source=static_cast<const unsigned char*>(copy.source);
+        if((reinterpret_cast<std::uintptr_t>(destination)|reinterpret_cast<std::uintptr_t>(source))%alignof(uint4)==0) {
+            for(auto i=begin/sizeof(uint4)+threadIdx.x;i<end/sizeof(uint4);i+=blockDim.x)
+                reinterpret_cast<uint4*>(destination)[i]=reinterpret_cast<const uint4*>(source)[i];
+            for(auto i=end/sizeof(uint4)*sizeof(uint4)+threadIdx.x;i<end;i+=blockDim.x)destination[i]=source[i];
+        } else for(auto i=begin+threadIdx.x;i<end;i+=blockDim.x)destination[i]=source[i];
+    }
+}
 thread_local WeightMemoryLedger* loading_weight_memory=nullptr;
 thread_local bool loading_weight_allocation=false;
+}
+void copy_recurrent_states(const DmaCopy* copies,std::size_t count,cudaStream_t stream) {
+    for(std::size_t first=0;first<count;first+=StateCopyPacket::capacity) {
+        StateCopyPacket packet{};
+        packet.count=int(std::min<std::size_t>(StateCopyPacket::capacity,count-first));
+        for(int i=0;i<packet.count;++i) {
+            const auto& copy=copies[first+i];
+            if(!copy.source || !copy.destination || !copy.bytes)throw std::invalid_argument("empty recurrent state copy");
+            packet.copies[i]={copy.destination,copy.source,copy.bytes,packet.tiles};
+            packet.tiles+=copy.bytes/state_copy_tile_bytes+(copy.bytes%state_copy_tile_bytes!=0);
+        }
+        const int blocks=int(std::min<std::size_t>(packet.tiles,65535));
+        copy_recurrent_state_kernel<<<blocks,256,0,stream>>>(packet);
+        TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
+    }
 }
 void WeightMemoryLedger::observe(const std::shared_ptr<TensorStorage>& storage) {
     if(storage && storage->device.is_cuda())weights_.push_back(storage);
@@ -59,7 +108,11 @@ std::shared_ptr<TensorStorage> allocate_cuda_storage(
     const Device& device) {
     auto context = default_context(device.index);
     const auto allocation_stream = current_stream(device.index);
-    struct StreamUses { std::mutex mutex; std::vector<cudaStream_t> streams; };
+    struct StreamUses {
+        struct Use {cudaStream_t stream;std::shared_ptr<void> lifetime;};
+        std::mutex mutex;
+        std::vector<Use> streams;
+    };
     auto uses = std::make_shared<StreamUses>();
     void* pointer = context->allocate(bytes, allocation_stream.stream());
     auto owner = std::shared_ptr<void>(pointer, [context, allocation_stream, bytes, uses](void* value) {
@@ -67,9 +120,9 @@ std::shared_ptr<TensorStorage> allocate_cuda_storage(
         // queued at registration. Fence their last uses when storage dies.
         try {
             DeviceGuard guard(allocation_stream.device_index());
-            for (auto usage_stream : uses->streams) {
+            for (const auto& usage : uses->streams) {
                 Event consumed;
-                consumed.record(usage_stream);
+                consumed.record(usage.stream);
                 TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(allocation_stream.stream(), consumed.get(), 0));
             }
         } catch (...) { (void)cudaDeviceSynchronize(); }
@@ -81,12 +134,14 @@ std::shared_ptr<TensorStorage> allocate_cuda_storage(
     storage->bytes = bytes;
     storage->device = device;
     const auto allocation_stream_value = allocation_stream.stream();
-    storage->record_stream = [allocation_stream_value, uses](std::uintptr_t raw_stream) {
+    storage->record_stream = [allocation_stream_value, uses](std::uintptr_t raw_stream,std::shared_ptr<void> lifetime) {
         const auto usage_stream = reinterpret_cast<cudaStream_t>(raw_stream);
         if (usage_stream == nullptr || usage_stream == allocation_stream_value) return;
         std::lock_guard lock(uses->mutex);
-        if (std::find(uses->streams.begin(), uses->streams.end(), usage_stream) == uses->streams.end())
-            uses->streams.push_back(usage_stream);
+        const auto found=std::find_if(uses->streams.begin(),uses->streams.end(),
+            [&](const auto& use){return use.stream==usage_stream;});
+        if(found==uses->streams.end())uses->streams.push_back({usage_stream,std::move(lifetime)});
+        else if(lifetime && !found->lifetime)found->lifetime=std::move(lifetime);
     };
     observe_weight_allocation(storage);
     return storage;

@@ -97,6 +97,11 @@ public:
     int device_index() const noexcept { return device_; }
     int device() const noexcept { return device_; }
     cudaStream_t stream() const noexcept { return stream_; }
+    // Tensor consumers can outlive the executor which created a side stream.
+    // Preserve the control block even for stream_from_pool's null alias owner.
+    std::shared_ptr<void> lifetime() const noexcept {
+        return owner_.use_count()?std::shared_ptr<void>(owner_,reinterpret_cast<void*>(stream_)):std::shared_ptr<void>{};
+    }
     operator cudaStream_t() const noexcept { return stream_; }
     explicit operator bool() const noexcept { return stream_ != nullptr; }
 
@@ -182,6 +187,12 @@ struct DeviceMemoryStats {
     std::size_t allocated = 0;
     std::size_t peak = 0;
 };
+struct PhysicalDeviceMemoryStats {
+    std::size_t total=0,free=0,used=0;
+};
+// Optional driver-wide accounting. CUDA's WDDM free figure can omit memory
+// held by other processes; an unavailable management API preserves CUDA/DXGI.
+std::optional<PhysicalDeviceMemoryStats> physical_device_memory_stats(int device);
 
 class Context final : public std::enable_shared_from_this<Context> {
 public:
@@ -216,6 +227,7 @@ public:
         std::size_t bytes,
         cudaStream_t stream = nullptr) noexcept;
     void begin_graph_pool(cudaStream_t stream);
+    bool has_graph_pool(cudaStream_t stream) const;
     void begin_graph_warmup(cudaStream_t stream);
     void end_graph_warmup(cudaStream_t stream) noexcept;
     void begin_graph_capture(cudaStream_t stream);
