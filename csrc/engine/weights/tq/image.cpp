@@ -1,4 +1,4 @@
-#include "backends/cuda/engine/weights/tq/image.h"
+#include "engine/weights/tq/image.h"
 #include "backends/cuda/engine/executor/execution.h"
 
 #include <climits>

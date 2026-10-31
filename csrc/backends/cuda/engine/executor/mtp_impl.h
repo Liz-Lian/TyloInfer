@@ -1,7 +1,7 @@
 #pragma once
 
 #include "env.h"
-#include "backends/cuda/engine/weights/routed_cache.h"
+#include "engine/weights/routed_cache.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/executor/speculative_sequence.h"
@@ -14,7 +14,7 @@
 #include "models/deepseek_v41/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/qwen4_exp/mtp.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/native/profile.h"
 
 #include <cuda_runtime_api.h>

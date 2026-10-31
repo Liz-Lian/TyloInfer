@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "ops/vision/vision.h"
 #include "ops/vision/block.h"
 

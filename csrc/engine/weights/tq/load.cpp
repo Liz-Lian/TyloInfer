@@ -1,9 +1,9 @@
-#include "backends/cuda/engine/weights/tq/load.h"
+#include "engine/weights/tq/load.h"
 
 #include "source/tq_source.h"
-#include "backends/cuda/engine/weights/routed_cache.h"
-#include "backends/cuda/engine/weights/tq/cache.h"
-#include "backends/cuda/engine/weights/tq/image.h"
+#include "engine/weights/routed_cache.h"
+#include "engine/weights/tq/cache.h"
+#include "engine/weights/tq/image.h"
 
 #include <climits>
 #include <cstring>

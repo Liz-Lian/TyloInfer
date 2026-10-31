@@ -1,7 +1,7 @@
 #pragma once
 #include "formats/format_features.h"
-#include "backends/cuda/engine/weights/routed_cache.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/routed_cache.h"
+#include "engine/weights/loader.h"
 #include "engine/executor/run.h"
 #include "engine/executor/ffn.h"
 #include "engine/executor/moe_ffn_pipeline.h"

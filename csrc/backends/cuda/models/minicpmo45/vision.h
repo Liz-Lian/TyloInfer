@@ -2,7 +2,7 @@
 
 #include "ops/vision/block.h"
 #include "backends/cuda/engine/models/vision.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/minicpmo45/causal_lm.h"
 

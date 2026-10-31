@@ -1,5 +1,5 @@
 #include "env.h"
-#include "backends/cuda/engine/weights/moe/host_expert_cache.h"
+#include "engine/weights/moe/host_expert_cache.h"
 
 #include <atomic>
 #include <condition_variable>

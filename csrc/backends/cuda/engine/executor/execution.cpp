@@ -2,7 +2,7 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/state/kv_offload.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"

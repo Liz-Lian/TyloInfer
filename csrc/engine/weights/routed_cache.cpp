@@ -1,7 +1,7 @@
 #include "routed_cache.h"
 
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "backends/cuda/engine/weights/tq/cache.h"
+#include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/tq/cache.h"
 
 namespace mfq::cuda {
 

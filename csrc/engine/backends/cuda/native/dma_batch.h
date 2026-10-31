@@ -1,6 +1,6 @@
 #pragma once
 #include "env.h"
-#include "backends/cuda/engine/weights/moe/dma_copy_batch.h"
+#include "engine/backends/cuda/native/copy_batch.h"
 #include <cuda.h>
 #include <array>
 #include <atomic>

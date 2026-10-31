@@ -2,7 +2,7 @@
 #include "backends/cuda/engine/state/kv_memory.h"
 #include "backends/cuda/engine/state/kv_vmm.h"
 #include "backends/cuda/engine/state/kv_budget.h"
-#include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
+#include "engine/weights/moe/kv_expert_loan.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "context.h"
 #include "engine/backends/cuda/native/device.h"

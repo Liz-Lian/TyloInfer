@@ -2,7 +2,7 @@
 #include "engine/weights/moe/experts.h"
 #include "engine/executor/ffn.h"
 #include "env.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "model_checks.h"
 
 #include "models/deepseek_v4/ops.h"
@@ -11,7 +11,7 @@
 #include "models/glm_dsa/ops.h"
 #include "quant_linear.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 
 #include <cuda_runtime_api.h>

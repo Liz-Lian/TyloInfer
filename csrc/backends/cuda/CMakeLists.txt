@@ -31,7 +31,7 @@ find_package(Threads REQUIRED)
 
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
 add_library(mfq-cuda-storage STATIC
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/expert_store.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/expert_store.cpp
 )
 add_library(mfq::cuda-storage ALIAS mfq-cuda-storage)
 target_include_directories(mfq-cuda-storage PUBLIC ${PROJECT_SOURCE_DIR})
@@ -534,13 +534,13 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/state/kv_cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/recurrent.cpp
     ${PROJECT_SOURCE_DIR}/engine/state/paged_kv.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/load.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/image.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/routed.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/tq/rows.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/load.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/routed_cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/image.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/routed.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/rows.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/loader.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/routed_cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/workspace.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
@@ -549,19 +549,19 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/expert_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/load.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/prepare.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/quant_range_source.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/host_expert_cache.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/residency.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/weights/nint_row_pipeline.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/expert_cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/prepare.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/quant_range_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/host_expert_cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/residency.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/nint_row_pipeline.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/nint.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/vq.cpp
     )
 else()
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
-        ${TYLOINFER_CUDA_ROOT}/engine/weights/moe/disabled.cpp)
+        ${PROJECT_SOURCE_DIR}/engine/weights/moe/disabled.cpp)
 endif()
 add_library(mfq-cuda-loading OBJECT ${TYLOINFER_CUDA_LOADING_SOURCES})
 mfq_configure_cuda_runtime_target(mfq-cuda-loading)

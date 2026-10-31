@@ -1,7 +1,7 @@
 #pragma once
 #include "backends/cuda/engine/requests/prompt.h"
 
-#include "backends/cuda/engine/weights/vision.h"
+#include "engine/models/common/vision/weights.h"
 #include "ops/vision/vision.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"

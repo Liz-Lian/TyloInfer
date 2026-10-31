@@ -10,7 +10,7 @@
 
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/executor/run.h"
-#include "backends/cuda/engine/weights/placement.h"
+#include "engine/weights/placement.h"
 
 #include <iostream>
 #include <stdexcept>

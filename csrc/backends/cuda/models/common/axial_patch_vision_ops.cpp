@@ -1,6 +1,6 @@
 #include "models/common/axial_patch_vision_ops.h"
 #include "backends/cuda/engine/models/vision.h"
-#include "backends/cuda/engine/weights/vision.h"
+#include "engine/models/common/vision/weights.h"
 #include "engine/executor/sequence.h"
 
 #include <limits>

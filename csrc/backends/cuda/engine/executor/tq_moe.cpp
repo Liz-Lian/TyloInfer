@@ -3,7 +3,7 @@
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/weights/tq/cache.h"
+#include "engine/weights/tq/cache.h"
 #include "ops/tq/include/detail.h"
 #include "ops/tq/include/moe.h"
 #include "engine/backends/cuda/native/memory.h"

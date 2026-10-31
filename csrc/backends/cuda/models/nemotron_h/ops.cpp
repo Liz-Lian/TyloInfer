@@ -2,7 +2,7 @@
 #include "backends/cuda/engine/executor/tq_moe.h"
 #include "backends/cuda/engine/models/load.h"
 #include "engine/executor/ffn.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "ops.h"
 #include "model.h"
 #include "models/common/session_codec.h"

@@ -2,7 +2,7 @@
 
 #include "backends/cuda/engine/models/vision.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 
 #include <algorithm>
 #include <stdexcept>

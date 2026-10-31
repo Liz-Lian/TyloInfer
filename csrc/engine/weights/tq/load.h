@@ -1,7 +1,7 @@
 #pragma once
 
 #include "source/model_source.h"
-#include "backends/cuda/engine/weights/tq/routed.h"
+#include "engine/weights/tq/routed.h"
 
 #include <cstddef>
 #include <cstdint>

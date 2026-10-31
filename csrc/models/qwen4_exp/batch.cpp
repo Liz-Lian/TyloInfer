@@ -5,7 +5,7 @@
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "native/error.h"
 
 #include <algorithm>

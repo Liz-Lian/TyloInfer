@@ -13,7 +13,7 @@
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/models/load.h"
 #include "quant_linear.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"

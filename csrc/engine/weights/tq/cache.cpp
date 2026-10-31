@@ -1,6 +1,6 @@
-#include "backends/cuda/engine/weights/tq/cache.h"
+#include "engine/weights/tq/cache.h"
 
-#include "backends/cuda/engine/weights/tq/image.h"
+#include "engine/weights/tq/image.h"
 #include "engine/backends/cuda/native/device.h"
 #include "engine/backends/cuda/native/memory.h"
 #include "engine/backends/cuda/native/stream.h"

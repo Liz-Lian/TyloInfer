@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/vision/vision.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 
 #include <cstddef>
 

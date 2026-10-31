@@ -3,7 +3,7 @@
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
 #include "backend.h"

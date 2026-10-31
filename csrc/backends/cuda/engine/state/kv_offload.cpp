@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/state/kv_offload.h"
-#include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
+#include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 
 #include <algorithm>

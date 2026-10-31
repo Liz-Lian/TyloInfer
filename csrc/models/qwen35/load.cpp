@@ -5,7 +5,7 @@
 #include "engine/models/qwen35/weights.h"
 
 #include "backends/cuda/engine/models/load.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "engine/weights/group.h"
 #include "source/read.h"
 

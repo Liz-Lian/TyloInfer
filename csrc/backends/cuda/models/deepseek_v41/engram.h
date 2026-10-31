@@ -1,8 +1,8 @@
 #pragma once
 
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 
-#include "backends/cuda/engine/weights/moe/expert_store.h"
+#include "engine/weights/moe/expert_store.h"
 #include "engine/models/deepseek_v41/config.h"
 #include "engine/models/deepseek_v41/engram.h"
 #include "engine/models/deepseek_v41/causal_lm.h"

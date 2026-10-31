@@ -2,7 +2,7 @@
 #include "env.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "cli.h"
 #include "diagnostics/token_generation.h"
 #include "models/load.h"
@@ -14,7 +14,7 @@
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/tq.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
 

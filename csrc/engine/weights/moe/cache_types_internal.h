@@ -1,12 +1,12 @@
 #pragma once
 #include "env.h"
 
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 
 #include "engine/backends/cuda/native/profile.h"
 #include "moe.h"
-#include "backends/cuda/engine/weights/moe/expert_store.h"
-#include "backends/cuda/engine/weights/moe/quant_range_source.h"
+#include "engine/weights/moe/expert_store.h"
+#include "engine/weights/moe/quant_range_source.h"
 #include "engine/weights/cache_policy.h"
 #include "engine/backends/cuda/kernels/moe_cache_transfer.h"
 

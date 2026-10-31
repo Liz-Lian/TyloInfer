@@ -6,7 +6,7 @@
 #include "ops/vision/block.h"
 #include "backends/cuda/engine/models/vision.h"
 #include "engine/models/nemotron_h/vision.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 
 #include "engine/requests/media.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"

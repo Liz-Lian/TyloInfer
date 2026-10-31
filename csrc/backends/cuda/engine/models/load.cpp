@@ -1,8 +1,8 @@
 #include "backends/cuda/engine/models/load.h"
 #include "engine/backends/cuda/native/env.h"
-#include "backends/cuda/engine/weights/moe/load.h"
-#include "backends/cuda/engine/weights/load.h"
-#include "backends/cuda/engine/weights/tq/load.h"
+#include "engine/weights/moe/load.h"
+#include "engine/weights/loader.h"
+#include "engine/weights/tq/load.h"
 #include "moe.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 

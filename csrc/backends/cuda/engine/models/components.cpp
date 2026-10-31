@@ -2,14 +2,14 @@
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/models/load.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "backends/cuda/engine/models/components.h"
 #include "models/qwen4_exp/mtp.h"
 #include "models/glm5_next/mtp.h"
 #include "models/nemotron_h/mtp.h"
 #include "models/deepseek_v41/dspark.h"
 
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 
 #include <algorithm>
 #include <iostream>

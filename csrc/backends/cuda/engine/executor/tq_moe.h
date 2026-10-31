@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/engine/weights/tq/routed.h"
+#include "engine/weights/tq/routed.h"
 #include "ops/tq/include/tq.h"
 #include "backend.h"
 #include "engine/weights/tensor_parallel.h"

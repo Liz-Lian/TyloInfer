@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/attention/full.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "engine/models/ffn.h"
 #include "engine/models/common/weight_loading.h"
 #include "engine/models/common/yarn.h"

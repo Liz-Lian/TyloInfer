@@ -3,7 +3,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "native/error.h"
 
 #include <algorithm>

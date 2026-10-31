@@ -4,7 +4,7 @@
 #include "engine/executor/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 #include "engine/models/common/transformer_layer.h"

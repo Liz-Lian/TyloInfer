@@ -1,8 +1,8 @@
 #include "engine/executor/load.h"
 
 #include "backends/cuda/engine/state/kv_memory.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
-#include "backends/cuda/engine/weights/routed_cache.h"
+#include "engine/weights/moe/expert_cache.h"
+#include "engine/weights/routed_cache.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 

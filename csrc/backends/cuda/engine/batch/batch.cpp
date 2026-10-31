@@ -1,7 +1,7 @@
 #include "backends/cuda/engine/batch/batch.h"
 
 #include "engine/backends/cuda/native/context.h"
-#include "backends/cuda/engine/weights/moe/expert_cache.h"
+#include "engine/weights/moe/expert_cache.h"
 #include "engine/batch/prefill_budget.h"
 #include "native/error.h"
 

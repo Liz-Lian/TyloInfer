@@ -3,10 +3,10 @@
 #include "quant_linear.h"
 #include "engine/weights/moe/experts.h"
 #include "source/read.h"
-#include "backends/cuda/engine/weights/placement.h"
-#include "backends/cuda/engine/weights/moe/load.h"
-#include "backends/cuda/engine/weights/routed_cache.h"
-#include "backends/cuda/engine/weights/tq/routed.h"
+#include "engine/weights/placement.h"
+#include "engine/weights/moe/load.h"
+#include "engine/weights/routed_cache.h"
+#include "engine/weights/tq/routed.h"
 
 #include <functional>
 

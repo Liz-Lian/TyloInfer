@@ -3,7 +3,7 @@
 #include "context.h"
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/device.h"
-#include "backends/cuda/engine/weights/moe/dma_copy_batch.h"
+#include "engine/backends/cuda/native/copy_batch.h"
 #include <array>
 #include <list>
 #include <map>

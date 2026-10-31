@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/models/load.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "ops.h"
 #include "models/common/session_codec.h"
 

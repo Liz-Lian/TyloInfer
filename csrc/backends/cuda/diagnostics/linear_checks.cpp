@@ -1,6 +1,6 @@
 #include "backends/cuda/engine/models/load.h"
 #include "env.h"
-#include "backends/cuda/engine/weights/load.h"
+#include "engine/weights/loader.h"
 #include "model_checks.h"
 
 #include "quant_linear.h"
