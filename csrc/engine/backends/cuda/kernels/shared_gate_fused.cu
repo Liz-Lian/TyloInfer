@@ -1,6 +1,7 @@
 #include "env.h"
 #include "mfq_cuda_shared_gate.h"
 #include "context.h"
+#include "engine/backends/cuda/native/device.h"
 #include "shared_gate_fused.cuh"
 #include "ops/mfq/include/nint.h"
 #include <cstdlib>

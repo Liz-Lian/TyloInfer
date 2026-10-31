@@ -5,6 +5,7 @@
 #include "backends/cuda/engine/weights/moe/kv_expert_loan.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "context.h"
+#include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
 #include <algorithm>
 #include <cstdlib>

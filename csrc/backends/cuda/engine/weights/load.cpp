@@ -1,4 +1,5 @@
 #include "backends/cuda/engine/weights/mapped_embedding.h"
+#include "engine/backends/cuda/native/device.h"
 #include "engine/weights/moe/experts.h"
 #include <iostream>
 #include "backends/cuda/engine/weights/moe/load.h"

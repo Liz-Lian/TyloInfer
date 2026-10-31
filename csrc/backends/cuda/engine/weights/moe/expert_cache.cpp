@@ -6,6 +6,7 @@
 #include "backends/cuda/engine/weights/moe/cached_source_internal.h"
 #include "backends/cuda/engine/weights/moe/host_cache_policy.h"
 #include "backends/cuda/engine/weights/moe/pinned_expert_arena.h"
+#include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "native/error.h"

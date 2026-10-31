@@ -9,7 +9,6 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -19,30 +18,7 @@
 
 namespace mfq::cuda {
 
-class Error final : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
-
-void check(cudaError_t status, const char* expression, const char* file, int line);
-void check(cublasStatus_t status, const char* expression, const char* file, int line);
 void record_gpu_timestamp(uint64_t* timestamps, std::size_t index, cudaStream_t stream);
-
-#define TYLOINFER_NATIVE_CUDA_CHECK(expression) \
-    ::mfq::cuda::check((expression), #expression, __FILE__, __LINE__)
-
-class DeviceGuard final {
-public:
-    explicit DeviceGuard(int device);
-    ~DeviceGuard() noexcept;
-
-    DeviceGuard(const DeviceGuard&) = delete;
-    DeviceGuard& operator=(const DeviceGuard&) = delete;
-
-private:
-    int previous_ = 0;
-    bool restore_ = false;
-};
 
 class Event final {
 public:

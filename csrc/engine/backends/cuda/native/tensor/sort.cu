@@ -1,5 +1,7 @@
 #include "env.h"
 #include "ops_common.cuh"
+#include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/native/device.h"
 
 #include <cub/cub.cuh>
 

@@ -13,6 +13,7 @@
 #include <limits>
 #include <tuple>
 #include "context.h"
+#include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
 
 namespace mfq::cuda {

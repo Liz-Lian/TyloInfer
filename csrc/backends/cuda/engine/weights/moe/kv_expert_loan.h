@@ -1,6 +1,7 @@
 #pragma once
 #include "backend.h"
 #include "context.h"
+#include "engine/backends/cuda/native/device.h"
 #include "backends/cuda/engine/weights/moe/dma_copy_batch.h"
 #include <array>
 #include <list>

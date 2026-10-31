@@ -1,5 +1,6 @@
 #include "backends/cuda/engine/executor/graph_registry.h"
 #include "context.h"
+#include "engine/backends/cuda/native/device.h"
 #include <chrono>
 #include <thread>
 #include <unordered_map>

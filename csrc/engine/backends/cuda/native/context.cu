@@ -1,5 +1,6 @@
 #include "env.h"
 #include "context.h"
+#include "device.h"
 #include "resident_allocations.h"
 #include "native/error.h"
 
@@ -11,7 +12,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
-#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -108,48 +108,6 @@ thread_local ContextSet fallback_contexts;
 thread_local ContextSet* active_contexts = &fallback_contexts;
 thread_local std::unordered_map<int, StreamHandle> active_streams;
 
-template <typename Function>
-void on_device_noexcept(int device, Function&& function) noexcept {
-    int previous = 0;
-    if (cudaGetDevice(&previous) != cudaSuccess) return;
-    const bool restore = previous != device;
-    if (restore && cudaSetDevice(device) != cudaSuccess) return;
-    try {
-        function();
-    } catch (...) {
-        // Resource destruction must never terminate inference during unwinding.
-    }
-    if (restore) (void)cudaSetDevice(previous);
-}
-
-std::string location_message(
-    const char* category,
-    const char* detail,
-    const char* expression,
-    const char* file,
-    int line) {
-    std::ostringstream message;
-    message << category << " error: " << detail << " (" << expression << ") at "
-            << file << ':' << line;
-    return message.str();
-}
-
-const char* cublas_status_name(cublasStatus_t status) {
-    switch (status) {
-        case CUBLAS_STATUS_SUCCESS: return "CUBLAS_STATUS_SUCCESS";
-        case CUBLAS_STATUS_NOT_INITIALIZED: return "CUBLAS_STATUS_NOT_INITIALIZED";
-        case CUBLAS_STATUS_ALLOC_FAILED: return "CUBLAS_STATUS_ALLOC_FAILED";
-        case CUBLAS_STATUS_INVALID_VALUE: return "CUBLAS_STATUS_INVALID_VALUE";
-        case CUBLAS_STATUS_ARCH_MISMATCH: return "CUBLAS_STATUS_ARCH_MISMATCH";
-        case CUBLAS_STATUS_MAPPING_ERROR: return "CUBLAS_STATUS_MAPPING_ERROR";
-        case CUBLAS_STATUS_EXECUTION_FAILED: return "CUBLAS_STATUS_EXECUTION_FAILED";
-        case CUBLAS_STATUS_INTERNAL_ERROR: return "CUBLAS_STATUS_INTERNAL_ERROR";
-        case CUBLAS_STATUS_NOT_SUPPORTED: return "CUBLAS_STATUS_NOT_SUPPORTED";
-        case CUBLAS_STATUS_LICENSE_ERROR: return "CUBLAS_STATUS_LICENSE_ERROR";
-    }
-    return "unknown cuBLAS status";
-}
-
 }  // namespace
 
 ContextGuard::ContextGuard(ContextSet& contexts)
@@ -169,34 +127,6 @@ std::shared_ptr<Context> default_context(int device) {
     return context;
 }
 
-void check(cudaError_t status, const char* expression, const char* file, int line) {
-    if (status != cudaSuccess) {
-        throw Error(location_message(
-            "CUDA", cudaGetErrorString(status), expression, file, line));
-    }
-}
-
-void check(cublasStatus_t status, const char* expression, const char* file, int line) {
-    if (status != CUBLAS_STATUS_SUCCESS) {
-        throw Error(location_message(
-            "cuBLAS", cublas_status_name(status), expression, file, line));
-    }
-}
-
-DeviceGuard::DeviceGuard(int device) {
-    TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&previous_));
-    if (previous_ != device) {
-        TYLOINFER_NATIVE_CUDA_CHECK(cudaSetDevice(device));
-        restore_ = true;
-    }
-}
-
-DeviceGuard::~DeviceGuard() noexcept {
-    if (restore_) {
-        (void)cudaSetDevice(previous_);
-    }
-}
-
 Event::Event(unsigned flags) {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device_));
     TYLOINFER_NATIVE_CUDA_CHECK(cudaEventCreateWithFlags(&event_, flags));
@@ -204,7 +134,7 @@ Event::Event(unsigned flags) {
 
 Event::~Event() noexcept {
     if (event_ != nullptr) {
-        on_device_noexcept(device_, [&] { (void)cudaEventDestroy(event_); });
+        internal::on_device_noexcept(device_, [&] { (void)cudaEventDestroy(event_); });
     }
 }
 
@@ -214,7 +144,7 @@ Event::Event(Event&& other) noexcept
 Event& Event::operator=(Event&& other) noexcept {
     if (this != &other) {
         if (event_ != nullptr) {
-            on_device_noexcept(device_, [&] { (void)cudaEventDestroy(event_); });
+            internal::on_device_noexcept(device_, [&] { (void)cudaEventDestroy(event_); });
         }
         device_ = other.device_;
         event_ = std::exchange(other.event_, nullptr);
@@ -253,7 +183,7 @@ Stream::Stream(int device, unsigned flags) : device_(device) {
 
 Stream::~Stream() noexcept {
     if (stream_ != nullptr) {
-        on_device_noexcept(device_, [&] { (void)cudaStreamDestroy(stream_); });
+        internal::on_device_noexcept(device_, [&] { (void)cudaStreamDestroy(stream_); });
     }
 }
 
@@ -263,7 +193,7 @@ Stream::Stream(Stream&& other) noexcept
 Stream& Stream::operator=(Stream&& other) noexcept {
     if (this != &other) {
         if (stream_ != nullptr) {
-            on_device_noexcept(device_, [&] { (void)cudaStreamDestroy(stream_); });
+            internal::on_device_noexcept(device_, [&] { (void)cudaStreamDestroy(stream_); });
         }
         device_ = other.device_;
         stream_ = std::exchange(other.stream_, nullptr);
@@ -302,7 +232,7 @@ StreamHandle stream_from_pool(bool high_priority, int device) {
     auto owner = std::shared_ptr<Stream>();
     auto raw_owner = std::shared_ptr<void>(
         reinterpret_cast<void*>(raw), [device](void* value) {
-            on_device_noexcept(device, [&] {
+            internal::on_device_noexcept(device, [&] {
                 (void)cudaStreamDestroy(reinterpret_cast<cudaStream_t>(value));
             });
         });
@@ -545,7 +475,7 @@ void Graph::replay() {
 }
 
 void Graph::reset() noexcept {
-    on_device_noexcept(device_, [&] {
+    internal::on_device_noexcept(device_, [&] {
         if (stream_) {
             cudaStreamCaptureStatus capture_status =
                 cudaStreamCaptureStatusNone;
@@ -606,7 +536,7 @@ BlasHandle::BlasHandle(int device) : device_(device) {
 
 BlasHandle::~BlasHandle() noexcept {
     if (handle_ != nullptr) {
-        on_device_noexcept(device_, [&] { (void)cublasDestroy(handle_); });
+        internal::on_device_noexcept(device_, [&] { (void)cublasDestroy(handle_); });
     }
 }
 
@@ -616,7 +546,7 @@ BlasHandle::BlasHandle(BlasHandle&& other) noexcept
 BlasHandle& BlasHandle::operator=(BlasHandle&& other) noexcept {
     if (this != &other) {
         if (handle_ != nullptr) {
-            on_device_noexcept(device_, [&] { (void)cublasDestroy(handle_); });
+            internal::on_device_noexcept(device_, [&] { (void)cublasDestroy(handle_); });
         }
         device_ = other.device_;
         handle_ = std::exchange(other.handle_, nullptr);
@@ -670,7 +600,7 @@ Context::Context(int device)
 }
 
 Context::~Context() noexcept {
-    on_device_noexcept(device_, [&] {
+    internal::on_device_noexcept(device_, [&] {
         (void)cudaStreamSynchronize(stream_.get());
         parallel_blas.reset();
         while (!graph_pools_.empty()) end_graph_pool(graph_pools_.begin()->first);
@@ -1084,7 +1014,7 @@ void Context::release(
             pool->second.owned.erase(pointer);
         graph_allocation_sizes_.erase(pointer);
     }
-    on_device_noexcept(device_, [&] {
+    internal::on_device_noexcept(device_, [&] {
         if (async_allocations_) {
             (void)cudaFreeAsync(pointer, allocation_stream);
         } else {
@@ -1187,7 +1117,7 @@ void Context::end_graph_pool(cudaStream_t stream) noexcept {
         pool = std::move(found->second);
         graph_pools_.erase(found);
     }
-    on_device_noexcept(device_, [&] {
+    internal::on_device_noexcept(device_, [&] {
         for (const auto& [bytes, pointers] : pool.available) {
             for (void* pointer : pointers) {
                 if (async_allocations_) {
