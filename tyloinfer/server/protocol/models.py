@@ -1038,10 +1038,13 @@ class HubModelSummary(ProtocolModel):
     likes: int = Field(default=0, ge=0)
     total_bytes: int = Field(default=0, ge=0)
     updated_at: AwareDatetime | None = None
+    formats: list[Literal["tq", "gguf", "mlx", "hf"]] = Field(default_factory=list)
+    trending_score: float = 0
 
 
 class HubModelSearchResult(ProtocolModel):
     data: list[HubModelSummary]
+    next_cursor: str | None = None
 
 
 class HubModelFile(ProtocolModel):
@@ -1074,7 +1077,7 @@ class HubModelVariant(ProtocolModel):
     label: str = Field(min_length=1, max_length=255)
     format: Literal["tq", "hf", "gguf", "unknown"]
     precision: str | None = Field(default=None, max_length=128)
-    files: list[str] = Field(default_factory=list, max_length=256)
+    files: list[str] = Field(default_factory=list, max_length=4096)
     byte_size: int = Field(default=0, ge=0)
     resident_weight_bytes: int | None = Field(default=None, ge=0)
     estimated_resident_weight_bytes: int | None = Field(default=None, ge=0)

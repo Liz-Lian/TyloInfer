@@ -6,7 +6,7 @@ import asyncio
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 
 from tyloinfer.server.api.dependencies import ServiceDependency
 from tyloinfer.server.api.routes import ERROR_RESPONSES
@@ -132,10 +132,32 @@ async def resolve_hub_model(
 async def search_hub_models(
     service: ServiceDependency,
     provider: Annotated[str, Query(pattern="^(huggingface|modelscope)$")],
-    query: Annotated[str, Query(min_length=1, max_length=255)],
+    query: Annotated[str, Query(max_length=255)] = "",
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    format: Annotated[str, Query(pattern="^(all|tq|gguf|mlx)$")] = "all",
+    sort: Annotated[str, Query(pattern="^(relevance|downloads|likes|updated)$")] = "downloads",
+    formats: Annotated[str | None, Query(pattern="^(tq|gguf|mlx)(,(tq|gguf|mlx))*$")] = None,
+    direction: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
+    cursor: Annotated[str | None, Query(min_length=16, max_length=64, pattern="^[A-Za-z0-9_-]+$")] = None,
+    browse: bool = False,
 ) -> HubModelSearchResult:
-    return await service.search_hub_models(provider, query, limit)
+    return await service.search_hub_models(provider, query, limit, format, sort,
+        formats=formats, direction=direction, cursor=cursor, browse=browse)
+
+
+@hub_router.get(
+    "/api/v1/hub/models/{provider}/{owner}/{name}/readme",
+    responses=ERROR_RESPONSES,
+    tags=["models"],
+)
+async def hub_model_readme(
+    service: ServiceDependency,
+    provider: Annotated[str, Path(pattern="^(huggingface|modelscope)$")],
+    owner: Annotated[str, Path(pattern="^[A-Za-z0-9_.-]+$")],
+    name: Annotated[str, Path(pattern="^[A-Za-z0-9_.-]+$")],
+    revision: Annotated[str | None, Query(max_length=255)] = None,
+) -> dict[str, str | None]:
+    return await service.hub_model_readme(provider, f"{owner}/{name}", revision)
 
 
 @hub_router.get(

@@ -71,7 +71,7 @@ it('downloads a shard folder as one request and allows multiple file selections'
   const onDownload = vi.fn();
   render(<RepositoryFiles files={files} disabled={false} onDownload={onDownload} tr={(_zh, en) => en} />);
   fireEvent.click(screen.getByText(/Files and folders/));
-  fireEvent.click(screen.getByRole('button', { name: /S4-L/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open folder S4-L' }));
   fireEvent.click(screen.getByRole('button', { name: 'Download folder' }));
   expect(onDownload.mock.calls[0][0]).toEqual(files);
   fireEvent.click(screen.getByRole('checkbox', { name: /model-1/ }));

@@ -12,6 +12,7 @@ import { StudioSidebar } from './StudioSidebar';
 import { RuntimeAlerts } from './RuntimeAlerts';
 import { ServerConnectionPage } from './ServerConnectionPage';
 import { resolveStudioLocation, isStudioPath } from '../navigation';
+import { isAssetLoadError } from './assetRecovery';
 
 
 class PageErrorBoundary extends Component<{ children: ReactNode }, { detail: string | null }> {
@@ -23,7 +24,10 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { detail: str
     if (this.state.detail !== null)
       return (
         <FailurePage detail={this.state.detail} kind="render"
-          onRetry={() => this.setState({ detail: null })} />
+          onRetry={() => {
+            if (isAssetLoadError(this.state.detail)) window.location.reload();
+            else this.setState({ detail: null });
+          }} />
       );
     return this.props.children;
   }

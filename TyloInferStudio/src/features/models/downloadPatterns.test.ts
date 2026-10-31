@@ -8,6 +8,16 @@ function variant(files: string[]): HubModelVariant {
 }
 
 describe('TQ model download selection', () => {
+  it.each(['hf', 'gguf'] as const)('keeps large %s shard sets scoped to the selected folder', format => {
+    const suffix = format === 'hf' ? 'safetensors' : 'gguf';
+    const files = Array.from({ length: 65 }, (_, index) => `4bit/model-${String(index + 1).padStart(5, '0')}-of-00065.${suffix}`);
+    const patterns = downloadPatterns({ ...variant(files), format, label: '4bit' });
+    expect(patterns).toEqual(expect.arrayContaining(files));
+    expect(patterns).not.toContain(`*.${suffix}`);
+    expect(patterns).not.toContain('*.bin');
+    expect(patterns).toContain('tokenizer*');
+  });
+
   it.each(['mfq', 'tq', 'MFQ'])('preserves .%s for a 65-shard tier', (suffix) => {
     const files = Array.from({ length: 65 }, (_, index) => `TQ2.5/model-${String(index + 1).padStart(5, '0')}-of-00065.${suffix}`);
     const patterns = downloadPatterns(variant(files));

@@ -2953,6 +2953,19 @@
             "title": "Files",
             "type": "array"
           },
+          "formats": {
+            "items": {
+              "enum": [
+                "tq",
+                "gguf",
+                "mlx",
+                "hf"
+              ],
+              "type": "string"
+            },
+            "title": "Formats",
+            "type": "array"
+          },
           "gated": {
             "default": false,
             "title": "Gated",
@@ -3118,6 +3131,11 @@
             "title": "Total Bytes",
             "type": "integer"
           },
+          "trending_score": {
+            "default": 0,
+            "title": "Trending Score",
+            "type": "number"
+          },
           "updated_at": {
             "anyOf": [
               {
@@ -3156,6 +3174,17 @@
             },
             "title": "Data",
             "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
           }
         },
         "required": [
@@ -3197,6 +3226,19 @@
             "title": "Downloads",
             "type": "integer"
           },
+          "formats": {
+            "items": {
+              "enum": [
+                "tq",
+                "gguf",
+                "mlx",
+                "hf"
+              ],
+              "type": "string"
+            },
+            "title": "Formats",
+            "type": "array"
+          },
           "likes": {
             "default": 0,
             "minimum": 0.0,
@@ -3234,6 +3276,11 @@
             "minimum": 0.0,
             "title": "Total Bytes",
             "type": "integer"
+          },
+          "trending_score": {
+            "default": 0,
+            "title": "Trending Score",
+            "type": "number"
           },
           "updated_at": {
             "anyOf": [
@@ -3298,7 +3345,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 256,
+            "maxItems": 4096,
             "title": "Files",
             "type": "array"
           },
@@ -4334,6 +4381,11 @@
             "title": "Format",
             "type": "string"
           },
+          "gguf_companion_required": {
+            "default": false,
+            "title": "Gguf Companion Required",
+            "type": "boolean"
+          },
           "id": {
             "pattern": "^[0-9a-f]{32}$",
             "title": "Id",
@@ -5042,6 +5094,15 @@
               "type": "string"
             },
             "title": "Device Ids",
+            "type": "array"
+          },
+          "gguf_companions": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Gguf Companions",
             "type": "array"
           },
           "idle_ttl_seconds": {
@@ -6771,6 +6832,30 @@
             "title": "Mtp Depth 5 Cycles",
             "type": "integer"
           },
+          "mtp_depth_6_cycle_ms": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Mtp Depth 6 Cycle Ms",
+            "type": "number"
+          },
+          "mtp_depth_6_cycles": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Mtp Depth 6 Cycles",
+            "type": "integer"
+          },
+          "mtp_depth_7_cycle_ms": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Mtp Depth 7 Cycle Ms",
+            "type": "number"
+          },
+          "mtp_depth_7_cycles": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Mtp Depth 7 Cycles",
+            "type": "integer"
+          },
           "mtp_drafted_tokens": {
             "default": 0,
             "minimum": 0,
@@ -6818,6 +6903,20 @@
             "title": "Mtp Position 5 Acceptance Rate",
             "type": "number"
           },
+          "mtp_position_6_acceptance_rate": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Mtp Position 6 Acceptance Rate",
+            "type": "number"
+          },
+          "mtp_position_7_acceptance_rate": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Mtp Position 7 Acceptance Rate",
+            "type": "number"
+          },
           "mtp_rollback_ms": {
             "default": 0.0,
             "minimum": 0.0,
@@ -6826,7 +6925,7 @@
           },
           "mtp_selected_depth": {
             "default": 0,
-            "maximum": 5,
+            "maximum": 7,
             "minimum": 0,
             "title": "Mtp Selected Depth",
             "type": "integer"
@@ -14703,10 +14802,10 @@
           {
             "in": "query",
             "name": "query",
-            "required": true,
+            "required": false,
             "schema": {
+              "default": "",
               "maxLength": 255,
-              "minLength": 1,
               "title": "Query",
               "type": "string"
             }
@@ -14721,6 +14820,85 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "pattern": "^(all|tq|gguf|mlx)$",
+              "title": "Format",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "downloads",
+              "pattern": "^(relevance|downloads|likes|updated)$",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "formats",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(tq|gguf|mlx)(,(tq|gguf|mlx))*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Formats"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Direction",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 16,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "browse",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Browse",
+              "type": "boolean"
             }
           }
         ],
@@ -15024,6 +15202,197 @@
           }
         },
         "summary": "Hub Model Info",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/hub/models/{provider}/{owner}/{name}/readme": {
+      "get": {
+        "operationId": "hub_model_readme_api_v1_hub_models__provider___owner___name__readme_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "pattern": "^(huggingface|modelscope)$",
+              "title": "Provider",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_.-]+$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_.-]+$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "title": "Response Hub Model Readme Api V1 Hub Models  Provider   Owner   Name  Readme Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request Entity Too Large"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unsupported Media Type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Implemented"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Hub Model Readme",
         "tags": [
           "models"
         ]

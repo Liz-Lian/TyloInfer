@@ -7,7 +7,7 @@ import { ModelBrowser } from './ModelBrowser';
 import { useJobStore } from '../../stores/jobStore';
 
 vi.mock('../../shared/api/resources/models', () => ({
-  modelsApi: { officialHubModels: vi.fn(), hubModelInfo: vi.fn(), resolveHubModel: vi.fn(), probeDownloadSources: vi.fn().mockResolvedValue({ data: [] }), downloadReuse: vi.fn().mockResolvedValue({ reusable_files: {} }) },
+  modelsApi: { officialHubModels: vi.fn(), hubModelInfo: vi.fn(), resolveHubModel: vi.fn(), browseHubModels: vi.fn().mockResolvedValue({ data: [] }), probeDownloadSources: vi.fn().mockResolvedValue({ data: [] }), downloadReuse: vi.fn().mockResolvedValue({ reusable_files: {} }) },
 }));
 vi.mock('../../shared/api/resources/jobs', () => ({ jobsApi: { createJob: vi.fn() } }));
 

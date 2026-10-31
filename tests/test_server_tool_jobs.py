@@ -43,7 +43,8 @@ def _python_script_executables_on_windows(tmp_path, monkeypatch):
 
 
 
-def test_download_reports_real_written_bytes_and_speed(tmp_path, monkeypatch):
+@pytest.mark.parametrize('raw_parts', [False, True])
+def test_download_reports_real_written_bytes_and_speed(tmp_path, monkeypatch, raw_parts):
     async def run():
         handlers = ToolJobHandlers(ModelCatalog([]), ToolJobPaths(tmp_path, tmp_path / 'tq', None, None, None, None))
         captured = []
@@ -52,11 +53,14 @@ def test_download_reports_real_written_bytes_and_speed(tmp_path, monkeypatch):
         async def transfer(*args, **kwargs):
             await asyncio.sleep(0.1)
             (tmp_path / 'shard.tq').write_bytes(b'x' * 1024)
-            (tmp_path / 'part.incomplete').write_bytes(b'x' * 1024)
+            (tmp_path / ('model.gguf.part-1-of-2.hash.incomplete' if raw_parts else 'part.incomplete')).write_bytes(b'x' * 1024)
             (tmp_path / 'ignored.lock').write_bytes(b'x' * 1024)
             await asyncio.sleep(1.05)
         monkeypatch.setattr(handlers, '_run', transfer)
-        await handlers._run_download(Context(), ['fake-download'], {}, tmp_path, 4096)
+        selection = handlers.download_request('download.huggingface', {
+            'repo_id': 'owner/model', 'destination': 'downloads', 'include': ['shard.tq', 'model.gguf.part-1-of-2'],
+        })[0] if raw_parts else None
+        await handlers._run_download(Context(), ['fake-download'], {}, tmp_path, 4096, selection=selection)
         assert captured[-1][0] == 0.5
         data = captured[-1][1]
         assert data['downloaded_bytes'] == 2048 and data['files_completed'] == 1
