@@ -1,6 +1,6 @@
 #pragma once
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "context.h"
+#include "engine/backends/cuda/native/memory.h"
 #include "tensor.h"
 #include <map>
 #include <memory>

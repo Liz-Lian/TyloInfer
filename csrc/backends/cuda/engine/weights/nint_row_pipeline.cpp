@@ -4,7 +4,7 @@
 #include "source/mapped_prefetch_scope.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "backends/cpu/native/host_parallel.h"
-#include "context.h"
+#include "engine/backends/cuda/native/memory.h"
 #include <atomic>
 #include <future>
 #include <map>

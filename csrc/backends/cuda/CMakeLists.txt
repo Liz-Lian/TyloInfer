@@ -53,6 +53,7 @@ add_library(mfq-cuda-core STATIC
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/env.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/device.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/stream.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/memory.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/context.cu
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor/tensor.cpp

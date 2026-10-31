@@ -3,6 +3,7 @@
 #include "env.h"
 #include "tq.h"
 #include "backends/cuda/engine/weights/tq/image.h"
+#include "engine/backends/cuda/native/memory.h"
 
 #include <algorithm>
 #include <atomic>

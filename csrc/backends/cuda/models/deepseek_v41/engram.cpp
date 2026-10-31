@@ -1,5 +1,5 @@
 #include "engram.h"
-#include "context.h"
+#include "engine/backends/cuda/native/memory.h"
 #include "engine/backends/cuda/native/stream.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "source/mapped_prefetch_scope.h"

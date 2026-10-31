@@ -6,7 +6,7 @@
 #include "backends/cuda/engine/weights/tq/cache.h"
 #include "ops/tq/include/detail.h"
 #include "ops/tq/include/moe.h"
-#include "context.h"
+#include "engine/backends/cuda/native/memory.h"
 #include "env.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "ops/common/include/moe.h"

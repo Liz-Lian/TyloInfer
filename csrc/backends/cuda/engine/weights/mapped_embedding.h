@@ -1,7 +1,7 @@
 #pragma once
 #include <atomic>
 #include "quant_linear.h"
-#include "context.h"
+#include "engine/backends/cuda/native/memory.h"
 #include <cstring>
 #include <memory>
 

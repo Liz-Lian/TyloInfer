@@ -4,6 +4,7 @@
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "backends/cuda/engine/weights/moe/native_dma_batch.h"
 #include "backends/cuda/engine/weights/moe/cached_source_internal.h"
+#include "engine/backends/cuda/native/memory.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "native/error.h"
 #include "engine/weights/routes.h"
