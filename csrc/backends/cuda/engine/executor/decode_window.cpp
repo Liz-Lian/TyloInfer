@@ -2,6 +2,7 @@
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "context.h"
+#include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/native/device.h"
 #include "native/error.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"

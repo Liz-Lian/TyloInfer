@@ -33,6 +33,7 @@
 #include "nint_prefill_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "matmul_rows.h"
+#include "engine/backends/cuda/native/graph.h"
 #endif
 #include <cstdlib>
 #include <cstdio>

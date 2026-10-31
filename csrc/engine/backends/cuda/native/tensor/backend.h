@@ -21,6 +21,7 @@
 #include "backends/cpu/native/host_parallel.h"
 #include "engine/backends/cuda/native/device.h"
 #include "context.h"
+#include "engine/backends/cuda/native/graph.h"
 #include "tensor.h"
 
 namespace mfq_tensor_backend = ::mfq::cuda;
