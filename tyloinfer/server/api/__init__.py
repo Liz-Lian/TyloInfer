@@ -112,7 +112,7 @@ def create_app(
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), geolocation=()"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; "
+            "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob: https:; "
             "media-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self'; font-src 'self' data:"
         )

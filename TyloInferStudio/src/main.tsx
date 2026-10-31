@@ -11,7 +11,10 @@ import { FailureView } from './app/FailurePage';
 import { isStudio } from './studio';
 import { SettingsProvider } from './features/settings/SettingsProvider';
 import { DesktopWindowFrame } from './app/DesktopWindowFrame';
+import { installAssetRecovery } from './app/assetRecovery';
 import './styles.css';
+
+installAssetRecovery();
 
 interface AppErrorBoundaryState {
   error: Error | null;

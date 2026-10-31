@@ -313,7 +313,7 @@ def test_metadata_client_uses_configured_proxy_when_proxy_discovery_fails(
         monkeypatch.setattr(network.urllib.request, name, unavailable, raising=False)
     monkeypatch.setattr(hub.httpx, "AsyncClient", lambda **kwargs: kwargs)
     options = hub._metadata_client(endpoint)
-    assert options["proxy"] == expected
+    assert (options["transport"]._proxy_url if options["transport"] else None) == expected
     assert options["trust_env"] is False
     assert options["timeout"].connect == 4 and options["timeout"].read == 8
 
@@ -413,7 +413,7 @@ def test_direct_http_response_does_not_trigger_proxy_retry(monkeypatch, status) 
 
 
 class FakeHub:
-    async def search(self, provider, query, *, limit):
+    async def search(self, provider, query, *, limit, format="all", sort="downloads"):
         return HubModelSearchResult(
             data=[HubModelSummary(provider=provider, repo_id=f"owner/{query}")][:limit]
         )
@@ -499,7 +499,7 @@ def test_hub_search_and_info_are_normalized(tmp_path: Path) -> None:
 
 def test_hub_failures_are_retryable_gateway_errors(tmp_path: Path) -> None:
     class BrokenHub(FakeHub):
-        async def search(self, provider, query, *, limit):
+        async def search(self, provider, query, *, limit, format="all", sort="downloads"):
             raise HubError("offline")
 
         async def info(self, provider, repo_id, revision):
@@ -586,6 +586,49 @@ def test_repository_link_resolution_rejects_untrusted_hosts_and_credentials() ->
             pass
         else:
             raise AssertionError(f"untrusted reference was accepted: {reference}")
+
+
+@pytest.mark.parametrize('raw_parts', [False, True])
+def test_gguf_shards_are_one_variant_per_precision_and_directory(raw_parts):
+    def name(folder, index):
+        return (f'{folder}/model-IQ3_XXS.gguf.part-{index}-of-2' if raw_parts else
+                f'{folder}/model-IQ3_XXS-{index:05d}-of-00002.gguf')
+    files = [HubModelFile(name=name(folder, index), byte_size=index * 1024)
+             for folder in ('first', 'second') for index in (1, 2)]
+    files.append(HubModelFile(name='model-Q4_K_M.gguf', byte_size=8192))
+    variants = _model_variants(files, system_profile(backend='metal'))
+    assert len(variants) == 3
+    for folder in ('first', 'second'):
+        variant = next(item for item in variants if item.label == f'{folder}/model-IQ3_XXS')
+        assert variant.files == [name(folder, 1), name(folder, 2)]
+        assert variant.byte_size == 3072
+        assert variant.precision == 'IQ3_XXS'
+        assert variant.format == 'gguf'
+        assert not any('converted' in reason for reason in variant.configuration.reasons)
+
+
+def test_hf_weight_folders_are_separate_complete_variants():
+    files = [HubModelFile(name=f'{folder}/model-{index:05d}-of-00002.safetensors', byte_size=1024)
+             for folder in ('4bit', '8bit') for index in (1, 2)]
+    files += [HubModelFile(name='model.safetensors', byte_size=4096),
+              HubModelFile(name='4bit/config.json', byte_size=100)]
+    variants = _model_variants(files, system_profile(backend='metal'))
+    assert {item.label for item in variants} == {'4bit', '8bit', 'Original weights'}
+    for folder in ('4bit', '8bit'):
+        variant = next(item for item in variants if item.label == folder)
+        assert len(variant.files) == 2 and variant.byte_size == 2048
+        assert all(name.startswith(f'{folder}/') for name in variant.files)
+    assert next(item for item in variants if item.id == 'hf:original').files == ['model.safetensors']
+
+
+@pytest.mark.parametrize('suffix', ['tq', 'gguf', 'safetensors'])
+def test_large_shard_sets_are_not_silently_truncated(suffix):
+    files = [HubModelFile(name=f'model-{index:05d}-of-00300.{suffix}', byte_size=1)
+             for index in range(1, 301)]
+    variants = _model_variants(files, system_profile(backend='metal'))
+    assert len(variants) == 1
+    assert variants[0].files == [item.name for item in files]
+    assert variants[0].byte_size == 300
 
 
 def test_mfq_variants_keep_subdirectories_and_use_the_quantization_suffix() -> None:

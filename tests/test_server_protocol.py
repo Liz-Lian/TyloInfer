@@ -175,6 +175,7 @@ def test_openapi_contract_has_all_native_routes_and_realtime_extension() -> None
         "/api/v1/models/unload",
         "/api/v1/hub/models",
         "/api/v1/hub/models/{provider}/{owner}/{name}",
+        "/api/v1/hub/models/{provider}/{owner}/{name}/readme",
         "/api/v1/hub/official",
         "/api/v1/hub/download-directory",
         "/api/v1/hub/download-sources/probe",

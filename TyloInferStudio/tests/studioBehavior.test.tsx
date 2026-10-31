@@ -103,6 +103,7 @@ describe('test_model_hub_accepts_repository_links_and_downloads_into_the_model_c
     expect(inspect).toHaveBeenCalledExactlyOnceWith(
       `https://${host}/team/model/tree/main`,
       'huggingface',
+      expect.any(AbortSignal),
     );
     fireEvent.click(download);
     await waitFor(() => expect(createJob).toHaveBeenCalledExactlyOnceWith(`download.${provider}`, {

@@ -184,6 +184,13 @@ export interface HubModelSummary {
   likes: number;
   total_bytes: number;
   updated_at?: string | null;
+  formats?: ('tq' | 'gguf' | 'mlx' | 'hf')[];
+  trending_score?: number;
+}
+
+export interface HubModelSearchPage {
+  data: HubModelSummary[];
+  next_cursor?: string | null;
 }
 
 export interface ModelConfigurationStatus {

@@ -1,4 +1,4 @@
-import { FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   HubModelInfo,
@@ -24,6 +24,7 @@ import { ModelVendorMark } from '../../app/ModelVendorMark';
 import { ModelPressureBars } from './ModelMemoryPressure';
 import { variantMemoryPressureRows, type PressureRow } from './memoryPressure';
 import { RepositoryFiles } from './RepositoryFiles';
+import { CommunityModelBrowser } from './CommunityModelBrowser';
 import { estimateCacheBytes, KvCachePlanner, plannedConfiguration, withCacheMemory } from './KvCachePlanner';
 import { useJobStore } from '../../stores/jobStore';
 import { useDownloadReuse, type DownloadReuse } from './useDownloadReuse';
@@ -273,13 +274,9 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
   const [officialSourceInfo, setOfficialSourceInfo] = useState<HubModelInfo | null>(null);
   const [automaticSource, setAutomaticSource] = useState<OfficialModelSource | null>(null);
   const [sourceProbing, setSourceProbing] = useState(false);
-  const [provider, setProvider] = useState<HubModelSummary["provider"]>("huggingface");
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<HubModelSummary[]>([]);
   const [communityModel, setCommunityModel] = useState<HubModelInfo | null>(null);
   const [officialLoading, setOfficialLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
-  const [communityLoading, setCommunityLoading] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [maxWorkers, setMaxWorkers] = useState(8);
   const [plannedContexts, setPlannedContexts] = useState<Record<string, number | undefined>>({});
@@ -287,7 +284,6 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
   const catalogRequest = useRef(0);
   const catalogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const catalogController = useRef<AbortController | null>(null);
-  const communityRequest = useRef(0);
   const sourceProbeRequest = useRef(0);
 
   const selectedOfficial = useMemo(
@@ -386,7 +382,6 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
     return () => {
       catalogRequest.current += 1;
       officialRequest.current += 1;
-      communityRequest.current += 1;
       catalogController.current?.abort();
       if (catalogTimer.current !== null) clearTimeout(catalogTimer.current);
     };
@@ -429,45 +424,6 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
       }
     } finally {
       if (request === officialRequest.current) setOfficialLoading(false);
-    }
-  }
-
-  async function search(event: FormEvent) {
-    event.preventDefault();
-    const reference = query.trim();
-    if (!reference) return;
-    const request = ++communityRequest.current;
-    setCommunityLoading(true);
-    try {
-      if (reference.includes("/") || /^https?:\/\//i.test(reference)) {
-        const model = await modelsApi.resolveHubModel(reference, provider);
-        if (request !== communityRequest.current) return;
-        setProvider(model.provider);
-        setCommunityModel(model);
-        setResults([model]);
-      } else {
-        const found = await modelsApi.searchHubModels(provider, reference);
-        if (request !== communityRequest.current) return;
-        setResults(found);
-        setCommunityModel(null);
-      }
-    } catch (cause) {
-      if (request === communityRequest.current) onError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (request === communityRequest.current) setCommunityLoading(false);
-    }
-  }
-
-  async function inspect(item: HubModelSummary) {
-    const request = ++communityRequest.current;
-    setCommunityLoading(true);
-    try {
-      const model = await modelsApi.hubModelInfo(item.provider, item.repo_id);
-      if (request === communityRequest.current) setCommunityModel(model);
-    } catch (cause) {
-      if (request === communityRequest.current) onError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (request === communityRequest.current) setCommunityLoading(false);
     }
   }
 
@@ -566,7 +522,7 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
                 <p className="model-weight-pressure-note">{tr('下方压力条与百分比表示常驻权重对当前剩余显存、内存或统一内存推理预算的压力，不是磁盘占用。', 'The bars and percentages below show resident-weight pressure on the currently available VRAM, RAM or unified-memory inference budget, not disk usage.')}<br />{tr('基于不同模型架构的推理特性，在非统一内存设备上，MoE 模型的推理预算统计内存 + 显存，Dense 模型的推理预算仅统计显存。', 'Because inference characteristics vary by architecture, on devices without unified memory, MoE inference budgets include RAM + VRAM, while Dense inference budgets include only VRAM.')}</p>
                 <VariantList disabled={officialLoading || sourceProbing || !selectedSource.available || !canDownload(selectedSource.provider) || downloading !== null} onDownload={(variant, origin) => void download({ provider: selectedSource.provider, repo_id: selectedSource.repo_id, revision: selectedSource.revision || selectedOfficial.revision }, variant, origin)} tr={tr} reuse={officialReuse} variants={plannedOfficialVariants} cacheBytes={officialCacheBytes} system={official?.system} moe={(parameters?.routed_experts ?? 0) > 0 || selectedOfficial.capabilities.includes('MoE')} />
                 {sourceInfoMatches && <RepositoryFiles key={`${selectedSource.provider}:${selectedSource.repo_id}:${officialSourceInfo!.revision}`}
-                  files={officialSourceInfo!.files} disabled={officialLoading || !canDownload(selectedSource.provider) || downloading !== null} tr={tr}
+                  files={officialSourceInfo!.files} variants={officialSourceInfo!.variants} disabled={officialLoading || !canDownload(selectedSource.provider) || downloading !== null} tr={tr}
                   onDownload={(files, label, origin) => void download(officialSourceInfo!, {
                     id: label, label, format: 'unknown', files: files.map((file) => file.name),
                     byte_size: files.reduce((sum, file) => sum + file.byte_size, 0), configuration: { status: 'unknown', recommendation: 'unknown', reasons: [] },
@@ -576,22 +532,9 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
           </div>
         </>
       ) : tab === 'community' ? (
-        <>
-          <form className="community-model-search" onSubmit={search}>
-            <select onChange={(event) => setProvider(event.target.value as HubModelSummary["provider"])} value={provider}><option value="huggingface">Hugging Face</option><option value="modelscope">ModelScope</option></select>
-            <input onChange={(event) => setQuery(event.target.value)} placeholder={tr("模型名称、owner/repo 或仓库链接", "Model name, owner/repo, or repository URL")} value={query} />
-            <button disabled={communityLoading || !query.trim()} type="submit">{communityLoading ? tr("查找中", "Searching") : tr("查找", "Search")}</button>
-          </form>
-          <p className="community-search-hint">{tr("支持直接粘贴 Hugging Face 与 ModelScope 链接；下载仍由可续传后台任务管理。", "Paste a Hugging Face or ModelScope link directly; downloads remain resumable background jobs.")}</p>
-          <div className="model-browser-layout community-layout">
-            <div className="community-results">
-              {results.map((item) => <button className={communityModel?.repo_id === item.repo_id && communityModel.provider === item.provider ? "selected" : ""} key={`${item.provider}:${item.repo_id}`} onClick={() => void inspect(item)} type="button"><div><strong>{item.repo_id}</strong><small>{item.provider === "huggingface" ? "Hugging Face" : "ModelScope"} · {formatCount(item.downloads)} downloads</small></div><span className="model-identity-trailing">{formatBytes(item.total_bytes)}<ModelVendorMark name={item.repo_id} architecture={communityModel?.repo_id === item.repo_id && communityModel.provider === item.provider ? communityModel.architectures : undefined} /></span></button>)}
-              {!results.length && <div className="model-browser-empty">{tr("搜索社区模型，或粘贴仓库链接直接打开。", "Search community models or paste a repository link to open it directly.")}</div>}
-            </div>
-            {communityModel && (
-              <aside className="model-detail-panel">
-                <div className="model-detail-heading"><div><small>{communityModel.author || communityModel.provider}</small><h3>{communityModel.repo_id.split("/").pop()}</h3></div><div className="model-identity-trailing">{communityModel.gated && <span className="gated-badge">{tr("需要授权", "Gated")}</span>}<ModelVendorMark name={communityModel.repo_id} architecture={communityModel.architectures} size={30} /></div></div>
-                {communityModel.description && <p>{communityModel.description}</p>}
+        <CommunityModelBrowser model={communityModel} onSelect={setCommunityModel} tr={tr} backend={system?.backend}
+          variants={communityModel ? withCacheMemory(communityModel.variants, communityCacheBytes) : []}
+          details={communityModel && <>
                 <dl className="model-metadata-grid">
                   <div><dt>{tr("架构", "Architecture")}</dt><dd>{communityModel.architectures.join(", ") || tr("未声明", "Not declared")}</dd></div>
                   <div className="model-parameter-row"><dt>{tr("参数", "Parameters")}</dt><dd><ParameterValue parameters={communityModel.parameter_breakdown} label={communityModel.parameter_count ? formatParameters(communityModel.parameter_count) : null} tr={tr} /></dd></div>
@@ -604,18 +547,18 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
                   <div><dt>{tr("发布时间", "Published")}</dt><dd>{formatDate(communityModel.published_at || communityModel.updated_at)}</dd></div>
                 </dl>
                 <KvCachePlanner key={`kv:${communityPlanKey}`} profile={communityModel.cache_profile} appliedContext={communityContext} onApply={(context) => applyPlan(communityPlanKey, context)} tr={tr} />
-                {communityModel.source_url && <div className="repository-line"><button onClick={() => void openStudioExternal(communityModel.source_url!).catch((cause) => onError(cause instanceof Error ? cause.message : String(cause)))} type="button">{tr("打开模型卡", "Open model card")}</button><span>{formatCount(communityModel.downloads)} downloads · {formatCount(communityModel.likes)} likes · {communityModel.files.length} files</span></div>}
-                <VariantList disabled={communityLoading || !canDownload(communityModel.provider) || downloading !== null} onDownload={(variant, origin) => void download({ provider: communityModel.provider, repo_id: communityModel.repo_id, revision: communityModel.revision }, variant, origin)} tr={tr} reuse={communityReuse} variants={withCacheMemory(communityModel.variants, communityCacheBytes)} cacheBytes={communityCacheBytes} system={official?.system} moe={(communityModel.parameter_breakdown?.routed_experts ?? 0) > 0} />
-                <RepositoryFiles key={`${communityModel.provider}:${communityModel.repo_id}:${communityModel.revision}`} files={communityModel.files}
-                  disabled={communityLoading || !canDownload(communityModel.provider) || downloading !== null} tr={tr}
+          </>}
+          renderDownload={variant => communityModel && <VariantList disabled={!canDownload(communityModel.provider) || downloading !== null}
+            onDownload={(selected, origin) => void download(communityModel, selected, origin)} tr={tr} reuse={communityReuse}
+            variants={[variant]} cacheBytes={communityCacheBytes} system={official?.system} moe={(communityModel.parameter_breakdown?.routed_experts ?? 0) > 0} />}
+          files={communityModel && <RepositoryFiles key={`${communityModel.provider}:${communityModel.repo_id}:${communityModel.revision}`} files={communityModel.files} variants={communityModel.variants} expanded
+                  disabled={!canDownload(communityModel.provider) || downloading !== null} tr={tr}
                   onDownload={(files, label, origin) => void download(communityModel, {
                     id: label, label, format: 'unknown', files: files.map((file) => file.name),
                     byte_size: files.reduce((sum, file) => sum + file.byte_size, 0), configuration: { status: 'unknown', recommendation: 'unknown', reasons: [] },
                   }, origin)} />
-              </aside>
-            )}
-          </div>
-        </>
+          }
+        />
       ) : downloadQueue}
     </section>
   );

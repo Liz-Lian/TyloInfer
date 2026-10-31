@@ -533,12 +533,31 @@ class ServerService:
         return await self.jobs.archive_completed()
 
     async def search_hub_models(
-        self, provider: HubProvider, query: str, limit: int
+        self, provider: HubProvider, query: str, limit: int,
+        format: str = "all", sort: str = "downloads",
+        *, formats: str | None = None, direction: str = "desc", cursor: str | None = None, browse: bool = False,
     ) -> HubModelSearchResult:
         try:
-            return await self.hub_catalog.search(provider, query, limit=limit)
+            if browse or formats is not None or cursor is not None or sort == 'relevance' or direction == 'asc':
+                from tyloinfer.server.services.hub_search import HubSearchCursorError
+                selected = tuple(formats.split(',')) if formats is not None else (format,) if format != 'all' else (
+                    ('tq', 'gguf') if getattr(self.runtime_manager, 'backend', 'unknown') in {'cuda', 'hip'} else ('tq', 'gguf', 'mlx'))
+                if provider == 'modelscope' and direction == 'asc':
+                    raise ServiceError(400, 'invalid_hub_search', 'ModelScope does not support ascending search order.')
+                try:
+                    return await self.hub_catalog.browse(provider, query, formats=selected,
+                        sort=sort, direction=direction, limit=limit, cursor=cursor)
+                except HubSearchCursorError as error:
+                    raise ServiceError(400, 'search_cursor_expired', str(error), retryable=True) from error
+            return await self.hub_catalog.search(provider, query, limit=limit, format=format, sort=sort)
         except HubError as error:
             raise ServiceError(502, "model_hub_error", str(error), retryable=True) from error
+
+    async def hub_model_readme(self, provider: HubProvider, repo_id: str, revision: str | None) -> dict[str, str | None]:
+        try:
+            return {"content": await self.hub_catalog.readme(provider, repo_id, revision)}
+        except (ValueError, HubError) as error:
+            raise ServiceError(502, "model_card_unavailable", "Could not retrieve the model card.", retryable=True) from error
 
     async def hub_model_info(
         self, provider: HubProvider, repo_id: str, revision: str | None

@@ -25,6 +25,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tyloinfer.formats.header import TYLOINFER_SUFFIXES
 from tyloinfer.formats.companions import with_engram_shards
+from tyloinfer.formats.gguf import is_gguf_path
 
 from tyloinfer.server.api.network import download_environment, hub_download_url
 from tyloinfer.server.protocol.models import ErrorDetail
@@ -332,7 +333,7 @@ class ToolJobHandlers:
             # Both SDKs keep resumable files under hidden download directories;
             # HF appends the content hash and .incomplete after the filename.
             if any(part.startswith('.') for part in relative.parts) or path.suffix in {'.partial', '.incomplete'}:
-                match = re.search(r'\.(?:tq|safetensors|gguf|bin)(?=\.|$)', name, re.IGNORECASE)
+                match = re.search(r'\.(?:tq|safetensors|gguf(?:\.part-[0-9]{1,5}-of-[0-9]{1,5})?|bin)(?=\.|$)', name, re.IGNORECASE)
                 if match:
                     name = name[:match.end()]
                 else:
@@ -907,7 +908,7 @@ class ToolJobHandlers:
     async def _download_environment(self, provider: str, request) -> tuple[dict[str, str], bool]:
         endpoint = os.environ.get('HF_ENDPOINT', 'https://huggingface.co') if provider == 'huggingface' else os.environ.get('MODELSCOPE_ENDPOINT', 'https://modelscope.cn')
         filename = next((name for name in request.include if not any(char in name for char in '*?[')
-            and name.lower().endswith((*TYLOINFER_SUFFIXES, '.safetensors', '.gguf', '.bin'))), None)
+            and (name.lower().endswith((*TYLOINFER_SUFFIXES, '.safetensors', '.bin')) or is_gguf_path(name))), None)
         options = {'direct': True} if request.direct else {}
         if filename and not request.direct:
             options['sample_url'] = hub_download_url(provider, request.repo_id, request.revision, filename)
@@ -962,7 +963,7 @@ class ToolJobHandlers:
     def download_files_present(destination: Path, request, files, *, mfq_only: bool = False) -> bool:
         selected = ToolJobHandlers.selected_download_files(request, files)
         if mfq_only:
-            weights = [item for item in selected if item.name.lower().endswith((*TYLOINFER_SUFFIXES, '.gguf'))]
+            weights = [item for item in selected if item.name.lower().endswith(TYLOINFER_SUFFIXES) or is_gguf_path(item.name)]
             if weights:
                 selected = weights
         if not selected:

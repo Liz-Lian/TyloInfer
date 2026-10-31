@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import proxy_bypass_environment
 
 import httpx
@@ -25,6 +25,7 @@ import httpx
 from tyloinfer.architectures.tensor_schema import tensor_schema_for_config
 from tyloinfer.formats.header import TYLOINFER_SUFFIXES
 from tyloinfer.formats.companions import is_engram_shard, with_engram_shards
+from tyloinfer.formats.gguf import is_gguf_path, parse_gguf_shard_path
 from tyloinfer.server.protocol.models import (
     HubMemoryPool,
     HubModelFile,
@@ -48,8 +49,21 @@ from tyloinfer.server.services.hub_metadata import estimated_resident_weight_byt
 from tyloinfer.server.services.model_parameters import parameter_breakdown
 from tyloinfer.server.services.model_memory import cache_profile
 from tyloinfer.server.services.model_attention import attention_profile
+from tyloinfer.server.services.hub_search import HubBrowserSearch, HubSearchQuery
 
 HubProvider = Literal["huggingface", "modelscope"]
+
+def _search_formats(repo_id: str, tags: list[Any]) -> list[str]:
+    labels = {str(tag).lower().rsplit(':', 1)[-1] for tag in tags}
+    name = repo_id.lower()
+    result = []
+    if "gguf" in labels or "gguf" in name:
+        result.append("gguf")
+    if "mlx" in labels or "mlx" in name:
+        result.append("mlx")
+    if "gguf" not in result and ("tq" in labels or re.search(r"(?:^|[-_/])tq(?:$|[-_\d])", name)):
+        result.append("tq")
+    return result or (["hf"] if "safetensors" in labels else [])
 
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _TYLOINFER_SHARD_PATTERN = re.compile(
@@ -126,7 +140,7 @@ def _metadata_client(endpoint: str, **kwargs: Any) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         timeout=httpx.Timeout(_METADATA_TIMEOUT, connect=4.0),
         follow_redirects=True, trust_env=False, verify=verify,
-        proxy=proxy, **kwargs,
+        transport=_DirectFirstTransport(proxy, verify) if proxy else None, **kwargs,
     )
 
 
@@ -389,7 +403,8 @@ def _model_variants(
 ) -> list[HubModelVariant]:
     variants: list[HubModelVariant] = []
     mfq_groups: dict[tuple[str, str], list[HubModelFile]] = {}
-    hf_files: list[HubModelFile] = []
+    gguf_groups: dict[tuple[str, int, bool], list[HubModelFile]] = {}
+    hf_groups: dict[str, list[HubModelFile]] = {}
     for item in files:
         parent, separator, basename = item.name.rpartition("/")
         match = _TYLOINFER_SHARD_PATTERN.match(basename)
@@ -403,26 +418,25 @@ def _model_variants(
                 label = f"{parent}/{stem}"
             suffix = match.group('suffix').lower()
             mfq_groups.setdefault((label, suffix), []).append(item)
-        elif basename.lower().endswith(".gguf"):
-            configuration = _configuration_status(
-                item.byte_size,
-                profile,
-                supported=False,
-                unsupported_reason="GGUF must be converted before the TyloInfer runtime can load it.",
-            )
-            variants.append(
-                HubModelVariant(
-                    id=item.name,
-                    label=basename.removesuffix(".gguf"),
-                    format="gguf",
-                    precision=_precision_from_name(basename),
-                    files=[item.name],
-                    byte_size=item.byte_size,
-                    configuration=configuration,
-                )
-            )
+        elif is_gguf_path(item.name):
+            try:
+                shard = parse_gguf_shard_path(item.name)
+            except ValueError:
+                shard = None
+            base, _, count = shard or (Path(item.name), 1, 1)
+            gguf_groups.setdefault((base.as_posix(), count, '.part-' in basename), []).append(item)
         elif basename.lower().endswith((".safetensors", ".bin")):
-            hf_files.append(item)
+            hf_groups.setdefault(parent, []).append(item)
+    for (base, _, _), group in gguf_groups.items():
+        size = sum(item.byte_size for item in group)
+        variants.append(HubModelVariant(
+            id=min(item.name for item in group), label=base[:-5], format="gguf",
+            precision=_precision_from_name(base), files=sorted(item.name for item in group),
+            byte_size=size, configuration=_configuration_status(
+                size, profile, supported=runtime_compatible,
+                unsupported_reason="This model architecture is not registered in TyloInfer.",
+            ),
+        ))
     by_name = {item.name: item for item in files}
     for (label, suffix), group in mfq_groups.items():
         if all(is_engram_shard(item.name) for item in group):
@@ -458,7 +472,7 @@ def _model_variants(
                     label=label,
                     format="tq",
                     precision=_precision_from_name(label),
-                    files=sorted(item.name for item in group)[:256],
+                    files=sorted(item.name for item in group),
                     byte_size=size,
                     resident_weight_bytes=weights,
                     estimated_resident_weight_bytes=estimated,
@@ -467,15 +481,15 @@ def _model_variants(
                     configuration=configuration,
                 )
         )
-    if hf_files:
+    for parent, hf_files in hf_groups.items():
         size = sum(item.byte_size for item in hf_files)
         variants.append(
             HubModelVariant(
-                id="hf:original",
-                label="Original weights",
+                id=f"hf:{parent}" if parent else "hf:original",
+                label=parent or "Original weights",
                 format="hf",
-                precision=None,
-                files=sorted(item.name for item in hf_files)[:256],
+                precision=_precision_from_name(parent + '/'),
+                files=sorted(item.name for item in hf_files),
                 byte_size=size,
                 configuration=_configuration_status(
                     size,
@@ -542,6 +556,7 @@ class HubCatalog:
         self._cache_path = cache_path
         self._refresh_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._browser = HubBrowserSearch(self._browse_page)
         self._load_cache()
 
     def _load_cache(self) -> None:
@@ -620,11 +635,103 @@ class HubCatalog:
             await asyncio.gather(self._refresh_task, return_exceptions=True)
 
     async def search(
-        self, provider: HubProvider, query: str, *, limit: int
+        self, provider: HubProvider, query: str, *, limit: int,
+        format: str = "all", sort: str = "downloads",
     ) -> HubModelSearchResult:
         if provider == "huggingface":
-            return await asyncio.to_thread(self._search_huggingface, query, limit)
-        return await self._search_modelscope(query, limit)
+            return await asyncio.to_thread(self._search_huggingface, query, limit, format, sort)
+        return await self._search_modelscope(query, limit, format, sort)
+
+    async def browse(self, provider: HubProvider, query: str, *, formats: tuple[str, ...],
+        sort: str, direction: str, limit: int, cursor: str | None) -> HubModelSearchResult:
+        try:
+            return await self._browser.search(HubSearchQuery(provider, query.strip(), tuple(sorted(set(formats))), sort, direction, limit), cursor)
+        except (httpx.HTTPError, TimeoutError, RuntimeError) as error:
+            raise HubError('Could not retrieve models from this source.') from error
+
+    async def _browse_page(self, query: HubSearchQuery, format: str, position: str | None) -> tuple[list[HubModelSummary], str | None]:
+        count = 50
+        search = f"{query.query} TQ".strip() if format == 'tq' else query.query
+        if query.provider == 'huggingface':
+            from huggingface_hub import constants, get_token
+            endpoint, token = constants.ENDPOINT.rstrip('/'), get_token()
+            params = {'search': search, 'limit': count, 'direction': -1 if query.direction == 'desc' else 1,
+                'sort': 'lastModified' if query.sort == 'updated' else 'downloads' if query.sort == 'relevance' and query.query
+                else 'trendingScore' if query.sort == 'relevance' else query.sort,
+                'expand': ['downloads', 'likes', 'lastModified', 'tags', 'trendingScore', 'pipeline_tag']}
+            if format != 'tq': params['filter'] = format
+            if position: params['cursor'] = position
+            url = f'{endpoint}/api/models'
+        else:
+            endpoint = os.environ.get('MODELSCOPE_ENDPOINT', 'https://modelscope.cn').rstrip('/')
+            token = os.environ.get('MODELSCOPE_API_TOKEN') or os.environ.get('MODELSCOPE_TOKEN')
+            params = {'search': search, 'page_size': count, 'page_number': int(position or '1'),
+                'sort': 'last_modified' if query.sort == 'updated' else 'downloads' if query.sort == 'relevance' else query.sort}
+            if format != 'tq': params['filter.library'] = format
+            url = f'{endpoint}/openapi/v1/models'
+        headers = {'Authorization': f'Bearer {token}'} if token else {}
+        async with _metadata_client(endpoint, headers=headers) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+        if query.provider == 'huggingface':
+            values = response.json()
+            next_url = response.links.get('next', {}).get('url', '')
+            next_position = parse_qs(urlparse(next_url).query).get('cursor', [None])[0]
+        else:
+            payload = response.json()
+            if payload.get('success') is False: raise HubError('ModelScope search is unavailable.')
+            data = payload.get('data', {})
+            values = data.get('models', [])
+            page = int(position or '1')
+            next_position = str(page + 1) if len(values) == count and page * count < data.get('total_count', page * count + 1) else None
+        result = []
+        for item in values:
+            repo_id = item.get('id', '')
+            if not isinstance(repo_id, str) or not _REPOSITORY_PATTERN.fullmatch(repo_id): continue
+            tags = item.get('tags') or []
+            formats = _search_formats(repo_id, tags)
+            if format not in formats: continue
+            pipeline = item.get('pipeline_tag') or ''
+            if pipeline in {'text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'unconditional-image-generation'}: continue
+            if not pipeline and any(str(tag).rsplit(':', 1)[-1] in {'text-to-image', 'image-to-image', 'text-to-video', 'image-to-video'} for tag in tags): continue
+            result.append(HubModelSummary(provider=query.provider, repo_id=repo_id, author=repo_id.split('/')[0],
+                source_url=f"{'https://huggingface.co' if query.provider == 'huggingface' else 'https://modelscope.cn/models'}/{repo_id}",
+                downloads=item.get('downloads') or 0, likes=item.get('likes') or 0,
+                updated_at=item.get('lastModified') or item.get('last_modified'),
+                description=_optional_text(item.get('description')), formats=formats,
+                trending_score=item.get('trendingScore') or item.get('trending_score') or 0))
+        return result, next_position
+
+    @staticmethod
+    async def readme(provider: HubProvider, repo_id: str, revision: str | None) -> str | None:
+        resolve_hub_reference(repo_id, provider)
+        if provider == "huggingface":
+            from huggingface_hub import constants, get_token
+            endpoint, token = constants.ENDPOINT.rstrip('/'), get_token()
+            url = f"{endpoint}/{repo_id}/resolve/{quote(revision or 'main', safe='')}/README.md"
+            params = {}
+        else:
+            endpoint = os.environ.get('MODELSCOPE_ENDPOINT', 'https://modelscope.cn').rstrip('/')
+            token = os.environ.get('MODELSCOPE_API_TOKEN') or os.environ.get('MODELSCOPE_TOKEN')
+            url = f"{endpoint}/api/v1/models/{repo_id}/repo"
+            params = {"Revision": revision or "master", "FilePath": "README.md"}
+        try:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            async with (
+                _metadata_client(endpoint, headers=headers) as client,
+                client.stream("GET", url, params=params) as response,
+            ):
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(data) + len(chunk) > 512 * 1024:
+                        raise HubError("Model card exceeds the display size limit.")
+                    data.extend(chunk)
+                return data.decode("utf-8", errors="replace")
+        except httpx.HTTPError as error:
+            raise HubError("Could not retrieve the model card.") from error
 
     async def info(
         self,
@@ -1086,15 +1193,16 @@ class HubCatalog:
         )
 
     @staticmethod
-    def _search_huggingface(query: str, limit: int) -> HubModelSearchResult:
+    def _search_huggingface(query: str, limit: int, format: str = "all", sort: str = "downloads") -> HubModelSearchResult:
         try:
             from huggingface_hub import HfApi
 
             models = HfApi().list_models(
-                search=query,
-                sort="downloads",
+                search=f"{query} TQ".strip() if format == "tq" else query,
+                filter=format if format in {"gguf", "mlx"} else None,
+                sort="lastModified" if sort == "updated" else sort,
                 limit=limit,
-                expand=["downloads", "likes", "lastModified"],
+                expand=["downloads", "likes", "lastModified", "tags"],
                 token=os.environ.get("HF_TOKEN") or None,
             )
             return HubModelSearchResult(
@@ -1107,8 +1215,10 @@ class HubCatalog:
                         downloads=item.downloads or 0,
                         likes=item.likes or 0,
                         updated_at=item.last_modified,
+                        formats=_search_formats(item.id, item.tags or []),
                     )
                     for item in models
+                    if format != "tq" or "tq" in _search_formats(item.id, item.tags or [])
                 ]
             )
         except Exception as error:
@@ -1198,23 +1308,31 @@ class HubCatalog:
             raise HubError(str(error)) from error
 
     @staticmethod
-    async def _search_modelscope(query: str, limit: int) -> HubModelSearchResult:
+    async def _search_modelscope(query: str, limit: int, format: str = "all", sort: str = "downloads") -> HubModelSearchResult:
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                response = await client.put(
-                    "https://modelscope.cn/api/v1/models",
-                    json={"PageSize": limit, "Name": query},
-                )
-                response.raise_for_status()
-                payload = response.json().get("Data", {})
-            values = payload.get("Models", payload.get("models", []))
+            endpoint = os.environ.get('MODELSCOPE_ENDPOINT', 'https://modelscope.cn').rstrip('/')
+            params = {"search": f"{query} TQ".strip() if format == "tq" else query,
+                "sort": "last_modified" if sort == "updated" else sort, "page_size": min(limit, 50)}
+            if format in {"gguf", "mlx"}:
+                params["filter.library"] = format
+            values = []
+            async with _metadata_client(endpoint) as client:
+                for page in range(1, math.ceil(limit / params["page_size"]) + 1):
+                    response = await client.get(f"{endpoint}/openapi/v1/models", params={**params, "page_number": page})
+                    response.raise_for_status()
+                    payload = response.json()
+                    if payload.get("success") is False:
+                        raise HubError("ModelScope search is unavailable.")
+                    batch = payload.get("data", {}).get("models", [])
+                    values.extend(batch)
+                    if len(batch) < params["page_size"]:
+                        break
             result = []
             for item in values:
-                owner = item.get("Path") or ""
-                name = item.get("Name") or ""
-                repo_id = f"{owner}/{name}" if owner and name else name or owner
-                if not repo_id:
+                repo_id = item.get("id") or ""
+                if not _REPOSITORY_PATTERN.fullmatch(repo_id):
                     continue
+                owner = repo_id.split('/', 1)[0]
                 result.append(
                     HubModelSummary(
                         provider="modelscope",
@@ -1222,13 +1340,17 @@ class HubCatalog:
                         source_url=f"https://modelscope.cn/models/{repo_id}",
                         author=owner or None,
                         description=_optional_text(
-                            item.get("Description") or item.get("ChineseName")
+                            item.get("description")
                         ),
-                        downloads=int(item.get("Downloads") or 0),
-                        likes=int(item.get("Likes") or item.get("Stars") or 0),
-                        total_bytes=int(item.get("StorageSize") or 0),
+                        downloads=int(item.get("downloads") or 0),
+                        likes=int(item.get("likes") or 0),
+                        total_bytes=int(item.get("storage_size") or 0),
+                        formats=_search_formats(repo_id, item.get("tags") or []),
+                        updated_at=item.get("last_modified"),
                     )
                 )
+            if format != "all":
+                result = [item for item in result if format in item.formats]
             return HubModelSearchResult(data=result[:limit])
         except Exception as error:
             raise HubError(str(error)) from error
