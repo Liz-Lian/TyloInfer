@@ -211,6 +211,7 @@ array MlxGgufExpertCache::apply_ffn(std::size_t layer_index, const array& input,
     }, parallel);
     return output.dtype() == input.dtype() ? output : astype(output, input.dtype());
 }
+void MlxGgufExpertCache::set_prefill_next_rows(std::size_t layer, std::size_t rows) { impl_->cache->set_prefill_next_rows(layer, rows); }
 std::size_t MlxGgufExpertCache::limit_bytes() const noexcept { return impl_->cache->limit_bytes(); }
 std::size_t MlxGgufExpertCache::backing_bytes() const noexcept { return impl_->cache->backing_bytes(); }
 std::size_t MlxGgufExpertCache::resident_bytes() const noexcept { return impl_->cache->resident_bytes(); }

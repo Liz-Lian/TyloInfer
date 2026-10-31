@@ -1,6 +1,7 @@
 #include "mlx_deepseek_v41_causal_lm.h"
 #include "gguf.h"
 #include "ggml-quants.h"
+#include "tyloinfer/gguf_model_source.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -17,6 +18,18 @@ using namespace mlx::core;
 using nlohmann::json;
 
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+
+void write_native_table(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes,
+        const std::string& architecture = "deepseek_v41", const std::string& name = "model.block.0.associative_memory.embedding.weight") {
+    std::ofstream output(path, std::ios::binary);
+    const auto scalar = [&](auto value) { output.write(reinterpret_cast<const char*>(&value), sizeof(value)); };
+    const auto text = [&](const std::string& value) { scalar(uint32_t(value.size())); output.write(value.data(), value.size()); };
+    output.write("MFQ1", 4); scalar(uint32_t(2)); text(architecture);
+    scalar(uint32_t(2)); text("split.no"); text("1"); text("split.count"); text("43");
+    scalar(uint32_t(1)); text(name); text("MXFP8"); scalar(uint64_t(bytes.size()));
+    output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    require(bool(output), "native Engram fixture write failed");
+}
 
 json config() {
     return {{"model_type", "deepseek_v41"}, {"eos_token_id", 1}, {"image_token_id", 255},
@@ -48,12 +61,13 @@ json config() {
             {"downsample_ratio", 1}, {"max_image_tokens", 16}, {"min_pixels", 16}}}};
 }
 
-void write_fixture(const std::filesystem::path& path, const std::filesystem::path& table_path) {
+void write_fixture(const std::filesystem::path& path, const std::filesystem::path& table_path, int window = 16) {
     auto* context = ggml_init({32 << 20, nullptr, false});
     auto* file = gguf_init_empty();
     auto* table = gguf_init_empty();
     gguf_set_val_str(file, "general.architecture", "deepseek41");
-    gguf_set_val_str(file, "deepseek41.config", config().dump().c_str());
+    auto settings = config(); settings["text_config"]["sliding_window"] = window;
+    gguf_set_val_str(file, "deepseek41.config", settings.dump().c_str());
     gguf_set_val_str(file, "deepseek41.engram.encoding", "e4m3_e8m0_32_row264");
     const uint32_t layers[]{0}, rows[]{8}, primes[]{3, 5};
     std::vector<uint32_t> tokens(256);
@@ -229,6 +243,71 @@ int main() {
         const auto snapshot = streamed.capture_text_session_state(tokens);
         const auto next = array({18}, int32);
         const auto expected = resident.forward(next, true);
+        const std::string table_name = "model.block.0.associative_memory.embedding.weight";
+        const auto table_bytes = external_source.read(table_name);
+        for (const auto suffix : {".tq", ".mfq"}) {
+            const auto directory = root / (std::string("native-engram") + suffix);
+            std::filesystem::create_directory(directory);
+            const auto path = directory / (std::string("model-Engram-MXFP8-00002-of-00043") + suffix);
+            write_native_table(path, table_bytes);
+            mfq::ModelSource::TensorReader reader;
+            mfq::ModelSource::TensorBatchReader batch;
+            {
+                const mfq::GgufModelSource source(root / "external.gguf", {directory, path});
+                require(source.source_paths().size() == 2, "native Engram companion was duplicated or resolved as a whole model");
+                require(source.tensor_file_range(table_name).has_value(), "native Engram lost its direct file range");
+                reader = source.tensor_reader(table_name); batch = source.tensor_batch_reader(table_name);
+            }
+            std::vector<std::byte> restored(table_bytes.size());
+            reader(0, restored.data(), restored.size());
+            require(std::memcmp(restored.data(), table_bytes.data(), restored.size()) == 0,
+                "retained native Engram range reader changed bytes");
+            require(bool(batch), "native Engram lost its batched reader");
+            std::vector<std::byte> first_bytes(19), last_bytes(23);
+            batch({{0, first_bytes.data(), first_bytes.size()},
+                {table_bytes.size() - last_bytes.size(), last_bytes.data(), last_bytes.size()}});
+            require(std::memcmp(first_bytes.data(), table_bytes.data(), first_bytes.size()) == 0 &&
+                std::memcmp(last_bytes.data(), table_bytes.data() + table_bytes.size() - last_bytes.size(), last_bytes.size()) == 0,
+                "native Engram batch reader changed bytes");
+            const MfqContainer source(root / "external.gguf", {}, {path});
+            auto native = MlxDeepseekV41CausalLm::load(source, 128, 256 << 10);
+            close(first, native.forward(ids)); close(expected, native.forward(next, true));
+            require(native.engram_ssd_stats()->rows_loaded > 0, "native Engram was not streamed");
+            const auto duplicate = directory / "duplicate.tq";
+            write_native_table(duplicate, table_bytes);
+            bool duplicates_rejected = false;
+            try { MfqContainer invalid(root / "external.gguf", {}, {directory}); }
+            catch (const std::runtime_error&) { duplicates_rejected = true; }
+            require(duplicates_rejected, "duplicate native Engram tables were accepted");
+            std::filesystem::remove(duplicate);
+            const auto invalid = directory / "wrong.tq";
+            write_native_table(invalid, table_bytes, "wrong-architecture");
+            bool architecture_rejected = false;
+            try { MfqContainer bad(root / "external.gguf", {}, {invalid}); }
+            catch (const std::runtime_error&) { architecture_rejected = true; }
+            require(architecture_rejected, "incompatible native Engram architecture was accepted");
+            write_native_table(invalid, table_bytes, "deepseek_v41", "model.output.weight");
+            bool weights_rejected = false;
+            try { MfqContainer bad(root / "external.gguf", {}, {invalid}); }
+            catch (const std::runtime_error&) { weights_rejected = true; }
+            require(weights_rejected, "non-Engram native weights were accepted as a table companion");
+            for (const auto offset : {0, 4, 5, 6, 7, 8, 16, 24, 32, 40, 48}) {
+                auto malformed = table_bytes; malformed[offset] ^= 1;
+                write_native_table(invalid, malformed);
+                bool rejected = false;
+                try { MfqContainer bad(root / "external.gguf", {}, {invalid}); }
+                catch (const std::runtime_error&) { rejected = true; }
+                require(rejected, "malformed native Engram header was accepted");
+            }
+            for (const auto size : {std::size_t{55}, table_bytes.size() - 1, table_bytes.size() + 1}) {
+                auto malformed = table_bytes; malformed.resize(size);
+                write_native_table(invalid, malformed);
+                bool rejected = false;
+                try { MfqContainer bad(root / "external.gguf", {}, {invalid}); }
+                catch (const std::runtime_error&) { rejected = true; }
+                require(rejected, "truncated or trailing native Engram payload was accepted");
+            }
+        }
         close(streamed.forward(next, true), expected);
         close(external.forward(next, true), expected);
         close(configured.forward(next, true), expected);
@@ -244,6 +323,22 @@ int main() {
         close(resident.prefill(ids, 8), streamed.prefill(ids, 8));
         close(resident.decode(next), streamed.decode(next));
         const auto long_ids = arange(2, 67, int32);
+        {
+            const auto directory = root / "ced-boundary";
+            std::filesystem::create_directory(directory);
+            const auto path = directory / "model-00001-of-00002.gguf";
+            write_fixture(path, directory / "model-00002-of-00002.gguf", 2);
+            const MfqContainer source(path);
+            auto reference = MlxDeepseekV41CausalLm::load(source, 128);
+            auto bounded = MlxDeepseekV41CausalLm::load(source, 128, 2 << 20);
+            close(reference.prefill(long_ids, 33), bounded.prefill(long_ids, 33));
+            require(bounded.ssd_expert_cache_stats()->overlapped_read_submissions == 0,
+                "CED GGUF prefill read a skipped or short-window decoder layer ahead");
+            auto full = MlxDeepseekV41CausalLm::load(source, 128, 2 << 20);
+            close(reference.prefill(long_ids, 65, true), full.prefill(long_ids, 65, true));
+            require(full.ssd_expert_cache_stats()->overlapped_read_submissions > 0,
+                "full-logit GGUF prefill lost next-layer read-ahead");
+        }
         const auto long_expected = multipart_resident.prefill(long_ids, 65);
         close(long_expected, streamed.prefill(long_ids, 65));
         close(long_expected, configured.prefill(long_ids, 65));

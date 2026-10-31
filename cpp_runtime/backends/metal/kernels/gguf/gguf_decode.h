@@ -16,20 +16,34 @@ METAL_FUNC float gguf_ptq_dot128(device const uchar* row, X x, uint k, uint lane
     auto block = row + ulong(k / 128u) * 28u;
     constexpr uint powers[5] = {1u, 3u, 9u, 27u, 81u};
     float sum = 0.f;
-    for (uint byte = lane; byte < 16u; byte += LANES) {
+    if constexpr (LANES == 8u) {
+        uint codes = uint(block[lane]) | (uint(block[lane + 8u]) << 16u);
+        float2 pair(0.f);
+        for (uint digit = 0u; digit < 5u; ++digit) {
+            codes *= 3u;
+            const uint trits = (codes >> 8u) & 0x00030003u;
+            codes &= 0x00ff00ffu;
+            pair += float2(float(int(trits & 3u) - 1), float(int(trits >> 16u) - 1)) *
+                float2(float(x[k + lane + digit * 16u]), float(x[k + lane + 8u + digit * 16u]));
+        }
+        sum = pair.x + pair.y;
+    } else for (uint byte = lane; byte < 16u; byte += LANES) {
         const uint code = block[byte];
         for (uint digit = 0u; digit < 5u; ++digit)
             sum += float(int((((code * powers[digit]) & 255u) * 3u) >> 8u) - 1) * float(x[k + byte + digit * 16u]);
     }
     for (uint byte = lane; byte < 8u; byte += LANES) {
-        const uint code = block[16u + byte];
-        for (uint digit = 0u; digit < 5u; ++digit)
-            sum += float(int((((code * powers[digit]) & 255u) * 3u) >> 8u) - 1) * float(x[k + 80u + byte + digit * 8u]);
+        uint code = block[16u + byte];
+        for (uint digit = 0u; digit < 5u; ++digit) {
+            code *= 3u;
+            sum += float(int(code >> 8u) - 1) * float(x[k + 80u + byte + digit * 8u]);
+            code &= 255u;
+        }
     }
-    if (lane < 2u) {
-        const uint code = block[24u + lane];
-        for (uint digit = 0u; digit < 4u; ++digit)
-            sum += float(int((((code * powers[digit]) & 255u) * 3u) >> 8u) - 1) * float(x[k + 120u + lane + digit * 2u]);
+    for (uint tail = lane; tail < 8u; tail += LANES) {
+        const uint code = block[24u + tail % 2u];
+        const uint digit = tail / 2u;
+        sum += float(int((((code * powers[digit]) & 255u) * 3u) >> 8u) - 1) * float(x[k + 120u + tail]);
     }
     return float(*reinterpret_cast<device const half*>(block + 26u)) * sum;
 }

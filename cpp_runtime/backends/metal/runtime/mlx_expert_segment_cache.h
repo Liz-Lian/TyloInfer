@@ -38,6 +38,7 @@ public:
         const mlx::core::array* parallel = nullptr);
     const std::vector<mlx::core::array>& address_tables(std::size_t layer) const;
     const std::shared_ptr<MlxWeightResidency>& residency() const noexcept;
+    void set_prefill_next_rows(std::size_t layer, std::size_t rows);
     std::size_t limit_bytes() const noexcept;
     std::size_t backing_bytes() const noexcept;
     std::size_t resident_bytes() const noexcept;

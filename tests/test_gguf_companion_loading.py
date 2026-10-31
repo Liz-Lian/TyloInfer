@@ -48,6 +48,17 @@ def test_unsupported_companion_combination_is_explicit(tmp_path, backend, model)
         native_gguf_companion_arguments(tmp_path / model, ['tables.gguf'], backend)
 
 
+@pytest.mark.parametrize('suffix', ['.tq', '.mfq'])
+def test_native_engram_files_and_folders_are_forwarded_to_inspector(tmp_path, suffix):
+    folder = tmp_path / 'Engram'
+    folder.mkdir()
+    table = folder / ('model-Engram-MXFP8-00002-of-00043' + suffix)
+    table.write_bytes(b'MFQ1')
+    for path in (table, folder):
+        assert native_gguf_companion_arguments(tmp_path / 'model.gguf', [str(path)], 'metal') == [
+            '--gguf-companion', str(path)]
+
+
 def test_unrelated_files_and_folders_are_not_silently_selected(tmp_path):
     model = tmp_path / 'model.gguf'
     header(model, 3)

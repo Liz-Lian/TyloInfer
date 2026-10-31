@@ -627,6 +627,13 @@ MappedPrefetchScope::~MappedPrefetchScope(){
 }
 
 MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mode)
+    : MfqModelSource(std::move(requested), mode, false) {}
+
+std::shared_ptr<MfqModelSource> MfqModelSource::open_engram_shard(std::filesystem::path path, FileReadMode mode) {
+    return std::shared_ptr<MfqModelSource>(new MfqModelSource(std::move(path), mode, true));
+}
+
+MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mode, bool table_only)
     : impl_(std::make_unique<Impl>()) {
     impl_->read_mode = mode;
     const auto initial_path = stable_path(requested);
@@ -637,6 +644,21 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
         throw std::runtime_error("invalid MFQ split metadata: " +
                                  initial_path.string());
     }
+
+    const auto table_record = [](const MfqStoredRecord& record) {
+        std::string_view name = record.tensor.name;
+        constexpr std::string_view marker = ".tq_row_shard.";
+        const auto shard = name.rfind(marker);
+        if (shard != std::string_view::npos && shard + marker.size() < name.size()
+            && std::all_of(name.begin() + shard + marker.size(), name.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            name = name.substr(0, shard);
+        for (const std::string_view suffix : {".associative_memory.embedding.weight", ".engram.embed.weight"})
+            if (name.size() >= suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
+                return !record.asset;
+        return false;
+    };
+    if (table_only && (initial.records.empty() || !std::all_of(initial.records.begin(), initial.records.end(), table_record)))
+        throw std::runtime_error("MFQ Engram companion contains non-table records: " + initial_path.string());
 
     auto append = [&](ParsedFile parsed) {
         for (auto& record : parsed.records) {
@@ -649,7 +671,7 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
         }
     };
 
-    if (split_count == 1) {
+    if (split_count == 1 || table_only) {
         impl_->header = initial.header;
         impl_->source_paths.push_back(initial_path);
         append(std::move(initial));
@@ -665,19 +687,7 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
             auto current = parse_file(paths[static_cast<std::size_t>(index)]);
             static const std::regex shared_name(R"(^.*-Engram-.+-[0-9]{5}-of-[0-9]{5}\.(mfq|tq)$)", std::regex::icase);
             if (std::regex_match(paths[index].filename().string(), shared_name)) {
-                const auto table = [](const MfqStoredRecord& record) {
-                    std::string_view name = record.tensor.name;
-                    constexpr std::string_view marker = ".tq_row_shard.";
-                    const auto shard = name.rfind(marker);
-                    if (shard != std::string_view::npos && shard + marker.size() < name.size()
-                        && std::all_of(name.begin() + shard + marker.size(), name.end(), [](char c) { return c >= '0' && c <= '9'; }))
-                        name = name.substr(0, shard);
-                    for (const std::string_view suffix : {".associative_memory.embedding.weight", ".engram.embed.weight"})
-                        if (name.size() >= suffix.size() &&
-                            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) return true;
-                    return false;
-                };
-                if (current.records.empty() || !std::all_of(current.records.begin(), current.records.end(), table))
+                if (current.records.empty() || !std::all_of(current.records.begin(), current.records.end(), table_record))
                     throw std::runtime_error("shared Engram shard contains non-table records: " + paths[index].string());
             }
             if (current.header.version != initial.header.version ||
@@ -765,8 +775,32 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
         }
     }
 
-    for (const auto& record : impl_->records) {
+    for (auto& record : impl_->records) {
         if (record.asset) continue;
+        if (table_only && record.tensor.dtype == "MXFP8") {
+            std::array<std::byte, 56> header{};
+            if (record.tensor.nbytes < header.size())
+                throw std::runtime_error("truncated native MXFP8 Engram header: " + record.tensor.name);
+            read_range_into(record.tensor.name, 0, header.data(), header.size());
+            const auto dimension = [&](std::size_t offset) {
+                std::uint64_t value = 0;
+                for (unsigned byte = 0; byte < 8; ++byte)
+                    value |= std::uint64_t(std::to_integer<unsigned char>(header[offset + byte])) << (8 * byte);
+                return value;
+            };
+            const auto rows = dimension(8), columns = dimension(16);
+            if (std::memcmp(header.data(), "MXT1", 4) || header[4] != std::byte{1} ||
+                header[5] != std::byte{8} || header[6] != std::byte{0} || header[7] != std::byte{0} ||
+                !rows || !columns || columns % 32 || rows > INT64_MAX || columns > INT64_MAX ||
+                rows > UINT64_MAX / columns || dimension(24) != rows || dimension(32) != columns ||
+                dimension(40) != rows || dimension(48) != columns / 32)
+                throw std::runtime_error("invalid native MXFP8 Engram geometry: " + record.tensor.name);
+            const auto values = rows * columns;
+            if (values > record.tensor.nbytes - header.size() ||
+                record.tensor.nbytes - header.size() - values != values / 32)
+                throw std::runtime_error("native MXFP8 Engram payload size disagrees: " + record.tensor.name);
+            record.tensor.shape = std::vector<std::int64_t>{static_cast<std::int64_t>(rows), static_cast<std::int64_t>(columns)};
+        }
         auto tensor = record.tensor;
         if (const auto found = stored_to_canonical.find(tensor.name);
             found != stored_to_canonical.end()) {
@@ -846,6 +880,18 @@ void MfqModelSource::read_range_into(
     if (impl_->read_mode == FileReadMode::Direct)
         impl_->direct_readers.at(record.source_path)->read(record.offset + relative_offset, destination, size);
     else read_exact(record.source_path, record.offset + relative_offset, destination, size);
+}
+
+std::optional<TensorFileRange> MfqModelSource::tensor_file_range(std::string_view name) const {
+    auto found = impl_->records_by_name.find(std::string(name));
+    if (found == impl_->records_by_name.end()) {
+        const auto alias = impl_->legacy_tensor_compatibility.canonical_to_stored.find(std::string(name));
+        if (alias != impl_->legacy_tensor_compatibility.canonical_to_stored.end())
+            found = impl_->records_by_name.find(alias->second);
+    }
+    if (found == impl_->records_by_name.end() || impl_->records[found->second].asset) return std::nullopt;
+    const auto& record = impl_->records[found->second];
+    return TensorFileRange{record.source_path, record.offset, record.tensor.nbytes};
 }
 
 ModelSource::TensorReader MfqModelSource::tensor_reader(std::string_view name) const {

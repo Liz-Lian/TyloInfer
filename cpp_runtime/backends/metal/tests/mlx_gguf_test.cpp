@@ -625,8 +625,90 @@ void check_heterogeneous_file() {
     }
 }
 
+void check_ptq_tail_projection() {
+    constexpr int K = 128, N = 256;
+    auto bytes = packed(GGML_TYPE_PTQ1_0, K, N);
+    for (int n = 0; n < N; ++n) {
+        bytes[n * 28 + 24] = std::uint8_t(n);
+        bytes[n * 28 + 25] = std::uint8_t(255 - n);
+        bytes[n * 28 + 26] = 0; bytes[n * 28 + 27] = 0x3c;
+    }
+    std::vector<float> decoded(N * K);
+    ggml_get_type_traits(GGML_TYPE_PTQ1_0)->to_float(bytes.data(), decoded.data(), decoded.size());
+    const auto weight = MlxGgufWeight::from_bytes("GGUF_PTQ1_0", bytes, {N, K});
+    for (auto dtype : {float16, bfloat16, float32}) for (int rows : {1, 6}) {
+        for (int first = 0; first + rows <= 8; first += rows == 1 ? 1 : 2) {
+            std::vector<float> values(rows * K), expected(rows * N);
+            for (int row = 0; row < rows; ++row) {
+                const int k = 120 + first + row;
+                values[row * K + k] = 1.f;
+                for (int n = 0; n < N; ++n) expected[row * N + n] = decoded[n * K + k];
+            }
+            compare(weight.matmul(astype(array(values.begin(), {rows, K}), dtype)),
+                astype(array(expected.begin(), {rows, N}), dtype), 0.f, "PTQ tail basis differs");
+        }
+    }
+}
+
+void check_ptq_packed_pairs() {
+    constexpr int N = 65536, K = 128, M = 5;
+    std::vector<std::uint8_t> bytes(N * 28, 0);
+    std::vector<float> input(M * K, 0.f), expected(M * N);
+    constexpr unsigned powers[]{1, 3, 9, 27, 81};
+    const std::uint16_t scale = ggml_fp32_to_fp16(1.f);
+    for (int row = 0; row < N; ++row) {
+        const unsigned a = row & 255, b = row >> 8;
+        bytes[row * 28] = a; bytes[row * 28 + 8] = b;
+        std::memcpy(bytes.data() + row * 28 + 26, &scale, 2);
+        for (int digit = 0; digit < M; ++digit)
+            expected[digit * N + row] = int((((a * powers[digit]) & 255) * 3) >> 8) - 1 +
+                int((((b * powers[digit]) & 255) * 3) >> 8) - 1;
+    }
+    for (int digit = 0; digit < M; ++digit)
+        input[digit * K + digit * 16] = input[digit * K + digit * 16 + 8] = 1.f;
+    const auto dense = MlxGgufWeight::from_bytes("GGUF_PTQ1_0", bytes, {N, K});
+    const auto mixed = MlxGgufWeight::from_mixed_experts({1, N, K}, {0}, {"GGUF_PTQ1_0"},
+        {array(bytes.begin(), {N, 28}, uint8)});
+    for (const auto dtype : {float16, bfloat16, float32}) {
+        const auto x = astype(array(input.begin(), {M, K}), dtype);
+        const auto gold = astype(array(expected.begin(), {M, N}), dtype);
+        compare(dense.matmul(x), gold, 0.f, "PTQ packed dense byte pairs differ");
+        compare(mixed.routed_matmul(x, zeros({M, 1}, int32), true), expand_dims(gold, 1),
+            0.f, "PTQ packed mixed byte pairs differ");
+    }
+}
+
 void check_heterogeneous_experts() {
+    check_ptq_tail_projection();
+    check_ptq_packed_pairs();
     check_heterogeneous_file();
+    for (const int width : {64, 192}) {
+        constexpr int experts = 2, outputs = 16;
+        const auto bytes = packed(GGML_TYPE_Q2_0, width, experts * outputs);
+        const auto stride = ggml_row_size(GGML_TYPE_Q2_0, width);
+        std::vector<array> storage;
+        for (int expert = 0; expert < experts; ++expert)
+            storage.emplace_back(bytes.begin() + expert * outputs * stride,
+                Shape{outputs, int(stride)}, uint8);
+        const auto weight = MlxGgufWeight::from_mixed_experts({experts, outputs, width}, {0, 1},
+            {"GGUF_Q2_0", "GGUF_Q2_0"}, storage);
+        std::vector<float> decoded(experts * outputs * width);
+        ggml_get_type_traits(GGML_TYPE_Q2_0)->to_float(bytes.data(), decoded.data(), decoded.size());
+        const array gold(decoded.begin(), {experts, outputs, width});
+        for (auto dtype : {float16, bfloat16, float32}) for (int rows : {1, 6}) {
+            const auto input = astype(reshape(sin(arange(rows * width, float32) * .013f), {rows, width}), dtype);
+            const auto ids = broadcast_to(array({0, 1}, int32), {rows, experts});
+            const auto expected = astype(reference_routed_mm(input, ids, gold, true), dtype);
+            const float tolerance = dtype == bfloat16 ? .01f : .002f;
+            compare(weight.routed_matmul(input, ids, true), expected, tolerance, "Q2 short-block projection differs");
+            compare(weight.routed_swiglu(weight, input, ids), moe_swiglu_pair(expected, expected),
+                dtype == bfloat16 ? .02f : .003f, "Q2 short-block Gate/Up differs");
+            const auto separate = broadcast_to(expand_dims(input, 1), {rows, experts, width});
+            const auto probabilities = full({rows, experts}, .5f);
+            compare(weight.routed_weighted_matmul(separate, ids, probabilities),
+                moe_weighted_reduce(expected, probabilities), tolerance, "Q2 short-block weighted Down differs");
+        }
+    }
     constexpr int E = 5, N = 64, K = 512;
     const std::array types{GGML_TYPE_PTQ1_0, GGML_TYPE_Q2_0, GGML_TYPE_Q3_K, GGML_TYPE_MXFP4};
     std::array<std::vector<array>, 2> gold;
@@ -1594,6 +1676,32 @@ void check_native_hyper() {
     eval(branches);
     for (std::size_t i = 0; i < branches.size(); ++i)
         compare(branches[i], expected_branches[i], .03f, "native hyper prepared affine input");
+    const auto down_bytes = packed(GGML_TYPE_Q8_0, width, rank);
+    const auto up_bytes = packed(GGML_TYPE_Q8_0, rank, width);
+    const auto inject_bytes = packed(GGML_TYPE_Q8_0, width, 4);
+    const auto quantized_inject = MlxGgufWeight::from_bytes("GGUF_Q8_0", inject_bytes, {4, width});
+    const auto inject_f32 = quantized_inject.dequantize(float32);
+    std::vector<float> decoded_inject(width * 4), decoded_down(width * rank), decoded_up(width * rank);
+    const auto decode = ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float;
+    decode(inject_bytes.data(), decoded_inject.data(), decoded_inject.size());
+    decode(down_bytes.data(), decoded_down.data(), decoded_down.size());
+    decode(up_bytes.data(), decoded_up.data(), decoded_up.size());
+    compare(inject_f32, array(decoded_inject.begin(), {4, width}), 0.f, "native hyper quantized injection decode");
+    const auto reference_down = astype(array(decoded_down.begin(), {rank, width}), bfloat16);
+    const auto reference_up = astype(array(decoded_up.begin(), {width, rank}), bfloat16);
+    const auto packed_down = mlx_native_gguf_pack(array(down_bytes.begin(), {int(down_bytes.size())}, uint8),
+        GGML_TYPE_Q8_0, rank, width, ggml_row_size(GGML_TYPE_Q8_0, width));
+    const auto packed_up = mlx_native_gguf_pack(array(up_bytes.begin(), {int(up_bytes.size())}, uint8),
+        GGML_TYPE_Q8_0, width, rank, ggml_row_size(GGML_TYPE_Q8_0, rank));
+    for (const auto dtype : {float16, bfloat16, float32}) for (const int rows : {1, 6, 65, 4096}) {
+        const auto input = astype(reshape(sin(arange(rows * width, float32) * .013f), {1, rows, width}), dtype);
+        const auto actual = mlx_native_gguf_hyper(input, norm + array(1.f), packed_down, packed_up, &inject_f32);
+        const auto expected = qwen4_gated_residual_pre(input, norm, reference_down, reference_up,
+            inject_f32, hidden, 4, 1e-6f);
+        compare(actual[0], expected.branch, .025f, "native hyper quantized projections and injection");
+        compare(reshape(actual[1], {1, rows, 4}), *expected.injection, .02f,
+            "native hyper quantized injection normalization");
+    }
     std::cout << "native hyper-connection norm, projections, activation and mix passed\n";
 }
 

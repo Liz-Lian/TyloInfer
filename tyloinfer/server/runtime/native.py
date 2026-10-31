@@ -189,12 +189,14 @@ def native_gguf_companion_arguments(model: str | Path, companions: list[str], ba
         try:
             path = Path(value).expanduser().resolve(strict=True)
             if path.is_dir():
-                if not any(item.is_file() for item in path.glob("*.safetensors")):
-                    raise ValueError("The Engram folder contains no Safetensors files")
+                if not any(item.is_file() and item.suffix.lower() in {".safetensors", ".tq", ".mfq"} for item in path.iterdir()):
+                    raise ValueError("The Engram folder contains no supported table files")
+            elif path.is_file() and path.suffix.lower() in {".tq", ".mfq"}:
+                pass
             elif is_gguf_path(path) and gguf_is_table_component(path):
                 path = gguf_part_paths(path)[0]
             else:
-                raise ValueError("Select a GGUF table file or an Engram Safetensors folder")
+                raise ValueError("Select a GGUF table, native Engram shard, or Engram folder")
         except (OSError, ValueError) as error:
             raise NativeRuntimeError(f"Invalid GGUF companion: {error}") from error
         if path not in seen:

@@ -329,7 +329,7 @@ void print_help() {
         << "  mfq-decode-metal --self-test-metal\n\n"
         << "Options:\n"
         << "  --model PATH           TQ/MFQ model, GGUF model/shard, or HF directory\n"
-        << "  --gguf-companion PATH  additional GGUF table/component (repeatable)\n"
+        << "  --gguf-companion PATH  additional GGUF component or external Engram source (repeatable)\n"
         << "  --check-mfq-container  validate headers, records, and shard set\n"
         << "  --list-tensors         print record dtype, bytes, and name\n"
         << "  --inspect-model-json   print model metadata without loading weights\n"

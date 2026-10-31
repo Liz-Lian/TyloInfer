@@ -809,12 +809,15 @@ private:
                 return std::nullopt;
             };
             const auto lower = convert(down_), upper = convert(up_);
-            if (lower && upper && (!injection_ || injection_->dense_weight_ref() || injection_->affine_weight_ref())) {
+            if (lower && upper && (!injection_ || injection_->dense_weight_ref() ||
+                injection_->affine_weight_ref() || injection_->gguf_weight_ref())) {
                 native_hyper_.emplace(std::array{*lower, *upper});
                 native_norm_.emplace(mlx::core::astype(norm_, mlx::core::float32) + array(1.f));
                 if (injection_) {
                     if (const auto* weight = injection_->dense_weight_ref())
                         native_inject_.emplace(mlx::core::astype(*weight, mlx::core::float32));
+                    else if (const auto* weight = injection_->gguf_weight_ref())
+                        native_inject_.emplace(weight->dequantize(mlx::core::float32));
                     else native_inject_.emplace(injection_->affine_weight_ref()->dequantize(mlx::core::float32));
                 }
                 native_norm_->eval(); MlxWeightResidency::track(*native_norm_);

@@ -204,6 +204,21 @@ int main() {
         check(ahead.apply_ffn(1, many, zeros_ids, many_weights),
             moe_weighted_reduce(down1.routed_matmul(sparse_hidden, zeros_ids, false), many_weights));
         require(ahead.stats().resident_experts == 5, "GGUF cache retained unused prefetched experts");
+        for (const auto next_rows : {std::size_t{0}, std::size_t{1}}) {
+            ahead.clear();
+            ahead.set_prefill_next_rows(0, next_rows);
+            const auto before = ahead.stats().overlapped_read_submissions;
+            check(ahead.apply_ffn(0, many, many_ids, many_weights), expected(gate, up, down));
+            require(ahead.stats().overlapped_read_submissions == before,
+                "GGUF prefill ignored a skipped or shortened next layer");
+            check(ahead.apply_ffn(1, many, zeros_ids, many_weights),
+                moe_weighted_reduce(down1.routed_matmul(sparse_hidden, zeros_ids, false), many_weights));
+        }
+        ahead.clear(); ahead.set_prefill_next_rows(0, many.shape(0));
+        const auto before_restored_ahead = ahead.stats().overlapped_read_submissions;
+        check(ahead.apply_ffn(0, many, many_ids, many_weights), expected(gate, up, down));
+        require(ahead.stats().overlapped_read_submissions == before_restored_ahead + 1,
+            "GGUF prefill did not restore read-ahead for a full next layer");
         MlxGgufExpertCache bounded_ahead(model, {"model.block.0", "model.block.1"}, one_expert * 4, 4);
         check(bounded_ahead.apply_ffn(0, many, many_ids, many_weights), expected(gate, up, down));
         require(bounded_ahead.stats().overlapped_read_submissions == 0 && bounded_ahead.stats().evictions == 0,

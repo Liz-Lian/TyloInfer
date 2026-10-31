@@ -39,7 +39,7 @@ float mixed_dot(device const uchar* row, X x, uint K, uint lane) {
     if constexpr (F == 143) {
         for (uint k = 0u; k < K; k += 128u) sum += gguf_ptq_dot128<8>(row, x, k, lane);
     } else if constexpr (F == 42) {
-        for (uint k = lane * 8u; k < K; k += 64u) sum += gguf_q2_dot<8>(row, x, k);
+        for (uint k = lane * 16u; k < K; k += 128u) sum += gguf_q2_dot<16>(row, x, k);
     } else {
         for (uint k = lane * 4u; k < K; k += 32u)
             sum += dot(gguf_values4<F>(row, k), float4(x[k], x[k + 1u], x[k + 2u], x[k + 3u]));

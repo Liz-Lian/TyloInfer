@@ -23,6 +23,7 @@ public:
     void validate_layer(std::size_t layer, int experts, int input, int intermediate) const override;
     void prepare_layer(std::size_t layer, int top_k) const override;
     void prepare_layer(std::size_t layer, int top_k, float swiglu_limit) const;
+    void set_prefill_next_rows(std::size_t layer, std::size_t rows);
     std::size_t limit_bytes() const noexcept override;
     std::size_t backing_bytes() const noexcept override;
     std::size_t resident_bytes() const noexcept override;

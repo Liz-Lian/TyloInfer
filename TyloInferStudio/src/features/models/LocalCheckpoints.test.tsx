@@ -19,6 +19,7 @@ it('passes an explicit external Engram path only for the selected GGUF model', a
   const view = render(<LocalCheckpoints catalog={catalog} />);
   expect(screen.getByRole('button', { name: 'Load' })).toBeDisabled();
   await userEvent.click(screen.getByText('Engram companion'));
+  expect(screen.getByPlaceholderText('Server-side GGUF/TQ/MFQ table file or Engram folder')).toBeInTheDocument();
   await userEvent.type(screen.getByRole('textbox', { name: 'Engram path: XQ' }), '/models/engram');
   await userEvent.click(screen.getByRole('button', { name: 'Load' }));
   expect(loadArtifact).toHaveBeenCalledExactlyOnceWith('XQ', ['/models/engram']);

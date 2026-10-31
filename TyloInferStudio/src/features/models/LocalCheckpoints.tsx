@@ -86,7 +86,7 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
                       <summary>{tr('Engram 配套文件', 'Engram companion')}</summary>
                       <input aria-label={tr(`Engram 路径：${item.name}`, `Engram path: ${item.name}`)}
                         disabled={busy} value={companions[item.id] ?? ''}
-                        placeholder={tr('服务端的 GGUF 表文件或 Safetensors 文件夹', 'Server-side GGUF table file or Safetensors folder')}
+                        placeholder={tr('服务端的 GGUF/TQ/MFQ 表文件或 Engram 文件夹', 'Server-side GGUF/TQ/MFQ table file or Engram folder')}
                         onChange={event => setCompanions(previous => ({ ...previous, [item.id]: event.target.value }))} />
                     </details>}
                   </div>

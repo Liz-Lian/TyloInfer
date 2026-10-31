@@ -40,6 +40,7 @@ struct MlxExpertSegmentCache::Impl {
     };
     MfqContainer model;
     std::vector<Layer> layers;
+    std::vector<std::size_t> prefill_next_rows;
     std::size_t budget, backing = 0, resident = 0, maximum_entry = 0;
     int workers;
     bool prefill_read_ahead;
@@ -136,6 +137,7 @@ struct MlxExpertSegmentCache::Impl {
             layers.push_back(std::move(layer));
         }
         if (budget < maximum_entry) throw std::invalid_argument("expert cache budget cannot hold one expert");
+        prefill_next_rows.assign(layers.size(), SIZE_MAX);
         pool = std::make_unique<MlxStreamedWeightPool>(budget, maximum_entry);
         resources.set({0, 0, 0, backing, 0});
     }
@@ -259,17 +261,18 @@ struct MlxExpertSegmentCache::Impl {
         }
     }
 
-    void prefetch_next(std::size_t current, std::size_t rows) {
+    void prefetch_next(std::size_t current, std::size_t rows, std::size_t in_flight = 0) {
         if (!prefill_read_ahead || prefetched || current + 1 >= layers.size()) return;
         const auto index = current + 1;
         auto& layer = layers[index];
-        if (rows < std::size_t(layer.source.experts) || rows < std::size_t(layers[current].source.experts)) return;
+        if (std::min(rows, prefill_next_rows[current]) < std::size_t(layer.source.experts) ||
+            rows < std::size_t(layers[current].source.experts)) return;
         std::size_t reserve = 0;
         for (int expert = 0; expert < layer.source.experts; ++expert) {
             const auto key = (std::uint64_t(index) << 32) | std::uint32_t(expert);
             if (!entries.contains(key)) reserve += layer.entry_size(expert);
         }
-        if (!reserve || resident > budget || reserve > budget - resident) return;
+        if (!reserve || resident > budget || in_flight > budget - resident || reserve > budget - resident - in_flight) return;
         Prefetch state; state.layer = index;
         struct ReadJob {
             std::string tensor;
@@ -369,18 +372,28 @@ struct MlxExpertSegmentCache::Impl {
             if (!offset) throw std::runtime_error("expert batch cannot fit the memory pool");
             pending.push_back({key, Entry{*offset, bytes, {}}});
         }
-        struct ReadJob { std::size_t field, first, last; };
+        struct ReadJob {
+            std::size_t field;
+            std::uint64_t offset;
+            std::vector<std::span<std::byte>> targets;
+        };
         std::vector<ReadJob> jobs;
         std::size_t first_jobs = 0;
         for (std::size_t field = 0; field < layer.source.fields.size(); ++field) {
-            const auto maximum = std::max<std::size_t>(1, (32u << 20) / layer.source.fields[field].expert_bytes);
+            const auto& source = layer.source.fields[field];
+            const auto maximum = std::max<std::size_t>(1, (32u << 20) / source.expert_bytes);
             for (std::size_t first = 0; first < pending.size();) {
                 auto last = first + 1;
-                const auto& source = layer.source.fields[field];
                 while (last < pending.size() && last - first < maximum && pending[last].first == pending[last - 1].first + 1 &&
                     source.begin(std::int32_t(pending[last].first)) == source.begin(std::int32_t(pending[last - 1].first)) +
                         source.size(std::int32_t(pending[last - 1].first))) ++last;
-                jobs.push_back({field, first, last}); first = last;
+                ReadJob job{field, source.begin(std::int32_t(pending[first].first)), {}};
+                job.targets.reserve(last - first);
+                for (auto item = first; item < last; ++item) {
+                    const int e = std::int32_t(pending[item].first);
+                    job.targets.emplace_back(pool->data(pending[item].second.offset + layer.field_offset(field, e)), source.size(e));
+                }
+                jobs.push_back(std::move(job)); first = last;
             }
             if (field + 1 == first_fields) first_jobs = jobs.size();
         }
@@ -402,13 +415,7 @@ struct MlxExpertSegmentCache::Impl {
             for (auto job = begin; job < end; ++job) {
                 const auto& read = jobs[std::size_t(job)];
                 const auto& field = layer.source.fields[read.field];
-                std::vector<std::span<std::byte>> targets;
-                targets.reserve(read.last - read.first);
-                for (auto item = read.first; item < read.last; ++item) {
-                    const int e = std::int32_t(pending[item].first);
-                    targets.emplace_back(pool->data(pending[item].second.offset + layer.field_offset(read.field, e)), field.size(e));
-                }
-                model.readv_range(field.tensor, field.begin(std::int32_t(pending[read.first].first)), targets);
+                model.readv_range(field.tensor, read.offset, read.targets);
             }
         };
         try {
@@ -441,6 +448,10 @@ MlxExpertSegmentCache::MlxExpertSegmentCache(const MfqContainer& model, std::vec
     : impl_(std::make_shared<Impl>(model, std::move(layers), budget, workers, prefill_read_ahead)) {}
 const std::vector<array>& MlxExpertSegmentCache::address_tables(std::size_t layer) const { return impl_->layers.at(layer).tables; }
 const std::shared_ptr<MlxWeightResidency>& MlxExpertSegmentCache::residency() const noexcept { return impl_->pool->residency(); }
+void MlxExpertSegmentCache::set_prefill_next_rows(std::size_t layer, std::size_t rows) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->prefill_next_rows.at(layer) = rows;
+}
 
 array MlxExpertSegmentCache::apply(std::size_t index, const array& ids, std::size_t first_fields,
     const std::function<array()>& first_stage, const std::function<array(const array&, bool)>& second_stage,
@@ -480,6 +491,11 @@ array MlxExpertSegmentCache::apply(std::size_t index, const array& ids, std::siz
         while (end < selected.size() && layer.entry_size(selected[end]) <= byte_capacity - bytes)
             bytes += layer.entry_size(selected[end++]);
         const std::vector<std::int32_t> batch(selected.begin() + start, selected.begin() + end);
+        std::size_t in_flight = 0;
+        if (!partial && impl_->prefill_read_ahead && std::size_t(ids.shape(0)) >= std::size_t(layer.source.experts))
+            for (const auto expert : batch)
+                if (!impl_->entries.contains((std::uint64_t(index) << 32) | std::uint32_t(expert)))
+                    in_flight += layer.entry_size(expert);
         const auto io_before = impl_->counters.io_seconds;
         const auto prepare_start = Clock::now();
         std::optional<array> intermediate;
@@ -487,9 +503,8 @@ array MlxExpertSegmentCache::apply(std::size_t index, const array& ids, std::siz
             intermediate = first_stage();
             std::vector<array> submitted{*intermediate};
             if (parallel && !parallel->is_available()) submitted.push_back(*parallel);
-            if (!impl_->prefill_read_ahead || std::size_t(ids.shape(0)) < std::size_t(layer.source.experts))
-                async_eval(submitted);
-            else eval(submitted);
+            async_eval(submitted);
+            if (!partial) impl_->prefetch_next(index, std::size_t(ids.shape(0)), in_flight);
         });
         impl_->counters.prepare_seconds += std::max(0.0, std::chrono::duration<double>(Clock::now() - prepare_start).count()
             - (impl_->counters.io_seconds - io_before));

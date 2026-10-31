@@ -1,5 +1,6 @@
 #include "tyloinfer/gguf_model_source.h"
 #include "tyloinfer/hf_model_source.h"
+#include "tyloinfer/mfq_model_source.h"
 
 #include "gguf.h"
 #include "nlohmann/json.hpp"
@@ -21,6 +22,12 @@ namespace {
 using json = nlohmann::json;
 using Gguf = std::unique_ptr<gguf_context, decltype(&gguf_free)>;
 using Ggml = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
+
+bool native_table_file(const std::filesystem::path& path) {
+    auto suffix = path.extension().string();
+    for (auto& c : suffix) c = std::tolower(static_cast<unsigned char>(c));
+    return (suffix == ".tq" || suffix == ".mfq") && std::filesystem::is_regular_file(path);
+}
 
 std::vector<std::filesystem::path> raw_parts(const std::filesystem::path& path) {
     const auto name = path.filename().string();
@@ -488,7 +495,7 @@ struct GgufModelSource::Impl {
         std::vector<std::byte> prefix;
         std::vector<std::byte> inline_bytes;
         std::vector<Piece> pieces;
-        std::shared_ptr<HfModelSource> external;
+        std::shared_ptr<ModelSource> external;
         std::string external_name;
     };
     std::vector<std::filesystem::path> paths;
@@ -544,7 +551,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
     std::vector<std::filesystem::path> table_directories;
     for (const auto& companion : companions) {
         const auto absolute = std::filesystem::absolute(companion);
-        if (std::filesystem::is_directory(absolute)) {
+        if (std::filesystem::is_directory(absolute) || native_table_file(absolute)) {
             table_directories.push_back(absolute);
             continue;
         }
@@ -875,7 +882,27 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
     }
     const auto config_json = model_config(meta, shapes, impl_->arch);
     if (!table_directories.empty()) {
-        if (impl_->arch != "deepseek41") throw std::runtime_error("GGUF Safetensors companions require DeepSeek Engram tables");
+        if (impl_->arch != "deepseek41") throw std::runtime_error("GGUF external table companions require DeepSeek Engram tables");
+        std::map<std::filesystem::path, std::shared_ptr<MfqModelSource>> native_tables;
+        std::vector<std::filesystem::path> safetensor_directories;
+        const auto append_native = [&](const std::filesystem::path& path) {
+            const auto canonical = std::filesystem::canonical(path);
+            if (native_tables.count(canonical)) return;
+            if (native_tables.size() >= 1024) throw std::runtime_error("too many native Engram companion shards");
+            auto source = MfqModelSource::open_engram_shard(canonical);
+            if (source->architecture() != "deepseek_v41" && source->architecture() != "deepseek41")
+                throw std::runtime_error("native Engram companion has an incompatible architecture");
+            native_tables.emplace(canonical, std::move(source));
+        };
+        for (const auto& path : table_directories) {
+            if (native_table_file(path)) { append_native(path); continue; }
+            bool safetensors = false;
+            for (const auto& entry : std::filesystem::directory_iterator(path)) {
+                if (native_table_file(entry.path())) append_native(entry.path());
+                if (entry.is_regular_file() && entry.path().extension() == ".safetensors") safetensors = true;
+            }
+            if (safetensors) safetensor_directories.push_back(path);
+        }
         const auto& text = config_json.at("text_config");
         const auto layers = text.at("engram_layer_ids").get<std::vector<int64_t>>();
         const auto rows = text.at("engram_num_embeddings").get<std::vector<int64_t>>();
@@ -883,9 +910,17 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             const auto name = "model.block." + std::to_string(layers[layer]) + ".associative_memory.embedding.weight";
             const auto original = "layers." + std::to_string(layers[layer]) + ".engram.embed.weight";
             if (impl_->records.count(name)) throw std::runtime_error("GGUF Engram companion duplicates an embedded table");
-            std::shared_ptr<HfModelSource> source;
+            std::shared_ptr<ModelSource> source;
             const TensorMetadata* table = nullptr;
-            for (const auto& directory : table_directories) {
+            const auto accept = [&](const std::shared_ptr<ModelSource>& candidate) {
+                const auto* found = candidate->find_tensor(name);
+                if (!found) found = candidate->find_tensor(original);
+                if (!found) return;
+                if (source) throw std::runtime_error("GGUF Engram table exists in multiple companions");
+                source = candidate; table = found;
+            };
+            for (const auto& [path, candidate] : native_tables) accept(candidate);
+            for (const auto& directory : safetensor_directories) {
                 const auto index_path = directory / "model.safetensors.index.json";
                 if (std::filesystem::is_regular_file(index_path)) {
                     if (std::filesystem::file_size(index_path) > (uint64_t{256} << 20))
@@ -902,11 +937,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
                 }
                 const auto candidate = std::make_shared<HfModelSource>(directory,
                     original.substr(0, original.size() - std::string("weight").size()));
-                const auto* found = candidate->find_tensor(name);
-                if (!found) found = candidate->find_tensor(original);
-                if (!found) continue;
-                if (source) throw std::runtime_error("GGUF Engram table exists in multiple companions");
-                source = candidate; table = found;
+                accept(candidate);
             }
             if (!table || table->dtype != "MXFP8" || !table->shape || layer >= rows.size() ||
                 *table->shape != std::vector<int64_t>{rows[layer], 256})
@@ -946,6 +977,10 @@ const TensorMetadata* GgufModelSource::find_tensor(std::string_view name) const 
 ModelSource::TensorReader GgufModelSource::tensor_reader(std::string_view name) const {
     const auto it = impl_->records.find(std::string(name));
     if (it == impl_->records.end()) throw std::out_of_range("GGUF tensor not found: " + std::string(name));
+    if (it->second.external) {
+        try { return it->second.external->tensor_reader(it->second.external_name); }
+        catch (const TensorReaderUnsupported&) {}
+    }
     return [saved = std::shared_ptr<const Impl::Record>(impl_, &it->second)](uint64_t offset, std::byte* destination, std::size_t size) {
         const auto& record = *saved;
         if (offset > record.tensor.nbytes || size > record.tensor.nbytes - offset)
@@ -982,12 +1017,16 @@ ModelSource::TensorReader GgufModelSource::tensor_reader(std::string_view name) 
 }
 std::optional<TensorFileRange> GgufModelSource::tensor_file_range(std::string_view name) const {
     const auto it = impl_->records.find(std::string(name));
-    if (it == impl_->records.end() || !it->second.prefix.empty() || !it->second.inline_bytes.empty() || !it->second.pieces.empty() || it->second.external || it->second.file->paths().size() != 1) return std::nullopt;
+    if (it == impl_->records.end()) return std::nullopt;
+    if (it->second.external) return it->second.external->tensor_file_range(it->second.external_name);
+    if (!it->second.prefix.empty() || !it->second.inline_bytes.empty() || !it->second.pieces.empty() || it->second.file->paths().size() != 1) return std::nullopt;
     return TensorFileRange{it->second.path, it->second.offset, it->second.tensor.nbytes};
 }
 ModelSource::TensorBatchReader GgufModelSource::tensor_batch_reader(std::string_view name) const {
     const auto it = impl_->records.find(std::string(name));
     if (it == impl_->records.end()) throw std::out_of_range("GGUF tensor not found: " + std::string(name));
+    if (it->second.external)
+        if (auto reader = it->second.external->tensor_batch_reader(it->second.external_name)) return reader;
     const auto fallback = tensor_reader(name);
     return [saved = std::shared_ptr<const Impl::Record>(impl_, &it->second), fallback](const std::vector<ReadSpan>& spans) {
         const auto& record = *saved;

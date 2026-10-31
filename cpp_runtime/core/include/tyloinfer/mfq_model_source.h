@@ -26,6 +26,8 @@ class MfqModelSource final : public ModelSource {
 public:
     explicit MfqModelSource(std::filesystem::path path,
                             FileReadMode mode = model_file_read_mode());
+    static std::shared_ptr<MfqModelSource> open_engram_shard(std::filesystem::path path,
+                            FileReadMode mode = model_file_read_mode());
     ~MfqModelSource() override;
 
     MfqModelSource(MfqModelSource&&) noexcept;
@@ -54,6 +56,7 @@ public:
     void drop_file_cache() const noexcept override;
     FileReadStats file_read_stats() const noexcept override;
     bool supports_parallel_tensor_reads() const noexcept override;
+    std::optional<TensorFileRange> tensor_file_range(std::string_view name) const override;
     TensorReader tensor_reader(std::string_view name) const override;
     // Read-only virtual mapping; only requested bytes are touched. The reader
     // owns its mapping independently of the source and preserves tensor bounds.
@@ -66,6 +69,7 @@ public:
     std::optional<ModelGraph> model_graph() const override;
 
 private:
+    MfqModelSource(std::filesystem::path path, FileReadMode mode, bool table_only);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

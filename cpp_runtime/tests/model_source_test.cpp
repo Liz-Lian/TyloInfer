@@ -185,6 +185,16 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
     write_shared_fixture(shared, 1, table_name);
     const auto unrelated = root / "Engram" / ("other-EW-Engram-MXFP8-00002-of-00003" + suffix);
     write_shared_fixture(unrelated, 1, table_name);
+    for (auto mode : {mfq::FileReadMode::Buffered, mfq::FileReadMode::Direct}) {
+        const auto source = mfq::MfqModelSource::open_engram_shard(shared, mode);
+        require(source->source_paths() == std::vector<std::filesystem::path>{std::filesystem::canonical(shared)},
+                "explicit Engram reader discovered unrelated model shards");
+        require(source->read(table_name).size() == 14, "explicit Engram shard read failed");
+    }
+    bool incomplete_rejected = false;
+    try { mfq::MfqModelSource incomplete(shared); }
+    catch (const std::runtime_error&) { incomplete_rejected = true; }
+    require(incomplete_rejected, "normal model loading accepted an Engram-only shard");
     for (const std::string precision : {"Q2.5", "Q3"}) {
         const auto first = root / precision / ("model-EW-" + precision + "-00001-of-00003" + suffix);
         const auto last = root / precision / ("model-EW-" + precision + "-00003-of-00003" + suffix);
@@ -225,6 +235,10 @@ void test_shared_engram_shards(const std::filesystem::path& root, const std::str
     std::filesystem::remove(duplicate);
     write_shared_fixture(shared, 1, "model.output.other.weight");
     require(rejects(), "shared filename allowed a non-table substitution");
+    bool table_only_rejected = false;
+    try { (void)mfq::MfqModelSource::open_engram_shard(shared); }
+    catch (const std::runtime_error&) { table_only_rejected = true; }
+    require(table_only_rejected, "explicit Engram reader accepted non-table weights");
     write_shared_fixture(shared, 1, table_name, "wrong-architecture");
     require(rejects(), "shared table from incompatible architecture was accepted");
     std::filesystem::remove(shared);
