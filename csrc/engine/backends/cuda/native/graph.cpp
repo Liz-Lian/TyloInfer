@@ -1,5 +1,6 @@
 #include "env.h"
 #include "graph.h"
+#include "context.h"
 #include "device.h"
 
 #include <algorithm>
@@ -10,6 +11,15 @@
 #include <vector>
 
 namespace mfq::cuda {
+
+GraphWarmupScope::GraphWarmupScope(std::shared_ptr<Context> context, cudaStream_t stream)
+    : context_(std::move(context)), stream_(stream) {
+    context_->begin_graph_warmup(stream_);
+}
+
+GraphWarmupScope::~GraphWarmupScope() {
+    context_->end_graph_warmup(stream_);
+}
 
 Graph::~Graph() noexcept {
     reset();

@@ -3,6 +3,7 @@
 #include "allocation.h"
 
 #include "context.h"
+#include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/device.h"
 #include "native/error.h"
 

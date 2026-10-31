@@ -2,6 +2,7 @@
 #include "ops_common.cuh"
 #include "matmul_rows.h"
 #include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/device.h"
 
 #include <cmath>

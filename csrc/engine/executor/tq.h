@@ -2,6 +2,7 @@
 
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "context.h"
+#include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/blas.h"
 
 #include <cstdint>

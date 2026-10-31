@@ -8,6 +8,8 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_shared_gate.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "native/error.h"
+#include "context.h"
+#include "engine/backends/cuda/native/stream.h"
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"

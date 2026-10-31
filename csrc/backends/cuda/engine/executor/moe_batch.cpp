@@ -1,6 +1,7 @@
 #include "env.h"
 #include "options.h"
 #include "moe_batch.h"
+#include "engine/backends/cuda/native/stream.h"
 #include "mfe_e8_narrow_bounds.h"
 #include "mfe_ffn_launch.h"
 #include "mfe_ffn_compact.h"

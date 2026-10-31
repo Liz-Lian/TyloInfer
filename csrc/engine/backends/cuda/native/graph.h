@@ -1,8 +1,14 @@
 #pragma once
 
-#include "context.h"
+#include "stream.h"
+
+#include <cstddef>
+#include <memory>
+#include <vector>
 
 namespace mfq::cuda {
+
+class Context;
 
 class Graph final {
 public:
@@ -40,11 +46,8 @@ private:
 
 class GraphWarmupScope {
 public:
-    GraphWarmupScope(std::shared_ptr<Context> context, cudaStream_t stream)
-        : context_(std::move(context)), stream_(stream) {
-        context_->begin_graph_warmup(stream_);
-    }
-    ~GraphWarmupScope() { context_->end_graph_warmup(stream_); }
+    GraphWarmupScope(std::shared_ptr<Context> context, cudaStream_t stream);
+    ~GraphWarmupScope();
     GraphWarmupScope(const GraphWarmupScope&) = delete;
 
 private:
