@@ -1,24 +1,15 @@
 #include "hf_safetensors_source.h"
 
+#include "engine/weights/source/json.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <limits>
-#include <mutex>
 #include <stdexcept>
-#include <system_error>
 #include <unordered_set>
 #include <utility>
-
-#if !defined(_WIN32)
-#include <cerrno>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 namespace mfq {
 namespace {
@@ -26,231 +17,16 @@ namespace {
 using json = nlohmann::json;
 
 constexpr std::string_view kAssetPrefix = "__mfq_asset__/";
-constexpr std::uint64_t kMaxSafetensorsHeaderBytes = 100'000'000;
-constexpr std::uint64_t kMaxJsonSidecarBytes = std::uint64_t{256} << 20;
-
-std::vector<std::byte> read_file(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) throw std::runtime_error("cannot open " + path.string());
-    stream.seekg(0, std::ios::end);
-    const auto end = stream.tellg();
-    if (end < 0 || static_cast<std::uintmax_t>(end) >
-                       std::numeric_limits<std::size_t>::max()) {
-        throw std::runtime_error("cannot size " + path.string());
-    }
-    std::vector<std::byte> result(static_cast<std::size_t>(end));
-    stream.seekg(0, std::ios::beg);
-    stream.read(reinterpret_cast<char*>(result.data()),
-                static_cast<std::streamsize>(result.size()));
-    if (!stream && !result.empty()) {
-        throw std::runtime_error("cannot read " + path.string());
-    }
-    return result;
-}
-
-std::string read_text(const std::filesystem::path& path) {
-    std::error_code error;
-    const auto size = std::filesystem::file_size(path, error);
-    if (error || size > kMaxJsonSidecarBytes) {
-        throw std::runtime_error("JSON sidecar is too large: " + path.string());
-    }
-    const auto bytes = read_file(path);
-    std::string result(bytes.size(), '\0');
-    if (!bytes.empty()) {
-        std::memcpy(result.data(), bytes.data(), bytes.size());
-    }
-    return result;
-}
-
-json parse_json(std::string_view payload, const std::filesystem::path& path) {
-    try {
-        return json::parse(payload.begin(), payload.end());
-    } catch (const json::exception& error) {
-        throw std::runtime_error("invalid JSON in " + path.string() + ": " +
-                                 error.what());
-    }
-}
-
-std::uint64_t little_u64(const std::array<unsigned char, 8>& bytes) {
-    std::uint64_t result = 0;
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        result |= static_cast<std::uint64_t>(bytes[index]) << (index * 8);
-    }
-    return result;
-}
-
-std::uint64_t checked_add(std::uint64_t left, std::uint64_t right) {
-    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
-        throw std::overflow_error("Safetensors byte offset overflow");
-    }
-    return left + right;
-}
-
-std::vector<std::int64_t> parse_shape(
-    const json& value,
-    const std::string& name) {
-    if (!value.is_array()) {
-        throw std::runtime_error("Safetensors shape is not an array: " + name);
-    }
-    std::vector<std::int64_t> result;
-    result.reserve(value.size());
-    for (const auto& dimension : value) {
-        if (!dimension.is_number_integer()) {
-            throw std::runtime_error(
-                "Safetensors shape has a non-integer dimension: " + name);
-        }
-        const auto size = dimension.get<std::int64_t>();
-        if (size < 0) {
-            throw std::runtime_error(
-                "Safetensors shape has a negative dimension: " + name);
-        }
-        result.push_back(size);
-    }
-    return result;
-}
-
-bool inside(const std::filesystem::path& root, const std::filesystem::path& path) {
-    auto parent = root.begin();
-    auto child = path.begin();
-    for (; parent != root.end(); ++parent, ++child) {
-        if (child == path.end() || *child != *parent) return false;
-    }
-    return true;
-}
-
-std::filesystem::path shard_path(
-    const std::filesystem::path& root,
-    const std::string& name) {
-    std::error_code error;
-    const auto path = std::filesystem::weakly_canonical(root / name, error);
-    if (error || !inside(root, path) ||
-        !std::filesystem::is_regular_file(path, error) || error) {
-        throw std::runtime_error("invalid Safetensors shard path: " + name);
-    }
-    return path;
-}
 
 } // namespace
 
 struct HfSafetensorsSource::Impl {
-    struct ShardReader {
-        ShardReader(std::filesystem::path source, std::uint64_t source_size)
-            : path(std::move(source)), size(source_size) {}
+    Impl(std::filesystem::path requested_root, std::string source_prefix)
+        : files(std::move(requested_root), std::move(source_prefix)) {}
 
-        ~ShardReader() {
-#if !defined(_WIN32)
-            if (descriptor >= 0) ::close(descriptor);
-#endif
-        }
-
-        void read(
-            std::uint64_t offset,
-            std::byte* destination,
-            std::size_t count) const {
-            if (count == 0) return;
-            if (offset > size || count > size - offset) {
-                throw std::out_of_range(
-                    "Safetensors byte range is outside shard " + path.string());
-            }
-#if defined(_WIN32)
-            if (offset > static_cast<std::uint64_t>(
-                             std::numeric_limits<std::streamoff>::max()) ||
-                count > static_cast<std::size_t>(
-                            std::numeric_limits<std::streamsize>::max())) {
-                throw std::runtime_error("Safetensors byte range is too large");
-            }
-            std::lock_guard<std::mutex> lock(mutex);
-            if (!stream.is_open()) stream.open(path, std::ios::binary);
-            stream.clear();
-            stream.seekg(static_cast<std::streamoff>(offset));
-            stream.read(reinterpret_cast<char*>(destination),
-                        static_cast<std::streamsize>(count));
-            if (!stream) {
-                throw std::runtime_error(
-                    "unexpected EOF while reading " + path.string());
-            }
-#else
-            const auto max_offset = static_cast<std::uint64_t>(
-                std::numeric_limits<off_t>::max());
-            if (offset > max_offset || count > max_offset - offset) {
-                throw std::runtime_error("Safetensors byte range is too large");
-            }
-            const auto file = open();
-            std::size_t done = 0;
-            while (done < count) {
-                constexpr std::size_t kMaxReadBytes = std::size_t{32} << 20;
-                const auto request = std::min(count - done, kMaxReadBytes);
-                const auto result = ::pread(
-                    file,
-                    destination + done,
-                    request,
-                    static_cast<off_t>(offset + done));
-                if (result < 0) {
-                    if (errno == EINTR) continue;
-                    throw std::system_error(
-                        errno, std::generic_category(),
-                        "pread " + path.string());
-                }
-                if (result == 0) {
-                    throw std::runtime_error(
-                        "unexpected EOF while reading " + path.string());
-                }
-                done += static_cast<std::size_t>(result);
-            }
-#endif
-        }
-
-#if !defined(_WIN32)
-        int open() const {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (descriptor < 0) {
-                descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-                if (descriptor < 0) {
-                    throw std::system_error(
-                        errno, std::generic_category(),
-                        "open " + path.string());
-                }
-#if defined(__APPLE__) && defined(F_NOCACHE)
-                // Raw-HF tensors are copied into final runtime buffers or
-                // consumed through bounded row/expert stores. Retaining the
-                // same payload in the macOS file cache creates a transient
-                // second model copy and can compress live GPU allocations.
-                if (::fcntl(descriptor, F_NOCACHE, 1) != 0) {
-                    const auto error = errno;
-                    ::close(descriptor);
-                    descriptor = -1;
-                    throw std::system_error(
-                        error,
-                        std::generic_category(),
-                        "F_NOCACHE " + path.string());
-                }
-#endif
-            }
-            return descriptor;
-        }
-#endif
-
-        std::filesystem::path path;
-        std::uint64_t size;
-        mutable std::mutex mutex;
-#if defined(_WIN32)
-        mutable std::ifstream stream;
-#else
-        mutable int descriptor = -1;
-#endif
-    };
-
-    struct PhysicalTensor {
-        TensorMetadata metadata;
-        HfTensorLocation location;
-    };
-
-    std::filesystem::path root;
+    Safetensors files;
     std::string architecture;
     std::unordered_map<std::string, std::string> metadata;
-    std::vector<std::filesystem::path> source_paths;
-    std::vector<std::unique_ptr<ShardReader>> readers;
-    std::unordered_map<std::string, PhysicalTensor> physical;
     std::vector<TensorMetadata> tensors;
     std::unordered_map<std::string, std::size_t> tensor_indices;
     std::unordered_map<std::string, std::string> exposed_to_source;
@@ -263,136 +39,11 @@ HfSafetensorsSource::HfSafetensorsSource(
     std::filesystem::path requested_root,
     std::unordered_map<std::string, std::string> canonical_to_source,
     std::string source_prefix)
-    : impl_(std::make_unique<Impl>()) {
-    std::error_code error;
-    impl_->root = std::filesystem::canonical(std::move(requested_root), error);
-    if (error || !std::filesystem::is_directory(impl_->root, error) || error) {
-        throw std::runtime_error("cannot open HF model directory: " +
-                                 impl_->root.string());
-    }
-
-    const auto index_path = impl_->root / "model.safetensors.index.json";
-    std::unordered_map<std::string, std::vector<std::string>> names_by_shard;
-    std::vector<std::string> shard_names;
-    if (std::filesystem::is_regular_file(index_path)) {
-        const auto index = parse_json(read_text(index_path), index_path);
-        const auto weight_map = index.find("weight_map");
-        if (weight_map == index.end() || !weight_map->is_object() ||
-            weight_map->empty()) {
-            throw std::runtime_error(
-                "Safetensors index requires a non-empty object weight_map: " +
-                index_path.string());
-        }
-        for (const auto& [name, shard] : weight_map->items()) {
-            if (!source_prefix.empty() && name.rfind(source_prefix, 0) != 0) continue;
-            if (!shard.is_string()) {
-                throw std::runtime_error(
-                    "Safetensors weight_map value is not a string: " + name);
-            }
-            names_by_shard[shard.get<std::string>()].push_back(name);
-        }
-        for (const auto& [name, unused] : names_by_shard) {
-            static_cast<void>(unused);
-            shard_names.push_back(name);
-        }
-    } else {
-        for (const auto& entry : std::filesystem::directory_iterator(impl_->root)) {
-            if (entry.is_regular_file() &&
-                entry.path().extension() == ".safetensors") {
-                shard_names.push_back(entry.path().filename().string());
-            }
-        }
-        if (shard_names.empty()) {
-            throw std::runtime_error("no Safetensors weights found under " +
-                                     impl_->root.string());
-        }
-    }
-    std::sort(shard_names.begin(), shard_names.end());
-
-    for (const auto& shard_name : shard_names) {
-        const auto path = shard_path(impl_->root, shard_name);
-        const auto size = std::filesystem::file_size(path);
-        if (size < 8) {
-            throw std::runtime_error(
-                "cannot read Safetensors header size: " + path.string());
-        }
-        std::ifstream stream(path, std::ios::binary);
-        std::array<unsigned char, 8> raw_header_size{};
-        stream.read(reinterpret_cast<char*>(raw_header_size.data()), 8);
-        if (!stream) {
-            throw std::runtime_error(
-                "cannot read Safetensors header size: " + path.string());
-        }
-        const auto header_size = little_u64(raw_header_size);
-        if (header_size > size - 8 ||
-            header_size > kMaxSafetensorsHeaderBytes ||
-            header_size > static_cast<std::uint64_t>(
-                              std::numeric_limits<std::size_t>::max())) {
-            throw std::runtime_error("invalid Safetensors header size: " +
-                                     path.string());
-        }
-        std::string header(static_cast<std::size_t>(header_size), '\0');
-        stream.read(header.data(), static_cast<std::streamsize>(header.size()));
-        if (!stream && !header.empty()) {
-            throw std::runtime_error("cannot read Safetensors header: " +
-                                     path.string());
-        }
-        const auto metadata = parse_json(header, path);
-        const auto shard_index = impl_->source_paths.size();
-        impl_->source_paths.push_back(path);
-        impl_->readers.push_back(
-            std::make_unique<Impl::ShardReader>(path, size));
-        const auto payload_base = checked_add(8, header_size);
-
-        std::vector<std::string> names;
-        const auto indexed = names_by_shard.find(shard_name);
-        if (indexed != names_by_shard.end()) {
-            names = indexed->second;
-        } else {
-            for (const auto& [name, unused] : metadata.items()) {
-                static_cast<void>(unused);
-                if (name != "__metadata__") names.push_back(name);
-            }
-        }
-        for (const auto& name : names) {
-            if (!source_prefix.empty() && name.rfind(source_prefix, 0) != 0) continue;
-            const auto found = metadata.find(name);
-            if (found == metadata.end() || !found->is_object()) {
-                throw std::runtime_error(
-                    "Safetensors index references a missing tensor: " + name);
-            }
-            const auto dtype = found->find("dtype");
-            const auto shape = found->find("shape");
-            const auto offsets = found->find("data_offsets");
-            if (dtype == found->end() || !dtype->is_string() ||
-                shape == found->end() || offsets == found->end() ||
-                !offsets->is_array() || offsets->size() != 2 ||
-                !(*offsets)[0].is_number_unsigned() ||
-                !(*offsets)[1].is_number_unsigned()) {
-                throw std::runtime_error(
-                    "invalid Safetensors tensor metadata: " + name);
-            }
-            const auto begin = (*offsets)[0].get<std::uint64_t>();
-            const auto end = (*offsets)[1].get<std::uint64_t>();
-            if (end < begin || checked_add(payload_base, end) > size) {
-                throw std::runtime_error(
-                    "Safetensors tensor range is outside its shard: " + name);
-            }
-            Impl::PhysicalTensor tensor;
-            tensor.metadata.name = name;
-            tensor.metadata.dtype = dtype->get<std::string>();
-            tensor.metadata.stored_dtype = tensor.metadata.dtype;
-            tensor.metadata.shape = parse_shape(*shape, name);
-            tensor.metadata.nbytes = end - begin;
-            tensor.location = {shard_index, checked_add(payload_base, begin)};
-            if (!impl_->physical.emplace(name, std::move(tensor)).second) {
-                throw std::runtime_error("duplicate Safetensors tensor: " + name);
-            }
-        }
-    }
+    : impl_(std::make_unique<Impl>(
+          std::move(requested_root), std::move(source_prefix))) {
 
     if (canonical_to_source.empty()) {
-        for (const auto& [name, unused] : impl_->physical) {
+        for (const auto& [name, unused] : impl_->files.records()) {
             static_cast<void>(unused);
             canonical_to_source.emplace(name, name);
         }
@@ -402,8 +53,9 @@ HfSafetensorsSource::HfSafetensorsSource(
     std::sort(aliases.begin(), aliases.end());
     std::unordered_set<std::string> claimed_sources;
     for (const auto& [canonical, source] : aliases) {
-        const auto found = impl_->physical.find(source);
-        if (canonical.empty() || source.empty() || found == impl_->physical.end()) {
+        const auto found = impl_->files.records().find(source);
+        if (canonical.empty() || source.empty() ||
+            found == impl_->files.records().end()) {
             throw std::runtime_error("invalid HF canonical tensor mapping: " +
                                      canonical);
         }
@@ -446,13 +98,14 @@ HfSafetensorsSource::HfSafetensorsSource(
         impl_->assets.push_back(std::move(name));
     };
 
-    const auto config = impl_->root / "config.json";
+    const auto config = impl_->files.root() / "config.json";
     if (std::filesystem::is_regular_file(config)) {
-        auto parsed = parse_json(read_text(config), config);
-        const auto inference_config = impl_->root / "inference" / "config.json";
+        auto parsed = source::parse_json(source::read_text(config), config);
+        const auto inference_config =
+            impl_->files.root() / "inference" / "config.json";
         if (std::filesystem::is_regular_file(inference_config)) {
-            const auto supplemental = parse_json(
-                read_text(inference_config), inference_config);
+            const auto supplemental = source::parse_json(
+                source::read_text(inference_config), inference_config);
             if (!parsed.is_object() || !supplemental.is_object()) {
                 throw std::runtime_error(
                     "HF model configuration files must contain JSON objects");
@@ -489,15 +142,15 @@ HfSafetensorsSource::HfSafetensorsSource(
             {"generation_config.json", "hf/generation_config.json"},
         }};
     for (const auto& [filename, asset_name] : sidecars) {
-        const auto path = impl_->root / filename;
+        const auto path = impl_->files.root() / filename;
         if (std::filesystem::is_regular_file(path)) {
             add_asset(std::string(kAssetPrefix) + std::string(asset_name), path);
         }
     }
-    const auto generation_path = impl_->root / "generation_config.json";
+    const auto generation_path = impl_->files.root() / "generation_config.json";
     if (std::filesystem::is_regular_file(generation_path)) {
-        const auto generation = parse_json(
-            read_text(generation_path), generation_path);
+        const auto generation = source::parse_json(
+            source::read_text(generation_path), generation_path);
         if (!generation.is_object()) {
             throw std::runtime_error(
                 "HF generation_config.json must be an object");
@@ -559,7 +212,7 @@ HfSafetensorsSource::HfSafetensorsSource(
                                      resolved.string());
         }
     };
-    add_directory(impl_->root / ".mfq-assets");
+    add_directory(impl_->files.root() / ".mfq-assets");
     if (const auto* configured = std::getenv("TYLOINFER_RUNTIME_ASSET_DIRECTORY");
         configured != nullptr && *configured != '\0') {
         add_directory(configured);
@@ -573,26 +226,14 @@ HfSafetensorsSource& HfSafetensorsSource::operator=(
     HfSafetensorsSource&&) noexcept = default;
 
 const std::filesystem::path& HfSafetensorsSource::root() const noexcept {
-    return impl_->root;
+    return impl_->files.root();
 }
 const std::vector<std::filesystem::path>&
 HfSafetensorsSource::source_paths() const noexcept {
-    return impl_->source_paths;
+    return impl_->files.paths();
 }
 void HfSafetensorsSource::drop_file_cache() const noexcept {
-#if !defined(_WIN32) && defined(POSIX_FADV_DONTNEED)
-    for (const auto& reader : impl_->readers) {
-        try {
-            const auto descriptor = reader->open();
-            static_cast<void>(::posix_fadvise(
-                descriptor,
-                0,
-                static_cast<off_t>(reader->size),
-                POSIX_FADV_DONTNEED));
-        } catch (...) {
-        }
-    }
-#endif
+    impl_->files.drop_file_cache();
 }
 std::string_view HfSafetensorsSource::architecture() const noexcept {
     return impl_->architecture;
@@ -619,7 +260,7 @@ const HfTensorLocation& HfSafetensorsSource::location(
     if (alias == impl_->exposed_to_source.end()) {
         throw std::runtime_error("model tensor not found: " + std::string(name));
     }
-    return impl_->physical.at(alias->second).location;
+    return impl_->files.records().at(alias->second).location;
 }
 
 void HfSafetensorsSource::read_range_into(
@@ -631,7 +272,7 @@ void HfSafetensorsSource::read_range_into(
     if (alias == impl_->exposed_to_source.end()) {
         throw std::runtime_error("model tensor not found: " + std::string(name));
     }
-    const auto& source = impl_->physical.at(alias->second);
+    const auto& source = impl_->files.records().at(alias->second);
     if (relative_offset > source.metadata.nbytes ||
         size > source.metadata.nbytes - relative_offset) {
         throw std::out_of_range("model tensor byte range is out of bounds: " +
@@ -647,10 +288,7 @@ void HfSafetensorsSource::read_shard_range_into(
     std::uint64_t offset,
     std::byte* destination,
     std::size_t size) const {
-    if (shard >= impl_->source_paths.size()) {
-        throw std::out_of_range("Safetensors shard index out of range");
-    }
-    impl_->readers[shard]->read(offset, destination, size);
+    impl_->files.read(shard, offset, destination, size);
 }
 
 const std::vector<std::string>& HfSafetensorsSource::assets() const noexcept {
@@ -674,7 +312,7 @@ std::vector<std::byte> HfSafetensorsSource::read_asset(
     if (found == impl_->asset_paths.end()) {
         throw std::runtime_error("model asset not found: " + std::string(name));
     }
-    return read_file(found->second);
+    return source::read_file(found->second);
 }
 
 std::optional<ModelGraph> HfSafetensorsSource::model_graph() const {

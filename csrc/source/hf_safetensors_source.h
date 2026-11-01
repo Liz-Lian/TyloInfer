@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/weights/source/safetensors.h"
 #include "model_source.h"
 
 #include <filesystem>
@@ -7,11 +8,6 @@
 #include <unordered_map>
 
 namespace mfq {
-
-struct HfTensorLocation {
-    std::size_t shard = 0;
-    std::uint64_t offset = 0;
-};
 
 class HfSafetensorsSource final : public ModelSource {
 public:
