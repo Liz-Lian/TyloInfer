@@ -2,24 +2,10 @@
 
 #include "engine/backends/cuda/native/profile.h"
 #include "backend.h"
-#include "engine/weights/encoding/mx_blob.h"
+#include "engine/weights/mx.h"
 
 #include <cstdint>
 #include <vector>
-
-struct Mxfp8Weight {
-    mfq_tensor_backend::Tensor values;
-    mfq_tensor_backend::Tensor scales;
-    int64_t out = 0;
-    int64_t neuron_len = 0;
-};
-
-struct Mxfp4Weight {
-    mfq_tensor_backend::Tensor values;
-    mfq_tensor_backend::Tensor scales;
-    int64_t out = 0;
-    int64_t neuron_len = 0;
-};
 
 mfq_tensor_backend::Tensor mxfp8_groupwise_matmul(
     CudaProfiler& profiler,
@@ -68,5 +54,4 @@ struct Mxfp8Linear {
     }
 };
 
-mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data& source);
 mfq_tensor_backend::Tensor mxfp8_cpu_reference(const Mxfp8Weight& weight);

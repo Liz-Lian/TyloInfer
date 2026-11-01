@@ -3,7 +3,7 @@
 #include "nvq_group.h"
 #include "nint.h"
 #include "vq.h"
-#include "mx.h"
+#include "engine/weights/mx.h"
 #include <functional>
 
 // The plan borrows an immutable expert lease. It never converts activations

@@ -1,7 +1,8 @@
 #pragma once
 
 #include "engine/weights/encoding/format_features.h"
-#include "ops/common/include/mx.h"
+#include "engine/weights/encoding/mx_blob.h"
+#include "engine/weights/mx.h"
 #include "engine/weights/tensor_parallel.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -28,6 +29,7 @@ Mxfp8Weight to_device_mxfp8(
     const mfq::mxfp8::Data& source, bool cuda, int device = -1);
 Mxfp4Weight to_device_mxfp4(
     const mfq::mxfp4::Data& source, bool cuda, int device = -1);
+mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data& source);
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 bool prepare_nvq_dense_groups(NvqWeight& weight);

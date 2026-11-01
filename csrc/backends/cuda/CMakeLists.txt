@@ -474,7 +474,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/ops/common/gated_residual.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/tq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/tq.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/mx.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mx.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/quant_linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/projection.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/expert_projection.cpp

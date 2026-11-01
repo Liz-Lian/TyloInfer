@@ -200,6 +200,35 @@ Mxfp4Weight to_device_mxfp4(
     return result;
 }
 
+mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data & source) {
+    auto dense = mfq_tensor_backend::empty(
+        {source.out, source.neuron_len},
+        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
+    float * destination = dense.data_ptr<float>();
+    static constexpr float magnitude[8] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+    };
+    const int64_t packed_columns = source.neuron_len / 2;
+    const int64_t scale_columns = source.neuron_len / 32;
+    for (int64_t row = 0; row < source.out; ++row) {
+        for (int64_t column = 0; column < source.neuron_len; ++column) {
+            const uint8_t packed = source.values[
+                static_cast<size_t>(row * packed_columns + column / 2)];
+            const uint8_t code = static_cast<uint8_t>(
+                (packed >> ((column & 1) * 4)) & 15u);
+            const uint8_t raw_scale = source.scales[
+                static_cast<size_t>(row * scale_columns + column / 32)];
+            const float scale = raw_scale == 255u
+                ? std::numeric_limits<float>::quiet_NaN()
+                : std::ldexp(1.0f, static_cast<int>(raw_scale) - 127);
+            const float value = magnitude[code & 7u] * scale;
+            destination[row * source.neuron_len + column] =
+                (code & 8u) == 0u ? value : -value;
+        }
+    }
+    return dense.to(mfq_tensor_backend::kFloat16);
+}
+
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 Mxfp4SqWeight to_device_mxfp4_sq(
         const std::vector<uint8_t> & payload,
