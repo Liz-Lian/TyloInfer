@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { mockStudioServer } from './mockServer';
+import { openModelSettings } from './modelSettings';
 
 for (const architecture of ['discrete', 'unified'] as const) {
   test(`physical ${architecture} CUDA memory controls and hierarchy`, async ({ page }, testInfo) => {
@@ -46,9 +47,12 @@ for (const architecture of ['discrete', 'unified'] as const) {
     await expect(page.locator('.memory-tier')).toHaveCount(separate ? 8 : 5);
     await expect(page.locator('[data-tier="weights"]')).toContainText(separate ? '13 GiB / 18 GiB' : '10 GiB / 22 GiB');
     await page.goto('/runtime');
-    await expect(page.getByText(separate ? 'VRAM → RAM → SSD' : 'RAM → SSD', { exact: true }).first()).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'RAM 前缀缓存配额模式', exact: true })).toHaveCount(separate ? 1 : 0);
+    await page.locator('.configuration-disclosure > summary').click();
     await expect(page.getByRole('combobox', { name: separate ? '前缀显存配额 模式' : '前缀 RAM 配额 模式' })).toBeEnabled();
+    await page.getByRole('tab', { name: '缓存', exact: true }).click();
+    await expect(page.locator('.server-prefix-panel').getByText(separate ? 'VRAM → RAM → SSD' : 'RAM → SSD', { exact: true })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'RAM 前缀缓存配额模式', exact: true })).toHaveCount(separate ? 1 : 0);
+    await openModelSettings(page, 'Studio Test Model', 'zh-CN');
     await page.getByRole('button', { name: '流式稀疏注意力', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: separate ? 'KV 显存常驻预算' : 'KV 常驻预算', exact: true })).toBeVisible();
     await expect(page.getByRole('spinbutton', { name: '内存流式 KV 预算', exact: true })).toHaveCount(separate ? 1 : 0);

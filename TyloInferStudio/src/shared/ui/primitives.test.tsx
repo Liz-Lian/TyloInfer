@@ -1,6 +1,6 @@
 
 import { useRef, useState } from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dialog } from './Dialog';
@@ -83,6 +83,21 @@ describe('Dialog', () => {
     await user.click(screen.getByRole('button', { name: '入口二' }));
     await user.click(screen.getByRole('button', { name: '关闭目录' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '入口一' })).toHaveFocus());
+  });
+
+  it('does not dismiss a settings dialog when closing a notification outside its portal', async () => {
+    useToastStore.getState().clearToasts();
+    const user = userEvent.setup();
+    render(<><DialogFixture /><ToastContainer /></>);
+    await user.click(screen.getByRole('button', { name: '入口一' }));
+    act(() => toast.success('Saved'));
+    const close = document.querySelector<HTMLButtonElement>('.studio-toast-close')!;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    fireEvent.pointerDown(close, { pointerType: 'mouse', button: 0 });
+    fireEvent.click(close);
+    await waitFor(() => expect(document.querySelector('.studio-toast-container')).toBeNull());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(screen.getByRole('dialog', { name: '模型目录' })).toBeInTheDocument();
   });
 });
 describe('Switch', () => {

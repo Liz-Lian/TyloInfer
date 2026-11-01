@@ -237,3 +237,39 @@ def gguf_is_table_component(path: str | Path) -> bool:
                 raise ValueError('invalid GGUF tensor rank')
             reader.read(rank * 8 + 12)
         return True
+
+
+def gguf_table_metadata(path: str | Path, *, include_mixed: bool = False) -> dict | None:
+    with _metadata_stream(Path(path)) as (stream, size):
+        reader = _MetadataReader(stream, size)
+        if not 0 < reader.tensors <= 1 << 20:
+            return None
+        architecture = 'unknown'
+        for _ in range(reader.fields):
+            name = reader.string(keep=True)
+            value = reader.value(reader.integer('<I'), keep=name == b'general.architecture')
+            if name == b'general.architecture' and isinstance(value, bytes):
+                architecture = value.decode('utf-8')
+        kinds = set()
+        for _ in range(reader.tensors):
+            name = reader.string(keep=True)
+            if name == b'per_layer_token_embd.weight':
+                kinds.add('ple')
+            elif re.fullmatch(rb'blk\.\d+\.engram_embd\.weight', name):
+                kinds.add('engram')
+            else:
+                if not include_mixed:
+                    return None
+                kinds.add(None)
+            rank = reader.integer('<I')
+            if not 1 <= rank <= 4:
+                raise ValueError('invalid GGUF tensor rank')
+            reader.read(rank * 8 + 12)
+        table_kinds = kinds - {None}
+        if not table_kinds:
+            return None
+        pure = len(kinds) == 1
+        if not pure and not include_mixed:
+            return None
+        return {'kind': next(iter(table_kinds)) if pure else 'mixed', 'architecture': architecture,
+                'tensor_count': reader.tensors, 'mixed_kinds': tuple(sorted(table_kinds)) if not pure else ()}

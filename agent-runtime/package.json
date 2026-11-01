@@ -1,0 +1,11 @@
+{
+  "name": "@tyloinfer/agent-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.5"
+  },
+  "engines": {
+    "node": ">=24.12.0"
+  }
+}

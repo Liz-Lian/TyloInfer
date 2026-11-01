@@ -21,6 +21,7 @@ import { getApiBaseUrl, getApiToken } from '../../shared/api/client';
 import { runtimeApi } from '../../shared/api/resources/runtime';
 import { toast } from '../../stores/toastStore';
 import { ModelVendorMark } from '../../app/ModelVendorMark';
+import { AppearanceControls } from '../../app/AppearanceControls';
 
 export function OverviewPage() {
   const {
@@ -94,10 +95,13 @@ export function OverviewPage() {
         title={tr('概览', 'Overview')}
         subtitle={tr('本机推理状态与性能。', 'Local inference status and performance.')}
         trailing={
+          <>
           <button disabled={busy} onClick={() => void refreshRuntime()} type="button">
             <Icon name="refresh" size={14} />
             {tr('刷新', 'Refresh')}
           </button>
+          <AppearanceControls />
+          </>
         }
       />
       <RuntimeHero />

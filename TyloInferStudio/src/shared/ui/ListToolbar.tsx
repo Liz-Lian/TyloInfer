@@ -3,10 +3,10 @@ import { CaretDownIcon, FunnelSimpleIcon, MagnifyingGlassIcon } from '@phosphor-
 import { useSettings } from '../../features/settings/SettingsProvider';
 
 export function ListToolbar({ label, placeholder, query, onQueryChange, children, activeFilters = 0,
-  count, total, onReset, disabled = false }: {
+  count, total, onReset, disabled = false, afterFilters }: {
   label: string; placeholder: string; query: string; onQueryChange: (value: string) => void;
   children: ReactNode; activeFilters?: number; count: number; total: number;
-  onReset: () => void; disabled?: boolean;
+  onReset: () => void; disabled?: boolean; afterFilters?: ReactNode;
 }) {
   const { tr } = useSettings();
   const menu = useRef<HTMLDetailsElement>(null);
@@ -36,6 +36,7 @@ export function ListToolbar({ label, placeholder, query, onQueryChange, children
         <button type="button" onClick={onReset} disabled={disabled}>{tr('重置', 'Reset')}</button>
       </div>
     </details>
+    {afterFilters}
     <small className="list-match-count" role="status">{count} / {total}</small>
   </div>;
 }

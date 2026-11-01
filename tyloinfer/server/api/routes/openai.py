@@ -100,6 +100,9 @@ async def openai_chat_completions(service: ServiceDependency, request: Request) 
             content=openai_error_body(str(error)),
         )
     try:
+        mtp = request.headers.get('x-tyloinfer-mtp')
+        if isinstance(body, dict) and mtp in {'on', 'off'}:
+            body.setdefault('enable_mtp', mtp == 'on')
         parsed = parse_chat_request(body)
     except OpenAIRequestError as error:
         return JSONResponse(

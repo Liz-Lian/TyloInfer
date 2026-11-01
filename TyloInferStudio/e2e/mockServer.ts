@@ -65,6 +65,7 @@ export const officialCatalog: OfficialModelList = {
 interface MockOptions {
   language?: 'zh-CN' | 'en';
   theme?: 'light' | 'dark';
+  preserveSettings?: boolean;
 
   failFirstSync?: boolean;
 
@@ -82,18 +83,27 @@ export async function mockStudioServer(page: Page, options: MockOptions = {}) {
   let responses: ResponseResource[] = [];
   let failedSync = false;
   let releasePending: (() => void) | undefined;
-  await page.addInitScript(({ language, theme }) => {
+  await page.addInitScript(({ language, theme, preserveSettings }) => {
+    if (preserveSettings && localStorage.getItem('tyloinfer.studio.generation.v1')) return;
     localStorage.setItem(
       'tyloinfer.studio.generation.v1',
       JSON.stringify({ language, theme }),
     );
-  }, { language: options.language ?? 'en', theme: options.theme ?? 'light' });
+  }, { language: options.language ?? 'en', theme: options.theme ?? 'light', preserveSettings: options.preserveSettings ?? false });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
     state.requests.push(`${method} ${path}`);
     const json = async (value: unknown) => route.fulfill({ json: value });
     if (path === '/api/v1/auth/policy' && method === 'GET') return json({ enabled: false, has_key: false });
+    if (path === '/api/v1/agent/state' || path === '/api/v1/agent/start') return json({
+      running: false, workspaces: [], sessions: [], models: [], approvals: [],
+    });
+    if (/^\/api\/v1\/agent\/sessions\/[^/]+\/controls$/.test(path)) return json({
+      values: { modelSelection: { next: null }, plan: { active: false, pending: null }, permissions: { currentValue: 'workspace-write' } },
+      commands: [{ name: 'plan', description: 'Enter or leave plan mode', input: { hint: '[off|message]' } }],
+      permissions: [{ value: 'read-only', name: 'read-only' }, { value: 'workspace-write', name: 'workspace-write' }, { value: 'danger-full-access', name: 'danger-full-access' }],
+    });
     if (path === '/api/v1/hub/official') return json(officialCatalog);
     if (path === '/api/v1/hub/download-directory') return json({ directory: null, actual_directory: '/tmp/studio/models', default_directory: '/tmp/studio/models' });
     if (path === '/api/v1/quantization/workspace' && method === 'GET')

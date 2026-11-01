@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import type { ModelArtifact } from '../../shared/api/types';
 import type { useModelCatalog } from './useModelCatalog';
@@ -73,8 +73,27 @@ it('shows the same zero shared budget as the model-loading estimate, not raw fre
     modelFilter: '', setModelFilter: vi.fn(), unloadInstance: vi.fn(), loadArtifact: vi.fn(),
     chooseModelDirectory: vi.fn(), openModelFiles: vi.fn() } as unknown as ReturnType<typeof useModelCatalog>;
   render(<LocalCheckpoints catalog={catalog} />);
-  expect(screen.getByText('Remaining available memory 0 GiB')).toBeInTheDocument();
+  expect(screen.getByText('Remaining available memory', { exact: false })).toHaveTextContent('Remaining available memory 0 GiB');
   expect(screen.getByRole('progressbar', { name: 'Estimated share of remaining available memory: No available memory' })).toBeInTheDocument();
+});
+
+it('shows remaining memory once beside Filter instead of repeating it on model rows', () => {
+  const base = { architecture: 'qwen4_exp', format: 'tq', shard_count: 1, total_bytes: 2 ** 30,
+    estimated_resident_weight_bytes: 2 ** 30, tensor_count: 1, record_count: 1, dtypes: [],
+    complete: true, loadable: true, modified_at: '' };
+  const artifacts = [{ ...base, id: 'a', name: 'Model A' }, { ...base, id: 'b', name: 'Model B' }] as ModelArtifact[];
+  const catalog = { runtime: { memory_architecture: 'unified', runtime_memory_headroom_bytes: 85.3 * 2 ** 30 },
+    artifacts, filteredArtifacts: artifacts, instances: [], busy: false, modelFilter: '', setModelFilter: vi.fn(),
+    unloadInstance: vi.fn(), loadArtifact: vi.fn(), chooseModelDirectory: vi.fn(), openModelFiles: vi.fn(),
+  } as unknown as ReturnType<typeof useModelCatalog>;
+  const { container } = render(<LocalCheckpoints catalog={catalog} />);
+  const memory = screen.getByText('Remaining available memory', { exact: false });
+  expect(memory).toHaveTextContent('Remaining available memory 85.3 GiB');
+  expect(memory.previousElementSibling).toHaveClass('list-filters');
+  expect(container.querySelectorAll('.checkpoint-available-memory')).toHaveLength(1);
+  expect(container.querySelectorAll('.model-row')).toHaveLength(2);
+  expect(container.querySelector('.model-row')).not.toHaveTextContent('Remaining available memory');
+  expect(screen.getAllByRole('progressbar')).toHaveLength(2);
 });
 
 it.each(['unified', 'discrete'] as const)('allows loading a low-memory MoE and describes SSD streaming on %s memory', async (memory_architecture) => {
@@ -116,5 +135,85 @@ it.each([
     chooseModelDirectory: vi.fn(), openModelFiles: vi.fn() } as unknown as ReturnType<typeof useModelCatalog>;
   render(<LocalCheckpoints catalog={catalog} />);
   expect(screen.queryByText(/Experts that do not fit/)).not.toBeInTheDocument();
-  if (!loadable) expect(screen.queryByRole('button', { name: 'Load' })).not.toBeInTheDocument();
+  if (!loadable) expect(screen.getByRole('button', { name: 'Load' })).toBeDisabled();
+});
+
+it('keeps incomplete-shard and streaming notices in the same slot before memory, outside the actions', async () => {
+  const GiB = 2 ** 30;
+  const base = { architecture: 'qwen4_exp', format: 'tq', shard_count: 8, total_bytes: 80 * GiB,
+    estimated_resident_weight_bytes: 80 * GiB, estimated_weight_bytes_by_role: { experts: 76 * GiB, dense: 4 * GiB },
+    tensor_count: 1, record_count: 1, dtypes: [], complete: true, loadable: true, modified_at: '' } as Omit<ModelArtifact, 'id' | 'name'>;
+  const artifacts = [{ ...base, id: 'streamed', name: 'Streamed model' },
+    { ...base, id: 'incomplete', name: 'Incomplete model', complete: false, loadable: false, missing_shards: 2 }];
+  const catalog = { runtime: { runtime_memory_headroom_bytes: 16 * GiB }, artifacts, filteredArtifacts: artifacts, instances: [], busy: false,
+    modelFilter: '', setModelFilter: vi.fn(), unloadInstance: vi.fn(), loadArtifact: vi.fn(),
+    chooseModelDirectory: vi.fn(), openModelFiles: vi.fn() } as unknown as ReturnType<typeof useModelCatalog>;
+  const view = render(<LocalCheckpoints catalog={catalog} />);
+  const notices = view.container.querySelectorAll('.local-checkpoint-notice');
+  expect(notices).toHaveLength(2);
+  expect(notices[0]).toHaveTextContent('Insufficient remaining memory.');
+  expect(notices[1]).toHaveTextContent('Incomplete shards');
+  const incomplete = view.container.querySelectorAll('.model-row')[1];
+  const load = incomplete.querySelector<HTMLButtonElement>('.model-load-action')!;
+  expect(load).toHaveTextContent('Load');
+  expect(load).toBeDisabled();
+  expect(load).toHaveAccessibleDescription('Incomplete shards');
+  await userEvent.click(load);
+  expect(catalog.loadArtifact).not.toHaveBeenCalled();
+  for (const notice of notices) expect(notice.nextElementSibling).toHaveClass('local-checkpoint-memory');
+  for (const actions of view.container.querySelectorAll('.model-row-controls')) {
+    expect(actions).not.toHaveTextContent('Insufficient remaining memory.');
+    expect(actions).not.toHaveTextContent('Incomplete shards');
+  }
+});
+
+it('keeps quantized versions under their model and loads the exact selected variant', async () => {
+  const base = { format: 'tq', shard_count: 1, total_bytes: 100,
+    tensor_count: 1, record_count: 1, dtypes: [], complete: true, loadable: true, modified_at: '' };
+  const artifacts = [
+    { ...base, id: 'flash-s2', name: 'Qwen3.8-Flash-Next-EW-S2-L', architecture: 'qwen4_exp_text' },
+    { ...base, id: 'deepseek', name: 'DeepSeek-V4.1-Flash-1017-Q3', architecture: 'deepseek_v41_text' },
+    { ...base, id: 'dense', name: 'Qwen3.8-27B-V1_M', architecture: 'qwen3_5_text' },
+    { ...base, id: 'flash-iq3', name: 'Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS', architecture: 'qwen4_exp_text', format: 'gguf' },
+  ] as ModelArtifact[];
+  const loadArtifact = vi.fn();
+  const catalog = { runtime: null, artifacts, filteredArtifacts: artifacts, instances: [], busy: false,
+    modelFilter: '', setModelFilter: vi.fn(), unloadInstance: vi.fn(), loadArtifact,
+    chooseModelDirectory: vi.fn(), openModelFiles: vi.fn() } as unknown as ReturnType<typeof useModelCatalog>;
+  const view = render(<LocalCheckpoints catalog={catalog} />);
+  expect([...view.container.querySelectorAll('.checkpoint-family-heading h3')].map(element => element.textContent)).toEqual(['Qwen', 'DeepSeek']);
+  const flash = screen.getByRole('region', { name: 'Qwen3.8-Flash-Next' });
+  expect(flash.querySelectorAll('.model-row')).toHaveLength(2);
+  expect(screen.getByRole('region', { name: 'Qwen3.8-27B' }).querySelectorAll('.model-row')).toHaveLength(1);
+  const variant = [...flash.querySelectorAll<HTMLElement>('.model-row')].find(row => row.textContent?.includes('GSQ-RCO'))!;
+  await userEvent.click(within(variant).getByRole('button', { name: 'Load' }));
+  expect(loadArtifact).toHaveBeenCalledExactlyOnceWith('Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS');
+});
+
+it('lists independent tables with file access but no load controls or pressure bars', async () => {
+  const base = { architecture: 'qwen4_exp_text', format: 'tq', shard_count: 2, total_bytes: 2 ** 30,
+    tensor_count: 1, record_count: 1, dtypes: [], complete: true, loadable: false, modified_at: '' };
+  const artifacts = [
+    { ...base, id: 'model', name: 'Qwen3.8-Flash-Next-EW-S2-L', loadable: true },
+    { ...base, id: 'ple', name: 'Qwen3.8-Flash-Next-PLE', asset_kind: 'ple' },
+    { ...base, id: 'engram', name: 'Qwen3.8-Flash-Next-Engram', asset_kind: 'engram' },
+  ] as ModelArtifact[];
+  const openModelFiles = vi.fn();
+  const catalog = { runtime: null, artifacts, filteredArtifacts: artifacts, instances: [], busy: false,
+    modelFilter: '', setModelFilter: vi.fn(), unloadInstance: vi.fn(), loadArtifact: vi.fn(),
+    chooseModelDirectory: vi.fn(), openModelFiles } as unknown as ReturnType<typeof useModelCatalog>;
+  render(<LocalCheckpoints catalog={catalog} />);
+  const group = screen.getByRole('region', { name: 'Qwen3.8-Flash-Next' });
+  expect(group.querySelectorAll('.model-row')).toHaveLength(3);
+  expect(screen.getByText('1 local models · 2 companion assets')).toBeInTheDocument();
+  for (const kind of ['PLE', 'Engram']) {
+    const row = screen.getByText(`Independently usable ${kind}`).closest('.model-row')!;
+    expect(row).toHaveTextContent('1 GiB · 2 shards');
+    expect(row.querySelector('.local-checkpoint-resources')).toBeNull();
+    expect(within(row as HTMLElement).queryByRole('button', { name: 'Load' })).toBeNull();
+    expect(within(row as HTMLElement).getAllByRole('button')).toHaveLength(1);
+    await userEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Model files' }));
+    expect(openModelFiles).toHaveBeenLastCalledWith(kind.toLowerCase());
+  }
+  expect(screen.getAllByRole('button', { name: 'Load' })).toHaveLength(1);
 });

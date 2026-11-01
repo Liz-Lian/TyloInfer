@@ -196,7 +196,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
   return <div className="community-browser">
     <form className="community-search-toolbar" onSubmit={submit}>
       <label className="community-search-field"><MagnifyingGlassIcon size={18} />
-        <input aria-label={tr('搜索第三方模型', 'Search community models')} placeholder={tr('模型名称、owner/repo 或仓库链接', 'Model name, owner/repo, or repository URL')}
+        <input aria-label={tr('搜索模型', 'Search models')} placeholder={tr('模型名称、owner/repo 或仓库链接', 'Model name, owner/repo, or repository URL')}
           value={query} onChange={event => setQuery(event.target.value)} />
         {query && <button type="button" aria-label={tr('清空搜索', 'Clear search')} onClick={() => setQuery('')}><XIcon size={15} /></button>}
       </label>

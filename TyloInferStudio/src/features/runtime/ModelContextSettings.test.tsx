@@ -115,6 +115,35 @@ async function controls() {
     toggle: screen.getByRole('checkbox', { name: 'Model A YaRN context limit extension' }) };
 }
 
+it('keeps global policy separate without fetching per-model capabilities or cache metadata', async () => {
+  render(<ModelContextSettings scope="global" />);
+  await waitFor(() => expect(mocks.policy).toHaveBeenCalledOnce());
+  expect(screen.getByRole('spinbutton', { name: 'Global context cap' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Save to this model' })).not.toBeInTheDocument();
+  expect(mocks.info).not.toHaveBeenCalled();
+  expect(mocks.profile).not.toHaveBeenCalled();
+});
+
+it('edits only the requested model without another model selector or global controls', async () => {
+  state.instances.push({ ...state.instances[0], id: 'b', model: 'Model B' });
+  render(<ModelContextSettings scope="model" modelName="Model B" />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save to this model' })).toBeEnabled());
+  expect(mocks.info).toHaveBeenCalledExactlyOnceWith('b');
+  expect(screen.queryByRole('spinbutton', { name: 'Global context cap' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('combobox', { name: 'Per-model context model' })).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Model B maximum context' }), { target: { value: '8192' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save to this model' }));
+  await waitFor(() => expect(mocks.reload).toHaveBeenCalledWith('b', 8192, false, undefined, undefined));
+});
+
+it('never falls back to another loaded model when the requested model disappears', async () => {
+  render(<ModelContextSettings scope="model" modelName="Removed model" />);
+  await waitFor(() => expect(mocks.policy).toHaveBeenCalledOnce());
+  expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Save to this model' })).not.toBeInTheDocument();
+  expect(mocks.reload).not.toHaveBeenCalled();
+});
+
 it('clamps native overflow on save instead of disabling the save button', async () => {
   const { save, input, toggle } = await controls();
   expect(toggle).not.toBeChecked();

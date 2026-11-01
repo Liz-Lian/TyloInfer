@@ -10,22 +10,24 @@ function gib(bytes: number | null) {
   return bytes == null ? '—' : `${formatNumber(bytes / 2 ** 30, 1)} GiB`;
 }
 
-export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, valid, disabled }: {
+export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, valid, disabled, onSparseChange }: {
   models: ModelArtifact[]; runtime?: RuntimeStatus | null; deviceIds: string[];
   value: LoadContextDefaults; valid: boolean; disabled: boolean;
+  onSparseChange?: (sparse: boolean | null) => void;
 }) {
   const { tr } = useSettings();
   const [selectedId, setSelectedId] = useState('');
   const [data, setData] = useState<{ key: string; profile: ModelCacheProfile | null } | null>(null);
   const choices = models.filter(model => model.complete && model.loadable);
-  const selected = choices.find(model => model.id === selectedId);
+  const selected = choices.length === 1 ? choices[0] : choices.find(model => model.id === selectedId);
   const key = selected ? `${selected.id}:${selected.modified_at}:${selected.total_bytes}` : '';
   useEffect(() => {
+    onSparseChange?.(null);
     if (!selected) { setSelectedId(''); return; }
     const controller = new AbortController();
     let active = true;
     void modelsApi.modelCacheProfile(selected.id, controller.signal, true)
-      .then(profile => { if (active) setData({ key, profile }); })
+      .then(profile => { if (active) { setData({ key, profile }); onSparseChange?.(profile ? profile.components.some(component => component.group === 'QSA') : null); } })
       .catch(() => { if (active) setData({ key, profile: null }); });
     return () => { active = false; controller.abort(); };
   }, [selected?.id, key]);
@@ -35,8 +37,8 @@ export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, val
     ? estimateLoadMemory(selected, data.profile, value) : null;
   const exceeded = estimate != null && available != null && estimate.total > available;
   return <div className="model-load-memory-estimate">
-    <p>{tr('选择模型，比较预计占用与剩余推理预算。自动预算已考虑系统预留和可回收内存。',
-      'Select a model to compare estimated usage with the remaining inference budget. The automatic budget accounts for system headroom and reclaimable memory.')}</p>
+    {models.length !== 1 && <p>{tr('选择模型，比较预计占用与剩余推理预算。自动预算已考虑系统预留和可回收内存。',
+      'Select a model to compare estimated usage with the remaining inference budget. The automatic budget accounts for system headroom and reclaimable memory.')}</p>}
     <div className="model-load-estimate-row">
       <strong>{tr('预计总占用（显存 + 内存）', 'Estimated total (VRAM + RAM)')}</strong>
       <div className="model-load-estimate-values">
@@ -48,11 +50,11 @@ export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, val
           {!selected ? '—' : loading ? tr('估算中…', 'Estimating…') : !valid ? '—'
             : estimate ? gib(estimate.total) : tr('暂无法估算', 'Estimate unavailable')}
         </output>
-        <select aria-label={tr('估算模型', 'Model to estimate')} value={selected?.id ?? ''} disabled={disabled}
+        {models.length !== 1 && <select aria-label={tr('估算模型', 'Model to estimate')} value={selected?.id ?? ''} disabled={disabled}
           onChange={event => setSelectedId(event.target.value)}>
           <option value="">{tr('无', 'None')}</option>
           {choices.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
-        </select>
+        </select>}
       </div>
     </div>
   </div>;

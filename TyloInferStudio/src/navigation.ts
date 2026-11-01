@@ -2,8 +2,8 @@
 
 
 
-export type ViewName = 'chat' | 'dashboard' | 'lab' | 'applications' | 'versions';
-export type DashboardPage = 'overview' | 'models' | 'connections' | 'cache' | 'logs' | 'settings';
+export type ViewName = 'chat' | 'agent' | 'dashboard' | 'lab' | 'versions';
+export type DashboardPage = 'overview' | 'models' | 'connections' | 'cache' | 'logs';
 export type LabPage = 'models' | 'evaluations' | 'analysis';
 
 export interface StudioLocation {
@@ -15,16 +15,15 @@ export interface StudioLocation {
 export const STUDIO_PATHS = {
   overview: '/',
   chat: '/chat',
+  agent: '/agent',
   models: '/models',
   server: '/runtime',
   resources: '/resources',
   modelHub: '/model-hub',
   evaluations: '/evaluations',
   analysis: '/analysis',
-  applications: '/applications',
   versions: '/versions',
   logs: '/logs',
-  settings: '/settings',
 } as const;
 
 const DASHBOARD_PATHS: Record<DashboardPage, string> = {
@@ -33,7 +32,6 @@ const DASHBOARD_PATHS: Record<DashboardPage, string> = {
   connections: STUDIO_PATHS.server,
   cache: STUDIO_PATHS.resources,
   logs: STUDIO_PATHS.logs,
-  settings: STUDIO_PATHS.settings,
 };
 
 const LAB_PATHS: Record<LabPage, string> = {
@@ -58,8 +56,8 @@ export function resolveStudioLocation(pathname: string): StudioLocation {
   if (normalizedPath === STUDIO_PATHS.versions) {
     return { view: 'versions', dashboardPage: 'overview', labPage: 'models' };
   }
-  if (normalizedPath === STUDIO_PATHS.applications) {
-    return { view: 'applications', dashboardPage: 'overview', labPage: 'models' };
+  if (normalizedPath === STUDIO_PATHS.agent) {
+    return { view: 'agent', dashboardPage: 'overview', labPage: 'models' };
   }
   if (normalizedPath === STUDIO_PATHS.chat) {
     return { view: 'chat', dashboardPage: 'overview', labPage: 'models' };

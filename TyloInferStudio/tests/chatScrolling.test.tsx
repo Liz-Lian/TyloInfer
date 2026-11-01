@@ -7,8 +7,6 @@ import { useChatAutoScroll } from '../src/features/chat/hooks/useChatAutoScroll'
 import { SavedMessageList } from '../src/features/chat/SavedMessageList';
 import { StreamingMessage } from '../src/features/chat/components/StreamingMessage';
 import { GenerationController } from '../src/features/chat/state/generationController';
-import { SettingsPage } from '../src/features/settings/SettingsPage';
-import { DEFAULT_SETTINGS } from '../src/features/settings/configuration';
 import { TooltipProvider } from '../src/shared/ui/Tooltip';
 import type { Message } from '../src/shared/api/types';
 
@@ -136,12 +134,6 @@ it('历史推理默认折叠，流式推理默认展开且只显示当前会话'
   expect(screen.getByText('Thinking').closest('details')).toHaveAttribute('open');
   view.rerender(<StreamingMessage controller={controller} sessionId="b" tr={tr} />);
   expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
-});
-
-it('默认生成限制保持 4096，设置页不再暴露生成参数', () => {
-  render(<SettingsPage tr={(_zh, en) => en} settingsDraft={{ language: DEFAULT_SETTINGS.language, theme: DEFAULT_SETTINGS.theme }} setSettingsDraft={vi.fn()} actions={{ resetSettingsDraft: vi.fn(), saveSettings: vi.fn() }} />);
-  expect(DEFAULT_SETTINGS.maxTokens).toBe(4096);
-  expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
 });
 
 it('聊天容器拥有垂直滚动，推理正文不引入独立限高滚动区', () => {

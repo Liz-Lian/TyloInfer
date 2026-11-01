@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { mockStudioServer } from './mockServer';
+import { openModelSettings } from './modelSettings';
 
 for (const language of ['zh-CN', 'en'] as const) {
   test(`one selected model saves context, YaRN and streaming together (${language})`, async ({ page }, testInfo) => {
@@ -18,7 +19,7 @@ for (const language of ['zh-CN', 'en'] as const) {
         maximum_context: supported ? 1048576 : 32768, maximum_factor: supported ? 4 : null,
         enabled: supported, effective_factor: supported ? 678920 / 262144 : 1 } });
     });
-    await page.route('**/api/v1/models', route => route.fulfill({ json: { data: models.map(model => ({ id: `artifact-${model.id}`, name: model.model })) } }));
+    await page.route(/\/api\/v1\/models(?:\?.*)?$/, route => route.fulfill({ json: { data: models.map(model => ({ id: `artifact-${model.id}`, name: model.model })) } }));
     await page.route('**/api/v1/models/*/cache-profile', route => route.fulfill({ json: {
       max_context: 262144, fixed_bytes: 29978, fixed_components: [{ group: 'QSA', name: 'indexer_tail', bytes: 29978 }], components: [
         { group: 'QSA', name: 'raw_kv', layers: 13, bytes_per_row: 26624, tokens_per_row: 1, allocation: 'power_of_two', minimum_rows: 16, max_read_rows_per_token: 2048 },
@@ -45,9 +46,7 @@ for (const language of ['zh-CN', 'en'] as const) {
           context_override: payload.context_size, qsa_kv_offload: payload.qsa_kv_offload },
         cancel_requested: false, created_at: `2026-10-09T00:00:0${writes.length}Z`, updated_at: '2026-10-09T00:01:00Z' } });
     });
-    await page.goto('/runtime');
-    const panel = page.locator('.server-context-panel');
-    const selected = panel.getByRole('combobox', { name: language === 'zh-CN' ? '单模型上下文模型' : 'Per-model context model' });
+    const panel = await openModelSettings(page, models[0].model, language);
     const stream = panel.locator('.qsa-kv-settings:not(.kv-quantization-settings)');
     const toggle = stream.getByRole('checkbox');
     const disclosure = stream.getByRole('button');
@@ -77,14 +76,8 @@ for (const language of ['zh-CN', 'en'] as const) {
     await expect(summary).toContainText('524,288 tokens');
     await expect(summary).toContainText('2.00×');
     expect(writes).toEqual([]);
-    await selected.selectOption(models[1].model);
-    await expect(panel.locator('.model-context-entry')).toHaveCount(1);
-    await expect(toggle).toBeDisabled();
-    await expect(summary).not.toContainText('SSD');
-    await selected.selectOption(models[0].model);
     await expect(context).toHaveValue('524288');
     await expect(toggle).toBeChecked();
-    await disclosure.click();
     await expect(budget).toHaveValue('1');
     if (testInfo.project.name === 'desktop') {
       const summaryBox = (await summary.boundingBox())!;
@@ -115,12 +108,16 @@ for (const language of ['zh-CN', 'en'] as const) {
     await expect(summary).toContainText('906.58 MiB');
     await expect(summary).toContainText('52 MiB');
     while (await page.locator('.studio-toast-close').count()) await page.locator('.studio-toast-close').first().click();
-    await panel.locator('.model-context-list-heading').click();
+    await panel.locator(':scope > header').click();
     await panel.scrollIntoViewIfNeeded();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await panel.screenshot({ path: testInfo.outputPath('model-context-settings-light.png'), animations: 'disabled' });
     await panel.locator('.model-context-footer').screenshot({ path: testInfo.outputPath('model-context-footer-light.png'), animations: 'disabled' });
     await page.evaluate(() => document.documentElement.dataset.theme = 'dark');
     await panel.screenshot({ path: testInfo.outputPath('model-context-settings-dark.png'), animations: 'disabled' });
+    await panel.getByRole('button', { name: language === 'zh-CN' ? '关闭模型设置' : 'Close model settings' }).click();
+    const dense = await openModelSettings(page, models[1].model, language);
+    await expect(dense.locator('.qsa-kv-settings:not(.kv-quantization-settings)').getByRole('checkbox')).toBeDisabled();
+    await expect(dense.locator('.model-context-summary')).not.toContainText('SSD');
   });
 }

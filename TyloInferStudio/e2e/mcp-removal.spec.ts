@@ -15,6 +15,7 @@ for (const language of ['zh-CN', 'en'] as const) {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('/runtime');
+    await page.getByRole('tab', { name: language === 'zh-CN' ? '高级' : 'Advanced', exact: true }).click();
     await expect(page.getByText(language === 'zh-CN' ? '远程路由' : 'Remote routing', { exact: true })).toBeVisible();
     await expect(page.getByRole('textbox', { name: language === 'zh-CN' ? '节点名称' : 'Node name' })).toBeVisible();
     await expect(page.getByText('MCP', { exact: true })).toHaveCount(0);
@@ -28,7 +29,7 @@ for (const language of ['zh-CN', 'en'] as const) {
       });
     })).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('remote-routing.png'), animations: 'disabled' });
-    await page.goto('/chat');
+    await page.goto('/agent');
     await expect(page.locator('main h1')).toBeVisible();
     expect(state.requests.some(request => request.includes('/mcp/'))).toBe(false);
     expect(state.unexpected).toEqual([]);

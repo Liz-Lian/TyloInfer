@@ -3,7 +3,6 @@ import { useSettings } from '../settings/SettingsProvider';
 import { TMPanel, SettingRow } from '../../app/display';
 import { Switch } from '../../shared/ui/Switch';
 import type { useModelCatalog } from './useModelCatalog';
-import { ModelLoadContext } from './ModelLoadContext';
 
 
 export function ModelLoadPolicy({ catalog }: { catalog: ReturnType<typeof useModelCatalog> }) {
@@ -53,8 +52,6 @@ export function ModelLoadPolicy({ catalog }: { catalog: ReturnType<typeof useMod
           }
         />
       </div>
-      <ModelLoadContext key={catalog.connectionRevision} value={catalog.loadContext} onChange={catalog.setLoadContext}
-        disabled={catalog.busy} models={catalog.artifacts} runtime={catalog.runtime} deviceIds={catalog.loadDeviceIds} />
     </TMPanel>
   );
 }

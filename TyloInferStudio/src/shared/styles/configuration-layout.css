@@ -1,0 +1,68 @@
+.configuration-tabs { display: flex; flex: 0 0 auto; gap: 22px; margin-bottom: 22px; border-bottom: 1px solid var(--line-soft); }
+.configuration-tabs > button { min-height: 40px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 2px; color: var(--muted); background: transparent; font-size: 13px; font-weight: 450; white-space: nowrap; }
+.configuration-tabs > button[aria-selected="true"] { border-bottom-color: var(--ink-strong); color: var(--ink-strong); }
+.configuration-tabs > button:hover { color: var(--ink-strong); background: transparent; }
+.service-view [role="tabpanel"][hidden], .model-settings-dialog [role="tabpanel"][hidden] { display: none; }
+.configuration-disclosure { margin-top: 4px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.configuration-disclosure > summary { width: fit-content; padding: 4px 0; color: var(--ink-soft); font-size: 12px; cursor: pointer; }
+.configuration-disclosure > p, .configuration-effect { margin: 8px 0 14px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.model-library-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 22px; color: var(--muted); font-size: 12px; }
+.model-library-summary > span { display: grid; min-width: 0; align-content: center; gap: 6px; border: 1px solid var(--panel-line); border-radius: 10px; padding: 12px 16px; background: var(--panel-surface); }
+.model-library-summary strong { overflow: hidden; color: var(--ink-soft); font-size: 20px; line-height: 1.2; font-weight: 550; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.model-folder-location { grid-template-columns: 16px auto minmax(0, 1fr); }
+.checkpoint-available-memory { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.checkpoint-available-memory > span { font-family: var(--small-numerals-font); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.checkpoint-family-groups { display: grid; gap: 18px; }
+.checkpoint-family-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line-soft); padding-bottom: 14px; }
+.checkpoint-family-heading h3 { margin: 0; color: var(--ink-strong); font-size: 14px; font-weight: 550; }
+.checkpoint-family-heading > span { flex-shrink: 0; color: var(--muted-light); font-size: 11px; font-variant-numeric: tabular-nums; }
+.checkpoint-model-group { display: contents; }
+.checkpoint-model-heading { display: flex; min-width: 0; align-items: center; gap: 14px; margin: 18px 0 0; color: var(--ink-soft); font-size: 12px; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
+.checkpoint-model-heading::after { content: ''; flex: 1; min-width: 24px; height: 1px; background: var(--line-soft); }
+.model-library-panel .model-row { grid-template-columns: 8px minmax(0, 1fr) minmax(280px, 410px) 258px; }
+.model-library-panel .model-row-actions { grid-template-columns: 24px max-content 28px 52px 28px; gap: 7px; }
+.model-library-panel .model-settings-action { display: grid; grid-column: 3; grid-row: 1; width: 28px; height: 30px; place-items: center; padding: 0; }
+.model-library-panel .model-load-action { grid-column: 4; }
+.model-library-panel .model-delete-action { grid-column: 5; }
+.model-library-panel .component-asset-row .checkpoint-row-details { grid-column: 2 / -2; }
+.model-library-panel .component-asset-row .model-row-controls { grid-column: -2; }
+.model-library-panel .component-asset-row .model-row-actions { display: flex; justify-content: flex-end; }
+.component-asset-row .component-asset-label { color: var(--muted); }
+.model-settings-dialog { display: flex; flex-direction: column; width: min(860px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; }
+.model-settings-dialog > header { flex: 0 0 auto; margin: 0; border-bottom: 1px solid var(--line-soft); padding: 20px 24px; }
+.model-settings-dialog > header > div { min-width: 0; }
+.model-settings-dialog > header h2 { overflow: hidden; font-size: 16px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.model-settings-dialog > .configuration-tabs { margin: 0; padding: 0 24px; }
+.model-settings-dialog :is(input[type="number"], select, small) { font-family: var(--small-numerals-font); font-variant-numeric: tabular-nums; }
+.model-settings-body { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 24px 24px; }
+.model-settings-body .model-context-models { margin: 0; border: 0; padding: 0; }
+.model-settings-body .model-context-settings { margin: 0; border: 0; padding: 0; }
+.model-settings-body .model-context-settings .server-number-input { width: 112px; min-height: 34px; height: 34px; font-family: var(--small-numerals-font); font-size: 12px; }
+.model-settings-body .model-context-entry { margin: 0; border: 0; padding: 0; }
+.model-settings-body .model-load-policy { margin: 0; border: 0; padding: 0; background: transparent; }
+.model-settings-body .model-load-policy .panel-heading { display: none; }
+.model-settings-body .model-policy-panel { margin: 0; }
+.model-settings-body .model-load-context > h3 { display: none; }
+.model-settings-body .model-context-footer { flex-wrap: wrap; gap: 14px; }
+.model-settings-dialog .model-context-yarn input, .model-settings-dialog .qsa-kv-toggle input { width: 14px; height: 14px; min-height: 14px; padding: 0; }
+.model-settings-dialog label.qsa-kv-toggle { display: flex; margin: 0; }
+.model-settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 20px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
+.model-settings-actions > span { color: var(--muted); font-size: 12px; }
+@media (max-width: 1200px) { .checkpoint-family-panel .model-list:not(:has(details[open])) { grid-template-rows: var(--checkpoint-group-rows); } .model-library-panel .model-row { grid-template-columns: 8px minmax(0, 1fr) 258px; } .model-library-panel .local-checkpoint-resources { grid-column: 2 / -1; grid-row: 2; } .model-library-panel .model-row-controls { grid-column: 3; grid-row: 1; } }
+@media (max-width: 560px) {
+  .model-library-summary { gap: 8px; font-size: 11px; }
+  .model-library-summary > span { padding: 11px 12px; }
+  .model-library-summary strong { font-size: 18px; }
+  .configuration-tabs { gap: 20px; }
+  .model-library-panel .model-row { grid-template-columns: 8px minmax(0, 1fr); }
+  .model-library-panel .model-row-controls { grid-column: 2; grid-row: 3; }
+  .model-library-panel .component-asset-row .checkpoint-row-details { grid-column: 2; }
+  .model-library-panel .component-asset-row .model-row-controls { grid-column: 2; }
+  .model-settings-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 24px); }
+  .model-settings-dialog > header { padding: 16px; }
+  .model-settings-dialog > .configuration-tabs { padding: 0 16px; }
+  .model-settings-body { padding: 12px 16px 20px; }
+  .model-settings-body .setting-row { flex-wrap: wrap; gap: 12px; }
+  .model-settings-body .model-context-controls { flex-wrap: wrap; }
+  .model-settings-body .model-context-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

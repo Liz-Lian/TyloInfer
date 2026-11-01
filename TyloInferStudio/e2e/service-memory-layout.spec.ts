@@ -19,6 +19,7 @@ for (const language of ['zh-CN', 'en'] as const) {
     } }));
     await page.goto('/runtime');
     const panel = page.locator('.server-memory-panel');
+    await panel.locator('.configuration-disclosure > summary').click();
     const name = language === 'zh-CN' ? '前缀 RAM 配额' : 'Prefix RAM allowance';
     const mode = panel.getByRole('combobox', { name: `${name} ${language === 'zh-CN' ? '模式' : 'mode'}`, exact: true });
     await expect(mode).toBeEnabled();

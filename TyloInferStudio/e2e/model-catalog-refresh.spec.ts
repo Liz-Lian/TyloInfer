@@ -13,7 +13,7 @@ test('updates deleted and added checkpoints on window focus', async ({ page }) =
     return route.fulfill({ json: { data: exists ? [artifact] : [] } });
   });
   await page.goto('/models');
-  const checkpoint = page.locator('#local-checkpoints').getByText(artifact.name, { exact: true });
+  const checkpoint = page.locator('#local-checkpoints .model-row').getByText(artifact.name, { exact: true });
   await expect(checkpoint).toBeVisible();
   exists = false;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));

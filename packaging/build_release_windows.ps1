@@ -586,6 +586,11 @@ function Remove-PyInstallerCache {
 function Build-NsisInstaller {
     param([Parameter(Mandatory)][hashtable] $Context)
 
+    Invoke-Checked $Context.Python @(
+        (Join-Path $Context.ScriptDirectory "stage_agent_runtime.py"),
+        (Join-Path $Context.ResourceDirectory "agent-runtime")
+    )
+
     $cargoTargetDirectory = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
         Join-Path $Context.StudioDirectory "src-tauri\target"
     } else {

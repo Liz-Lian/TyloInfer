@@ -141,11 +141,11 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     expect(APP).not.toContain('className="role-inherited-fields"');
   });
 
-  it('test_studio_exposes_theme_selection_without_using_sidebar_status_space', () => {
-    expect(APP).toContain('settingsDraft.theme');
-    expect(APP).toContain('<option value="system">{tr("跟随系统", "System")}</option>');
-    expect(APP).toContain('<option value="light">{tr("浅色", "Light")}</option>');
-    expect(APP).toContain('<option value="dark">{tr("深色", "Dark")}</option>');
+  it('exposes immediate appearance controls above the version card', () => {
+    expect(APP).toContain('settings.theme === value');
+    expect(APP).toContain('SunIcon');
+    expect(APP).toContain('MoonIcon');
+    expect(APP).toContain("'Auto'");
     expect(APP).not.toContain('className="theme-switcher"');
     expect(APP).not.toContain('connection-card');
     expect(STYLES).not.toContain('.connection-card');
@@ -156,8 +156,8 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     expect(APP).toContain('className="runtime-hero"');
     expect(models).toContain('Pin in memory');
     expect(models).toContain('Idle unload');
-    expect(models).toContain('pin: loadPinned');
-    expect(models).toContain('idle_ttl_seconds: loadIdleTtl');
+    expect(models).toContain('pin: options.pinned');
+    expect(models).toContain('idle_ttl_seconds: options.idleTtl');
     expect(API).toContain('idle_ttl_seconds?: number | null');
     expect(API).toContain('pin?: boolean');
     expect(STYLES).toContain('.runtime-hero {');
@@ -222,7 +222,8 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     expect(APP).toContain('const storageKey = `${page}:${id}`');
     expect(APP).toContain('localStorage.setItem(PANEL_COLLAPSED_KEY, JSON.stringify(updated))');
     expect(shell).toContain('<Outlet />');
-    expect(APP_ENTRY).toContain('path="settings"');
+    expect(APP_ENTRY).toContain('path="agent"');
+    expect(APP_ENTRY).not.toContain('path="settings"');
     expect(APP_ENTRY).not.toContain('path="quantization"');
     const jobs = readSources('features/jobs/useJobRecordActions.ts');
     expect(jobs).toContain('jobsApi.clearCompletedJobs()');
@@ -255,12 +256,12 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
 
   it('keeps service sections separate and chat settings on the chat page', () => {
     const connection = readSources('features/connections/ConnectionsPage.tsx');
-    for (const label of ['API parameters', 'Automation', 'Model ID', 'Bind address', 'OpenAI port', 'Anthropic port']) {
+    for (const label of ['API parameters', 'Model ID', 'Service connection', 'OpenAI port', 'Anthropic port']) {
       expect(connection).toContain(label);
     }
     for (const [component, path, label] of [
       ['MemorySettingsPanel', 'features/connections/MemorySettingsPanel.tsx', 'Memory plan'],
-      ['ContextManagementPanel', 'features/connections/ContextManagementPanel.tsx', 'Context management'],
+      ['ContextManagementPanel', 'features/connections/ContextManagementPanel.tsx', 'Context defaults'],
       ['PrefixCacheSettingsPanel', 'features/connections/PrefixCacheSettingsPanel.tsx', 'Persistent prefix cache'],
       ['InferencePolicyPanel', 'features/connections/InferencePolicyPanel.tsx', 'Inference controls'],
       ['RemoteRoutingPanel', 'features/connections/RemoteRoutingPanel.tsx', 'Remote routing'],
@@ -270,6 +271,8 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     }
     expect(connection).toContain('<ModelAliasMapping');
     expect(connection).not.toContain('RuntimeProfilesPanel');
+    expect(connection).not.toContain('Automation');
+    expect(readSources('features/connections/ContextManagementPanel.tsx')).toContain('scope="global"');
     expect(readSources('features/connections/ModelAliasMapping.tsx')).toContain('Alias mapping');
     expect(connection).not.toContain('InferenceDefaultsPanel');
     expect(readSources('features/chat/components/ChatPageHeader.tsx')).toContain('<InferenceDefaultsPanel />');

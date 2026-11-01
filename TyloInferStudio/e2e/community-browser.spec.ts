@@ -39,7 +39,7 @@ test('browses repositories, selects one quantization and reads model cards witho
     return route.fulfill({ json: { id: 'new-download', kind: 'download.huggingface', status: 'queued', progress: 0, cancel_requested: false, payload: {}, created_at: '', updated_at: '' } });
   });
   await page.goto('/model-hub');
-  await page.getByRole('tab', { name: 'Community', exact: true }).click();
+  await page.getByRole('tab', { name: 'Model browser', exact: true }).click();
   const inspector = page.getByRole('region', { name: 'Model details' });
   await expect(inspector.getByRole('heading', { name: 'Qwen3-GGUF' })).toBeVisible();
   await page.getByRole('checkbox', { name: 'MLX', exact: true }).uncheck();
@@ -105,7 +105,7 @@ test('downloads a complete model folder as one task without sibling weights', as
     return route.fulfill({ json: { id: 'folder-download', kind: 'download.huggingface', status: 'queued', progress: 0, cancel_requested: false, payload: {}, created_at: '', updated_at: '' } });
   });
   await page.goto('/model-hub');
-  await page.getByRole('tab', { name: 'Community', exact: true }).click();
+  await page.getByRole('tab', { name: 'Model browser', exact: true }).click();
   const inspector = page.getByRole('region', { name: 'Model details' });
   await inspector.getByRole('tab', { name: 'Files', exact: true }).click();
   await inspector.getByRole('button', { name: 'Download folder 4bit', exact: true }).click();

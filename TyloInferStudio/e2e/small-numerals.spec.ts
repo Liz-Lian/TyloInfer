@@ -15,6 +15,7 @@ for (const language of ['zh-CN', 'en'] as const) {
     await expect(available).toHaveText('107.5 GiB');
     await expect(available).toHaveCSS('font-size', '11.5px');
     expect(await available.evaluate(element => getComputedStyle(element).fontFamily)).toContain('MFQ Small Numerals');
+    await page.locator('.configuration-disclosure > summary').click();
     const label = language === 'zh-CN' ? '前缀 RAM 配额' : 'Prefix RAM allowance';
     await page.getByRole('combobox', { name: `${label} ${language === 'zh-CN' ? '模式' : 'mode'}`, exact: true }).selectOption('manual');
     const input = page.getByRole('spinbutton', { name: `${label} ${language === 'zh-CN' ? '预算上限' : 'budget limit'}`, exact: true });

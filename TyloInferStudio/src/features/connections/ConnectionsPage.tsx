@@ -22,6 +22,7 @@ import { InferencePolicyPanel } from './InferencePolicyPanel';
 import { ApiAuthenticationPanel } from './ApiAuthenticationPanel';
 import { toast } from '../../stores/toastStore';
 import { ServerConnectionPage } from '../../app/ServerConnectionPage';
+import '../../shared/styles/configuration-layout.css';
 
 function browserConfig(): StudioConfig {
   const address = getApiBaseUrl() || 'http://127.0.0.1:8090';
@@ -51,6 +52,8 @@ export function ConnectionsPage() {
   const [credentialWritable, setCredentialWritable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [applyState, setApplyState] = useState<{ error: boolean; text: string } | null>(null);
+  const [section, setSection] = useState('general');
+  const [visited, setVisited] = useState(['general']);
   const applying = useRef(false);
   const applied = useRef(draft);
   const mounted = useRef(false);
@@ -214,7 +217,25 @@ export function ConnectionsPage() {
           'Runtime service, connections, and model defaults.',
         )}
       />
-      <div className="server-page">
+      <div className="configuration-tabs" role="tablist" aria-label={tr('服务设置分类', 'Service settings sections')}>
+        {[
+          ['general', tr('常用', 'General')], ['cache', tr('缓存', 'Cache')], ['advanced', tr('高级', 'Advanced')],
+        ].map(([value, label], index, sections) => <button key={value} type="button" role="tab"
+          id={`service-tab-${value}`} aria-selected={section === value} aria-controls={`service-section-${value}`}
+          tabIndex={section === value ? 0 : -1}
+          onClick={() => { setSection(value); setVisited(current => current.includes(value) ? current : [...current, value]); }}
+          onKeyDown={event => {
+            const next = event.key === 'ArrowRight' ? (index + 1) % sections.length
+              : event.key === 'ArrowLeft' ? (index + sections.length - 1) % sections.length
+                : event.key === 'Home' ? 0 : event.key === 'End' ? sections.length - 1 : null;
+            if (next == null) return;
+            event.preventDefault();
+            const target = sections[next][0];
+            setSection(target); setVisited(current => current.includes(target) ? current : [...current, target]);
+            document.getElementById(`service-tab-${target}`)?.focus();
+          }}>{label}</button>)}
+      </div>
+      <div className="server-page" role="tabpanel" id="service-section-general" aria-labelledby="service-tab-general" hidden={section !== 'general'}>
         {(studio?.connection === 'confirmation_required' || studio?.connection === 'incompatible') && <ServerConnectionPage />}
         {active && (
           <div className="server-active-notice">
@@ -248,14 +269,14 @@ export function ConnectionsPage() {
               }
             />
             <SettingRow
-              title={tr('绑定地址', 'Bind address')}
+              title={tr('服务连接', 'Service connection')}
               detail={tr(
                 '本地模式仅监听 127.0.0.1；远程模式连接另一台 TyloInfer Server。',
                 'Local mode stays on 127.0.0.1; remote mode connects to another TyloInfer Server.',
               )}
               trailing={
                 <select
-                  aria-label={tr('绑定地址', 'Bind address')}
+                  aria-label={tr('服务连接', 'Service connection')}
                   disabled={busy || !draft}
                   onChange={(event) => {
                     const next = { ...draft, mode: event.target.value as StudioConfig['mode'] };
@@ -370,35 +391,15 @@ export function ConnectionsPage() {
           {applyState && <p className="server-apply-state" role={applyState.error ? 'alert' : 'status'}>{applyState.text}</p>}
         </TMPanel>
         <MemorySettingsPanel />
+        <InferencePolicyPanel />
         <ContextManagementPanel />
-        <PrefixCacheSettingsPanel />
-        <SectionLabel title={tr('自动化', 'Automation')} />
-        <TMPanel className="server-settings-panel">
-          <div className="setting-list">
-            <SettingRow
-              title={tr('TyloInfer 打开时启动服务器', 'Start server when TyloInfer opens')}
-              detail={tr(
-                '本地模式会自动启动服务，并使用已保存的服务设置。',
-                'Local mode starts the server automatically using saved service settings.',
-              )}
-              trailing={
-                <input
-                  aria-label={tr(
-                    'TyloInfer 打开时启动服务器',
-                    'Start server when TyloInfer opens',
-                  )}
-                  checked={draft?.mode !== 'remote'}
-                  disabled
-                  readOnly
-                  type="checkbox"
-                />
-              }
-            />
-          </div>
-        </TMPanel>
       </div>
-      <InferencePolicyPanel />
-      <RemoteRoutingPanel />
+      <div className="server-page" role="tabpanel" id="service-section-cache" aria-labelledby="service-tab-cache" hidden={section !== 'cache'}>
+        {visited.includes('cache') && <PrefixCacheSettingsPanel />}
+      </div>
+      <div className="server-page" role="tabpanel" id="service-section-advanced" aria-labelledby="service-tab-advanced" hidden={section !== 'advanced'}>
+        {visited.includes('advanced') && <RemoteRoutingPanel />}
+      </div>
     </section>
   );
 }

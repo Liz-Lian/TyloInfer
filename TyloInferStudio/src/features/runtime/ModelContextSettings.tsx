@@ -17,7 +17,7 @@ import { hasSeparateVram } from './memoryArchitecture';
 import { contextCacheEstimate, quantizedCacheProfile } from '../models/cacheData';
 import { useModelCacheProfiles } from '../models/useModelCacheProfiles';
 
-export function ModelContextSettings() {
+export function ModelContextSettings({ scope = 'all', modelName }: { scope?: 'all' | 'global' | 'model'; modelName?: string }) {
   const { instances, runtime, ready, connectionRevision, reloadingInstances, reloadModelContext, addJob } = useRuntime();
   const connectionScope = useConnectionScope();
   const { tr } = useSettings();
@@ -48,25 +48,27 @@ export function ModelContextSettings() {
   const globalBusy = reloadingGlobal || contextJobs.some(job => ['queued', 'running', 'cancelling'].includes(job.status));
   const terminalVersion = contextJobs.filter((job) => !['queued', 'running', 'cancelling'].includes(job.status))
     .map((job) => `${job.id}:${job.status}`).sort().join('|');
-  const loaded = instances.filter((item) => item.state === 'ready' || item.state === 'busy');
+  const loaded = instances.filter((item) => (item.state === 'ready' || item.state === 'busy')
+    && (scope !== 'model' || item.model === modelName));
   for (const item of loaded) seenInstances.current[item.id] = item;
   const models = [...loaded];
   for (const job of contextJobs.filter((job) => ['queued', 'running', 'cancelling'].includes(job.status))) {
     const previous = seenInstances.current[String(job.payload.instance_id)];
     if (previous && !models.some((item) => item.model === previous.model)) models.push(previous);
   }
-  const item = models.find((model) => model.model === selected) ?? models[0];
+  const item = scope === 'global' ? undefined : scope === 'model'
+    ? models.find((model) => model.model === modelName) : models.find((model) => model.model === selected) ?? models[0];
   const loadedIds = loaded.map((model) => model.id).sort().join('|');
-  const { cacheProfiles, cacheErrors } = useModelCacheProfiles(models.map((model) => model.model));
+  const { cacheProfiles, cacheErrors } = useModelCacheProfiles(scope === 'global' ? [] : models.map((model) => model.model));
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || scope === 'global') return;
     let disposed = false;
     void Promise.allSettled(loaded.map(async (model) => {
       const info = await runtimeApi.yarnContextInfo(model.id);
       if (!disposed) setYarnInfo((current) => ({ ...current, [model.model]: info }));
     }));
     return () => { disposed = true; };
-  }, [ready, loadedIds, connectionRevision, terminalVersion]);
+  }, [ready, loadedIds, connectionRevision, terminalVersion, scope]);
   useEffect(() => {
     if (!ready) return;
     let disposed = false;
@@ -208,7 +210,7 @@ export function ModelContextSettings() {
   }
 
   return <div className="model-context-settings">
-    <SettingRow title={tr('全局上下文上限', 'Global context cap')} detail={tr('留空由 TyloInfer 管理。保存后，下次加载模型时生效。“重载”会立即重载所有当前上限超出已保存全局上限的已加载模型，并清除其活动 KV 缓存。', 'Leave empty for TyloInfer to manage. Saved changes apply on the next model load. Reload immediately reloads all loaded models above the saved global cap and clears their active KV cache.')}
+    {scope !== 'model' && <><SettingRow title={tr('全局上下文上限', 'Global context cap')} detail={tr('留空由 TyloInfer 管理。保存后，下次加载模型时生效。“重载”会立即重载所有当前上限超出已保存全局上限的已加载模型，并清除其活动 KV 缓存。', 'Leave empty for TyloInfer to manage. Saved changes apply on the next model load. Reload immediately reloads all loaded models above the saved global cap and clears their active KV cache.')}
       trailing={<div className="model-context-global-control"><div className="server-row-actions">
         <div className="server-input-unit"><input className="server-number-input" type="number" min={512} value={cap} disabled={!policy || saving || globalBusy}
           aria-label={tr('全局上下文上限', 'Global context cap')} placeholder={tr('自动', 'Automatic')}
@@ -223,10 +225,11 @@ export function ModelContextSettings() {
         {(capChanged || saved) && <span className="model-context-save-state" role="status">{saving ? tr('正在保存…', 'Saving…')
           : capChanged ? tr('未保存', 'Unsaved') : tr('已保存 · 下次加载生效', 'Saved · applies on next load')}</span>}
       </div>} />
-    {globalJob?.status === 'succeeded' && <p role="status">{tr(`已重载 ${Number(globalJob.result?.models_reloaded ?? 0)} 个超出全局上限的模型。`, `Reloaded ${Number(globalJob.result?.models_reloaded ?? 0)} models above the global cap.`)}</p>}
+    {globalJob?.status === 'succeeded' && <p role="status">{tr(`已重载 ${Number(globalJob.result?.models_reloaded ?? 0)} 个超出全局上限的模型。`, `Reloaded ${Number(globalJob.result?.models_reloaded ?? 0)} models above the global cap.`)}</p>}</>}
     {(error || globalJob?.error) && <p role="alert">{error || errorMessage(new ApiError(400, { error: globalJob!.error! }), tr)}</p>}
+    {scope === 'model' && !item && <p role="status">{tr('模型当前未就绪，请在模型列表中查看加载状态。', 'This model is not ready. Check its loading status in the model list.')}</p>}
     {item && <div className="model-context-models">
-      <div className="model-context-list-heading"><div>
+      {scope !== 'model' && <><div className="model-context-list-heading"><div>
         <strong>{tr('单模型上下文', 'Per-model context')}</strong>
         <p>{tr('选择模型后编辑整套上下文设置。留空由 TyloInfer 管理；单模型设置优先于全局。保存后重载该模型并清除活动 KV 缓存。',
           'Select a model to edit its context settings together. Leave empty for TyloInfer to manage; per-model settings override the global cap. Saving reloads that model and clears active KV cache.')}</p>
@@ -236,7 +239,7 @@ export function ModelContextSettings() {
           onChange={(event) => setSelected(event.target.value)}>
           {models.map((model) => <option value={model.model} key={model.model}>{model.model}</option>)}
         </CompactSelect>
-      </label>
+      </label></>}
       <div className="model-context-entry" role="group" aria-label={tr('单模型上下文', 'Per-model context')}>
         <SettingRow title={tr('最大上下文', 'Maximum context')}
           detail={tr(`当前 ${formatNumber(item.context_size)} tokens${capacity ? ` · 原生上限 ${formatNumber(capacity)}` : ''}`,

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { mockStudioServer } from './mockServer';
+import { openModelSettings } from './modelSettings';
 
 for (const language of ['zh-CN', 'en'] as const) {
   test(`per-GPU VRAM allocations and device selection (${language})`, async ({ page }, testInfo) => {
@@ -11,6 +12,11 @@ for (const language of ['zh-CN', 'en'] as const) {
       runtime_state: 'ready', backend: 'cuda', memory_architecture: 'discrete', gpu_devices,
       host_memory_total_bytes: 64 * GiB, host_memory_available_bytes: 32 * GiB, sampling_defaults: {},
     } }));
+    await page.route(/\/api\/v1\/models(?:\?.*)?$/, route => route.fulfill({ json: { data: [{
+      id: 'unloaded', name: 'Device selection model', architecture: 'qwen35', format: 'tq',
+      shard_count: 1, total_bytes: GiB, estimated_resident_weight_bytes: GiB, tensor_count: 1,
+      record_count: 1, dtypes: [], complete: true, loadable: true, modified_at: '',
+    }] } }));
     await page.route('**/api/v1/runtime/instances', route => route.fulfill({ json: { data: [{
       id: 'split', model: 'Qwen-Flash-Next', state: 'ready', devices: ['cuda:0', 'cuda:2'],
       active_sessions: 1, queued_requests: 0, started_at: '2026-10-13T00:00:00Z', memory: {
@@ -34,8 +40,9 @@ for (const language of ['zh-CN', 'en'] as const) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
     await page.screenshot({ path: testInfo.outputPath('multi-gpu-resources.png'), fullPage: true });
-    await page.goto('/models');
-    const gpu = page.getByRole('combobox', { name: language === 'zh-CN' ? '计算设备' : 'Compute device' });
+    const settings = await openModelSettings(page, 'Device selection model', language);
+    await settings.getByRole('tab', { name: language === 'zh-CN' ? '驻留与设备' : 'Residency and device' }).click();
+    const gpu = settings.getByRole('combobox', { name: language === 'zh-CN' ? '计算设备' : 'Compute device' });
     await gpu.selectOption('2');
     await expect(gpu).toHaveValue('2');
     await gpu.selectOption('0');

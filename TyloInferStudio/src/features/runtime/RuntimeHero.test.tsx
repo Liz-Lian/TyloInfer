@@ -33,6 +33,12 @@ it('retains the normal Models action when a model is running', () => {
   expect(screen.getByTestId('location').textContent).toBe('/models');
 });
 
+it('opens the agent workspace instead of the retired chat route', () => {
+  render(<MemoryRouter><RuntimeHero /><Location /></MemoryRouter>);
+  fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
+  expect(screen.getByTestId('location').textContent).toBe('/agent');
+});
+
 it('shows an interrupted load after runtime cleanup and lets a new retry show its progress', () => {
   const interrupted = { id: 'old-load', kind: 'model.load', status: 'interrupted', progress: .2,
     cancel_requested: false, payload: { model: 'fixture-model' },

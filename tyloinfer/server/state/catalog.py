@@ -37,6 +37,7 @@ from tyloinfer.server.protocol.models import (
 from tyloinfer.server.state.model_weights import estimated_resident_weight_bytes, estimated_weight_roles, weight_role
 from tyloinfer.server.services.model_context import declared_context_size, yarn_context_limits
 from tyloinfer.server.services.desktop import directory_opener
+from tyloinfer.server.state.table_components import TableComponent, component_base, component_resource, inspect_table_component, table_record_kind
 
 MODEL_FILE_INDEX = ".tq-files.json"
 _MODEL_SUFFIXES = (*TYLOINFER_SUFFIXES, '.gguf')
@@ -76,6 +77,7 @@ class DiscoveredModel:
     always_streamed_bytes: int = 0
     source_config: dict | None = None
     source_tensors: dict | None = None
+    file_paths: tuple[Path, ...] = ()
 
 
 def parse_shard_path(path: Path):
@@ -152,6 +154,7 @@ class ModelCatalog:
         self.cache_seconds = max(0.0, cache_seconds)
         self._native_inspector = native_inspector
         self._source_metadata: dict[Path, tuple[tuple, dict]] = {}
+        self._table_metadata: dict[Path, tuple[tuple, TableComponent | None]] = {}
         self._models: dict[str, DiscoveredModel] = {}
         self._last_scan = float("-inf")
         self._last_scan_attempt = float("-inf")
@@ -162,11 +165,11 @@ class ModelCatalog:
         self._directory_ids: dict[str, Path] = {}
         self._directory_secret = os.urandom(32)
 
-    async def list(self, *, refresh: bool = False) -> ModelArtifactList:
+    async def list(self, *, refresh: bool = False, include_components: bool = False) -> ModelArtifactList:
         models = await self._snapshot(refresh=refresh)
         return ModelArtifactList(
             data=sorted(
-                (item.resource for item in models.values()),
+                (item.resource for item in models.values() if include_components or item.resource.asset_kind == 'model'),
                 key=lambda item: (item.name.casefold(), item.id),
             )
         )
@@ -197,13 +200,13 @@ class ModelCatalog:
         exact = models.get(identifier)
         if exact is not None:
             return exact
-        matches = [item for item in models.values() if item.resource.name == identifier]
+        matches = [item for item in models.values() if item.resource.name == identifier and item.resource.asset_kind == 'model']
         if not matches:
             models = await self._snapshot(refresh=True)
             exact = models.get(identifier)
             if exact is not None:
                 return exact
-            matches = [item for item in models.values() if item.resource.name == identifier]
+            matches = [item for item in models.values() if item.resource.name == identifier and item.resource.asset_kind == 'model']
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
@@ -440,15 +443,12 @@ class ModelCatalog:
     @staticmethod
     def _registration_paths(directory: Path) -> list[Path]:
         grouped: dict[Path, list[Path]] = {}
-        tables: dict[Path, bool] = {}
         try:
             candidates = sorted(path for path in directory.rglob("*") if _is_model_path(path))
         except OSError as error:
             raise ModelRegistrationError("cannot scan selected model directory") from error
         for candidate in candidates:
             if not candidate.is_file():
-                continue
-            if _is_gguf_table(candidate, tables):
                 continue
             try:
                 parsed = parse_shard_path(candidate)
@@ -632,6 +632,8 @@ class ModelCatalog:
         model_paths: dict[str, Path] = {}
         models_by_name: dict[str, DiscoveredModel] = {}
         tables: dict[Path, bool] = {}
+        components: dict[tuple[Path, str], dict[Path, TableComponent]] = {}
+        mixed_components: set[tuple[Path, str]] = set()
         for root in self.roots:
             if not root.is_dir():
                 continue
@@ -646,6 +648,13 @@ class ModelCatalog:
             if self._is_hf_model_directory(root):
                 paths.add(root)
             for path in sorted(paths):
+                component = self._table_component(path)
+                if component is not None:
+                    if component.mixed_kinds:
+                        mixed_components.update((component_base(component.path), kind) for kind in component.mixed_kinds)
+                    else:
+                        components.setdefault((component_base(component.path), component.kind), {})[component.path] = component
+                        continue
                 if _is_gguf_table(path, tables):
                     continue
                 try:
@@ -665,6 +674,15 @@ class ModelCatalog:
                         break
                 privacy_root = root if path.is_relative_to(root) else path.parent
                 discovered = self._inspect_source(privacy_root, path)
+                if discovered.resource.format == 'hf' and discovered.resource.complete:
+                    config = json.loads((discovered.path / 'config.json').read_text(encoding='utf-8'))
+                    for shard in discovered.file_paths:
+                        component = self._table_component(shard, config)
+                        if component is not None:
+                            if component.mixed_kinds:
+                                mixed_components.update((component_base(component.path), kind) for kind in component.mixed_kinds)
+                            else:
+                                components.setdefault((component_base(component.path), component.kind), {})[component.path] = component
                 canonical_path = self._canonical_model_path(discovered.path)
                 previous_path = model_paths.get(discovered.resource.name)
                 if previous_path is not None and previous_path != canonical_path:
@@ -690,7 +708,52 @@ class ModelCatalog:
                 previous = result.get(discovered.resource.id)
                 if previous is None or str(path) < str(previous.path):
                     result[discovered.resource.id] = discovered
+        table_files: set[Path] = set()
+        for key, group in components.items():
+            if key in mixed_components:
+                continue
+            parts = list(group.values())
+            resource, files = component_resource(parts)
+            table_files.update(files)
+            result[resource.id] = DiscoveredModel(resource, parts[0].path, file_paths=files)
+        for key, artifact in list(result.items()):
+            if artifact.resource.asset_kind != 'model' or not artifact.file_paths:
+                continue
+            owned_bytes = sum(path.stat().st_size for path in set(artifact.file_paths) if path.resolve() not in table_files)
+            result[key] = replace(artifact, resource=artifact.resource.model_copy(update={'owned_file_bytes': owned_bytes}))
         return result
+
+    def _table_component(self, path: Path, config: dict | None = None) -> TableComponent | None:
+        if not path.is_file():
+            return None
+        try:
+            files = gguf_part_paths(path) if is_gguf_path(path) else (path,)
+            first = files[0]
+            signature = tuple((str(item), item.stat().st_size, item.stat().st_mtime_ns) for item in files)
+            is_hf = path.suffix.casefold() == '.safetensors'
+            if is_hf:
+                source = path.parent / 'config.json'
+                signature += ((str(source), source.stat().st_size, source.stat().st_mtime_ns),)
+            cached = self._table_metadata.get(first)
+            if cached is not None and cached[0] == signature:
+                return cached[1]
+            if is_hf:
+                tensors = {name: value for name, value in self._safetensors_header(first).items() if name != '__metadata__'}
+                kinds = set()
+                for name in tensors:
+                    mapped = map_source_tensor_name(name, config or {})
+                    kinds.add(table_record_kind(mapped.canonical_name if mapped is not None else name))
+                table_kinds = kinds - {None}
+                pure = None not in kinds and len(kinds) == 1
+                component = TableComponent(first, (first,), next(iter(table_kinds)) if pure else 'mixed',
+                    (config or {}).get('model_type', 'unknown'), len(tensors), tuple(sorted({entry['dtype'] for entry in tensors.values()})),
+                    tuple(sorted(table_kinds)) if not pure else ()) if table_kinds else None
+            else:
+                component = inspect_table_component(first, include_mixed=True)
+            self._table_metadata[first] = (signature, component)
+            return component
+        except (OSError, ValueError, TypeError, struct.error, UnicodeError):
+            return None
 
     @staticmethod
     def _registered_paths(root: Path) -> set[Path]:
@@ -831,7 +894,7 @@ class ModelCatalog:
             tensor_count=len(tensors), record_count=len(tensors), dtypes=sorted({item['dtype'] for item in tensors.values()}),
             complete=not missing, loadable=loadable, error=error,
             modified_at=datetime.fromtimestamp(max((stat.st_mtime for stat in stats), default=path.stat().st_mtime), timezone.utc))
-        return DiscoveredModel(resource, path, experts, streamed, config, tensors)
+        return DiscoveredModel(resource, path, experts, streamed, config, tensors, paths)
 
     def _inspect_native_metadata(self, path: Path, signature: tuple) -> dict:
         if self._native_inspector is None:
@@ -853,9 +916,11 @@ class ModelCatalog:
             parsed = None
         name = (parsed[0] if parsed is not None else path).stem
         relative = path.relative_to(root).as_posix()
+        file_paths: tuple[Path, ...] = ()
         try:
             with open_mmap(path) as store:
                 paths = tuple(store.paths)
+                file_paths = paths
                 stats = tuple(item.stat() for item in paths)
                 dtypes = sorted({record.dtype for record in store.records.values()})
                 tensor_count = sum(
@@ -930,6 +995,7 @@ class ModelCatalog:
             remaining = tuple(candidate for candidate in matching_shard_paths(parsed[0])
                 if candidate.is_file() and parse_shard_path(candidate)[2] == parsed[2]) if parsed is not None else (path,)
             remaining_stats = tuple(item.stat() for item in remaining) or (stat,)
+            file_paths = remaining
             identifier = hashlib.sha256(f"{relative}\0{stat.st_size}".encode()).hexdigest()[:32]
             resource = ModelArtifactResource(
                 id=identifier,
@@ -954,6 +1020,7 @@ class ModelCatalog:
             always_streamed_bytes=(
                 always_streamed_bytes if resource.complete else 0
             ),
+            file_paths=file_paths,
         )
 
     @staticmethod
@@ -985,6 +1052,8 @@ class ModelCatalog:
             if len(raw_size) != 8:
                 raise ValueError(f"truncated Safetensors header: {path.name}")
             size = struct.unpack("<Q", raw_size)[0]
+            if size > 16 * 1024 * 1024 or size > path.stat().st_size - 8:
+                raise ValueError(f"invalid Safetensors header length: {path.name}")
             raw_header = stream.read(size)
         if len(raw_header) != size:
             raise ValueError(f"truncated Safetensors header: {path.name}")
@@ -1136,4 +1205,5 @@ class ModelCatalog:
             always_streamed_bytes=(
                 always_streamed_bytes if resource.complete else 0
             ),
+            file_paths=shard_paths if resource.complete else (),
         )

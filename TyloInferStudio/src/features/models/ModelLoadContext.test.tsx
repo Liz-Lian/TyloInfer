@@ -5,20 +5,23 @@ import { ModelLoadContext } from './ModelLoadContext';
 import { DEFAULT_LOAD_CONTEXT, readLoadContext, saveLoadContext } from './loadContextDefaults';
 import { setApiBaseUrl } from '../../shared/api/client';
 import { modelsApi } from '../../shared/api/resources/models';
+import { runtimeApi } from '../../shared/api/resources/runtime';
 import type { ModelArtifact, ModelCacheProfile, RuntimeStatus } from '../../shared/api/types';
 
 vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (zh: string) => zh }) }));
 
-beforeEach(() => { vi.restoreAllMocks(); localStorage.clear(); setApiBaseUrl(''); });
+beforeEach(() => { vi.restoreAllMocks(); localStorage.clear(); setApiBaseUrl('');
+  vi.spyOn(runtimeApi, 'contextPolicy').mockResolvedValue({ max_context_size: null, model_overrides: {}, fallback_context_size: 32768 });
+});
 function Form({ models = [], runtime }: { models?: ModelArtifact[]; runtime?: RuntimeStatus } = {}) {
   const [value, setValue] = useState(readLoadContext);
   return <ModelLoadContext models={models} runtime={runtime} value={value} onChange={next => { setValue(next); saveLoadContext(next); }} />;
 }
 
-it('defaults to 32768 with collapsed automatic settings and remembers explicit context', () => {
+it('defers empty context to the server with collapsed automatic settings and remembers explicit context', () => {
   const view = render(<Form />);
-  const context = screen.getByRole('spinbutton', { name: '默认上下文' });
-  expect(context).toHaveAttribute('placeholder', '32768');
+  const context = screen.getByRole('spinbutton', { name: '加载上下文' });
+  expect(context).toHaveAttribute('placeholder', '自动');
   expect(context).toHaveValue(null);
   expect(screen.getByRole('button', { name: '高级' })).toHaveAttribute('aria-expanded', 'false');
   expect(screen.getByRole('checkbox', { name: '自动' })).toBeChecked();
@@ -70,35 +73,30 @@ it('shows zero backend headroom even when the OS still reports three GiB availab
   expect(screen.getByText(/当前剩余/)).toHaveTextContent('0 GiB');
 });
 
-it('defaults to no model and updates total with context and KV precision without loading a model', async () => {
+it('uses the selected model directly and updates estimates without loading or asking for its architecture', async () => {
   const cache = vi.spyOn(modelsApi, 'modelCacheProfile').mockResolvedValue(profile);
   const load = vi.spyOn(modelsApi, 'loadModel');
   render(<Form models={[model]} runtime={{ memory_architecture: 'discrete', host_memory_available_bytes: 12 * GiB,
     gpu_devices: [{ id: '0', name: 'GPU', memory_available_bytes: 3 * GiB }] }} />);
-  const selector = screen.getByRole('combobox', { name: '估算模型' });
-  expect(selector).toHaveValue('');
-  expect(screen.getByLabelText('预计总占用')).toHaveTextContent('—');
+  expect(screen.queryByRole('combobox', { name: '估算模型' })).not.toBeInTheDocument();
   expect(screen.getByText(/当前剩余/)).toHaveTextContent('15 GiB');
-  expect(cache).not.toHaveBeenCalled();
-  fireEvent.change(selector, { target: { value: model.id } });
-  await waitFor(() => expect(screen.getByLabelText('预计总占用')).toHaveTextContent('10 GiB'));
+  await waitFor(() => expect(screen.getByLabelText('预计总占用')).toHaveTextContent('13 GiB'));
   expect(cache).toHaveBeenCalledWith(model.id, expect.any(AbortSignal), true);
   fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '65536' } });
   expect(screen.getByLabelText('预计总占用')).toHaveTextContent('11 GiB');
   fireEvent.click(screen.getByRole('checkbox', { name: '自动' }));
+  expect(screen.queryByRole('button', { name: '稀疏注意力模型' })).not.toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: 'SSD KV' })).toBeEnabled();
   fireEvent.change(screen.getByRole('combobox', { name: '默认 KV 量化档位' }), { target: { value: '4' } });
   expect(screen.getByLabelText('预计总占用')).toHaveTextContent('9.5 GiB');
   expect(cache).toHaveBeenCalledTimes(1);
   expect(load).not.toHaveBeenCalled();
-  fireEvent.change(selector, { target: { value: '' } });
-  expect(screen.getByLabelText('预计总占用')).toHaveTextContent('—');
 });
 
 it('marks insufficient space and clears a stale estimate when the model disappears', async () => {
   vi.spyOn(modelsApi, 'modelCacheProfile').mockResolvedValue(profile);
   const runtime: RuntimeStatus = { memory_architecture: 'unified', host_memory_available_bytes: 9 * GiB };
   const view = render(<Form models={[model]} runtime={runtime} />);
-  fireEvent.change(screen.getByRole('combobox', { name: '估算模型' }), { target: { value: model.id } });
   await waitFor(() => expect(screen.getByLabelText('预计总占用')).toHaveClass('model-load-memory-exceeded'));
   view.rerender(<Form models={[]} runtime={runtime} />);
   expect(screen.getByRole('combobox', { name: '估算模型' })).toHaveValue('');
@@ -108,7 +106,6 @@ it('marks insufficient space and clears a stale estimate when the model disappea
 it('does not report a partial total when cache metadata is unavailable', async () => {
   vi.spyOn(modelsApi, 'modelCacheProfile').mockResolvedValue(null);
   render(<Form models={[model]} />);
-  fireEvent.change(screen.getByRole('combobox', { name: '估算模型' }), { target: { value: model.id } });
   await waitFor(() => expect(screen.getByLabelText('预计总占用')).toHaveTextContent('暂无法估算'));
 });
 
@@ -122,4 +119,11 @@ it('isolates stored defaults by server and tolerates blocked storage', () => {
   write.mockRestore();
   setApiBaseUrl('http://127.0.0.1:8090');
   expect(readLoadContext().context_size).toBe(8192);
+});
+
+it('isolates next-load options by model and does not inherit the removed browser-wide override', () => {
+  saveLoadContext({ ...DEFAULT_LOAD_CONTEXT, context_size: 8192 });
+  saveLoadContext({ ...DEFAULT_LOAD_CONTEXT, context_size: 65536 }, 'Model A');
+  expect(readLoadContext('Model A').context_size).toBe(65536);
+  expect(readLoadContext('Model B').context_size).toBeNull();
 });

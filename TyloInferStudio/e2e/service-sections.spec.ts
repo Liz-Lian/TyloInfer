@@ -10,15 +10,18 @@ for (const language of ['zh-CN', 'en'] as const) {
     }] } }));
     await page.goto('/runtime');
     await expect(page.locator('.server-page > .section-label')).toHaveText(language === 'zh-CN'
-      ? ['API参数', '内存规划', '上下文管理', '持久化前缀缓存', '自动化']
-      : ['API parameters', 'Memory plan', 'Context management', 'Persistent prefix cache', 'Automation']);
+      ? ['API参数', '内存规划', '推理控制', '上下文默认值']
+      : ['API parameters', 'Memory plan', 'Inference controls', 'Context defaults']);
     const contexts = page.locator('.server-context-panel');
     await expect(contexts.locator('.model-context-settings')).toHaveCount(1);
-    await expect(contexts.locator('.model-context-entry').getByRole('spinbutton')).toHaveValue('');
+    await expect(contexts.locator('.model-context-entry')).toHaveCount(0);
     await expect(page.locator('.server-memory-panel .model-context-settings')).toHaveCount(0);
     await expect(page.locator('.server-memory-panel')).not.toContainText(language === 'zh-CN' ? '前缀块大小' : 'Prefix block size');
+    await expect(page.locator('.server-prefix-panel')).toHaveCount(0);
+    await page.getByRole('tab', { name: language === 'zh-CN' ? '缓存' : 'Cache', exact: true }).click();
     await expect(page.locator('.server-prefix-panel')).toContainText(language === 'zh-CN' ? '前缀块大小' : 'Prefix block size');
     await expect(page.locator('.server-prefix-panel').getByRole('checkbox')).toBeEnabled();
+    await page.getByRole('tab', { name: language === 'zh-CN' ? '常用' : 'General', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: language === 'zh-CN' ? 'OpenAI 端口' : 'OpenAI port', exact: true })).toBeEnabled();
     await contexts.scrollIntoViewIfNeeded();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

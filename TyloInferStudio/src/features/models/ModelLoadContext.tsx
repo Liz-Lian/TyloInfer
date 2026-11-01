@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { CaretRightIcon } from '@phosphor-icons/react';
 import { SettingRow } from '../../app/display';
 import { useSettings } from '../settings/SettingsProvider';
@@ -7,6 +7,7 @@ import type { KvQuantizationSettings } from '../../shared/api/resources/runtime'
 import type { ModelArtifact, RuntimeStatus } from '../../shared/api/types';
 import { ModelLoadMemoryEstimate } from './ModelLoadMemoryEstimate';
 import './model-load-context.css';
+import { runtimeApi, type RuntimeContextPolicy } from '../../shared/api/resources/runtime';
 
 export function ModelLoadContext({ value, onChange, disabled = false, models = [], runtime, deviceIds = [] }: {
   value: LoadContextDefaults; onChange: (value: LoadContextDefaults) => void; disabled?: boolean;
@@ -16,28 +17,38 @@ export function ModelLoadContext({ value, onChange, disabled = false, models = [
   const id = useId();
   const [expanded, setExpanded] = useState(false);
   const [kind, setKind] = useState<'sparse' | 'full'>('sparse');
+  const [detectedSparse, setDetectedSparse] = useState<boolean | null>(null);
+  const [policy, setPolicy] = useState<RuntimeContextPolicy | null>(null);
+  const model = models.length === 1 ? models[0] : undefined;
+  useEffect(() => {
+    let active = true;
+    if (model) void runtimeApi.contextPolicy().then(value => { if (active) setPolicy(value); }).catch(() => {});
+    return () => { active = false; };
+  }, [model?.id]);
   const [contextDraft, setContextDraft] = useState<string | null>(null);
   const context = contextDraft ?? (value.context_size == null ? '' : String(value.context_size));
   const valid = context === '' || Number.isSafeInteger(Number(context)) && Number(context) >= 512 && Number(context) <= 2147483647;
   const patch = (change: Partial<LoadContextDefaults>) => onChange({ ...value, ...change });
   const locked = disabled || value.automatic;
-  const sparse = kind === 'sparse';
+  const sparse = model ? detectedSparse === true : kind === 'sparse';
+  const automaticContext = model ? policy?.model_overrides[model.name]
+    ?? (model.context_capacity ? Math.min(model.context_capacity, policy?.max_context_size ?? Infinity) : policy?.fallback_context_size) : undefined;
   return <section className="model-load-context" aria-label={tr('上下文管理', 'Context management')}>
     <h3>{tr('上下文管理', 'Context management')}</h3>
-    <SettingRow title={tr('默认上下文', 'Default context')}
-      detail={tr('留空使用 32768 tokens；超出模型支持的上限时自动缩小。设置会保存在当前浏览器，下次加载模型时生效。',
-        'Leave empty for 32768 tokens, capped by the model’s supported context. Settings are saved in this browser and apply on the next model load.')}
-      trailing={<input type="number" min={512} max={2147483647} step={1} placeholder="32768" value={context}
-        aria-label={tr('默认上下文', 'Default context')} aria-invalid={!valid} disabled={disabled}
+    <SettingRow title={tr('加载上下文', 'Load context')}
+      detail={tr('留空遵循服务端保存的单模型设置与全局上限。加载选项保存在当前浏览器，仅用于此模型的下次加载。',
+        'Leave empty to follow the saved server-side model settings and global cap. Load options are saved in this browser for this model’s next load only.')}
+      trailing={<input type="number" min={512} max={2147483647} step={1} placeholder={tr('自动', 'Automatic')} value={context}
+        aria-label={tr('加载上下文', 'Load context')} aria-invalid={!valid} disabled={disabled}
         onChange={event => {
           const text = event.target.value;
           setContextDraft(text);
           if (text === '' || Number.isSafeInteger(Number(text)) && Number(text) >= 512 && Number(text) <= 2147483647)
             patch({ context_size: text === '' ? null : Number(text) });
         }} onBlur={() => { if (!valid) setContextDraft(null); }} />} />
-    {!valid && <p role="alert">{tr('请输入 512～2147483647 的整数，或留空使用 32768。', 'Enter an integer from 512 to 2147483647, or leave empty for 32768.')}</p>}
+    {!valid && <p role="alert">{tr('请输入不小于 512 的有效整数，或留空使用服务端设置。', 'Enter a valid integer of at least 512, or leave empty to follow server settings.')}</p>}
     <ModelLoadMemoryEstimate models={models} runtime={runtime} deviceIds={deviceIds}
-      value={value} valid={valid} disabled={disabled} />
+      value={{ ...value, context_size: value.context_size ?? automaticContext ?? null }} valid={valid} disabled={disabled} onSparseChange={setDetectedSparse} />
     <div className="model-load-advanced-heading">
       <button type="button" className="model-load-advanced-toggle" aria-expanded={expanded} aria-controls={id}
         onClick={() => setExpanded(open => !open)}>
@@ -52,10 +63,10 @@ export function ModelLoadContext({ value, onChange, disabled = false, models = [
           'Automatic: SSD KV off, preallocation on, KV quantization off. Uncheck to customize.')
         : tr('自动：开启预分配、关闭 KV 量化。取消勾选后可手动调整。',
           'Automatic: preallocation on, KV quantization off. Uncheck to customize.')}</p>
-      <div className="model-load-context-kinds" role="group" aria-label={tr('模型类型', 'Model type')}>
+      {!model && <div className="model-load-context-kinds" role="group" aria-label={tr('模型类型', 'Model type')}>
         <button type="button" aria-pressed={sparse} onClick={() => setKind('sparse')}>{tr('稀疏注意力模型', 'Sparse-attention models')}</button>
         <button type="button" aria-pressed={!sparse} onClick={() => setKind('full')}>{tr('非稀疏注意力模型', 'Other models')}</button>
-      </div>
+      </div>}
       {sparse && <SettingRow title="SSD KV"
         detail={tr('显存和内存容纳不下的冷 KV 写入 SSD；长上下文可能变慢，并占用磁盘空间。',
           'Cold KV spills to SSD when VRAM and RAM are full; this can slow long contexts and use disk space.')}

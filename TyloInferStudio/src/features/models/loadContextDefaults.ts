@@ -16,13 +16,13 @@ export const DEFAULT_LOAD_CONTEXT: LoadContextDefaults = {
   kv_quantization: { enabled: false, bits: 4, algorithm: 'turboquant' },
 };
 
-function key() {
-  return `tyloinfer.studio.load-context.v1:${getApiBaseUrl() || window.location.origin}`;
+function key(model?: string) {
+  return `tyloinfer.studio.load-context.v1:${getApiBaseUrl() || window.location.origin}${model ? `:model:${model}` : ''}`;
 }
 
-export function readLoadContext(): LoadContextDefaults {
+export function readLoadContext(model?: string): LoadContextDefaults {
   try {
-    const value = JSON.parse(localStorage.getItem(key()) || '{}');
+    const value = JSON.parse(localStorage.getItem(key(model)) || '{}');
     if (!value || typeof value !== 'object' || Array.isArray(value)) return structuredClone(DEFAULT_LOAD_CONTEXT);
     const result = structuredClone(DEFAULT_LOAD_CONTEXT);
     if (Number.isSafeInteger(value.context_size) && value.context_size >= 512 && value.context_size <= 2147483647)
@@ -36,6 +36,6 @@ export function readLoadContext(): LoadContextDefaults {
   } catch { return structuredClone(DEFAULT_LOAD_CONTEXT); }
 }
 
-export function saveLoadContext(value: LoadContextDefaults) {
-  try { localStorage.setItem(key(), JSON.stringify(value)); } catch { /* The current page remains usable without storage. */ }
+export function saveLoadContext(value: LoadContextDefaults, model?: string) {
+  try { localStorage.setItem(key(model), JSON.stringify(value)); } catch { /* The current page remains usable without storage. */ }
 }
