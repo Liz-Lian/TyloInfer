@@ -3,6 +3,7 @@
 #include "engine/weights/format.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/encoding/fp8_sq_blob.h"
 #include "engine/weights/encoding/mxfp4_sq_decode.h"
 #endif
 

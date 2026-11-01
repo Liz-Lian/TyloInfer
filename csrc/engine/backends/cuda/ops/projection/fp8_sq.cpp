@@ -1,5 +1,7 @@
 #include "fp8_sq.h"
 
+#include "engine/weights/encoding/fp8_sq_blob.h"
+
 mfq_tensor_backend::Tensor dequant_fp8_sq(
         const Fp8SqWeight & weight,
         bool fp32) {

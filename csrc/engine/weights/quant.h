@@ -7,8 +7,7 @@
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/encoding/quant/vq_blob.h"
-#include "ops/mfq/include/fp8_sq.h"
-#include "ops/mfq/include/mxfp4_sq.h"
+#include "engine/weights/sq.h"
 #include "ops/mfq/include/nint.h"
 #include "ops/mfq/include/vq.h"
 #endif

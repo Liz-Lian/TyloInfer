@@ -1,8 +1,7 @@
 #pragma once
 
-#include "fp8_sq.h"
 #include "engine/weights/mx.h"
-#include "mxfp4_sq.h"
+#include "engine/weights/sq.h"
 #include "nint.h"
 #include "vq.h"
 

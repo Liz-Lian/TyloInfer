@@ -482,8 +482,8 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_RUNTIME_OP_SOURCES
-    ${PROJECT_SOURCE_DIR}/ops/mfq/fp8_sq.cpp
-    ${PROJECT_SOURCE_DIR}/ops/mfq/mxfp4_sq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/fp8_sq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq.cpp
     ${PROJECT_SOURCE_DIR}/ops/mfq/moe.cpp
     ${PROJECT_SOURCE_DIR}/ops/mfq/mfe.cpp
     ${PROJECT_SOURCE_DIR}/ops/mfq/nint.cpp

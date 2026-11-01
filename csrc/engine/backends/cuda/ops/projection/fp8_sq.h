@@ -1,32 +1,7 @@
 #pragma once
 
-#include "backend.h"
+#include "engine/weights/sq.h"
 #include "engine/backends/cuda/kernels/fp8_sq.h"
-
-#include <cstdint>
-#include <string>
-#include <string_view>
-#include <vector>
-
-struct Fp8SqWeight {
-    std::string dtype;
-    mfq_tensor_backend::Tensor blob;
-    mfq_tensor_backend::Tensor row_q;
-    mfq_tensor_backend::Tensor row_symbol_byte_offsets;
-    int64_t out = 0;
-    int64_t neuron_len = 0;
-    int64_t block_rows = 0;
-    int64_t block_columns = 0;
-    int64_t scale_rows = 0;
-    int64_t scale_columns = 0;
-    int64_t scale_kind = 0;
-    int64_t palettes_offset = 0;
-    int64_t symbols_offset = 0;
-    int64_t scales_offset = 0;
-    int format_version = 0;
-    double aggregate_bpw = 0.0;
-    double distribution_entropy = 0.0;
-};
 
 mfq_tensor_backend::Tensor sq_matmul_cpu(
     const Fp8SqWeight& weight,

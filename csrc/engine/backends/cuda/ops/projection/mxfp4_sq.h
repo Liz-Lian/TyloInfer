@@ -1,26 +1,7 @@
 #pragma once
 
-#include "backend.h"
+#include "engine/weights/sq.h"
 #include "engine/backends/cuda/kernels/mxfp4_sq.h"
-
-#include <cstdint>
-#include <vector>
-
-struct Mxfp4SqWeight {
-    mfq_tensor_backend::Tensor blob;
-    mfq_tensor_backend::Tensor row_q;
-    mfq_tensor_backend::Tensor row_symbol_byte_offsets;
-    mfq_tensor_backend::Tensor row_auxiliary;
-    int64_t bits = 0;
-    int64_t out = 0;
-    int64_t neuron_len = 0;
-    int64_t matrix_scale_base = 0;
-    int64_t q_sum = 0;
-    int64_t sq4_rows = 0;
-    int format_version = 0;
-    double aggregate_bpw = 0.0;
-    double distribution_entropy = 0.0;
-};
 
 mfq_tensor_backend::Tensor sq_matmul_cpu(
     const Mxfp4SqWeight& weight,
