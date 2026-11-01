@@ -3,6 +3,11 @@ target_include_directories(mfq-formats INTERFACE
     ${PROJECT_SOURCE_DIR})
 
 add_library(mfq-quant-readers STATIC
+    bytes.h
+    dense_blob.cpp
+    dense_blob.h
+    fp8_sq_blob.cpp
+    fp8_sq_blob.h
     quant/nint_rows.cpp
     quant/nint_blob.cpp
     quant/nint_blob.h

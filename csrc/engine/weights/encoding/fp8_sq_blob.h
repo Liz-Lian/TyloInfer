@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -34,6 +35,12 @@ enum class ScaleKind : std::uint8_t {
     F16 = 3,
     F32 = 4,
 };
+
+std::vector<std::byte> block128_prefix(
+    const std::vector<std::int64_t>& shape,
+    std::string_view scale_dtype,
+    const std::vector<std::int64_t>& scale_shape,
+    const std::string& name);
 
 struct Layout {
     Family family = Family::Mxfp8;

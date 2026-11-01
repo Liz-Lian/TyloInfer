@@ -10,6 +10,8 @@
 
 namespace mfq::dense {
 
+std::vector<std::byte> prefix(const std::vector<std::int64_t>& shape);
+
 struct Layout {
     std::vector<std::int64_t> shape;
     std::size_t offset = 0;

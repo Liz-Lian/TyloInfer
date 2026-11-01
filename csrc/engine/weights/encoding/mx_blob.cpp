@@ -1,5 +1,7 @@
 #include "mx_blob.h"
 
+#include "bytes.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
@@ -29,6 +31,68 @@ static size_t checked_size(
 }
 
 } // namespace
+
+namespace mx {
+
+std::vector<std::byte> prefix(
+    std::string_view dtype,
+    const std::vector<std::int64_t>& logical_shape,
+    const std::vector<std::int64_t>& storage_shape,
+    const std::vector<std::int64_t>& scale_shape,
+    const std::string& name) {
+    if (logical_shape.size() != 2 || storage_shape.size() != 2 ||
+        scale_shape.size() != 2) {
+        throw std::runtime_error("native MX tensor must be rank two: " + name);
+    }
+    const auto rows = logical_shape[0];
+    const auto columns = logical_shape[1];
+    if (rows <= 0 || columns <= 0 || columns % 32 != 0) {
+        throw std::runtime_error("invalid native MX tensor shape: " + name);
+    }
+    const std::vector<std::int64_t> expected_storage = dtype == "MXFP4"
+        ? std::vector<std::int64_t>{rows, columns / 2}
+        : std::vector<std::int64_t>{rows, columns};
+    bool valid_scales = false;
+    if (dtype == "MXFP4") {
+        valid_scales = scale_shape ==
+            std::vector<std::int64_t>{rows, columns / 32};
+    } else {
+        valid_scales =
+            scale_shape == std::vector<std::int64_t>{rows, columns / 32} ||
+            scale_shape == std::vector<std::int64_t>{
+                (rows + 31) / 32, columns / 32} ||
+            (columns % 128 == 0 &&
+             scale_shape == std::vector<std::int64_t>{
+                 (rows + 127) / 128, columns / 128});
+    }
+    if (storage_shape != expected_storage || !valid_scales) {
+        throw std::runtime_error("invalid native MX storage geometry: " + name);
+    }
+    constexpr std::uint64_t kMxHeaderBytes = 56;
+    std::vector<std::byte> result;
+    result.reserve(kMxHeaderBytes);
+    for (const char value : std::string_view("MXT1")) {
+        result.push_back(static_cast<std::byte>(value));
+    }
+    result.push_back(std::byte{1});
+    result.push_back(dtype == "MXFP4" ? std::byte{4} : std::byte{8});
+    encoding::append_little<std::uint16_t>(result, 0);
+    for (const auto dimension : logical_shape) {
+        encoding::append_little<std::uint64_t>(
+            result, static_cast<std::uint64_t>(dimension));
+    }
+    for (const auto dimension : storage_shape) {
+        encoding::append_little<std::uint64_t>(
+            result, static_cast<std::uint64_t>(dimension));
+    }
+    for (const auto dimension : scale_shape) {
+        encoding::append_little<std::uint64_t>(
+            result, static_cast<std::uint64_t>(dimension));
+    }
+    return result;
+}
+
+} // namespace mx
 
 namespace mxfp8 {
 

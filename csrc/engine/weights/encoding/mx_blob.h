@@ -1,7 +1,21 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
+
+namespace mfq::mx {
+
+std::vector<std::byte> prefix(
+    std::string_view dtype,
+    const std::vector<std::int64_t>& logical_shape,
+    const std::vector<std::int64_t>& storage_shape,
+    const std::vector<std::int64_t>& scale_shape,
+    const std::string& name);
+
+} // namespace mfq::mx
 
 namespace mfq::mxfp8 {
 

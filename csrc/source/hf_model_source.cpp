@@ -1,6 +1,9 @@
 #include "hf_model_source.h"
 
+#include "engine/weights/encoding/bytes.h"
+#include "engine/weights/encoding/dense_blob.h"
 #include "engine/weights/encoding/fp8_sq_blob.h"
+#include "engine/weights/encoding/mx_blob.h"
 #include "compat/mfq_legacy_tensor_names.h"
 #include "engine/weights/source/mlx.h"
 #include "mlx_tensor_names.h"
@@ -13,7 +16,6 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
-#include <type_traits>
 #include <unordered_set>
 #include <utility>
 
@@ -22,7 +24,6 @@ namespace {
 
 using json = nlohmann::json;
 
-constexpr std::uint64_t kMxHeaderBytes = 56;
 constexpr std::uint32_t kMaxRecords = std::uint32_t{1} << 20;
 
 bool ends_with(std::string_view value, std::string_view suffix) {
@@ -38,15 +39,6 @@ std::uint64_t checked_add(
         throw std::overflow_error(std::string(what) + " byte size overflow");
     }
     return left + right;
-}
-
-template <typename T>
-void append_little(std::vector<std::byte>& destination, T value) {
-    using Unsigned = std::make_unsigned_t<T>;
-    const auto bits = static_cast<Unsigned>(value);
-    for (std::size_t index = 0; index < sizeof(T); ++index) {
-        destination.push_back(static_cast<std::byte>(bits >> (index * 8)));
-    }
 }
 
 std::uint64_t checked_product(
@@ -70,149 +62,6 @@ std::uint64_t dense_item_size(std::string_view dtype) {
     if (dtype == "F32" || dtype == "I32") return 4;
     if (dtype == "I64") return 8;
     return 0;
-}
-
-std::vector<std::byte> dense_prefix(
-    const std::vector<std::int64_t>& shape) {
-    std::vector<std::byte> result;
-    result.reserve(4 + shape.size() * 8);
-    append_little<std::uint32_t>(
-        result, static_cast<std::uint32_t>(shape.size()));
-    for (const auto dimension : shape) {
-        append_little<std::int64_t>(result, dimension);
-    }
-    return result;
-}
-
-std::vector<std::byte> fp8_128_sq8_prefix(
-    const std::vector<std::int64_t>& shape,
-    std::string_view scale_dtype,
-    const std::vector<std::int64_t>& scale_shape,
-    const std::string& name) {
-    if (shape.size() != 2 || scale_shape.size() != 2 ||
-        shape[0] <= 0 || shape[1] <= 0 ||
-        scale_shape != std::vector<std::int64_t>{
-            (shape[0] + 127) / 128, (shape[1] + 127) / 128}) {
-        throw std::runtime_error(
-            "invalid native FP8-128 scale geometry: " + name);
-    }
-    mfq::fp8sq::ScaleKind scale_kind;
-    if (scale_dtype == "BF16") {
-        scale_kind = mfq::fp8sq::ScaleKind::Bf16;
-    } else if (scale_dtype == "F16") {
-        scale_kind = mfq::fp8sq::ScaleKind::F16;
-    } else if (scale_dtype == "F32") {
-        scale_kind = mfq::fp8sq::ScaleKind::F32;
-    } else {
-        throw std::runtime_error(
-            "invalid native FP8-128 scale dtype: " + name);
-    }
-
-    std::vector<std::byte> result;
-    const auto selector_bytes =
-        ((static_cast<std::size_t>(shape[0]) * 3 + 7) / 8 + 3) &
-        ~std::size_t{3};
-    result.reserve(
-        mfq::fp8sq::kHeaderBytes + selector_bytes +
-        mfq::fp8sq::kPaletteBytes);
-    for (const char value : std::string_view("F8SQ")) {
-        result.push_back(static_cast<std::byte>(value));
-    }
-    result.push_back(std::byte{1});
-    result.push_back(static_cast<std::byte>(scale_kind));
-    append_little<std::uint16_t>(result, 0);
-    append_little<std::uint16_t>(result, 128);
-    append_little<std::uint16_t>(result, 128);
-    append_little<std::uint64_t>(
-        result, static_cast<std::uint64_t>(shape[0]));
-    append_little<std::uint64_t>(
-        result, static_cast<std::uint64_t>(shape[1]));
-    append_little<std::uint64_t>(
-        result, static_cast<std::uint64_t>(scale_shape[0]));
-    append_little<std::uint64_t>(
-        result, static_cast<std::uint64_t>(scale_shape[1]));
-
-    const auto selector_offset = result.size();
-    result.resize(selector_offset + selector_bytes, std::byte{0});
-    for (std::size_t row = 0; row < static_cast<std::size_t>(shape[0]); ++row) {
-        const auto bit = row * 3;
-        const auto byte = selector_offset + bit / 8;
-        const auto shift = static_cast<unsigned>(bit & 7);
-        result[byte] |= static_cast<std::byte>(7u << shift);
-        if (shift + 3 > 8) {
-            result[byte + 1] |= static_cast<std::byte>(7u >> (8 - shift));
-        }
-    }
-
-    const auto palette_offset = result.size();
-    result.resize(palette_offset + mfq::fp8sq::kPaletteBytes, std::byte{0});
-    std::size_t destination = palette_offset;
-    for (unsigned bits = 1; bits <= 7; ++bits) {
-        const auto count = std::size_t{1} << bits;
-        for (unsigned code = 0, written = 0; written < count; ++code) {
-            if ((code & 0x7Fu) == 0x7Fu) continue;
-            result[destination++] = static_cast<std::byte>(code);
-            ++written;
-        }
-    }
-    return result;
-}
-
-std::vector<std::byte> mx_prefix(
-    std::string_view dtype,
-    const std::vector<std::int64_t>& logical_shape,
-    const std::vector<std::int64_t>& storage_shape,
-    const std::vector<std::int64_t>& scale_shape,
-    const std::string& name) {
-    if (logical_shape.size() != 2 || storage_shape.size() != 2 ||
-        scale_shape.size() != 2) {
-        throw std::runtime_error("native MX tensor must be rank two: " + name);
-    }
-    const auto rows = logical_shape[0];
-    const auto columns = logical_shape[1];
-    if (rows <= 0 || columns <= 0 || columns % 32 != 0) {
-        throw std::runtime_error("invalid native MX tensor shape: " + name);
-    }
-    const std::vector<std::int64_t> expected_storage = dtype == "MXFP4"
-        ? std::vector<std::int64_t>{rows, columns / 2}
-        : std::vector<std::int64_t>{rows, columns};
-    bool valid_scales = false;
-    if (dtype == "MXFP4") {
-        valid_scales = scale_shape ==
-            std::vector<std::int64_t>{rows, columns / 32};
-    } else {
-        valid_scales =
-            scale_shape == std::vector<std::int64_t>{rows, columns / 32} ||
-            scale_shape == std::vector<std::int64_t>{
-                (rows + 31) / 32, columns / 32} ||
-            (columns % 128 == 0 &&
-             scale_shape == std::vector<std::int64_t>{
-                 (rows + 127) / 128, columns / 128});
-    }
-    if (storage_shape != expected_storage || !valid_scales) {
-        throw std::runtime_error("invalid native MX storage geometry: " + name);
-    }
-    std::vector<std::byte> result;
-    result.reserve(kMxHeaderBytes);
-    for (const char value : std::string_view("MXT1")) {
-        result.push_back(static_cast<std::byte>(value));
-    }
-    result.push_back(std::byte{1});
-    result.push_back(dtype == "MXFP4" ? std::byte{4} : std::byte{8});
-    append_little<std::uint16_t>(result, 0);
-    for (const auto dimension : logical_shape) {
-        append_little<std::uint64_t>(
-            result, static_cast<std::uint64_t>(dimension));
-    }
-    for (const auto dimension : storage_shape) {
-        append_little<std::uint64_t>(
-            result, static_cast<std::uint64_t>(dimension));
-    }
-    for (const auto dimension : scale_shape) {
-        append_little<std::uint64_t>(
-            result, static_cast<std::uint64_t>(dimension));
-    }
-    return result;
 }
 
 MfqLegacyTensorAliases source_compatibility(
@@ -418,7 +267,7 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
             }
             record.metadata.dtype = values->dtype;
             record.metadata.shape = mlx_hf_tensor_shape(canonical, *values->shape);
-            auto prefix = dense_prefix(*record.metadata.shape);
+            auto prefix = dense::prefix(*record.metadata.shape);
             record.segments.push_back({0, std::move(prefix), {}, 0, 0});
             const auto values_offset = record.segments.front().inline_bytes.size();
             record.segments.push_back({
@@ -483,10 +332,10 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
                     "native FP8/MX scale byte size mismatch: " + scale_name);
             }
             auto prefix = record.metadata.dtype == "FP8-128SQ"
-                ? fp8_128_sq8_prefix(
+                ? fp8sq::block128_prefix(
                     logical_shape, scales->dtype, *scales->shape, source_name)
-                : mx_prefix(record.metadata.dtype, logical_shape,
-                            *values->shape, *scales->shape, source_name);
+                : mx::prefix(record.metadata.dtype, logical_shape,
+                             *values->shape, *scales->shape, source_name);
             const auto values_offset = prefix.size();
             const auto scales_offset = checked_add(
                 values_offset, values->nbytes, "native FP8/MX tensor");
@@ -591,11 +440,11 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
         for (const char value : std::string_view("MFE1")) {
             header.push_back(static_cast<std::byte>(value));
         }
-        append_little<std::uint32_t>(
+        encoding::append_little<std::uint32_t>(
             header, static_cast<std::uint32_t>(expert_count));
-        append_little<std::uint32_t>(header, 0);
-        append_little<std::uint32_t>(header, 0);
-        append_little<std::uint32_t>(
+        encoding::append_little<std::uint32_t>(header, 0);
+        encoding::append_little<std::uint32_t>(header, 0);
+        encoding::append_little<std::uint32_t>(
             header, static_cast<std::uint32_t>(expert_count));
 
         for (const auto& [expert, tensor_name] : projection.experts) {
@@ -626,12 +475,12 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
             }
 
             std::vector<std::byte> pool;
-            append_little<std::uint32_t>(pool, 1);
-            append_little<std::uint32_t>(
+            encoding::append_little<std::uint32_t>(pool, 1);
+            encoding::append_little<std::uint32_t>(
                 pool, static_cast<std::uint32_t>(dtype.size()));
-            append_little<std::uint64_t>(pool, record.metadata.nbytes);
-            append_little<std::uint64_t>(pool, 0);
-            append_little<std::int32_t>(pool, static_cast<std::int32_t>(expert));
+            encoding::append_little<std::uint64_t>(pool, record.metadata.nbytes);
+            encoding::append_little<std::uint64_t>(pool, 0);
+            encoding::append_little<std::int32_t>(pool, static_cast<std::int32_t>(expert));
             for (const char value : dtype) {
                 pool.push_back(static_cast<std::byte>(value));
             }
