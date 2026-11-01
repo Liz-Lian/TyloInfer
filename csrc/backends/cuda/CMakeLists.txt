@@ -396,7 +396,6 @@ function(mfq_configure_cuda_backend_target target)
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
         ${PROJECT_SOURCE_DIR}/ops/common/include
-        ${PROJECT_SOURCE_DIR}/ops/mfq/include
         ${TYLOINFER_CUDA_KERNEL_ROOT}
         ${CUDAToolkit_INCLUDE_DIRS}
     )
@@ -470,7 +469,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/moe_routes.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/routes.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/gated_residual.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/tq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/tq.cpp
@@ -484,8 +483,8 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/fp8_sq.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq.cpp
-    ${PROJECT_SOURCE_DIR}/ops/mfq/moe.cpp
-    ${PROJECT_SOURCE_DIR}/ops/mfq/mfe.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/moe.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mfe.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nint.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/vq.cpp
     )

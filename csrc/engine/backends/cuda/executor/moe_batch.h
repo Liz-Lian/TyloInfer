@@ -1,5 +1,5 @@
 #pragma once
-#include "ops/common/include/moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "mfe_ffn.h"
 #include "mfe_ffn_prepare.h"
 #include "engine/backends/cuda/native/stream.h"

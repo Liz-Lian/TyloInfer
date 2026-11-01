@@ -8,7 +8,7 @@
 #include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/projection/mmq.h"
-#include "ops/common/include/moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
 

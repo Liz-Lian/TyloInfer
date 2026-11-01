@@ -4,7 +4,7 @@
 #include "engine/weights/moe/expert_cache.h"
 
 #include "engine/backends/cuda/native/profile.h"
-#include "moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/moe/expert_store.h"
 #include "engine/weights/moe/quant_range_source.h"
 #include "engine/weights/cache_policy.h"

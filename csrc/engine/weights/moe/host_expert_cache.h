@@ -1,6 +1,6 @@
 #pragma once
 
-#include "moe.h"
+#include "engine/weights/moe/pool.h"
 #include "engine/weights/cache_policy.h"
 
 #include <functional>

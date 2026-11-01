@@ -15,7 +15,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
-#include "moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/expert_store.h"
 #include "engine/weights/moe/quant_range_source.h"

@@ -1,13 +1,49 @@
-#include "moe.h"
+#include "routes.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
-#include "engine/backends/cuda/ops/projection/quant_linear.h"
+#include "engine/weights/encoding/format_features.h"
 #include <algorithm>
 #include <atomic>
+#include <stdexcept>
+#include <utility>
 
 static std::atomic<uint64_t> g_moe_route_generation{1};
-#include <cstring>
-#include <limits>
+
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+int select_nint_prefill_route_tile(
+        const MoeRoutePlan & route,
+        int tokens,
+        int routes,
+        int experts) {
+    const int64_t pairs = static_cast<int64_t>(tokens) * routes;
+    const int64_t rows_per_expert = std::max<int64_t>(
+        1, (pairs + experts - 1) / experts);
+    if (rows_per_expert < 4) {
+        return 8;
+    }
+    if (rows_per_expert > 64 && route.wide_tile_m == 128) {
+        return 128;
+    }
+    return route.mma_tile_m == 16 || route.mma_tile_m == 32 ||
+            route.mma_tile_m == 64
+        ? route.mma_tile_m
+        : 8;
+}
+
+const mfq_tensor_backend::Tensor & nint_route_tile_bounds(
+        const MoeRoutePlan & route, int tile_m) {
+    return tile_m == 128
+        ? route.wide_tile_bounds
+        : (tile_m == 8 ? route.tile_bounds : route.mma_tile_bounds);
+}
+
+const mfq_tensor_backend::Tensor & nint_route_tile_experts(
+        const MoeRoutePlan & route, int tile_m) {
+    return tile_m == 128
+        ? route.wide_tile_experts
+        : (tile_m == 8 ? route.tile_experts : route.mma_tile_experts);
+}
+#endif
 
 static void copy_route_tensor(
         mfq::cuda::Collectives& collectives,

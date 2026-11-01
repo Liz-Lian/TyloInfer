@@ -3,6 +3,7 @@
 
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 namespace mfq::cuda {
 

@@ -5,6 +5,7 @@
 #include "engine/backends/cuda/native/collectives.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/backends/cuda/ops/ffn/mfe.h"
 #include "engine/weights/moe/cached_source_internal.h"
 #endif
 

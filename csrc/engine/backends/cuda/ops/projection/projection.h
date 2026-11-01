@@ -1,7 +1,7 @@
 #pragma once
 
 #include "quant_linear.h"
-#include "ops/common/include/moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 
 struct TqMoeBanks;
 

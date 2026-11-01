@@ -1,9 +1,16 @@
 #pragma once
 
-#include "ops/mfq/include/mfe.h"
+#include "engine/weights/moe/pool.h"
+#include "engine/backends/cuda/ops/ffn/activation.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <vector>
 
 class MoeCachedSource;
 struct MixedMoeRuntime;
+struct MoeRoutePlan;
 
 namespace mfq::cuda {
 

@@ -1,15 +1,10 @@
 #pragma once
 
-#include "moe_types.h"
+#include "engine/weights/moe/pool.h"
+#include "engine/backends/cuda/ops/ffn/activation.h"
+#include "engine/backends/cuda/ops/ffn/routes.h"
 
 namespace mfq::cuda {
-
-struct MfeScratch {
-    std::unordered_map<MoeActivationKey, MoeActivationWorkspace, MoeActivationKeyHash> values;
-
-    MoeActivationWorkspace get(mfq_tensor_backend::Tensor input, int rows, int groups,
-                               int gs, bool stable = true);
-};
 
 // Borrowed NINT expert pools; the caller retains scratch and any cache leases.
 struct Mfe {

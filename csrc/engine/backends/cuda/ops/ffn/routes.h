@@ -1,15 +1,11 @@
 #pragma once
 
-#include "engine/weights/moe/pool.h"
+#include "backend.h"
 
-#include <algorithm>
-#include <array>
+#include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
-#include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace mfq::cuda {
@@ -30,39 +26,6 @@ const mfq_tensor_backend::Tensor& nint_route_tile_bounds(
     const MoeRoutePlan& route, int tile_m);
 const mfq_tensor_backend::Tensor& nint_route_tile_experts(
     const MoeRoutePlan& route, int tile_m);
-
-struct MoeActivationKey {
-    int input_rows = 0;
-    int groups = 0;
-    int gs = 0;
-    int device = 0;
-
-    bool operator==(const MoeActivationKey & other) const {
-        return input_rows == other.input_rows && groups == other.groups &&
-               gs == other.gs && device == other.device;
-    }
-};
-
-struct MoeActivationKeyHash {
-    size_t operator()(const MoeActivationKey & key) const {
-        size_t value = (size_t)key.input_rows;
-        value = value * 1315423911u + (size_t)key.groups;
-        value = value * 1315423911u + (size_t)key.gs;
-        return value * 1315423911u + (size_t)key.device;
-    }
-};
-
-struct MoeActivationWorkspace {
-    static constexpr int stable_row_limit = 2048;
-    static int capacity_rows(int rows, bool stable) {
-        if (!stable) return ((rows + 255) / 256) * 256;
-        int capacity = 1;
-        while (capacity < rows) capacity *= 2;
-        return capacity;
-    }
-    mfq_tensor_backend::Tensor qx;
-    mfq_tensor_backend::Tensor xscale;
-};
 
 struct MoeRoutePlan {
     mfq_tensor_backend::Tensor ids;

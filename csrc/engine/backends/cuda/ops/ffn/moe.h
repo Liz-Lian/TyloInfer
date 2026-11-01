@@ -1,11 +1,16 @@
 #pragma once
 
-#include "moe_types.h"
 #include "engine/weights/moe/pool.h"
 #include "engine/weights/moe/dispatch.h"
+#include "engine/backends/cuda/ops/ffn/activation.h"
+#include "engine/backends/cuda/ops/ffn/routes.h"
 #include "engine/backends/cuda/ops/projection/mmq.h"
 
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <unordered_map>
+#include <vector>
 
 void fp8_sq_moe_matmul(
     const Fp8SqWeight& weight,
@@ -17,47 +22,6 @@ void fp8_sq_moe_matmul(
     int out_per_expert,
     int neuron_len,
     mfq_tensor_backend::Tensor output);
-
-struct MixedMoeTransformKey {
-    int block = 0;
-    uint64_t seed = 0;
-
-    bool operator==(const MixedMoeTransformKey & other) const {
-        return block == other.block && seed == other.seed;
-    }
-};
-
-struct MixedMoeTransformKeyHash {
-    size_t operator()(const MixedMoeTransformKey & key) const {
-        return ((size_t)key.block * 1315423911u) ^
-            (size_t)(key.seed ^ (key.seed >> 32));
-    }
-};
-
-struct MixedMoeActivationKey {
-    int input_rows = 0;
-    int groups = 0;
-    int gs = 0;
-    int device = 0;
-    MixedMoeTransformKey transform;
-
-    bool operator==(const MixedMoeActivationKey & other) const {
-        return input_rows == other.input_rows && groups == other.groups &&
-            gs == other.gs && device == other.device &&
-            transform == other.transform;
-    }
-};
-
-struct MixedMoeActivationKeyHash {
-    size_t operator()(const MixedMoeActivationKey & key) const {
-        size_t value = (size_t)key.input_rows;
-        value = value * 1315423911u + (size_t)key.groups;
-        value = value * 1315423911u + (size_t)key.gs;
-        value = value * 1315423911u + (size_t)key.device;
-        return value * 1315423911u +
-            MixedMoeTransformKeyHash{}(key.transform);
-    }
-};
 
 struct MixedNintInputPlan {
     mfq_tensor_backend::Tensor weight_ptrs,quantize_descriptors;

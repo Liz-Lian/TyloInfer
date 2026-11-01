@@ -2,11 +2,19 @@
 
 #include "engine/weights/encoding/quant/mfe_quant_expert_store.h"
 
-#include "moe.h"
+#include "engine/weights/moe/pool.h"
 #include "engine/weights/moe/host_expert_cache.h"
+#include <cstddef>
+#include <cstdint>
 #include <atomic>
 #include <array>
+#include <memory>
 #include <unordered_map>
+#include <utility>
+#include <vector>
+
+struct MixedMoeRuntime;
+struct MoeRoutePlan;
 
 // Shared source for GPU cache misses and original-FP32 CPU cold projections.
 // Only one prototype per format cohort is read at registration. Its codebook

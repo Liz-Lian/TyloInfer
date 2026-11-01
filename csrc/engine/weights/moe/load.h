@@ -1,8 +1,11 @@
 #pragma once
 
-#include "moe.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/weights/encoding/quant/mfe_blob.h"
+
+#include <cstdint>
+#include <memory>
+#include <string>
 
 namespace mfq { class ModelSource; }
 

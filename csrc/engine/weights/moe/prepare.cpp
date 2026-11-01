@@ -1,5 +1,5 @@
 #include "engine/weights/moe/prepare.h"
-#include "ops/common/include/moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/quant.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"

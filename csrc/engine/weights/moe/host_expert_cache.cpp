@@ -1,6 +1,7 @@
 #include "env.h"
 #include "engine/weights/moe/host_expert_cache.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>

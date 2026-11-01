@@ -3,7 +3,7 @@
 #include "engine/weights/moe/load.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/tq/load.h"
-#include "moe.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 
 #include <cstdio>
