@@ -5,7 +5,7 @@
 #include "source/mapped_prefetch_scope.h"
 #include "backends/cpu/storage/nint_row_cache.h"
 #include "engine/weights/nint_row_pipeline.h"
-#include "source/tq_source.h"
+#include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"
 
 #include <condition_variable>

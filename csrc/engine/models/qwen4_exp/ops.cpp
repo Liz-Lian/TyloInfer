@@ -17,7 +17,7 @@
 #include "mtp.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/group.h"
-#include "source/tq_source.h"
+#include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"
 #include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
 #include "engine/weights/moe/expert_cache.h"

@@ -21,7 +21,7 @@
 #include "engine/weights/moe/quant_range_source.h"
 #include "engine/weights/tq/load.h"
 #include "engine/weights/tq/image.h"
-#include "source/tq_source.h"
+#include "engine/weights/tq/source.h"
 #include "engine/weights/encoding/quant/packed_nint_expert_store.h"
 #include <cstdlib>
 #include <cstdio>

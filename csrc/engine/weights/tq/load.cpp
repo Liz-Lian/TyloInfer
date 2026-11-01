@@ -1,6 +1,6 @@
 #include "engine/weights/tq/load.h"
 
-#include "source/tq_source.h"
+#include "engine/weights/tq/source.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/tq/cache.h"
 #include "engine/weights/tq/image.h"

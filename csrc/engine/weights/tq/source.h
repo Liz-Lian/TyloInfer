@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/weights/encoding/tq_table.h"
-#include "model_source.h"
+#include "source/model_source.h"
 
 #include <array>
 #include <cstdint>

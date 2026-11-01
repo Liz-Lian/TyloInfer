@@ -8,7 +8,7 @@ add_library(mfq-model-source STATIC
     mlx_affine_source.h
     mlx_tensor_names.h
     hf_safetensors_source.cpp
-    tq_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.cpp
     tq_fixture_source.cpp
     compat/mfq_format_compat.h
     compat/mfq_legacy_model_graph.cpp
@@ -20,7 +20,7 @@ add_library(mfq-model-source STATIC
     mfq_model_source.h
     hf_model_source.h
     hf_safetensors_source.h
-    tq_source.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.h
     tq_fixture_source.h
     mapped_prefetch_scope.h
     mapped_read_profile.h
