@@ -1,6 +1,7 @@
 #include "env.h"
 #include "tq.h"
-#include "detail.h"
+#include "tq_detail.h"
+#include "engine/weights/tq/image.h"
 #include "engine/backends/cuda/native/blas.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include <algorithm>
@@ -70,21 +71,6 @@ tb::Tensor projection_workspace(const TqWeight& weight,int tokens,tb::ScalarType
             tokens,static_cast<long long>(weight.neuron_len),static_cast<long long>(weight.out),groups,
             static_cast<unsigned long long>(bytes));
     return tb::empty({static_cast<std::int64_t>(bytes)},weight.image.options().dtype(tb::kUInt8));
-}
-}
-
-namespace {
-TqWeight promote_tq(const TqWeight& weight,const tb::Device& device) {
-    TqWeight result=weight;
-    result.image=weight.image.to(device,false,false).contiguous();
-    const auto old=reinterpret_cast<std::uintptr_t>(weight.image.data_ptr());
-    const auto target=reinterpret_cast<std::uintptr_t>(result.image.data_ptr());
-    auto address=[&](const void* p){return p?target+(reinterpret_cast<std::uintptr_t>(p)-old):std::uintptr_t(0);};
-    result.view.words=reinterpret_cast<const std::uint32_t*>(address(weight.view.words));
-    result.view.descriptors=reinterpret_cast<const std::uint64_t*>(address(weight.view.descriptors));
-    result.view.scales=reinterpret_cast<const void*>(address(weight.view.scales));
-    result.view.relative=reinterpret_cast<const void*>(address(weight.view.relative));
-    return result;
 }
 }
 

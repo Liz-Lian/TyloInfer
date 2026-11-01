@@ -1,7 +1,7 @@
 #include "engine/weights/tq/rows.h"
 
 #include "env.h"
-#include "tq.h"
+#include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/tq/image.h"
 #include "engine/backends/cuda/native/memory.h"
 

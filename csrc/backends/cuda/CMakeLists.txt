@@ -396,7 +396,6 @@ function(mfq_configure_cuda_backend_target target)
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
         ${PROJECT_SOURCE_DIR}/ops/common/include
-        ${PROJECT_SOURCE_DIR}/ops/tq/include
         ${PROJECT_SOURCE_DIR}/ops/mfq/include
         ${TYLOINFER_CUDA_KERNEL_ROOT}
         ${CUDAToolkit_INCLUDE_DIRS}
@@ -473,8 +472,8 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/moe_routes.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/gated_residual.cpp
-    ${PROJECT_SOURCE_DIR}/ops/tq/tq.cpp
-    ${PROJECT_SOURCE_DIR}/ops/tq/moe.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/tq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/tq.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/mx.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/quant_linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/projection.cpp

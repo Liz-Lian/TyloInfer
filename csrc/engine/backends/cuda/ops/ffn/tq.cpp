@@ -1,6 +1,6 @@
-#include "ops/tq/include/moe.h"
+#include "engine/backends/cuda/ops/ffn/tq.h"
 
-#include "ops/tq/include/detail.h"
+#include "engine/backends/cuda/ops/projection/tq_detail.h"
 #include "engine/backends/cuda/native/blas.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 

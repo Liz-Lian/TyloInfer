@@ -46,6 +46,20 @@ TqWeight tq_view(mfq_tensor_backend::Tensor image,
     return result;
 }
 
+TqWeight promote_tq(const TqWeight& weight,
+                   const mfq_tensor_backend::Device& device) {
+    TqWeight result=weight;
+    result.image=weight.image.to(device,false,false).contiguous();
+    const auto old=reinterpret_cast<std::uintptr_t>(weight.image.data_ptr());
+    const auto target=reinterpret_cast<std::uintptr_t>(result.image.data_ptr());
+    auto address=[&](const void* p){return p?target+(reinterpret_cast<std::uintptr_t>(p)-old):std::uintptr_t(0);};
+    result.view.words=reinterpret_cast<const std::uint32_t*>(address(weight.view.words));
+    result.view.descriptors=reinterpret_cast<const std::uint64_t*>(address(weight.view.descriptors));
+    result.view.scales=reinterpret_cast<const void*>(address(weight.view.scales));
+    result.view.relative=reinterpret_cast<const void*>(address(weight.view.relative));
+    return result;
+}
+
 TqWeight to_device_tq(const std::vector<std::uint8_t>& blob,
                       std::int64_t columns, int device, bool cuda) {
     const mfq::TqLayout layout(blob.data(), blob.size());

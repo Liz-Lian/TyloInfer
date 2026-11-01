@@ -5,7 +5,7 @@
 #include "ops/mfq/include/mxfp4_sq.h"
 #include "ops/mfq/include/nint.h"
 #include "ops/mfq/include/vq.h"
-#include "ops/tq/include/tq.h"
+#include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/encoding/format_features.h"
 
 #include "mmq.h"
