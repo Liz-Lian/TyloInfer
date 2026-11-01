@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/executor/ffn.h"
 #include "engine/executor/moe_ffn_pipeline.h"
 #include "engine/executor/scope.h"
-#include "ops/common/include/gated_residual.h"
+#include "engine/backends/cuda/ops/ffn/gated.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"

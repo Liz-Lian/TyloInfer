@@ -1,4 +1,4 @@
-#include "ops/common/include/float_projection.h"
+#include "float_projection.h"
 #include "engine/weights/nint.h"
 #include "qwen4_exp.h"
 

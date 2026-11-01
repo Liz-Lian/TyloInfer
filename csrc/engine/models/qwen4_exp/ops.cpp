@@ -33,7 +33,7 @@
 #include "engine/models/common/moe.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/session_codec.h"
-#include "gated_residual.h"
+#include "engine/backends/cuda/ops/ffn/gated.h"
 #include "engine/weights/nint_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "matmul_rows.h"

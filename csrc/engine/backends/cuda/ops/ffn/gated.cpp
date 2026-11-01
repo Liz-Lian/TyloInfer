@@ -1,12 +1,12 @@
-#include "gated_residual.h"
-#include "qwen4_exp.h"
+#include "gated.h"
+#include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
-#include "selected_attention.h"
+#include "engine/backends/cuda/kernels/selected_attention.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/allocation.h"
-#include "gated_residual_fused.h"
-#include "float_projection.h"
+#include "engine/backends/cuda/kernels/gated_residual_fused.h"
+#include "engine/backends/cuda/kernels/float_projection.h"
 #include "engine/executor/options.h"
 
 #include <algorithm>
