@@ -2,7 +2,7 @@
 #include "engine/backends/cuda/native/memory.h"
 #include "engine/backends/cuda/native/stream.h"
 #include "backends/cpu/native/host_parallel.h"
-#include "source/mapped_prefetch_scope.h"
+#include "engine/weights/source/mapped.h"
 #include "backends/cpu/storage/nint_row_cache.h"
 #include "engine/weights/nint_row_pipeline.h"
 #include "engine/weights/tq/source.h"

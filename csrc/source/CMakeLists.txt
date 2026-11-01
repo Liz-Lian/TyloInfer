@@ -1,6 +1,7 @@
 add_library(mfq-model-source STATIC
     model_source.cpp
     mfq_model_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.cpp
     hf_model_source.cpp
     mlx_affine_source.cpp
     gguf_model_source.cpp
@@ -22,9 +23,7 @@ add_library(mfq-model-source STATIC
     hf_safetensors_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.h
     tq_fixture_source.h
-    mapped_prefetch_scope.h
-    mapped_read_profile.h
-    mapped_tensor_pages.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.h
 )
 add_library(mfq::model-source ALIAS mfq-model-source)
 target_include_directories(mfq-model-source PUBLIC

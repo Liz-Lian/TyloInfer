@@ -10,9 +10,7 @@
 #include "resident_allocations.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "native/error.h"
-#include "source/mapped_read_profile.h"
-#include "source/mapped_prefetch_scope.h"
-#include "source/mapped_tensor_pages.h"
+#include "engine/weights/source/mapped.h"
 #include <thread>
 #include <map>
 #include <condition_variable>
