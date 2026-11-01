@@ -77,33 +77,6 @@ void fp8_sq_moe_matmul(
     throw std::runtime_error("unsupported FP8-SQ MoE dtype");
 }
 
-MixedNvqF16FormatGroup mixed_nvq_f16_format_group(int format) {
-    switch (format) {
-        case 2:
-        case 3:
-        case 4:
-        case 5:
-        case 6:
-        case 10:
-        case 11:
-            return MixedNvqF16FormatGroup::Standard;
-        case 12:
-        case 13:
-        case 14:
-        case 15:
-        case 16:
-        case 17:
-            return MixedNvqF16FormatGroup::Extended;
-        case 1:
-        case 7:
-        case 8:
-        case 9:
-            return MixedNvqF16FormatGroup::Legacy;
-        default:
-            return MixedNvqF16FormatGroup::All;
-    }
-}
-
 bool MixedMoeRuntime::nint_only() const {
     return !pools.empty() && std::all_of(
         pools.begin(), pools.end(), [](const MixedMoePool & pool) {
@@ -145,40 +118,6 @@ MoeActivationWorkspace MixedMoeRuntime::prefill_activation_workspace(
         mfq_tensor_backend::Tensor x,int input_rows,int groups,int gs,
         MixedMoeTransformKey transform) const {
     return activation_workspace(x, input_rows, groups, gs, transform, false);
-}
-
-std::vector<MoeActivationGeometry> MixedMoeRuntime::activation_geometry() const {
-    std::vector<MoeActivationGeometry> result;
-    for (const auto & pool : pools) {
-        int groups = 0;
-        int gs = 24;
-        int transform_block = 0;
-        uint64_t transform_seed = 0;
-        if (pool.family == MixedMoeFamily::Nint) {
-            groups = static_cast<int>(pool.nint.ng);
-            gs = static_cast<int>(pool.nint.gs);
-        } else if (pool.family == MixedMoeFamily::Nint8Zero) {
-            groups = static_cast<int>(pool.q8_zero.ng);
-            gs = 32;
-        } else if (pool.family == MixedMoeFamily::Nvq) {
-            groups = static_cast<int>(pool.nvq.ng);
-            gs = static_cast<int>(pool.nvq.gs);
-        } else if (pool.family == MixedMoeFamily::Mxfp4 ||
-                pool.family == MixedMoeFamily::Mxfp4Sq ||
-                pool.family == MixedMoeFamily::Fp8Sq) {
-            continue;
-        } else {
-            groups = pool.nepq.ng;
-            transform_block = pool.nepq.rotation_block;
-            transform_seed = pool.nepq.rotation_seed;
-        }
-        const MoeActivationGeometry geometry{
-            groups, gs, transform_block, transform_seed};
-        if (std::find(result.begin(), result.end(), geometry) == result.end()) {
-            result.push_back(geometry);
-        }
-    }
-    return result;
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward(

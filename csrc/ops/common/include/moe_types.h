@@ -1,9 +1,6 @@
 #pragma once
 
-#include "engine/weights/mx.h"
-#include "engine/weights/sq.h"
-#include "engine/weights/nint.h"
-#include "engine/weights/vq.h"
+#include "engine/weights/moe/pool.h"
 
 #include <algorithm>
 #include <array>
@@ -33,12 +30,6 @@ const mfq_tensor_backend::Tensor& nint_route_tile_bounds(
     const MoeRoutePlan& route, int tile_m);
 const mfq_tensor_backend::Tensor& nint_route_tile_experts(
     const MoeRoutePlan& route, int tile_m);
-
-struct MfePoolWeight {
-    NintWeight weight;
-    mfq_tensor_backend::Tensor expert_local;
-    int local_experts = 0;
-};
 
 struct MoeActivationKey {
     int input_rows = 0;
@@ -71,19 +62,6 @@ struct MoeActivationWorkspace {
     }
     mfq_tensor_backend::Tensor qx;
     mfq_tensor_backend::Tensor xscale;
-};
-
-struct MoeActivationGeometry {
-    int groups = 0;
-    int gs = 0;
-    int transform_block = 0;
-    uint64_t transform_seed = 0;
-
-    bool operator==(const MoeActivationGeometry & other) const {
-        return groups == other.groups && gs == other.gs &&
-            transform_block == other.transform_block &&
-            transform_seed == other.transform_seed;
-    }
 };
 
 struct MoeRoutePlan {

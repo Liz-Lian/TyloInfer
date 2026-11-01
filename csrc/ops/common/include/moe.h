@@ -1,32 +1,11 @@
 #pragma once
 
 #include "moe_types.h"
+#include "engine/weights/moe/pool.h"
+#include "engine/weights/moe/dispatch.h"
 #include "engine/backends/cuda/ops/projection/mmq.h"
 
 #include <optional>
-
-enum class MixedMoeFamily {
-    Nint,
-    Nint8Zero,
-    Mxfp4,
-    Mxfp4Sq,
-    Fp8Sq,
-    Nvq,
-    Nepq,
-};
-
-struct MixedMoePool {
-    MixedMoeFamily family = MixedMoeFamily::Nint;
-    NintWeight nint;
-    NintWeight q8_zero;
-    Mxfp4Weight mxfp4;
-    Mxfp4SqWeight mxfp4_sq;
-    Fp8SqWeight fp8_sq;
-    NvqWeight nvq;
-    NepqWeight nepq;
-    mfq_tensor_backend::Tensor expert_local;
-    int local_experts = 0;
-};
 
 void fp8_sq_moe_matmul(
     const Fp8SqWeight& weight,
@@ -80,36 +59,6 @@ struct MixedMoeActivationKeyHash {
     }
 };
 
-enum class MixedNvqF16FormatGroup : int {
-    All = 0,
-    Standard = 1,
-    Extended = 2,
-    Legacy = 3,
-};
-
-MixedNvqF16FormatGroup mixed_nvq_f16_format_group(int format);
-
-struct MixedNvqDispatch {
-    // Retain the packed device allocation and its asynchronous upload source.
-    mfq_tensor_backend::Tensor metadata_device,metadata_host;
-    mfq_tensor_backend::Tensor map_ptrs;
-    mfq_tensor_backend::Tensor weight_ptrs;
-    mfq_tensor_backend::Tensor weight_sizes;
-    mfq_tensor_backend::Tensor pool_params;
-    mfq_tensor_backend::Tensor expert_pool;
-    mfq_tensor_backend::Tensor expert_local;
-    int pool_count = 0;
-    MixedNvqF16FormatGroup f16_format_group =
-        MixedNvqF16FormatGroup::All;
-    bool masked_experts = false;
-    bool dense_groups = false;
-};
-
-struct MixedNintDispatch {
-    mfq_tensor_backend::Tensor metadata_device,metadata_host;
-    mfq_tensor_backend::Tensor map_ptrs,expert_pool,expert_local,pool_params;
-    std::vector<int> pools;
-};
 struct MixedNintInputPlan {
     mfq_tensor_backend::Tensor weight_ptrs,quantize_descriptors;
     mfq_tensor_backend::Tensor row_metadata_workspace;
@@ -151,8 +100,6 @@ struct MixedMoeRuntime {
     MoeActivationWorkspace prefill_activation_workspace(
             mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
             MixedMoeTransformKey transform) const;
-
-    std::vector<MoeActivationGeometry> activation_geometry() const;
 
     mfq_tensor_backend::Tensor forward(
             const MoeOptions& options,

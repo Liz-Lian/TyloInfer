@@ -1045,7 +1045,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 auto& runtime=buffer.projections[p];
                 if(!cache_->pipeline_prefill_activations_)
                     cache_->pipeline_prefill_activations_=std::make_shared<MixedMoeRuntime>();
-                for(const auto& geometry:runtime.activation_geometry()) {
+                for(const auto& geometry:moe_activation_geometry(runtime.pools)) {
                     const MixedMoeTransformKey transform{geometry.transform_block,geometry.transform_seed};
                     const MixedMoeActivationKey key{group.rows,geometry.groups,geometry.gs,x.get_device(),transform};
                     runtime.activation_workspaces.insert_or_assign(key,
@@ -1490,7 +1490,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             // Direct FP16 MMA consumes x; allocate shared Q8 scratch only when
             // the integer path actually needs it.
             if(!kernels_.prefill)
-            for(const auto& geometry:runtime.activation_geometry()) {
+            for(const auto& geometry:moe_activation_geometry(runtime.pools)) {
                 const MixedMoeTransformKey transform{geometry.transform_block,geometry.transform_seed};
                 const MixedMoeActivationKey key{rows,geometry.groups,geometry.gs,x.get_device(),transform};
                 runtime.activation_workspaces.insert_or_assign(key,
@@ -1791,7 +1791,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                     cache_->pipeline_prefill_activations_=std::make_shared<MixedMoeRuntime>();
                 const int rows=projection==2?cell.entries:cell.tokens;
                 for(auto* runtime:{&binding.hot,&binding.transfer})
-                    for(const auto& g:runtime->activation_geometry()) {
+                    for(const auto& g:moe_activation_geometry(runtime->pools)) {
                         const MixedMoeTransformKey transform{g.transform_block,g.transform_seed};
                         const MixedMoeActivationKey key{rows,g.groups,g.gs,cell.input.get_device(),transform};
                         runtime->activation_workspaces.insert_or_assign(key,
@@ -1805,7 +1805,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
                 cell.tokens>=kernels_.min_tokens);
         if(cell.shared_input) {
             std::vector<MoeActivationGeometry> geometries;
-            for(int projection=0;projection<2;++projection)for(const auto& geometry:cell.binding[projection].hot.activation_geometry()) {
+            for(int projection=0;projection<2;++projection)for(const auto& geometry:moe_activation_geometry(cell.binding[projection].hot.pools)) {
                 if(geometry.transform_block || geometry.groups<=0 || geometry.gs<=0 || geometry.gs>64)
                     throw std::runtime_error("shared FFN input needs canonical unrotated NINT/NVQ groups");
                 if(std::find(geometries.begin(),geometries.end(),geometry)==geometries.end())geometries.push_back(geometry);

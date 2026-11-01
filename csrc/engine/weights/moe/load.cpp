@@ -261,7 +261,7 @@ static mfq::cuda::Experts wrap_mixed_moe_runtime(
     result.neuron_len = runtime->neuron_len;
     result.partial_experts = runtime->partial_experts;
     result.mixed_weight_bytes = mixed_moe_storage_bytes(*runtime);
-    result.activation_geometries = runtime->activation_geometry();
+    result.activation_geometries = moe_activation_geometry(runtime->pools);
     result.activation_workspace_domain = 2;
     result.resident = runtime;
     return result;
@@ -538,7 +538,7 @@ mfq::cuda::Experts cpu_mixed_moe_metadata(
     result.out_per_expert = runtime->out_per_expert;
     result.neuron_len = runtime->neuron_len;
     result.mixed_weight_bytes = mixed_moe_storage_bytes(*runtime);
-    result.activation_geometries = runtime->activation_geometry();
+    result.activation_geometries = moe_activation_geometry(runtime->pools);
     result.activation_workspace_domain = 2;
     return result;
 }
