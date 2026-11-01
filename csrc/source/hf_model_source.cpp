@@ -1,9 +1,9 @@
 #include "hf_model_source.h"
 
-#include "engine/weights/encoding/bytes.h"
 #include "engine/weights/encoding/dense_blob.h"
 #include "engine/weights/encoding/fp8_sq_blob.h"
 #include "engine/weights/encoding/mx_blob.h"
+#include "engine/weights/encoding/quant/mfe_blob.h"
 #include "compat/mfq_legacy_tensor_names.h"
 #include "engine/weights/source/mlx.h"
 #include "mlx_tensor_names.h"
@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cstring>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -436,17 +435,6 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
             }
         };
 
-        std::vector<std::byte> header;
-        for (const char value : std::string_view("MFE1")) {
-            header.push_back(static_cast<std::byte>(value));
-        }
-        encoding::append_little<std::uint32_t>(
-            header, static_cast<std::uint32_t>(expert_count));
-        encoding::append_little<std::uint32_t>(header, 0);
-        encoding::append_little<std::uint32_t>(header, 0);
-        encoding::append_little<std::uint32_t>(
-            header, static_cast<std::uint32_t>(expert_count));
-
         for (const auto& [expert, tensor_name] : projection.experts) {
             const auto& record = impl_->records.at(tensor_name);
             if (!record.metadata.shape || record.metadata.shape->size() != 2 ||
@@ -465,25 +453,17 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
                 }
                 const auto output = static_cast<std::uint32_t>(shape[0]);
                 const auto input = static_cast<std::uint32_t>(shape[1]);
-                std::memcpy(header.data() + 8, &output, sizeof(output));
-                std::memcpy(header.data() + 12, &input, sizeof(input));
-                append_inline(std::move(header));
+                append_inline(mfe::header(
+                    static_cast<std::uint32_t>(expert_count), output, input,
+                    static_cast<std::uint32_t>(expert_count)));
             } else if (dtype != record.metadata.dtype ||
                        shape != *record.metadata.shape) {
                 throw std::runtime_error(
                     "native HF expert projection has mixed geometry: " + name);
             }
 
-            std::vector<std::byte> pool;
-            encoding::append_little<std::uint32_t>(pool, 1);
-            encoding::append_little<std::uint32_t>(
-                pool, static_cast<std::uint32_t>(dtype.size()));
-            encoding::append_little<std::uint64_t>(pool, record.metadata.nbytes);
-            encoding::append_little<std::uint64_t>(pool, 0);
-            encoding::append_little<std::int32_t>(pool, static_cast<std::int32_t>(expert));
-            for (const char value : dtype) {
-                pool.push_back(static_cast<std::byte>(value));
-            }
+            auto pool = mfe::expert_prefix(
+                static_cast<std::int32_t>(expert), dtype, record.metadata.nbytes);
             pool.insert(pool.end(), record.segments.front().inline_bytes.begin(),
                         record.segments.front().inline_bytes.end());
             append_inline(std::move(pool));

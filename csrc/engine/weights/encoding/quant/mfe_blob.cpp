@@ -1,5 +1,6 @@
 #include "mfe_blob.h"
 #include "mfe_index.h"
+#include "engine/weights/encoding/bytes.h"
 #include "engine/weights/encoding/fp8_sq_blob.h"
 #include "engine/weights/encoding/mxfp4_sq_blob.h"
 
@@ -8,6 +9,41 @@
 #include <utility>
 
 namespace mfq::mfe {
+
+std::vector<std::byte> header(
+    std::uint32_t experts,
+    std::uint32_t output,
+    std::uint32_t input,
+    std::uint32_t pools) {
+    std::vector<std::byte> result;
+    for (const char value : std::string_view("MFE1")) {
+        result.push_back(static_cast<std::byte>(value));
+    }
+    encoding::append_little<std::uint32_t>(result, experts);
+    encoding::append_little<std::uint32_t>(result, 0);
+    encoding::append_little<std::uint32_t>(result, 0);
+    encoding::append_little<std::uint32_t>(result, pools);
+    std::memcpy(result.data() + 8, &output, sizeof(output));
+    std::memcpy(result.data() + 12, &input, sizeof(input));
+    return result;
+}
+
+std::vector<std::byte> expert_prefix(
+    std::int32_t expert,
+    std::string_view dtype,
+    std::uint64_t nbytes) {
+    std::vector<std::byte> result;
+    encoding::append_little<std::uint32_t>(result, 1);
+    encoding::append_little<std::uint32_t>(
+        result, static_cast<std::uint32_t>(dtype.size()));
+    encoding::append_little<std::uint64_t>(result, nbytes);
+    encoding::append_little<std::uint64_t>(result, 0);
+    encoding::append_little<std::int32_t>(result, expert);
+    for (const char value : dtype) {
+        result.push_back(static_cast<std::byte>(value));
+    }
+    return result;
+}
 
 Data unpack(const std::vector<uint8_t>& blob) {
     auto index = mfq::mfe::parse(blob.size(), [&](std::size_t offset, std::uint8_t* data,

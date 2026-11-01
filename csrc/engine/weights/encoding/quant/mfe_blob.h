@@ -3,8 +3,10 @@
 #include "nint_blob.h"
 #include "../mx_blob.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mfq::mfe {
@@ -25,6 +27,17 @@ struct Data {
     int neuron_len = 0;
     std::vector<Pool> pools;
 };
+
+std::vector<std::byte> header(
+    std::uint32_t experts,
+    std::uint32_t output,
+    std::uint32_t input,
+    std::uint32_t pools);
+
+std::vector<std::byte> expert_prefix(
+    std::int32_t expert,
+    std::string_view dtype,
+    std::uint64_t nbytes);
 
 Data unpack(const std::vector<uint8_t>& blob);
 
