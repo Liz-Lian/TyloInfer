@@ -1,7 +1,7 @@
 #pragma once
 
-#include "backends/cuda/engine/executor/run.h"
-#include "engine/executor/input.h"
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/models/input.h"
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/state.h"
 #include "ops/attention/full.h"

@@ -10,6 +10,7 @@
 #include "engine/models/nemotron_h/ops.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
+#include "engine/models/input.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/common/load.h"
 #include "quant_linear.h"

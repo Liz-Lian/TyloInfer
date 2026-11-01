@@ -9,7 +9,7 @@
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "engine/weights/cpu_cost_model.h"
-#include "engine/executor/cpu_calibration.h"
+#include "engine/weights/cpu_calibration.h"
 #include <array>
 #include <cstring>
 #include <fstream>

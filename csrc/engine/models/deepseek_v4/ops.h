@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
-#include "engine/executor/ffn.h"
+#include "engine/backends/cuda/executor/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"

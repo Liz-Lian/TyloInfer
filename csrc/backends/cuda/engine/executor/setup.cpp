@@ -2,7 +2,7 @@
 #include "cuda_runtime_config.h"
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "engine/executor/tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"

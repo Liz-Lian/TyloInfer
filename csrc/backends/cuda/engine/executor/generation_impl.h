@@ -16,6 +16,7 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/generation/prefill_budget.h"
+#include "engine/models/input.h"
 
 #include <algorithm>
 #include <cstdlib>

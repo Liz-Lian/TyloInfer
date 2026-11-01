@@ -505,11 +505,11 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/budget.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/pipelines.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
-    ${PROJECT_SOURCE_DIR}/engine/executor/ffn.cpp
-    ${PROJECT_SOURCE_DIR}/engine/executor/tq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/ffn.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/graph_registry.cpp

@@ -3,7 +3,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/models/common/components.h"
 #include "engine/models/common/load.h"
-#include "engine/executor/tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/qwen35/load.h"

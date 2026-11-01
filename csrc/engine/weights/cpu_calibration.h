@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../weights/cpu_cost_model.h"
+#include "cpu_cost_model.h"
 #include "backends/cpu/execution/cpu_measurement.h"
 
 #include <chrono>

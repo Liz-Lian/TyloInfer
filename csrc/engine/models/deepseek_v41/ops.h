@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#include "engine/executor/ffn.h"
+#include "engine/backends/cuda/executor/ffn.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"

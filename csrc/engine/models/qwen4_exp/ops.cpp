@@ -2,7 +2,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "engine/executor/tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_shared_gate.h"

@@ -6,7 +6,7 @@
 #include "cuda_model_plan.h"
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "engine/executor/tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/executor/text.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"

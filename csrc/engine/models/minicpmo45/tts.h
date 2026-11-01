@@ -7,7 +7,7 @@
 #include "engine/requests/policy.h"
 #include "engine/generation/sampling.h"
 #include "engine/models/common/load.h"
-#include "backends/cuda/engine/executor/run.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_cache.h"
 
 #include <array>

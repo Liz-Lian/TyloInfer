@@ -3,7 +3,7 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/ffn.h"
-#include "engine/task.h"
+#include "engine/backends/cuda/executor/task.h"
 #include "engine/models/common/model_graph.h"
 #include "cuda_model_plan.h"
 #include "source/model_source.h"

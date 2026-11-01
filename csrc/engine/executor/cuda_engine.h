@@ -6,7 +6,7 @@
 #include "load.h"
 #include "engine/metrics.h"
 #include "scope.h"
-#include "tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/budget.h"
 #include "../requests/processor.h"
 #include "../scheduler/table.h"

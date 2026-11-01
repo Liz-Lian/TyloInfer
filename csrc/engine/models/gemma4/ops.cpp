@@ -1,7 +1,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/moe/experts.h"
-#include "engine/executor/ffn.h"
+#include "engine/backends/cuda/executor/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/weights/loader.h"

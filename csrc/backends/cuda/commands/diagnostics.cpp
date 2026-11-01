@@ -13,7 +13,7 @@
 #include "minicpmo45.h"
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "engine/executor/tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"

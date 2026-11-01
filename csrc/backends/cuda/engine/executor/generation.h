@@ -4,7 +4,7 @@
 #include "engine/generation/batch.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/generation/step.h"
-#include "engine/executor/run.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/models/common/mtp.h"

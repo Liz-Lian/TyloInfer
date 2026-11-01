@@ -2,7 +2,7 @@
 #include "engine/executor/options.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
-#include "engine/executor/tq.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"

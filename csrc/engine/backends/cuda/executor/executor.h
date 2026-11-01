@@ -1,8 +1,7 @@
 #pragma once
 
-#include "engine/task.h"
-#include "engine/executor/ffn.h"
-#include "engine/executor/input.h"
+#include "engine/backends/cuda/executor/task.h"
+#include "engine/backends/cuda/executor/ffn.h"
 
 #include <memory>
 
