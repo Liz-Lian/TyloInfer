@@ -6,7 +6,7 @@
 #include <random>
 #include "engine/requests/policy.h"
 #include "engine/executor/sampling.h"
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 #include "backends/cuda/engine/executor/run.h"
 #include "engine/state/kv_cache.h"
 

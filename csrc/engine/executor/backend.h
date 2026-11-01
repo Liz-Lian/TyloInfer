@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 #include "env.h"
 #include "cuda_runtime_config.h"
 #include "cuda_model_plan.h"

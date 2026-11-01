@@ -2,7 +2,7 @@
 
 #include "engine/models/qwen35/config.h"
 #include "engine/models/common/causal_metadata.h"
-#include "backends/cuda/engine/models/ffn.h"
+#include "engine/models/common/ffn.h"
 #include "engine/task.h"
 #include "formats/model_graph.h"
 #include "cuda_model_plan.h"

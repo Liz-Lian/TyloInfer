@@ -1,6 +1,6 @@
 #include "models/common/grid_vision.h"
 
-#include "backends/cuda/engine/models/vision.h"
+#include "engine/models/common/vision/load.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/weights/loader.h"
 

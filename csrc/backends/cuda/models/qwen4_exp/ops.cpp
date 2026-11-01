@@ -14,7 +14,7 @@
 #include "ops.h"
 #include "model.h"
 #include "mtp.h"
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 #include "engine/weights/group.h"
 #include "source/tq_source.h"
 #include "engine/weights/tq/rows.h"

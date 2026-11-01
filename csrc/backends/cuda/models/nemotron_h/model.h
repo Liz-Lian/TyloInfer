@@ -1,7 +1,7 @@
 #pragma once
 
 #include "models/common/block.h"
-#include "engine/models/ffn.h"
+#include "engine/models/common/ffn.h"
 #include "models/common/full_block.h"
 #include "quant_linear.h"
 #include "engine/state/recurrent.h"

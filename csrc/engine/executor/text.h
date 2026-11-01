@@ -2,7 +2,7 @@
 
 #include "env.h"
 #include "cuda_runtime_config.h"
-#include "backends/cuda/engine/models/components.h"
+#include "engine/models/common/components.h"
 #include "engine/weights/routed_cache.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/budget.h"

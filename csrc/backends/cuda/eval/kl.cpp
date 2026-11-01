@@ -11,7 +11,7 @@
 #include "engine/models/qwen35/forward.h"
 #include "models/minicpmo45/forward.h"
 #include "models/qwen4_exp/ops.h"
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 #include "quant_linear.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"

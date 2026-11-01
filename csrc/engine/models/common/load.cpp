@@ -1,4 +1,4 @@
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/moe/load.h"
 #include "engine/weights/loader.h"

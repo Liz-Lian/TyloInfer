@@ -2,7 +2,7 @@
 
 #include "ops/attention/full.h"
 #include "engine/weights/loader.h"
-#include "engine/models/ffn.h"
+#include "engine/models/common/ffn.h"
 #include "engine/models/common/weight_loading.h"
 #include "engine/models/common/yarn.h"
 

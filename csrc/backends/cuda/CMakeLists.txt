@@ -545,7 +545,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/memory.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/models/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/load.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_LOADING_SOURCES
@@ -575,7 +575,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/models ${CMAKE_CURRENT_BINARY_DIR}/models
 # Concrete Engine selection is compiled from models/engine.cpp.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/models/components.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp

@@ -1,5 +1,5 @@
 #include "models/minicpmo45/model.h"
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 
 #include <iostream>
 #include <stdexcept>

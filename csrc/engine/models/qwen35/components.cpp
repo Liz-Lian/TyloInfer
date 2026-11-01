@@ -1,6 +1,6 @@
 #include "engine/models/qwen35/components.h"
 
-#include "backends/cuda/engine/models/load.h"
+#include "engine/models/common/load.h"
 #include "models/common/grid_vision.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/qwen35/load.h"

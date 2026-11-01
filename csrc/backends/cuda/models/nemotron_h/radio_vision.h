@@ -4,7 +4,7 @@
 
 #include "ops/norm/rms.h"
 #include "ops/vision/block.h"
-#include "backends/cuda/engine/models/vision.h"
+#include "engine/models/common/vision/load.h"
 #include "engine/models/nemotron_h/vision.h"
 #include "engine/weights/loader.h"
 
