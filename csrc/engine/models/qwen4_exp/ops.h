@@ -2,6 +2,7 @@
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/block.h"
+#include "engine/models/common/session/size.h"
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/models/qwen4_exp/config.h"
 #include "quant_linear.h"
@@ -76,7 +77,7 @@ mfq_tensor_backend::Tensor qwen4_decode_graph_compact_topk(const Qwen4CausalLm&)
 void qwen4_release_decode_graphs(Qwen4CausalLm&,MtpModule*);
 void qwen4_warmup_decode_graphs(Qwen4CausalLm&,MtpModule*,int maximum_draft_depth=3);
 std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm&,const MtpModule*,int maximum_draft_depth=5);
-std::size_t qwen4_prefix_snapshot_bytes(const Qwen4CausalLm&,const MtpModule*);
+mfq::models::SnapshotSize snapshot_size(const Qwen4CausalLm&,const MtpModule*);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const Qwen4CausalLm&,const MtpModule*);
 bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm&, int64_t tokens);
 mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(

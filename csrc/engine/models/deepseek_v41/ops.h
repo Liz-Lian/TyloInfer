@@ -6,6 +6,7 @@
 #include "engine/models/deepseek_v41/causal_lm.h"
 
 #include "engine/models/common/causal_model_ops.h"
+#include "engine/models/common/session/size.h"
 #include "../deepseek_v4/ops.h"
 #include "dspark.h"
 #include "engram.h"
@@ -926,6 +927,8 @@ inline int run_self_check() {
 } // namespace mfq::cuda::deepseek_v41_runtime
 
 namespace mfq::cuda {
+
+mfq::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm&,const MtpModule*);
 
 struct DeepseekV41Model : CausalResources {
     static constexpr bool joint_speculation_supported=true;

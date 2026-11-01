@@ -1872,7 +1872,7 @@ void qwen4_finish_router_lookahead_audit(Qwen4CausalLm& model,const std::string&
         <<" scores=predicted_then_same_layer_oracle row_dtype=FP32\n";
 }
 
-std::size_t qwen4_prefix_snapshot_bytes(const Qwen4CausalLm& model,const MtpModule* mtp) {
+mfq::models::SnapshotSize snapshot_size(const Qwen4CausalLm& model,const MtpModule* mtp) {
     std::size_t bytes=session_tensor_bytes(model.positions);
     const auto count_block=[&](const qwen4_exp::Qwen4Block& block,int64_t count) {
         if(count<=0)return;
@@ -1889,7 +1889,8 @@ std::size_t qwen4_prefix_snapshot_bytes(const Qwen4CausalLm& model,const MtpModu
         }
         bytes+=std::size_t(model.config.hidden)*model.config.streams*sizeof(float);
     }
-    return bytes;
+    // Transposed graph KV can temporarily require a contiguous copy of the checkpoint.
+    return {bytes, bytes * 2};
 }
 
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(

@@ -188,6 +188,25 @@ Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &
 
 namespace mfq::cuda {
 
+mfq::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const MtpModule* mtp) {
+    std::size_t incoming=256; // Rolling Engram history and scalar metadata.
+    const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
+        return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
+    };
+    for(const auto& item:model.blocks) {
+        const auto& state=dynamic_cast<const deepseek_v41_runtime::Block&>(*item).state;
+        incoming+=session_tensor_bytes(state.local_kv)+session_tensor_bytes(state.partial_kv)+
+            session_tensor_bytes(state.partial_score)+prefix_bytes(state.compressed_kv,state.compressed_length)+
+            prefix_bytes(state.index_k,state.compressed_length);
+    }
+    if(mtp) {
+        const auto& c=model.config;
+        incoming+=std::size_t(c.sliding_window)*sizeof(mfq_half)*
+            (c.n_mtp_layers*c.head_dim+c.hidden*c.dspark_target_layer_ids.size());
+    }
+    return {incoming,incoming};
+}
+
 void DeepseekV41Model::adapter_validate_load_options() const {
     deepseek_v41_runtime::validate_load_options(*execution);
 }
