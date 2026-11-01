@@ -1,5 +1,5 @@
-#include "backends/cuda/engine/executor/graph_registry.h"
-#include "context.h"
+#include "engine/backends/cuda/executor/graph_registry.h"
+#include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/native/device.h"

@@ -5,6 +5,7 @@
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/options.h"
+#include "engine/budget.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "native/error.h"
 
@@ -21,6 +22,25 @@ namespace mfq::cuda::qwen4_exp {
 
 using mfq::cuda::internal::PrefillCudaTimer;
 using Tensor = mfq_tensor_backend::Tensor;
+
+namespace {
+
+class CacheScope {
+  public:
+    CacheScope(bool& serial, bool enabled) : serial_(serial), previous_(serial) {
+        serial_ = enabled;
+    }
+    ~CacheScope() { serial_ = previous_; }
+
+    CacheScope(const CacheScope&) = delete;
+    CacheScope& operator=(const CacheScope&) = delete;
+
+  private:
+    bool& serial_;
+    bool previous_ = false;
+};
+
+} // namespace
 
 BatchOps::BatchOps(Qwen4CausalLm& model, CudaExecutionContext& execution,
                    CudaContinuousBatchConfig config)
@@ -325,7 +345,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                         .reshape({-1, 1});
     auto ids = host_ids.to(mfq_tensor_backend::Device(
         mfq_tensor_backend::kCUDA, execution_.layer_placement.primary_device()));
-    mfq::cuda::BatchCacheScope moe_cache_scope(
+    CacheScope moe_cache_scope(
         execution_.continuous_batch_cache_serial, tokens.size() > 8);
     const bool greedy =
         config_.greedy && std::all_of(

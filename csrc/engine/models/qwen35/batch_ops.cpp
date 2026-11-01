@@ -2,7 +2,8 @@
 #include "engine/models/batch.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "backends/cuda/engine/executor/decode_graph.h"
+#include "engine/backends/cuda/executor/decode_graph.h"
+#include "engine/budget.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "native/error.h"
 

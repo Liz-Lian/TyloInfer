@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cuda/engine/batch/batch.h"
+#include "engine/models/common/batch.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "cuda_runtime_config.h"

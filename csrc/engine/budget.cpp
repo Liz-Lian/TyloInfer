@@ -1,18 +1,39 @@
-#include "engine/executor/budget.h"
+#include "engine/budget.h"
 
+#include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/generation/prefill_budget.h"
 #include "engine/models/common/session/cache.h"
+#include "engine/requests/processor.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/executor/engine.h"
 #include "engine/weights/workspace.h"
 #include "engine/weights/memory.h"
+#include "native/error.h"
 
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
 
 namespace mfq::cuda {
+
+mfq::engine::PrefillChunk budget_batch_prefill(
+        std::int64_t hidden_size, std::int64_t hc_mult, int device,
+        const std::shared_ptr<MoeExpertCache>& cache,
+        mfq::engine::PrefillChunk chunk, std::size_t growth) {
+    const auto context=default_context(device);
+    const auto transfer=moe_prefill_workspace_budget(cache,false).transfer_bytes;
+    const auto fixed=mfq::engine::prefill_budget_add((std::size_t(1)<<30)+growth,transfer);
+    const auto available=context->available_memory()+context->workspace_available();
+    const auto row_bytes=std::size_t(hidden_size)*hc_mult*sizeof(float)*8;
+    const auto selected=mfq::engine::select_prefill_chunk(chunk.count,chunk.count,available,fixed,row_bytes);
+    if(!selected)throw mfq::engine::InferenceInputError(
+        mfq::engine::InferenceInputErrorCode::ContextLength,
+        "insufficient CUDA workspace for batched prefill; reduce concurrent requests");
+    chunk.count=selected;
+    return chunk;
+}
 
 Budget::Budget(WeightMemoryLedger& weight_memory, RoutedCache& weights,
         internal::TextSessionCache& cache, int primary_device)

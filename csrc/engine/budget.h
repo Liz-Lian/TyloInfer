@@ -1,7 +1,13 @@
 #pragma once
 
+#include "engine/requests/policy.h"
+
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <memory>
+
+class MoeExpertCache;
 
 namespace mfq::engine {
 struct SessionCommand;
@@ -15,6 +21,11 @@ class ExpertSpace;
 namespace internal {
 class TextSessionCache;
 }
+
+mfq::engine::PrefillChunk budget_batch_prefill(
+        std::int64_t hidden_size, std::int64_t hc_mult, int device,
+        const std::shared_ptr<MoeExpertCache>&,
+        mfq::engine::PrefillChunk, std::size_t growth = 0);
 
 class Budget {
 public:

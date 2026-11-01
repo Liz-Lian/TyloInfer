@@ -15,7 +15,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "engine/batch/prefill_budget.h"
+#include "engine/generation/prefill_budget.h"
 
 #include <algorithm>
 #include <cstdlib>

@@ -5,7 +5,7 @@
 #include "engine/executor/step.h"
 #include "engine/executor/run.h"
 #include "engine/models/common/causal_metadata.h"
-#include "backends/cuda/engine/executor/decode_graph.h"
+#include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/executor/mtp.h"
 #include "cuda_runtime_config.h"
 

@@ -5,7 +5,7 @@
 #include "engine/models/common/components.h"
 #include "engine/weights/routed_cache.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "engine/executor/budget.h"
+#include "engine/budget.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "engine/weights/loader.h"

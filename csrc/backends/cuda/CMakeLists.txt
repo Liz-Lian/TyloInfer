@@ -502,17 +502,17 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
-    ${PROJECT_SOURCE_DIR}/engine/executor/budget.cpp
+    ${PROJECT_SOURCE_DIR}/engine/budget.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/load.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/pipelines.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/run.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/batch/batch.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/tq.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/graph_registry.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/graph_registry.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
@@ -574,7 +574,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_graph.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp

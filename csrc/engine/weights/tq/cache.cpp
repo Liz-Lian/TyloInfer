@@ -7,7 +7,7 @@
 #include "formats/tq_table.h"
 #include "engine/executor/tq.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/executor/graph_registry.h"
+#include "engine/backends/cuda/executor/graph_registry.h"
 #include "env.h"
 #include "backends/cpu/native/host_memory.h"
 

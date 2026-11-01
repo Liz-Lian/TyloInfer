@@ -9,7 +9,7 @@
 #include "engine/weights/moe/cached_source_internal.h"
 #include "cpu_projection_rows.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
-#include "backends/cuda/engine/executor/graph_registry.h"
+#include "engine/backends/cuda/executor/graph_registry.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"

@@ -6,6 +6,7 @@
 #include "metrics.h"
 #include "scope.h"
 #include "tq.h"
+#include "engine/budget.h"
 #include "../requests/processor.h"
 #include "../requests/table.h"
 #include "../weights/workspace.h"

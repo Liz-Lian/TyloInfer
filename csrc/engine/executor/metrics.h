@@ -8,7 +8,7 @@
 #include "engine/weights/placement.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/batch/batch.h"
-#include "engine/executor/budget.h"
+#include "engine/budget.h"
 #include "engine/executor/engine.h"
 #include "engine/executor/mtp_metrics.h"
 #include "engine/weights/workspace.h"
