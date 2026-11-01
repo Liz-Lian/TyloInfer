@@ -4,8 +4,6 @@
 
 namespace mfq {
 
-bool is_gguf_file(const std::filesystem::path& path);
-
 class GgufModelSource final : public ModelSource {
 public:
     explicit GgufModelSource(const std::filesystem::path& path,

@@ -1,6 +1,7 @@
 #include "model_source.h"
 #include "read.h"
 
+#include "engine/weights/source/gguf.h"
 #include "hf_model_source.h"
 #include "gguf_model_source.h"
 #include "mfq_model_source.h"

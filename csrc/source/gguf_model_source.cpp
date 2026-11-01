@@ -2,67 +2,22 @@
 #include "engine/models/common/gguf.h"
 #include "engine/models/common/legacy_names.h"
 #include "engine/weights/encoding/dense_blob.h"
+#include "engine/weights/source/gguf.h"
 
-#include "gguf.h"
+#include "components/ggml/include/gguf.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
-#include <fstream>
-#include <iomanip>
 #include <limits>
-#include <sstream>
 
 namespace mfq {
 namespace {
 using json = nlohmann::json;
 using Gguf = std::unique_ptr<gguf_context, decltype(&gguf_free)>;
 using Ggml = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
-
-json scalar(const gguf_context* ctx, int64_t id) {
-    switch (gguf_get_kv_type(ctx, id)) {
-        case GGUF_TYPE_UINT8: return gguf_get_val_u8(ctx, id);
-        case GGUF_TYPE_INT8: return gguf_get_val_i8(ctx, id);
-        case GGUF_TYPE_UINT16: return gguf_get_val_u16(ctx, id);
-        case GGUF_TYPE_INT16: return gguf_get_val_i16(ctx, id);
-        case GGUF_TYPE_UINT32: return gguf_get_val_u32(ctx, id);
-        case GGUF_TYPE_INT32: return gguf_get_val_i32(ctx, id);
-        case GGUF_TYPE_UINT64: return gguf_get_val_u64(ctx, id);
-        case GGUF_TYPE_INT64: return gguf_get_val_i64(ctx, id);
-        case GGUF_TYPE_FLOAT32: return gguf_get_val_f32(ctx, id);
-        case GGUF_TYPE_FLOAT64: return gguf_get_val_f64(ctx, id);
-        case GGUF_TYPE_BOOL: return gguf_get_val_bool(ctx, id);
-        case GGUF_TYPE_STRING: return gguf_get_val_str(ctx, id);
-        default: return nullptr;
-    }
-}
-
-json metadata_value(const gguf_context* ctx, int64_t id) {
-    if (gguf_get_kv_type(ctx, id) != GGUF_TYPE_ARRAY) return scalar(ctx, id);
-    const auto count = gguf_get_arr_n(ctx, id);
-    const auto* data = gguf_get_arr_type(ctx, id) == GGUF_TYPE_STRING ? nullptr : gguf_get_arr_data(ctx, id);
-    json result = json::array();
-    for (std::size_t i = 0; i < count; ++i) {
-        switch (gguf_get_arr_type(ctx, id)) {
-            case GGUF_TYPE_UINT8: result.push_back(static_cast<const uint8_t*>(data)[i]); break;
-            case GGUF_TYPE_INT8: result.push_back(static_cast<const int8_t*>(data)[i]); break;
-            case GGUF_TYPE_UINT16: result.push_back(static_cast<const uint16_t*>(data)[i]); break;
-            case GGUF_TYPE_INT16: result.push_back(static_cast<const int16_t*>(data)[i]); break;
-            case GGUF_TYPE_UINT32: result.push_back(static_cast<const uint32_t*>(data)[i]); break;
-            case GGUF_TYPE_INT32: result.push_back(static_cast<const int32_t*>(data)[i]); break;
-            case GGUF_TYPE_UINT64: result.push_back(static_cast<const uint64_t*>(data)[i]); break;
-            case GGUF_TYPE_INT64: result.push_back(static_cast<const int64_t*>(data)[i]); break;
-            case GGUF_TYPE_FLOAT32: result.push_back(static_cast<const float*>(data)[i]); break;
-            case GGUF_TYPE_FLOAT64: result.push_back(static_cast<const double*>(data)[i]); break;
-            case GGUF_TYPE_BOOL: result.push_back(static_cast<const uint8_t*>(data)[i] != 0); break;
-            case GGUF_TYPE_STRING: result.push_back(gguf_get_arr_str(ctx, id, i)); break;
-            default: throw std::runtime_error("unsupported GGUF metadata array");
-        }
-    }
-    return result;
-}
 
 } // namespace
 
@@ -84,12 +39,6 @@ struct GgufModelSource::Impl {
     std::vector<std::string> assets;
 };
 
-bool is_gguf_file(const std::filesystem::path& path) {
-    std::ifstream file(path, std::ios::binary);
-    char magic[4]{};
-    return file.read(magic, 4) && std::memcmp(magic, "GGUF", 4) == 0;
-}
-
 GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         std::vector<std::filesystem::path> companions) : impl_(std::make_shared<Impl>()) {
     const auto load = [](const std::filesystem::path& file, ggml_context** tensors) {
@@ -99,22 +48,8 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
     };
     auto first = load(path, nullptr);
     const auto split_key = gguf_find_key(first.get(), "split.count");
-    const auto splits = split_key < 0 ? 1 : scalar(first.get(), split_key).get<int>();
-    if (splits < 1 || splits > 99999) throw std::runtime_error("invalid GGUF split count");
-    if (splits > 1) {
-        const auto filename = path.filename().string();
-        const auto marker = filename.rfind("-of-");
-        if (marker == std::string::npos || marker < 6 || filename.substr(filename.size() - 5) != ".gguf")
-            throw std::runtime_error("split GGUF requires a -00001-of-000NN.gguf filename");
-        const auto stem = filename.substr(0, marker - 6);
-        for (int i = 1; i <= splits; ++i) {
-            std::ostringstream name;
-            name << stem << '-' << std::setfill('0') << std::setw(5) << i << "-of-" << std::setw(5) << splits << ".gguf";
-            const auto shard = path.parent_path() / name.str();
-            if (!std::filesystem::is_regular_file(shard)) throw std::runtime_error("missing GGUF shard: " + name.str());
-            impl_->paths.push_back(std::filesystem::absolute(shard));
-        }
-    } else impl_->paths.push_back(std::filesystem::absolute(path));
+    const auto splits = split_key < 0 ? 1 : gguf::scalar(first.get(), split_key).get<int>();
+    impl_->paths = gguf::paths(path, splits);
     const auto model_shards = impl_->paths.size();
     for (const auto& companion : companions) {
         const auto absolute = std::filesystem::absolute(companion);
@@ -133,7 +68,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         if (splits > 1 && shard < model_shards) {
             const auto split_no = gguf_find_key(ctx.get(), "split.no");
             const auto split_count = gguf_find_key(ctx.get(), "split.count");
-            if (split_no < 0 || split_count < 0 || scalar(ctx.get(), split_no) != shard || scalar(ctx.get(), split_count) != splits)
+            if (split_no < 0 || split_count < 0 || gguf::scalar(ctx.get(), split_no) != shard || gguf::scalar(ctx.get(), split_count) != splits)
                 throw std::runtime_error("inconsistent GGUF shard metadata");
         }
         const auto file_size = std::filesystem::file_size(impl_->paths[shard]);
@@ -142,7 +77,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             for (int64_t i = 0; i < gguf_get_n_kv(ctx.get()); ++i) {
                 const std::string name = gguf_get_key(ctx.get(), i);
                 if (name.rfind("tokenizer.", 0) == 0 && gguf_get_kv_type(ctx.get(), i) == GGUF_TYPE_ARRAY) continue;
-                const auto value = metadata_value(ctx.get(), i);
+                const auto value = gguf::value(ctx.get(), i);
                 if (!value.is_null()) meta[name] = value;
             }
             if (!meta.contains("general.architecture")) throw std::runtime_error("GGUF has no architecture");
@@ -156,7 +91,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         std::unordered_map<std::string, std::string> predictor_names;
         const auto architecture_key = gguf_find_key(ctx.get(), "general.architecture");
         const bool raw_predictor = shard >= model_shards && architecture_key >= 0 &&
-            scalar(ctx.get(), architecture_key) == "qwen4exp-mtp";
+            gguf::scalar(ctx.get(), architecture_key) == "qwen4exp-mtp";
         if (raw_predictor) {
             if (impl_->arch != "qwen4exp")
                 throw std::runtime_error("Qwen4 MTP companion requires a Qwen4 backbone");

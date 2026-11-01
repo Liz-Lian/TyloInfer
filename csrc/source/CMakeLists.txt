@@ -9,9 +9,11 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/source/tensor.h
     hf_model_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mlx.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/gguf.cpp
     gguf_model_source.cpp
     gguf_model_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mlx.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/gguf.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/json.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/safetensors.h
