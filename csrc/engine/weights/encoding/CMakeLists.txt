@@ -4,6 +4,7 @@ target_include_directories(mfq-formats INTERFACE
 
 add_library(mfq-quant-readers STATIC
     bytes.h
+    legacy.h
     dense_blob.cpp
     dense_blob.h
     fp8_sq_blob.cpp

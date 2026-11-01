@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/model_graph.h"
+#include "engine/weights/source/tensor.h"
 #include "components/io/file_range_reader.h"
 #include "components/io/read_span.h"
 
@@ -24,32 +25,12 @@ inline constexpr const char* kTokenizerGgufAsset = "__mfq_asset__/tokenizer.gguf
 inline constexpr std::string_view kModelConfigAsset =
     "__mfq_asset__/model_config.json";
 
-struct TensorMetadata {
-    std::string name;
-    std::string dtype;
-    std::string stored_dtype;
-    std::optional<std::vector<std::int64_t>> shape;
-    std::uint64_t nbytes = 0;
-};
-
 // The small set of legacy numeric-layout facts still needed by model loaders.
 // Name aliases remain private to each source implementation.
 struct TensorLayout {
     double norm_weight_offset = 1.0;
     bool linear_attention_a_is_log = true;
     bool qwen_gdn_gguf_layout = false;
-};
-
-struct TensorFileRange {
-    std::filesystem::path path;
-    std::uint64_t offset = 0;
-    std::uint64_t nbytes = 0;
-};
-
-// A capability refusal, distinct from invalid metadata or a failed read.
-class TensorReaderUnsupported : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
 };
 
 // Backend-neutral, read-only model input. Implementations normalize storage

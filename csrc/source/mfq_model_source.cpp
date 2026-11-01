@@ -3,7 +3,7 @@
 #include "engine/weights/source/mapped.h"
 #include "components/io/async_range_reader.h"
 
-#include "compat/mfq_format_compat.h"
+#include "engine/weights/encoding/legacy.h"
 #include "compat/mfq_legacy_tensor_names.h"
 #include "nlohmann/json.hpp"
 
