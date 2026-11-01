@@ -1,26 +1,13 @@
 #pragma once
 
 #include "model_source.h"
+#include "engine/weights/source/mfq.h"
 
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
 
 namespace mfq {
-
-struct MfqSourceHeader {
-    std::uint32_t version = 0;
-    std::string architecture;
-    std::unordered_map<std::string, std::string> metadata;
-    std::uint32_t record_count = 0;
-};
-
-struct MfqStoredRecord {
-    TensorMetadata tensor;
-    std::filesystem::path source_path;
-    std::uint64_t offset = 0;
-    bool asset = false;
-};
 
 class MfqModelSource final : public ModelSource {
 public:

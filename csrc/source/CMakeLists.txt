@@ -1,6 +1,7 @@
 add_library(mfq-model-source STATIC
     model_source.cpp
     mfq_model_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/tensor.h
     hf_model_source.cpp
@@ -8,6 +9,7 @@ add_library(mfq-model-source STATIC
     gguf_model_source.cpp
     gguf_model_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mlx.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.h
     mlx_tensor_names.h
     hf_safetensors_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.cpp
