@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../requests/policy.h"
-#include "../state/snapshot.h"
+#include "requests/policy.h"
+#include "state/snapshot.h"
 
 #include <cstdint>
 #include <filesystem>

@@ -1,5 +1,5 @@
 add_library(mfq-engine STATIC
-    executor/config.cpp
+    config.cpp
     generation/mtp/metrics.cpp
     models/common/axial_patch_vision.cpp
     models/common/model_config.cpp

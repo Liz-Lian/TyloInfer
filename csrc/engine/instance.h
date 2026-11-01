@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine.h"
-#include "../requests/processor.h"
-#include "../scheduler/table.h"
+#include "requests/processor.h"
+#include "scheduler/table.h"
 
 #include <memory>
 

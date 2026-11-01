@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/executor/config.h"
+#include "engine/config.h"
 
 #include <cstddef>
 #include <cstdint>

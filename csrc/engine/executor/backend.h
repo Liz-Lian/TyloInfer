@@ -12,7 +12,7 @@
 #include "engine/state/kv_offload.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/models/common/session/cache.h"
-#include "engine/executor/engine.h"
+#include "engine/engine.h"
 #include "engine/requests/processor.h"
 #include "engine/weights/memory.h"
 

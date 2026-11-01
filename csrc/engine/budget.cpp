@@ -7,7 +7,7 @@
 #include "engine/requests/processor.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/routed_cache.h"
-#include "engine/executor/engine.h"
+#include "engine/engine.h"
 #include "engine/weights/workspace.h"
 #include "engine/weights/memory.h"
 #include "native/error.h"

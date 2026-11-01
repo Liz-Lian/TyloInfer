@@ -9,7 +9,7 @@
 #include "engine/weights/routed_cache.h"
 #include "engine/generation/batch.h"
 #include "engine/budget.h"
-#include "engine/executor/engine.h"
+#include "engine/engine.h"
 #include "engine/generation/mtp/metrics.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/weights/workspace.h"

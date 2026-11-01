@@ -24,7 +24,7 @@
 #include "mlx_kernel_prepare.h"
 #include "mlx_weight_residency.h"
 #include "mlx_mtp_lora.h"
-#include "engine/executor/config.h"
+#include "engine/config.h"
 #include "backends/cpu/storage/prefix_blocks.h"
 #include "mlx_transformer.h"
 #include "backends/cpu/native/host_parallel.h"

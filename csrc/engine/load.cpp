@@ -4,7 +4,7 @@
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/executor/cuda_engine.h"
 #include "engine/executor/backend.h"
-#include "engine/executor/instance.h"
+#include "engine/instance.h"
 
 #include <memory>
 #include <utility>
