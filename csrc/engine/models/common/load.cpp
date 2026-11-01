@@ -4,7 +4,7 @@
 #include "engine/weights/loader.h"
 #include "engine/weights/tq/load.h"
 #include "moe.h"
-#include "backends/cuda/engine/executor/tq_moe.h"
+#include "engine/backends/cuda/executor/tq_moe.h"
 
 #include <cstdio>
 #include <cmath>

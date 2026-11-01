@@ -3,7 +3,7 @@
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/executor/ffn.h"
 #include "engine/backends/cuda/executor/tq.h"
-#include "engine/executor/tq_moe.h"
+#include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"
 
 #include "engine/models/common/causal_model_ops.h"

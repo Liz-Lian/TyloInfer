@@ -510,14 +510,14 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/tq_moe.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/decode_window.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq_moe.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_window.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/graph_registry.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_EXECUTION_SOURCES
         ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_ffn_pipeline.cpp
-        ${TYLOINFER_CUDA_ROOT}/engine/executor/moe_batch.cpp)
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/moe_batch.cpp)
 endif()
 add_library(mfq-cuda-execution OBJECT ${TYLOINFER_CUDA_EXECUTION_SOURCES})
 mfq_configure_cuda_backend_target(mfq-cuda-execution)

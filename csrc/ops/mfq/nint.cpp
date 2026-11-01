@@ -8,7 +8,7 @@
 #include "format.h"
 #include "packed_nint.h"
 #include "cpu_projection_rows.h"
-#include "backends/cuda/engine/executor/decode_window.h"
+#include "engine/backends/cuda/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"
 
 #include <cstring>

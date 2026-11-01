@@ -14,7 +14,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_shared_gate.h"
-#include "backends/cuda/engine/executor/decode_window.h"
+#include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/native/copy_batch.h"
 #include "engine/backends/cuda/native/dma_batch.h"
 #include "context.h"
@@ -22,7 +22,7 @@
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/graph.h"
 #include "native/error.h"
-#include "engine/executor/moe_batch.h"
+#include "engine/backends/cuda/executor/moe_batch.h"
 #include "ops/common/include/projection.h"
 #include "engine/backends/cuda/native/profile.h"
 #include <cuda.h>

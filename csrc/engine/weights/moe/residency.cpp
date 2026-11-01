@@ -1,6 +1,6 @@
 #include "env.h"
 #include "engine/weights/moe/residency.h"
-#include "backends/cuda/engine/executor/decode_window.h"
+#include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "engine/backends/cuda/native/dma_batch.h"
 #include "engine/weights/moe/cached_source_internal.h"

@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/backends/cuda/executor/tq.h"
-#include "backends/cuda/engine/executor/tq_moe.h"
+#include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_shared_gate.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
@@ -23,7 +23,7 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/weights/nint_row_pipeline.h"
-#include "backends/cuda/engine/executor/decode_window.h"
+#include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "diagnostics/router_lookahead.h"
 #include <fstream>
