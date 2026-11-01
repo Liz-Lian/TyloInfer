@@ -5,7 +5,7 @@
 #include "nint.h"
 #include "nint_prefill_cache.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "format.h"
+#include "engine/weights/format.h"
 #include "packed_nint.h"
 #include "cpu_projection_rows.h"
 #include "engine/backends/cuda/executor/decode_window.h"

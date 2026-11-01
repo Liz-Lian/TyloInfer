@@ -27,8 +27,6 @@
 #include <cstdio>
 #include <atomic>
 
-using namespace mfq::cuda::quant_format;
-
 void LayerPlacementConfig::prepare(int64_t layers) {
     layer_devices.assign(static_cast<size_t>(layers), primary_device());
     if (!enabled()) return;

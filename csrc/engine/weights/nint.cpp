@@ -1,5 +1,5 @@
 #include "engine/weights/quant.h"
-#include "ops/common/include/format.h"
+#include "engine/weights/format.h"
 
 #include <algorithm>
 #include <cstring>

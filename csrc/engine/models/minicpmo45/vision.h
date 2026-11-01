@@ -2,6 +2,7 @@
 
 #include "ops/vision/block.h"
 #include "engine/models/common/vision/load.h"
+#include "engine/weights/format.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/minicpmo45/causal_lm.h"

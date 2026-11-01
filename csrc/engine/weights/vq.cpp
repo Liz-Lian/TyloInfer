@@ -1,7 +1,7 @@
 #include "engine/weights/quant.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/backends/cuda/native/resident_allocations.h"
-#include "ops/common/include/format.h"
+#include "engine/weights/format.h"
 #include "engine/weights/tensor_parallel.h"
 #include "nvq_group.h"
 #include "nvq_dense_pack.h"

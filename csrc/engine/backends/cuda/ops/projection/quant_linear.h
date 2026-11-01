@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ops/common/include/format.h"
 #include "ops/mfq/include/fp8_sq.h"
 #include "ops/common/include/mx.h"
 #include "ops/mfq/include/mxfp4_sq.h"

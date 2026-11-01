@@ -471,7 +471,6 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/format.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/moe_routes.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/gated_residual.cpp
     ${PROJECT_SOURCE_DIR}/ops/tq/tq.cpp
@@ -541,6 +540,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/routed_cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/workspace.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/format.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/memory.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/moe/experts.cpp

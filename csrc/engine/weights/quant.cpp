@@ -1,6 +1,6 @@
 #include "engine/weights/quant.h"
 
-#include "ops/common/include/format.h"
+#include "engine/weights/format.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/encoding/mxfp4_sq_decode.h"

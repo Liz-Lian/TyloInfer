@@ -7,7 +7,7 @@
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "backends/cpu/native/host_copy.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
-#include "format.h"
+#include "engine/weights/format.h"
 
 #include <algorithm>
 #include <cstring>
