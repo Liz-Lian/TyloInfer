@@ -517,7 +517,7 @@ test('模型下载留在本页，飞入圆圈后打开第三个队列标签', as
   await page.goto('/model-hub');
   await expect(page.getByRole('img', { name: 'Apple · METAL' })).toBeVisible();
   await expect(page.getByText('Apple M5 Max · 18 CPU / 40 GPU · 128 GiB URAM')).toBeVisible();
-  await expect(page.getByRole('tab')).toHaveText(['Official', 'Community', 'Download queue']);
+  await expect(page.getByRole('tab')).toHaveText(['Recommended models', 'Model browser', 'Download queue']);
   await page.getByRole('button', { name: 'Download', exact: true }).first().click();
   await expect(page).toHaveURL('/model-hub');
   await expect(page.getByRole('tab', { name: 'Recommended models' })).toHaveAttribute('aria-selected', 'true');
