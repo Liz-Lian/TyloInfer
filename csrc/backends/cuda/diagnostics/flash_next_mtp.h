@@ -3,6 +3,7 @@
 #include "nlohmann/json.hpp"
 #include "generation_result.h"
 #include "engine/models/common/mtp.h"
+#include "engine/models/qwen4_exp/session_codec.h"
 
 #include <cstdint>
 #include <utility>
@@ -70,10 +71,10 @@ static int run_flash_next_mtp_check(Model& model, Predictor& mtp) {
         (void)mtp.evaluate(target,raw.narrow(1,0,6),ids.narrow(1,1,6));
         auto predictor=mtp.capture_session_state(7,raw.narrow(1,6,1));
         state.mtp=predictor;state.bytes+=predictor.bytes;
-        std::vector<CudaPagedPayload> disk{encode_cuda_qwen4_paged_block(state,4,0),encode_cuda_qwen4_paged_block(state,4,1)};
+        std::vector<CudaPagedPayload> disk{mfq::models::qwen4_exp::encode_block(state,4,0),mfq::models::qwen4_exp::encode_block(state,4,1)};
         TYLOINFER_RUNTIME_CHECK(cuda_paged_decodable_blocks({disk.front()})==0 && cuda_paged_decodable_blocks(disk)==2 &&
             cuda_paged_payload_tokens(disk.back())==3,"Qwen4 SSD prefix lost its exact boundary or tail");
-        auto cold=decode_cuda_qwen4_paged_session(disk,state.tokens,4);
+        auto cold=mfq::models::qwen4_exp::decode_session(disk,state.tokens,4);
         auto next=tb::tensor(std::vector<int64_t>{2,3},options).reshape({1,2});
         tb::Tensor extension_raw;
         auto extension=model.hidden_forward(next,mfq_nullopt,mfq_nullopt,nullptr,mfq_nullopt,&extension_raw);

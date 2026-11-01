@@ -1,9 +1,11 @@
+#include "engine/models/deepseek_v41/session_codec.h"
 #include "engine/models/common/session/state.h"
 #include "engine/models/deepseek_v41/hash.h"
 
 #include <algorithm>
 #include <array>
 
+namespace mfq::models::deepseek_v41 {
 namespace {
 namespace tb=mfq_tensor_backend;
 constexpr std::array<uint8_t,8> magic{'M','F','Q','C','U','D','3',0};
@@ -43,7 +45,7 @@ struct Layout {
 };
 }
 
-CudaPagedPayload encode_cuda_deepseek_v41_paged_block(
+CudaPagedPayload encode_block(
         const TextSessionState& state,size_t block_size,size_t index) {
     const auto* layers=std::get_if<std::vector<DeepseekV41BlockSessionState>>(&state.payload);
     if(!block_size || !layers || layers->empty() || state.cache_pos<=0 ||
@@ -95,18 +97,17 @@ CudaPagedPayload encode_cuda_deepseek_v41_paged_block(
     return std::move(writer).finish();
 }
 
-bool cuda_deepseek_v41_paged_exact(const CudaPagedPayload& payload) {
+bool exact(const CudaPagedPayload& payload) {
     if(!payload)throw CudaSessionStateError("null DeepSeek-V4.1 prefix payload");
     CudaPagedReader reader(*payload);return (header(reader).flags&1)!=0;
 }
-bool cuda_paged_checkpoint_needs_update(const CudaPagedPayload& payload,const TextSessionState& state) {
-    if(state.kind()!=TextSessionStateKind::DeepseekV41)return false;
+bool checkpoint_needs_update(const CudaPagedPayload& payload,const TextSessionState& state) {
     if(!payload)return true;
     CudaPagedReader reader(*payload);const auto flags=header(reader).flags;
     return !(flags&1) || (state.mtp && !(flags&2));
 }
 
-TextSessionState decode_cuda_deepseek_v41_paged_session(
+TextSessionState decode_session(
         const std::vector<CudaPagedPayload>& payloads,const std::vector<int64_t>& tokens,size_t block_size) {
     if(!block_size || tokens.empty() || tokens.size()>UINT32_MAX ||
             payloads.size()!=(tokens.size()-1)/block_size+1)
@@ -210,3 +211,5 @@ TextSessionState decode_cuda_deepseek_v41_paged_session(
     state.bytes+=hash->context.size()*sizeof(int64_t);state.deepseek_v41_engram=std::move(hash);
     state.payload=std::move(layers);return state;
 }
+
+} // namespace mfq::models::deepseek_v41

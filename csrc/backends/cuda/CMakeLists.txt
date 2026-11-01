@@ -577,7 +577,9 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
