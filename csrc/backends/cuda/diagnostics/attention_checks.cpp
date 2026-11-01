@@ -1,6 +1,6 @@
 #include "model_checks.h"
 
-#include "models/deepseek_v4/ops.h"
+#include "engine/models/deepseek_v4/ops.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"

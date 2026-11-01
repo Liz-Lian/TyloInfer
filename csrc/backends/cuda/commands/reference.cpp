@@ -8,7 +8,7 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/qwen35/load.h"
 #include "engine/models/qwen35/forward.h"
-#include "models/common/block.h"
+#include "engine/models/common/block.h"
 
 #include <algorithm>
 #include <cstring>

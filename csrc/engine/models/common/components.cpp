@@ -4,10 +4,10 @@
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/components.h"
-#include "models/qwen4_exp/mtp.h"
-#include "models/glm5_next/mtp.h"
-#include "models/nemotron_h/mtp.h"
-#include "models/deepseek_v41/dspark.h"
+#include "engine/models/qwen4_exp/mtp.h"
+#include "engine/models/glm5_next/mtp.h"
+#include "engine/models/nemotron_h/mtp.h"
+#include "engine/models/deepseek_v41/dspark.h"
 
 #include "engine/weights/moe/expert_cache.h"
 

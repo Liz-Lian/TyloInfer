@@ -1,0 +1,79 @@
+#pragma once
+#include "engine/models/common/prompt.h"
+#include "engine/executor/sequence.h"
+
+#include "engine/models/common/causal_model_ops.h"
+#include "engine/models/common/session/state.h"
+#include "engine/requests/inference.h"
+#include "engine/models/common/block.h"
+#include "engine/models/minicpmo45/causal_lm.h"
+#include "engine/models/minicpmo45/config.h"
+#include "quant_linear.h"
+
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace mfq::cuda {
+
+struct MiniCPMO45Model : CausalResources {
+    template <class Backend> using CausalModel = mfq::models::minicpmo45::CausalLm<Backend>;
+    mfq::models::minicpmo45::Config config;
+
+    bool adapter_uses_common_rope() const noexcept;
+    bool adapter_supports_dense_cpu_offload() const noexcept;
+    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
+                                              const std::string &type);
+
+    mfq_tensor_backend::Tensor adapter_embed(mfq_tensor_backend::Tensor output) const;
+    bool mask_all_ones(const mfq_tensor_backend::Tensor &mask) const;
+    mfq_tensor_backend::Tensor adapter_prepare_hidden(mfq_tensor_backend::Tensor hidden,
+                                                      int64_t batch, int64_t tokens) const;
+    mfq_tensor_backend::Tensor
+    adapter_finalize_hidden(mfq_tensor_backend::Tensor hidden,
+                            const mfq_tensor_backend::Tensor &output_norm, int64_t batch,
+                            int64_t tokens) const;
+    mfq_tensor_backend::Tensor adapter_logits(const QuantLinear &lm_head,
+                                              mfq_tensor_backend::Tensor hidden) const;
+    mfq_tensor_backend::Tensor adapter_last_logits(const QuantLinear &lm_head,
+                                                   mfq_tensor_backend::Tensor hidden) const;
+    mfq_tensor_backend::Tensor adapter_next_token(const QuantLinear &lm_head,
+                                                  mfq_tensor_backend::Tensor hidden) const;
+};
+
+template <>
+struct CudaSessionCodec<MiniCPMO45Model> : FullAttentionSessionCodec<MiniCPMO45Model> {};
+
+extern template struct FullAttentionSessionCodec<MiniCPMO45Model>;
+
+} // namespace mfq::cuda
+
+namespace mfq::models {
+extern template struct minicpmo45::CausalLm<cuda::CudaCausalOps<cuda::MiniCPMO45Model>>;
+} // namespace mfq::models
+
+namespace mfq::cuda::minicpmo45 {
+
+class Components {
+  public:
+    explicit Components(mfq::cuda::MiniCPMO45CausalLm language);
+    ~Components();
+
+    mfq::cuda::MiniCPMO45CausalLm &language() noexcept;
+    mfq::StepSequence<PreparedPrompt> prepare(const std::vector<int64_t> &prompt, const MfqMultimodalInput &media);
+    void start(const MfqDuplexSessionParams &parameters);
+    MfqDuplexStepResult step(const MfqDuplexStepInput &input);
+    void stop();
+
+  private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
+
+} // namespace mfq::cuda::minicpmo45
+
+namespace mfq::cuda::minicpmo45 {
+std::unique_ptr<Block> load_language_block(const mfq::cuda::weight_loader::Loader& weights, const mfq::models::ModelConfig& config, int layer,
+    const std::string& type, mfq::models::minicpmo45::LanguageComponent component,
+    std::string_view tensor_root = "model");
+}

@@ -7,7 +7,7 @@
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/models/common/session/cache.h"
-#include "models/batch.h"
+#include "engine/models/batch.h"
 
 #include <cuda_profiler_api.h>
 

@@ -1,10 +1,10 @@
-#include "models/deepseek_v4/ops.h"
-#include "models/gemma4/ops.h"
-#include "models/glm5_next/ops.h"
-#include "models/glm_dsa/ops.h"
-#include "models/minicpmo45/ops.h"
-#include "models/minicpmo45/forward.h"
-#include "models/nemotron_h/ops.h"
+#include "engine/models/deepseek_v4/ops.h"
+#include "engine/models/gemma4/ops.h"
+#include "engine/models/glm5_next/ops.h"
+#include "engine/models/glm_dsa/ops.h"
+#include "engine/models/minicpmo45/ops.h"
+#include "engine/models/minicpmo45/forward.h"
+#include "engine/models/nemotron_h/ops.h"
 
 #include "backends/cuda/engine/executor/generation_impl.h"
 

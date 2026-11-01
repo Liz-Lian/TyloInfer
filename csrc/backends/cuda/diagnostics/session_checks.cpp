@@ -1,7 +1,7 @@
 #include "model_checks.h"
 
-#include "models/deepseek_v4/ops.h"
-#include "models/glm_dsa/ops.h"
+#include "engine/models/deepseek_v4/ops.h"
+#include "engine/models/glm_dsa/ops.h"
 #include "storage/session/state.h"
 
 #include <cstdint>

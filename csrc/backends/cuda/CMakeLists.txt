@@ -423,10 +423,8 @@ endfunction()
 function(mfq_configure_cuda_runtime_target target)
     mfq_configure_cuda_backend_target(${target})
     target_include_directories(${target} PRIVATE
-        ${TYLOINFER_CUDA_ROOT}/models
         ${TYLOINFER_CUDA_ROOT}/commands
         ${TYLOINFER_CUDA_ROOT}/engine
-        ${PROJECT_SOURCE_DIR}/engine/models
     )
     target_link_libraries(${target} PRIVATE
         mfq-model-source
@@ -439,23 +437,23 @@ function(mfq_configure_cuda_runtime_target target)
 endfunction()
 
 set(TYLOINFER_CUDA_MODEL_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/models/common/causal_model_ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/common/full_block.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/common/axial_patch_vision_ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/common/grid_vision.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v4/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/session.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/engram.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/prefill.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/dspark.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/deepseek_v41/vision.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/qwen4_exp/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/glm5_next/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/gemma4/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/glm_dsa/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/ops.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/nemotron_h/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/causal_model_ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/full_block.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/vision/axial_patch_ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/vision/grid_ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v4/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/engram.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/prefill.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/dspark.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/vision.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/glm5_next/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/gemma4/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/glm_dsa/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/nemotron_h/ops.cpp
 )
 
 
@@ -569,10 +567,10 @@ target_compile_definitions(mfq-cuda-loading PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 set_target_properties(mfq-cuda-loading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-add_subdirectory(${PROJECT_SOURCE_DIR}/models ${CMAKE_CURRENT_BINARY_DIR}/models)
+add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}/models)
 
 # Remaining legacy bindings are shared by native and optional Torch builds.
-# Concrete Engine selection is compiled from models/engine.cpp.
+# Concrete Engine selection is compiled from engine/load.cpp.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
@@ -581,7 +579,7 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
-    ${TYLOINFER_CUDA_ROOT}/models/minicpmo45/components.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp
     ${TYLOINFER_CUDA_ROOT}/commands/minicpmo45.cpp

@@ -1,5 +1,5 @@
 #pragma once
-#include "backends/cuda/engine/requests/prompt.h"
+#include "engine/models/common/prompt.h"
 
 #include "engine/batch/batch.h"
 #include "engine/executor/step.h"

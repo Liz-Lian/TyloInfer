@@ -1,5 +1,5 @@
 #include "engine/models/qwen35/batch_ops.h"
-#include "models/batch.h"
+#include "engine/models/batch.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "backends/cuda/engine/executor/decode_graph.h"

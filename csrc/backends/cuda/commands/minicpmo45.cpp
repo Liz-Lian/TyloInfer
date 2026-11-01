@@ -2,7 +2,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "minicpmo45.h"
 
-#include "models/minicpmo45/runtime.h"
+#include "engine/models/minicpmo45/runtime.h"
 #include "cli.h"
 #include "cuda_runtime_config.h"
 

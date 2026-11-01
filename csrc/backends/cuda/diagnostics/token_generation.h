@@ -8,10 +8,10 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "backends/cuda/engine/executor/decode_graph.h"
 #include "engine/models/qwen35/forward.h"
-#include "models/common/block.h"
-#include "models/common/full_block.h"
+#include "engine/models/common/block.h"
+#include "engine/models/common/full_block.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "models/qwen4_exp/ops.h"
+#include "engine/models/qwen4_exp/ops.h"
 #include "backend.h"
 #include "source/model_source.h"
 

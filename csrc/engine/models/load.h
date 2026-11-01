@@ -12,7 +12,7 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
-#include "models/minicpmo45/state.h"
+#include "engine/models/minicpmo45/state.h"
 #include "cuda_runtime_config.h"
 
 #include <chrono>
