@@ -12,8 +12,6 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.cpp
     tq_fixture_source.cpp
     compat/mfq_format_compat.h
-    compat/mfq_legacy_model_graph.cpp
-    compat/mfq_legacy_model_graph.h
     compat/mfq_legacy_tensor_names.cpp
     compat/mfq_legacy_tensor_names.h
     model_source.h

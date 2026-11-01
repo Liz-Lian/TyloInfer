@@ -1,4 +1,4 @@
-#include "mfq_legacy_model_graph.h"
+#include "legacy_graph.h"
 
 #include "nlohmann/json.hpp"
 

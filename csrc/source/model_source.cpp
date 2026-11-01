@@ -5,7 +5,7 @@
 #include "gguf_model_source.h"
 #include "mfq_model_source.h"
 #include "tq_fixture_source.h"
-#include "compat/mfq_legacy_model_graph.h"
+#include "engine/models/common/legacy_graph.h"
 
 #include <cstdlib>
 #include <cstring>
