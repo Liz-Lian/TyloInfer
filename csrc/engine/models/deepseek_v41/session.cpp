@@ -1,6 +1,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "ops.h"
 #include "engine/models/common/session/state.h"
+#include "engine/models/deepseek_v41/snapshot.h"
 
 namespace mfq::cuda {
 namespace {
@@ -13,7 +14,7 @@ bool session_tensor(const Tensor& value,int64_t tokens,int64_t width,
         value.size(1)==tokens && value.size(2)==width && value.scalar_type()==dtype;
 }
 
-void validate_layer(const NativeBlock& block,const DeepseekV41BlockSessionState& saved,
+void validate_layer(const NativeBlock& block,const mfq::models::deepseek_v41::BlockSnapshot& saved,
                     int64_t position) {
     const auto& config=block.config;
     const bool local=session_tensor(saved.local_kv,config.sliding_window,config.head_dim,
@@ -62,8 +63,8 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
     state.tokens=tokens;state.cache_pos=model.cache_pos;
     state.deepseek_v41_engram=std::make_shared<const mfq::models::deepseek_v41::EngramHashSnapshot>(std::move(hash));
     state.bytes=state.deepseek_v41_engram->context.size()*sizeof(int64_t);
-    state.payload=std::vector<DeepseekV41BlockSessionState>{};
-    auto& layers=std::get<std::vector<DeepseekV41BlockSessionState>>(state.payload);
+    state.payload=std::vector<mfq::models::deepseek_v41::BlockSnapshot>{};
+    auto& layers=std::get<std::vector<mfq::models::deepseek_v41::BlockSnapshot>>(state.payload);
     layers.reserve(model.blocks.size());
     for(const auto& item:model.blocks) {
         const auto& block=dynamic_cast<const NativeBlock&>(*item);
@@ -71,7 +72,7 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
         const auto& source=block.state;
         if(block.speculative_pending || source.position!=model.cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
-        DeepseekV41BlockSessionState saved;
+        mfq::models::deepseek_v41::BlockSnapshot saved;
         const auto copy=[&](const Tensor& value) {
             if(!value.defined())return Tensor{};
             auto result=value.clone();state.bytes+=session_tensor_bytes(result);return result;
@@ -89,7 +90,7 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
 }
 
 void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionState& state) {
-    const auto* layers=std::get_if<std::vector<DeepseekV41BlockSessionState>>(&state.payload);
+    const auto* layers=std::get_if<std::vector<mfq::models::deepseek_v41::BlockSnapshot>>(&state.payload);
     if(kind(model)!=TextSessionStateKind::DeepseekV41 || !layers || layers->size()!=model.blocks.size() ||
             state.cache_pos<=0 || state.cache_pos>model.max_position_embeddings() ||
             std::size_t(state.cache_pos)!=state.tokens.size() || state.decode_position_delta!=0 ||

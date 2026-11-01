@@ -203,37 +203,16 @@ std::map<int, std::size_t> TextSessionCache::device_hot_bytes() const {
         auto& bytes = allocations[{value.get_device(), reinterpret_cast<std::uintptr_t>(value.data_ptr())}];
         bytes = std::max(bytes, std::size_t(value.numel()) * value.element_size());
     };
-    const auto full = [&](const KvSnapshot& block) { tensor(block.k); tensor(block.v); };
-    const auto qwen = [&](const Qwen4BlockSessionState& block) {
-        tensor(block.keys); tensor(block.values); tensor(block.index); tensor(block.convolution);
-        tensor(block.recurrent); tensor(block.ple_convolution);
-    };
-    const auto pool = [&](const Dsv4PoolSessionState& value) {
-        tensor(value.state_kv); tensor(value.state_gate); tensor(value.previous_kv);
-        tensor(value.previous_gate); tensor(value.pool);
-    };
     impl_->visit_snapshots([&](const TextSessionState& state) {
         tensor(state.qwen4_positions);
         std::visit([&](const auto& blocks) {
             if constexpr (!std::is_same_v<std::decay_t<decltype(blocks)>, std::monostate>)
-                for (const auto& block : blocks) {
-                    using Block = std::decay_t<decltype(block)>;
-                    if constexpr (std::is_same_v<Block, KvSnapshot>) full(block);
-                    else if constexpr (std::is_same_v<Block, Qwen4BlockSessionState>) qwen(block);
-                    else if constexpr (std::is_same_v<Block, HybridBlockSessionState>) {
-                        full(block.full_attention); tensor(block.mixer.convolution); tensor(block.mixer.recurrent);
-                    } else if constexpr (std::is_same_v<Block, Dsv4BlockSessionState>) {
-                        tensor(block.local_cache); pool(block.compressor); pool(block.indexer_compressor);
-                    } else if constexpr (std::is_same_v<Block, DeepseekV41BlockSessionState>) {
-                        tensor(block.local_kv); tensor(block.compressed_kv); tensor(block.index_k);
-                        tensor(block.partial_kv); tensor(block.partial_score);
-                    } else { tensor(block.kv_cache); tensor(block.index_cache); }
-                }
+                for (const auto& block : blocks) block.tensors(tensor);
         }, state.payload);
         if (state.mtp) {
             tensor(state.mtp->last_target_hidden);
-            for (const auto& block : state.mtp->blocks) full(block);
-            for (const auto& block : state.mtp->qwen4_blocks) qwen(block);
+            for (const auto& block : state.mtp->blocks) block.tensors(tensor);
+            for (const auto& block : state.mtp->qwen4_blocks) block.tensors(tensor);
             for (const auto& ring : state.mtp->deepseek_v41_rings) tensor(ring);
             for (const auto& value : state.mtp->qwen4_positions) tensor(value);
         }

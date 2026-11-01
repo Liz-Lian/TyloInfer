@@ -1,6 +1,7 @@
 #include "engine/models/qwen4_exp/session_codec.h"
 
 #include "engine/models/common/session/state.h"
+#include "engine/models/qwen4_exp/snapshot.h"
 
 #include <algorithm>
 #include <array>
@@ -27,12 +28,12 @@ tb::Tensor read_optional(CudaPagedReader& reader) {
     auto [tensor,device]=reader.tensor();
     return tensor.to(tb::Device{tb::DeviceType::cuda,device});
 }
-void write_recurrent(CudaPagedWriter& writer,const Qwen4BlockSessionState& layer) {
+void write_recurrent(CudaPagedWriter& writer,const mfq::models::qwen4_exp::BlockSnapshot& layer) {
     write_optional(writer,layer.convolution);write_optional(writer,layer.recurrent);write_optional(writer,layer.ple_convolution);
     writer.scalar<int64_t>(layer.ple_batch);writer.scalar<uint32_t>(uint32_t(layer.ple_tokens.size()));
     for(auto token:layer.ple_tokens)writer.scalar<int64_t>(token);
 }
-void read_recurrent(CudaPagedReader& reader,Qwen4BlockSessionState& layer) {
+void read_recurrent(CudaPagedReader& reader,mfq::models::qwen4_exp::BlockSnapshot& layer) {
     layer.convolution=read_optional(reader);layer.recurrent=read_optional(reader);layer.ple_convolution=read_optional(reader);
     layer.ple_batch=reader.scalar<int64_t>("PLE batch");
     const auto count=reader.scalar<uint32_t>("PLE history length");
@@ -49,7 +50,7 @@ void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state) {
         writer.scalar<int64_t>(state.qwen4_lengths[i]);
     }
 }
-std::size_t qwen4_layer_bytes(const Qwen4BlockSessionState& layer) {
+std::size_t qwen4_layer_bytes(const mfq::models::qwen4_exp::BlockSnapshot& layer) {
     std::size_t bytes=layer.ple_tokens.size()*sizeof(int64_t);
     for(const auto* tensor:{&layer.keys,&layer.values,&layer.index,&layer.convolution,&layer.recurrent,&layer.ple_convolution})
         bytes+=session_tensor_bytes(*tensor);
@@ -61,7 +62,7 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
     if(!count || count>64)throw CudaSessionStateError("invalid Qwen4 MTP layers");
     state.bytes=session_tensor_bytes(state.last_target_hidden);
     for(uint32_t i=0;i<count;++i) {
-        Qwen4BlockSessionState layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
+        mfq::models::qwen4_exp::BlockSnapshot layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
         read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);state.qwen4_blocks.push_back(std::move(layer));
         auto positions=read_optional(reader);state.bytes+=session_tensor_bytes(positions);state.qwen4_positions.push_back(std::move(positions));
         state.qwen4_lengths.push_back(reader.scalar<int64_t>("MTP layer position"));
@@ -71,7 +72,7 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
 }
 
 CudaPagedPayload encode_block(const TextSessionState& state,size_t block_size,size_t index) {
-    const auto* layers=std::get_if<std::vector<Qwen4BlockSessionState>>(&state.payload);
+    const auto* layers=std::get_if<std::vector<mfq::models::qwen4_exp::BlockSnapshot>>(&state.payload);
     if(!block_size || !layers || layers->empty() || state.cache_pos<=0 || state.tokens.size()!=std::size_t(state.cache_pos) ||
         index>state.tokens.size()/block_size || index*block_size>=state.tokens.size() || state.cache_pos>UINT32_MAX)
         throw std::runtime_error("invalid Qwen4 prefix block boundary");
@@ -99,7 +100,7 @@ bool exact(const CudaPagedPayload& payload) {
 TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     const std::vector<int64_t>& tokens,size_t block_size) {
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
-    std::vector<Qwen4BlockSessionState> layers;
+    std::vector<mfq::models::qwen4_exp::BlockSnapshot> layers;
     std::vector<std::array<std::vector<tb::Tensor>,3>> fragments;
     size_t position=0;
     for(size_t i=0;i<payloads.size();++i) {

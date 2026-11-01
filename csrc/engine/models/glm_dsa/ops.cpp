@@ -2,6 +2,7 @@
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
 #include "ops.h"
+#include "engine/models/glm_dsa/snapshot.h"
 #include "engine/models/common/session_codec.h"
 
 namespace mfq::cuda::glm_dsa {
@@ -75,8 +76,8 @@ TextSessionState CudaSessionCodec<GlmDsaModel>::capture(const Model &model,
     TextSessionState state;
     state.tokens = tokens;
     state.cache_pos = model.cache_pos;
-    state.payload = std::vector<GlmDsaBlockSessionState>{};
-    auto &layers = std::get<std::vector<GlmDsaBlockSessionState>>(state.payload);
+    state.payload = std::vector<mfq::models::glm_dsa::BlockSnapshot>{};
+    auto &layers = std::get<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(state.payload);
     layers.reserve(model.blocks.size());
     for (const auto &block : model.blocks) {
         MfqCudaGuard guard(block->cuda_device);
@@ -85,7 +86,7 @@ TextSessionState CudaSessionCodec<GlmDsaModel>::capture(const Model &model,
             glm->kv_cache.size(0) != 1 || model.cache_pos > glm->kv_cache.size(2)) {
             throw std::runtime_error("GLM DSA session MLA cache is unavailable");
         }
-        GlmDsaBlockSessionState saved;
+        mfq::models::glm_dsa::BlockSnapshot saved;
         saved.full_indexer = glm->full_indexer;
         saved.kv_capacity = glm->kv_cache.size(2);
         saved.kv_cache = glm->kv_cache.narrow(2, 0, model.cache_pos).clone();
@@ -105,7 +106,7 @@ TextSessionState CudaSessionCodec<GlmDsaModel>::capture(const Model &model,
 }
 
 void CudaSessionCodec<GlmDsaModel>::restore(Model &model, const TextSessionState &state) {
-    const auto *layers = std::get_if<std::vector<GlmDsaBlockSessionState>>(&state.payload);
+    const auto *layers = std::get_if<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(&state.payload);
     if (kind(model) != TextSessionStateKind::GlmDsa ||
         state.kind() != TextSessionStateKind::GlmDsa || state.cache_pos <= 0 ||
         static_cast<size_t>(state.cache_pos) != state.tokens.size() || layers == nullptr ||

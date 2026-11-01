@@ -1,8 +1,10 @@
 #include "model_checks.h"
 
 #include "engine/models/deepseek_v4/ops.h"
+#include "engine/models/deepseek_v4/snapshot.h"
 #include "engine/models/glm_dsa/ops.h"
-#include "storage/session/state.h"
+#include "engine/models/glm_dsa/snapshot.h"
+#include "engine/models/common/session/state.h"
 
 #include <cstdint>
 #include <iostream>
@@ -83,12 +85,12 @@ int run_text_session_state_check() {
     dsv4_model.cache_pos = 0;
     dsv4_model.restore_text_session_state(dsv4_state);
     const auto & saved_dsv4 = std::get<
-        std::vector<Dsv4BlockSessionState>>(dsv4_state.payload).at(0);
+        std::vector<mfq::models::deepseek_v4::BlockSnapshot>>(dsv4_state.payload).at(0);
     require_equal(
         mfq_tensor_backend::equal(dsv4_block->local_cache, saved_dsv4.local_cache),
         "DeepSeek V4 local session cache restore failed");
     const auto check_dsv4_pool = [&](const Dsv4PoolState & restored,
-                                     const Dsv4PoolSessionState & saved) {
+                                     const mfq::models::deepseek_v4::PoolSnapshot & saved) {
         require_equal(
             mfq_tensor_backend::equal(restored.state_kv, saved.state_kv) &&
             mfq_tensor_backend::equal(restored.state_gate, saved.state_gate),
@@ -145,7 +147,7 @@ int run_text_session_state_check() {
     glm_model.cache_pos = 0;
     glm_model.restore_text_session_state(glm_state);
     const auto& saved_glm = std::get<
-        std::vector<GlmDsaBlockSessionState>>(glm_state.payload);
+        std::vector<mfq::models::glm_dsa::BlockSnapshot>>(glm_state.payload);
     for (size_t index = 0; index < glm_blocks.size(); ++index) {
         const auto & saved = saved_glm.at(index);
         require_equal(

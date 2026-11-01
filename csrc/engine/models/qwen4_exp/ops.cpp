@@ -13,6 +13,7 @@
 #include "engine/backends/cuda/native/stream.h"
 #include "ops.h"
 #include "model.h"
+#include "engine/models/qwen4_exp/snapshot.h"
 #include "mtp.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/group.h"
@@ -1137,8 +1138,8 @@ bool Qwen4ExpMtp::target_bootstrap_decode() const noexcept { return true; }
 
 bool Qwen4ExpMtp::preserve_output_dtype() const noexcept { return true; }
 
-Qwen4BlockSessionState capture_block_session(const Qwen4Block& block,int64_t position,std::size_t& bytes) {
-    Qwen4BlockSessionState state;
+mfq::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& block,int64_t position,std::size_t& bytes) {
+    mfq::models::qwen4_exp::BlockSnapshot state;
     const auto save=[&](const Tensor& tensor) {
         TYLOINFER_RUNTIME_CHECK(tensor.defined(),"Qwen4 recurrent session state is unavailable");
         auto saved=tensor.clone();bytes+=session_tensor_bytes(saved);return saved;
@@ -1157,7 +1158,7 @@ Qwen4BlockSessionState capture_block_session(const Qwen4Block& block,int64_t pos
     return state;
 }
 
-void restore_block_session(Qwen4Block& block,const Qwen4BlockSessionState& state,int64_t position) {
+void restore_block_session(Qwen4Block& block,const mfq::models::qwen4_exp::BlockSnapshot& state,int64_t position) {
     block.reset(1);
     if(block.qsa)block.qsa->restore_session(state,position);
     if(block.gdn)block.gdn->restore_session(state.convolution,state.recurrent,block.retain_graph_storage);
@@ -1177,7 +1178,7 @@ MtpSessionState Qwen4ExpMtp::capture_session_state(int64_t target_position,const
     for(std::size_t i=0;i<layers.size();++i) {
         const auto count=std::min(position,lengths[i]);
         state.qwen4_lengths.push_back(count);
-        state.qwen4_blocks.push_back(count?capture_block_session(*layers[i],count,state.bytes):Qwen4BlockSessionState{});
+        state.qwen4_blocks.push_back(count?capture_block_session(*layers[i],count,state.bytes):mfq::models::qwen4_exp::BlockSnapshot{});
         auto pos=count?positions[i].narrow(-1,0,count).clone():Tensor{};
         state.bytes+=session_tensor_bytes(pos);state.qwen4_positions.push_back(std::move(pos));
     }
@@ -1742,7 +1743,7 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
         const auto* chain_check=mfq::cuda::env_lookup("TYLOINFER_VERIFY_MTP_HISTORY_CHAIN");
         const bool verify_chain=chain_check && chain_check[0]=='1' && predictor->layers[0]->qsa->supports_session();
         if(history_chain)for(int rows=2;rows<=std::min(4,verification_rows-1);++rows) {
-            Qwen4BlockSessionState expected;
+            mfq::models::qwen4_exp::BlockSnapshot expected;
             if(verify_chain) {
                 predictor->trim_cache_to(16);
                 for(int row=0;row<rows;++row)
@@ -1753,7 +1754,7 @@ void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_
             predictor->trim_cache_to(16);
             predictor->history_step(raw.narrow(1,0,rows),ids.narrow(1,0,rows),{},true);
             if(verify_chain) {
-                Qwen4BlockSessionState actual;std::size_t bytes=0;
+                mfq::models::qwen4_exp::BlockSnapshot actual;std::size_t bytes=0;
                 predictor->layers[0]->qsa->capture_session(actual,16+rows,bytes);
                 for(const auto& pair:{std::pair{actual.keys,expected.keys},std::pair{actual.values,expected.values},
                                      std::pair{actual.index,expected.index}}) {
@@ -2930,7 +2931,7 @@ TextSessionState CudaSessionCodec<Qwen4Model>::capture(const Qwen4CausalLm& mode
         std::size_t(model.cache_pos)==tokens.size() && model.speculative_start<0,
         "Qwen4 text session boundary is unavailable");
     TextSessionState state;state.tokens=tokens;state.cache_pos=model.cache_pos;
-    std::vector<Qwen4BlockSessionState> blocks;
+    std::vector<mfq::models::qwen4_exp::BlockSnapshot> blocks;
     for(const auto& block:model.blocks)blocks.push_back(qwen4_exp::capture_block_session(
         static_cast<const qwen4_exp::Qwen4Block&>(*block),model.cache_pos,state.bytes));
     state.payload=std::move(blocks);
@@ -2939,7 +2940,7 @@ TextSessionState CudaSessionCodec<Qwen4Model>::capture(const Qwen4CausalLm& mode
 }
 
 void CudaSessionCodec<Qwen4Model>::restore(Qwen4CausalLm& model,const TextSessionState& state) {
-    const auto* blocks=std::get_if<std::vector<Qwen4BlockSessionState>>(&state.payload);
+    const auto* blocks=std::get_if<std::vector<mfq::models::qwen4_exp::BlockSnapshot>>(&state.payload);
     TYLOINFER_RUNTIME_CHECK(kind(model)==TextSessionStateKind::Qwen4 && blocks && blocks->size()==model.blocks.size() &&
         state.cache_pos>0 && std::size_t(state.cache_pos)==state.tokens.size() &&
         state.qwen4_positions.defined() && state.qwen4_positions.size(-1)==state.cache_pos,

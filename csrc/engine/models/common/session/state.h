@@ -3,6 +3,10 @@
 #include "backend.h"
 #include "engine/state/recurrent.h"
 #include "engine/models/common/session/paged.h"
+#include "engine/models/deepseek_v4/snapshot.h"
+#include "engine/models/deepseek_v41/snapshot.h"
+#include "engine/models/glm_dsa/snapshot.h"
+#include "engine/models/qwen4_exp/snapshot.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,7 +20,6 @@
 #include <variant>
 #include <vector>
 
-struct Dsv4PoolState;
 struct KVCache;
 namespace mfq::cuda { struct KvQuantization; }
 namespace mfq::models::deepseek_v41 { struct EngramHashSnapshot; }
@@ -26,6 +29,12 @@ struct KvSnapshot {
     mfq_tensor_backend::Tensor v;
     int64_t capacity = 0;
     bool ring = false;
+
+    template <class Visit>
+    void tensors(const Visit& visit) const {
+        visit(k);
+        visit(v);
+    }
 };
 
 inline bool session_kv_geometry_matches(const mfq_tensor_backend::Tensor& k,
@@ -45,38 +54,6 @@ enum class TextSessionStateKind : int {
     DeepseekV41,
 };
 
-struct Dsv4PoolSessionState {
-    int64_t ratio = 0;
-    int64_t head_dim = 0;
-    int64_t cache_quant_mode = 0;
-    int64_t capacity = 0;
-    bool overlap = false;
-    mfq_tensor_backend::Tensor state_kv;
-    mfq_tensor_backend::Tensor state_gate;
-    mfq_tensor_backend::Tensor previous_kv;
-    mfq_tensor_backend::Tensor previous_gate;
-    mfq_tensor_backend::Tensor pool;
-};
-
-struct Dsv4BlockSessionState {
-    mfq_tensor_backend::Tensor local_cache;
-    Dsv4PoolSessionState compressor;
-    Dsv4PoolSessionState indexer_compressor;
-};
-
-struct DeepseekV41BlockSessionState {
-    mfq_tensor_backend::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
-    int64_t compressed_length = 0, partial_length = 0;
-};
-
-struct GlmDsaBlockSessionState {
-    mfq_tensor_backend::Tensor kv_cache;
-    mfq_tensor_backend::Tensor index_cache;
-    int64_t kv_capacity = 0;
-    int64_t index_capacity = 0;
-    bool full_indexer = false;
-};
-
 enum class HybridBlockSessionStateKind {
     FullAttention,
     Recurrent,
@@ -89,19 +66,19 @@ struct HybridBlockSessionState {
         HybridBlockSessionStateKind::FullAttention;
     KvSnapshot full_attention;
     mfq::cuda::Recurrent::State mixer;
-};
 
-struct Qwen4BlockSessionState {
-    mfq_tensor_backend::Tensor keys, values, index;
-    mfq_tensor_backend::Tensor convolution, recurrent, ple_convolution;
-    int64_t ple_batch = 0;
-    std::vector<int64_t> ple_tokens;
+    template <class Visit>
+    void tensors(const Visit& visit) const {
+        full_attention.tensors(visit);
+        visit(mixer.convolution);
+        visit(mixer.recurrent);
+    }
 };
 
 struct MtpSessionState {
     std::vector<KvSnapshot> blocks;
     mfq_tensor_backend::Tensor last_target_hidden;
-    std::vector<Qwen4BlockSessionState> qwen4_blocks;
+    std::vector<mfq::models::qwen4_exp::BlockSnapshot> qwen4_blocks;
     std::vector<mfq_tensor_backend::Tensor> qwen4_positions;
     std::vector<int64_t> qwen4_lengths;
     std::vector<mfq_tensor_backend::Tensor> deepseek_v41_rings;
@@ -113,10 +90,10 @@ using TextSessionPayload = std::variant<
     std::monostate,
     std::vector<KvSnapshot>,
     std::vector<HybridBlockSessionState>,
-    std::vector<Dsv4BlockSessionState>,
-    std::vector<GlmDsaBlockSessionState>,
-    std::vector<Qwen4BlockSessionState>,
-    std::vector<DeepseekV41BlockSessionState>>;
+    std::vector<mfq::models::deepseek_v4::BlockSnapshot>,
+    std::vector<mfq::models::glm_dsa::BlockSnapshot>,
+    std::vector<mfq::models::qwen4_exp::BlockSnapshot>,
+    std::vector<mfq::models::deepseek_v41::BlockSnapshot>>;
 
 struct TextSessionState {
     std::vector<int64_t> tokens;
@@ -209,12 +186,3 @@ void restore_kv(
     int64_t head_dim,
     mfq_tensor_backend::ScalarType dtype,
     mfq::cuda::KvQuantization quantization);
-
-Dsv4PoolSessionState capture_dsv4_pool_session_state(
-    const Dsv4PoolState& source,
-    int64_t cache_pos,
-    size_t& bytes);
-
-void restore_dsv4_pool_session_state(
-    Dsv4PoolState& target,
-    const Dsv4PoolSessionState& state);

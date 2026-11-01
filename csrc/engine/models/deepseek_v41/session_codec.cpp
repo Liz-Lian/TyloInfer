@@ -1,5 +1,6 @@
 #include "engine/models/deepseek_v41/session_codec.h"
 #include "engine/models/common/session/state.h"
+#include "engine/models/deepseek_v41/snapshot.h"
 #include "engine/models/deepseek_v41/hash.h"
 
 #include <algorithm>
@@ -47,7 +48,7 @@ struct Layout {
 
 CudaPagedPayload encode_block(
         const TextSessionState& state,size_t block_size,size_t index) {
-    const auto* layers=std::get_if<std::vector<DeepseekV41BlockSessionState>>(&state.payload);
+    const auto* layers=std::get_if<std::vector<mfq::models::deepseek_v41::BlockSnapshot>>(&state.payload);
     if(!block_size || !layers || layers->empty() || state.cache_pos<=0 ||
             state.tokens.size()!=size_t(state.cache_pos) || state.cache_pos>UINT32_MAX ||
             index>(state.tokens.size()-1)/block_size || !state.deepseek_v41_engram ||
@@ -114,7 +115,7 @@ TextSessionState decode_session(
         throw CudaSessionStateError("invalid DeepSeek-V4.1 prefix chain length");
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
     std::vector<Layout> layouts;
-    std::vector<DeepseekV41BlockSessionState> layers;
+    std::vector<mfq::models::deepseek_v41::BlockSnapshot> layers;
     std::vector<std::array<std::vector<tb::Tensor>,2>> fragments;
     auto hash=std::make_shared<mfq::models::deepseek_v41::EngramHashSnapshot>();
     hash->batch=1;hash->position=state.cache_pos;

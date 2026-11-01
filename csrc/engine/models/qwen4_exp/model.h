@@ -17,6 +17,7 @@
 #include "backends/cuda/engine/executor/decode_window.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 #include "engine/models/common/session/state.h"
+#include "engine/models/qwen4_exp/snapshot.h"
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -1056,7 +1057,7 @@ class Qsa {
         return std::size_t(count)*(c_.kv_heads*(key_width()+value_width())*(quantization_.enabled()?4:2)+
             c_.index_width*index_.storage().element_size());
     }
-    void capture_session(Qwen4BlockSessionState& state,int64_t count,std::size_t& bytes) const {
+    void capture_session(mfq::models::qwen4_exp::BlockSnapshot& state,int64_t count,std::size_t& bytes) const {
         TYLOINFER_RUNTIME_CHECK(!offload_ && count>0 && count<=position(),"invalid Qwen4 QSA session boundary");
         const auto save=[&](const Tensor& tensor) {
             auto saved=tensor.contiguous().clone();bytes+=session_tensor_bytes(saved);return saved;
@@ -1074,7 +1075,7 @@ class Qsa {
         }
         state.index=save(index_.storage().narrow(1,0,count));
     }
-    void restore_session(const Qwen4BlockSessionState& state,int64_t count) {
+    void restore_session(const mfq::models::qwen4_exp::BlockSnapshot& state,int64_t count) {
         TYLOINFER_RUNTIME_CHECK(!offload_ && state.keys.defined() && state.values.defined() && state.index.defined() &&
             state.keys.dim()==3 && state.keys.size(0)==1 && state.keys.size(1)==count &&
             state.keys.size(2)==c_.kv_heads*key_width() && state.keys.scalar_type()==cache_dtype() &&

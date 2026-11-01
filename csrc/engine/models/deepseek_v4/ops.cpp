@@ -4,6 +4,7 @@
 #include "engine/weights/group.h"
 #include "engine/executor/tq.h"
 #include "ops.h"
+#include "engine/models/deepseek_v4/snapshot.h"
 #include "engine/models/common/session_codec.h"
 
 namespace mfq::cuda::deepseek_v4 {
@@ -327,8 +328,8 @@ TextSessionState CudaSessionCodec<DeepseekV4Model>::capture(const Model &model,
     TextSessionState state;
     state.tokens = tokens;
     state.cache_pos = model.cache_pos;
-    state.payload = std::vector<Dsv4BlockSessionState>{};
-    auto &layers = std::get<std::vector<Dsv4BlockSessionState>>(state.payload);
+    state.payload = std::vector<mfq::models::deepseek_v4::BlockSnapshot>{};
+    auto &layers = std::get<std::vector<mfq::models::deepseek_v4::BlockSnapshot>>(state.payload);
     layers.reserve(model.blocks.size());
     for (const auto &block : model.blocks) {
         MfqCudaGuard guard(block->cuda_device);
@@ -336,20 +337,20 @@ TextSessionState CudaSessionCodec<DeepseekV4Model>::capture(const Model &model,
         if (dsv4 == nullptr || !dsv4->local_cache.defined()) {
             throw std::runtime_error("DeepSeek V4 local session cache is unavailable");
         }
-        Dsv4BlockSessionState saved;
+        mfq::models::deepseek_v4::BlockSnapshot saved;
         saved.local_cache = dsv4->local_cache.clone();
         state.bytes += session_tensor_bytes(saved.local_cache);
         saved.compressor =
-            capture_dsv4_pool_session_state(dsv4->compressor, model.cache_pos, state.bytes);
+            mfq::models::deepseek_v4::capture_pool(dsv4->compressor, model.cache_pos, state.bytes);
         saved.indexer_compressor =
-            capture_dsv4_pool_session_state(dsv4->indexer_compressor, model.cache_pos, state.bytes);
+            mfq::models::deepseek_v4::capture_pool(dsv4->indexer_compressor, model.cache_pos, state.bytes);
         layers.push_back(std::move(saved));
     }
     return state;
 }
 
 void CudaSessionCodec<DeepseekV4Model>::restore(Model &model, const TextSessionState &state) {
-    const auto *layers = std::get_if<std::vector<Dsv4BlockSessionState>>(&state.payload);
+    const auto *layers = std::get_if<std::vector<mfq::models::deepseek_v4::BlockSnapshot>>(&state.payload);
     if (kind(model) != TextSessionStateKind::DeepseekV4 ||
         state.kind() != TextSessionStateKind::DeepseekV4 || state.cache_pos <= 0 ||
         static_cast<size_t>(state.cache_pos) != state.tokens.size() || layers == nullptr ||
@@ -366,8 +367,8 @@ void CudaSessionCodec<DeepseekV4Model>::restore(Model &model, const TextSessionS
             throw CudaSessionStateError("DeepSeek V4 saved local cache is invalid");
         }
         restore_session_tensor(dsv4->local_cache, saved.local_cache);
-        restore_dsv4_pool_session_state(dsv4->compressor, saved.compressor);
-        restore_dsv4_pool_session_state(dsv4->indexer_compressor, saved.indexer_compressor);
+        mfq::models::deepseek_v4::restore_pool(dsv4->compressor, saved.compressor);
+        mfq::models::deepseek_v4::restore_pool(dsv4->indexer_compressor, saved.indexer_compressor);
         dsv4->shared_state->ensure();
     }
     model.cache_pos = state.cache_pos;
@@ -393,9 +394,10 @@ DeepseekV4Model::normalize_hidden(mfq_tensor_backend::Tensor hidden,
 
 } // namespace mfq::cuda
 
-Dsv4PoolSessionState capture_dsv4_pool_session_state(const Dsv4PoolState &source, int64_t cache_pos,
-                                                     size_t &bytes) {
-    Dsv4PoolSessionState state;
+namespace mfq::models::deepseek_v4 {
+
+PoolSnapshot capture_pool(const Dsv4PoolState &source, int64_t cache_pos, size_t &bytes) {
+    PoolSnapshot state;
     state.ratio = source.ratio;
     state.head_dim = source.head_dim;
     state.cache_quant_mode = source.cache_quant_mode;
@@ -425,7 +427,7 @@ Dsv4PoolSessionState capture_dsv4_pool_session_state(const Dsv4PoolState &source
     return state;
 }
 
-void restore_dsv4_pool_session_state(Dsv4PoolState &target, const Dsv4PoolSessionState &state) {
+void restore_pool(Dsv4PoolState &target, const PoolSnapshot &state) {
     if (target.ratio != state.ratio || target.head_dim != state.head_dim ||
         target.cache_quant_mode != state.cache_quant_mode || target.overlap != state.overlap) {
         throw CudaSessionStateError("DeepSeek V4 session compressor configuration changed");
@@ -450,6 +452,8 @@ void restore_dsv4_pool_session_state(Dsv4PoolState &target, const Dsv4PoolSessio
     }
     restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity);
 }
+
+} // namespace mfq::models::deepseek_v4
 
 namespace mfq::cuda {} // namespace mfq::cuda
 
