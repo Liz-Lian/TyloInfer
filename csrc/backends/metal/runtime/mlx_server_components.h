@@ -7,7 +7,7 @@
 #include "mlx_nemotron_h_causal_lm.h"
 #include "mlx_qwen35_causal_lm.h"
 
-#include "formats/model_graph.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/requests/media.h"
 #include "mlx_generation_job.h"
 

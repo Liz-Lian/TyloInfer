@@ -5,7 +5,7 @@
 #include "mlx_platform.h"
 #include "mlx_moe_ops.h"
 #include "mlx_affine_nax.h"
-#include "formats/mlx_affine.h"
+#include "engine/weights/encoding/mlx_affine.h"
 #include "../../kernels/mlx/mlx_affine_decode.h"
 
 #include <climits>

@@ -1,4 +1,4 @@
-#include "formats/tq_table.h"
+#include "engine/weights/encoding/tq_table.h"
 
 #include <algorithm>
 #include <climits>

@@ -1,5 +1,5 @@
 #include "moe_ffn_pipeline.h"
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 #include "engine/executor/ffn.h"
 
 #include <cstdio>

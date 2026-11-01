@@ -1,5 +1,5 @@
 #pragma once
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/loader.h"
 #include "engine/executor/run.h"

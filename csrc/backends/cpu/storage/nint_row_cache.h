@@ -1,5 +1,5 @@
 #pragma once
-#include "formats/quant/nint_rows.h"
+#include "engine/weights/encoding/quant/nint_rows.h"
 #include <list>
 #include <memory>
 #include <mutex>

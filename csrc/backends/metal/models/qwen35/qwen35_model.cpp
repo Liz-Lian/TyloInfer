@@ -1,6 +1,6 @@
 #include "qwen35_model.h"
 
-#include "formats/quant/nint_blob.h"
+#include "engine/weights/encoding/quant/nint_blob.h"
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "mlx_nint.h"
 #include "mlx_nint8_zero.h"

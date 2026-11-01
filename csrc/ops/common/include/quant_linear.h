@@ -7,7 +7,7 @@
 #include "nint.h"
 #include "vq.h"
 #include "tq.h"
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 
 #include "mmq.h"
 #include "parallel.h"

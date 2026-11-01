@@ -1,8 +1,8 @@
 #pragma once
 
 #include "backend.h"
-#include "formats/quant/nint_rows.h"
-#include "formats/quant/nint_blob.h"
+#include "engine/weights/encoding/quant/nint_rows.h"
+#include "engine/weights/encoding/quant/nint_blob.h"
 
 #include <cstdint>
 #include <string>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "formats/model_graph.h"
+#include "engine/models/common/model_graph.h"
 #include "components/io/file_range_reader.h"
 #include "components/io/read_span.h"
 

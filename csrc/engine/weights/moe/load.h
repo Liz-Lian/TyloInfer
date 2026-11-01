@@ -2,7 +2,7 @@
 
 #include "moe.h"
 #include "engine/weights/moe/experts.h"
-#include "formats/quant/mfe_blob.h"
+#include "engine/weights/encoding/quant/mfe_blob.h"
 
 namespace mfq { class ModelSource; }
 

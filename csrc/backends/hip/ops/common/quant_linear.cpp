@@ -5,7 +5,7 @@
 #include "storage/weight_loader.h"
 #include "quant_linear.h"
 #include "tq_input_gate.h"
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 
 #include "format.h"
 #include "fp8_sq.h"
@@ -17,7 +17,7 @@
 #include "mfq_format_compat.h"
 #include "mfe_expert_store.h"
 #include "nvq_codebooks.generated.h"
-#include "formats/mxfp4_sq_decode.h"
+#include "engine/weights/encoding/mxfp4_sq_decode.h"
 
 #include <algorithm>
 #include <array>

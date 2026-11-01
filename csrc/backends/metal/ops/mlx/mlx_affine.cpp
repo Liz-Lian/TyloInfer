@@ -4,7 +4,7 @@
 #include "mfq_container.h"
 #include "mlx_weight_residency.h"
 #include "../gguf/native/mlx_native_gguf.h"
-#include "formats/mlx_affine.h"
+#include "engine/weights/encoding/mlx_affine.h"
 
 #include <mlx/allocator.h>
 #include <climits>

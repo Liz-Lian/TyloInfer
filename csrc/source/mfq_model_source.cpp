@@ -1,5 +1,5 @@
 #include "mfq_model_source.h"
-#include "formats/tensor_dtype.h"
+#include "engine/weights/encoding/tensor_dtype.h"
 #include "components/io/async_range_reader.h"
 #include "mapped_read_profile.h"
 #include "mapped_prefetch_scope.h"

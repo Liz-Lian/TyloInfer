@@ -1,5 +1,5 @@
 #include "mxfp4_sq.h"
-#include "formats/mxfp4_sq_decode.h"
+#include "engine/weights/encoding/mxfp4_sq_decode.h"
 
 mfq_tensor_backend::Tensor dequant_mxfp4_sq_cpu(
         const Mxfp4SqWeight& weight) {

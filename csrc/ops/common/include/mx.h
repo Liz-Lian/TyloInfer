@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/native/profile.h"
 #include "backend.h"
-#include "formats/mx_blob.h"
+#include "engine/weights/encoding/mx_blob.h"
 
 #include <cstdint>
 #include <vector>

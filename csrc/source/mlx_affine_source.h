@@ -1,7 +1,7 @@
 #pragma once
 
 #include "source/hf_safetensors_source.h"
-#include "formats/mlx_affine.h"
+#include "engine/weights/encoding/mlx_affine.h"
 #include "nlohmann/json.hpp"
 
 namespace mfq {

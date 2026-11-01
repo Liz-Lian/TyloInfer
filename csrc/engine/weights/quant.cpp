@@ -3,7 +3,7 @@
 #include "ops/common/include/format.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-#include "formats/mxfp4_sq_decode.h"
+#include "engine/weights/encoding/mxfp4_sq_decode.h"
 #endif
 
 #include <array>

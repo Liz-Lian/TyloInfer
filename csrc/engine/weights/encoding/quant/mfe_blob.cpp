@@ -1,7 +1,7 @@
 #include "mfe_blob.h"
 #include "mfe_index.h"
-#include "formats/fp8_sq_blob.h"
-#include "formats/mxfp4_sq_blob.h"
+#include "engine/weights/encoding/fp8_sq_blob.h"
+#include "engine/weights/encoding/mxfp4_sq_blob.h"
 
 #include <cstring>
 #include <stdexcept>

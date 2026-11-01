@@ -1,5 +1,5 @@
 #include "ffn.h"
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 #include "engine/weights/moe/experts.h"
 #include "backends/cuda/engine/executor/tq_moe.h"
 #include "backends/cuda/engine/executor/moe_ffn_pipeline.h"

@@ -3,7 +3,7 @@
 #include "tq.h"
 
 #include "format.h"
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 #include "../../mfq/include/fp8_sq.h"
 #include "mx.h"
 #include "../../mfq/include/mxfp4_sq.h"

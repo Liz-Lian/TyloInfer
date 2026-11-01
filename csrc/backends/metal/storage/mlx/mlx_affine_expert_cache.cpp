@@ -5,7 +5,7 @@
 #include "mlx_kernel_prepare.h"
 #include "mlx_moe_ops.h"
 #include "mlx_weight_residency.h"
-#include "formats/mlx_affine.h"
+#include "engine/weights/encoding/mlx_affine.h"
 
 #include <climits>
 #include <algorithm>

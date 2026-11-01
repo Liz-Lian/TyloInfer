@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/tq/include/tq.h"
-#include "formats/tq_rows.h"
+#include "engine/weights/encoding/tq_rows.h"
 
 // Shared TQ wire-to-device conversion used by ordinary loads, row lookups and
 // the routed expert cache. Model-source loading does not participate.

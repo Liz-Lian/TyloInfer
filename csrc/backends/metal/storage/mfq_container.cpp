@@ -4,7 +4,7 @@
 
 #include "source/mfq_model_source.h"
 #include "source/gguf_model_source.h"
-#include "formats/tq_rows.h"
+#include "engine/weights/encoding/tq_rows.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>

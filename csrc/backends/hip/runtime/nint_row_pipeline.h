@@ -1,6 +1,6 @@
 #pragma once
 #include "../../hip/include/backend.h"
-#include "formats/quant/nint_rows.h"
+#include "engine/weights/encoding/quant/nint_rows.h"
 #include <memory>
 namespace mfq {class NintRowCache;}
 class NintRowStage {

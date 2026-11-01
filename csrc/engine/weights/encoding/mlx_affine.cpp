@@ -1,4 +1,4 @@
-#include "formats/mlx_affine.h"
+#include "engine/weights/encoding/mlx_affine.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>

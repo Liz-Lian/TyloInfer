@@ -10,7 +10,7 @@
 
 #include "engine/requests/media.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
-#include "formats/model_graph.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/state/prefix_cache.h"
 
 #include <cstdint>

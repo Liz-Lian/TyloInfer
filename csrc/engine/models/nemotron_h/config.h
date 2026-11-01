@@ -1,6 +1,6 @@
 #pragma once
 
-#include "formats/model_graph.h"
+#include "engine/models/common/model_graph.h"
 #include "../common/model_config.h"
 
 #include <cstdint>

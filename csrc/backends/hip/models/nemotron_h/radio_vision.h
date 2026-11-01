@@ -9,7 +9,7 @@
 #include "hip_execution.h"
 #include "engine/requests/media.h"
 #include "mfq_hip_activation_ops.h"
-#include "formats/model_graph.h"
+#include "engine/models/common/model_graph.h"
 #include "backends/cpu/storage/prefix_blocks.h"
 
 #include <cstdint>

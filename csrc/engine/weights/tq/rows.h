@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backends/cuda/engine/executor/layer_inputs.h"
-#include "formats/tq_table.h"
+#include "engine/weights/encoding/tq_table.h"
 
 #include <cstddef>
 #include <cstdint>

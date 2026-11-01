@@ -2,7 +2,7 @@
 #include "backend.h"
 #include "source/model_source.h"
 #include "tq_projection.h"
-#include "formats/tq_rows.h"
+#include "engine/weights/encoding/tq_rows.h"
 #include "runtime/row_stage.h"
 
 struct TqWeight {

@@ -3,7 +3,7 @@
 #include "source/hf_model_source.h"
 #include "mfq_legacy_tensor_names.h"
 #include "mfq_format_compat.h"
-#include "formats/model_graph.h"
+#include "engine/models/common/model_graph.h"
 
 #include <cstdint>
 #include <filesystem>

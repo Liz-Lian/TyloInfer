@@ -1,6 +1,6 @@
 #include "hf_model_source.h"
 
-#include "formats/fp8_sq_blob.h"
+#include "engine/weights/encoding/fp8_sq_blob.h"
 #include "compat/mfq_legacy_tensor_names.h"
 #include "mlx_affine_source.h"
 #include "mlx_tensor_names.h"

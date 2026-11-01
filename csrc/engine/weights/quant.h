@@ -1,11 +1,11 @@
 #pragma once
 
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 #include "ops/common/include/mx.h"
 #include "ops/common/include/parallel.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-#include "formats/quant/vq_blob.h"
+#include "engine/weights/encoding/quant/vq_blob.h"
 #include "ops/mfq/include/fp8_sq.h"
 #include "ops/mfq/include/mxfp4_sq.h"
 #include "ops/mfq/include/nint.h"

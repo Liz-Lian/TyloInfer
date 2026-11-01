@@ -8,7 +8,7 @@
 #include "ops/common/include/projection.h"
 #include "engine/weights/group.h"
 #include "engine/weights/quant.h"
-#include "formats/dense_blob.h"
+#include "engine/weights/encoding/dense_blob.h"
 #include "engine/weights/memory.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include <algorithm>
@@ -22,7 +22,7 @@
 #include "engine/weights/tq/load.h"
 #include "engine/weights/tq/image.h"
 #include "source/tq_source.h"
-#include "formats/quant/packed_nint_expert_store.h"
+#include "engine/weights/encoding/quant/packed_nint_expert_store.h"
 #include <cstdlib>
 #include <cstdio>
 #include <atomic>

@@ -3,7 +3,7 @@
 
 #include "../../../include/backend.h"
 #include "source/model_source.h"
-#include "formats/quant/nint_rows.h"
+#include "engine/weights/encoding/quant/nint_rows.h"
 
 #include <cstdint>
 #include <string>

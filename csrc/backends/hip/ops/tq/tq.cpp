@@ -9,7 +9,7 @@ extern "C" uint64_t mfq_tq_prefill_f32_workspace(ProjectionView,int);
 #include "mfq_hip_moe_ops.h"
 #include "tq_input_gate.h"
 #include "tq_residual.h"
-#include "formats/tq_rows.h"
+#include "engine/weights/encoding/tq_rows.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>

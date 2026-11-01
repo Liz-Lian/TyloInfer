@@ -1,6 +1,6 @@
 #pragma once
 
-#include "formats/tq_rows.h"
+#include "engine/weights/encoding/tq_rows.h"
 
 #include <cstddef>
 #include <cstdint>

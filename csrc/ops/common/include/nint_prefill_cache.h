@@ -1,6 +1,6 @@
 #pragma once
 #include <memory>
-#include "formats/format_features.h"
+#include "engine/weights/encoding/format_features.h"
 
 struct NintPrefillDecodeCacheState;
 // Reuse the existing temporary dense projection within one prefill layer.

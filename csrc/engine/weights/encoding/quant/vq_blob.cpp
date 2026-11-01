@@ -1,5 +1,5 @@
 #include "vq_blob.h"
-#include "formats/generated/nvq_codebooks.generated.h"
+#include "engine/weights/encoding/generated/nvq_codebooks.generated.h"
 
 #include <algorithm>
 #include <cstddef>
