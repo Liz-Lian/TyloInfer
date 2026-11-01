@@ -7,6 +7,7 @@ vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (_zh:
 vi.mock('./useModelCatalog', () => ({ useModelCatalog: () => ({ artifacts: [], busy: false, availableModelNames: [], modelFolderPath: '/models' }) }));
 vi.mock('./LoadedModels', () => ({ LoadedModels: () => null }));
 vi.mock('./ModelLoadPolicy', () => ({ ModelLoadPolicy: () => null }));
+vi.mock('./ModelSettingsDialog', () => ({ ModelSettingsDialog: () => null }));
 vi.mock('./LocalCheckpoints', () => ({ LocalCheckpoints: () => <h2>Local checkpoints list</h2> }));
 vi.mock('./ModelDirectoryDialog', () => ({ ModelDirectoryDialog: () => null }));
 
@@ -24,4 +25,12 @@ it('positions the local checkpoint section when opened through the Load shortcut
 it('keeps normal model-page navigation at its original position', () => {
   render(<MemoryRouter initialEntries={['/models']}><ModelsPage /></MemoryRouter>);
   expect(scroll).not.toHaveBeenCalled();
+});
+
+it('puts the model library directly after a compact summary instead of load-policy panels', () => {
+  const { container } = render(<MemoryRouter><ModelsPage /></MemoryRouter>);
+  expect(container.querySelector('.model-workbench-summary')).toBeNull();
+  expect(container.querySelector('.model-load-policy')).toBeNull();
+  const summary = container.querySelector('.model-library-summary')!;
+  expect(summary.nextElementSibling).toContainElement(screen.getByText('Local checkpoints list'));
 });

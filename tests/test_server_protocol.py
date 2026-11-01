@@ -120,6 +120,18 @@ def test_realtime_frames_cover_audio_text_state_and_sequence() -> None:
 def test_openapi_contract_has_all_native_routes_and_realtime_extension() -> None:
     schema = build_openapi_schema()
     expected_paths = {
+        "/api/v1/agent/state",
+        "/api/v1/agent/search",
+        "/api/v1/agent/start",
+        "/api/v1/agent/rpc",
+        "/api/v1/agent/approvals",
+        "/api/v1/agent/answers",
+        "/api/v1/agent/workspaces/{workspace_id}/session",
+        "/api/v1/agent/sessions/{session_id}/events",
+        "/api/v1/agent/sessions/{session_id}/controls",
+        "/api/v1/agent/sessions/{session_id}/commands",
+        "/api/v1/agent/sessions/{session_id}/files",
+        "/api/v1/agent/sessions/{session_id}/export",
         "/api/v1/sessions",
         "/api/v1/sessions/import",
         "/api/v1/jobs",

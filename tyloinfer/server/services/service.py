@@ -34,6 +34,7 @@ from tyloinfer.server.state.catalog import (
     ModelRegistrationError,
 )
 from tyloinfer.server.services.checkpoint_analysis import analyze_checkpoint
+from tyloinfer.server.services.agent_runtime import AgentRuntime
 from tyloinfer.server.services.model_deletion import ModelDeletionError, delete_model_files, model_deletion_plan
 from tyloinfer.server.services.model_memory import checkpoint_cache_profile
 from tyloinfer.server.services.documents import DocumentExtractionError, extract_document
@@ -307,6 +308,7 @@ class ServerService:
         stream_keepalive_seconds: float = 15.0,
     ) -> None:
         self.store = store
+        self.agent_runtime = AgentRuntime(store.path.parent / 'agent')
         self.model_aliases = store.runtime_model_aliases()
         self.backend = backend
         self.jobs = jobs or JobManager(store)
@@ -383,6 +385,7 @@ class ServerService:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            await self.agent_runtime.close()
             await self.backend.aclose()
 
     async def create_job(self, request: CreateJobRequest) -> JobResource:
@@ -1071,10 +1074,10 @@ class ServerService:
             return await self.runtime_manager.instances()
         return RuntimeInstanceList(data=[])
 
-    async def model_artifacts(self, *, refresh: bool = False) -> ModelArtifactList:
+    async def model_artifacts(self, *, refresh: bool = False, include_components: bool = False) -> ModelArtifactList:
         if self.catalog is None:
             return ModelArtifactList(data=[])
-        return await self.catalog.list(refresh=refresh)
+        return await self.catalog.list(refresh=refresh, include_components=True) if include_components else await self.catalog.list(refresh=refresh)
 
     async def model_directories(
         self,

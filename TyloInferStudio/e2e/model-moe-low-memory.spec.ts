@@ -44,7 +44,8 @@ for (const memory_architecture of ['unified', 'discrete'] as const) {
 
     await load.click();
     await expect.poll(() => writes.length).toBe(1);
-    expect(writes[0]).toMatchObject({ model: 'Low Memory MoE', context_size: 32768, prefill_chunk_size: 'auto', pin: false });
+    expect(writes[0]).toMatchObject({ model: 'Low Memory MoE', context_size: null, prefill_chunk_size: 'auto', pin: false });
+    expect(writes[0]).not.toHaveProperty('context_management');
     expect(writes[0]).not.toHaveProperty('device_ids');
     await expect(load).toBeDisabled();
     release();
@@ -52,3 +53,53 @@ for (const memory_architecture of ['unified', 'discrete'] as const) {
     expect(writes).toHaveLength(1);
   });
 }
+
+test('checkpoint warnings stay left of pressure bars with equal row heights and stable action columns', async ({ page }, testInfo) => {
+  await mockStudioServer(page);
+  await page.route('**/api/v1/runtime/status*', route => route.fulfill({ json: {
+    runtime_state: 'idle', memory_architecture: 'unified', runtime_memory_headroom_bytes: 16 * GiB,
+    active_requests: 0, sampling_defaults: {},
+  } }));
+  await page.route(/\/api\/v1\/models(?:\?.*)?$/, route => route.fulfill({ json: { data: [
+    { ...artifact('fit', 'Fitting model', 0), estimated_resident_weight_bytes: 4 * GiB },
+    artifact('streamed', 'Streamed model', 76),
+    { ...artifact('incomplete', 'Incomplete model', 76), shard_count: 8, missing_shards: 2, complete: false, loadable: false, estimated_resident_weight_bytes: null },
+    { ...artifact('convert', 'Conversion model', 0), format: 'hf', loadable: false },
+  ] } }));
+  await page.goto('/models');
+  const rows = page.locator('.model-library-panel .model-row');
+  await expect(rows).toHaveCount(4);
+  const unavailableLoad = page.locator('.model-row', { hasText: 'Incomplete model' }).getByRole('button', { name: 'Load', exact: true });
+  await expect(unavailableLoad).toBeVisible();
+  await expect(unavailableLoad).toBeDisabled();
+  await expect(unavailableLoad).toHaveAccessibleDescription('Incomplete shards');
+  const widths = testInfo.project.name === 'desktop' ? [1440, 1024] : [390];
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: 1000 });
+    const layout = await rows.evaluateAll(elements => elements.map(element => {
+      const row = element.getBoundingClientRect();
+      const pressure = element.querySelector('.local-checkpoint-memory')!.getBoundingClientRect();
+      const resources = element.querySelector('.local-checkpoint-resources')!.getBoundingClientRect();
+      const notice = element.querySelector('.local-checkpoint-notice')!.getBoundingClientRect();
+      const files = element.querySelector('.model-files-action')!.getBoundingClientRect();
+      return { height: row.height, pressureLeft: pressure.left, pressureRight: pressure.right, noticeRight: notice.right,
+        noticeCenter: notice.y + notice.height / 2, resourcesCenter: resources.y + resources.height / 2,
+        filesLeft: files.left, rowRight: row.right,
+        actionWarnings: element.querySelector('.model-row-controls')!.textContent!.includes('Incomplete shards') || element.querySelector('.model-row-controls')!.textContent!.includes('Insufficient remaining memory.') };
+    }));
+    expect(Math.max(...layout.map(row => row.height)) - Math.min(...layout.map(row => row.height)), JSON.stringify({ width, layout })).toBeLessThanOrEqual(1);
+    const message = page.locator('.model-streaming-notice');
+    await expect(message).toHaveCSS('white-space', 'normal');
+    await expect(message).not.toHaveCSS('text-overflow', 'ellipsis');
+    expect(await message.evaluate(element => element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(Math.max(...layout.map(row => row.pressureLeft)) - Math.min(...layout.map(row => row.pressureLeft))).toBeLessThanOrEqual(1);
+    expect(Math.max(...layout.map(row => row.filesLeft)) - Math.min(...layout.map(row => row.filesLeft))).toBeLessThanOrEqual(1);
+    for (const row of layout) {
+      expect(row.noticeRight).toBeLessThan(row.pressureLeft);
+      expect(row.pressureRight).toBeLessThanOrEqual(row.rowRight + 1);
+      expect(Math.abs(row.noticeCenter - row.resourcesCenter)).toBeLessThanOrEqual(1);
+      expect(row.actionWarnings).toBe(false);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+});

@@ -22,7 +22,7 @@ test('sidebar labels and icons use neutral ink in every theme', async ({ page },
       await page.emulateMedia({ colorScheme: scheme });
       await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
       const color = scheme === 'light' ? 'rgb(51, 51, 51)' : 'rgb(222, 222, 222)';
-      for (const element of await nav.locator('button, .sidebar-group-label, .ui-icon').all()) {
+      for (const element of await nav.locator('.sidebar-nav-items button, .sidebar-group-toggle, .sidebar-group-label, .ui-icon').all()) {
         await expect(element).toHaveCSS('color', color);
       }
       const background = await active.evaluate(element => getComputedStyle(element).backgroundColor);

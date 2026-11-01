@@ -16,6 +16,8 @@ class ModelDeletionError(ValueError):
 
 
 def model_deletion_plan(artifact: DiscoveredModel) -> ModelDeletionPlan:
+    if artifact.resource.asset_kind != 'model':
+        raise ModelDeletionError('model_delete_unsafe')
     source = artifact.path
     root = source if artifact.resource.format == "hf" else source.parent
     if artifact.resource.format == 'gguf':

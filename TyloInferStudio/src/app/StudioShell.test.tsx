@@ -9,11 +9,11 @@ import { NotFoundPage } from './NotFoundPage';
 
 vi.mock('./RuntimeProvider', () => ({ useRuntime: vi.fn() }));
 vi.mock('../features/settings/SettingsProvider', () => ({
-  useSettings: () => ({ tr: (chinese: string) => chinese }),
+  useSettings: () => ({ tr: (chinese: string) => chinese, settings: { theme: 'system', language: 'system' }, updateSettings: vi.fn() }),
 }));
 
 
-function renderShell(overrides: Partial<ReturnType<typeof useRuntime>>, path = '/settings') {
+function renderShell(overrides: Partial<ReturnType<typeof useRuntime>>, path = '/runtime') {
   const runtime = {
     runtime: null,
     selectedModel: '',
@@ -48,6 +48,20 @@ function renderShell(overrides: Partial<ReturnType<typeof useRuntime>>, path = '
 
 describe('StudioShell 持久运行时告警', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('expands Tools by default and still lets users collapse it', () => {
+    renderShell({});
+    const tools = screen.getByRole('button', { name: '工具' });
+    expect(tools).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '分析' })).toBeVisible();
+    expect(screen.getByText('Agent', { selector: '.sidebar-group-label' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '新建会话' })).toBeVisible();
+    expect(screen.queryByText('代理', { selector: '.sidebar-group-label' })).not.toBeInTheDocument();
+    expect(document.querySelector('#studio-sidebar .appearance-controls')).toBeNull();
+    fireEvent.click(tools);
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: '分析' })).not.toBeInTheDocument();
+  });
 
   it('shows explicit connection confirmation instead of a perpetual loading page for CLI servers', () => {
     const connect = vi.fn();
@@ -92,9 +106,9 @@ describe('StudioShell 持久运行时告警', () => {
     expect(disposed).toHaveBeenCalledOnce();
   });
 
-  it('未就绪时设置页仍可打开，显示连接故障和重试', () => {
+  it('未就绪时服务页仍可打开，显示连接故障和重试', () => {
     const runtime = renderShell({ ready: false, connectionError: 'server offline' });
-    expect(screen.getByText('Settings content')).toBeTruthy();
+    expect(screen.getByText('Connection settings content')).toBeTruthy();
     expect(within(screen.getByRole('alert')).getByText('server offline')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '重试连接' }));
     expect(runtime.reloadService).toHaveBeenCalledOnce();

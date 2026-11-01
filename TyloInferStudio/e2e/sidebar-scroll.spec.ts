@@ -1,0 +1,76 @@
+import { expect, test } from '@playwright/test';
+import { mockStudioServer } from './mockServer';
+import type { AgentState } from '../src/features/agent/AgentProvider';
+
+test('only workspaces scroll until the fixed navigation and first workspace cannot fit', async ({ page }, testInfo) => {
+  await mockStudioServer(page);
+  const state: AgentState = { running: true, workspaces: Array.from({ length: 12 }, (_, index) => ({
+    workspaceId: `workspace-${index}`, title: `Project ${index}`, path: `/projects/${index}`, sessionIds: Array.from({ length: 5 }, (_, session) => `session-${index}-${session}`),
+  })), sessions: [], models: [], approvals: [] };
+  state.sessions = state.workspaces.flatMap(workspace => workspace.sessionIds.map(sessionId => ({ sessionId, blank: false, running: false, projections: { values: { title: `Conversation ${sessionId}` } } })));
+  await page.route('**/api/v1/agent/state', route => route.fulfill({ json: state }));
+  await page.route('**/api/v1/agent/start', route => route.fulfill({ json: state }));
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/agent');
+  if (testInfo.project.name === 'mobile') await page.getByRole('button', { name: 'Open sidebar', exact: true }).click();
+  const sidebar = page.locator('#studio-sidebar');
+  const outer = sidebar.locator('.sidebar-scroll');
+  const list = sidebar.getByRole('region', { name: 'Workspace list', exact: true });
+  const tools = sidebar.getByRole('button', { name: 'Tools', exact: true });
+  await expect(sidebar.getByRole('button', { name: 'Expand workspace Project 0', exact: true })).toBeVisible();
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  await expect(outer).toHaveCSS('overflow-y', 'hidden');
+  await expect(list).toHaveCSS('overflow-y', 'auto');
+  await expect.poll(() => list.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await expect(tools).toHaveAttribute('aria-expanded', 'true');
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  const overview = sidebar.getByRole('button', { name: 'Overview', exact: true });
+  const top = (await overview.boundingBox())!.y;
+  const toolbar = sidebar.locator('.agent-workspace-toolbar');
+  const toolbarTop = (await toolbar.boundingBox())!.y;
+  await list.hover();
+  await page.mouse.wheel(0, 650);
+  await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(await outer.evaluate(element => element.scrollTop)).toBe(0);
+  expect(Math.abs((await overview.boundingBox())!.y - top)).toBeLessThan(1);
+  expect(Math.abs((await toolbar.boundingBox())!.y - toolbarTop)).toBeLessThan(1);
+  await expect(sidebar.getByRole('button', { name: 'Add workspace', exact: true })).toBeVisible();
+  const threshold = await outer.evaluate(element => {
+    const list = element.querySelector<HTMLElement>('.agent-workspace-list')!;
+    const first = list.querySelector<HTMLElement>('.agent-workspace-heading')!;
+    return innerHeight - element.clientHeight + list.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop
+      + first.getBoundingClientRect().bottom - list.getBoundingClientRect().top + list.scrollTop;
+  });
+  const width = page.viewportSize()!.width;
+  await page.setViewportSize({ width, height: Math.ceil(threshold) + 8 });
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  const search = sidebar.getByRole('button', { name: 'Search conversations', exact: true });
+  await search.click();
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'all');
+  await search.click();
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  await page.setViewportSize({ width, height: Math.floor(threshold) - 8 });
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'all');
+  await expect(outer).toHaveCSS('overflow-y', 'auto');
+  await expect(list).toHaveCSS('overflow-y', 'visible');
+  expect(await outer.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await outer.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(sidebar.getByRole('button', { name: 'Conversation session-11-4', exact: true })).toBeVisible();
+  await page.setViewportSize({ width, height: 1000 });
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  await expect.poll(() => outer.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(overview).toBeVisible();
+  await tools.click();
+  await expect(tools).toHaveAttribute('aria-expanded', 'false');
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  await page.setViewportSize({ width, height: Math.floor(threshold) - 8 });
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  await tools.click();
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'all');
+  await tools.click();
+  await expect(outer).toHaveAttribute('data-scroll-mode', 'workspaces');
+  await expect(sidebar.locator('.agent-workspace-session-row')).toHaveCount(60);
+  expect(errors).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

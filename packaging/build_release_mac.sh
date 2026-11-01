@@ -221,6 +221,7 @@ DYLD_LIBRARY_PATH="${mfq_framework_dir}" \
   "${mfq_sidecar_dir}/${mfq_perplexity_name}" --help >/dev/null
 
 cd "${tyloinfer_dir}"
+"${mfq_venv_dir}/bin/python" "${mfq_script_dir}/stage_agent_runtime.py" "${mfq_resource_dir}/agent-runtime"
 npm ci
 npm run check
 if [[ "${mfq_signing_identity}" != "-" ]]; then

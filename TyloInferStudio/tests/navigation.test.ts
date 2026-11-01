@@ -15,12 +15,11 @@ describe('Studio 页面路由', () => {
     ['/runtime', 'dashboard', 'connections'],
     ['/resources', 'dashboard', 'cache'],
     ['/logs', 'dashboard', 'logs'],
-    ['/settings', 'dashboard', 'settings'],
     ['/model-hub', 'lab', 'models'],
     ['/evaluations', 'lab', 'evaluations'],
     ['/analysis', 'lab', 'analysis'],
     ['/chat', 'chat', 'overview'],
-    ['/applications', 'applications', 'overview'],
+    ['/agent', 'agent', 'overview'],
     ['/versions', 'versions', 'overview'],
   ])('解析深链接 %s', (path, view, page) => {
     const location = resolveStudioLocation(path);
@@ -39,7 +38,9 @@ describe('Studio 页面路由', () => {
   it('未知地址不会被视为业务页面', () => {
     expect(isStudioPath('/chat')).toBe(true);
     expect(isStudioPath('/chat/')).toBe(true);
-    expect(isStudioPath('/applications/')).toBe(true);
+    expect(isStudioPath('/agent/')).toBe(true);
+    expect(isStudioPath('/applications/')).toBe(false);
+    expect(isStudioPath('/settings')).toBe(false);
     expect(isStudioPath('/missing')).toBe(false);
     expect(isStudioPath('/quantization')).toBe(false);
     expect(isStudioPath('/quantization/')).toBe(false);

@@ -519,6 +519,12 @@ async fn start_local(app: &AppHandle, config: StudioConfig) -> Result<StudioStat
     if let Some(runtime) = packaged_runtime(app) {
         command.arg("--running-executable").arg(runtime);
     }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let agent_runtime = resource_dir.join("agent-runtime");
+        if agent_runtime.is_dir() {
+            command.env("TYLOINFER_AGENT_RUNTIME", agent_runtime);
+        }
+    }
     #[cfg(windows)]
     if let Ok(resource_dir) = app.path().resource_dir() {
         // The CUDA, PyTorch, and MSVC DLLs are bundled as resources rather

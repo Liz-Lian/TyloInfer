@@ -36,6 +36,10 @@ export function Dialog({
           <DialogPrimitive.Content
             className={`studio-dialog ${className}`.trim()}
             {...(!description ? { 'aria-describedby': undefined } : {})}
+            onInteractOutside={event => {
+              const target = event.detail.originalEvent.target;
+              if (target instanceof Element && target.closest('.studio-toast-container, .studio-toast, .studio-toast-close')) event.preventDefault();
+            }}
             onOpenAutoFocus={() => {
               previousFocus.current =
                 document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -51,7 +55,7 @@ export function Dialog({
             <header>
               <div>
                 <DialogPrimitive.Title asChild>
-                  <h2>{title}</h2>
+                  <h2 title={title}>{title}</h2>
                 </DialogPrimitive.Title>
                 {description && (
                   <DialogPrimitive.Description asChild>

@@ -27,7 +27,8 @@ vi.mock('../src/app/RuntimeProvider', () => ({
   }),
 }));
 vi.mock('../src/features/settings/SettingsProvider', () => ({
-  useSettings: () => ({ tr: (_chinese: string, english: string) => english }),
+  useSettings: () => ({ tr: (_chinese: string, english: string) => english,
+    settings: { theme: 'system', language: 'system' }, updateSettings: vi.fn() }),
 }));
 vi.mock('../src/features/runtime/useServingStatistics', () => ({
   useServingStatistics: () => ({ error: null, data: { scope: 'session', started_at: 1, activity: [],

@@ -10,7 +10,8 @@
       "../../packaging/Resources/mlx.metallib": "mlx.metallib",
       "../../packaging/Resources/mfq-metal": "mfq-metal",
       "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
-      "../../packaging/Resources/licenses": "licenses"
+      "../../packaging/Resources/licenses": "licenses",
+      "../../packaging/Resources/agent-runtime": "agent-runtime"
     },
     "macOS": {
       "minimumSystemVersion": "26.2",

@@ -82,6 +82,30 @@ def _request(**updates: Any):
     return parse_chat_request(body)
 
 
+def test_reasoning_none_disables_thinking_without_losing_explicit_override() -> None:
+    request = _request(reasoning_effort='none')
+    assert request.sampling.enable_thinking is False
+    assert request.sampling.reasoning_effort is None
+    assert 'enable_thinking' in request.sampling.model_fields_set
+    assert _request(reasoning_effort='none', enable_thinking=True).sampling.enable_thinking is True
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_agent_mtp_header_is_request_local_and_preserves_explicit_body(stream) -> None:
+    async def run() -> None:
+        backend = _Backend()
+        app = create_app(_Service(backend))
+        body = {'model': 'DeepSeek-V4-Flash', 'messages': [{'role': 'user', 'content': 'hello'}], 'stream': stream}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            for headers, update, expected in [({'X-TyloInfer-MTP': 'off'}, {}, False),
+                    ({}, {}, True), ({'X-TyloInfer-MTP': 'on'}, {}, True),
+                    ({'X-TyloInfer-MTP': 'on'}, {'enable_mtp': False}, False)]:
+                result = await client.post('/v1/chat/completions', json={**body, **update}, headers=headers)
+                assert result.status_code == 200
+                assert backend.requests[-1]['sampling'].enable_mtp is expected
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_missing_model_returns_not_found_for_both_transports(tmp_path, stream) -> None:
     from tyloinfer.server.runtime.runtime_pool import RuntimePool

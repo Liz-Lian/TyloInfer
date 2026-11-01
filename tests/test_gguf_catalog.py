@@ -167,7 +167,7 @@ def test_raw_gguf_catalog_groups_resolves_and_reports_missing_parts(tmp_path):
         assert catalog._immediate_model_count(models) == 1
         assert catalog._immediate_model_count(tables) == 0
         assert catalog._registration_paths(models) == [parts[0]]
-        assert catalog._registration_paths(tables) == []
+        assert catalog._registration_paths(tables) == [next(tables.glob('*.part-00001-of-*'))]
         assert len(catalog._browse_directories(None, models).files) == 4
         standard = models / 'xq-model-00001-of-00004.gguf'
         header(standard, 3)

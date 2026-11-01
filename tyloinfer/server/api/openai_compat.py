@@ -118,6 +118,10 @@ def parse_chat_request(body: Any) -> OpenAIChatRequest:
         "reasoning_effort",
         template_kwargs.get("reasoning_effort"),
     )
+    reasoning_disabled = reasoning_effort == 'none' and 'enable_thinking' not in body and 'enable_thinking' not in template_kwargs
+    if reasoning_disabled:
+        enable_thinking = False
+        reasoning_effort = None
 
     max_tokens = body.get("max_completion_tokens")
     if max_tokens is None:
@@ -163,6 +167,8 @@ def parse_chat_request(body: Any) -> OpenAIChatRequest:
         explicit_sampling_fields.add("enable_thinking")
     if "reasoning_effort" not in body and "reasoning_effort" in template_kwargs:
         explicit_sampling_fields.add("reasoning_effort")
+    if reasoning_disabled:
+        explicit_sampling_fields.add('enable_thinking')
     try:
         validated_sampling = SamplingParams.model_validate(sampling_values)
         sampling = SamplingParams.model_construct(

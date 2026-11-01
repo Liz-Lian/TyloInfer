@@ -50,25 +50,8 @@ for (const mode of ['light', 'dark', 'system-light', 'system-dark'] as const) {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
 
-    await page.goto('/settings');
-    await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toBeVisible();
+    await page.goto('/');
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    const primary = page.locator('main button.primary').first();
-    await expect(primary).toBeVisible();
-    const buttonColors = await primary.evaluate(element => {
-      const style = getComputedStyle(element);
-      return { background: style.backgroundColor, foreground: style.color };
-    });
-    expect(buttonColors.background).toBe(expected);
-    expect(contrast(buttonColors.foreground, buttonColors.background)).toBeGreaterThanOrEqual(4.5);
-    await primary.focus();
-    await expect(primary).toHaveCSS('outline-color', expected);
-    const selection = await primary.evaluate(element => {
-      const style = getComputedStyle(element, '::selection');
-      return { background: style.backgroundColor, foreground: style.color };
-    });
-    expect(selection.background).toBe(expected);
-    expect(contrast(selection.foreground, selection.background)).toBeGreaterThanOrEqual(4.5);
     await expect(page.getByRole('switch', { name: 'Vision input', exact: true })).toHaveCount(0);
     await page.goto('/runtime');
     const vision = page.getByRole('switch', { name: 'Vision input', exact: true });

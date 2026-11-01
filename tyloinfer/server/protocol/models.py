@@ -927,6 +927,8 @@ class ModelArtifactResource(ProtocolModel):
     name: str = Field(min_length=1, max_length=255)
     architecture: str = Field(min_length=1, max_length=128)
     format: Literal["tq", "hf", "gguf"] = "tq"
+    asset_kind: Literal['model', 'ple', 'engram'] = 'model'
+    owned_file_bytes: int | None = Field(default=None, ge=0)
     gguf_companion_required: bool = False
     shard_count: int = Field(ge=1)
     missing_shards: int = Field(default=0, ge=0)

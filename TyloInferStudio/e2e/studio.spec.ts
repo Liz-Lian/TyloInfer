@@ -1,6 +1,7 @@
 
 import { expect, test, type Page } from '@playwright/test';
 import { mockStudioServer, officialCatalog } from './mockServer';
+import { openModelSettings } from './modelSettings';
 
 for (const language of ['zh', 'en'] as const) {
   test(`compact tool navigation keeps labels aligned (${language})`, async ({ page }, testInfo) => {
@@ -13,8 +14,9 @@ for (const language of ['zh', 'en'] as const) {
     const sidebar = page.locator('#studio-sidebar');
     await expect(sidebar).toBeVisible();
     const tools = sidebar.locator('nav > section').filter({ has: page.getByText(language === 'zh' ? '工具' : 'Tools', { exact: true }) });
-    await expect(tools.locator('button')).toHaveText(language === 'zh'
-      ? ['分析', '下载', '测评'] : ['Analysis', 'Downloads', 'Evaluations']);
+    await expect(tools.getByRole('button', { name: language === 'zh' ? '工具' : 'Tools', exact: true })).toHaveAttribute('aria-expanded', 'true');
+    await expect(tools.locator('.sidebar-nav-items button')).toHaveText(language === 'zh'
+      ? ['分析', '下载', '测评', '日志'] : ['Analysis', 'Downloads', 'Evaluations', 'Logs']);
     expect((await sidebar.boundingBox())!.width).toBeCloseTo(200, 3);
     for (const button of await tools.locator('button').all()) {
       expect(await button.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -68,30 +70,19 @@ async function navigateClient(page: Page, path: string) {
   }, path);
 }
 
-test('服务器移除对话和可执行文件，设置迁入对话页，模型宽框包含生成参数', async ({ page }, testInfo) => {
+test('服务页不再包含旧聊天设置和可执行文件入口', async ({ page }, testInfo) => {
   await mockStudioServer(page);
   await page.route('**/api/v1/runtime/models', (route) => route.fulfill({ json: { data: [{ id: 'Test Model' }, { id: 'Another Model' }] } }));
   await page.goto('/runtime');
   await expect(page.getByText('Runtime executable', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'System prompt' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Alias mapping' })).toBeEnabled();
+  await page.getByRole('tab', { name: 'Cache', exact: true }).click();
   await expect(page.getByText('/data/tyloinfer/prefix-cache', { exact: true })).toBeVisible();
-  await navigateClient(page, '/chat');
-  const box = page.locator('.chat-model-summary');
-  await expect(box.getByRole('combobox', { name: 'Chat model' })).toBeVisible();
-  await expect(box.locator('small')).toBeVisible();
-  await expect(box).toContainText('max tokens');
-  await expect(box).toContainText('temperature');
-  await expect(box).toContainText('streaming');
-  if (testInfo.project.name === 'desktop') expect((await box.boundingBox())!.width).toBeLessThanOrEqual(360);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole('button', { name: 'Chat settings' }).click();
-  await expect(page.getByRole('dialog', { name: 'Chat settings' })).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'System prompt' })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('chat-settings-and-selector.png'), animations: 'disabled' });
+
 });
 
-test('每个模型独立保留 ctx 草稿，保存整套设置且不丢失另一个模型', async ({ page }, testInfo) => {
+test('每个模型独立配置 ctx，保存整套设置且不改变另一个模型', async ({ page }, testInfo) => {
   await mockStudioServer(page);
   const instances = [
     { id: 'flash', model: 'Qwen3.8-Flash-S4-L', state: 'ready', devices: ['metal'], active_sessions: 0,
@@ -128,40 +119,31 @@ test('每个模型独立保留 ctx 草稿，保存整套设置且不丢失另一
   });
   const dialogs: string[] = [];
   page.on('dialog', async (dialog) => { dialogs.push(dialog.message()); await dialog.dismiss(); });
-  await page.goto('/runtime');
+  await openModelSettings(page, instances[0].model);
   const flash = page.getByRole('spinbutton', { name: 'Qwen3.8-Flash-S4-L maximum context' });
   const dense = page.getByRole('spinbutton', { name: 'Qwen3.8-27B-S4-M maximum context' });
-  const selected = page.getByRole('combobox', { name: 'Per-model context model' });
   const save = page.getByRole('button', { name: 'Save to this model', exact: true });
   await expect(save).toBeEnabled();
   await expect(flash).toHaveValue('');
   const contexts = page.locator('.model-context-settings');
   await expect(contexts.locator('.model-context-controls svg')).toHaveCount(0);
-  expect(await contexts.evaluate((element) => {
-    const heading = element.querySelector('.model-context-list-heading')!;
-    const row = heading.nextElementSibling!;
-    return Number.parseFloat(getComputedStyle(heading).borderBottomWidth) >= 1
-      && row.getBoundingClientRect().top >= heading.getBoundingClientRect().bottom;
-  })).toBe(true);
+  await expect(page.getByRole('combobox', { name: 'Per-model context model' })).toHaveCount(0);
   await flash.fill('8192');
-  await selected.selectOption(instances[1].model);
-  await expect(dense).toHaveValue('');
-  await dense.fill('65536');
-  await selected.selectOption(instances[0].model);
   await save.click();
   await expect.poll(() => reloads).toEqual([{ instance_id: 'flash', context_size: 8192, yarn_enabled: false }]);
   await expect(save).toHaveText('Saving…');
-  await selected.selectOption(instances[1].model);
-  await expect(save).toBeEnabled();
-  await expect(dense).toHaveValue('65536');
-  await expect(page.locator('.server-memory-panel .memory-budget-actions')).toContainText('96.3');
   await page.screenshot({ path: testInfo.outputPath('per-model-context.png'), animations: 'disabled' });
   complete();
-  await selected.selectOption(instances[0].model);
   await expect(save).toHaveText('Save to this model');
   await expect(flash).toHaveValue('8192');
-  await selected.selectOption(instances[1].model);
-  await expect(dense).toHaveValue('65536');
+  await page.getByRole('button', { name: 'Close model settings' }).click();
+  await openModelSettings(page, instances[1].model);
+  await expect(dense).toHaveValue('');
+  await expect(save).toBeEnabled();
+  await dense.fill('65536');
+  await save.click();
+  await expect.poll(() => reloads).toHaveLength(2);
+  expect(reloads[1]).toMatchObject({ instance_id: 'dense', context_size: 65536 });
   expect(dialogs).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });
@@ -304,7 +286,7 @@ test('推理预算按内存架构分列容量，带宽用小号灰字放在下�
   expect(errors).toEqual([]);
 });
 
-test('注册资产显示文件总大小，已载入模型可在生成期间切换且无需登记资产', async ({ page }) => {
+test('注册资产显示文件总大小', async ({ page }) => {
   const state = await mockStudioServer(page, { holdResponse: true });
   const nextModel = 'Loaded without registration';
   const assets = [32, 8].map((size, index) => ({ id: `asset-${index}`, name: `Registered checkpoint ${index}`,
@@ -316,49 +298,10 @@ test('注册资产显示文件总大小，已载入模型可在生成期间切�
     { id: 'instance-1', model: 'Studio Test Model', state: 'ready', devices: ['cpu'] },
     { id: 'instance-2', model: nextModel, state: 'ready', devices: ['cpu'] },
   ] } }));
-  let forks = 0;
-  const responseModels: string[] = [];
-  page.on('request', (request) => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/sessions/session-1/responses') {
-      responseModels.push(request.postDataJSON().model);
-    }
-  });
-  await page.route('**/api/v1/sessions/*/fork', (route) => {
-    forks += 1;
-    return route.abort();
-  });
   await page.goto('/models');
-  await expect(page.locator('.model-workbench-summary > div').last()).toContainText('Registered model assets size');
-  await expect(page.locator('.model-workbench-summary > div').last().locator('strong')).toHaveText('40 GiB');
+  await expect(page.locator('.model-library-summary > span').last()).toContainText('Total file size');
+  await expect(page.locator('.model-library-summary > span').last().locator('strong')).toHaveText('40 GiB');
   await expect(page.getByText('Switching keeps the registered asset')).toHaveCount(0);
-  await navigateClient(page, '/chat');
-  const selector = page.getByRole('combobox', { name: 'Chat model', exact: true });
-  await expect(selector.locator('option')).toHaveText(['Studio Test Model', nextModel]);
-  const input = page.getByRole('textbox', { name: 'Message', exact: true });
-  await expect(input).toBeEnabled();
-  await input.fill('Keep this response on the original model');
-  await page.getByRole('button', { name: 'Send' }).click();
-  await expect.poll(() => state.submissions).toBe(1);
-  await expect(selector).toBeEnabled();
-  await selector.selectOption(nextModel);
-  await expect(selector).toHaveValue(nextModel);
-  expect(forks).toBe(0);
-  state.releaseResponse();
-  await expect(input).toBeEnabled();
-  await expect(page.locator('.message-assistant')).toContainText('A streamed answer with formatted content.');
-  expect(forks).toBe(0);
-  await expect(selector).toHaveValue(nextModel);
-  expect(state.submissions).toBe(1);
-  expect(responseModels).toEqual(['Studio Test Model']);
-  await input.fill('Continue this conversation on the selected model');
-  await page.getByRole('button', { name: 'Send' }).click();
-  await expect.poll(() => state.submissions).toBe(2);
-  expect(responseModels).toEqual(['Studio Test Model', nextModel]);
-  state.releaseResponse();
-  await expect(input).toBeEnabled();
-  expect(forks).toBe(0);
-  expect(state.requests.filter((request) => /^POST \/api\/v1\/sessions(?:\?|$)/.test(request))).toEqual([]);
-  expect(state.requests.filter((request) => request.startsWith('POST /api/v1/models'))).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });
 
@@ -518,7 +461,7 @@ for (const kind of ['model.load', 'download.modelscope']) {
     if (!loading) await page.locator('.download-circle').click();
     const progress = () => page.locator(loading ? '.runtime-hero progress' : '.download-queue-item progress');
     await expect(progress()).toHaveAttribute('value', '0.25');
-    await navigateClient(page, '/chat');
+    await navigateClient(page, '/models');
     job.progress = 0.75;
     job.updated_at = '2026-01-01T00:00:05Z';
     await navigateClient(page, path);
@@ -542,7 +485,7 @@ test('页面按需请求自己的资源，概览不预载其他业务列表', as
   const routes = [
     ['/evaluations', '/api/v1/evaluations'],
     ['/model-hub', null],
-    ['/settings', null],
+    ['/versions', null],
     ['/runtime', '/api/v1/cluster/nodes'],
     ['/resources', '/api/v1/runtime/resources'],
     ['/logs', '/api/v1/runtime/logs'],
@@ -551,7 +494,7 @@ test('页面按需请求自己的资源，概览不预载其他业务列表', as
     await navigateClient(page, path);
     await expect(page.locator('main h1')).toBeVisible();
     if (endpoint) await expect.poll(() => state.requests.includes(`GET ${endpoint}`)).toBe(true);
-    if (path === '/settings') expect(state.requests).not.toContain('GET /api/v1/presets');
+    if (path === '/versions') expect(state.requests).not.toContain('GET /api/v1/presets');
   }
   expect(errors).toEqual([]);
   expect(state.unexpected).toEqual([]);
@@ -577,7 +520,7 @@ test('模型下载留在本页，飞入圆圈后打开第三个队列标签', as
   await expect(page.getByRole('tab')).toHaveText(['Official', 'Community', 'Download queue']);
   await page.getByRole('button', { name: 'Download', exact: true }).first().click();
   await expect(page).toHaveURL('/model-hub');
-  await expect(page.getByRole('tab', { name: 'Official' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Recommended models' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.download-flight')).toBeVisible();
   expect(await page.locator('.download-flight').evaluate((node) => getComputedStyle(node).animationName)).toBe('download-fly');
   expect(await page.locator('.download-circle').evaluate((node) => {
@@ -594,152 +537,6 @@ test('模型下载留在本页，飞入圆圈后打开第三个队列标签', as
   await page.screenshot({ path: testInfo.outputPath('download-queue.png'), animations: 'disabled' });
   expect(state.requests).not.toContain('GET /api/v1/artifacts/lineage');
   expect(state.unexpected).toEqual([]);
-});
-
-test('生成期间离开聊天页后返回仍完成同一次请求，草稿按会话保留', async ({ page }) => {
-  const state = await mockStudioServer(page, { holdResponse: true });
-  await page.goto('/chat');
-  const input = page.getByRole('textbox', { name: 'Message', exact: true });
-  await expect(input).toBeEnabled();
-  await input.fill('Continue in background');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect.poll(() => state.submissions).toBe(1);
-  await navigateClient(page, '/evaluations');
-  await expect(page.getByRole('heading', { name: 'Evaluations', exact: true })).toBeVisible();
-  state.releaseResponse();
-  await navigateClient(page, '/chat');
-  await expect(page.locator('.message-assistant strong')).toHaveText('formatted content');
-  await expect(input).toBeEnabled();
-  expect(state.submissions).toBe(1);
-  expect(state.cancellations).toBe(0);
-  await input.fill('Draft survives navigation');
-  await navigateClient(page, '/');
-  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
-  await navigateClient(page, '/chat');
-  await expect(input).toHaveValue('Draft survives navigation');
-});
-
-test('待发送附件切页保留，移除时释放预览 URL', async ({ page }) => {
-  await mockStudioServer(page);
-  await page.goto('/chat');
-  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
-  await page.evaluate(() => {
-    const revoke = URL.revokeObjectURL.bind(URL);
-    window.revokedPreviews = [];
-    URL.revokeObjectURL = (url) => {
-      window.revokedPreviews.push(url);
-      revoke(url);
-    };
-  });
-  await page.locator('input[type="file"]').setInputFiles({
-    name: 'example.png',
-    mimeType: 'image/png',
-    buffer: Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/hS8AAAAASUVORK5CYII=',
-      'base64',
-    ),
-  });
-  await expect(page.getByText('example.png')).toBeVisible();
-  const preview = await page.locator('.attachment-chip img').getAttribute('src');
-  await navigateClient(page, '/settings');
-  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await navigateClient(page, '/chat');
-  await expect(page.getByText('example.png')).toBeVisible();
-  expect(await page.locator('.attachment-chip img').getAttribute('src')).toBe(preview);
-  await page.getByRole('button', { name: 'Remove attachment' }).click();
-  await expect(page.getByText('example.png')).toHaveCount(0);
-  expect(await page.evaluate(() => window.revokedPreviews)).toContain(preview);
-});
-
-test('生成 POST 被拒绝时保留草稿与附件，重试成功后清空输入', async ({ page }) => {
-  const state = await mockStudioServer(page, { rejectFirstSubmission: true });
-  await page.goto('/chat');
-  const input = page.getByRole('textbox', { name: 'Message', exact: true });
-  await expect(input).toBeEnabled();
-  await input.fill('Retry this request');
-  await page.locator('input[type="file"]').setInputFiles({
-    name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('note'),
-  });
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Request rejected');
-  await expect(input).toHaveValue('Retry this request');
-  await expect(page.locator('.attachment-chip')).toContainText('notes.txt');
-  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(page.locator('.message-assistant strong')).toHaveText('formatted content');
-  await expect(input).toHaveValue('');
-  await expect(page.locator('.attachment-chip')).toHaveCount(0);
-  expect(state.submissions).toBe(2);
-  expect(state.unexpected).toEqual([]);
-});
-
-test('发送流式回答并完成历史同步', async ({ page }, testInfo) => {
-  const state = await mockStudioServer(page);
-  const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto('/chat');
-  const input = page.getByRole('textbox', { name: 'Message', exact: true });
-  await expect(input).toBeEnabled();
-  await input.fill('Explain this project');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(page.locator('.message-assistant strong')).toHaveText('formatted content');
-  await expect(input).toBeEnabled();
-  await expect(page.locator('.message-assistant')).toHaveCount(1);
-  await expect.poll(() => state.submissions).toBe(1);
-  expect(state.unexpected).toEqual([]);
-  expect(errors).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
-  await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
-});
-
-test('输入法确认不会误发，Shift Enter 保留换行', async ({ page }) => {
-  const state = await mockStudioServer(page);
-  await page.goto('/chat');
-  const input = page.getByRole('textbox', { name: 'Message', exact: true });
-  await expect(input).toBeEnabled();
-  await input.fill('中文候选');
-  await input.dispatchEvent('compositionstart');
-  await input.dispatchEvent('keydown', {
-    key: 'Enter',
-    code: 'Enter',
-    isComposing: true,
-    keyCode: 229,
-  });
-  await input.dispatchEvent('compositionend');
-  await expect(input).toHaveValue('中文候选');
-  expect(state.submissions).toBe(0);
-  await input.press('Shift+Enter');
-  await expect(input).toHaveValue('中文候选\n');
-  expect(state.submissions).toBe(0);
-});
-
-test('历史同步失败保留回答且恢复时不重复生成', async ({ page }) => {
-  const state = await mockStudioServer(page, { failFirstSync: true });
-  await page.goto('/chat');
-  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Keep this response');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  const retry = page.getByRole('button', { name: 'Synchronize response', exact: true });
-  await expect(retry).toBeVisible();
-  await expect(page.getByText('formatted content', { exact: true })).toBeVisible();
-  await retry.click();
-  await expect(retry).toBeHidden();
-  await expect(page.locator('.message-assistant')).toHaveCount(1);
-  expect(state.submissions).toBe(1);
-});
-
-test('停止挂起生成后恢复输入', async ({ page }) => {
-  const state = await mockStudioServer(page, { waitForCancel: true });
-  await page.goto('/chat');
-  const input = page.getByRole('textbox', { name: 'Message', exact: true });
-  await input.fill('Stop this request');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect.poll(() => state.submissions).toBe(1);
-  await page.getByRole('button', { name: 'Stop generation', exact: true }).click();
-  await expect(input).toBeEnabled();
-  expect(state.cancellations).toBe(1);
-  expect(state.submissions).toBe(1);
 });
 
 test('路由导航及模型目录弹窗键盘焦点', async ({ page }, testInfo) => {
@@ -772,15 +569,11 @@ test('路由导航及模型目录弹窗键盘焦点', async ({ page }, testInfo)
 
 test('明暗主题的页面内容保持在工作区内且可滚动访问', async ({ page }, testInfo) => {
   const state = await mockStudioServer(page);
-  const routes = [['/', 'Overview'], ['/models', 'Models'], ['/settings', 'Settings'],
+  const routes = [['/', 'Overview'], ['/models', 'Models'], ['/runtime', 'Service'],
     ['/model-hub', 'Model downloads']] as const;
   for (const theme of ['light', 'dark']) {
-    await page.goto('/settings');
-    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-    await expect(page.getByRole('switch', { name: 'Use model or architecture defaults' })).toHaveCount(0);
-    await expect(page.locator('#settings-system-prompt')).toHaveCount(0);
-    await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
-    await page.getByRole('button', { name: 'Apply settings', exact: true }).first().click();
+    await page.goto('/');
+    await page.locator('#dashboard-overview .appearance-controls').getByRole('button', { name: theme === 'light' ? 'Light' : 'Dark', exact: true }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     for (const [path, title] of routes) {
       await navigateClient(page, path);

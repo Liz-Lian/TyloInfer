@@ -11,7 +11,7 @@ test('recovers a stale route chunk by refreshing the same page once', async ({ p
     if (request.resourceType() === 'document' && new URL(request.url()).pathname === '/') reloads += 1;
   });
   await page.goto('/model-hub');
-  await expect(page.getByRole('tab', { name: 'Community', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Model browser', exact: true })).toBeVisible();
   await page.evaluate(() => { history.pushState(null, '', '/'); dispatchEvent(new PopStateEvent('popstate')); });
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
   expect(reloads).toBe(1);
@@ -29,7 +29,7 @@ test('stops automatic reloads for a persistent failure and makes manual retry re
     if (request.resourceType() === 'document' && new URL(request.url()).pathname === '/') reloads += 1;
   });
   await page.goto('/model-hub');
-  await expect(page.getByRole('tab', { name: 'Community', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Model browser', exact: true })).toBeVisible();
   await page.evaluate(() => { history.pushState(null, '', '/'); dispatchEvent(new PopStateEvent('popstate')); });
   await expect(page.getByRole('heading', { name: 'Page unavailable', exact: true })).toBeVisible();
   expect(reloads).toBe(1);

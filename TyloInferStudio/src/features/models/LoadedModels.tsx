@@ -5,10 +5,11 @@ import type { useModelCatalog } from './useModelCatalog';
 import { ModelVendorMark } from '../../app/ModelVendorMark';
 import { ModelLoadProgress } from './ModelLoadProgress';
 
-export function LoadedModels({ catalog }: { catalog: ReturnType<typeof useModelCatalog> }) {
+export function LoadedModels({ catalog, unlistedOnly = false }: { catalog: ReturnType<typeof useModelCatalog>; unlistedOnly?: boolean }) {
   const { tr } = useSettings();
   const { busy, artifacts, availableModelNames, modelFilter, filteredInstances,
     unloadInstance, chooseModelDirectory } = catalog;
+  const visible = unlistedOnly ? filteredInstances.filter(instance => !artifacts.some(artifact => artifact.name === instance.model)) : filteredInstances;
   return (
     <>
       <SectionLabel
@@ -16,10 +17,10 @@ export function LoadedModels({ catalog }: { catalog: ReturnType<typeof useModelC
         subtitle={tr(`${availableModelNames.length} 个可用于推理`,
           `${availableModelNames.length} available for inference`)}
       />
-      {filteredInstances.length > 0 ? (
+      {visible.length > 0 ? (
         <TMPanel className="model-catalog-panel loaded-model-panel">
           <div className="model-list">
-            {filteredInstances.map((instance) => {
+            {visible.map((instance) => {
               const ready = instance.state === 'ready' || instance.state === 'busy';
               const stateLabel = instance.state === 'loading'
                 ? tr('加载中', 'Loading')
@@ -47,6 +48,9 @@ export function LoadedModels({ catalog }: { catalog: ReturnType<typeof useModelC
                   </div>
                   <div className="model-row-actions">
                     <ModelVendorMark name={instance.model} architecture={artifacts.find((item) => item.name === instance.model)?.architecture} />
+                    <button type="button" disabled={!ready} onClick={() => catalog.openModelSettings(instance.model)}>
+                      {tr('配置', 'Configure')}
+                    </button>
                     <button
                       disabled={busy || instance.state !== 'ready'}
                       onClick={() => void unloadInstance(instance.id)}

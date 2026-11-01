@@ -64,7 +64,7 @@ it('sends format, sort and source changes to the server', async () => {
 it('accepts a direct repository URL without waiting for the search debounce', async () => {
   render(<Harness />);
   await screen.findByRole('button', { name: 'Download Q3_K_M' });
-  fireEvent.change(screen.getByRole('textbox', { name: 'Search community models' }), { target: { value: 'https://huggingface.co/community/Direct-GGUF' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'https://huggingface.co/community/Direct-GGUF' } });
   fireEvent.click(screen.getByRole('button', { name: 'Search' }));
   await screen.findByRole('heading', { name: 'Direct-GGUF' });
   expect(modelsApi.resolveHubModel).toHaveBeenCalledWith('https://huggingface.co/community/Direct-GGUF', 'huggingface', expect.any(AbortSignal));
@@ -91,7 +91,7 @@ it('ignores a stale search response after a new search is submitted', async () =
     .mockResolvedValueOnce({ data: [info('New-GGUF')] });
   render(<Harness />);
   await waitFor(() => expect(modelsApi.browseHubModels).toHaveBeenCalledOnce());
-  fireEvent.change(screen.getByRole('textbox', { name: 'Search community models' }), { target: { value: 'new' } });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'new' } });
   fireEvent.click(screen.getByRole('button', { name: 'Search' }));
   await screen.findByRole('heading', { name: 'New-GGUF' });
   await act(async () => resolveFirst({ data: [info('Stale-GGUF')] }));

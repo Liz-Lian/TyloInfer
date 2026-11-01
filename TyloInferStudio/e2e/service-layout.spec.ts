@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { mockStudioServer } from './mockServer';
+import { openModelSettings } from './modelSettings';
 
 for (const language of ['zh-CN', 'en'] as const) {
   test(`service layout keeps model controls aligned, readable and separate (${language})`, async ({ page }, testInfo) => {
@@ -26,12 +27,10 @@ for (const language of ['zh-CN', 'en'] as const) {
       return route.fulfill({ json: { max_context_size: route.request().method() === 'PUT' ? 65536 : null,
         model_overrides: {}, fallback_context_size: 32768 } });
     });
-    await page.goto('/runtime');
-    const panel = page.locator('.server-context-panel');
+    const panel = await openModelSettings(page, names[0], language);
     await expect(panel.locator('.model-context-entry')).toHaveCount(1);
-    const selected = panel.getByRole('combobox', { name: language === 'zh-CN' ? '单模型上下文模型' : 'Per-model context model' });
-    const longTitle = panel.locator('.model-context-selector .compact-select-value');
-    await expect(selected).toHaveAttribute('title', names[0]);
+    const longTitle = panel.locator(':scope > header h2');
+    await expect(longTitle).toHaveText(names[0]);
     expect(await longTitle.evaluate(element => {
       const style = getComputedStyle(element);
       return style.whiteSpace === 'nowrap' && style.textOverflow === 'ellipsis';
@@ -45,34 +44,24 @@ for (const language of ['zh-CN', 'en'] as const) {
       name: language === 'zh-CN' ? '保存服务器设置' : 'Save server settings', exact: true,
     })).toHaveCount(0);
     const entry = panel.locator('.model-context-entry');
-    const first = (await entry.getByRole('spinbutton').boundingBox())!;
-    await selected.selectOption(names[1]);
-    const second = (await entry.getByRole('spinbutton').boundingBox())!;
-    expect(Math.abs(first.x - second.x)).toBeLessThanOrEqual(1);
-    await selected.selectOption(names[0]);
+    await expect(panel.getByRole('combobox', { name: language === 'zh-CN' ? '单模型上下文模型' : 'Per-model context model' })).toHaveCount(0);
     await expect(entry.locator('.model-context-controls button')).toHaveCount(0);
     await panel.scrollIntoViewIfNeeded();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await panel.screenshot({ path: testInfo.outputPath('service-context-layout.png'), animations: 'disabled' });
     await page.evaluate(() => document.documentElement.dataset.theme = 'dark');
     await panel.screenshot({ path: testInfo.outputPath('service-context-layout-dark.png'), animations: 'disabled' });
-    const global = panel.getByRole('spinbutton', { name: language === 'zh-CN' ? '全局上下文上限' : 'Global context cap', exact: true });
-    if (await global.count()) {
+    await entry.getByRole('spinbutton').fill('8192');
+    await entry.getByRole('button', { name: language === 'zh-CN' ? '保存到该模型' : 'Save to this model' }).click();
+    await expect.poll(() => updates).toEqual([{ context_size: 8192, instance_id: 'instance-1', yarn_enabled: false }]);
+    await panel.getByRole('button', { name: language === 'zh-CN' ? '关闭模型设置' : 'Close model settings' }).click();
+    await page.goto('/runtime');
+    const defaults = page.locator('.server-context-panel');
+    const global = defaults.getByRole('spinbutton', { name: language === 'zh-CN' ? '全局上下文上限' : 'Global context cap', exact: true });
       await global.fill('65536');
-      await panel.getByRole('button', { name: language === 'zh-CN' ? '保存全局上下文上限' : 'Save global context cap' }).click();
+      await defaults.getByRole('button', { name: language === 'zh-CN' ? '保存全局上下文上限' : 'Save global context cap' }).click();
       await expect.poll(() => saves).toEqual([{ max_context_size: 65536 }]);
-      await expect(panel.getByRole('status').filter({ hasText: language === 'zh-CN' ? '已保存' : 'Saved' })).toBeVisible();
-      await entry.getByRole('spinbutton').fill('8192');
-      await selected.selectOption(names[1]);
-      await entry.getByRole('spinbutton').fill('32768');
-      await selected.selectOption(names[0]);
-      await expect(entry.getByRole('spinbutton')).toHaveValue('8192');
-      await entry.getByRole('button', { name: language === 'zh-CN' ? '保存到该模型' : 'Save to this model' }).click();
-      await expect.poll(() => updates).toEqual([{ context_size: 8192, instance_id: 'instance-1', yarn_enabled: false }]);
-      await selected.selectOption(names[1]);
-      await expect(entry.getByRole('spinbutton')).toHaveValue('32768');
-      await expect(entry.getByRole('button', { name: language === 'zh-CN' ? '保存到该模型' : 'Save to this model' })).toBeEnabled();
-    }
-    expect(state.requests.filter(request => /^(POST|DELETE) /.test(request))).toEqual([]);
+      await expect(defaults.getByRole('status').filter({ hasText: language === 'zh-CN' ? '已保存' : 'Saved' })).toBeVisible();
+    expect(state.requests.filter(request => /^DELETE /.test(request))).toEqual([]);
   });
 }

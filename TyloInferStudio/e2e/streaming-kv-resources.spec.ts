@@ -64,10 +64,11 @@ for (const language of ['zh-CN', 'en'] as const) {
     await page.screenshot({ path: testInfo.outputPath('resources-streamed-kv.png'), animations: 'disabled', fullPage: true });
     await traffic.scrollIntoViewIfNeeded();
     await page.screenshot({ path: testInfo.outputPath('resources-kv-traffic.png'), animations: 'disabled' });
-    await page.goto('/settings');
+    await page.goto('/versions');
     await expect(page.locator('.model-context-settings')).toHaveCount(0);
     await expect(page.getByText(zh ? '上下文' : 'Context', { exact: true })).toHaveCount(0);
-    await expect(page.getByText(zh ? '外观' : 'Appearance', { exact: true })).toBeVisible();
+    if (testInfo.project.name === 'mobile') await page.getByRole('button', { name: zh ? '打开侧栏' : 'Open sidebar', exact: true }).click();
+    await expect(page.getByRole('group', { name: zh ? '明暗' : 'Appearance', exact: true })).toBeVisible();
     expect(state.requests.filter(request => /^(POST|PUT|DELETE) /.test(request))).toEqual([]);
   });
 }

@@ -18,7 +18,8 @@
       "../dist": "web-ui",
       "../../packaging/windows-runtime/": "",
       "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
-      "../../packaging/Resources/licenses": "licenses"
+      "../../packaging/Resources/licenses": "licenses",
+      "../../packaging/Resources/agent-runtime": "agent-runtime"
     }
   }
 }

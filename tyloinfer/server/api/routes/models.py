@@ -195,8 +195,8 @@ async def load_model(service: ServiceDependency, body: ModelLoadRequest) -> Oper
     responses=ERROR_RESPONSES,
     tags=["models"],
 )
-async def model_artifacts(service: ServiceDependency, refresh: bool = False) -> ModelArtifactList:
-    return await service.model_artifacts(refresh=refresh)
+async def model_artifacts(service: ServiceDependency, refresh: bool = False, include_components: bool = False) -> ModelArtifactList:
+    return await service.model_artifacts(refresh=refresh, include_components=True) if include_components else await service.model_artifacts(refresh=refresh)
 
 
 @router.get(

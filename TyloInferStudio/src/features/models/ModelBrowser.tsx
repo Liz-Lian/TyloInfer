@@ -465,12 +465,12 @@ export function ModelBrowser({ jobKinds, onError, onJobCreated, tab, onTabChange
           </select>
         </label>
         <div className="model-browser-description">
-          <p>{tr("查找官方优化模型或浏览社区仓库。", "Find optimized official models or browse community repositories.")}</p>
+          <p>{tr("查找推荐模型或浏览模型仓库。", "Find recommended models or browse model repositories.")}</p>
           {downloadDirectoryControl}
         </div>
         <div className="model-browser-tabs" role="tablist">
-          <button aria-selected={tab === "official"} onClick={() => onTabChange("official")} role="tab" type="button">{tr("官方模型", "Official")}</button>
-          <button aria-selected={tab === "community"} onClick={() => onTabChange("community")} role="tab" type="button">{tr("第三方模型", "Community")}</button>
+          <button aria-selected={tab === "official"} onClick={() => onTabChange("official")} role="tab" type="button">{tr("推荐模型", "Recommended models")}</button>
+          <button aria-selected={tab === "community"} onClick={() => onTabChange("community")} role="tab" type="button">{tr("模型浏览器", "Model browser")}</button>
           <button aria-selected={tab === "downloads"} onClick={() => onTabChange("downloads")} role="tab" type="button">{tr("下载队列", "Download queue")}</button>
         </div>
       </header>

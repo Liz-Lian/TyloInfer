@@ -133,6 +133,9 @@ export function MemoryBudgetControls({ residency, children }: { residency: strin
       detail={separate ? tr('显存权重、活跃 KV 与显存热前缀共用此预算；RAM 专家、KV 和前缀缓存单独统计。', 'VRAM weights, live KV and hot prefixes share this budget. RAM experts, KV and prefix caches are accounted separately.') : tr('权重、活跃 KV 和前缀 RAM 共用此预算；接近上限时，先将前缀缓存移至 SSD，再减少常驻专家。', 'Weights, live KV and prefix RAM share this budget; near the limit, move prefix caches to SSD before reducing resident experts.')}
       trailing={<>{!totalManual && <small className="memory-budget-available">{automaticTotal != null ? `${(automaticTotal / 2 ** 30).toFixed(1)} GiB` : '--'}</small>}
         {control(totalLabel, totalManual, changeTotalMode, totalDraft, setTotalDraft, 0.1)}</>} />
+    <details className="configuration-disclosure">
+      <summary>{tr('细分预算与缓存策略', 'Budget limits and cache policy')}</summary>
+      <p>{tr('以下上限在总预算内生效；保持自动即可由 TyloInfer 分配。', 'These limits apply within the total budget. Leave them automatic for TyloInfer to allocate.')}</p>
     <SettingRow title={modelLabel}
       detail={separate ? tr('所有模型权重的显存上限；放不下的 MoE 专家在 RAM 中按需传入显存，SSD 专家流式加载尚未支持。', 'VRAM ceiling across model weights; overflowing MoE experts stream from RAM to VRAM. SSD expert streaming is not yet supported.') : tr('所有模型权重的总上限；放不下的 MoE 专家自动转为 SSD 缓存。', 'Total weight ceiling across models; overflowing MoE experts use SSD-backed caching.')}
       trailing={control(modelLabel, modelManual, setModelManual, modelDraft, setModelDraft, 0.1)} />
@@ -140,6 +143,7 @@ export function MemoryBudgetControls({ residency, children }: { residency: strin
       detail={separate ? tr('所有模型可复用前缀的显存上限，不含活跃 KV；RAM 与 SSD 前缀缓存配额单独设置。', 'VRAM limit for reusable prefixes, excluding live KV. RAM and SSD prefix allowances are configured separately.') : tr('所有模型可复用前缀的 RAM 上限，不含活跃 KV。', 'RAM limit for reusable prefixes across models; excludes active KV.')}
       trailing={control(prefixLabel, prefixManual, setPrefixManual, prefixDraft, setPrefixDraft, 0)} />
     {children}
+    </details>
     <div className="memory-budget-actions"><small>{tr('当前模型驻留', 'Current weight residency')}: {residency}</small>
       <button disabled={!available || saving || pending || !valid} onClick={() => void apply()} type="button">
         {saving || pending ? tr('应用中…', 'Applying…') : tr('应用预算', 'Apply budgets')}

@@ -7,7 +7,8 @@ const state = vi.hoisted(() => ({ runtime: null as RuntimeStatus | null, models:
   connectionRevision: 0, refreshRuntime: vi.fn(), listener: vi.fn().mockResolvedValue({ anthropic_port: null }),
   data: null as ServingStatistics | null, scope: 'session' }));
 vi.mock('../../app/RuntimeProvider', () => ({ useRuntime: () => state }));
-vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (_zh: string, en: string) => en }) }));
+vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (_zh: string, en: string) => en,
+  settings: { theme: 'system', language: 'system' }, updateSettings: vi.fn() }) }));
 vi.mock('../../shared/api/resources/runtime', () => ({ runtimeApi: { runtimeListener: state.listener } }));
 vi.mock('./RuntimeHero', () => ({ RuntimeHero: () => null }));
 vi.mock('./MemoryHierarchy', () => ({ MemoryHierarchy: () => null }));
@@ -15,6 +16,13 @@ vi.mock('./useServingStatistics', () => ({ useServingStatistics: (scope: string)
 
 beforeEach(() => { state.runtime = null; state.models = []; state.data = null; });
 afterEach(() => { vi.restoreAllMocks(); });
+
+it('places the combined appearance control beside Refresh in the overview header', async () => {
+  await act(async () => { render(<OverviewPage />); });
+  const controls = screen.getByRole('group', { name: 'Appearance and language' });
+  expect(controls.closest('.screen-header-trailing')).toContainElement(screen.getByRole('button', { name: 'Refresh' }));
+  expect(controls.querySelectorAll('.appearance-controls-divider')).toHaveLength(1);
+});
 
 it('uses placeholders without statistics, not unsupported or old request speed', async () => {
   state.runtime = { model: 'model', last_request: { decode_tps: 987.6 }, prefix_cache_supported: 0 };

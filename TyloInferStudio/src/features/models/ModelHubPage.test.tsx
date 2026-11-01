@@ -52,13 +52,13 @@ it('keeps a submitted download on this page, animates into the circle and opens 
   expect(header.children[1]).toHaveClass('download-concurrency');
   expect(header.children[2]).toHaveClass('model-browser-description');
   expect(header.children[2].querySelector('.download-directory-control')).toBeInTheDocument();
-  expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Official', 'Community', 'Download queue']);
+  expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Recommended models', 'Model browser', 'Download queue']);
   const button = await screen.findByRole('button', { name: 'Download' });
   await waitFor(() => expect(button).toBeEnabled());
   fireEvent.click(button);
   await waitFor(() => expect(container.querySelector('.download-flight')).toBeInTheDocument());
   expect(jobsApi.createJob).toHaveBeenCalledWith('download.modelscope', expect.objectContaining({ download_directory: '/workspace/models' }));
-  expect(screen.getByRole('tab', { name: 'Official' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tab', { name: 'Recommended models' })).toHaveAttribute('aria-selected', 'true');
   expect(container.querySelector('.download-circle-count')).toHaveTextContent('1');
   fireEvent.click(screen.getByRole('button', { name: 'Download queue' }));
   expect(screen.getByRole('tab', { name: 'Download queue' })).toHaveAttribute('aria-selected', 'true');

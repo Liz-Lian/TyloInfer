@@ -67,14 +67,24 @@ it('restores the Anthropic value after another application occupies the selected
   expect(input).toHaveValue(8091);
 });
 
-it('keeps API, memory, context and persistent cache in independent ordered sections', () => {
+it('keeps common settings visible and opens lower-frequency sections without losing drafts', async () => {
   const { container } = render(<MemoryRouter><ConnectionsPage /></MemoryRouter>);
   expect([...container.querySelectorAll('.server-page > .section-label')].map(item => item.textContent)).toEqual([
-    'API parameters', 'Memory plan', 'Context management', 'Persistent prefix cache', 'Automation',
+    'API parameters', 'Memory plan', 'Context management',
   ]);
   expect(container.querySelector('.server-api-panel')).toContainElement(screen.getByRole('spinbutton', { name: 'OpenAI port' }));
   expect(container.querySelector('.server-api-panel')).toContainElement(screen.getByRole('spinbutton', { name: 'Anthropic port' }));
   expect(screen.queryByRole('button', { name: 'Save server settings' })).not.toBeInTheDocument();
+  expect(screen.queryByText('Persistent prefix cache')).not.toBeInTheDocument();
+  expect(screen.queryByText('Automation')).not.toBeInTheDocument();
+  const port = screen.getByRole('spinbutton', { name: 'OpenAI port' });
+  await waitFor(() => expect(port).toBeEnabled());
+  fireEvent.change(port, { target: { value: '8092' } });
+  fireEvent.click(screen.getByRole('tab', { name: 'Cache' }));
+  expect(screen.getByRole('tabpanel')).toHaveTextContent('Persistent prefix cache');
+  fireEvent.keyDown(screen.getByRole('tab', { name: 'Cache' }), { key: 'Home' });
+  expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus();
+  expect(screen.getByRole('spinbutton', { name: 'OpenAI port' })).toHaveValue(8092);
 });
 
 it('网页端可编辑端口，保存实际更改监听并持久化连接地址', async () => {

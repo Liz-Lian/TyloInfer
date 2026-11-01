@@ -76,11 +76,30 @@ beforeEach(() => {
 });
 
 describe('useModelCatalog', () => {
+  it('registers standalone table assets without attempting to load them as models', async () => {
+    const component = { ...artifact, asset_kind: 'engram' as const, loadable: false };
+    vi.mocked(modelsApi.modelArtifacts).mockResolvedValue([component]);
+    vi.spyOn(modelsApi, 'modelDirectories').mockResolvedValue({ current_id: 'folder', current_name: 'models',
+      current_path: '/models', parent_id: null, model_file_count: 1, data: [] });
+    vi.spyOn(modelsApi, 'registerModelDirectory').mockResolvedValue([component]);
+    const load = vi.spyOn(modelsApi, 'loadModel');
+    const { result } = renderHook(useModelCatalog, { wrapper: Wrapper });
+    await act(async () => result.current.chooseModelDirectory());
+    await act(async () => result.current.registerCurrentModelDirectory());
+    expect(result.current.artifacts).toEqual([component]);
+    expect(result.current.modelBrowserOpen).toBe(false);
+    expect(load).not.toHaveBeenCalled();
+    expect(state.setSelectedModel).not.toHaveBeenCalled();
+    await act(async () => result.current.loadArtifact(component.name));
+    expect(load).not.toHaveBeenCalled();
+    expect(screen.getByText('Companion assets cannot be loaded as standalone models.')).toBeInTheDocument();
+  });
+
   it('forwards explicitly selected GGUF companions with the model load request', async () => {
     const load = vi.spyOn(modelsApi, 'loadModel').mockResolvedValue({ operation_id: 'load', status: 'accepted' });
     const { result } = renderHook(useModelCatalog, { wrapper: Wrapper });
     await act(async () => result.current.loadArtifact('XQ', ['/models/engram']));
-    expect(load).toHaveBeenCalledExactlyOnceWith('XQ', 32768, 'auto', expect.objectContaining({
+    expect(load).toHaveBeenCalledExactlyOnceWith('XQ', null, 'auto', expect.objectContaining({
       gguf_companions: ['/models/engram'],
     }));
   });
@@ -163,7 +182,7 @@ describe('useModelCatalog', () => {
       state.ready = true;
       const { result, unmount } = renderHook(useModelCatalog, { wrapper: Wrapper });
       await act(async () => { await Promise.resolve(); });
-      expect(modelsApi.modelArtifacts).toHaveBeenLastCalledWith(true);
+      expect(modelsApi.modelArtifacts).toHaveBeenLastCalledWith(true, true);
       expect(result.current.artifacts).toEqual([artifact]);
       vi.mocked(modelsApi.modelArtifacts).mockResolvedValue([]);
       await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
@@ -266,7 +285,7 @@ describe('useModelCatalog', () => {
     await act(async () => result.current.chooseModelDirectory());
     let pending!: Promise<void>;
     await act(async () => { pending = result.current.registerCurrentModelDirectory(); await Promise.resolve(); });
-    expect(modelsApi.modelArtifacts).toHaveBeenCalledWith(true);
+    expect(modelsApi.modelArtifacts).toHaveBeenCalledWith(true, true);
     setApiBaseUrl('http://other-server:8090');
     state.connectionRevision++;
     rerender();
@@ -466,28 +485,54 @@ describe('useModelCatalog', () => {
     expect(result.current.filteredArtifacts).toEqual([artifact]);
   });
 
-  it('passes the page load policy and shared context size before selecting the loaded model', async () => {
+  it('passes the selected model’s load policy without replacing server context defaults', async () => {
     state.ready = true;
     const load = vi
       .spyOn(modelsApi, 'loadModel')
       .mockResolvedValue({ operation_id: 'load-1', status: 'accepted' });
     const { result } = renderHook(useModelCatalog, { wrapper: Wrapper });
     await waitFor(() => expect(result.current.artifacts).toHaveLength(1));
+    act(() => result.current.openModelSettings(artifact.name));
     act(() => {
       result.current.setLoadPinned(true);
       result.current.setLoadIdleTtl(300);
       result.current.setLoadDeviceIds(['2']);
     });
     await act(async () => result.current.loadArtifact(artifact.name));
-    expect(load).toHaveBeenCalledWith('Local Model', 32768, 'auto', {
+    expect(load).toHaveBeenCalledWith('Local Model', null, 'auto', {
       pin: true,
       idle_ttl_seconds: 300,
       device_ids: ['2'],
-      context_management: DEFAULT_LOAD_CONTEXT,
     });
     expect(state.refreshRuntime).toHaveBeenCalledWith(false);
     expect(state.setSelectedModel).toHaveBeenCalledWith('Local Model');
     expect(result.current.busy).toBe(false);
+  });
+
+  it('isolates context, devices and residency choices by model and connection', async () => {
+    const load = vi.spyOn(modelsApi, 'loadModel').mockResolvedValue({ operation_id: 'load', status: 'accepted' });
+    const { result, rerender } = renderHook(useModelCatalog, { wrapper: Wrapper });
+    act(() => result.current.openModelSettings('Model A'));
+    act(() => {
+      result.current.setLoadPinned(true);
+      result.current.setLoadDeviceIds(['2']);
+      result.current.setLoadContext({ ...DEFAULT_LOAD_CONTEXT, automatic: false, context_size: 8192 });
+    });
+    act(() => result.current.openModelSettings('Model B'));
+    expect(result.current.loadPinned).toBe(false);
+    expect(result.current.loadDeviceIds).toEqual([]);
+    expect(result.current.loadContext.context_size).toBeNull();
+    await act(async () => result.current.loadArtifact('Model B'));
+    expect(load).toHaveBeenLastCalledWith('Model B', null, 'auto', { pin: false, device_ids: [], idle_ttl_seconds: null });
+    await act(async () => result.current.loadArtifact('Model A'));
+    expect(load).toHaveBeenLastCalledWith('Model A', 8192, 'auto', expect.objectContaining({ pin: true, device_ids: ['2'],
+      context_management: expect.objectContaining({ automatic: false, context_size: 8192 }) }));
+    act(() => result.current.openModelSettings('Model A'));
+    setApiBaseUrl('https://another.invalid'); state.connectionRevision++;
+    rerender();
+    expect(result.current.settingsModel).toBeNull();
+    act(() => result.current.openModelSettings('Model A'));
+    expect(result.current.loadContext.context_size).toBeNull();
   });
 
   it('keeps the server directory dialog open after failed registration', async () => {
