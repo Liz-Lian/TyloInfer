@@ -67,7 +67,7 @@ for (const language of ['zh-CN', 'en'] as const) {
     await page.goto('/versions');
     await expect(page.locator('.model-context-settings')).toHaveCount(0);
     await expect(page.getByText(zh ? '上下文' : 'Context', { exact: true })).toHaveCount(0);
-    if (testInfo.project.name === 'mobile') await page.getByRole('button', { name: zh ? '打开侧栏' : 'Open sidebar', exact: true }).click();
+    await page.goto('/');
     await expect(page.getByRole('group', { name: zh ? '明暗' : 'Appearance', exact: true })).toBeVisible();
     expect(state.requests.filter(request => /^(POST|PUT|DELETE) /.test(request))).toEqual([]);
   });

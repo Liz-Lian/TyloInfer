@@ -195,9 +195,9 @@ test('三家架构标识贯穿模型页面，保持描线、无边框和靠右�
   expect(heroMark!.x + heroMark!.width).toBeLessThan(heroButton!.x);
   for (const item of models) await expect(page.locator(`.overview-model-grid [data-model-vendor="${item.vendor}"]`)).toBeVisible();
   await navigateClient(page, '/models');
+  await expect(page.locator('.loaded-model-panel')).toHaveCount(0);
   await expect(page.locator('.loaded-model-panel').getByRole('button', { name: /Use in chat|Current/ })).toHaveCount(0);
   for (const item of models) {
-    await expect(page.locator(`.loaded-model-panel [data-model-vendor="${item.vendor}"]`)).toBeVisible();
     await expect(page.locator(`.model-library-panel [data-model-vendor="${item.vendor}"]`)).toBeVisible();
   }
   const row = page.locator('.model-library-panel .model-row').first();
@@ -212,7 +212,7 @@ test('三家架构标识贯穿模型页面，保持描线、无边框和靠右�
   expect(markBox!.x + markBox!.width).toBeLessThan(rowButton!.x);
   expect(Math.abs(markBox!.y + markBox!.height / 2 - rowButton!.y - rowButton!.height / 2)).toBeLessThanOrEqual(1);
   await navigateClient(page, '/runtime');
-  await expect(page.locator('.server-model-control')).toBeVisible();
+  await expect(page.locator('.server-model-control')).toHaveCount(0);
   await expect(page.locator('.server-model-control .model-vendor-mark')).toHaveCount(0);
   await navigateClient(page, '/models');
   await page.screenshot({ path: testInfo.outputPath('model-vendors-local.png'), animations: 'disabled' });
@@ -417,7 +417,7 @@ test('加载条显示实际任务进度，部分缺失的资源明细保留已�
   advance();
   await expect(page.locator('.runtime-hero progress')).toHaveAttribute('value', '0.75');
   await navigateClient(page, '/models');
-  await expect(page.locator('.loaded-model-panel progress')).toHaveAttribute('value', '0.75');
+  await expect(page.locator('.loaded-model-panel progress')).toHaveCount(0);
   await expect(page.locator('.model-library-panel progress')).toHaveAttribute('value', '0.75');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('model-loading-progress.png') });
@@ -486,7 +486,7 @@ test('页面按需请求自己的资源，概览不预载其他业务列表', as
     ['/evaluations', '/api/v1/evaluations'],
     ['/model-hub', null],
     ['/versions', null],
-    ['/runtime', '/api/v1/cluster/nodes'],
+    ['/runtime', null],
     ['/resources', '/api/v1/runtime/resources'],
     ['/logs', '/api/v1/runtime/logs'],
   ] as const;
@@ -494,6 +494,11 @@ test('页面按需请求自己的资源，概览不预载其他业务列表', as
     await navigateClient(page, path);
     await expect(page.locator('main h1')).toBeVisible();
     if (endpoint) await expect.poll(() => state.requests.includes(`GET ${endpoint}`)).toBe(true);
+    if (path === '/runtime') {
+      expect(state.requests).not.toContain('GET /api/v1/cluster/nodes');
+      await page.getByRole('tab', { name: 'Advanced', exact: true }).click();
+      await expect.poll(() => state.requests.includes('GET /api/v1/cluster/nodes')).toBe(true);
+    }
     if (path === '/versions') expect(state.requests).not.toContain('GET /api/v1/presets');
   }
   expect(errors).toEqual([]);
