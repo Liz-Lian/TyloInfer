@@ -11,12 +11,9 @@ add_library(mfq-model-source STATIC
     gguf_model_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mlx.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.h
-    mlx_tensor_names.h
     hf_safetensors_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.cpp
     tq_fixture_source.cpp
-    compat/mfq_legacy_tensor_names.cpp
-    compat/mfq_legacy_tensor_names.h
     model_source.h
     read.h
     mfq_model_source.h

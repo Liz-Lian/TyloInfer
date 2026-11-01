@@ -1,5 +1,5 @@
 #include "gguf_model_source.h"
-#include "compat/mfq_legacy_tensor_names.h"
+#include "engine/models/common/legacy_names.h"
 
 #include "gguf.h"
 #include "nlohmann/json.hpp"

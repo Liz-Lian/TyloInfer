@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/models/common/legacy_names.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/weights/source/tensor.h"
 #include "components/io/file_range_reader.h"
@@ -24,14 +25,6 @@ inline constexpr const char* kTokenizerGgufAsset = "__mfq_asset__/tokenizer.gguf
 
 inline constexpr std::string_view kModelConfigAsset =
     "__mfq_asset__/model_config.json";
-
-// The small set of legacy numeric-layout facts still needed by model loaders.
-// Name aliases remain private to each source implementation.
-struct TensorLayout {
-    double norm_weight_offset = 1.0;
-    bool linear_attention_a_is_log = true;
-    bool qwen_gdn_gguf_layout = false;
-};
 
 // Backend-neutral, read-only model input. Implementations normalize storage
 // names before tensors cross this boundary; CUDA and Metal only consume the

@@ -3,7 +3,7 @@
 #include "engine/weights/source/mapped.h"
 #include "components/io/async_range_reader.h"
 
-#include "compat/mfq_legacy_tensor_names.h"
+#include "engine/models/common/legacy_names.h"
 
 #include <algorithm>
 #include <atomic>

@@ -4,7 +4,10 @@ add_library(mfq-model-graph STATIC
     model_config.cpp
     model_config.h
     legacy_graph.cpp
-    legacy_graph.h)
+    legacy_graph.h
+    legacy_names.cpp
+    legacy_names.h
+    mlx_names.h)
 add_library(mfq::model-graph ALIAS mfq-model-graph)
 target_include_directories(mfq-model-graph PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(mfq-model-graph PRIVATE mfq-json)

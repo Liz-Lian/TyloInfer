@@ -4,9 +4,9 @@
 #include "engine/weights/encoding/fp8_sq_blob.h"
 #include "engine/weights/encoding/mx_blob.h"
 #include "engine/weights/encoding/quant/mfe_blob.h"
-#include "compat/mfq_legacy_tensor_names.h"
+#include "engine/models/common/legacy_names.h"
 #include "engine/weights/source/mlx.h"
-#include "mlx_tensor_names.h"
+#include "engine/models/common/mlx_names.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>

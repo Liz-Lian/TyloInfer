@@ -1,4 +1,4 @@
-#include "mfq_legacy_tensor_names.h"
+#include "legacy_names.h"
 
 #include "nlohmann/json.hpp"
 
