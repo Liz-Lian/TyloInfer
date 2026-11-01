@@ -1,6 +1,6 @@
 #include "models/load.h"
 #include "models/batch.h"
-#include "models/qwen35/forward.h"
+#include "engine/models/qwen35/forward.h"
 #include "models/minicpmo45/forward.h"
 #include "engine/executor/cuda_engine.h"
 #include "engine/executor/backend.h"

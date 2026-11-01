@@ -6,8 +6,8 @@
 #include "engine/executor/tq.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "models/qwen35/load.h"
-#include "models/qwen35/forward.h"
+#include "engine/models/qwen35/load.h"
+#include "engine/models/qwen35/forward.h"
 #include "models/common/block.h"
 
 #include <algorithm>

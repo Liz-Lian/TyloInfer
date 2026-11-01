@@ -8,7 +8,7 @@
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
 #include "models/nemotron_h/ops.h"
-#include "models/qwen35/forward.h"
+#include "engine/models/qwen35/forward.h"
 #include "models/minicpmo45/forward.h"
 #include "models/qwen4_exp/ops.h"
 #include "backends/cuda/engine/models/load.h"

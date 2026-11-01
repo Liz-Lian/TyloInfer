@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/qwen35/config.h"
+#include "engine/models/qwen35/config.h"
 #include "../common/weight_loading.h"
 
 namespace mfq::models::qwen35 {

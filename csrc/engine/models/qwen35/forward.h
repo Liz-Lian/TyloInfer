@@ -2,8 +2,8 @@
 
 #include "backends/cuda/engine/executor/run.h"
 #include "engine/executor/input.h"
-#include "models/qwen35/model.h"
-#include "models/qwen35/state.h"
+#include "engine/models/qwen35/model.h"
+#include "engine/models/qwen35/state.h"
 #include "ops/attention/full.h"
 
 #include <cstddef>

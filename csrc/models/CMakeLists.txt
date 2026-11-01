@@ -2,18 +2,18 @@ set(TYLOINFER_MODELS_CUDA_SOURCES
     ${PROJECT_SOURCE_DIR}/models/minicpmo45/model.cpp
     ${PROJECT_SOURCE_DIR}/models/minicpmo45/state.cpp
     ${PROJECT_SOURCE_DIR}/models/minicpmo45/forward.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/config.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/load.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/model.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/forward.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/generation.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/predictor.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/state.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/batch.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/batch_ops.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/mtp_state.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/mtp.cpp
-    ${PROJECT_SOURCE_DIR}/models/qwen35/components.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/config.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/load.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/model.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/forward.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/generation.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/predictor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/state.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/batch_ops.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/mtp_state.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/mtp.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/qwen35/components.cpp
     ${PROJECT_SOURCE_DIR}/models/engine.cpp
     ${PROJECT_SOURCE_DIR}/models/qwen4_exp/batch.cpp
 )

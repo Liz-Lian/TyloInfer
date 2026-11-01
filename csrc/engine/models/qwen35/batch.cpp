@@ -1,4 +1,4 @@
-#include "models/qwen35/batch.h"
+#include "engine/models/qwen35/batch.h"
 
 #include "engine/executor/ffn.h"
 #include "native/error.h"

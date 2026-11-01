@@ -1,4 +1,4 @@
-#include "models/qwen35/load.h"
+#include "engine/models/qwen35/load.h"
 
 #include "backend.h"
 #include "engine/models/qwen35/metadata.h"

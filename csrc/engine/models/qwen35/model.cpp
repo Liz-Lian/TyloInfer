@@ -1,4 +1,4 @@
-#include "models/qwen35/model.h"
+#include "engine/models/qwen35/model.h"
 
 namespace mfq::cuda::qwen35 {
 

@@ -1,4 +1,4 @@
-#include "models/qwen35/batch_ops.h"
+#include "engine/models/qwen35/batch_ops.h"
 #include "models/batch.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"

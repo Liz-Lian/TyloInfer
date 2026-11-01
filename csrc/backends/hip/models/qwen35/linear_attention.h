@@ -7,8 +7,8 @@
 
 #include "core/block.h"
 #include "core/ffn.h"
-#include "models/qwen35/config.h"
-#include "models/qwen35/causal_lm.h"
+#include "engine/models/qwen35/config.h"
+#include "engine/models/qwen35/causal_lm.h"
 
 namespace mfq::cuda::qwen35 {
 

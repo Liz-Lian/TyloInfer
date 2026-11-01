@@ -1,11 +1,11 @@
-#include "models/qwen35/components.h"
+#include "engine/models/qwen35/components.h"
 
 #include "backends/cuda/engine/models/load.h"
 #include "models/common/grid_vision.h"
-#include "models/qwen35/forward.h"
-#include "models/qwen35/load.h"
-#include "models/qwen35/mtp.h"
-#include "models/qwen35/state.h"
+#include "engine/models/qwen35/forward.h"
+#include "engine/models/qwen35/load.h"
+#include "engine/models/qwen35/mtp.h"
+#include "engine/models/qwen35/state.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include "engine/backends/cuda/native/collectives.h"

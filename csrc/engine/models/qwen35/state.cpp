@@ -1,6 +1,6 @@
-#include "models/qwen35/state.h"
+#include "engine/models/qwen35/state.h"
 
-#include "models/qwen35/model.h"
+#include "engine/models/qwen35/model.h"
 
 #include <algorithm>
 #include <cstddef>

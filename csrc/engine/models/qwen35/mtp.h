@@ -1,8 +1,8 @@
 #pragma once
 
-#include "models/qwen35/predictor.h"
+#include "engine/models/qwen35/predictor.h"
 #include "engine/executor/run.h"
-#include "models/qwen35/mtp_state.h"
+#include "engine/models/qwen35/mtp_state.h"
 #include "engine/executor/mtp.h"
 
 #include <functional>

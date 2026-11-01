@@ -3,8 +3,8 @@
 #include "engine/executor/loaded.h"
 #include "engine/executor/engine.h"
 #include "models/common/grid_vision.h"
-#include "models/qwen35/model.h"
-#include "models/qwen35/mtp.h"
+#include "engine/models/qwen35/model.h"
+#include "engine/models/qwen35/mtp.h"
 #include "engine/backends/cuda/native/profile.h"
 
 #include <cstdint>

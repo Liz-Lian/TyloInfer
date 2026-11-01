@@ -1,5 +1,5 @@
-#include "models/qwen35/forward.h"
-#include "models/qwen35/mtp.h"
+#include "engine/models/qwen35/forward.h"
+#include "engine/models/qwen35/mtp.h"
 #include "backends/cuda/engine/executor/generation_impl.h"
 #include "backends/cuda/engine/executor/mtp_impl.h"
 
