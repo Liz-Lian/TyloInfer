@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/native/device.h"
 #include "backends/cpu/native/host_copy.h"
 #include "engine/weights/moe/cached_source_internal.h"
-#include "cpu_projection_rows.h"
+#include "engine/backends/cuda/ops/projection/cpu_rows.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "engine/backends/cuda/executor/graph_registry.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"

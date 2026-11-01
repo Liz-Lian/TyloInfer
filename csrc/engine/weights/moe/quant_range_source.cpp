@@ -3,7 +3,7 @@
 #include "engine/weights/moe/quant_range_source.h"
 #include "engine/weights/moe/pinned_expert_arena.h"
 #include "engine/weights/quant.h"
-#include "cpu_projection_rows.h"
+#include "engine/backends/cuda/ops/projection/cpu_rows.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "backends/cpu/native/host_copy.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"

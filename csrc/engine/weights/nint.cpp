@@ -1,13 +1,63 @@
 #include "engine/weights/quant.h"
+#include "engine/weights/nint_cache.h"
 #include "engine/weights/format.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <stdexcept>
 
 using namespace mfq::cuda::quant_format;
+
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+struct NintCacheState {
+    using Key=std::array<uintptr_t,11>;
+    std::map<Key,mfq_tensor_backend::Tensor> decoded;
+    NintCacheState* previous=nullptr;
+};
+namespace {
+thread_local NintCacheState* current_cache=nullptr;
+NintCacheState::Key cache_key(const NintWeight& w) {
+    return {reinterpret_cast<uintptr_t>(w.q_packed.data_ptr()),
+        reinterpret_cast<uintptr_t>(w.row_q_bits.data_ptr()),
+        reinterpret_cast<uintptr_t>(w.row_q_bit_offsets.data_ptr()),
+        reinterpret_cast<uintptr_t>(w.sub_scale.data_ptr()),
+        reinterpret_cast<uintptr_t>(w.sub_min.data_ptr()),
+        reinterpret_cast<uintptr_t>(w.neuron_scale.data_ptr()),
+        reinterpret_cast<uintptr_t>(w.neuron_min.data_ptr()),
+        uintptr_t(w.neuron_len),uintptr_t(w.gs),uintptr_t(w.out),uintptr_t(w.q_packed.get_device())};
+}
+}
+NintCache::NintCache(bool enabled) {
+    if(!enabled)return;
+    state_=std::make_unique<NintCacheState>();
+    state_->previous=current_cache;
+    current_cache=state_.get();
+}
+NintCache::~NintCache() {
+    if(state_)current_cache=state_->previous;
+}
+void NintCache::clear() {
+    if(state_)state_->decoded.clear();
+}
+bool NintCache::active() noexcept {
+    return current_cache!=nullptr;
+}
+mfq_tensor_backend::Tensor NintCache::get(
+        const NintWeight& w,
+        const std::function<mfq_tensor_backend::Tensor()>& decode) {
+    if(!current_cache)return decode();
+    const auto key=cache_key(w);
+    const auto found=current_cache->decoded.find(key);
+    if(found!=current_cache->decoded.end())return found->second;
+    auto dense=decode();
+    current_cache->decoded.emplace(key,dense);
+    return dense;
+}
+#endif
 
 static uint64_t nint_row_payload_bits(
         int ng, int gs, int bits) {
@@ -503,5 +553,37 @@ mfq::nint8::Data select_nint8_zero_cpu_rows(
                 sizeof(uint16_t));
     }
     return result;
+}
+
+mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(const mfq::nint8::Data & source) {
+    TYLOINFER_RUNTIME_CHECK(source.shape.size() == 2,
+        "CPU NINT8-0 dense tensor must be rank 2");
+    const auto quantized_tensor = cpu_u8_tensor(
+        source.q, {source.out, source.ng, 32});
+    const auto scales_tensor = cpu_f16_tensor(
+        source.scale_h, {source.out, source.ng});
+    auto result = mfq_tensor_backend::empty(
+        source.shape,
+        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
+    const auto * quantized =
+        reinterpret_cast<const int8_t *>(quantized_tensor.data_ptr<uint8_t>());
+    const mfq_half * scales = scales_tensor.data_ptr<mfq_half>();
+    float * output = result.data_ptr<float>();
+    mfq_parallel_for(0, source.out, 1, [&](int64_t begin, int64_t end) {
+        for (int64_t row = begin; row < end; ++row) {
+            for (int64_t group = 0; group < source.ng; ++group) {
+                const int64_t meta = row * source.ng + group;
+                const float scale = static_cast<float>(scales[meta]);
+                const int64_t k0 = group * 32;
+                const int64_t valid = std::min<int64_t>(
+                    32, source.neuron_len - k0);
+                for (int64_t index = 0; index < valid; ++index) {
+                    output[row * source.neuron_len + k0 + index] =
+                        scale * static_cast<float>(quantized[meta * 32 + index]);
+                }
+            }
+        }
+    });
+    return result.contiguous();
 }
 

@@ -2,19 +2,21 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
 #include "nint.h"
-#include "nint_prefill_cache.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "engine/backends/cuda/native/profile.h"
 #include "engine/weights/format.h"
 #include "packed_nint.h"
-#include "cpu_projection_rows.h"
+#include "cpu_rows.h"
+#include "engine/weights/nint_cache.h"
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "backends/cuda/engine/executor/options.h"
 
+#include <cmath>
 #include <cstring>
+#include <stdexcept>
 #include <limits>
-#include <array>
 #include <algorithm>
-#include <map>
+#include <memory>
+#include <utility>
 
 #if defined(__x86_64__) && defined(__GNUC__)
 #include <immintrin.h>
@@ -24,11 +26,6 @@
 using mfq_tensor_backend::indexing::Slice;
 using namespace mfq::cuda::quant_format;
 
-struct NintPrefillDecodeCacheState {
-    using Key=std::array<uintptr_t,11>;
-    std::map<Key,mfq_tensor_backend::Tensor> decoded;
-    NintPrefillDecodeCacheState* previous=nullptr;
-};
 namespace {
 struct NintScratch {
     mfq_tensor_backend::Tensor qx;
@@ -41,31 +38,7 @@ NintScratch scratch(const NintWeight& weight, int rows) {
         mfq_tensor_backend::empty({rows, K_pad}, options.dtype(mfq_tensor_backend::kInt8)),
         mfq_tensor_backend::empty({rows, weight.ng}, options.dtype(mfq_tensor_backend::kFloat32))};
 }
-thread_local NintPrefillDecodeCacheState* nint_prefill_decode_cache=nullptr;
-NintPrefillDecodeCacheState::Key nint_prefill_decode_key(const NintWeight& w) {
-    return {reinterpret_cast<uintptr_t>(w.q_packed.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.row_q_bits.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.row_q_bit_offsets.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.sub_scale.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.sub_min.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.neuron_scale.data_ptr()),
-        reinterpret_cast<uintptr_t>(w.neuron_min.data_ptr()),
-        uintptr_t(w.neuron_len),uintptr_t(w.gs),uintptr_t(w.out),uintptr_t(w.q_packed.get_device())};
 }
-}
-NintPrefillDecodeCacheScope::NintPrefillDecodeCacheScope(bool enabled) {
-    if(!enabled)return;
-    state_=std::make_unique<NintPrefillDecodeCacheState>();
-    state_->previous=nint_prefill_decode_cache;
-    nint_prefill_decode_cache=state_.get();
-}
-NintPrefillDecodeCacheScope::~NintPrefillDecodeCacheScope() {
-    if(state_)nint_prefill_decode_cache=state_->previous;
-}
-void NintPrefillDecodeCacheScope::clear() {
-    if(state_)state_->decoded.clear();
-}
-
 mfq_tensor_backend::Tensor nint_row_embedding_lookup(
         const mfq::NintRows& table, const mfq_tensor_backend::Tensor& ids) {
     TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.scalar_type() == mfq_tensor_backend::kInt64,
@@ -456,7 +429,7 @@ bool nint_packed_decode_rows(const NintWeight& w,int64_t rows) {
     // Batched decode projects directly from packed weights. Preserve
     // prefill's GEMM path and its layer decode cache.
     return !w.q8_zero && (rows <= 8 || (rows <= 32 && w.gs>=4 && w.gs<=64 &&
-        !nint_prefill_decode_cache && mfq::cuda::DecodeWindow::recording() &&
+        !NintCache::active() && mfq::cuda::DecodeWindow::recording() &&
         (mfq::cuda::runtime_options::nint_compressed_decode_batch() ||
          (rows>16 && mfq::cuda::runtime_options::nint_compressed_large_batch(w.out>=65536)))));
 }
@@ -469,7 +442,7 @@ mfq_tensor_backend::Tensor nint_matmul(
     x = x.contiguous();
     const bool packed_rows=nint_packed_decode_rows(w,x.size(0));
     if (!packed_rows && !w.q8_zero && w.out>=65536 && x.size(0)>8 && x.size(0)<=32 &&
-        !nint_prefill_decode_cache && mfq::cuda::runtime_options::nint_large_output_tiling()) {
+        !NintCache::active() && mfq::cuda::runtime_options::nint_large_output_tiling()) {
         // Large vocabulary heads otherwise materialize over a GiB of FP16
         // weights. Reuse compressed GEMV across up to eight activation rows.
         x=x.to(mfq_tensor_backend::kFloat16);
@@ -519,15 +492,7 @@ mfq_tensor_backend::Tensor nint_matmul(
                 w.sub_scale, w.sub_min, w.neuron_scale, w.neuron_min,
                 w.neuron_len, w.gs);});
         };
-        mfq_tensor_backend::Tensor dense;
-        if(nint_prefill_decode_cache) {
-            const auto key=nint_prefill_decode_key(w);
-            const auto found=nint_prefill_decode_cache->decoded.find(key);
-            if(found!=nint_prefill_decode_cache->decoded.end())dense=found->second;
-            else {
-                dense=decode();nint_prefill_decode_cache->decoded.emplace(key,dense);
-            }
-        } else dense=decode();
+        auto dense=NintCache::get(w,decode);
         return profiler.measure("nint.gemm", [&]() {
             return mfq_tensor_backend::matmul(x, dense.transpose(0, 1));
         });
@@ -706,37 +671,4 @@ mfq_tensor_backend::Tensor nint_matmul_geglu(
     x = pad_last(x, w.neuron_len);
     auto parts = nint_matmul(profiler, w, x).chunk(2, -1);
     return gelu_mul_cuda(parts[0].contiguous(), parts[1].contiguous());
-}
-
-
-mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(const mfq::nint8::Data & source) {
-    TYLOINFER_RUNTIME_CHECK(source.shape.size() == 2,
-        "CPU NINT8-0 dense tensor must be rank 2");
-    const auto quantized_tensor = cpu_u8_tensor(
-        source.q, {source.out, source.ng, 32});
-    const auto scales_tensor = cpu_f16_tensor(
-        source.scale_h, {source.out, source.ng});
-    auto result = mfq_tensor_backend::empty(
-        source.shape,
-        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
-    const auto * quantized =
-        reinterpret_cast<const int8_t *>(quantized_tensor.data_ptr<uint8_t>());
-    const mfq_half * scales = scales_tensor.data_ptr<mfq_half>();
-    float * output = result.data_ptr<float>();
-    mfq_parallel_for(0, source.out, 1, [&](int64_t begin, int64_t end) {
-        for (int64_t row = begin; row < end; ++row) {
-            for (int64_t group = 0; group < source.ng; ++group) {
-                const int64_t meta = row * source.ng + group;
-                const float scale = static_cast<float>(scales[meta]);
-                const int64_t k0 = group * 32;
-                const int64_t valid = std::min<int64_t>(
-                    32, source.neuron_len - k0);
-                for (int64_t index = 0; index < valid; ++index) {
-                    output[row * source.neuron_len + k0 + index] =
-                        scale * static_cast<float>(quantized[meta * 32 + index]);
-                }
-            }
-        }
-    });
-    return result.contiguous();
 }

@@ -2,8 +2,8 @@
 
 #include "engine/weights/mx.h"
 #include "engine/weights/sq.h"
-#include "nint.h"
-#include "vq.h"
+#include "engine/weights/nint.h"
+#include "engine/weights/vq.h"
 
 #include <algorithm>
 #include <array>

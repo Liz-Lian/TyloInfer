@@ -3,8 +3,8 @@
 #include "engine/backends/cuda/ops/projection/fp8_sq.h"
 #include "engine/backends/cuda/ops/projection/mx.h"
 #include "engine/backends/cuda/ops/projection/mxfp4_sq.h"
-#include "ops/mfq/include/nint.h"
-#include "ops/mfq/include/vq.h"
+#include "engine/backends/cuda/ops/projection/nint.h"
+#include "engine/backends/cuda/ops/projection/vq.h"
 #include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/encoding/format_features.h"
 

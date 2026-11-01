@@ -1,5 +1,5 @@
 #include "ops/common/include/float_projection.h"
-#include "ops/mfq/include/nint.h"
+#include "engine/weights/nint.h"
 #include "qwen4_exp.h"
 
 #include <limits>

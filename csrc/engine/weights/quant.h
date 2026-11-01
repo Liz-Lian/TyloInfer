@@ -6,10 +6,11 @@
 #include "engine/weights/tensor_parallel.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
+#include "engine/weights/encoding/quant/nint_blob.h"
 #include "engine/weights/encoding/quant/vq_blob.h"
+#include "engine/weights/nint.h"
+#include "engine/weights/vq.h"
 #include "engine/weights/sq.h"
-#include "ops/mfq/include/nint.h"
-#include "ops/mfq/include/vq.h"
 #endif
 
 #include <cstdint>
@@ -69,6 +70,8 @@ NintWeight to_device_mfe_nint(
     bool cuda);
 NintWeight to_device_nint8_zero(
     const mfq::nint8::Data& source, bool cuda, int device = -1);
+mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(
+    const mfq::nint8::Data& source);
 Mxfp4SqWeight to_device_mxfp4_sq(
     const std::vector<uint8_t>& payload, bool cuda, int device = -1);
 Fp8SqWeight to_device_fp8_sq(

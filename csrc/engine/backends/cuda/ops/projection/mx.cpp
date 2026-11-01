@@ -1,7 +1,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "mx.h"
 #include "engine/backends/cuda/kernels/mxfp8_grouped_gemm.h"
-#include "ops/mfq/include/cpu_projection_rows.h"
+#include "engine/backends/cuda/ops/projection/cpu_rows.h"
 #include <cmath>
 
 CpuProjectionRows make_cpu_projection_rows(const Mxfp4Weight& w) {

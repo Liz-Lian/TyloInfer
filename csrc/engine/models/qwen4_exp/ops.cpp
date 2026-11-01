@@ -34,7 +34,7 @@
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/session_codec.h"
 #include "gated_residual.h"
-#include "nint_prefill_cache.h"
+#include "engine/weights/nint_cache.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "matmul_rows.h"
 #include "engine/backends/cuda/native/graph.h"
@@ -2314,7 +2314,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
     }
     auto hidden=model.adapter_prepare_hidden(model.embed_tokens(ids),1,tokens);
     for (std::size_t i=0;i<model.blocks.size();++i) {
-        NintPrefillDecodeCacheScope decode_reuse(packed);
+        NintCache decode_reuse(packed);
         auto& block=static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]);
         if (block.ple) {
             std::vector<tb::Tensor> positional;
@@ -2655,7 +2655,7 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
     int layer=0;
     for(auto& block:model.blocks) {
         const auto decode_reuse_option=mfq::cuda::runtime_options::nint_prefill_decode_reuse();
-        NintPrefillDecodeCacheScope decode_reuse(!decode_reuse_option || *decode_reuse_option);
+        NintCache decode_reuse(!decode_reuse_option || *decode_reuse_option);
         Tensor next_hidden=hidden;
         Tensor ffn_inputs,ffn_gate;
         GatedResidual::Result attention_result;

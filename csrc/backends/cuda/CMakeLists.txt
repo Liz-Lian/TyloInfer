@@ -486,8 +486,8 @@ if(TYLOINFER_ENABLE_MFQ_COMPAT)
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mxfp4_sq.cpp
     ${PROJECT_SOURCE_DIR}/ops/mfq/moe.cpp
     ${PROJECT_SOURCE_DIR}/ops/mfq/mfe.cpp
-    ${PROJECT_SOURCE_DIR}/ops/mfq/nint.cpp
-    ${PROJECT_SOURCE_DIR}/ops/mfq/vq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/nint.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/vq.cpp
     )
 endif()
 

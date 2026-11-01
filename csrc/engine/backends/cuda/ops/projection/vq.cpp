@@ -6,7 +6,12 @@
 #include "nint.h"
 #include "quant_dot.h"
 #include "nvq_group.h"
-#include "cpu_projection_rows.h"
+#include "cpu_rows.h"
+
+#include <algorithm>
+#include <cstring>
+#include <stdexcept>
+#include <utility>
 
 namespace {
 struct NvqScratch {

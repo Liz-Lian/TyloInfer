@@ -3,7 +3,7 @@
 #include "context.h"
 #include "engine/backends/cuda/native/device.h"
 #include "shared_gate_fused.cuh"
-#include "ops/mfq/include/nint.h"
+#include "engine/weights/nint.h"
 #include <cstdlib>
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT

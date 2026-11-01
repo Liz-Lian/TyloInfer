@@ -1,5 +1,5 @@
 #pragma once
-#include "nint.h"
+#include "engine/weights/nint.h"
 #include <functional>
 #include <vector>
 

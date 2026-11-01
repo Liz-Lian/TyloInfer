@@ -1,10 +1,8 @@
 #pragma once
 
-#include "engine/backends/cuda/native/profile.h"
 #include "backend.h"
 
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 struct NvqWeight {
@@ -35,27 +33,6 @@ struct NvqWeight {
 inline constexpr int64_t kNvq2JscXlGroupExecKernelFormat = 16;
 inline constexpr int64_t kNvq3JscLGroupExecKernelFormat = 17;
 
-mfq_tensor_backend::Tensor nvq_matmul_multi2(
-    CudaProfiler& profiler,
-    const NvqWeight& first,
-    const NvqWeight& second,
-    mfq_tensor_backend::Tensor input);
-mfq_tensor_backend::Tensor nvq_matmul_swiglu(
-    CudaProfiler& profiler,
-    const NvqWeight& gate,
-    const NvqWeight& up,
-    mfq_tensor_backend::Tensor input);
-mfq_tensor_backend::Tensor nvq_matmul(
-    CudaProfiler& profiler,
-    const NvqWeight& weight,
-    mfq_tensor_backend::Tensor input);
-mfq_tensor_backend::Tensor nvq_matmul_input_mul(
-    CudaProfiler& profiler,
-    const NvqWeight& weight,
-    mfq_tensor_backend::Tensor input,
-    mfq_tensor_backend::Tensor gate,
-    int mode);
-
 struct NepqWeight {
     mfq_tensor_backend::Tensor indices_packed;
     mfq_tensor_backend::Tensor aux_packed;
@@ -80,8 +57,3 @@ struct NepqWeight {
     mfq_tensor_backend::Tensor residual_first;
     mfq_tensor_backend::Tensor residual_second;
 };
-
-bool nvq_pair_compatible(const NvqWeight& first, const NvqWeight& second);
-mfq_tensor_backend::Tensor nvq_dequant(const NvqWeight& weight);
-mfq_tensor_backend::Tensor nvq_embedding(
-    const NvqWeight& weight, mfq_tensor_backend::Tensor token_ids);
