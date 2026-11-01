@@ -48,19 +48,19 @@ struct Layout {
 
 CudaPagedPayload encode_block(
         const TextSessionState& state,size_t block_size,size_t index) {
-    const auto* layers=std::get_if<std::vector<mfq::models::deepseek_v41::BlockSnapshot>>(&state.payload);
-    if(!block_size || !layers || layers->empty() || state.cache_pos<=0 ||
+    const auto* snapshot=std::get_if<mfq::models::deepseek_v41::Snapshot>(&state.payload);
+    if(!block_size || !snapshot || snapshot->blocks.empty() || state.cache_pos<=0 ||
             state.tokens.size()!=size_t(state.cache_pos) || state.cache_pos>UINT32_MAX ||
-            index>(state.tokens.size()-1)/block_size || !state.deepseek_v41_engram ||
-            state.deepseek_v41_engram->batch!=1 ||
-            state.deepseek_v41_engram->position!=state.cache_pos || state.decode_position_delta!=0)
+            index>(state.tokens.size()-1)/block_size || !snapshot->engram ||
+            snapshot->engram->batch!=1 ||
+            snapshot->engram->position!=state.cache_pos || state.decode_position_delta!=0)
         throw std::runtime_error("invalid DeepSeek-V4.1 paged session");
     const auto start=index*block_size,count=std::min(block_size,state.tokens.size()-start),end=start+count;
     const bool exact=end==state.tokens.size();
     CudaPagedWriter writer;writer.raw(magic.data(),magic.size());writer.scalar<uint32_t>(1);
-    for(const auto value:{start,count,layers->size(),size_t(exact?(state.mtp?3:1):0)})
+    for(const auto value:{start,count,snapshot->blocks.size(),size_t(exact?(state.mtp?3:1):0)})
         writer.scalar<uint32_t>(uint32_t(value));
-    for(const auto& layer:*layers) {
+    for(const auto& layer:snapshot->blocks) {
         const int64_t ratio=layer.compressed_kv.defined()?(layer.partial_kv.defined()?layer.partial_kv.size(1):1):0;
         const int64_t kv_width=ratio?layer.compressed_kv.size(2):0;
         const int64_t index_width=ratio && layer.index_k.defined()?layer.index_k.size(2):0;
@@ -82,17 +82,18 @@ CudaPagedPayload encode_block(
         optional(writer,exact?layer.partial_score:tb::Tensor{});
     }
     if(exact) {
-        const auto& context=state.deepseek_v41_engram->context;
+        const auto& context=snapshot->engram->context;
         writer.scalar<uint32_t>(uint32_t(context.size()));
         for(auto token:context)writer.scalar<int64_t>(token);
         if(state.mtp) {
             const auto& mtp=*state.mtp;
-            if(mtp.cache_pos!=state.cache_pos || mtp.deepseek_v41_rings.empty() ||
-                    !mtp.blocks.empty() || !mtp.qwen4_blocks.empty() || !mtp.last_target_hidden.defined())
+            const auto* rings=std::get_if<mfq::models::deepseek_v41::MtpSnapshot>(&mtp.payload);
+            if(mtp.cache_pos!=state.cache_pos || !rings || rings->rings.empty() ||
+                    !mtp.last_target_hidden.defined())
                 throw std::runtime_error("incompatible DeepSeek-V4.1 DSpark checkpoint");
             writer.tensor(mtp.last_target_hidden);
-            writer.scalar<uint32_t>(uint32_t(mtp.deepseek_v41_rings.size()));
-            for(const auto& ring:mtp.deepseek_v41_rings)writer.tensor(ring);
+            writer.scalar<uint32_t>(uint32_t(rings->rings.size()));
+            for(const auto& ring:rings->rings)writer.tensor(ring);
         }
     }
     return std::move(writer).finish();
@@ -202,15 +203,18 @@ TextSessionState decode_session(
     }
     if(!predictor.empty()) {
         auto& mtp=state.mtp.emplace();mtp.cache_pos=state.cache_pos;
+        auto& rings=mtp.payload.emplace<mfq::models::deepseek_v41::MtpSnapshot>().rings;
         for(size_t i=0;i<predictor.size();++i) {
             auto& [value,device]=predictor[i];
             auto target=value.to(tb::Device{tb::DeviceType::cuda,device});mtp.bytes+=session_tensor_bytes(target);
-            if(!i)mtp.last_target_hidden=std::move(target);else mtp.deepseek_v41_rings.push_back(std::move(target));
+            if(!i)mtp.last_target_hidden=std::move(target);else rings.push_back(std::move(target));
         }
         state.bytes+=mtp.bytes;
     }
-    state.bytes+=hash->context.size()*sizeof(int64_t);state.deepseek_v41_engram=std::move(hash);
-    state.payload=std::move(layers);return state;
+    state.bytes+=hash->context.size()*sizeof(int64_t);
+    mfq::models::deepseek_v41::Snapshot snapshot;
+    snapshot.blocks=std::move(layers);snapshot.engram=std::move(hash);
+    state.payload=std::move(snapshot);return state;
 }
 
 } // namespace mfq::models::deepseek_v41

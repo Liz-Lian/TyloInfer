@@ -251,12 +251,13 @@ struct DeepseekV41Dspark final : MtpModule {
             hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)>0 && hidden.size(2)==width,
             "DeepSeek-V4.1 DSpark session position or hidden state disagrees");
         MtpSessionState state;state.cache_pos=position;state.last_target_hidden=hidden.clone();
+        auto& saved=state.payload.emplace<mfq::models::deepseek_v41::MtpSnapshot>();
         state.bytes=session_tensor_bytes(state.last_target_hidden);
         for(const auto& ring:rings) {
             TYLOINFER_RUNTIME_CHECK(ring.dim()==3 && ring.size(0)==1 && ring.size(1)==config.sliding_window &&
                 ring.size(2)==config.head_dim,"DeepSeek-V4.1 DSpark session ring disagrees");
-            state.deepseek_v41_rings.push_back(ring.clone());
-            state.bytes+=session_tensor_bytes(state.deepseek_v41_rings.back());
+            saved.rings.push_back(ring.clone());
+            state.bytes+=session_tensor_bytes(saved.rings.back());
         }
         return state;
     }
@@ -264,18 +265,18 @@ struct DeepseekV41Dspark final : MtpModule {
     void restore_session_state(const MtpSessionState& state) override {
         const auto width=config.hidden*int64_t(config.dspark_target_layer_ids.size());
         const auto& hidden=state.last_target_hidden;
+        const auto* saved=std::get_if<mfq::models::deepseek_v41::MtpSnapshot>(&state.payload);
         if(state.cache_pos<=0 || state.cache_pos>maximum_context ||
-                state.deepseek_v41_rings.size()!=stages.size() || !state.blocks.empty() ||
-                !state.qwen4_blocks.empty() || !hidden.defined() || !hidden.is_cuda() ||
+                !saved || saved->rings.size()!=stages.size() || !hidden.defined() || !hidden.is_cuda() ||
                 hidden.dim()!=3 || hidden.size(0)!=1 || hidden.size(1)<=0 || hidden.size(2)!=width)
             throw CudaSessionStateError("DeepSeek-V4.1 DSpark session state is incompatible");
-        for(const auto& ring:state.deepseek_v41_rings)
+        for(const auto& ring:saved->rings)
             if(!ring.defined() || !ring.is_cuda() || ring.scalar_type()!=mfq_tensor_backend::kFloat16 ||
                     ring.dim()!=3 || ring.size(0)!=1 || ring.size(1)!=config.sliding_window ||
                     ring.size(2)!=config.head_dim)
                 throw CudaSessionStateError("DeepSeek-V4.1 DSpark saved ring geometry is incompatible");
         if(batch!=1 || rings.size()!=stages.size() || !attention_meta.defined())reset(1);
-        for(std::size_t i=0;i<rings.size();++i)restore_session_tensor(rings[i],state.deepseek_v41_rings[i]);
+        for(std::size_t i=0;i<rings.size();++i)restore_session_tensor(rings[i],saved->rings[i]);
         position=state.cache_pos;
     }
 
@@ -552,9 +553,11 @@ void run_dspark_self_check() {
                       "DeepSeek-V4.1 DSpark session restore lost its committed ring");
     predictor.append_target_context(history.narrow(1,0,1).contiguous(),257);
     TYLOINFER_RUNTIME_CHECK(predictor.rings.front().equal(advanced) &&
-                      saved.deepseek_v41_rings.front().equal(expected_ring),
+                      std::get<mfq::models::deepseek_v41::MtpSnapshot>(saved.payload).rings.front().equal(expected_ring),
                       "DeepSeek-V4.1 DSpark session changed continuation or mutated its snapshot");
-    auto broken=saved;broken.deepseek_v41_rings.front()=broken.deepseek_v41_rings.front().narrow(1,0,127);
+    auto broken=saved;
+    std::get<mfq::models::deepseek_v41::MtpSnapshot>(broken.payload).rings.front()=
+        std::get<mfq::models::deepseek_v41::MtpSnapshot>(broken.payload).rings.front().narrow(1,0,127);
     bool rejected=false;try{predictor.restore_session_state(broken);}catch(const CudaSessionStateError&){rejected=true;}
     TYLOINFER_RUNTIME_CHECK(rejected && predictor.cache_position()==258 && predictor.rings.front().equal(advanced),
                       "DeepSeek-V4.1 DSpark accepted an incompatible session ring");

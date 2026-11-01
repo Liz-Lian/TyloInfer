@@ -22,7 +22,6 @@
 
 struct KVCache;
 namespace mfq::cuda { struct KvQuantization; }
-namespace mfq::models::deepseek_v41 { struct EngramHashSnapshot; }
 
 struct KvSnapshot {
     mfq_tensor_backend::Tensor k;
@@ -76,12 +75,11 @@ struct HybridBlockSessionState {
 };
 
 struct MtpSessionState {
-    std::vector<KvSnapshot> blocks;
+    std::variant<
+        std::vector<KvSnapshot>,
+        mfq::models::qwen4_exp::MtpSnapshot,
+        mfq::models::deepseek_v41::MtpSnapshot> payload = std::vector<KvSnapshot>{};
     mfq_tensor_backend::Tensor last_target_hidden;
-    std::vector<mfq::models::qwen4_exp::BlockSnapshot> qwen4_blocks;
-    std::vector<mfq_tensor_backend::Tensor> qwen4_positions;
-    std::vector<int64_t> qwen4_lengths;
-    std::vector<mfq_tensor_backend::Tensor> deepseek_v41_rings;
     int64_t cache_pos = 0;
     size_t bytes = 0;
 };
@@ -92,15 +90,13 @@ using TextSessionPayload = std::variant<
     std::vector<HybridBlockSessionState>,
     std::vector<mfq::models::deepseek_v4::BlockSnapshot>,
     std::vector<mfq::models::glm_dsa::BlockSnapshot>,
-    std::vector<mfq::models::qwen4_exp::BlockSnapshot>,
-    std::vector<mfq::models::deepseek_v41::BlockSnapshot>>;
+    mfq::models::qwen4_exp::Snapshot,
+    mfq::models::deepseek_v41::Snapshot>;
 
 struct TextSessionState {
     std::vector<int64_t> tokens;
     std::string input_key;
     TextSessionPayload payload;
-    mfq_tensor_backend::Tensor qwen4_positions;
-    std::shared_ptr<const mfq::models::deepseek_v41::EngramHashSnapshot> deepseek_v41_engram;
     std::optional<MtpSessionState> mtp;
     int64_t cache_pos = 0;
     int64_t decode_position_delta = 0;

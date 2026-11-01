@@ -3,8 +3,12 @@
 #include "backend.h"
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace mfq::models::deepseek_v41 {
+
+struct EngramHashSnapshot;
 
 struct BlockSnapshot {
     mfq_tensor_backend::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
@@ -17,6 +21,25 @@ struct BlockSnapshot {
         visit(index_k);
         visit(partial_kv);
         visit(partial_score);
+    }
+};
+
+struct Snapshot {
+    std::vector<BlockSnapshot> blocks;
+    std::shared_ptr<const EngramHashSnapshot> engram;
+
+    template <class Visit>
+    void tensors(const Visit& visit) const {
+        for (const auto& block : blocks) block.tensors(visit);
+    }
+};
+
+struct MtpSnapshot {
+    std::vector<mfq_tensor_backend::Tensor> rings;
+
+    template <class Visit>
+    void tensors(const Visit& visit) const {
+        for (const auto& ring : rings) visit(ring);
     }
 };
 

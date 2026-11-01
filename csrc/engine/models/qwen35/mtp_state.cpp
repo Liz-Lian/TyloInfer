@@ -67,10 +67,11 @@ MtpSessionState MtpState::capture(int64_t target_position, const tb::Tensor& hid
         throw std::runtime_error("Qwen MTP session boundary is unavailable");
     MtpSessionState saved;
     saved.cache_pos = position;
-    saved.blocks.reserve(kv_.size());
+    auto& blocks = std::get<std::vector<KvSnapshot>>(saved.payload);
+    blocks.reserve(kv_.size());
     for (size_t index = 0; index < kv_.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
-        saved.blocks.push_back(capture_kv(kv_[index], position, saved.bytes));
+        blocks.push_back(capture_kv(kv_[index], position, saved.bytes));
     }
     saved.last_target_hidden = hidden.clone();
     saved.bytes += session_tensor_bytes(saved.last_target_hidden);
@@ -78,15 +79,16 @@ MtpSessionState MtpState::capture(int64_t target_position, const tb::Tensor& hid
 }
 
 MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
-    if (saved.cache_pos <= 0 || saved.blocks.size() != kv_.size() ||
+    const auto* blocks = std::get_if<std::vector<KvSnapshot>>(&saved.payload);
+    if (saved.cache_pos <= 0 || blocks == nullptr || blocks->size() != kv_.size() ||
         !saved.last_target_hidden.defined() || saved.last_target_hidden.dim() != 3 ||
         saved.last_target_hidden.size(0) != 1 || saved.last_target_hidden.size(1) != 1 ||
         saved.last_target_hidden.size(2) != hidden_)
         throw CudaSessionStateError("Qwen MTP session state is incompatible");
-    for (size_t index = 0; index < saved.blocks.size(); ++index) {
+    for (size_t index = 0; index < blocks->size(); ++index) {
         if (saved.cache_pos > layout_[index].capacity)
             throw CudaSessionStateError("Qwen MTP session exceeds context capacity");
-        const auto& block = saved.blocks[index];
+        const auto& block = (*blocks)[index];
         const auto& layout = layout_[index];
         validate_kv(block);
         const auto key_width = layout.quantization.enabled()
@@ -105,10 +107,11 @@ MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
 }
 
 void MtpState::stage(Restore& restore, const MtpSessionState& saved) const {
+    const auto& blocks = std::get<std::vector<KvSnapshot>>(saved.payload);
     for (size_t index = 0; index < restore.kv.size(); ++index) {
         const auto& layout = layout_[index];
         MfqCudaGuard guard(layout.device);
-        restore_kv(restore.kv[index], saved.blocks[index], layout.head_dim,
+        restore_kv(restore.kv[index], blocks[index], layout.head_dim,
             layout.dtype, layout.quantization);
     }
 }

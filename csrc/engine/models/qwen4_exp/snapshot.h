@@ -24,4 +24,27 @@ struct BlockSnapshot {
     }
 };
 
+struct Snapshot {
+    std::vector<BlockSnapshot> blocks;
+    mfq_tensor_backend::Tensor positions;
+
+    template <class Visit>
+    void tensors(const Visit& visit) const {
+        visit(positions);
+        for (const auto& block : blocks) block.tensors(visit);
+    }
+};
+
+struct MtpSnapshot {
+    std::vector<BlockSnapshot> blocks;
+    std::vector<mfq_tensor_backend::Tensor> positions;
+    std::vector<int64_t> lengths;
+
+    template <class Visit>
+    void tensors(const Visit& visit) const {
+        for (const auto& block : blocks) block.tensors(visit);
+        for (const auto& position : positions) visit(position);
+    }
+};
+
 } // namespace mfq::models::qwen4_exp

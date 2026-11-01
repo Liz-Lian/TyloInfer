@@ -200,12 +200,13 @@ struct NemotronHMtp final : MtpModule {
         }
         MtpSessionState state;
         state.cache_pos = predictor_position;
+        auto& snapshots = std::get<std::vector<KvSnapshot>>(state.payload);
         for (const auto &block : blocks) {
             const auto *full = dynamic_cast<const FullBlock *>(block.get());
             if (full == nullptr)
                 continue;
             MfqCudaGuard guard(block->cuda_device);
-            state.blocks.push_back(
+            snapshots.push_back(
                 capture_kv(full->cache, predictor_position, state.bytes));
         }
         state.last_target_hidden = last_target_hidden.clone();
@@ -218,7 +219,8 @@ struct NemotronHMtp final : MtpModule {
         for (auto &block : blocks)
             if (auto *full = dynamic_cast<FullBlock *>(block.get()))
                 saved.push_back(full);
-        if (state.cache_pos <= 0 || state.blocks.size() != saved.size() ||
+        const auto *blocks = std::get_if<std::vector<KvSnapshot>>(&state.payload);
+        if (state.cache_pos <= 0 || blocks == nullptr || blocks->size() != saved.size() ||
             !state.last_target_hidden.defined() || state.last_target_hidden.dim() != 3 ||
             state.last_target_hidden.size(0) != 1 || state.last_target_hidden.size(1) != 1 ||
             state.last_target_hidden.size(2) != config.hidden_size) {
@@ -227,7 +229,7 @@ struct NemotronHMtp final : MtpModule {
         for (std::size_t index = 0; index < saved.size(); ++index) {
             MfqCudaGuard guard(saved[index]->cuda_device);
             const auto& attention = *saved[index];
-            restore_kv(saved[index]->cache, state.blocks[index], attention.attention_head_dim,
+            restore_kv(saved[index]->cache, (*blocks)[index], attention.attention_head_dim,
                 attention.official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
                 attention.kv_quantization);
         }

@@ -61,10 +61,10 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
         throw std::runtime_error("DeepSeek-V4.1 session Engram position disagrees with cache");
     TextSessionState state;
     state.tokens=tokens;state.cache_pos=model.cache_pos;
-    state.deepseek_v41_engram=std::make_shared<const mfq::models::deepseek_v41::EngramHashSnapshot>(std::move(hash));
-    state.bytes=state.deepseek_v41_engram->context.size()*sizeof(int64_t);
-    state.payload=std::vector<mfq::models::deepseek_v41::BlockSnapshot>{};
-    auto& layers=std::get<std::vector<mfq::models::deepseek_v41::BlockSnapshot>>(state.payload);
+    auto& snapshot=state.payload.emplace<mfq::models::deepseek_v41::Snapshot>();
+    snapshot.engram=std::make_shared<const mfq::models::deepseek_v41::EngramHashSnapshot>(std::move(hash));
+    state.bytes=snapshot.engram->context.size()*sizeof(int64_t);
+    auto& layers=snapshot.blocks;
     layers.reserve(model.blocks.size());
     for(const auto& item:model.blocks) {
         const auto& block=dynamic_cast<const NativeBlock&>(*item);
@@ -90,23 +90,23 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
 }
 
 void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionState& state) {
-    const auto* layers=std::get_if<std::vector<mfq::models::deepseek_v41::BlockSnapshot>>(&state.payload);
-    if(kind(model)!=TextSessionStateKind::DeepseekV41 || !layers || layers->size()!=model.blocks.size() ||
+    const auto* snapshot=std::get_if<mfq::models::deepseek_v41::Snapshot>(&state.payload);
+    if(kind(model)!=TextSessionStateKind::DeepseekV41 || !snapshot || snapshot->blocks.size()!=model.blocks.size() ||
             state.cache_pos<=0 || state.cache_pos>model.max_position_embeddings() ||
             std::size_t(state.cache_pos)!=state.tokens.size() || state.decode_position_delta!=0 ||
-            !state.deepseek_v41_engram || state.deepseek_v41_engram->batch!=1 ||
-            state.deepseek_v41_engram->position!=state.cache_pos)
+            !snapshot->engram || snapshot->engram->batch!=1 ||
+            snapshot->engram->position!=state.cache_pos)
         throw CudaSessionStateError("DeepSeek-V4.1 text session state is incompatible");
     // Validate every layer and rolling n-gram before changing the active cache.
     auto hash=*model.shared->engram_hash;
-    hash.restore(*state.deepseek_v41_engram);
-    for(std::size_t i=0;i<layers->size();++i)
-        validate_layer(dynamic_cast<const NativeBlock&>(*model.blocks[i]),(*layers)[i],state.cache_pos);
+    hash.restore(*snapshot->engram);
+    for(std::size_t i=0;i<snapshot->blocks.size();++i)
+        validate_layer(dynamic_cast<const NativeBlock&>(*model.blocks[i]),snapshot->blocks[i],state.cache_pos);
     model.reset(1);
-    for(std::size_t i=0;i<layers->size();++i) {
+    for(std::size_t i=0;i<snapshot->blocks.size();++i) {
         auto& block=dynamic_cast<NativeBlock&>(*model.blocks[i]);
         MfqCudaGuard guard(block.cuda_device);
-        const auto& saved=(*layers)[i];auto& target=block.state;
+        const auto& saved=snapshot->blocks[i];auto& target=block.state;
         restore_session_tensor(target.local_kv,saved.local_kv);
         if(block.kv_source()) {
             restore_session_prefix_tensor(target.compressed_kv,saved.compressed_kv,1,

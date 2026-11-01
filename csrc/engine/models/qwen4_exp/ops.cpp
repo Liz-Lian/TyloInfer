@@ -1175,28 +1175,30 @@ MtpSessionState Qwen4ExpMtp::capture_session_state(int64_t target_position,const
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm.numel(),
         "Qwen4 MTP session boundary is unavailable");
     MtpSessionState state;state.cache_pos=position;
+    auto& snapshot=state.payload.emplace<mfq::models::qwen4_exp::MtpSnapshot>();
     for(std::size_t i=0;i<layers.size();++i) {
         const auto count=std::min(position,lengths[i]);
-        state.qwen4_lengths.push_back(count);
-        state.qwen4_blocks.push_back(count?capture_block_session(*layers[i],count,state.bytes):mfq::models::qwen4_exp::BlockSnapshot{});
+        snapshot.lengths.push_back(count);
+        snapshot.blocks.push_back(count?capture_block_session(*layers[i],count,state.bytes):mfq::models::qwen4_exp::BlockSnapshot{});
         auto pos=count?positions[i].narrow(-1,0,count).clone():Tensor{};
-        state.bytes+=session_tensor_bytes(pos);state.qwen4_positions.push_back(std::move(pos));
+        state.bytes+=session_tensor_bytes(pos);snapshot.positions.push_back(std::move(pos));
     }
     state.last_target_hidden=hidden.clone();state.bytes+=session_tensor_bytes(state.last_target_hidden);
     return state;
 }
 
 void Qwen4ExpMtp::restore_session_state(const MtpSessionState& state) {
+    const auto* snapshot=std::get_if<mfq::models::qwen4_exp::MtpSnapshot>(&state.payload);
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && state.cache_pos>0 &&
-        state.qwen4_blocks.size()==layers.size() && state.qwen4_positions.size()==layers.size() &&
-        state.qwen4_lengths.size()==layers.size() && state.qwen4_lengths.front()==state.cache_pos &&
+        snapshot && snapshot->blocks.size()==layers.size() && snapshot->positions.size()==layers.size() &&
+        snapshot->lengths.size()==layers.size() && snapshot->lengths.front()==state.cache_pos &&
         state.last_target_hidden.defined() && state.last_target_hidden.dim()==3 &&
         state.last_target_hidden.size(0)==1 && state.last_target_hidden.size(1)==1 &&
         state.last_target_hidden.size(2)==hidden_norm.numel(),"incompatible Qwen4 MTP session state");
     reset(1);
-    for(std::size_t i=0;i<layers.size();++i)if(state.qwen4_lengths[i]) {
-        restore_block_session(*layers[i],state.qwen4_blocks[i],state.qwen4_lengths[i]);
-        positions[i]=state.qwen4_positions[i].clone();lengths[i]=state.qwen4_lengths[i];
+    for(std::size_t i=0;i<layers.size();++i)if(snapshot->lengths[i]) {
+        restore_block_session(*layers[i],snapshot->blocks[i],snapshot->lengths[i]);
+        positions[i]=snapshot->positions[i].clone();lengths[i]=snapshot->lengths[i];
     }
 }
 
@@ -2931,24 +2933,24 @@ TextSessionState CudaSessionCodec<Qwen4Model>::capture(const Qwen4CausalLm& mode
         std::size_t(model.cache_pos)==tokens.size() && model.speculative_start<0,
         "Qwen4 text session boundary is unavailable");
     TextSessionState state;state.tokens=tokens;state.cache_pos=model.cache_pos;
-    std::vector<mfq::models::qwen4_exp::BlockSnapshot> blocks;
-    for(const auto& block:model.blocks)blocks.push_back(qwen4_exp::capture_block_session(
+    mfq::models::qwen4_exp::Snapshot snapshot;
+    for(const auto& block:model.blocks)snapshot.blocks.push_back(qwen4_exp::capture_block_session(
         static_cast<const qwen4_exp::Qwen4Block&>(*block),model.cache_pos,state.bytes));
-    state.payload=std::move(blocks);
-    state.qwen4_positions=model.positions.clone();state.bytes+=session_tensor_bytes(state.qwen4_positions);
+    snapshot.positions=model.positions.clone();state.bytes+=session_tensor_bytes(snapshot.positions);
+    state.payload=std::move(snapshot);
     return state;
 }
 
 void CudaSessionCodec<Qwen4Model>::restore(Qwen4CausalLm& model,const TextSessionState& state) {
-    const auto* blocks=std::get_if<std::vector<mfq::models::qwen4_exp::BlockSnapshot>>(&state.payload);
-    TYLOINFER_RUNTIME_CHECK(kind(model)==TextSessionStateKind::Qwen4 && blocks && blocks->size()==model.blocks.size() &&
+    const auto* snapshot=std::get_if<mfq::models::qwen4_exp::Snapshot>(&state.payload);
+    TYLOINFER_RUNTIME_CHECK(kind(model)==TextSessionStateKind::Qwen4 && snapshot && snapshot->blocks.size()==model.blocks.size() &&
         state.cache_pos>0 && std::size_t(state.cache_pos)==state.tokens.size() &&
-        state.qwen4_positions.defined() && state.qwen4_positions.size(-1)==state.cache_pos,
+        snapshot->positions.defined() && snapshot->positions.size(-1)==state.cache_pos,
         "incompatible Qwen4 text session state");
     model.reset(1);
-    for(std::size_t i=0;i<blocks->size();++i)qwen4_exp::restore_block_session(
-        static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]),(*blocks)[i],state.cache_pos);
-    model.positions=state.qwen4_positions.clone();model.cache_pos=state.cache_pos;
+    for(std::size_t i=0;i<snapshot->blocks.size();++i)qwen4_exp::restore_block_session(
+        static_cast<qwen4_exp::Qwen4Block&>(*model.blocks[i]),snapshot->blocks[i],state.cache_pos);
+    model.positions=snapshot->positions.clone();model.cache_pos=state.cache_pos;
 }
 
 } // namespace mfq::cuda

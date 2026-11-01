@@ -203,18 +203,18 @@ std::map<int, std::size_t> TextSessionCache::device_hot_bytes() const {
         auto& bytes = allocations[{value.get_device(), reinterpret_cast<std::uintptr_t>(value.data_ptr())}];
         bytes = std::max(bytes, std::size_t(value.numel()) * value.element_size());
     };
+    const auto payload_tensors = [&](const auto& value) {
+        if constexpr (requires { value.tensors(tensor); }) {
+            value.tensors(tensor);
+        } else if constexpr (!std::is_same_v<std::decay_t<decltype(value)>, std::monostate>) {
+            for (const auto& block : value) block.tensors(tensor);
+        }
+    };
     impl_->visit_snapshots([&](const TextSessionState& state) {
-        tensor(state.qwen4_positions);
-        std::visit([&](const auto& blocks) {
-            if constexpr (!std::is_same_v<std::decay_t<decltype(blocks)>, std::monostate>)
-                for (const auto& block : blocks) block.tensors(tensor);
-        }, state.payload);
+        std::visit(payload_tensors, state.payload);
         if (state.mtp) {
             tensor(state.mtp->last_target_hidden);
-            for (const auto& block : state.mtp->blocks) block.tensors(tensor);
-            for (const auto& block : state.mtp->qwen4_blocks) block.tensors(tensor);
-            for (const auto& ring : state.mtp->deepseek_v41_rings) tensor(ring);
-            for (const auto& value : state.mtp->qwen4_positions) tensor(value);
+            std::visit(payload_tensors, state.mtp->payload);
         }
     });
     std::map<int, std::size_t> result;

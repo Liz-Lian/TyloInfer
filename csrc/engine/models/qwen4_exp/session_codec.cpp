@@ -41,13 +41,15 @@ void read_recurrent(CudaPagedReader& reader,mfq::models::qwen4_exp::BlockSnapsho
     for(uint32_t i=0;i<count;++i)layer.ple_tokens.push_back(reader.scalar<int64_t>("PLE token"));
 }
 void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state) {
+    const auto* snapshot=std::get_if<mfq::models::qwen4_exp::MtpSnapshot>(&state.payload);
+    if(!snapshot)throw CudaSessionStateError("incompatible Qwen4 MTP session state");
     writer.scalar<int64_t>(state.cache_pos);write_optional(writer,state.last_target_hidden);
-    writer.scalar<uint32_t>(uint32_t(state.qwen4_blocks.size()));
-    for(std::size_t i=0;i<state.qwen4_blocks.size();++i) {
-        const auto& layer=state.qwen4_blocks[i];
+    writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));
+    for(std::size_t i=0;i<snapshot->blocks.size();++i) {
+        const auto& layer=snapshot->blocks[i];
         write_optional(writer,layer.keys);write_optional(writer,layer.values);write_optional(writer,layer.index);
-        write_recurrent(writer,layer);write_optional(writer,state.qwen4_positions[i]);
-        writer.scalar<int64_t>(state.qwen4_lengths[i]);
+        write_recurrent(writer,layer);write_optional(writer,snapshot->positions[i]);
+        writer.scalar<int64_t>(snapshot->lengths[i]);
     }
 }
 std::size_t qwen4_layer_bytes(const mfq::models::qwen4_exp::BlockSnapshot& layer) {
@@ -61,33 +63,34 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
     const auto count=reader.scalar<uint32_t>("MTP layers");
     if(!count || count>64)throw CudaSessionStateError("invalid Qwen4 MTP layers");
     state.bytes=session_tensor_bytes(state.last_target_hidden);
+    auto& snapshot=state.payload.emplace<mfq::models::qwen4_exp::MtpSnapshot>();
     for(uint32_t i=0;i<count;++i) {
         mfq::models::qwen4_exp::BlockSnapshot layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
-        read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);state.qwen4_blocks.push_back(std::move(layer));
-        auto positions=read_optional(reader);state.bytes+=session_tensor_bytes(positions);state.qwen4_positions.push_back(std::move(positions));
-        state.qwen4_lengths.push_back(reader.scalar<int64_t>("MTP layer position"));
+        read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);snapshot.blocks.push_back(std::move(layer));
+        auto positions=read_optional(reader);state.bytes+=session_tensor_bytes(positions);snapshot.positions.push_back(std::move(positions));
+        snapshot.lengths.push_back(reader.scalar<int64_t>("MTP layer position"));
     }
     return state;
 }
 }
 
 CudaPagedPayload encode_block(const TextSessionState& state,size_t block_size,size_t index) {
-    const auto* layers=std::get_if<std::vector<mfq::models::qwen4_exp::BlockSnapshot>>(&state.payload);
-    if(!block_size || !layers || layers->empty() || state.cache_pos<=0 || state.tokens.size()!=std::size_t(state.cache_pos) ||
+    const auto* snapshot=std::get_if<mfq::models::qwen4_exp::Snapshot>(&state.payload);
+    if(!block_size || !snapshot || snapshot->blocks.empty() || state.cache_pos<=0 || state.tokens.size()!=std::size_t(state.cache_pos) ||
         index>state.tokens.size()/block_size || index*block_size>=state.tokens.size() || state.cache_pos>UINT32_MAX)
         throw std::runtime_error("invalid Qwen4 prefix block boundary");
     const auto start=index*block_size,count=std::min(block_size,state.tokens.size()-start);
     const bool exact=start+count==state.tokens.size();
     CudaPagedWriter writer;writer.raw(qwen4_magic.data(),qwen4_magic.size());writer.scalar<uint32_t>(1);
     writer.scalar<uint32_t>(uint32_t(start));writer.scalar<uint32_t>(uint32_t(count));
-    writer.scalar<uint32_t>(uint32_t(layers->size()));writer.scalar<uint32_t>(exact?1:0);
-    for(const auto& layer:*layers) {
+    writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));writer.scalar<uint32_t>(exact?1:0);
+    for(const auto& layer:snapshot->blocks) {
         for(const auto* tensor:{&layer.keys,&layer.values,&layer.index})
             write_optional(writer,tensor->defined()?tensor->narrow(1,int64_t(start),int64_t(count)):tb::Tensor{});
         if(exact)write_recurrent(writer,layer);
     }
     if(exact) {
-        write_optional(writer,state.qwen4_positions);writer.scalar<uint32_t>(state.mtp?1:0);
+        write_optional(writer,snapshot->positions);writer.scalar<uint32_t>(state.mtp?1:0);
         if(state.mtp)write_qwen4_mtp(writer,*state.mtp);
     }
     return std::move(writer).finish();
@@ -100,7 +103,8 @@ bool exact(const CudaPagedPayload& payload) {
 TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     const std::vector<int64_t>& tokens,size_t block_size) {
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
-    std::vector<mfq::models::qwen4_exp::BlockSnapshot> layers;
+    mfq::models::qwen4_exp::Snapshot snapshot;
+    auto& layers=snapshot.blocks;
     std::vector<std::array<std::vector<tb::Tensor>,3>> fragments;
     size_t position=0;
     for(size_t i=0;i<payloads.size();++i) {
@@ -125,13 +129,13 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
             }
         }
         if(header.exact) {
-            state.qwen4_positions=read_optional(reader);
+            snapshot.positions=read_optional(reader);
             state.mtp.reset();if(reader.scalar<uint32_t>("MTP presence"))state.mtp=read_qwen4_mtp(reader);
         }
         if(i+1==payloads.size() && !header.exact)throw CudaSessionStateError("Qwen4 prefix has no exact recurrent checkpoint");
         reader.expect_end();
     }
-    if(payloads.empty() || position!=tokens.size() || !state.qwen4_positions.defined() || state.qwen4_positions.size(-1)!=int64_t(position))
+    if(payloads.empty() || position!=tokens.size() || !snapshot.positions.defined() || snapshot.positions.size(-1)!=int64_t(position))
         throw CudaSessionStateError("Qwen4 prefix boundary mismatch");
     for(size_t i=0;i<layers.size();++i) {
         auto& layer=layers[i];std::array<tb::Tensor*,3> fields{&layer.keys,&layer.values,&layer.index};
@@ -141,8 +145,8 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
         }
         state.bytes+=qwen4_layer_bytes(layer);
     }
-    state.bytes+=session_tensor_bytes(state.qwen4_positions)+(state.mtp?state.mtp->bytes:0);
-    state.payload=std::move(layers);return state;
+    state.bytes+=session_tensor_bytes(snapshot.positions)+(state.mtp?state.mtp->bytes:0);
+    state.payload=std::move(snapshot);return state;
 }
 
 } // namespace mfq::models::qwen4_exp
