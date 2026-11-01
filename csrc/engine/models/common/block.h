@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ops/common/include/rope.h"
-#include "ops/norm/rms.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 
 #include <cstdint>
 #include <vector>

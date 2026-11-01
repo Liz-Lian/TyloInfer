@@ -465,11 +465,11 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/vmm.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/route_stats.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/collectives.cpp
-    ${PROJECT_SOURCE_DIR}/ops/attention/attention.cpp
-    ${PROJECT_SOURCE_DIR}/ops/attention/full.cpp
-    ${PROJECT_SOURCE_DIR}/ops/attention/kv.cpp
-    ${PROJECT_SOURCE_DIR}/ops/attention/linear.cpp
-    ${PROJECT_SOURCE_DIR}/ops/norm/rms.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/attention.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/full.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/kv.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/linear.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/rope.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/format.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/moe_routes.cpp

@@ -2,7 +2,7 @@
 #include "engine/generation/sequence.h"
 #include "engine/models/common/prompt.h"
 
-#include "ops/norm/rms.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 #include "ops/vision/block.h"
 #include "engine/models/common/vision/load.h"
 #include "engine/models/nemotron_h/vision.h"

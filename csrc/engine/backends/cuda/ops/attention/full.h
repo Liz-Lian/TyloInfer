@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/attention/attention.h"
+#include "attention.h"
 #include "ops/common/include/projection.h"
 #include "ops/common/include/rope.h"
 

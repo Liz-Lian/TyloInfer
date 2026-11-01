@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "ops/attention/attention.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
 
 #include <cstdint>
 #include <utility>

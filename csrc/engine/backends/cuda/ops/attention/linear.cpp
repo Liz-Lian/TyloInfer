@@ -1,5 +1,5 @@
 #include "linear.h"
-#include "ops/norm/rms.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/qwen35/attention.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"

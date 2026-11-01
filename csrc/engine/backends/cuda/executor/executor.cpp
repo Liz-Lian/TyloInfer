@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
-#include "ops/norm/rms.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 
 #include <type_traits>
 

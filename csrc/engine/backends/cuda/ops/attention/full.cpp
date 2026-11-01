@@ -1,6 +1,6 @@
 #include "full.h"
 #include "kv.h"
-#include "ops/norm/rms.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/models/common/attention.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"

@@ -2,7 +2,7 @@
 
 #include "engine/models/common/block.h"
 #include "engine/models/common/ffn.h"
-#include "ops/attention/full.h"
+#include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/state/kv_cache.h"
 
 #include <cstdint>

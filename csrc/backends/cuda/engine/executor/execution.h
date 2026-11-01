@@ -17,7 +17,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include "ops/common/include/mmq.h"
 #include "ops/common/include/parallel.h"
 #include "ops/common/include/projection.h"
-#include "ops/attention/scratch.h"
+#include "engine/backends/cuda/ops/attention/scratch.h"
 #include "engine/weights/tensor_parallel.h"
 #include "engine/models/common/yarn.h"
 

@@ -1,4 +1,4 @@
-#include "ops/attention/attention.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"

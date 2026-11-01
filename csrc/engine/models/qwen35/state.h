@@ -4,7 +4,7 @@
 #include "engine/state/kv_cache.h"
 #include "engine/state/recurrent.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
-#include "ops/attention/linear.h"
+#include "engine/backends/cuda/ops/attention/linear.h"
 
 #include <cstdint>
 #include <variant>
