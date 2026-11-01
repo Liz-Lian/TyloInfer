@@ -1,5 +1,7 @@
 #pragma once
 
+#include "engine/requests/constraint.h"
+
 #include <cstdint>
 #include <algorithm>
 #include <cmath>
@@ -155,5 +157,33 @@ private:
     Ops ops_;
     std::mt19937_64 rng_;
 };
+
+template <typename Ops>
+typename Ops::Tensor sample_logits(
+        Sampler<Ops>& sampler,
+        typename Ops::Tensor logits,
+        const typename Ops::Tensor& counts,
+        const MfqTokenConstraintPtr& token_constraint = {}) {
+    logits = logits.contiguous().view({1, -1});
+    if (sampler.has_penalties()) {
+        logits = sampler.apply_penalties(std::move(logits), counts);
+    }
+
+    auto next = sampler.sample(logits);
+    if (token_constraint &&
+        !token_constraint->allows(next.template item<std::int64_t>())) {
+        // Keep the host mask alive until fallback token validation completes.
+        auto masked = sampler.ops().constrain(logits, token_constraint);
+        next = sampler.sample(masked.to(logits.device()));
+        if (!token_constraint->allows(next.template item<std::int64_t>())) {
+            throw std::runtime_error(
+                "CUDA constrained sampler returned an invalid token");
+        }
+    }
+    if (token_constraint) {
+        token_constraint->accept(next.template item<std::int64_t>());
+    }
+    return next;
+}
 
 } // namespace mfq::engine

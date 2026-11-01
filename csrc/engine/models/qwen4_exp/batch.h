@@ -5,7 +5,7 @@
 #include "engine/models/qwen4_exp/ops.h"
 #include "cuda_runtime_config.h"
 #include "engine/generation/batch.h"
-#include "engine/executor/sampler.h"
+#include "engine/backends/cuda/executor/sampling.h"
 
 #include <cstdint>
 #include <memory>

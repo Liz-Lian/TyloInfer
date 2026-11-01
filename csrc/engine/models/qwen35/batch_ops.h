@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/executor/batch_graph.h"
 #include "cuda_runtime_config.h"
 #include "engine/generation/batch.h"
-#include "engine/executor/sampler.h"
+#include "engine/backends/cuda/executor/sampling.h"
 #include "engine/models/qwen35/batch.h"
 #include "engine/backends/cuda/native/profile.h"
 

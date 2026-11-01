@@ -10,7 +10,7 @@
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/common/prompt.h"
-#include "engine/executor/sampler.h"
+#include "engine/backends/cuda/executor/sampling.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/weights/moe/expert_cache.h"
@@ -92,11 +92,11 @@ Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* executor,
             auto logits = last_logits(model, state, executor, collectives, mode,
                                           std::move(ids), true)
                               .contiguous().view({1, -1});
-            return mfq::cuda::sample_logits(sampler, std::move(logits), counts,
+            return mfq::engine::sample_logits(sampler, std::move(logits), counts,
                                             token_constraint);
         } else {
             auto logits = model.last_logits(ids).contiguous().view({1, -1});
-            return mfq::cuda::sample_logits(sampler, std::move(logits), counts, token_constraint);
+            return mfq::engine::sample_logits(sampler, std::move(logits), counts, token_constraint);
         }
     };
     const auto* setting = mfq::cuda::env_lookup("TYLOINFER_PROFILE_DECODE");
@@ -279,10 +279,10 @@ template <typename Model, typename State> struct CudaGenerationOps {
             if constexpr (has_logits<Model>) {
                 auto logits = project(model, executor, mode, std::move(input), true)
                                   .reshape({1, -1});
-                pending = mfq::cuda::sample_logits(sampler, std::move(logits), counts, constraint);
+                pending = mfq::engine::sample_logits(sampler, std::move(logits), counts, constraint);
             } else {
                 auto logits = model.logits_from_hidden(std::move(input)).reshape({1, -1});
-                pending = mfq::cuda::sample_logits(sampler, std::move(logits), counts, constraint);
+                pending = mfq::engine::sample_logits(sampler, std::move(logits), counts, constraint);
             }
         }
         const auto elapsed=timer.elapsed_ms();
@@ -484,7 +484,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 if(known_token_host.defined()) {
                     const bool greedy=sampler.greedy() && !has_penalties && !constraint;
                     if(auto result=qwen4_decode_graph_logits(model,pending.reshape({1,1}),greedy?2:1,known_token_host)) {
-                        pending=greedy?std::move(*result):mfq::cuda::sample_logits(sampler,
+                        pending=greedy?std::move(*result):mfq::engine::sample_logits(sampler,
                             result->contiguous().view({1,-1}),counts,constraint);
                         return pending.template item<int64_t>();
                     }

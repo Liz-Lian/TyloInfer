@@ -128,7 +128,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     TYLOINFER_CUDA_CHECK(
         cudaEventRecord(final_timer->finished_event(), mfq_get_current_cuda_stream()));
     request->prefill_timers.push_back(std::move(final_timer));
-    auto next = mfq::cuda::sample_logits(*request->sampler, std::move(logits), request->counts,
+    auto next = mfq::engine::sample_logits(*request->sampler, std::move(logits), request->counts,
                                          request->token_constraint);
     const int64_t token = next.item<int64_t>();
     double prefill_ms = 0.0;
@@ -368,7 +368,7 @@ BatchOps::Sample BatchOps::sample(const std::shared_ptr<Request>& request,
     const auto slot = static_cast<int64_t>(request->cache.slot());
     if (decoded.greedy_tokens.defined())
         return {{}, decoded.greedy_tokens.data_ptr<int64_t>()[slot], {}};
-    auto next = mfq::cuda::sample_logits(*request->sampler, decoded.logits.narrow(0, slot, 1),
+    auto next = mfq::engine::sample_logits(*request->sampler, decoded.logits.narrow(0, slot, 1),
                                          request->counts, request->token_constraint);
     const auto token = next.item<int64_t>();
     return {std::move(next), token, {}};

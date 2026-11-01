@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <utility>
 
 namespace mfq::cuda {
@@ -63,42 +62,22 @@ public:
             params.frequency_penalty, params.repetition_penalty);
     }
 
-private:
-    Tensor random_host_;
-    Tensor random_cuda_;
-};
-
-using Sampler = mfq::engine::Sampler<SamplingOps>;
-
-inline SamplingOps::Tensor sample_logits(
-        Sampler& sampler,
-        SamplingOps::Tensor logits,
-        const SamplingOps::Tensor& counts,
-        const MfqTokenConstraintPtr& token_constraint = {}) {
-    logits = logits.contiguous().view({1, -1});
-    if (sampler.has_penalties()) {
-        logits = sampler.apply_penalties(std::move(logits), counts);
-    }
-
-    auto next = sampler.sample(logits);
-    if (token_constraint &&
-        !token_constraint->allows(next.item<std::int64_t>())) {
+    static Tensor constrain(
+            const Tensor& logits, const MfqTokenConstraintPtr& token_constraint) {
         auto masked = logits
             .to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kFloat32)
             .contiguous();
         token_constraint->apply(
             masked.data_ptr<float>(),
             static_cast<std::size_t>(masked.numel()));
-        next = sampler.sample(masked.to(logits.device()));
-        if (!token_constraint->allows(next.item<std::int64_t>())) {
-            throw std::runtime_error(
-                "CUDA constrained sampler returned an invalid token");
-        }
+        return masked;
     }
-    if (token_constraint) {
-        token_constraint->accept(next.item<std::int64_t>());
-    }
-    return next;
-}
+
+private:
+    Tensor random_host_;
+    Tensor random_cuda_;
+};
+
+using Sampler = mfq::engine::Sampler<SamplingOps>;
 
 } // namespace mfq::cuda

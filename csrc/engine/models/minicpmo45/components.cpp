@@ -3,7 +3,7 @@
 #include "ops.h"
 #include "runtime.h"
 
-#include "engine/executor/sampler.h"
+#include "engine/backends/cuda/executor/sampling.h"
 #include "backend.h"
 #include "engine/weights/tensor_parallel.h"
 

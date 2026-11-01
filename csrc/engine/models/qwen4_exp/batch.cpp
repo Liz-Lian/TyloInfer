@@ -176,7 +176,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
             chunk.offset + chunk.count == static_cast<int64_t>(request->prompt.size());
         Tensor next;
         if (finished)
-            next = sample_logits(
+            next = mfq::engine::sample_logits(
                 *request->sampler,
                 model_.logits_from_hidden(model_.last_hidden(std::move(hidden))).reshape({1, -1}),
                 request->counts, request->token_constraint);
@@ -268,7 +268,7 @@ std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill
                 for (std::size_t i = 0; i < finished.size(); ++i) {
                     const auto row = finished[i];
                     const auto& request = items[row].first;
-                    next[row] = sample_logits(*request->sampler, logits.narrow(0, i, 1),
+                    next[row] = mfq::engine::sample_logits(*request->sampler, logits.narrow(0, i, 1),
                                               request->counts, request->token_constraint);
                 }
             }
@@ -390,7 +390,7 @@ BatchOps::Sample BatchOps::sample(const std::shared_ptr<Request>& request,
     TYLOINFER_RUNTIME_CHECK(request->decode_row >= 0, "Flash-Next sampled an inactive row");
     if (decoded.greedy_tokens.defined())
         return {{}, decoded.greedy_tokens.data_ptr<int64_t>()[request->decode_row], {}};
-    auto next = sample_logits(
+    auto next = mfq::engine::sample_logits(
         *request->sampler, decoded.logits.narrow(0, request->decode_row, 1), request->counts,
         request->token_constraint);
     const auto token = next.item<int64_t>();

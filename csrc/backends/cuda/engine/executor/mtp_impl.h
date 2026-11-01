@@ -7,7 +7,7 @@
 #include "engine/generation/mtp/sequence.h"
 #include "engine/executor/mtp.h"
 #include "engine/models/common/prompt.h"
-#include "engine/executor/sampler.h"
+#include "engine/backends/cuda/executor/sampling.h"
 #include "engine/requests/policy.h"
 #include "engine/requests/inference.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
@@ -726,7 +726,7 @@ template <class Model, class State> struct CudaMtpOps {
     if (penalties)
       logits = logits.clone();
     return static_cast<int32_t>(
-        mfq::cuda::sample_logits(sampler(), std::move(logits), token_counts)
+        mfq::engine::sample_logits(sampler(), std::move(logits), token_counts)
             .template item<int64_t>());
   }
   std::vector<int32_t> greedy_tokens(Tensor logits) {
@@ -747,7 +747,7 @@ template <class Model, class State> struct CudaMtpOps {
     auto sampler_constraint =
         constraint ? constraint->clone() : MfqTokenConstraintPtr{};
     return static_cast<int32_t>(
-        mfq::cuda::sample_logits(sampler(), std::move(logits), token_counts,
+        mfq::engine::sample_logits(sampler(), std::move(logits), token_counts,
                                  sampler_constraint)
             .template item<int64_t>());
   }
