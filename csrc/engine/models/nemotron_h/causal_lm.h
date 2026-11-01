@@ -149,7 +149,6 @@ void load_dense_mlp(Block& block, Loader& ops, const Config& config, int layer,
     ffn.down = ops.linear(mlp + "down.weight");
     ffn.gate_up = ops.gate_up({mlp + "up.weight"}, ffn.down);
     ffn.activation = models::MlpActivation::relu_squared;
-    ops.workspace(ffn);
     if (ffn.gate_up.outs.size() != 1 || ffn.gate_up.outs[0] != config.intermediate_size ||
         ffn.down.out() != config.hidden_size ||
         ffn.down.neuron_len() != config.intermediate_size) {

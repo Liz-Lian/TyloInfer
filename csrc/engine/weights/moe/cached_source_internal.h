@@ -292,7 +292,6 @@ public:
             size_t field = 0;
             if (pool.family == MixedMoeFamily::Nint) {
                 pool.nint.aligned_q8 = false;
-                pool.nint.workspaces.clear();
                 pool.nint.q_packed = arena.fields.at(field++);
                 pool.nint.row_q_bits = arena.fields.at(field++);
                 pool.nint.row_q_bit_offsets = arena.fields.at(field++);
@@ -307,7 +306,6 @@ public:
                     pool.nint.shape[0] = pool.nint.out;
                 }
             } else if (pool.family == MixedMoeFamily::Nint8Zero) {
-                pool.q8_zero.workspaces.clear();
                 pool.q8_zero.q_packed = arena.fields.at(field++);
                 pool.q8_zero.q8_zero_scale = arena.fields.at(field++);
                 pool.q8_zero.out =
@@ -323,7 +321,6 @@ public:
                     static_cast<int64_t>(arena.slots) *
                     cpu_->out_per_expert;
             } else if (pool.family == MixedMoeFamily::Nvq) {
-                pool.nvq.workspaces.clear();
                 pool.nvq.indices_packed = arena.fields.at(field++);
                 pool.nvq.aux_packed = arena.fields.at(field++);
                 pool.nvq.sub_scale_packed = arena.fields.at(field++);

@@ -95,7 +95,6 @@ static NintLinearGroup make_linear_group(const std::vector<NintWeight> & ws) {
                     g.w.q_packed.narrow(0, offset, source.out);
                 projection.q8_zero_scale =
                     g.w.q8_zero_scale.narrow(0, offset, source.out);
-                projection.workspaces.clear();
                 g.projection_w.push_back(std::move(projection));
                 offset += source.out;
             }
@@ -259,7 +258,6 @@ Projections make_projections(
             "grouped projection storage geometry mismatch");
         auto alias = original;
         auto & view = alias.nint;
-        view.workspaces.clear();
         view.q_packed = matrix.q_packed;
         if (view.q8_zero) {
             view.q_packed = matrix.q_packed.narrow(0, row, view.out);

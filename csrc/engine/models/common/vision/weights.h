@@ -62,8 +62,6 @@ void visit_linear(QuantLinear& weight, Visitor visit) {
          }) {
         if (tensor->defined()) visit(*tensor);
     }
-    n.workspaces.clear();
-    v.workspaces.clear();
 }
 
 template <class Visitor>

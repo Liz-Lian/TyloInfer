@@ -1,7 +1,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
-#include "resident_allocations.h"
 #include "nint.h"
 #include "nint_prefill_cache.h"
 #include "backends/cuda/engine/executor/execution.h"
@@ -31,11 +30,16 @@ struct NintPrefillDecodeCacheState {
     NintPrefillDecodeCacheState* previous=nullptr;
 };
 namespace {
-Workspace& resident_nint_workspace(const NintWeight& weight,int rows) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::cuda::ResidentAllocationScope resident;
-#endif
-    return weight.workspace(rows);
+struct NintScratch {
+    mfq_tensor_backend::Tensor qx;
+    mfq_tensor_backend::Tensor xscale;
+};
+NintScratch scratch(const NintWeight& weight, int rows) {
+    const int K_pad = (int)(weight.ng * weight.gs);
+    const auto options = weight.q_packed.options();
+    return {
+        mfq_tensor_backend::empty({rows, K_pad}, options.dtype(mfq_tensor_backend::kInt8)),
+        mfq_tensor_backend::empty({rows, weight.ng}, options.dtype(mfq_tensor_backend::kFloat32))};
 }
 thread_local NintPrefillDecodeCacheState* nint_prefill_decode_cache=nullptr;
 NintPrefillDecodeCacheState::Key nint_prefill_decode_key(const NintWeight& w) {
@@ -489,7 +493,7 @@ mfq_tensor_backend::Tensor nint_matmul(
             });
         }
         if (M <= 8) {
-            Workspace & ws = resident_nint_workspace(w,M);
+            auto ws = scratch(w, M);
             return profiler.measure("nint.matmul", [&]() {
                 if (w.aligned_q8) {
                     return nint_matmul_q8_ws_cuda(
@@ -529,7 +533,7 @@ mfq_tensor_backend::Tensor nint_matmul(
         });
     }
     if (M <= 8) {
-        Workspace & ws = resident_nint_workspace(w,M);
+        auto ws = scratch(w, M);
         return profiler.measure("nint8_zero.gemv", [&]() {
             return nint8_zero_gemv_ws_cuda(
                 w.q_packed, w.q8_zero_scale, x, ws.qx, ws.xscale);
@@ -654,7 +658,7 @@ mfq_tensor_backend::Tensor nint_matmul_input_mul(
     x = pad_last(x, w.neuron_len);
     gate = pad_last(gate, w.neuron_len);
     if (!w.q8_zero && x.size(0) <= 8) {
-        Workspace & ws = resident_nint_workspace(w,static_cast<int>(x.size(0)));
+        auto ws = scratch(w, static_cast<int>(x.size(0)));
         return profiler.measure("nint.matmul.input_mul", [&]() {
             if (w.aligned_q8) {
                 return nint_matmul_input_mul_q8_ws_cuda(

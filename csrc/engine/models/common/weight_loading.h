@@ -20,7 +20,6 @@ Ffn load_dense_ffn(Loader& ops, const ModelConfig& config, const std::string& pr
     result.down = ops.linear(down);
     result.gate_up = ops.gate_up({gate, up}, result.down);
     ops.important_neurons(config.hidden_size, config.intermediate_size, result, down, gate, up);
-    ops.workspace(result);
     return result;
 }
 
@@ -105,7 +104,6 @@ Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
     } else {
         result.shared->gate_up = ops.gate_up({shared_gate, shared_up}, result.shared->down);
     }
-    ops.workspace(*result.shared);
     return result;
 }
 

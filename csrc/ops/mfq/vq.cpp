@@ -2,7 +2,6 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_embedding_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
-#include "resident_allocations.h"
 #include "vq.h"
 #include "nint.h"
 #include "quant_dot.h"
@@ -10,11 +9,16 @@
 #include "cpu_projection_rows.h"
 
 namespace {
-NvqWorkspace& resident_nvq_workspace(const NvqWeight& weight,int rows) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::cuda::ResidentAllocationScope resident;
-#endif
-    return weight.workspace(rows);
+struct NvqScratch {
+    mfq_tensor_backend::Tensor qx;
+    mfq_tensor_backend::Tensor xscale;
+};
+NvqScratch scratch(const NvqWeight& weight, int rows) {
+    const int K_pad = (int)(weight.ng * weight.gs);
+    const auto options = weight.indices_packed.options();
+    return {
+        mfq_tensor_backend::empty({rows, K_pad}, options.dtype(mfq_tensor_backend::kInt8)),
+        mfq_tensor_backend::empty({rows, weight.ng}, options.dtype(mfq_tensor_backend::kFloat32))};
 }
 }
 
@@ -390,7 +394,7 @@ mfq_tensor_backend::Tensor nvq_matmul(
     int M = (int)x.size(0);
     const NvqMatmulPath path = select_nvq_matmul_path(w, M);
     if (path == NvqMatmulPath::Gemv) {
-        NvqWorkspace & ws = resident_nvq_workspace(w,M);
+        auto ws = scratch(w, M);
         return profiler.measure("nvq.gemv", [&]() {
             return nvq_gemv_ws_cuda(
                 w.indices_packed, w.aux_packed, w.sub_scale_packed,
@@ -399,7 +403,7 @@ mfq_tensor_backend::Tensor nvq_matmul(
         });
     }
     if (path == NvqMatmulPath::Mmq) {
-        NvqWorkspace & ws = resident_nvq_workspace(w,M);
+        auto ws = scratch(w, M);
         return profiler.measure("nvq.mma24", [&]() {
             return nvq_mmq_ws_cuda(
                 w.indices_packed, w.aux_packed, w.sub_scale_packed,
@@ -445,7 +449,7 @@ mfq_tensor_backend::Tensor nvq_matmul_input_mul(
     int M = (int)x.size(0);
     const NvqMatmulPath path = select_nvq_matmul_path(w, M);
     if (path == NvqMatmulPath::Gemv) {
-        NvqWorkspace & ws = resident_nvq_workspace(w,M);
+        auto ws = scratch(w, M);
         return profiler.measure("nvq.gemv_gate", [&]() {
             return nvq_gemv_gate_ws_cuda(
                 w.indices_packed, w.aux_packed, w.sub_scale_packed,
@@ -454,7 +458,7 @@ mfq_tensor_backend::Tensor nvq_matmul_input_mul(
         });
     }
     if (path == NvqMatmulPath::Mmq) {
-        NvqWorkspace & ws = resident_nvq_workspace(w,M);
+        auto ws = scratch(w, M);
         return profiler.measure("nvq.mma24_gate", [&]() {
             return nvq_mmq_gate_ws_cuda(
                 w.indices_packed, w.aux_packed, w.sub_scale_packed,
@@ -489,7 +493,7 @@ mfq_tensor_backend::Tensor nvq_matmul_multi2(
             {nvq_matmul(profiler, first, x),
              nvq_matmul(profiler, second, x)}, -1);
     }
-    NvqWorkspace & ws = resident_nvq_workspace(first,M);
+    auto ws = scratch(first, M);
     return profiler.measure("nvq.gemv_multi2", [&]() {
         return nvq_gemv_multi2_ws_cuda(
             first.indices_packed, first.aux_packed, first.sub_scale_packed,
@@ -517,7 +521,7 @@ mfq_tensor_backend::Tensor nvq_matmul_swiglu(
         auto parts = pair.split_with_sizes({gate.out, up.out}, -1);
         return mfq_tensor_backend::silu(parts[0]) * parts[1];
     }
-    NvqWorkspace & ws = resident_nvq_workspace(gate,1);
+    auto ws = scratch(gate, 1);
     return profiler.measure("nvq.gemv_swiglu", [&]() {
         return nvq_gemv_swiglu_ws_cuda(
             gate.indices_packed, gate.aux_packed, gate.sub_scale_packed,
@@ -550,13 +554,10 @@ mfq_tensor_backend::Tensor nvq_ffn_swiglu_down(
             ? acc_cuda(residual.value(), output)
             : output;
     }
-    NvqWorkspace & input_ws = resident_nvq_workspace(gate,1);
-    NvqWorkspace & output_ws = resident_nvq_workspace(down,1);
-    if (!input_ws.swiglu_scratch.defined() || input_ws.swiglu_scratch.numel() < gate.out) {
-        input_ws.swiglu_scratch = mfq_tensor_backend::empty(
-            {gate.out}, gate.indices_packed.options().dtype(
-                mfq_tensor_backend::kFloat32));
-    }
+    auto input_ws = scratch(gate, 1);
+    auto output_ws = scratch(down, 1);
+    auto swiglu_scratch = mfq_tensor_backend::empty(
+        {gate.out}, gate.indices_packed.options().dtype(mfq_tensor_backend::kFloat32));
     profiler.measure("nvq.ffn_swiglu_quant", [&]() {
         nvq_ffn_swiglu_quant_ws_cuda(
             gate.indices_packed, gate.aux_packed, gate.sub_scale_packed,
@@ -567,7 +568,7 @@ mfq_tensor_backend::Tensor nvq_ffn_swiglu_down(
             gate.sub_bits, gate.kernel_format, gate.sign_mode,
             up.sub_bits, up.kernel_format, up.sign_mode, down.gs,
             input_ws.qx, input_ws.xscale,
-            output_ws.qx, output_ws.xscale, input_ws.swiglu_scratch);
+            output_ws.qx, output_ws.xscale, swiglu_scratch);
         return 0;
     });
     return profiler.measure(

@@ -1,6 +1,5 @@
 #include "engine/weights/quant.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "engine/backends/cuda/native/resident_allocations.h"
 #include "engine/weights/format.h"
 #include "engine/weights/tensor_parallel.h"
 #include "nvq_group.h"
@@ -707,12 +706,6 @@ NvqWeight to_device_nvq(
         w.neuron_scale = w.neuron_scale.to(target).contiguous();
         w.codebook = w.codebook.to(target).contiguous();
         prepare_nvq_decode_records(w);
-        {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            mfq::cuda::ResidentAllocationScope resident;
-#endif
-            (void)w.workspace(1);
-        }
     }
     return w;
 }

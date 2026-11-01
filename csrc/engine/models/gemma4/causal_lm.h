@@ -119,7 +119,6 @@ void load_block(Block &b, Loader &ops, const Config &c, int layer, std::string_v
     b.ffn.geglu = true;
     b.ffn.down = ops.linear(mlp + "down.weight");
     b.ffn.gate_up = ops.gate_up({mlp + "gate.weight", mlp + "up.weight"}, b.ffn.down);
-    ops.workspace(b.ffn);
     if (!spec.moe)
         return;
     b.gemma_moe_gate_up = ops.experts(mlp + "experts.gate_up.weight", layer, "gate_up");

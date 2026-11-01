@@ -10,8 +10,6 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 
-static void prepare_ffn(bool cpu, mfq::cuda::Ffn& f);
-
 void load_important_neuron_branch(const mfq::cuda::weight_loader::Loader& weights,
                                   int64_t hidden_size, int64_t intermediate_size, mfq::cuda::Ffn &f,
                                   const std::string &down_name, const std::string &gate_name,
@@ -87,7 +85,6 @@ void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::ve
                                     preserve_projection_boundaries);
     }
 }
-void TransformerWeightLoader::workspace(mfq::cuda::Ffn& ffn) const { prepare_ffn(weights.placement.cpu, ffn); }
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {
     load_important_neuron_branch(weights, hidden, intermediate, ffn, down, gate, up);
@@ -187,27 +184,6 @@ mfq::cuda::Ffn load_moe_weights(const mfq::cuda::weight_loader::Loader& weights,
     result.moe_router_projection=std::move(loader.router_projection);
     return result;
 }
-
-static void prepare_ffn(bool cpu, mfq::cuda::Ffn &f) {
-    if (cpu)
-        return;
-    if (f.down.tensor_parallel())
-        return;
-    if (mfq::mfq_compat_enabled && f.gate_up.nvq_prefix2 && f.gate_up.layers.size() == 2 && f.down.is_nvq() &&
-        f.gate_up.outs.size() == 2 && f.gate_up.outs[0] == f.gate_up.outs[1] &&
-        f.gate_up.outs[0] == f.down.nvq.neuron_len) {
-        NvqWorkspace &ws = f.gate_up.layers[0].nvq.workspace(1);
-        ws.swiglu_scratch = mfq_tensor_backend::empty({f.gate_up.outs[0]},
-                                                      mfq_tensor_backend::TensorOptions()
-                                                          .device(mfq_tensor_backend::kCUDA)
-                                                          .dtype(mfq_tensor_backend::kFloat32));
-        (void)f.down.nvq.workspace(1);
-    }
-    if (f.important_neurons) {
-        prepare_ffn(cpu, *f.important_neurons);
-    }
-}
-
 
 namespace mfq::cuda {
 

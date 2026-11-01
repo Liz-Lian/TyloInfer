@@ -408,7 +408,6 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
 
 static NintWeight copy_cpu_nint_to_cuda(const NintWeight & source) {
     NintWeight result = source;
-    result.workspaces.clear();
     result.q_packed = copy_cpu_weight_to_cuda(source.q_packed);
     result.row_q_bits = copy_cpu_weight_to_cuda(source.row_q_bits);
     result.row_q_bit_offsets =
@@ -425,7 +424,6 @@ static NintWeight copy_cpu_nint_to_cuda(const NintWeight & source) {
 
 static NvqWeight copy_cpu_nvq_to_cuda(const NvqWeight & source) {
     NvqWeight result = source;
-    result.workspaces.clear();
     result.indices_packed =
         copy_cpu_weight_to_cuda(source.indices_packed);
     result.aux_packed = copy_cpu_weight_to_cuda(source.aux_packed);

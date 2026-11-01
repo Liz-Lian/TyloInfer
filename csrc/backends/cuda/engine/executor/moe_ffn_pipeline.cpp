@@ -125,12 +125,12 @@ void publish(uint32_t* flag) {
 MixedMoePool fields_pool(MixedMoePool pool,const std::vector<tb::Tensor>& fields,int slots,int output) {
     pool.local_experts=slots;
     if(pool.family==MixedMoeFamily::Nint) {
-        auto& w=pool.nint;w.workspaces.clear();w.aligned_q8=false;
+        auto& w=pool.nint;w.aligned_q8=false;
         w.q_packed=fields[0];w.row_q_bits=fields[1];w.row_q_bit_offsets=fields[2];
         w.sub_scale=fields[3];w.sub_min=fields[4];w.neuron_scale=fields[5];w.neuron_min=fields[6];
         w.out=int64_t(slots)*output;if(!w.shape.empty())w.shape[0]=w.out;
     } else if(pool.family==MixedMoeFamily::Nvq) {
-        auto& w=pool.nvq;w.workspaces.clear();w.indices_packed=fields[0];w.aux_packed=fields[1];
+        auto& w=pool.nvq;w.indices_packed=fields[0];w.aux_packed=fields[1];
         w.sub_scale_packed=fields[2];w.neuron_scale=fields[3];
         w.out=int64_t(slots)*output;if(!w.shape.empty())w.shape[0]=w.out;
     } else if(pool.family==MixedMoeFamily::Mxfp4) {

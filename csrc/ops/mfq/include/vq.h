@@ -4,17 +4,8 @@
 #include "backend.h"
 
 #include <cstdint>
-#include <unordered_map>
 #include <utility>
 #include <vector>
-
-struct NvqWorkspace {
-    int M = 0;
-    int K_pad = 0;
-    mfq_tensor_backend::Tensor qx;
-    mfq_tensor_backend::Tensor xscale;
-    mfq_tensor_backend::Tensor swiglu_scratch;
-};
 
 struct NvqWeight {
     mfq_tensor_backend::Tensor indices_packed;
@@ -39,22 +30,6 @@ struct NvqWeight {
     int64_t ng = 0;
     int64_t neuron_len = 0;
     std::vector<int64_t> shape;
-    mutable std::unordered_map<int, NvqWorkspace> workspaces;
-
-    NvqWorkspace & workspace(int M) const {
-        int K_pad = (int)(ng * gs);
-        auto it = workspaces.find(M);
-        if (it != workspaces.end() && it->second.K_pad == K_pad) return it->second;
-        NvqWorkspace ws;
-        ws.M = M;
-        ws.K_pad = K_pad;
-        const auto workspace_options = indices_packed.options();
-        ws.qx = mfq_tensor_backend::empty(
-            {M, K_pad}, workspace_options.dtype(mfq_tensor_backend::kInt8));
-        ws.xscale = mfq_tensor_backend::empty(
-            {M, ng}, workspace_options.dtype(mfq_tensor_backend::kFloat32));
-        return workspaces.emplace(M, std::move(ws)).first->second;
-    }
 };
 
 inline constexpr int64_t kNvq2JscXlGroupExecKernelFormat = 16;

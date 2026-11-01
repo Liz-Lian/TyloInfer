@@ -6,7 +6,6 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 struct CudaProfiler;
@@ -17,13 +16,6 @@ mfq_tensor_backend::Tensor nint_sharded_embedding_lookup(
     const std::vector<std::shared_ptr<mfq::NintRows>>& tables,
     const std::vector<int64_t>& ids,const std::vector<int64_t>& shape,
     const mfq_tensor_backend::Device& device);
-
-struct Workspace {
-    int M = 0;
-    int K_pad = 0;
-    mfq_tensor_backend::Tensor qx;
-    mfq_tensor_backend::Tensor xscale;
-};
 
 struct NintWeight {
     mfq_tensor_backend::Tensor q_packed;
@@ -51,24 +43,6 @@ struct NintWeight {
     // Proven from immutable CPU row metadata; zero means mixed/unknown.
     int uniform_qbits = 0;
     std::vector<int64_t> shape;
-    mutable std::unordered_map<int, Workspace> workspaces;
-
-    Workspace & workspace(int M) const {
-        int K_pad = (int)(ng * gs);
-        auto it = workspaces.find(M);
-        if (it != workspaces.end() && it->second.K_pad == K_pad) return it->second;
-        Workspace ws;
-        ws.M = M;
-        ws.K_pad = K_pad;
-        const auto workspace_options = q_packed.options();
-        ws.qx = mfq_tensor_backend::empty(
-            {M, K_pad}, workspace_options.dtype(mfq_tensor_backend::kInt8));
-        ws.xscale = mfq_tensor_backend::empty(
-            {M, ng}, workspace_options.dtype(mfq_tensor_backend::kFloat32));
-        auto res = workspaces.emplace(M, std::move(ws));
-        return res.first->second;
-    }
-
 };
 
 mfq_tensor_backend::Tensor nint_matmul(

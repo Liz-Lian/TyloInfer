@@ -174,12 +174,12 @@ MixedMoePool MoeQuantRangeSource::allocate_expert(int expert) const {
 #endif
     auto pool=metadata_->pools.at(index);pool.local_experts=1;pool.expert_local={};
     if(pool.family==MixedMoeFamily::Nvq) {
-        auto& w=pool.nvq;w.workspaces.clear();
+        auto& w=pool.nvq;
         w.indices_packed=fields[0];w.aux_packed=fields[1];w.sub_scale_packed=fields[2];w.neuron_scale=fields[3];
     } else if(pool.family==MixedMoeFamily::Mxfp4) {
         pool.mxfp4.values=fields[0];pool.mxfp4.scales=fields[1];
     } else {
-        auto& w=pool.nint;w.workspaces.clear();
+        auto& w=pool.nint;
         w.q_packed=fields[0];w.row_q_bits=fields[1];w.row_q_bit_offsets=fields[2];
         w.sub_scale=fields[3];w.sub_min=fields[4];w.neuron_scale=fields[5];w.neuron_min=fields[6];
     }
@@ -206,7 +206,7 @@ MixedMoePool MoeQuantRangeSource::read_expert_canonical(int expert) const {
     MixedMoePool result;
     if(fields) {
         result=metadata_->pools[index];result.local_experts=1;result.expert_local={};
-        auto& w=result.nvq;w.workspaces.clear();
+        auto& w=result.nvq;
         w.neuron_scale=cpu_f16_to_f32_tensor(fields->neuron_scale,store_->out_per_expert());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         // Tensor owners retain the actual read buffers through every DMA
