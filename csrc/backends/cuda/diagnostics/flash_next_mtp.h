@@ -2,7 +2,7 @@
 
 #include "nlohmann/json.hpp"
 #include "generation_result.h"
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 
 #include <cstdint>
 #include <utility>
@@ -14,6 +14,7 @@
 template <typename Model, typename Predictor>
 static int run_flash_next_mtp_check(Model& model, Predictor& mtp) {
     namespace tb=mfq_tensor_backend;
+    mfq::engine::mtp::State mtp_state;
     const MtpTarget target(model);
     TYLOINFER_RUNTIME_CHECK(
         model.metadata.flash_next && model.vocab_size() >= 8 &&
@@ -135,20 +136,20 @@ static int run_flash_next_mtp_check(Model& model, Predictor& mtp) {
         auto next=model.next_token(current);expected.push_back(next.template item<int64_t>());current=next.reshape({1,1});
     }
     generated=mfq::cuda::diagnostics::check_mtp_steps(
-        model, mtp, model, nullptr, *model.execution, model.metadata,
+        model, mtp, mtp_state, model, nullptr, *model.execution, model.metadata,
         prompt, sampling);
     const auto count=generated.size();
-    TYLOINFER_RUNTIME_CHECK(count==sampling.max_tokens && generated==expected && mtp.last_cycles>0,
+    TYLOINFER_RUNTIME_CHECK(count==sampling.max_tokens && generated==expected && mtp_state.cycles>0,
         "Flash-Next MTP greedy tokens disagree with incremental target");
-    result["greedy"]=generated;result["cycles"]=mtp.last_cycles;
-    result["accepted"]=mtp.last_accepted;result["rejected"]=mtp.last_rejected;
-    result["drafted"]=mtp.last_stats.drafted_tokens;
-    result["selected_depth"]=mtp.last_stats.selected_depth;
-    result["depth_cycles"]=mtp.last_stats.depth_cycles;
+    result["greedy"]=generated;result["cycles"]=mtp_state.cycles;
+    result["accepted"]=mtp_state.accepted;result["rejected"]=mtp_state.rejected;
+    result["drafted"]=mtp_state.stats.drafted_tokens;
+    result["selected_depth"]=mtp_state.stats.selected_depth;
+    result["depth_cycles"]=mtp_state.stats.depth_cycles;
     if constexpr(requires { mtp.graph_replays; })result["predictor_graph_replays"]=mtp.graph_replays;
     generated.clear();
     generated=mfq::cuda::diagnostics::check_mtp_steps(
-        model, mtp, model, nullptr, *model.execution, model.metadata,
+        model, mtp, mtp_state, model, nullptr, *model.execution, model.metadata,
         prompt, sampling, 3);
     const auto stopped=generated.size();
     TYLOINFER_RUNTIME_CHECK(stopped==3 && generated==std::vector<int64_t>(expected.begin(),expected.begin()+3),
@@ -156,7 +157,7 @@ static int run_flash_next_mtp_check(Model& model, Predictor& mtp) {
     sampling.max_tokens=8;sampling.temperature=.8;sampling.top_k=16;sampling.top_p=.95;
     sampling.presence_penalty=.2;sampling.frequency_penalty=.1;sampling.repetition_penalty=1.05;sampling.seed=20260907;
     TYLOINFER_RUNTIME_CHECK(mfq::cuda::diagnostics::check_mtp_steps(
-        model, mtp, model, nullptr, *model.execution, model.metadata,
+        model, mtp, mtp_state, model, nullptr, *model.execution, model.metadata,
         prompt, sampling).size()==8,
         "Flash-Next stochastic MTP failed to generate requested tokens");
     std::cout<<"flash_next_mtp_check "<<result.dump()<<'\n';return 0;

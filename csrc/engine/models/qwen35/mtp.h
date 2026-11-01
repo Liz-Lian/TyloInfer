@@ -3,7 +3,7 @@
 #include "engine/models/qwen35/predictor.h"
 #include "engine/executor/run.h"
 #include "engine/models/qwen35/mtp_state.h"
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 
 #include <functional>
 #include <memory>

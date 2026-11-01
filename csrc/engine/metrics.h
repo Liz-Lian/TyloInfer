@@ -11,6 +11,7 @@
 #include "engine/budget.h"
 #include "engine/executor/engine.h"
 #include "engine/generation/mtp/metrics.h"
+#include "engine/generation/mtp/state.h"
 #include "engine/weights/workspace.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/weights/memory.h"
@@ -27,7 +28,8 @@ namespace mfq::cuda::engine_detail {
 
 template <class Model, class Parts>
 mfq::engine::Metrics runtime_metrics(
-        const Model& language, const Parts& components, int graph_depth,
+        const Model& language, const Parts& components,
+        const mfq::engine::mtp::State& mtp_state, int graph_depth,
         const ExpertSpace* space, mfq::engine::Batch* batching,
         const mfq::ModelSource* source, WeightMemoryLedger& ledger,
         const RoutedCache& weights, KvMemoryManager* kv,
@@ -167,7 +169,7 @@ mfq::engine::Metrics runtime_metrics(
             {"qsa_kv_ssd_bytes", 0.0}});
     }
     if (components.mtp) {
-        mfq::engine::mtp::append_generation_metrics(metrics, components.mtp->last_stats);
+        mfq::engine::mtp::append_generation_metrics(metrics, mtp_state.stats);
         metrics.emplace_back("mtp_predictor_graph_replays",
             double(components.mtp->graph_replay_count()));
     }

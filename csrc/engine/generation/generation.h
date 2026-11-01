@@ -87,8 +87,8 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     if constexpr(requires { ops.set_prefix_boundary(size_t{}); })
         ops.set_prefix_boundary(caching?std::min(plan.stable_prefix_tokens,prompt.size()-1):0);
     if (mtp) {
-        mtp->last_stats = {};
-        mtp->last_stats.available = true;
+        ops.mtp_state.stats = {};
+        ops.mtp_state.stats.available = true;
     }
     ExecutionCleanup cleanup{output.cleanup_failure, [&] { ops.release(); }};
     if constexpr(requires { ops.prepare_request(request); })ops.prepare_request(request);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/common/attention_ops.h"
 #include "engine/models/glm5_next/config.h"
 

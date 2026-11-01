@@ -20,6 +20,7 @@
 #include "engine/metrics.h"
 #include "engine/requests/table.h"
 #include "engine/generation/generation.h"
+#include "engine/generation/mtp/state.h"
 #include "engine/weights/memory.h"
 
 #include <cuda_runtime_api.h>
@@ -71,6 +72,7 @@ struct Text {
     std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     TextSessionCache cache;
+    mfq::engine::mtp::State mtp_state;
     std::optional<Budget> budget;
     std::unique_ptr<mfq::engine::Batch> batching;
     bool duplex_active = false;
@@ -260,7 +262,7 @@ struct Text {
                     ~CacheLearningScope(){set_moe_reuse_learning(cache,previous);}
                 } learning(weights.moe);
                 auto& predictor=*components.mtp;
-                const auto saved_policy=predictor.policy_state;
+                const auto saved_policy=mtp_state.policy;
                 const auto start=std::chrono::steady_clock::now();
                 InferenceRequest request;
                 request.chat=false;
@@ -275,15 +277,15 @@ struct Text {
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->collectives,
-                                                   execution->forward_mode(),weights,metadata,predictor,request,output,16,
+                                                   execution->forward_mode(),weights,metadata,predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(weights.moe);
                 predictor.reset(1);
                 state.reset(1);
-                predictor.policy_state=saved_policy;
-                predictor.last_stats={};
-                predictor.last_cycles=predictor.last_accepted=predictor.last_rejected=0;
+                mtp_state.policy=saved_policy;
+                mtp_state.stats={};
+                mtp_state.cycles=mtp_state.accepted=mtp_state.rejected=0;
                 TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_get_current_cuda_stream()));
                 std::cerr<<"runtime_qwen4_mtp_warmup tokens="<<output.result.completion_tokens
                     <<" ms="<<std::chrono::duration<double,std::milli>(
@@ -365,6 +367,7 @@ struct Text {
                 model_parallel_cuda_graph_enabled(*execution),
             [owner = execution] { owner->drain(); },
             metadata, graph, cache, config, input, output,
+            mtp_state,
             batched ? nullptr : components.mtp.get(), std::move(prepared),
             batched ? batching.get() : nullptr, id, restore_decode_workspace);
     }
@@ -382,7 +385,7 @@ struct Text {
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {
-            return runtime_metrics(language,components,graph_draft_depth,
+            return runtime_metrics(language,components,mtp_state,graph_draft_depth,
                 expert_space ? &*expert_space : nullptr,batching.get(),source.get(),
                 *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
                 execution->layer_placement,execution->tensor_parallel,execution->expert_parallel);

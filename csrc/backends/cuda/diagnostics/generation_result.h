@@ -1,6 +1,7 @@
 #pragma once
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/execution.h"
+#include "engine/generation/mtp/state.h"
 
 namespace mfq::cuda::diagnostics {
 struct GenerationResult {
@@ -24,6 +25,7 @@ inline GenerationResult collect_generation(mfq::engine::Generation generation) {
 }
 template <class Model, class State>
 std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
+        mfq::engine::mtp::State& mtp_state,
         State& state,
         mfq::cuda::Executor* executor,
         CudaExecutionContext& execution,
@@ -36,7 +38,7 @@ std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
     mtp.reset(1);
     auto generation = run_mtp_generation(
         model, state, executor, execution.collectives, execution.forward_mode(),
-        execution.weights, metadata, mtp, request, output);
+        execution.weights, metadata, mtp, mtp_state, request, output);
     std::vector<int64_t> tokens;
     std::size_t largest_delta = 0;
     while (auto step = generation.next()) {
@@ -49,12 +51,12 @@ std::vector<int64_t> check_mtp_steps(Model& model, MtpModule& mtp,
             if (stop_after) request.sampling.max_tokens = stop_after;
         }
     }
-    if (!stop_after && tokens.size() >= 16 && mtp.last_accepted > 1)
+    if (!stop_after && tokens.size() >= 16 && mtp_state.accepted > 1)
         TYLOINFER_RUNTIME_CHECK(largest_delta > 1, "MTP split a verification delta into per-token events");
     TYLOINFER_RUNTIME_CHECK(output.metrics.mtp.available &&
-        output.metrics.mtp.cycles == mtp.last_stats.cycles &&
-        output.metrics.mtp.drafted_tokens == mtp.last_stats.drafted_tokens &&
-        output.metrics.mtp.accepted_tokens == mtp.last_stats.accepted_tokens,
+        output.metrics.mtp.cycles == mtp_state.stats.cycles &&
+        output.metrics.mtp.drafted_tokens == mtp_state.stats.drafted_tokens &&
+        output.metrics.mtp.accepted_tokens == mtp_state.stats.accepted_tokens,
         "request did not retain its MTP statistics");
     return tokens;
 }

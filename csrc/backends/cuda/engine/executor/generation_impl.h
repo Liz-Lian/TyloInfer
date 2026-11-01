@@ -555,6 +555,7 @@ template <class Model, class State, class Predictor> struct CudaGenerationContex
     DecodeGraphCache &graph;
     TextSessionCache &cache;
     const CudaRuntimeConfig &config;
+    mfq::engine::mtp::State &mtp_state;
     Predictor *mtp;
     std::optional<PreparedPrompt> prepared;
     mfq::engine::Batch* batching;
@@ -807,7 +808,7 @@ template <class Model, class State, class Predictor> struct CudaGenerationContex
             prepare_prefill_workspace(input.prompt.size()-reused);
             return ::run_mtp_generation(model, state, executor, collectives,
                 mode, weights, metadata,
-                *mtp,
+                *mtp, mtp_state,
                 input,
                 output,
                 prefill_chunk(input.prompt.size()-reused),
@@ -830,14 +831,16 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     const mfq::models::CausalLmMetadata &metadata,
     DecodeGraphCache &graph, TextSessionCache &cache,
     const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
-    mfq::engine::InferenceOutput &output, Predictor *mtp,
+    mfq::engine::InferenceOutput &output, mfq::engine::mtp::State &mtp_state,
+    Predictor *mtp,
     std::optional<PreparedPrompt> prepared,
     mfq::engine::Batch* batching, std::string request_id,
     std::function<void()> restore) {
     return mfq::engine::generate_request(
         generation_detail::CudaGenerationContext<Model, State, Predictor>{model, state, executor, collectives, mode,
                                      profiler, weights, serial_branches, report_memory, graph_allowed,
-                                     std::move(drain), metadata, graph, cache, config, mtp,
+                                     std::move(drain), metadata, graph, cache, config, mtp_state,
+                                     mtp,
                                      std::move(prepared), batching,
                                      std::move(request_id), std::move(restore)},
         request,

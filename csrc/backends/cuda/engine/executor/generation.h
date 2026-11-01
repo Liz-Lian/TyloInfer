@@ -2,11 +2,12 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/generation/batch.h"
+#include "engine/generation/mtp/state.h"
 #include "engine/generation/step.h"
 #include "engine/executor/run.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 #include "cuda_runtime_config.h"
 
 #include <functional>
@@ -37,7 +38,8 @@ mfq::engine::Generation generate(
     const mfq::models::CausalLmMetadata& metadata,
     DecodeGraphCache& graph, TextSessionCache& cache,
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
-    mfq::engine::InferenceOutput& output, Predictor* mtp = nullptr,
+    mfq::engine::InferenceOutput& output, mfq::engine::mtp::State& mtp_state,
+    Predictor* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},
     mfq::engine::Batch* batching = nullptr,
     std::string request_id = {}, std::function<void()> restore = {});
@@ -50,7 +52,8 @@ mfq::engine::Generation run_mtp_generation(
     mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
     mfq::cuda::RoutedCache& weights,
     const mfq::models::CausalLmMetadata& metadata,
-    MtpModule& mtp, mfq::engine::InferenceRequest& request,
+    MtpModule& mtp, mfq::engine::mtp::State& mtp_state,
+    mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
     const mfq::cuda::PreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,
     mfq_tensor_backend::Tensor restored_last_hidden = {},

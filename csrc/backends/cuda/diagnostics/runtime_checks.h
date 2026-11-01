@@ -7,7 +7,7 @@
 #include "engine/models/deepseek_v4/ops.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/nemotron_h/mtp.h"
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/nemotron_h/radio_vision.h"
 #include "diagnostics/flash_next_mtp.h"
 #include "diagnostics/token_generation.h"
@@ -105,6 +105,7 @@ static int run_prefill_sweep(
     if (max_m > mfq::cuda::internal::diagnostic_max_position_embeddings(model)) {
         throw std::runtime_error("--prefill-sweep exceeds the configured context size");
     }
+    mfq::engine::mtp::State mtp_state;
 
     std::vector<int64_t> token_ids((size_t)max_m);
     const int64_t token_span = std::max<int64_t>(
@@ -417,7 +418,7 @@ static int run_prefill_sweep(
                     execution.dsv4_cpu_offload_layers.empty() && execution.dense_cpu_layer_count == 0 &&
                         model_parallel_cuda_graph_enabled(execution),
                     [owner = &execution] { owner->drain(); },
-                    metadata, graph, cache, config, request, output));
+                    metadata, graph, cache, config, request, output, mtp_state));
                 mfq_cuda_synchronize();
                 const auto engine_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-engine_started).count();
                 std::cout<<"prefill_ordinary_generation_timing prompt="<<sizes.front()<<" chunk="<<engine_chunk
@@ -888,6 +889,7 @@ static int run_qwen35_mtp_check(
         mfq::cuda::qwen35::Mtp& mtp) {
     using Tensor = mfq_tensor_backend::Tensor;
     CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
+    mfq::engine::mtp::State mtp_state;
     TYLOINFER_RUNTIME_CHECK(executor != nullptr,
         "Qwen3.5 MTP diagnostic requires an executor");
     const MtpTarget target(
@@ -1110,19 +1112,19 @@ static int run_qwen35_mtp_check(
             current = next.reshape({1, 1});
         }
         std::vector<int64_t> got;
-        got = check_mtp_steps(model, mtp, state, executor, execution,
+        got = check_mtp_steps(model, mtp, mtp_state, state, executor, execution,
                               model.metadata, input, params);
         const int produced = static_cast<int>(got.size());
-        total_cycles += mtp.last_cycles;
+        total_cycles += mtp_state.cycles;
         std::cout << "mtp_check greedy_prompt_tokens=" << input.size() << " produced=" << produced
-            << " exact=" << (got == expected) << " accepted=" << mtp.last_accepted
-            << " rejected=" << mtp.last_rejected << '\n';
+            << " exact=" << (got == expected) << " accepted=" << mtp_state.accepted
+            << " rejected=" << mtp_state.rejected << '\n';
         TYLOINFER_RUNTIME_CHECK(produced == params.max_tokens && got == expected,
             "MTP greedy generation differs from ordinary incremental decode");
         // Output limit then a fresh request exercises state reset after an
         // early return, including stopping before a computed bonus is emitted.
         got.clear();
-        got = check_mtp_steps(model, mtp, state, executor, execution,
+        got = check_mtp_steps(model, mtp, mtp_state, state, executor, execution,
                               model.metadata, input, params, 3);
         const int stopped = static_cast<int>(got.size());
         TYLOINFER_RUNTIME_CHECK(stopped == 3 && got == std::vector<int64_t>(expected.begin(), expected.begin() + 3),
@@ -1138,9 +1140,9 @@ static int run_qwen35_mtp_check(
     stochastic.repetition_penalty = 1.05;
     stochastic.seed = 20260907;
     const int produced = static_cast<int>(check_mtp_steps(
-        model, mtp, state, executor, execution, model.metadata, prompt,
+        model, mtp, mtp_state, state, executor, execution, model.metadata, prompt,
         stochastic).size());
-    TYLOINFER_RUNTIME_CHECK(produced == 8 && mtp.last_cycles > 0 && total_cycles > 0,
+    TYLOINFER_RUNTIME_CHECK(produced == 8 && mtp_state.cycles > 0 && total_cycles > 0,
         "MTP runtime gate did not execute speculative cycles");
     int64_t linear_layers = 0, ffn_batches = 0, projection_batches = 0;
     for (std::size_t layer = 0; layer < model.layers.size(); ++layer) {
@@ -1284,6 +1286,7 @@ static int run_qwen4_decode_hidden_check(mfq::cuda::Qwen4CausalLm& model) {
 static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,MtpModule& mtp,
         const std::vector<int64_t>& prompt) {
     TYLOINFER_RUNTIME_CHECK(!prompt.empty(),"MTP generation variants require explicit prompt IDs");
+    mfq::engine::mtp::State mtp_state;
     MtpProfileEnvironment compact("TYLOINFER_MFE_TOKEN_COMPACT_PLAN"),aligned("TYLOINFER_MFE_TOKEN_ALIGNED_GU"),
         down("TYLOINFER_GR_BATCH_SHARED_DOWN"),up("TYLOINFER_GR_BATCH_SHARED_UP"),capacity("TYLOINFER_MFE_TOKEN_GROUP_CAPACITY"),
         exact_batch("TYLOINFER_NINT_EXACT_BATCH"),separated("TYLOINFER_MFE_SEPARATE_HIDDEN_QUANT"),
@@ -1394,7 +1397,7 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
                     model_parallel_cuda_graph_enabled(*model.execution),
                 [owner = model.execution] { owner->drain(); },
                 model.metadata, graph, cache, config, request, output,
-                enable_mtp ? &mtp : nullptr));
+                mtp_state, enable_mtp ? &mtp : nullptr));
             mfq_cuda_synchronize();
             const auto decode_ms=std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-result.first_token).count();
@@ -1406,8 +1409,8 @@ static int run_qwen4_mtp_generation_variants(mfq::cuda::Qwen4CausalLm& model,Mtp
                 "MTP generation variant changed output: ",variant.name);
             nlohmann::json sample={{"variant",variant.name},{"repeat",repeat},{"tokens",result.tokens.size()},{"mtp",enable_mtp},
                 {"decode_ms",decode_ms},{"decode_tps",1023.*1000./decode_ms},{"exact",exact},
-                {"cycles",mtp.last_cycles},{"accepted",mtp.last_accepted},{"drafted",mtp.last_stats.drafted_tokens},
-                {"selected_depth",mtp.last_stats.selected_depth},{"depth_cycles",mtp.last_stats.depth_cycles}};
+                {"cycles",mtp_state.cycles},{"accepted",mtp_state.accepted},{"drafted",mtp_state.stats.drafted_tokens},
+                {"selected_depth",mtp_state.stats.selected_depth},{"depth_cycles",mtp_state.stats.depth_cycles}};
             std::cout<<"mtp_generation_variant "<<sample.dump()<<'\n';
         }
     }
@@ -1781,6 +1784,7 @@ static int run_nemotron_h_vision_check(
 template <typename Model>
 static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::NemotronHMtp& mtp) {
     namespace tb=mfq_tensor_backend;
+    mfq::engine::mtp::State mtp_state;
     TYLOINFER_RUNTIME_CHECK(model.vocab_size() >= 8 && model.max_position_embeddings() >= 32,
         "Nemotron-H MTP diagnostic requires vocab>=8 and context>=32");
     const MtpTarget target(model);
@@ -1898,13 +1902,13 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
     const std::vector<int64_t> prompt{1,2,3,4,5};
     model.reset(1);mtp.reset(1);
     const auto speculative=check_mtp_steps(
-        model, mtp, model, nullptr, *model.execution, model.metadata,
+        model, mtp, mtp_state, model, nullptr, *model.execution, model.metadata,
         prompt, greedy);
     result["greedy_mtp"]=speculative;
-    result["cycles"]=mtp.last_stats.cycles;
-    result["accepted"]=mtp.last_accepted;
-    result["rejected"]=mtp.last_rejected;
-    TYLOINFER_RUNTIME_CHECK(mtp.last_stats.cycles>0,"Nemotron-H MTP diagnostic ran no speculative cycle");
+    result["cycles"]=mtp_state.stats.cycles;
+    result["accepted"]=mtp_state.accepted;
+    result["rejected"]=mtp_state.rejected;
+    TYLOINFER_RUNTIME_CHECK(mtp_state.stats.cycles>0,"Nemotron-H MTP diagnostic ran no speculative cycle");
     const auto config=resolve_cuda_runtime_config({});
     const auto ordinary=[&](MtpModule *predictor,bool enable_mtp) {
         DecodeGraphCache graph(model.max_position_embeddings());
@@ -1923,7 +1927,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
                 model.execution->dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(*model.execution),
             [owner = model.execution] { owner->drain(); },
-            model.metadata, graph, cache, config, request, output, predictor)).tokens;
+            model.metadata, graph, cache, config, request, output, mtp_state, predictor)).tokens;
     };
     const auto plain=ordinary(nullptr,false);
     result["greedy_plain"]=plain;
@@ -1932,7 +1936,7 @@ static int run_nemotron_h_mtp_check(Model& model, mfq::cuda::nemotron_h::Nemotro
     // The predictor stays loaded; only the request switch turns speculation off.
     const auto disabled=ordinary(&mtp,false);
     result["greedy_disabled"]=disabled;
-    TYLOINFER_RUNTIME_CHECK(disabled==plain && mtp.last_stats.cycles==0,
+    TYLOINFER_RUNTIME_CHECK(disabled==plain && mtp_state.stats.cycles==0,
         "disabled Nemotron-H MTP still ran speculative cycles");
     std::cout << "nemotron_h_mtp_check " << result.dump() << '\n';
     return 0;

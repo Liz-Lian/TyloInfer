@@ -2,7 +2,7 @@
 
 #include "engine/weights/loader.h"
 
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/common/full_block.h"
 #include "engine/models/nemotron_h/causal_lm.h"
 #include "ops.h"

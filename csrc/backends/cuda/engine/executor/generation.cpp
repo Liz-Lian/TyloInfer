@@ -19,6 +19,7 @@ namespace mfq::cuda::internal {
         const CudaRuntimeConfig &,                                                                 \
         mfq::engine::InferenceRequest &,                                                           \
         mfq::engine::InferenceOutput &,                                                            \
+        mfq::engine::mtp::State &,                                                                  \
         MtpModule *,                                                                               \
         std::optional<PreparedPrompt>,                                                         \
         mfq::engine::Batch*, std::string,                    \

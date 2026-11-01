@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/generation/mtp/sequence.h"
-#include "engine/executor/mtp.h"
+#include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/requests/policy.h"
@@ -84,6 +84,7 @@ template <class Model, class State> struct CudaMtpOps {
   mfq::cuda::RoutedCache& weights;
   const mfq::models::CausalLmMetadata &metadata;
   MtpModule &mtp;
+  mfq::engine::mtp::State &mtp_state;
   const mfq::cuda::PreparedPrompt *prepared;
   bool transformed_prompt;
   int position_axes;
@@ -270,11 +271,12 @@ template <class Model, class State> struct CudaMtpOps {
              mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
              mfq::cuda::RoutedCache& weights,
              const mfq::models::CausalLmMetadata &metadata,
-             MtpModule &mtp, const mfq::cuda::PreparedPrompt *prepared,
+             MtpModule &mtp, mfq::engine::mtp::State &mtp_state,
+             const mfq::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              std::function<void()> restore = {})
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
-        weights(weights), metadata(metadata), mtp(mtp), prepared(prepared),
+        weights(weights), metadata(metadata), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt && prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
@@ -915,7 +917,8 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
                    mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
                    mfq::cuda::RoutedCache& weights,
                    const mfq::models::CausalLmMetadata &metadata,
-                   MtpModule &mtp, InferenceRequest &request,
+                   MtpModule &mtp, mfq::engine::mtp::State &mtp_state,
+                   InferenceRequest &request,
                    InferenceOutput &output, int64_t prefill_chunk_size,
                    const mfq::cuda::PreparedPrompt *prepared,
                    std::size_t reused_tokens,
@@ -936,7 +939,7 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
     if(!retained_chunks && (!prepared || !prepared->transformed()))logical_chunk=request.prompt.size();
   }
   return mfq::engine::speculative_sequence(
-      mtp_detail::CudaMtpOps<Model, State>{model, state, executor, collectives, mode, weights, metadata, mtp, prepared,
+      mtp_detail::CudaMtpOps<Model, State>{model, state, executor, collectives, mode, weights, metadata, mtp, mtp_state, prepared,
                                prefill_chunk_size, &output, std::move(restore)},
       request, output,
       logical_chunk, reused_tokens, std::move(restored_last_hidden),

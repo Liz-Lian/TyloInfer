@@ -2,6 +2,7 @@
 
 #include "engine.h"
 #include "engine/generation/generation.h"
+#include "engine/generation/mtp/state.h"
 #include "load.h"
 #include "engine/metrics.h"
 #include "scope.h"
@@ -139,6 +140,7 @@ public:
             cache_.reset();
             graph_.reset();
             loaded_.reset();
+            mtp_state_ = {};
             execution_->pipelines.clear();
             offload_.reset();
             kv_.reset();
@@ -224,6 +226,7 @@ public:
                 model_parallel_cuda_graph_enabled(*execution_),
             [owner = execution_.get()] { owner->drain(); }, metadata(), *graph_,
             *cache_, config_, input, output,
+            mtp_state_,
             batched ? nullptr : components().mtp.get(), std::move(prepared),
             batched ? batching_.get() : nullptr, id, restore_decode_workspace_);
     }
@@ -247,6 +250,7 @@ private:
     std::shared_ptr<const mfq::ModelSource> source_;
     CudaRuntimeConfig config_;
     std::optional<LoadedModel> loaded_;
+    mfq::engine::mtp::State mtp_state_;
     std::optional<DecodeGraphCache> graph_;
     std::optional<internal::TextSessionCache> cache_;
     std::optional<Budget> budget_;
@@ -474,7 +478,7 @@ private:
     engine::ControlResult control_model(T value) {
         if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
             return engine_detail::runtime_metrics(
-                language(), components(), 3,
+                language(), components(), mtp_state_, 3,
                 expert_space_ ? &*expert_space_ : nullptr, batching_.get(),
                 source_.get(), *weight_memory_, weights_, kv_.get(),
                 offload_.get(), *cache_, *budget_,

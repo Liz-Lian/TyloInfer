@@ -87,9 +87,4 @@ struct MtpModule {
         throw std::runtime_error("this CUDA MTP predictor has no block-draft adapter");
     }
 
-    mfq::engine::mtp::GenerationStats last_stats;
-    mfq::engine::mtp::PolicyState policy_state;
-    uint64_t last_cycles = 0;
-    uint64_t last_accepted = 0;
-    uint64_t last_rejected = 0;
 };

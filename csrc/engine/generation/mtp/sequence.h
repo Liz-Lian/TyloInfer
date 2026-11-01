@@ -28,6 +28,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     auto &state = ops.state;
     const auto &metadata = ops.metadata;
     auto &mtp = ops.mtp;
+    auto &mtp_state = ops.mtp_state;
     const auto *prepared = ops.prepared;
     using Clock = std::chrono::steady_clock;
     namespace policy = mfq::engine::mtp;
@@ -53,10 +54,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                                   mtp.cache_position() == static_cast<int64_t>(reused_tokens) -
                                       (mtp.blockwise_drafting()?0:1)),
         "restored MTP session boundary is incompatible");
-    mtp.last_stats = {};
-    mtp.last_stats.available = true;
-    mtp.last_stats.used = true;
-    mtp.last_cycles = mtp.last_accepted = mtp.last_rejected = 0;
+    mtp_state.stats = {};
+    mtp_state.stats.available = true;
+    mtp_state.stats.used = true;
+    mtp_state.cycles = mtp_state.accepted = mtp_state.rejected = 0;
     const int64_t next_logical_position =
         static_cast<int64_t>(prompt.size()) +
         (transformed_prompt ? prepared->decode_position_delta : 0);
@@ -108,14 +109,14 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             ? 1
             : std::clamp<int>(sampling.mtp_max_draft_tokens, 1, policy::kMaximumDraftDepth));
     policy::GenerationPolicy<typename Ops::DepthController> depth_controller(
-        maximum_depth, mtp.dspark_policy(), &mtp.policy_state,[&] {
+        maximum_depth, mtp.dspark_policy(), &mtp_state.policy,[&] {
             if constexpr(requires {ops.gradual_mtp_warmup();})return ops.gradual_mtp_warmup();
             return false;
         }(),[&] {
             if constexpr(requires {ops.metal_mtp_policy();})return ops.metal_mtp_policy();
             return false;
         }());
-    mtp.last_stats.park_count=depth_controller.parks();
+    mtp_state.stats.park_count=depth_controller.parks();
 
     {
         Tensor raw, hidden;
@@ -223,7 +224,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         std::function<void()> flush_history;
         auto finish = [&]() {
             if (output.stopped() && flush_history) flush_history();
-            output.metrics.mtp = mtp.last_stats;
+            output.metrics.mtp = mtp_state.stats;
             if (session_last_hidden != nullptr) {
                 *session_last_hidden = committed_last_hidden;
             }
@@ -520,7 +521,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         auto draft =
             prepare_draft(initial_hidden, {pending}, bounded_depth(depth_controller.depth()), true);
         double draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
-        mtp.last_stats.head_ms+=draft_ms;
+        mtp_state.stats.head_ms+=draft_ms;
         while (generated < limit) {
             if (output.stopped()) {
                 finish();
@@ -531,22 +532,22 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 Tensor raw_step;
                 auto hidden_step = ops.target_forward(ops.ids_for({pending}), &raw_step);
                 const auto next = ops.sample_constrained(ops.logits_for(hidden_step), counts, constraint_cursor);
-                mtp.last_stats.target_ms+=std::chrono::duration<double,std::milli>(Clock::now()-plain_started).count();
+                mtp_state.stats.target_ms+=std::chrono::duration<double,std::milli>(Clock::now()-plain_started).count();
                 if (constraint_cursor) constraint_cursor->accept(next);
                 committed_last_hidden = ops.slice(raw_step, 1, ops.size(raw_step, 1)-1, 1);
                 auto delta = output.append(std::vector<int64_t>{next});
                 accept(delta);
                 prefetch_committed_token(next);
-                ++mtp.last_stats.standard_tokens;
+                ++mtp_state.stats.standard_tokens;
                 bool time_sample=!maintenance;
                 if constexpr(requires { ops.take_target_maintenance(); }) {
                     const bool initialized=ops.take_target_maintenance();time_sample=time_sample && !initialized;
                 }
                 depth_controller.observe_plain_window(cycle_started,Clock::now(),time_sample);
                 if(const auto measured=depth_controller.measured_cycle_ms(0))
-                    mtp.last_stats.measured_depth_ms[0]=*measured;
-                mtp.last_stats.selected_depth = depth_controller.depth();
-                mtp.last_stats.reentry_probes = depth_controller.reentries();
+                    mtp_state.stats.measured_depth_ms[0]=*measured;
+                mtp_state.stats.selected_depth = depth_controller.depth();
+                mtp_state.stats.reentry_probes = depth_controller.reentries();
                 pending = next;
                 finish();
                 co_yield std::move(delta);
@@ -555,7 +556,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 draft = prepare_draft(committed_last_hidden, {pending},
                     output.stopped()?0:bounded_depth(depth_controller.depth()), false);
                 draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
-                mtp.last_stats.head_ms+=draft_ms;
+                mtp_state.stats.head_ms+=draft_ms;
                 if(output.stopped()){finish();co_return;}
                 continue;
             }
@@ -601,11 +602,11 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 ops.reshape(ops.logits_for(verified), {draft_count + 1, metadata.vocab_size});
             const auto verify_finished=Clock::now();
 
-            ++mtp.last_stats.cycles;
-            mtp.last_stats.drafted_tokens += static_cast<uint64_t>(draft_count);
-            ++mtp.last_stats.depth_cycles.at(static_cast<size_t>(draft_count));
+            ++mtp_state.stats.cycles;
+            mtp_state.stats.drafted_tokens += static_cast<uint64_t>(draft_count);
+            ++mtp_state.stats.depth_cycles.at(static_cast<size_t>(draft_count));
             for (int position = 0; position < draft_count; ++position) {
-                ++mtp.last_stats.position_drafted.at(static_cast<size_t>(position));
+                ++mtp_state.stats.position_drafted.at(static_cast<size_t>(position));
             }
 
             auto row_counts = penalties ? ops.clone(counts) : Tensor{};
@@ -715,10 +716,10 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 constraint_cursor->accept(result.next_token);
                 result.accepted_drafts = static_cast<size_t>(accepted);
             }
-            mtp.last_stats.target_ms+=std::chrono::duration<double,std::milli>(Clock::now()-verify_started).count();
-            mtp.last_stats.accepted_tokens += static_cast<uint64_t>(accepted);
+            mtp_state.stats.target_ms+=std::chrono::duration<double,std::milli>(Clock::now()-verify_started).count();
+            mtp_state.stats.accepted_tokens += static_cast<uint64_t>(accepted);
             for (int position = 0; position < accepted; ++position) {
-                ++mtp.last_stats.position_accepted.at(static_cast<size_t>(position));
+                ++mtp_state.stats.position_accepted.at(static_cast<size_t>(position));
             }
 
             std::vector<int64_t> candidates(draft.tokens.begin(), draft.tokens.begin() + accepted);
@@ -753,7 +754,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 }
             }else resolve_routes(1);
             committed_last_hidden = ops.slice(verified_raw, 1, emitted_accepted, 1);
-            mtp.last_stats.rollback_ms+=std::chrono::duration<double,std::milli>(Clock::now()-resolve_started).count();
+            mtp_state.stats.rollback_ms+=std::chrono::duration<double,std::milli>(Clock::now()-resolve_started).count();
             if (output.stopped()) {
                 if (mtp.blockwise_drafting()) {
                     // Block predictors retain the committed target rows rather
@@ -784,7 +785,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             const double cycle_ms =
                 std::chrono::duration<double, std::milli>(cycle_finished - cycle_started).count();
             if constexpr(requires { ops.trace_cycle(uint64_t{},int{},int{},double{},double{},double{}); })
-                ops.trace_cycle(mtp.last_stats.cycles,draft_count,accepted,draft_ms,
+                ops.trace_cycle(mtp_state.stats.cycles,draft_count,accepted,draft_ms,
                     std::chrono::duration<double,std::milli>(verify_finished-verify_started).count(),
                     std::chrono::duration<double,std::milli>(Clock::now()-verify_finished).count());
             bool time_sample=!maintenance;
@@ -792,23 +793,23 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 const bool initialized=ops.take_target_maintenance();time_sample=time_sample && !initialized;
             }
             depth_controller.observe_window(draft_count,accepted,cycle_started,cycle_finished,time_sample);
-            mtp.last_stats.park_count = depth_controller.parks();
-            mtp.last_stats.selected_depth = depth_controller.depth();
+            mtp_state.stats.park_count = depth_controller.parks();
+            mtp_state.stats.selected_depth = depth_controller.depth();
             for (int depth = 0; depth <= depth_controller.maximum_depth(); ++depth) {
                 if (const auto measured = depth_controller.measured_cycle_ms(depth)) {
-                    mtp.last_stats.measured_depth_ms.at(static_cast<size_t>(depth)) = *measured;
+                    mtp_state.stats.measured_depth_ms.at(static_cast<size_t>(depth)) = *measured;
                 }
             }
 
             if (draft_count > 0) {
                 if (accepted == draft_count) {
-                    mtp.last_accepted += static_cast<uint64_t>(accepted);
+                    mtp_state.accepted += static_cast<uint64_t>(accepted);
                 } else {
-                    mtp.last_accepted += static_cast<uint64_t>(accepted);
-                    ++mtp.last_rejected;
+                    mtp_state.accepted += static_cast<uint64_t>(accepted);
+                    ++mtp_state.rejected;
                 }
             }
-            ++mtp.last_cycles;
+            ++mtp_state.cycles;
             pending = result.next_token;
             std::vector<int32_t> next_ids;
             next_ids.reserve(static_cast<size_t>(accepted + 1));
@@ -826,7 +827,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 output.stopped()?0:bounded_depth(depth_controller.depth()),
                 false);
             draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
-            mtp.last_stats.head_ms+=draft_ms;
+            mtp_state.stats.head_ms+=draft_ms;
             // Cancellation between yields still commits predictor history for
             // prefix restoration, without running another speculative chain.
             if(output.stopped()){finish();co_return;}

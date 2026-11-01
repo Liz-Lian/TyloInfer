@@ -59,6 +59,7 @@ int run_qwen35_mtp_bench(
     const auto ms_between = [](Clock::time_point first, Clock::time_point last) {
         return std::chrono::duration<double, std::milli>(last - first).count();
     };
+    mfq::engine::mtp::State mtp_state;
     for (const auto& prompt : std::vector<std::vector<int64_t>>{
             {1, 2, 3}, {100, 200, 300, 400, 500, 600, 700}, std::vector<int64_t>(17, 10)}) {
         state.reset(1);
@@ -98,7 +99,7 @@ int run_qwen35_mtp_bench(
                     model_parallel_cuda_graph_enabled(execution),
                 [owner = &execution] { owner->drain(); },
                 model.metadata, graph_cache, session_cache, runtime_config,
-                request, parsed, &mtp));
+                request, parsed, mtp_state, &mtp));
             output = std::move(result.tokens); prefill = result.prefill; first_token = result.first_token;
             const int produced = static_cast<int>(output.size());
             mfq_cuda_synchronize();
@@ -110,7 +111,7 @@ int run_qwen35_mtp_bench(
             }
             TYLOINFER_RUNTIME_CHECK(produced == generated_tokens && output == reference,
                 "MTP benchmark output differs from ordinary serial oracle");
-            TYLOINFER_RUNTIME_CHECK(!enable_mtp || mtp.last_cycles > 0,
+            TYLOINFER_RUNTIME_CHECK(!enable_mtp || mtp_state.cycles > 0,
                 "MTP benchmark did not execute speculative cycles");
             const double total_ms = ms_between(started, finished);
             const double first_ms = ms_between(started, first_token);
@@ -124,9 +125,9 @@ int run_qwen35_mtp_bench(
                 << " decode_ms=" << decode_ms << " prefill_gpu_ms=" << prefill.llm_ms
                 << " total_tps=" << produced * 1000. / total_ms
                 << " decode_tps=" << (produced - 1) * 1000. / decode_ms
-                << " exact=1 cycles=" << (enable_mtp ? mtp.last_cycles : 0)
-                << " accepted=" << (enable_mtp ? mtp.last_accepted : 0)
-                << " rejected=" << (enable_mtp ? mtp.last_rejected : 0)
+                << " exact=1 cycles=" << (enable_mtp ? mtp_state.cycles : 0)
+                << " accepted=" << (enable_mtp ? mtp_state.accepted : 0)
+                << " rejected=" << (enable_mtp ? mtp_state.rejected : 0)
                 << " graph_captures=" << graph_cache.captures
                 << " graph_reuses=" << graph_cache.reuses << '\n';
         }
@@ -155,6 +156,7 @@ int run_qwen_continuous_batching_check(Model& model,
     for (size_t i = 0; i < second_prompt.size(); ++i) second_prompt[i] = (113 + (i * 53) % 880) % diagnostic_vocab_size(model);
     DecodeGraphCache graph(diagnostic_max_position_embeddings(model));
     TextSessionCache cache(config.session_cache, config.prefix_cache);
+    mfq::engine::mtp::State mtp_state;
     auto serial = [&](const std::vector<int64_t>& prompt, MfqPromptCachePlan plan = {}) {
         InferenceRequest request; request.prompt = prompt; request.sampling = sampling; request.cache_plan = std::move(plan);
         InferenceOutput output(request, nullptr, "serial");
@@ -167,7 +169,7 @@ int run_qwen_continuous_batching_check(Model& model,
                 execution_context.dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(execution_context),
             [owner = &execution_context] { owner->drain(); },
-            metadata, graph, cache, config, request, output)).tokens;
+            metadata, graph, cache, config, request, output, mtp_state)).tokens;
     };
     const auto first_reference = serial(first_prompt), second_reference = serial(second_prompt);
     std::vector<int64_t> growth_prompt(253);
@@ -183,6 +185,7 @@ int run_qwen_continuous_batching_check(Model& model,
             TextSessionCache& cache;
             const CudaRuntimeConfig& config;
             State& state;
+            mfq::engine::mtp::State mtp_state;
             mfq::cuda::Executor* executor;
             CudaExecutionContext& execution_context;
             std::shared_ptr<const mfq::cuda::qwen35::Model> model_owner;
@@ -234,7 +237,7 @@ int run_qwen_continuous_batching_check(Model& model,
                         model_parallel_cuda_graph_enabled(execution_context),
                     [owner = &execution_context] { owner->drain(); },
                     metadata, graph, cache, config, request.input, request.output,
-                    nullptr, {}, batcher.get(), id);
+                    mtp_state, nullptr, {}, batcher.get(), id);
             }
         } execution(model, metadata, graph, cache, config, state, executor,
                     execution_context, std::move(model_owner));

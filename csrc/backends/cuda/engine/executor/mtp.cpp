@@ -12,6 +12,7 @@
       MODEL &, MODEL &, mfq::cuda::Executor*, mfq::cuda::Collectives&,           \
       mfq::cuda::Executor::Mode, mfq::cuda::RoutedCache&,                        \
       const mfq::models::CausalLmMetadata &, MtpModule &,                       \
+      mfq::engine::mtp::State &,                                                \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
       const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>)
