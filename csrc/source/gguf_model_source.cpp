@@ -22,19 +22,11 @@ using Ggml = std::unique_ptr<ggml_context, decltype(&ggml_free)>;
 } // namespace
 
 struct GgufModelSource::Impl {
-    struct Record {
-        TensorMetadata tensor;
-        std::shared_ptr<FileRangeReader> file;
-        std::filesystem::path path;
-        uint64_t offset = 0;
-        std::vector<std::byte> prefix;
-        std::vector<std::byte> inline_bytes;
-    };
     std::vector<std::filesystem::path> paths;
     std::string arch;
     std::unordered_map<std::string, std::string> metadata;
     std::vector<TensorMetadata> tensors;
-    std::unordered_map<std::string, Record> records;
+    std::unordered_map<std::string, gguf::Record> records;
     std::unordered_map<std::string, std::vector<std::byte>> asset_data;
     std::vector<std::string> assets;
 };
@@ -123,7 +115,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
                     shape.insert(shape.begin(), 1);
             }
             if (impl_->records.count(name)) throw std::runtime_error("duplicate GGUF tensor: " + name);
-            Impl::Record record;
+            gguf::Record record;
             record.file = file;
             record.path = impl_->paths[shard];
             const auto data_offset = gguf_get_data_offset(ctx.get());
@@ -196,7 +188,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
                 throw std::runtime_error("GGUF indexer query/key layouts cannot be joined without changing precision");
             const std::vector<int64_t> shape{qt.shape->front() + kt.shape->front(), qt.shape->back()};
             const auto name = root + "query_key.weight";
-            Impl::Record joined;
+            gguf::Record joined;
             joined.inline_bytes = dense::prefix(shape);
             for (const auto* record : {&q->second, &k->second}) {
                 const auto bytes = read(record->tensor.name);
@@ -218,7 +210,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             const auto root = "model.block." + std::to_string(layer) + ".position_embedding.ngram.";
             for (const auto* key : {"layer_multipliers", "head_offsets", "head_vocab_sizes"}) {
                 const auto values = meta.at(std::string("qwen4exp.ple.") + key).get<std::vector<int64_t>>();
-                Impl::Record record;
+                gguf::Record record;
                 const auto name = root + key;
                 std::vector<int64_t> shape{static_cast<int64_t>(values.size())};
                 record.inline_bytes = dense::prefix(shape);
@@ -254,55 +246,27 @@ ModelSource::TensorReader GgufModelSource::tensor_reader(std::string_view name) 
     const auto it = impl_->records.find(std::string(name));
     if (it == impl_->records.end()) throw std::out_of_range("GGUF tensor not found: " + std::string(name));
     return [record = it->second](uint64_t offset, std::byte* destination, std::size_t size) {
-        if (offset > record.tensor.nbytes || size > record.tensor.nbytes - offset)
-            throw std::out_of_range("GGUF tensor read exceeds its byte range");
-        if (!record.inline_bytes.empty()) {
-            if (size) std::memcpy(destination, record.inline_bytes.data() + offset, size);
-            return;
-        }
-        if (offset < record.prefix.size()) {
-            const auto count = std::min<std::size_t>(size, record.prefix.size() - offset);
-            std::memcpy(destination, record.prefix.data() + offset, count);
-            offset += count; destination += count; size -= count;
-        }
-        if (size) record.file->read(record.offset + offset - record.prefix.size(), destination, size);
+        record.read(offset, destination, size);
     };
 }
 std::optional<TensorFileRange> GgufModelSource::tensor_file_range(std::string_view name) const {
     const auto it = impl_->records.find(std::string(name));
-    if (it == impl_->records.end() || !it->second.prefix.empty() || !it->second.inline_bytes.empty()) return std::nullopt;
-    return TensorFileRange{it->second.path, it->second.offset, it->second.tensor.nbytes};
+    if (it == impl_->records.end()) return std::nullopt;
+    const auto& record = it->second;
+    return record.file_range();
 }
 ModelSource::TensorBatchReader GgufModelSource::tensor_batch_reader(std::string_view name) const {
     const auto it = impl_->records.find(std::string(name));
     if (it == impl_->records.end()) throw std::out_of_range("GGUF tensor not found: " + std::string(name));
-    const auto fallback = tensor_reader(name);
-    return [record = it->second, fallback](const std::vector<ReadSpan>& spans) {
-        for (const auto& span : spans) {
-            if (span.offset > record.tensor.nbytes || span.size > record.tensor.nbytes - span.offset)
-                throw std::out_of_range("GGUF tensor read exceeds its byte range");
-            if (span.size && !span.destination) throw std::invalid_argument("GGUF tensor destination is null");
-        }
-        if (!record.prefix.empty() || !record.inline_bytes.empty()) {
-            for (const auto& span : spans) fallback(span.offset, span.destination, span.size);
-            return;
-        }
-        std::vector<ReadSpan> destinations;
-        for (std::size_t begin = 0; begin < spans.size();) {
-            destinations.clear();
-            auto end = begin;
-            auto next = spans[begin].offset;
-            while (end < spans.size() && spans[end].offset == next) {
-                destinations.push_back({record.offset + spans[end].offset, spans[end].destination, spans[end].size});
-                next += spans[end++].size;
-            }
-            record.file->read_contiguous(destinations);
-            begin = end;
-        }
+    return [record = it->second](const std::vector<ReadSpan>& spans) {
+        record.read(spans);
     };
 }
 void GgufModelSource::read_range_into(std::string_view name, uint64_t offset, std::byte* destination, std::size_t size) const {
-    tensor_reader(name)(offset, destination, size);
+    const auto it = impl_->records.find(std::string(name));
+    if (it == impl_->records.end()) throw std::out_of_range("GGUF tensor not found: " + std::string(name));
+    const auto& record = it->second;
+    record.read(offset, destination, size);
 }
 const std::vector<std::string>& GgufModelSource::assets() const noexcept { return impl_->assets; }
 bool GgufModelSource::has_asset(std::string_view name) const noexcept { return impl_->asset_data.count(std::string(name)) != 0; }

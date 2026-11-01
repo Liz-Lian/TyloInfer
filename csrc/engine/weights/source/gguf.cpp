@@ -1,8 +1,10 @@
 #include "engine/weights/source/gguf.h"
 
 #include "components/ggml/include/gguf.h"
+#include "components/io/file_range_reader.h"
 #include "nlohmann/json.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -21,6 +23,50 @@ bool is_gguf_file(const std::filesystem::path& path) {
 namespace gguf {
 
 using json = nlohmann::json;
+
+void Record::read(std::uint64_t relative_offset, std::byte* destination, std::size_t size) const {
+    if (relative_offset > tensor.nbytes || size > tensor.nbytes - relative_offset)
+        throw std::out_of_range("GGUF tensor read exceeds its byte range");
+    if (!inline_bytes.empty()) {
+        if (size) std::memcpy(destination, inline_bytes.data() + relative_offset, size);
+        return;
+    }
+    if (relative_offset < prefix.size()) {
+        const auto count = std::min<std::size_t>(size, prefix.size() - relative_offset);
+        std::memcpy(destination, prefix.data() + relative_offset, count);
+        relative_offset += count; destination += count; size -= count;
+    }
+    if (size) file->read(offset + relative_offset - prefix.size(), destination, size);
+}
+
+void Record::read(const std::vector<ReadSpan>& spans) const {
+    for (const auto& span : spans) {
+        if (span.offset > tensor.nbytes || span.size > tensor.nbytes - span.offset)
+            throw std::out_of_range("GGUF tensor read exceeds its byte range");
+        if (span.size && !span.destination) throw std::invalid_argument("GGUF tensor destination is null");
+    }
+    if (!prefix.empty() || !inline_bytes.empty()) {
+        for (const auto& span : spans) read(span.offset, span.destination, span.size);
+        return;
+    }
+    std::vector<ReadSpan> destinations;
+    for (std::size_t begin = 0; begin < spans.size();) {
+        destinations.clear();
+        auto end = begin;
+        auto next = spans[begin].offset;
+        while (end < spans.size() && spans[end].offset == next) {
+            destinations.push_back({offset + spans[end].offset, spans[end].destination, spans[end].size});
+            next += spans[end++].size;
+        }
+        file->read_contiguous(destinations);
+        begin = end;
+    }
+}
+
+std::optional<TensorFileRange> Record::file_range() const {
+    if (!prefix.empty() || !inline_bytes.empty()) return std::nullopt;
+    return TensorFileRange{path, offset, tensor.nbytes};
+}
 
 json scalar(const gguf_context* ctx, int64_t id) {
     switch (gguf_get_kv_type(ctx, id)) {
