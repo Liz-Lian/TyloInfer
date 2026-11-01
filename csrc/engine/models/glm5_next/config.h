@@ -36,13 +36,6 @@ struct Config {
     }
     static Config from_json(std::string_view payload);
 
-    template <class Source> static Config from_source(const Source &source) {
-        const auto graph = source.resolved_model_graph();
-        if (graph.backbone != "glm5_next") {
-            throw std::runtime_error("GLM5-Next loading requires a glm5_next model graph");
-        }
-        return from_json(source.model_config_json());
-    }
     static Config parse(const nlohmann::json &outer) {
         const auto &text = outer.contains("text_config") ? outer.at("text_config") : outer;
         const auto outer_type = outer.value("model_type", std::string{});

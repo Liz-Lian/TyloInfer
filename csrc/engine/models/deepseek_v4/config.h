@@ -42,10 +42,6 @@ struct Config : ModelConfig {
 
     static Config from_json(std::string_view payload);
 
-    template <class Source>
-    static Config from_source(const Source& source) {
-        return from_json(source.model_config_json());
-    }
 };
 
 } // namespace mfq::models::deepseek_v4

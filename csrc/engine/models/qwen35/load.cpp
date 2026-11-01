@@ -5,6 +5,8 @@
 #include "engine/models/qwen35/weights.h"
 
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_config.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/group.h"
 #include "source/read.h"
@@ -156,12 +158,12 @@ Model load(std::shared_ptr<const mfq::ModelSource> source,
     Model model;
     model.source = std::move(source);
     const auto& source_ref = *model.source;
-    model.graph = source_ref.resolved_model_graph();
+    model.graph = mfq::models::graph(source_ref);
     model.plan = cuda_model_plan(model.graph);
     if (model.graph.component("vision") != nullptr &&
         model.plan.vision != CudaVisionAdapter::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
-    auto definition = source_ref.model_config_json(options.config_path);
+    auto definition = mfq::models::config_json(source_ref, options.config_path);
     definition = mfq::cuda::configure_yarn(yarn, options.extend_yarn, std::move(definition),
                                            model.graph.backbone, options.context_size);
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")

@@ -1,11 +1,33 @@
 #include "model_config.h"
 
+#include "source/model_source.h"
 #include "nlohmann/json.hpp"
 
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 namespace mfq::models {
+
+std::string config_json(
+        const ModelSource& source,
+        const std::string& external_path) {
+    if (!external_path.empty()) {
+        std::ifstream input(external_path, std::ios::binary);
+        if (!input) throw std::runtime_error("cannot open config: " + external_path);
+        return {std::istreambuf_iterator<char>(input), {}};
+    }
+    if (!source.has_asset(kModelConfigAsset)) {
+        throw std::runtime_error("model source has no model config");
+    }
+    const auto bytes = source.read_asset(kModelConfigAsset);
+    return {
+        reinterpret_cast<const char*>(bytes.data()),
+        bytes.size(),
+    };
+}
+
 namespace {
 
 using json = nlohmann::json;

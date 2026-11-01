@@ -1,6 +1,8 @@
 add_library(mfq-model-graph STATIC
     model_graph.cpp
     model_graph.h
+    model_config.cpp
+    model_config.h
     legacy_graph.cpp
     legacy_graph.h)
 add_library(mfq::model-graph ALIAS mfq-model-graph)

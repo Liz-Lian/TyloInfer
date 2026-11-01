@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace mfq { class ModelSource; }
+
 namespace mfq {
 
 inline constexpr std::string_view kModelGraphAsset =
@@ -63,5 +65,11 @@ struct ModelGraph {
     }
     bool has_capability(std::string_view capability) const noexcept;
 };
+
+namespace models {
+
+ModelGraph graph(const ModelSource& source);
+
+} // namespace models
 
 } // namespace mfq

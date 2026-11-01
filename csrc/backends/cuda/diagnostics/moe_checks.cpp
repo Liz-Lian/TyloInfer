@@ -1,4 +1,6 @@
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_config.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/backends/cuda/executor/ffn.h"
 #include "env.h"
@@ -805,8 +807,8 @@ int run_moe_check(
     auto model_source = mfq::open_model_source(model_path);
     const auto& mfq = *model_source;
     mfq::cuda::validate_model_source(mfq);
-    const auto graph = mfq.resolved_model_graph();
-    const auto payload = mfq.model_config_json(config_path);
+    const auto graph = mfq::models::graph(mfq);
+    const auto payload = mfq::models::config_json(mfq, config_path);
     mfq::cuda::Ffn ffn;
     int64_t hidden_size = 0;
     if (graph.backbone == "gemma4") {

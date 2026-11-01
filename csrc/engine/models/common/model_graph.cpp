@@ -1,6 +1,9 @@
 #include "model_graph.h"
 
+#include "engine/models/common/legacy_graph.h"
+#include "engine/models/common/model_config.h"
 #include "nlohmann/json.hpp"
+#include "source/model_source.h"
 
 #include <algorithm>
 #include <limits>
@@ -84,6 +87,18 @@ ModelGraphComponent parse_component(const json& value) {
 }
 
 } // namespace
+
+namespace models {
+
+ModelGraph graph(const ModelSource& source) {
+    if (auto stored = source.model_graph()) return *stored;
+    const auto config = config_json(source);
+    return synthesize_legacy_model_graph(
+        source.architecture(), config,
+        [&](std::string_view name) { return source.find_tensor(name) != nullptr; });
+}
+
+} // namespace models
 
 ModelGraph ModelGraph::from_json(std::string_view payload) {
     json root;

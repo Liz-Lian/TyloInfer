@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_config.h"
 #include "env.h"
 #include "cuda_runtime_config.h"
 #include "cuda_model_plan.h"
@@ -102,7 +103,7 @@ struct Backend {
             auto text = TextProcessor::load(*state.source, options.tokenizer_model,
                 info.vocab_size, info.model_type);
             info.stop_token_ids = model_stop_token_ids(
-                state.source->model_config_json(options.config_path), info.vocab_size);
+                mfq::models::config_json(*state.source, options.config_path), info.vocab_size);
             return std::pair{std::move(info), std::move(text)};
         });
     }

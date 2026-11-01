@@ -89,16 +89,6 @@ struct Config {
 
     static Config from_json(std::string_view payload);
 
-    template <class Source>
-    static Config from_source(const Source& source) {
-        const auto graph = source.resolved_model_graph();
-        if (graph.backbone != "deepseek_v41") {
-            throw std::runtime_error(
-                "DeepSeek-V4.1 C++ loading requires a deepseek_v41 model graph");
-        }
-        return from_json(source.model_config_json());
-    }
-
     template <class Container, class Graph>
     static Config from_mfq(
         const Container& model,

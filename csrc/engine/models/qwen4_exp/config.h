@@ -33,13 +33,6 @@ struct Config {
     MoeRouting routing() const { return {RouterActivation::softmax, normalize_routes, false, 1.0}; }
     static Config from_json(std::string_view payload);
 
-    template <class Source> static Config from_source(const Source &source) {
-        const auto graph = source.resolved_model_graph();
-        if (graph.backbone != "qwen4_exp") {
-            throw std::runtime_error("Qwen4-Exp loading requires a qwen4_exp model graph");
-        }
-        return from_json(source.model_config_json());
-    }
     static Config parse(const nlohmann::json &outer) {
         const auto &text = outer.contains("text_config") ? outer.at("text_config") : outer;
         const auto outer_type = outer.value("model_type", std::string{});

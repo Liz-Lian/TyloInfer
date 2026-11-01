@@ -6,6 +6,8 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/models/common/components.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_config.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/models/qwen35/load.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/state/kv_memory.h"
@@ -75,9 +77,9 @@ inline constexpr auto with_model = []<typename F>(
     };
     auto load_tts = [&] {
         auto started = std::chrono::steady_clock::now();
-        auto definition = source->model_config_json(options.config_path);
+        auto definition = mfq::models::config_json(*source, options.config_path);
         definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
-            source->resolved_model_graph().backbone, options.context_size);
+            mfq::models::graph(*source).backbone, options.context_size);
         auto owner = std::make_shared<minicpmo45::Model>(
             minicpmo45::read(source, definition, options.context_size));
         auto& model = *owner;
@@ -110,7 +112,7 @@ inline constexpr auto with_model = []<typename F>(
         return finish(loaded, started);
     };
 
-    switch (cuda_backbone(source->resolved_model_graph().backbone)) {
+    switch (cuda_backbone(mfq::models::graph(*source).backbone)) {
         case CudaBackbone::generic_qwen:
             if constexpr (IncludeQwen) {
                 auto started = std::chrono::steady_clock::now();

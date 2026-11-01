@@ -2,7 +2,6 @@ add_library(mfq-engine STATIC
     config.cpp
     generation/mtp/metrics.cpp
     models/common/axial_patch_vision.cpp
-    models/common/model_config.cpp
     models/common/vision/grid_vision.cpp
     models/deepseek_v4/config.cpp
     models/deepseek_v41/config.cpp

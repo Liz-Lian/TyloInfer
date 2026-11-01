@@ -109,13 +109,9 @@ public:
     virtual const std::vector<std::string>& assets() const noexcept = 0;
     virtual bool has_asset(std::string_view name) const noexcept = 0;
     virtual std::vector<std::byte> read_asset(std::string_view name) const = 0;
-    // The stored graph may be absent in legacy artifacts. Runtime callers
-    // should use resolved_model_graph(), which applies compatibility here at
-    // the source boundary.
+    // The stored graph may be absent in legacy artifacts. Model modules apply
+    // compatibility when they need a graph.
     virtual std::optional<ModelGraph> model_graph() const = 0;
-
-    std::string model_config_json(const std::string& external_path = {}) const;
-    ModelGraph resolved_model_graph() const;
 
     std::vector<std::byte> read(
         std::string_view name,

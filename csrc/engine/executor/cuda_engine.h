@@ -18,6 +18,7 @@
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
 #include "engine/models/common/session/cache.h"
+#include "engine/models/common/model_config.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/kv_expert_loan.h"
@@ -470,7 +471,7 @@ private:
             *source_, options_.tokenizer_model, info_.vocab_size, info_.model_type);
         info_.chat = text_->chat_template_capabilities();
         info_.stop_token_ids = engine::model_stop_token_ids(
-            source_->model_config_json(options_.config_path), info_.vocab_size);
+            mfq::models::config_json(*source_, options_.config_path), info_.vocab_size);
         requests_ = engine::RequestExecutor(info_.max_requests);
     }
 

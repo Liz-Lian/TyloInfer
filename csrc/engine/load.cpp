@@ -2,6 +2,7 @@
 #include "engine/models/batch.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/executor/cuda_engine.h"
 #include "engine/executor/backend.h"
 #include "engine/instance.h"
@@ -65,7 +66,7 @@ auto load_qwen(
 
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     auto source = mfq::open_model_source(options.model_path);
-    if (cuda_backbone(source->resolved_model_graph().backbone) ==
+    if (cuda_backbone(mfq::models::graph(*source).backbone) ==
             CudaBackbone::generic_qwen) {
         return std::make_unique<CudaEngine<
             Loaded<qwen35::Model, qwen35::State, qwen35::Components>,

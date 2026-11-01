@@ -67,13 +67,6 @@ struct Config : ModelConfig {
 
     static Config from_json(std::string_view payload, const ModelGraph &graph);
 
-    template <class Source> static Config from_source(const Source &source) {
-        const auto graph = source.resolved_model_graph();
-        if (graph.backbone != "qwen3_5" && graph.backbone != "generic_qwen") {
-            throw std::runtime_error("Qwen3.5 loading requires a Qwen-compatible model graph");
-        }
-        return from_json(source.model_config_json(), graph);
-    }
 };
 
 } // namespace mfq::models::qwen35

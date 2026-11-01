@@ -5,7 +5,13 @@
 #include <string_view>
 #include <vector>
 
+namespace mfq { class ModelSource; }
+
 namespace mfq::models {
+
+std::string config_json(
+    const ModelSource& source,
+    const std::string& external_path = {});
 
 // How the model positions attention queries and keys.
 enum class PositionalEncoding { rope, none };

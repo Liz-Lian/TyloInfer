@@ -3,6 +3,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/models/common/components.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
@@ -362,7 +363,7 @@ int run_reference(int argc, char** argv) {
         internal::setup_cuda_load(options, execution);
         tb::NoGradGuard guard;
         auto source = mfq::open_model_source(options.model_path);
-        const auto backbone = source->resolved_model_graph().backbone;
+        const auto backbone = mfq::models::graph(*source).backbone;
         if (backbone == "qwen3_5" || backbone == "generic_qwen")
             return generate<mfq::cuda::qwen35::Model>(execution, options, input, output, resident);
         if (backbone == "gemma4") return generate<Gemma4CausalLm>(execution, options, input, output, resident);

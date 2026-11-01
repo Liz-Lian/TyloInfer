@@ -1,5 +1,6 @@
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_graph.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -18,7 +19,7 @@ Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view defi
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = model.source->resolved_model_graph();
+    model.graph = mfq::models::graph(*model.source);
     if (model.graph.backbone != "minicpmo_tts")
         throw std::runtime_error("MiniCPM TTS loading requires the minicpmo_tts backbone");
     model.plan = cuda_model_plan(model.graph);

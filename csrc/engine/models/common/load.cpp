@@ -1,4 +1,5 @@
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/native/env.h"
 #include "engine/weights/moe/load.h"
 #include "engine/weights/loader.h"
@@ -218,7 +219,7 @@ void validate_model_source(const mfq::ModelSource& source) {
         throw std::runtime_error(
             "canonical text tensor inventory has no token embedding");
     }
-    for (const auto& component : source.resolved_model_graph().components) {
+    for (const auto& component : mfq::models::graph(source).components) {
         if (component.tensor_root != "runtime" &&
                 !has_tensor_prefix(source, component.tensor_root)) {
             throw std::runtime_error(

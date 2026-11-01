@@ -1,6 +1,8 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/scope.h"
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_config.h"
+#include "engine/models/common/model_graph.h"
 #include "backends/cuda/engine/executor/options.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/components.h"
@@ -65,9 +67,9 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     model.source = model_source ? std::move(model_source) : mfq::open_model_source(model_path);
     const auto &source = *model.source;
     validate_model_source(source);
-    model.graph = source.resolved_model_graph();
+    model.graph = mfq::models::graph(source);
     model.plan = cuda_model_plan(model.graph);
-    auto definition=source.model_config_json(config_path);
+    auto definition=mfq::models::config_json(source, config_path);
     definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
                                 model.graph.backbone, context_size_override);
     model.load_definition(definition, model.graph, source,
@@ -192,7 +194,8 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
     RuntimeComponents<mfq::cuda::Qwen4CausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
     if (result.plan.vision == mfq::cuda::CudaVisionAdapter::grid_vit) {
-        const auto document = nlohmann::json::parse(model.source->model_config_json());
+        const auto document = nlohmann::json::parse(
+            mfq::models::config_json(*model.source));
         const auto& vision = document.at("vision_config");
         if (vision.value("hidden_act", std::string("gelu_pytorch_tanh")) != "gelu_pytorch_tanh" ||
                 !vision.value("deepstack_visual_indexes", std::vector<int>{}).empty())
@@ -332,7 +335,7 @@ RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
         TYLOINFER_RUNTIME_CHECK(component != nullptr,
             "Nemotron-H graph declares a RADIO adapter without a vision component");
         const auto vision = mfq::models::nemotron_h::RadioVisionConfig::from_json(
-            model.source->model_config_json());
+            mfq::models::config_json(*model.source));
         result.radio_vision.emplace(
             mfq::cuda::nemotron_h::CudaRadioPromptComponent::load(
                 weights, vision, component->input_contract,

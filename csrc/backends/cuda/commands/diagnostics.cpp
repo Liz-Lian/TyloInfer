@@ -1,4 +1,5 @@
 #include "engine/models/common/load.h"
+#include "engine/models/common/model_config.h"
 #include "env.h"
 #include "engine/models/qwen4_exp/mtp.h"
 #include "engine/models/glm5_next/mtp.h"
@@ -405,7 +406,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             auto model_source = mfq::open_model_source(model_path);
             const auto& mfq = *model_source;
             const auto config = mfq::models::ModelConfig::from_json(
-                mfq.model_config_json(config_path));
+                mfq::models::config_json(mfq, config_path));
             if (!mfq.has_asset(mfq::kTokenizerGgufAsset)) {
                 throw std::runtime_error(
                     "model source has no tokenizer GGUF");
@@ -1183,7 +1184,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
             const auto* source = diagnostic_source(model);
             if (!source) throw std::runtime_error("diagnostics model source is unavailable");
             stop_ids = mfq::engine::model_stop_token_ids(
-                source->model_config_json(config_path),
+                mfq::models::config_json(*source, config_path),
                 diagnostic_vocab_size(model));
             if (stop_ids.empty()) std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
         }

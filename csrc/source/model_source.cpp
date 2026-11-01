@@ -5,12 +5,9 @@
 #include "gguf_model_source.h"
 #include "mfq_model_source.h"
 #include "tq_fixture_source.h"
-#include "engine/models/common/legacy_graph.h"
 
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 
 namespace mfq {
 
@@ -37,30 +34,6 @@ std::shared_ptr<const ModelSource> open_model_source(
     }
     if (is_gguf_file(path)) return std::make_shared<GgufModelSource>(path);
     return std::make_shared<MfqModelSource>(path);
-}
-
-std::string ModelSource::model_config_json(const std::string& external_path) const {
-    if (!external_path.empty()) {
-        std::ifstream input(external_path, std::ios::binary);
-        if (!input) throw std::runtime_error("cannot open config: " + external_path);
-        return {std::istreambuf_iterator<char>(input), {}};
-    }
-    if (!has_asset(kModelConfigAsset)) {
-        throw std::runtime_error("model source has no model config");
-    }
-    const auto bytes = read_asset(kModelConfigAsset);
-    return {
-        reinterpret_cast<const char*>(bytes.data()),
-        bytes.size(),
-    };
-}
-
-ModelGraph ModelSource::resolved_model_graph() const {
-    if (auto graph = model_graph()) return *graph;
-    const auto config = model_config_json();
-    return synthesize_legacy_model_graph(
-        architecture(), config,
-        [&](std::string_view name) { return find_tensor(name) != nullptr; });
 }
 
 const mfq::TensorMetadata& require_tensor(
