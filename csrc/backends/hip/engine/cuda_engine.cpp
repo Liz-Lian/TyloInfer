@@ -8,9 +8,9 @@
 #include "storage/weight_loader.h"
 #include "hip_batching.h"
 #include "storage/text_session_cache.h"
-#include "mtp_metrics.h"
+#include "engine/generation/mtp/metrics.h"
 #include "engine/requests/table.h"
-#include "engine/executor/flow.h"
+#include "engine/generation/generation.h"
 
 #include <hip/hip_runtime_api.h>
 #include <algorithm>

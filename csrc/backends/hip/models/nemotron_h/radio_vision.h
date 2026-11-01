@@ -2,7 +2,7 @@
 
 #include "core/block.h"
 #include "core/vision_block.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 #include "models/nemotron_h/vision.h"
 #include "storage/weight_loader.h"
 

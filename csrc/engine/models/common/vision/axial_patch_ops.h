@@ -2,7 +2,7 @@
 
 #include "backend.h"
 #include "engine/models/common/axial_patch_vision.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 
 #include <cstdint>
 #include <memory>

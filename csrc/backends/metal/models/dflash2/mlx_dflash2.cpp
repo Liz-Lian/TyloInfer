@@ -4,7 +4,7 @@
 #include "mlx_tensor.h"
 #include "mlx_weight_residency.h"
 #include "mlx_kernel_prepare.h"
-#include "mtp_policy.h"
+#include "engine/generation/mtp/policy.h"
 #include "../flash_next/mlx_qwen4_causal_lm.h"
 
 #include <algorithm>

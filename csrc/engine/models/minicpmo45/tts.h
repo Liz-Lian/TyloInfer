@@ -5,7 +5,7 @@
 #include "vision.h"
 #include <random>
 #include "engine/requests/policy.h"
-#include "engine/executor/sampling.h"
+#include "engine/generation/sampling.h"
 #include "engine/models/common/load.h"
 #include "backends/cuda/engine/executor/run.h"
 #include "engine/state/kv_cache.h"

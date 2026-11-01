@@ -1,6 +1,6 @@
 add_library(mfq-engine STATIC
     executor/config.cpp
-    executor/mtp_metrics.cpp
+    generation/mtp/metrics.cpp
     models/common/axial_patch_vision.cpp
     models/common/model_config.cpp
     models/common/vision/grid_vision.cpp

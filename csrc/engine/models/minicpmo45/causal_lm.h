@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include "../../executor/sequence.h"
+#include "../../generation/sequence.h"
 #include "../common/weight_loading.h"
 #include "../common/causal_forward.h"
 #include "../common/causal_model.h"

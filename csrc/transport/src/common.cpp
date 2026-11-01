@@ -2,7 +2,7 @@
 
 #include "nlohmann/json.hpp"
 #include "chat.h"
-#include "engine/executor/mtp_metrics.h"
+#include "engine/generation/mtp/metrics.h"
 
 #include <algorithm>
 #include <array>

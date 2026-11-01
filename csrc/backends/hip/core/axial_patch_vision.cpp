@@ -1,5 +1,5 @@
 #include "core/axial_patch_vision.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 
 #include <limits>
 #include <stdexcept>

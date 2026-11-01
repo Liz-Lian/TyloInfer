@@ -2,7 +2,7 @@
 #pragma once
 
 #include "storage/session_state.h"
-#include "mtp_policy.h"
+#include "engine/generation/mtp/policy.h"
 #include "../../hip/include/backend.h"
 #include "core/causal_model.h"
 

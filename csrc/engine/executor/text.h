@@ -15,11 +15,11 @@
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
 #include "backends/cuda/engine/executor/options.h"
-#include "engine/batch/batch.h"
+#include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
-#include "engine/executor/metrics.h"
+#include "engine/metrics.h"
 #include "engine/requests/table.h"
-#include "engine/executor/flow.h"
+#include "engine/generation/generation.h"
 #include "engine/weights/memory.h"
 
 #include <cuda_runtime_api.h>

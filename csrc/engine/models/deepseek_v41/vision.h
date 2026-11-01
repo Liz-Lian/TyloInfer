@@ -2,7 +2,7 @@
 #include "engine/models/common/prompt.h"
 #include "ops.h"
 #include "engine/requests/media.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 
 namespace mfq::cuda::deepseek_v41_runtime {
 

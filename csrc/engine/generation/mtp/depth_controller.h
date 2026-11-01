@@ -1,8 +1,8 @@
 #pragma once
 
-#include "prefill_activity.h"
-#include "../batch/mtp_batch_policy.h"
-#include "../batch/mtp_batch_policy_v1.h"
+#include "../prefill_activity.h"
+#include "batch_policy.h"
+#include "batch_policy_v1.h"
 
 #include <algorithm>
 #include <array>

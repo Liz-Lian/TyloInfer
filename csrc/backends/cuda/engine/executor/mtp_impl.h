@@ -4,7 +4,7 @@
 #include "engine/weights/routed_cache.h"
 #include "backends/cuda/engine/executor/generation.h"
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
-#include "engine/executor/speculative_sequence.h"
+#include "engine/generation/mtp/sequence.h"
 #include "engine/executor/mtp.h"
 #include "engine/models/common/prompt.h"
 #include "engine/executor/sampler.h"
@@ -12,6 +12,7 @@
 #include "engine/requests/inference.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/models/deepseek_v41/ops.h"
+#include "engine/models/deepseek_v41/policy.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/qwen4_exp/mtp.h"
 #include "engine/weights/moe/expert_cache.h"
@@ -73,6 +74,7 @@ void replay_target(Model& model, State& state, mfq::cuda::Executor* executor,
 }
 
 template <class Model, class State> struct CudaMtpOps {
+  using DepthController = mfq::models::deepseek_v41::DepthController;
   using Tensor = mfq_tensor_backend::Tensor;
   Model &model;
   State &state;

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "causal_forward.h"
-#include "../../executor/sequence.h"
+#include "../../generation/sequence.h"
 #include "gated_mlp.h"
 #include "vision/grid_vision.h"
 #include "transformer_layer.h"

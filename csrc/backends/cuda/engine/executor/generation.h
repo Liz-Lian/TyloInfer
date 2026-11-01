@@ -1,8 +1,8 @@
 #pragma once
 #include "engine/models/common/prompt.h"
 
-#include "engine/batch/batch.h"
-#include "engine/executor/step.h"
+#include "engine/generation/batch.h"
+#include "engine/generation/step.h"
 #include "engine/executor/run.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/backends/cuda/executor/decode_graph.h"

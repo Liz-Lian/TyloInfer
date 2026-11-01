@@ -1,5 +1,5 @@
 #pragma once
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 #include "engine/models/common/prompt.h"
 
 #include "ops/norm/rms.h"

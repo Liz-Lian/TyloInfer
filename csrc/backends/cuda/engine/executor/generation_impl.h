@@ -5,7 +5,7 @@
 #include "backends/cuda/engine/executor/generation.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/profile.h"
-#include "engine/executor/flow.h"
+#include "engine/generation/generation.h"
 #include "backends/cuda/engine/executor/token_row_prefetch.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/qwen4_exp/ops.h"

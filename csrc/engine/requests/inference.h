@@ -2,7 +2,7 @@
 
 #include "chat.h"
 #include "media.h"
-#include "../executor/mtp_policy.h"
+#include "../generation/mtp/policy.h"
 #include "request.h"
 #include "result.h"
 #include "sampling.h"

@@ -1,7 +1,7 @@
 #include "engine/models/common/vision/axial_patch_ops.h"
 #include "engine/models/common/vision/load.h"
 #include "engine/models/common/vision/weights.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 
 #include <limits>
 #include <stdexcept>

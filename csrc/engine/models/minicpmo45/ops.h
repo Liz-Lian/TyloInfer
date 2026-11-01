@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/models/common/prompt.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/sequence.h"
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/session/state.h"

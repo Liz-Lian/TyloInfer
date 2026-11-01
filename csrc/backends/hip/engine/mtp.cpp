@@ -1,7 +1,7 @@
 #include "runtime/mtp_compact_sampling.h"
 #include "models/nemotron_h/ops.h"
 #include "generation.h"
-#include "speculative_sequence.h"
+#include "engine/generation/mtp/sequence.h"
 
 #include "hip_execution.h"
 #include "hip_sampling.h"
@@ -10,6 +10,7 @@
 #include "mfq_hip_sampling_ops.h"
 #include "models/deepseek_v4/ops.h"
 #include "models/deepseek_v41/ops.h"
+#include "engine/models/deepseek_v41/policy.h"
 #include "models/gemma4/ops.h"
 #include "models/glm5_next/ops.h"
 #include "models/glm_dsa/ops.h"
@@ -43,6 +44,7 @@ mfq_tensor_backend::Tensor MtpTarget::logits(mfq_tensor_backend::Tensor hidden) 
 using mfq::engine::Generation;
 using namespace mfq::engine;
 template <class Model> struct CudaMtpOps {
+  using DepthController = mfq::models::deepseek_v41::DepthController;
   using Tensor = mfq_tensor_backend::Tensor;
   Model &model;
   MtpModule &mtp;

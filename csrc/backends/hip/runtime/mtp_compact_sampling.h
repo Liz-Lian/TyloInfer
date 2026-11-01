@@ -1,6 +1,6 @@
 #pragma once
 #include "mfq_hip_sampling_ops.h"
-#include "mtp_policy.h"
+#include "engine/generation/mtp/policy.h"
 #include "engine/requests/media.h"
 #include <array>
 #include <cstdint>

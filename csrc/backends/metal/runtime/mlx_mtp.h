@@ -2,8 +2,8 @@
 
 #include "engine/requests/constraint.h"
 #include "mlx_sampling.h"
-#include "mtp_depth_controller.h"
-#include "engine/executor/sequence.h"
+#include "engine/generation/mtp/depth_controller.h"
+#include "engine/generation/sequence.h"
 
 #include <array>
 #include <cstddef>

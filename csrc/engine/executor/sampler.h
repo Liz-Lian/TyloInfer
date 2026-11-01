@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/executor/sampling.h"
+#include "engine/generation/sampling.h"
 #include "engine/requests/sampling.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 

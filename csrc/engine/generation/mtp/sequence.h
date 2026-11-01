@@ -1,8 +1,7 @@
 #pragma once
 
-#include "step.h"
-#include "check.h"
-#include "mtp_policy.h"
+#include "../step.h"
+#include "policy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -10,6 +9,11 @@
 #include <vector>
 
 namespace mfq::engine {
+
+inline void require_execution(bool condition, const char *message) {
+    if (!condition)
+        throw std::runtime_error(message);
+}
 
 // The complete speculative transaction lives here. Ops submits native target /
 // predictor work and numerical sampling; acceptance and commit order are shared.
@@ -103,7 +107,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         (!greedy && !compact_stochastic)
             ? 1
             : std::clamp<int>(sampling.mtp_max_draft_tokens, 1, policy::kMaximumDraftDepth));
-    policy::GenerationPolicy<policy::DsparkDepthController> depth_controller(
+    policy::GenerationPolicy<typename Ops::DepthController> depth_controller(
         maximum_depth, mtp.dspark_policy(), &mtp.policy_state,[&] {
             if constexpr(requires {ops.gradual_mtp_warmup();})return ops.gradual_mtp_warmup();
             return false;

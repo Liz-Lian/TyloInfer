@@ -2,7 +2,7 @@
 
 #include "engine/models/common/session/state.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
-#include "engine/executor/mtp_policy.h"
+#include "engine/generation/mtp/policy.h"
 
 #include <cstdint>
 #include <stdexcept>

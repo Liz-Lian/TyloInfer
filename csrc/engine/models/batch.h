@@ -1,7 +1,7 @@
 #pragma once
 
 #include "cuda_runtime_config.h"
-#include "engine/batch/batch.h"
+#include "engine/generation/batch.h"
 #include "backends/cuda/engine/executor/run.h"
 #include "engine/models/common/causal_model_ops.h"
 
