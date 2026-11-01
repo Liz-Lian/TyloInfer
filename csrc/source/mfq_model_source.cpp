@@ -146,7 +146,7 @@ struct MfqModelSource::Impl {
     std::vector<MfqStoredRecord> records;
     std::vector<TensorMetadata> tensors;
     std::vector<std::string> assets;
-    MfqLegacyTensorAliases legacy_tensor_compatibility;
+    TensorLayout layout;
     std::unordered_map<std::string, std::size_t> records_by_name;
     std::unordered_map<std::string, std::size_t> tensors_by_name;
 };
@@ -260,15 +260,16 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
     std::sort(impl_->assets.begin(), impl_->assets.end());
 
     std::unordered_map<std::string, std::string> stored_to_canonical;
+    MfqLegacyTensorAliases aliases;
     if (!has_asset(kModelGraphAsset) && has_asset(kModelConfigAsset)) {
         const auto config = read_asset(kModelConfigAsset);
-        impl_->legacy_tensor_compatibility = make_legacy_tensor_aliases(
+        aliases = make_legacy_tensor_aliases(
             architecture(),
             std::string_view(
                 reinterpret_cast<const char*>(config.data()), config.size()),
             stored_names);
         for (const auto& [canonical, stored] :
-             impl_->legacy_tensor_compatibility.canonical_to_stored) {
+             aliases.canonical_to_stored) {
             const auto record = impl_->records_by_name.find(stored);
             if (record == impl_->records_by_name.end() ||
                     impl_->records[record->second].asset ||
@@ -302,6 +303,10 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
         }
         impl_->tensors.push_back(std::move(tensor));
     }
+    for (const auto& [stored, canonical] : stored_to_canonical) {
+        impl_->records_by_name.emplace(canonical, impl_->records_by_name.at(stored));
+    }
+    impl_->layout = aliases.layout;
 }
 
 MfqModelSource::~MfqModelSource() = default;
@@ -334,7 +339,7 @@ const TensorMetadata* MfqModelSource::find_tensor(std::string_view name) const n
 }
 
 TensorLayout MfqModelSource::tensor_layout() const noexcept {
-    return impl_->legacy_tensor_compatibility.layout;
+    return impl_->layout;
 }
 
 void MfqModelSource::read_range_into(
@@ -342,15 +347,7 @@ void MfqModelSource::read_range_into(
     std::uint64_t relative_offset,
     std::byte* destination,
     std::size_t size) const {
-    auto found = impl_->records_by_name.find(std::string(name));
-    if (found == impl_->records_by_name.end()) {
-        const auto alias = impl_->legacy_tensor_compatibility
-            .canonical_to_stored.find(std::string(name));
-        if (alias != impl_->legacy_tensor_compatibility
-                .canonical_to_stored.end()) {
-            found = impl_->records_by_name.find(alias->second);
-        }
-    }
+    const auto found = impl_->records_by_name.find(std::string(name));
     if (found == impl_->records_by_name.end() ||
             impl_->records[found->second].asset) {
         throw std::runtime_error("model tensor not found: " + std::string(name));
@@ -369,12 +366,7 @@ void MfqModelSource::read_range_into(
 }
 
 ModelSource::TensorReader MfqModelSource::tensor_reader(std::string_view name) const {
-    auto found = impl_->records_by_name.find(std::string(name));
-    if (found == impl_->records_by_name.end()) {
-        const auto alias = impl_->legacy_tensor_compatibility.canonical_to_stored.find(std::string(name));
-        if (alias != impl_->legacy_tensor_compatibility.canonical_to_stored.end())
-            found = impl_->records_by_name.find(alias->second);
-    }
+    const auto found = impl_->records_by_name.find(std::string(name));
     if (found == impl_->records_by_name.end() || impl_->records[found->second].asset)
         throw std::runtime_error("model tensor not found: " + std::string(name));
     const auto& record = impl_->records[found->second];
@@ -383,11 +375,7 @@ ModelSource::TensorReader MfqModelSource::tensor_reader(std::string_view name) c
 }
 
 ModelSource::TensorReader MfqModelSource::mapped_tensor_reader(std::string_view name) const {
-    auto found=impl_->records_by_name.find(std::string(name));
-    if(found==impl_->records_by_name.end()) {
-        const auto alias=impl_->legacy_tensor_compatibility.canonical_to_stored.find(std::string(name));
-        if(alias!=impl_->legacy_tensor_compatibility.canonical_to_stored.end())found=impl_->records_by_name.find(alias->second);
-    }
+    const auto found=impl_->records_by_name.find(std::string(name));
     if(found==impl_->records_by_name.end() || impl_->records[found->second].asset)
         throw std::runtime_error("mapped model tensor not found: "+std::string(name));
     const auto& record=impl_->records[found->second];
@@ -398,22 +386,14 @@ bool MfqModelSource::supports_parallel_tensor_reads() const noexcept {
     return impl_->files->mode() == FileReadMode::Direct;
 }
 ModelSource::TensorBatchReader MfqModelSource::mapped_tensor_batch_reader(std::string_view name) const {
-    auto found=impl_->records_by_name.find(std::string(name));
-    if(found==impl_->records_by_name.end()) {
-        const auto alias=impl_->legacy_tensor_compatibility.canonical_to_stored.find(std::string(name));
-        if(alias!=impl_->legacy_tensor_compatibility.canonical_to_stored.end())found=impl_->records_by_name.find(alias->second);
-    }
+    const auto found=impl_->records_by_name.find(std::string(name));
     if(found==impl_->records_by_name.end() || impl_->records[found->second].asset)
         throw std::runtime_error("mapped model tensor not found: "+std::string(name));
     const auto& record=impl_->records[found->second];
     return mfq::mapped_batch_reader(record.source_path,record.offset,record.tensor.nbytes);
 }
 ModelSource::TensorBatchReader MfqModelSource::tensor_batch_reader(std::string_view name) const {
-    auto found=impl_->records_by_name.find(std::string(name));
-    if(found==impl_->records_by_name.end()) {
-        const auto alias=impl_->legacy_tensor_compatibility.canonical_to_stored.find(std::string(name));
-        if(alias!=impl_->legacy_tensor_compatibility.canonical_to_stored.end())found=impl_->records_by_name.find(alias->second);
-    }
+    const auto found=impl_->records_by_name.find(std::string(name));
     if(found==impl_->records_by_name.end() || impl_->records[found->second].asset)throw std::runtime_error("model tensor not found: "+std::string(name));
     const auto& record=impl_->records[found->second];
     return impl_->files->batch_reader(record.source_path, record.offset,
