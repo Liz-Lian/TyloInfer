@@ -1,4 +1,4 @@
-#include "ops/common/include/projection.h"
+#include "projection.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/executor/options.h"
@@ -14,30 +14,6 @@
 namespace mfq::cuda {
 
 using Tensor = mfq_tensor_backend::Tensor;
-
-bool Experts::supports_clamped_swiglu() const {
-    if (expert_parallel()) {
-        return std::all_of(expert_parallel_shards.begin(), expert_parallel_shards.end(),
-                          [](const Shard& shard) {
-                              return shard.weight && shard.weight->supports_clamped_swiglu();
-                          });
-    }
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    return !pools.empty() || (resident && resident->supports_clamped_swiglu()) ||
-           (cached_source && cached_source->supports_clamped_swiglu());
-#else
-    return !pools.empty();
-#endif
-}
-
-void prefetch_experts(const Experts& weight, const MoeRoutePlan& route, bool begin) {
-#if TYLOINFER_ENABLE_MFQ_COMPAT
-    if (weight.cached_source) {
-        if (begin) weight.cached_source->begin_prefetch(route);
-        else weight.cached_source->prefetch(route);
-    }
-#endif
-}
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace {

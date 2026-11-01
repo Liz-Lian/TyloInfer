@@ -1,7 +1,7 @@
 #pragma once
 
-#include "quant_linear.h"
-#include "moe.h"
+#include "ops/common/include/quant_linear.h"
+#include "ops/common/include/moe.h"
 
 struct TqMoeBanks;
 

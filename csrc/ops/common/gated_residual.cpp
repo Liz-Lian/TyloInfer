@@ -1,7 +1,7 @@
 #include "gated_residual.h"
 #include "qwen4_exp.h"
 #include "quant_linear.h"
-#include "projection.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "selected_attention.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/allocation.h"

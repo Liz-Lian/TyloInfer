@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/common/include/projection.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/models/common/gated_mlp.h"
 
 #include <cstddef>

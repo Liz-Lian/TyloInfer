@@ -5,7 +5,7 @@
 #include "engine/weights/moe/load.h"
 #include "env.h"
 #include "engine/weights/loader.h"
-#include "ops/common/include/projection.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/weights/group.h"
 #include "engine/weights/quant.h"
 #include "engine/weights/encoding/dense_blob.h"

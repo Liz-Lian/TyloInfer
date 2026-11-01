@@ -478,8 +478,8 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/ops/tq/moe.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/mx.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/quant_linear.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/projection.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/expert_projection.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/projection.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/expert_projection.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
@@ -543,6 +543,7 @@ set(TYLOINFER_CUDA_LOADING_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/weights/group.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/quant.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/memory.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/moe/experts.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/load.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)

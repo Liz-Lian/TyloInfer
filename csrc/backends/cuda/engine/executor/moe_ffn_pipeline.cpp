@@ -23,7 +23,7 @@
 #include "engine/backends/cuda/native/graph.h"
 #include "native/error.h"
 #include "engine/backends/cuda/executor/moe_batch.h"
-#include "ops/common/include/projection.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/native/profile.h"
 #include <cuda.h>
 #include <array>
