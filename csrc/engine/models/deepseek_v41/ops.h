@@ -971,6 +971,9 @@ template <> struct CudaSessionCodec<DeepseekV41Model> {
 mfq_tensor_backend::Tensor deepseek_v41_prefill_hidden(
     DeepseekV41CausalLm& model, mfq_tensor_backend::Tensor ids, std::int64_t compute_chunk,
     const std::function<bool()>& stopped = {}, mfq_tensor_backend::Tensor* raw_hidden = nullptr);
+std::int64_t prefill_span(const DeepseekV41CausalLm&, std::size_t tokens,
+                          std::int64_t chunk, std::size_t, std::size_t,
+                          bool transformed, bool retained);
 
 } // namespace mfq::cuda
 

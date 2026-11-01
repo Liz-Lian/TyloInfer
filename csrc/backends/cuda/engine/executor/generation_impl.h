@@ -757,18 +757,9 @@ template <class Model, class State, class Predictor> struct CudaGenerationContex
         prepare_prefill_workspace(input.prompt.size()-reused);
         const auto compute_chunk=prefill_chunk(input.prompt.size()-reused);
         auto logical_chunk=compute_chunk;
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-            // Bound residual/FFN storage as well as projection tiles. Long
-            // prompts advance each bounded chunk through all layers.
-            logical_chunk=std::min<int64_t>(logical_chunk,8192);
-            if(compute_chunk>8 && reused==0 && (stable==0 || stable==input.prompt.size()) &&
-                (!prepared || !prepared->transformed()) &&
-                qwen4_layer_major_prefill_eligible(model,input.prompt.size()))
-                logical_chunk=input.prompt.size();
-        }
-        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>) {
-            if(!short_streamed_prefill(input.prompt.size()-reused) &&
-                    (!prepared || !prepared->transformed()))logical_chunk=input.prompt.size();
+        if constexpr(requires { prefill_span(model,input.prompt.size(),compute_chunk,reused,stable,false,false); }) {
+            logical_chunk=prefill_span(model,input.prompt.size(),compute_chunk,reused,stable,
+                prepared && prepared->transformed(),short_streamed_prefill(input.prompt.size()-reused));
         }
         auto graph_options = config.decode_graph;
         graph_options.enabled &= graph_allowed;

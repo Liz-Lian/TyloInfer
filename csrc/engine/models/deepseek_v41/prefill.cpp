@@ -41,6 +41,16 @@ HashBatch append_hash_tail(const HashBatch& previous, const HashBatch& current, 
 }
 }
 
+std::int64_t prefill_span(const DeepseekV41CausalLm&, std::size_t tokens,
+                          std::int64_t chunk, std::size_t, std::size_t,
+                          bool transformed, bool retained) {
+    auto logical_chunk=chunk;
+    // Retained small-M continuations must bound decoder replay as well as
+    // encoder tiles; merging the suffix would re-enter the large PP pipeline.
+    if(!retained && !transformed)logical_chunk=tokens;
+    return logical_chunk;
+}
+
 Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
                                    int64_t compute_chunk, const std::function<bool()>& stopped, Tensor* raw_hidden) {
     auto scope = model.execution_scope();

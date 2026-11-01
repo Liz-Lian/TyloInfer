@@ -926,17 +926,9 @@ run_mtp_generation(Model &model, State &state, mfq::cuda::Executor* executor,
                    mfq_tensor_backend::Tensor *session_last_hidden,
                    std::size_t stable_prefix_tokens, std::function<void()> restore) {
   auto logical_chunk=prefill_chunk_size;
-  if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-    logical_chunk=std::min<int64_t>(logical_chunk,8192);
-    if(prefill_chunk_size>8 && reused_tokens==0 && (!prepared || !prepared->transformed()) &&
-        mfq::cuda::qwen4_layer_major_prefill_eligible(model,request.prompt.size()))
-      logical_chunk=request.prompt.size();
-  }
-  if constexpr(std::is_same_v<Model,mfq::cuda::DeepseekV41CausalLm>) {
-    // Retained small-M continuations must bound decoder replay as well as
-    // encoder tiles; merging the suffix would re-enter the large PP pipeline.
-    const bool retained_chunks=reused_tokens>0 && prefill_chunk_size<=8;
-    if(!retained_chunks && (!prepared || !prepared->transformed()))logical_chunk=request.prompt.size();
+  if constexpr(requires { prefill_span(model,request.prompt.size(),prefill_chunk_size,reused_tokens,0,false,false); }) {
+    logical_chunk=prefill_span(model,request.prompt.size(),prefill_chunk_size,reused_tokens,0,
+        prepared && prepared->transformed(),reused_tokens>0 && prefill_chunk_size<=8);
   }
   return mfq::engine::speculative_sequence(
       mtp_detail::CudaMtpOps<Model, State>{model, state, executor, collectives, mode, weights, metadata, mtp, mtp_state, prepared,

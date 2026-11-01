@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <functional>
+#include <cstdint>
 #include <iosfwd>
 #include <vector>
 
@@ -80,6 +81,9 @@ std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm&,const MtpModule*,int ma
 mfq::models::SnapshotSize snapshot_size(const Qwen4CausalLm&,const MtpModule*);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const Qwen4CausalLm&,const MtpModule*);
 bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm&, int64_t tokens);
+std::int64_t prefill_span(const Qwen4CausalLm&, std::size_t tokens,
+                          std::int64_t chunk, std::size_t reused,
+                          std::size_t stable, bool transformed, bool);
 mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
     Qwen4CausalLm&, mfq_tensor_backend::Tensor ids, int64_t compute_chunk = 1024,
     bool last_only = true, const std::function<bool()>& cancelled = {},

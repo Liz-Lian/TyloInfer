@@ -2513,6 +2513,18 @@ bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm& model, int64_t toke
     return true;
 }
 
+std::int64_t prefill_span(const Qwen4CausalLm& model, std::size_t tokens,
+                          std::int64_t chunk, std::size_t reused,
+                          std::size_t stable, bool transformed, bool) {
+    // Bound residual/FFN storage as well as projection tiles. Long
+    // prompts advance each bounded chunk through all layers.
+    auto logical_chunk=std::min<int64_t>(chunk,8192);
+    if(chunk>8 && reused==0 && (stable==0 || stable==tokens) && !transformed &&
+        qwen4_layer_major_prefill_eligible(model,tokens))
+        logical_chunk=tokens;
+    return logical_chunk;
+}
+
 mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
         Qwen4CausalLm& model,mfq_tensor_backend::Tensor ids,int64_t compute_chunk,
         bool last_only,const std::function<bool()>& cancelled,mfq_tensor_backend::Tensor* raw_hidden,
