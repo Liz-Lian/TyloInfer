@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/common/include/rope.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 
 #include <cstdint>

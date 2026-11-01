@@ -1,4 +1,4 @@
-#include "ops/common/include/rope.h"
+#include "rope.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 

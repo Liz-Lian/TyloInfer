@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
-#include "ops/ffn/dense.h"
+#include "engine/backends/cuda/ops/ffn/dense.h"
 
 #include <optional>
 #include <span>

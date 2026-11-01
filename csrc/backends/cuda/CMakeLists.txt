@@ -458,9 +458,9 @@ set(TYLOINFER_CUDA_MODEL_SOURCES
 
 
 set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
-    ${PROJECT_SOURCE_DIR}/ops/ffn/mlp.cpp
-    ${PROJECT_SOURCE_DIR}/ops/ffn/dense.cpp
-    ${PROJECT_SOURCE_DIR}/ops/ffn/residual.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/mlp.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/dense.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/ffn/residual.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/profile.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/vmm.cpp
     ${PROJECT_SOURCE_DIR}/diagnostics/route_stats.cpp
@@ -470,7 +470,7 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/kv.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/attention/linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/norm/rms.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/rope.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/rope/rope.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/format.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/moe_routes.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/gated_residual.cpp

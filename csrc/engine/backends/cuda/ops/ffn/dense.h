@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/ffn/mlp.h"
+#include "mlp.h"
 
 #include <optional>
 

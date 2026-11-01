@@ -7,7 +7,7 @@
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/models/qwen4_exp/ngram.h"
 #include "engine/models/common/attention_ops.h"
-#include "ops/common/include/rope.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/kernels/ple_fused.h"
 #include "engine/weights/nint_row_pipeline.h"

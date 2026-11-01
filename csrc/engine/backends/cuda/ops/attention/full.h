@@ -2,7 +2,7 @@
 
 #include "attention.h"
 #include "ops/common/include/projection.h"
-#include "ops/common/include/rope.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 
 #include <array>
 
