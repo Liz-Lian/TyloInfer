@@ -1,6 +1,6 @@
 #pragma once
 #include <atomic>
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/native/memory.h"
 #include <cstring>
 #include <memory>

@@ -9,7 +9,7 @@
 #include "backend.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/kernels/gr_prefill_blas.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/tensor_parallel.h"
 
 #include <cuda_runtime_api.h>

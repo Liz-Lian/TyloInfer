@@ -8,7 +8,7 @@
 #include "cuda_model_plan.h"
 #include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
-#include "ops/common/include/quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "source/model_source.h"
 

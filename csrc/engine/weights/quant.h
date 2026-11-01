@@ -2,7 +2,7 @@
 
 #include "engine/weights/encoding/format_features.h"
 #include "ops/common/include/mx.h"
-#include "ops/common/include/parallel.h"
+#include "engine/weights/tensor_parallel.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "engine/weights/encoding/quant/vq_blob.h"

@@ -5,7 +5,7 @@
 #include "engine/models/common/session/size.h"
 #include "engine/models/qwen4_exp/causal_lm.h"
 #include "engine/models/qwen4_exp/config.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 
 #include <memory>
 #include <functional>

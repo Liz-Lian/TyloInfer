@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_nvq1_decode.h"
 #include "moe.h"
 
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 
 #include <algorithm>

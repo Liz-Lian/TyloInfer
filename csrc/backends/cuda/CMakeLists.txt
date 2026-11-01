@@ -477,10 +477,10 @@ set(TYLOINFER_CUDA_RUNTIME_OP_SOURCES
     ${PROJECT_SOURCE_DIR}/ops/tq/tq.cpp
     ${PROJECT_SOURCE_DIR}/ops/tq/moe.cpp
     ${PROJECT_SOURCE_DIR}/ops/common/mx.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/quant_linear.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/quant_linear.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/projection.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/expert_projection.cpp
-    ${PROJECT_SOURCE_DIR}/ops/common/mmq.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/ops/projection/mmq.cpp
 )
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     list(APPEND TYLOINFER_CUDA_RUNTIME_OP_SOURCES

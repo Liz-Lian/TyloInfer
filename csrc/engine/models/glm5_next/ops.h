@@ -4,7 +4,7 @@
 #include "engine/models/common/block.h"
 #include "engine/models/glm5_next/causal_lm.h"
 #include "engine/models/glm5_next/config.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 
 #include <memory>
 

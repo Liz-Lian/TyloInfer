@@ -13,7 +13,7 @@
 #include "diagnostics/token_generation.h"
 #include "engine/models/qwen35/mtp.h"
 #include "engine/models/qwen35/forward.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/session/cache.h"

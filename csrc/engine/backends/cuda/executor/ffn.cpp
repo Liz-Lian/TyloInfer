@@ -3,7 +3,7 @@
 #include "engine/weights/moe/experts.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
-#include "ops/common/include/parallel.h"
+#include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
 #include "engine/backends/cuda/ops/ffn/residual.h"

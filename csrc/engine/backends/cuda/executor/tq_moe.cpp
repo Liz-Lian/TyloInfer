@@ -10,7 +10,7 @@
 #include "env.h"
 #include "engine/backends/cuda/kernels/moe/pipeline.h"
 #include "ops/common/include/moe.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 
 #include <algorithm>
 #include <array>

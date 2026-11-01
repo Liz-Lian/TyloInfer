@@ -1,7 +1,7 @@
 #pragma once
 
 #include "moe_types.h"
-#include "mmq.h"
+#include "engine/backends/cuda/ops/projection/mmq.h"
 
 #include <optional>
 

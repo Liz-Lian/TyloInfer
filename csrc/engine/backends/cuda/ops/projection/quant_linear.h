@@ -1,12 +1,12 @@
 #pragma once
 
-#include "format.h"
-#include "fp8_sq.h"
-#include "mx.h"
-#include "mxfp4_sq.h"
-#include "nint.h"
-#include "vq.h"
-#include "tq.h"
+#include "ops/common/include/format.h"
+#include "ops/mfq/include/fp8_sq.h"
+#include "ops/common/include/mx.h"
+#include "ops/mfq/include/mxfp4_sq.h"
+#include "ops/mfq/include/nint.h"
+#include "ops/mfq/include/vq.h"
+#include "ops/tq/include/tq.h"
 #include "engine/weights/encoding/format_features.h"
 
 #include "mmq.h"

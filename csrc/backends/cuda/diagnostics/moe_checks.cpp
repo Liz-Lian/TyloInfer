@@ -9,7 +9,7 @@
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/gemma4/ops.h"
 #include "engine/models/glm_dsa/ops.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"

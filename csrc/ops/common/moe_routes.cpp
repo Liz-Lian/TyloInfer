@@ -1,7 +1,7 @@
 #include "moe.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include <algorithm>
 #include <atomic>
 

@@ -13,7 +13,7 @@
 #include "engine/models/input.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/common/load.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"

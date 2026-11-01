@@ -8,7 +8,7 @@
 #include "engine/models/common/block.h"
 #include "engine/models/minicpmo45/causal_lm.h"
 #include "engine/models/minicpmo45/config.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 
 #include <memory>
 #include <string>

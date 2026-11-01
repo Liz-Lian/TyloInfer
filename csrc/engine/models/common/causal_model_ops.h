@@ -4,7 +4,7 @@
 #include "engine/executor/scope.h"
 #include "engine/models/common/block.h"
 #include "engine/models/common/causal_model.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 
 #include <cstdint>
 #include <functional>

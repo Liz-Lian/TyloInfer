@@ -10,7 +10,7 @@
 #include <vector>
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-#include "../mfq/linear_dispatch.inc"
+#include "linear_dispatch.inc"
 
 mfq_tensor_backend::Tensor dequant_nint_dense_f32(const NintWeight & w) {
     if (w.q8_zero) {

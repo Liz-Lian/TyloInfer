@@ -6,7 +6,7 @@
 #include "engine/models/deepseek_v41/config.h"
 #include "engine/models/deepseek_v41/hash.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"

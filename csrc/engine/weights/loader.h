@@ -1,6 +1,6 @@
 #pragma once
 
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/moe/experts.h"
 #include "source/read.h"
 #include "engine/weights/placement.h"

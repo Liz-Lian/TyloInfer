@@ -3,7 +3,7 @@
 #include "engine/models/common/block.h"
 #include "engine/models/common/ffn.h"
 #include "engine/models/common/full_block.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/state/recurrent.h"
 
 #include <array>

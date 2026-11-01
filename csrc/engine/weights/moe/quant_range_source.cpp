@@ -6,7 +6,7 @@
 #include "cpu_projection_rows.h"
 #include "backends/cpu/execution/cpu_expert_pool.h"
 #include "backends/cpu/native/host_copy.h"
-#include "quant_linear.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "format.h"
 
 #include <algorithm>

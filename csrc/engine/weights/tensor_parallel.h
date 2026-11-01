@@ -8,6 +8,12 @@
 #include <string>
 #include <vector>
 
+enum class TensorParallelAxis {
+    Mirrored,
+    Output,
+    Input,
+};
+
 namespace mfq {
 
 struct TensorParallelSlice {
