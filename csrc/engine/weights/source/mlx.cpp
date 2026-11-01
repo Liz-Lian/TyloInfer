@@ -1,4 +1,4 @@
-#include "mlx_affine_source.h"
+#include "mlx.h"
 
 #include <limits>
 #include <stdexcept>

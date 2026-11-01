@@ -3,10 +3,10 @@ add_library(mfq-model-source STATIC
     mfq_model_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.cpp
     hf_model_source.cpp
-    mlx_affine_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/mlx.cpp
     gguf_model_source.cpp
     gguf_model_source.h
-    mlx_affine_source.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/mlx.h
     mlx_tensor_names.h
     hf_safetensors_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.cpp
