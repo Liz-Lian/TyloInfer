@@ -1,41 +1,18 @@
 #include "mfq_model_source.h"
-#include "engine/weights/source/buffered.h"
+#include "engine/weights/source/files.h"
 #include "engine/weights/source/mapped.h"
-#include "components/io/async_range_reader.h"
 
 #include "engine/models/common/legacy_names.h"
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
 #include <cctype>
-#include <cstring>
 #include <iomanip>
 #include <limits>
-#include <mutex>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
-#include <system_error>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <cerrno>
-#endif
 
 namespace mfq {
 namespace {
@@ -164,12 +141,8 @@ std::vector<std::filesystem::path> shard_paths(
 } // namespace
 
 struct MfqModelSource::Impl {
-    FileReadMode read_mode = FileReadMode::Buffered;
-    std::unordered_map<std::filesystem::path, std::shared_ptr<FileRangeReader>> direct_readers;
-    mutable std::mutex pipeline_reader_mutex;
-    mutable std::unordered_map<std::filesystem::path,std::shared_ptr<AsyncRangeReader>> pipeline_readers;
+    std::unique_ptr<source::Files> files;
     MfqSourceHeader header;
-    std::vector<std::filesystem::path> source_paths;
     std::vector<MfqStoredRecord> records;
     std::vector<TensorMetadata> tensors;
     std::vector<std::string> assets;
@@ -180,8 +153,8 @@ struct MfqModelSource::Impl {
 
 MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mode)
     : impl_(std::make_unique<Impl>()) {
-    impl_->read_mode = mode;
     const auto initial_path = mfq_path(requested);
+    std::vector<std::filesystem::path> source_paths;
     auto initial = read_mfq(initial_path);
     const auto split_no = metadata_uint(initial.header, "split.no", 0);
     const auto split_count = metadata_uint(initial.header, "split.count", 1);
@@ -203,7 +176,7 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
 
     if (split_count == 1) {
         impl_->header = initial.header;
-        impl_->source_paths.push_back(initial_path);
+        source_paths.push_back(initial_path);
         append(std::move(initial));
     } else {
         // A numbered entry may be a symlink to an unnumbered downloaded file.
@@ -272,13 +245,10 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
             actual_tensors != expected_tensors) {
             throw std::runtime_error("MFQ shard tensor total mismatch");
         }
-        impl_->source_paths = paths;
+        source_paths = paths;
     }
 
-    if (mode == FileReadMode::Direct) {
-        for (const auto& path : impl_->source_paths)
-            impl_->direct_readers.emplace(path, std::make_shared<FileRangeReader>(path, mode));
-    }
+    impl_->files = std::make_unique<source::Files>(std::move(source_paths), mode);
     std::vector<std::string> stored_names;
     for (const auto& record : impl_->records) {
         if (record.asset) {
@@ -340,7 +310,7 @@ MfqModelSource& MfqModelSource::operator=(MfqModelSource&&) noexcept = default;
 
 const MfqSourceHeader& MfqModelSource::header() const noexcept { return impl_->header; }
 const std::vector<std::filesystem::path>& MfqModelSource::source_paths() const noexcept {
-    return impl_->source_paths;
+    return impl_->files->paths();
 }
 const std::vector<MfqStoredRecord>& MfqModelSource::records() const noexcept {
     return impl_->records;
@@ -394,9 +364,8 @@ void MfqModelSource::read_range_into(
     if (relative_offset > std::numeric_limits<std::uint64_t>::max() - record.offset) {
         throw std::overflow_error("model tensor byte offset overflow");
     }
-    if (impl_->read_mode == FileReadMode::Direct)
-        impl_->direct_readers.at(record.source_path)->read(record.offset + relative_offset, destination, size);
-    else mfq::read_buffered(record.source_path, record.offset + relative_offset, destination, size);
+    impl_->files->read(record.source_path, record.offset + relative_offset,
+                       destination, size);
 }
 
 ModelSource::TensorReader MfqModelSource::tensor_reader(std::string_view name) const {
@@ -408,17 +377,9 @@ ModelSource::TensorReader MfqModelSource::tensor_reader(std::string_view name) c
     }
     if (found == impl_->records_by_name.end() || impl_->records[found->second].asset)
         throw std::runtime_error("model tensor not found: " + std::string(name));
-    if (impl_->read_mode == FileReadMode::Direct) {
-        const auto record = impl_->records[found->second];
-        auto reader = impl_->direct_readers.at(record.source_path);
-        return [record, reader](std::uint64_t offset, std::byte* destination, std::size_t size) {
-            if (offset > record.tensor.nbytes || size > record.tensor.nbytes - offset)
-                throw std::out_of_range("model tensor row range is out of bounds");
-            reader->read(record.offset + offset, destination, size);
-        };
-    }
     const auto& record = impl_->records[found->second];
-    return mfq::buffered_reader(record.source_path, record.offset, record.tensor.nbytes);
+    return impl_->files->reader(record.source_path, record.offset,
+                                record.tensor.nbytes);
 }
 
 ModelSource::TensorReader MfqModelSource::mapped_tensor_reader(std::string_view name) const {
@@ -434,7 +395,7 @@ ModelSource::TensorReader MfqModelSource::mapped_tensor_reader(std::string_view 
 }
 
 bool MfqModelSource::supports_parallel_tensor_reads() const noexcept {
-    return impl_->read_mode == FileReadMode::Direct;
+    return impl_->files->mode() == FileReadMode::Direct;
 }
 ModelSource::TensorBatchReader MfqModelSource::mapped_tensor_batch_reader(std::string_view name) const {
     auto found=impl_->records_by_name.find(std::string(name));
@@ -454,58 +415,17 @@ ModelSource::TensorBatchReader MfqModelSource::tensor_batch_reader(std::string_v
         if(alias!=impl_->legacy_tensor_compatibility.canonical_to_stored.end())found=impl_->records_by_name.find(alias->second);
     }
     if(found==impl_->records_by_name.end() || impl_->records[found->second].asset)throw std::runtime_error("model tensor not found: "+std::string(name));
-    const auto record=impl_->records[found->second];
-    std::shared_ptr<AsyncRangeReader> reader;
-    {
-        std::lock_guard lock(impl_->pipeline_reader_mutex);
-        auto& slot=impl_->pipeline_readers[record.source_path];
-        if(!slot)slot=std::make_shared<AsyncRangeReader>(record.source_path,impl_->read_mode);
-        reader=slot;
-    }
-    return [record,reader](const std::vector<ReadSpan>& spans) {
-        std::vector<ReadSpan> absolute;absolute.reserve(spans.size());
-        for(auto span:spans) {
-            if(span.offset>record.tensor.nbytes || span.size>record.tensor.nbytes-span.offset)
-                throw std::out_of_range("batched tensor read exceeds canonical record");
-            span.offset+=record.offset;absolute.push_back(span);
-        }
-        reader->read(absolute);
-    };
+    const auto& record=impl_->records[found->second];
+    return impl_->files->batch_reader(record.source_path, record.offset,
+                                      record.tensor.nbytes);
 }
 
 FileReadStats MfqModelSource::file_read_stats() const noexcept {
-    FileReadStats result;
-    result.mode = impl_->read_mode;
-    for (const auto& [path, reader] : impl_->direct_readers) {
-        const auto value = reader->stats();
-        result.files += value.files; result.calls += value.calls;
-        result.logical_bytes += value.logical_bytes; result.physical_bytes += value.physical_bytes;
-        result.errors += value.errors; result.staging_bytes += value.staging_bytes;
-        result.staging_peak_bytes += value.staging_peak_bytes; result.read_nanoseconds += value.read_nanoseconds;
-        result.staging_cached_bytes+=value.staging_cached_bytes;result.staging_allocations+=value.staging_allocations;
-    }
-    {
-        std::lock_guard lock(impl_->pipeline_reader_mutex);
-        for(const auto& [path,reader]:impl_->pipeline_readers) {
-            const auto value=reader->stats();result.calls+=value.calls;result.logical_bytes+=value.logical_bytes;
-            result.physical_bytes+=value.physical_bytes;result.errors+=value.errors;
-            result.staging_bytes+=value.staging_bytes;result.staging_peak_bytes+=value.staging_peak_bytes;
-            result.read_nanoseconds+=value.read_nanoseconds;
-            result.staging_cached_bytes+=value.staging_cached_bytes;result.staging_allocations+=value.staging_allocations;
-        }
-    }
-    return result;
+    return impl_->files->stats();
 }
 
 void MfqModelSource::drop_file_cache() const noexcept {
-#if !defined(_WIN32) && defined(POSIX_FADV_DONTNEED)
-    for (const auto& path : impl_->source_paths) {
-        const int fd = ::open(path.c_str(), O_RDONLY);
-        if (fd < 0) continue;
-        static_cast<void>(::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
-        static_cast<void>(::close(fd));
-    }
-#endif
+    impl_->files->drop_cache();
 }
 
 const std::vector<std::string>& MfqModelSource::assets() const noexcept {
@@ -529,9 +449,8 @@ std::vector<std::byte> MfqModelSource::read_asset(std::string_view name) const {
         throw std::overflow_error("model asset is too large to read");
     }
     std::vector<std::byte> result(static_cast<std::size_t>(record.tensor.nbytes));
-    if (impl_->read_mode == FileReadMode::Direct)
-        impl_->direct_readers.at(record.source_path)->read(record.offset, result.data(), result.size());
-    else mfq::read_buffered(record.source_path, record.offset, result.data(), result.size());
+    impl_->files->read(record.source_path, record.offset, result.data(),
+                       result.size());
     return result;
 }
 

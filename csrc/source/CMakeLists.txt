@@ -4,6 +4,7 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/buffered.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/files.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/json.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/safetensors.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/tensor.h
@@ -29,6 +30,7 @@ add_library(mfq-model-source STATIC
     tq_fixture_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/buffered.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/files.h
 )
 add_library(mfq::model-source ALIAS mfq-model-source)
 target_include_directories(mfq-model-source PUBLIC
