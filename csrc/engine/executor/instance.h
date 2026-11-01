@@ -2,7 +2,7 @@
 
 #include "engine.h"
 #include "../requests/processor.h"
-#include "../requests/table.h"
+#include "../scheduler/table.h"
 
 #include <memory>
 

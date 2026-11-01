@@ -9,7 +9,7 @@
 #include "tq.h"
 #include "engine/budget.h"
 #include "../requests/processor.h"
-#include "../requests/table.h"
+#include "../scheduler/table.h"
 #include "../weights/workspace.h"
 #include "engine/generation/batch.h"
 #include "backends/cuda/engine/executor/generation.h"

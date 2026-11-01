@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/executor/engine.h"
-#include "scheduler.h"
+#include "engine/scheduler/scheduler.h"
 
 #include <cstdint>
 #include <memory>

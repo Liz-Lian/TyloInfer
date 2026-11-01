@@ -1,11 +1,8 @@
 add_library(mfq-runtime-scheduler STATIC
-    src/scheduler.cpp
+    scheduler.cpp
 )
 add_library(mfq::runtime-scheduler ALIAS mfq-runtime-scheduler)
 target_include_directories(mfq-runtime-scheduler PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_include_directories(mfq-runtime-scheduler PRIVATE
     ${PROJECT_SOURCE_DIR}
 )
 target_link_libraries(mfq-runtime-scheduler PUBLIC mfq-engine)

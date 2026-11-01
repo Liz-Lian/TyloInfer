@@ -18,8 +18,8 @@ add_library(mfq-engine STATIC
     requests/inference.cpp
     requests/policy.cpp
     requests/processor.cpp
-    requests/table.cpp
     requests/tokenizer.cpp
+    scheduler/table.cpp
     state/paged.cpp
     state/prefix_cache.cpp
     state/qsa_sequence.cpp

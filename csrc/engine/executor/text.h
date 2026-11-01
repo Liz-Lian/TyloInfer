@@ -18,7 +18,7 @@
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/metrics.h"
-#include "engine/requests/table.h"
+#include "engine/scheduler/table.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/weights/memory.h"
