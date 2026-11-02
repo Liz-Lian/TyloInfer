@@ -19,6 +19,7 @@ public:
     Collectives(const Collectives&) = delete;
     Collectives& operator=(const Collectives&) = delete;
 
+    static void enable_peer_access(const std::vector<int>& devices);
     void configure(const std::vector<int>& devices, bool allow_duplicates);
     void drain() const;
     void reset() noexcept;

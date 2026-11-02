@@ -146,11 +146,3 @@ const ParallelConfig& moe_parallel_config(
     const CudaExecutionContext& execution);
 int model_parallel_primary_device(const CudaExecutionContext& execution);
 bool model_parallel_cuda_graph_enabled(const CudaExecutionContext& execution);
-void trace_gemma_stage(
-    CudaExecutionContext& execution,
-    int layer,
-    const char* name,
-    const mfq_tensor_backend::Tensor& value);
-namespace mfq::cuda::internal {
-void prepare_sampling_runtime(int64_t vocabulary);
-}

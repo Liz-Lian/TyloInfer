@@ -10,6 +10,7 @@
 #include "engine/models/common/model_graph.h"
 #include "engine/models/qwen35/load.h"
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/qwen35/components.h"
@@ -37,7 +38,7 @@ inline constexpr auto with_model = []<typename F>(
         auto& runtime_components = loaded.components;
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
-            internal::prepare_sampling_runtime(model.vocab_size());
+            Executor::prepare(model.vocab_size());
         mfq::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
         std::size_t graph_reserve=0;

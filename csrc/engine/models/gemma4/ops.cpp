@@ -19,6 +19,18 @@
 
 namespace mfq::cuda::gemma4 {
 
+static void trace_stage(
+        CudaExecutionContext& execution,
+        int layer,
+        const char * name,
+        const mfq_tensor_backend::Tensor & value) {
+    if (execution.gemma_stage_trace != nullptr &&
+            layer == execution.gemma_trace_layer) {
+        execution.gemma_stage_trace->emplace_back(
+            name, value.to(mfq_tensor_backend::kFloat32).contiguous().clone());
+    }
+}
+
 struct Gemma4Block final : ::FullBlock {
     bool gemma4_moe = false;
     mfq_tensor_backend::Tensor attn_post_norm;
@@ -53,7 +65,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                                                     mfq_tensor_backend::Tensor oo, int64_t B,
                                                     int64_t T, int64_t H) {
     auto &profiler = execution.profiler;
-    trace_gemma_stage(execution, layer, "attention_output", oo);
+    trace_stage(execution, layer, "attention_output", oo);
     const bool fused_norms = gemma4_moe && execution.config.gemma4_fused_norms &&
                              execution.gemma_stage_trace == nullptr && layer_scale.defined();
     using Tensor = mfq_tensor_backend::Tensor;
@@ -80,7 +92,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
             auto x = profiler.measure("gemma.attn_residual", [&] {
                 return acc_cuda(residual.reshape({B * T, H}), attn_post).reshape({B, T, H});
             });
-            trace_gemma_stage(execution, layer, "attention_residual", x);
+            trace_stage(execution, layer, "attention_residual", x);
             return x;
         },
         [&](Tensor x) {
@@ -126,14 +138,14 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                     });
                 },
                 [&](auto &selected) {
-                    trace_gemma_stage(execution, layer, "route_ids", selected.at(0));
-                    trace_gemma_stage(execution, layer, "route_weights_before_scale",
+                    trace_stage(execution, layer, "route_ids", selected.at(0));
+                    trace_stage(execution, layer, "route_weights_before_scale",
                                       selected.at(1));
                     profiler.measure("gemma.route_scale", [&]() {
                         return moe_apply_expert_scale_cuda(selected.at(1), selected.at(0),
                                                            gemma_expert_scale);
                     });
-                    trace_gemma_stage(execution, layer, "route_weights", selected.at(1));
+                    trace_stage(execution, layer, "route_weights", selected.at(1));
                 },
                 [&](const auto &selected) {
                     auto route = profiler.measure("gemma.route_map", [&]() {
@@ -165,7 +177,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                                 return execution.projector().run(gemma_moe_gate_up, input, route);
                             });
                             prefetch_down();
-                            trace_gemma_stage(execution, layer, "moe_gate_up", packed);
+                            trace_stage(execution, layer, "moe_gate_up", packed);
                             const auto width = packed.size(-1) / 2;
                             return std::array<Tensor, 2>{packed.narrow(-1, 0, width),
                                                          packed.narrow(-1, width, width)};
@@ -174,7 +186,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                             auto hidden = profiler.measure(
                                 "gemma.moe_geglu", [&] { return moe_geglu_split_cuda(packed); });
                             if (tracing)
-                                trace_gemma_stage(execution, layer, "moe_hidden", hidden);
+                                trace_stage(execution, layer, "moe_hidden", hidden);
                             return hidden;
                         },
                         [&](Tensor hidden) {
@@ -189,14 +201,14 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                                 return execution.projector().gated(gemma_moe_down, packed, route, true);
                             });
                         });
-                    trace_gemma_stage(execution, layer, "moe_down", down_pair);
+                    trace_stage(execution, layer, "moe_down", down_pair);
                     return down_pair;
                 },
                 [&](Tensor down_pair, const auto &selected) {
                     auto moe_output = profiler.measure("gemma.moe_reduce", [&]() {
                         return moe_weighted_reduce_cuda(down_pair, selected.at(1));
                     });
-                    trace_gemma_stage(execution, layer, "moe_reduce", moe_output);
+                    trace_stage(execution, layer, "moe_reduce", moe_output);
                     return moe_output;
                 });
 #else
@@ -221,7 +233,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                                  .contiguous();
             });
             if (role == Norm::dense)
-                trace_gemma_stage(execution, layer, "dense_output", normalized);
+                trace_stage(execution, layer, "dense_output", normalized);
             return normalized;
         },
         [&](Tensor dense, Tensor routed) {
@@ -243,7 +255,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                     .reshape({B, T, H});
             });
         });
-    trace_gemma_stage(execution, layer, "layer_output", result);
+    trace_stage(execution, layer, "layer_output", result);
     return result;
 }
 

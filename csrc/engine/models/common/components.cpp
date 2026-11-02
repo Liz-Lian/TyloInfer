@@ -5,6 +5,7 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/executor/executor.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/predictor.h"
@@ -150,7 +151,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     if (moe_expert_cache_has_sources(execution.weights.moe) &&
         !moe_expert_cache_finalized(execution.weights.moe) && !defer_moe_cache_finalize) {
         if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-            mfq::cuda::internal::prepare_sampling_runtime(model.vocab_size());
+            mfq::cuda::Executor::prepare(model.vocab_size());
         finalize_moe_expert_cache(execution.weights.moe);
     }
     return model;

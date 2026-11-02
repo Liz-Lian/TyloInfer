@@ -1,4 +1,7 @@
 #include "engine/backends/cuda/native/env.h"
+#include "backends/cuda/engine/executor/execution.h"
+#include "engine/executor/scope.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "cli.h"
 #include "cuda_runtime_config.h"
 #include "minicpmo45.h"
@@ -9,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -217,14 +221,17 @@ int execute_runtime(RuntimeCommandOptions options) {
                 options.input_prefix.empty()) {
             return run_transport_runtime(options);
         }
-        return mfq::cuda::internal::with_cuda_load(
-            options, [&](CudaExecutionContext& execution) {
-                return !options.duplex_input_prefix.empty()
-                    ? mfq::cuda::minicpmo45::run_duplex(
-                        execution, options, options)
-                    : mfq::cuda::minicpmo45::run_composite(
-                        execution, options, options);
-        });
+        auto tq = std::make_shared<TqExec>();
+        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
+        mfq::cuda::RoutedCache weights;
+        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
+        mfq::cuda::ContextSet contexts;
+        CudaExecutionContext execution(contexts, weights, kv, offload, tq);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
+        mfq::cuda::internal::setup_cuda_load(options, execution);
+        return !options.duplex_input_prefix.empty()
+            ? mfq::cuda::minicpmo45::run_duplex(execution, options, options)
+            : mfq::cuda::minicpmo45::run_composite(execution, options, options);
     });
 }
 

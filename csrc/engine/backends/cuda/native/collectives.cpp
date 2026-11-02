@@ -4,6 +4,7 @@
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #ifdef TYLOINFER_HAVE_NCCL
@@ -63,6 +64,34 @@ void Collectives::reset() noexcept {
     ready_.clear();
     completed_.clear();
     collectives_enabled_ = false;
+}
+
+void Collectives::enable_peer_access(const std::vector<int>& devices) {
+    std::unordered_set<int> unique_devices(
+        devices.begin(), devices.end());
+    for (const int source : unique_devices) {
+        for (const int destination : unique_devices) {
+            if (source == destination) continue;
+            int can_access = 0;
+            TYLOINFER_CUDA_CHECK(cudaDeviceCanAccessPeer(
+                &can_access, source, destination));
+            if (!can_access) continue;
+            TYLOINFER_CUDA_CHECK(cudaSetDevice(source));
+            const cudaError_t status = cudaDeviceEnablePeerAccess(
+                destination, 0);
+            if (status != cudaSuccess &&
+                    status != cudaErrorPeerAccessAlreadyEnabled) {
+                throw std::runtime_error(
+                    "failed to enable model-parallel peer access from CUDA " +
+                    std::to_string(source) + " to CUDA " +
+                    std::to_string(destination) + ": " +
+                    cudaGetErrorString(status));
+            }
+            if (status == cudaErrorPeerAccessAlreadyEnabled) {
+                (void)cudaGetLastError();
+            }
+        }
+    }
 }
 
 void Collectives::configure(

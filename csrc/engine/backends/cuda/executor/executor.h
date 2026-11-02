@@ -32,6 +32,8 @@ public:
         Dense::Options dense;
     };
 
+    static void prepare(std::int64_t vocabulary);
+
     Executor(CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
              Branches& branches, Collectives& collectives, RouteStats& routes,
              const Options& options, const FfnExec::Options& ffn_options,

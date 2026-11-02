@@ -369,15 +369,3 @@ bool model_parallel_cuda_graph_enabled(
         : execution.config.tensor_parallel_cuda_graph;
     return execution.collectives.enabled() && enabled;
 }
-
-void trace_gemma_stage(
-        CudaExecutionContext& execution,
-        int layer,
-        const char * name,
-        const mfq_tensor_backend::Tensor & value) {
-    if (execution.gemma_stage_trace != nullptr &&
-            layer == execution.gemma_trace_layer) {
-        execution.gemma_stage_trace->emplace_back(
-            name, value.to(mfq_tensor_backend::kFloat32).contiguous().clone());
-    }
-}

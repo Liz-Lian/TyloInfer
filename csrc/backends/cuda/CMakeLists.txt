@@ -567,7 +567,6 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}
 # Remaining legacy bindings are shared by native and optional Torch builds.
 # Concrete Engine selection is compiled from engine/load.cpp.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
