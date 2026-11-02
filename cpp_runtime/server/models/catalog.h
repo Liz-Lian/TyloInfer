@@ -35,6 +35,7 @@ public:
     };
     explicit ModelCatalog(std::vector<std::filesystem::path> roots);
     std::vector<Artifact> list(bool refresh);
+    /** Lists accessible children and model files, rejecting an unavailable selected directory. */
     DirectoryListing browse(const DirectorySource& source);
     std::vector<Artifact> register_directory(const DirectorySource& source);
     DirectoryListing model_directory(const std::string& model_id);
@@ -46,7 +47,8 @@ private:
     void refresh();
     std::string directory_id(const std::filesystem::path& path);
     std::filesystem::path directory(const DirectorySource& source) const;
-    DirectoryEntry directory_entry(const std::filesystem::path& path);
+    /** Returns a browse summary, or no value when the directory cannot be enumerated. */
+    std::optional<DirectoryEntry> directory_entry(const std::filesystem::path& path);
     DirectoryListing browse(const std::filesystem::path& path);
 
     std::mutex mutex_;

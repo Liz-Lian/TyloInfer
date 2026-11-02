@@ -24,6 +24,11 @@ using json = nlohmann::json;
 constexpr std::size_t max_entries = 100000;
 constexpr std::size_t max_index_bytes = 4 * 1024 * 1024;
 
+/** Reports an explicitly selected directory that is missing or inaccessible. */
+[[noreturn]] void unavailable_directory() {
+    throw ModelError(ModelError::Kind::not_found, "model_directory_not_found", "model directory is unavailable");
+}
+
 std::string hash(const std::string& value) {
     return mfq::cache::block_hash_hex(mfq::cache::sha256(value)).substr(0, 32);
 }
@@ -62,8 +67,11 @@ bool is_hf(const fs::path& path) {
     std::error_code error;
     if (!fs::is_regular_file(path / "config.json", error)) return false;
     if (fs::is_regular_file(path / "model.safetensors.index.json", error)) return true;
-    for (const auto& entry : fs::directory_iterator(path, fs::directory_options::skip_permission_denied, error))
-        if (entry.is_regular_file(error) && entry.path().extension() == ".safetensors") return true;
+    for (auto it = fs::directory_iterator(path, fs::directory_options::skip_permission_denied, error);
+            it != fs::directory_iterator(); it.increment(error)) {
+        std::error_code item_error;
+        if (it->is_regular_file(item_error) && it->path().extension() == ".safetensors") return true;
+    }
     return false;
 }
 
@@ -296,47 +304,67 @@ fs::path ModelCatalog::directory(const DirectorySource& source) const {
     if (path.size() > 4096 || path.find('\0') != std::string::npos)
         throw ModelError(ModelError::Kind::invalid, "invalid_model_directory_source", "invalid directory path");
     fs::path selected;
-    if (!path.empty()) selected = resolved_path(source.path);
+    if (!path.empty()) {
+        try { selected = resolved_path(source.path); }
+        catch (const fs::filesystem_error&) { unavailable_directory(); }
+    }
     else {
         const auto found = directories_.find(id);
         if (found != directories_.end()) selected = found->second;
     }
     std::error_code error;
     if (selected.empty() || !fs::is_directory(selected, error))
-        throw ModelError(ModelError::Kind::not_found, "model_directory_not_found", "model directory is unavailable");
-    return fs::canonical(selected);
+        unavailable_directory();
+    const auto canonical = fs::canonical(selected, error);
+    if (error) unavailable_directory();
+    return canonical;
 }
 
-ModelCatalog::DirectoryEntry ModelCatalog::directory_entry(const fs::path& path) {
+std::optional<ModelCatalog::DirectoryEntry> ModelCatalog::directory_entry(const fs::path& path) {
+    std::error_code error;
+    auto it = fs::directory_iterator(path, error);
+    if (error) return {};
     std::set<fs::path> models;
     if (is_hf(path)) models.insert(path);
     std::size_t visited = 0;
-    for (const auto& item : fs::directory_iterator(path, fs::directory_options::skip_permission_denied)) {
+    for (; it != fs::directory_iterator(); it.increment(error)) {
         if (++visited > max_entries) throw ModelError(ModelError::Kind::too_large, "model_catalog_too_large", "directory exceeds scan limits");
-        std::error_code error;
-        if (item.is_regular_file(error) && is_model_file(item.path()) && !is_gguf_table(item.path()))
-            models.insert(model_key(item.path()));
-        else if (item.is_directory(error) && is_hf(item.path())) models.insert(item.path());
+        std::error_code item_error;
+        if (it->is_regular_file(item_error) && is_model_file(it->path()) && !is_gguf_table(it->path()))
+            models.insert(model_key(it->path()));
+        else if (it->is_directory(item_error) && is_hf(it->path())) models.insert(it->path());
     }
+    if (error) return {};
     auto name = path_utf8(path.filename());
     if (name.empty()) name = path_utf8(path.root_path());
-    return {directory_id(path), name, models.size()};
+    return DirectoryEntry{directory_id(path), name, models.size()};
 }
 
 ModelCatalog::DirectoryListing ModelCatalog::browse(const fs::path& path) {
     DirectoryListing result;
     result.current = directory_entry(path);
+    if (!result.current) unavailable_directory();
     result.path = path;
     if (path.parent_path() != path) result.parent_id = directory_id(path.parent_path());
     std::map<std::string, fs::path> children;
-    for (const auto& entry : fs::directory_iterator(path, fs::directory_options::skip_permission_denied)) {
+    std::error_code error;
+    auto it = fs::directory_iterator(path, error);
+    if (error) unavailable_directory();
+    for (; it != fs::directory_iterator(); it.increment(error)) {
+        const auto& entry = *it;
         if (entry.path().filename() == ".tyloinfer-downloads") continue;
-        std::error_code error;
-        if (entry.is_directory(error)) children.emplace(path_utf8(entry.path().filename()), fs::canonical(entry.path()));
-        else if (entry.is_regular_file(error) && is_model_file(entry.path()))
-            result.files.push_back({path_utf8(entry.path().filename()), entry.file_size()});
+        std::error_code item_error;
+        if (entry.is_directory(item_error)) {
+            const auto child = fs::canonical(entry.path(), item_error);
+            if (!item_error) children.emplace(path_utf8(entry.path().filename()), child);
+        } else if (entry.is_regular_file(item_error) && is_model_file(entry.path())) {
+            const auto size = entry.file_size(item_error);
+            if (!item_error) result.files.push_back({path_utf8(entry.path().filename()), size});
+        }
     }
-    for (const auto& [name, child] : children) result.children.push_back(directory_entry(child));
+    if (error) unavailable_directory();
+    for (const auto& [name, child] : children)
+        if (auto entry = directory_entry(child)) result.children.push_back(std::move(*entry));
     std::sort(result.files.begin(), result.files.end(), [](const DirectoryFile& a, const DirectoryFile& b) { return a.name < b.name; });
     return result;
 }
@@ -345,7 +373,11 @@ ModelCatalog::DirectoryListing ModelCatalog::browse(const DirectorySource& sourc
     std::lock_guard<std::mutex> guard(mutex_);
     if (!source.id.empty() || !source.path.empty()) return browse(directory(source));
     DirectoryListing result;
-    for (const auto& root : roots_) if (fs::is_directory(root)) result.children.push_back(directory_entry(root));
+    for (const auto& root : roots_) {
+        std::error_code error;
+        if (fs::is_directory(root, error))
+            if (auto entry = directory_entry(root)) result.children.push_back(std::move(*entry));
+    }
     return result;
 }
 
