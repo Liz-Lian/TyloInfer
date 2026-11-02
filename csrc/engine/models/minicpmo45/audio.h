@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/minicpmo45/causal_lm.h"
+#include "engine/models/minicpmo45/media.h"
 #include "engine/ops.h"
 #include "vision.h"
 

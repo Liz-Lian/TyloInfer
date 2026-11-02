@@ -1,11 +1,9 @@
 #pragma once
-#include "config.h"
-#include "../../generation/sequence.h"
-#include "../common/weight_loading.h"
-#include "../common/causal_forward.h"
-#include "../common/causal_model.h"
+
+#include "engine/generation/sequence.h"
 #include "engine/ops.h"
-#include "../common/transformer_layer.h"
+#include "engine/models/common/causal_forward.h"
+#include "engine/models/common/transformer_layer.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,23 +11,6 @@
 #include <vector>
 
 namespace mfq::models::minicpmo45 {
-
-enum class LanguageComponent { text, tts, standalone_tts };
-
-template <class Block, class Loader>
-void load_language_block(Block& block, Loader& ops, const ModelConfig& config, int layer,
-                         std::string_view type, LanguageComponent component,
-                         std::string_view tensor_root = "model") {
-    if (type != "full_attention")
-        throw std::runtime_error("unsupported MiniCPM layer type: " + std::string(type));
-    const auto prefix = std::string(tensor_root) + ".block." + std::to_string(layer) + ".";
-    // The standalone TTS checkpoint stores offset RMS weights; the composite
-    // TTS and text checkpoints store direct RMS weights.
-    models::load_full_attention(block, ops, config, layer, prefix,
-                                component == LanguageComponent::standalone_tts ? 1.0 : 0.0);
-    block.ffn = models::load_dense_ffn<std::decay_t<decltype(block.ffn)>>(ops, config, prefix + "mlp.");
-}
-
 
 struct MediaBound {
     int64_t batch = 0, source = 0, begin = 0, end = 0;
@@ -54,8 +35,7 @@ template <class Tensor> struct MultimodalInputs {
     std::vector<MediaBound> images, audios;
 };
 template <class Tensor> struct MultimodalResult {
-    Tensor vision_states, image_embeddings, audio_embeddings, input_embeddings, hidden_states,
-        logits;
+    Tensor vision_states, image_embeddings, audio_embeddings, input_embeddings;
 };
 
 // The model owns modality order, resampling, and replacement geometry. Device
@@ -113,16 +93,6 @@ encode(Ops &ops, MultimodalInputs<typename Ops::Tensor> &input) {
         }
     }
     co_yield std::move(result);
-}
-
-template <class Model, class Tensor>
-auto multimodal_forward(Model &model, Tensor ids, MultimodalResult<Tensor> result,
-                        std::optional<Tensor> positions, std::optional<Tensor> mask) {
-    model.reset(Model::size(ids, 0));
-    result.hidden_states = model.hidden_forward_inputs(ids, result.input_embeddings, positions, {},
-                                                       nullptr, mask, positions.has_value());
-    result.logits = model.logits_from_hidden(result.hidden_states);
-    return result;
 }
 
 struct TtsSampling {
@@ -227,7 +197,7 @@ mfq::StepSequence<Tensor> audio_encoder(Tensor features, Layers &layers, Conv1 c
         hidden = layer(block, std::move(hidden), prepared[1]);
         co_yield mfq::StepState::advanced;
     }
-    co_yield pool(mlp(normalize(std::move(hidden)), project1, relu, project2));
+    co_yield pool(mfq::ops::mlp(normalize(std::move(hidden)), project1, relu, project2));
 }
 
 template <class Tensor, class Layers, class Patch, class Prepare, class Layer, class Normalize>
@@ -272,60 +242,5 @@ auto tts_forward(Tensor embeddings, int64_t batch, int64_t tokens, int64_t capac
     cache_position += tokens;
     return normalize(std::move(hidden));
 }
-
-inline void set_standard_metadata(mfq::models::CausalLmMetadata &metadata,
-                                  const mfq::models::ModelConfig &config) {
-    metadata.vocab_size = config.vocab_size;
-    metadata.hidden_size = config.hidden_size;
-    metadata.num_hidden_layers = config.num_hidden_layers;
-    metadata.num_attention_heads = config.num_attention_heads;
-    metadata.num_key_value_heads = config.num_key_value_heads;
-    metadata.head_dim = config.head_dim;
-    metadata.max_position_embeddings = config.max_position_embeddings;
-    metadata.rotary_dim = config.rotary_dim;
-    metadata.rope_base = config.rope_base;
-    metadata.rms_norm_eps = config.rms_norm_eps;
-    metadata.tie_word_embeddings = config.tie_word_embeddings;
-    metadata.model_type = config.model_type;
-    metadata.layer_types = config.layer_types;
-}
-
-template <class Backend> struct CausalLm : models::CausalModelBase<Backend, CausalLm<Backend>> {
-    using Tensor = typename Backend::Tensor;
-    static bool accepts_backbone(std::string_view backbone) { return backbone == "minicpmo45"; }
-    template <class Graph, class Source>
-    void adapter_load_config(std::string_view payload, const Graph &graph, const Source &source) {
-        auto &config = this->config;
-        auto &metadata = this->metadata;
-
-        config = Config::from_json(payload);
-        if (config.model_type.empty())
-            config.model_type = graph.architecture;
-        config.rotary_dim = config.head_dim;
-        config.layer_types.assign(static_cast<std::size_t>(config.num_hidden_layers),
-                                  "full_attention");
-        if (config.hidden_size != 4096 || config.intermediate_size != 12288 ||
-            config.num_hidden_layers != 36 || config.num_attention_heads != 32 ||
-            config.num_key_value_heads != 8 || config.head_dim != 128 ||
-            config.hidden_act != "silu" || config.attention_bias || config.use_sliding_window) {
-            throw std::runtime_error("unsupported MiniCPM-o 4.5 Qwen3 configuration");
-        }
-        set_standard_metadata(metadata, config);
-        metadata.rope_interleaved = true;
-        metadata.decode_graph_double_warmup = true;
-    }
-    void adapter_set_max_position_embeddings(int64_t value) {
-        this->config.max_position_embeddings = value;
-    }
-    std::optional<Tensor> adapter_attention_mask(std::optional<Tensor> mask, int64_t tokens,
-                                                 int64_t cache_position) const {
-        if (mask && (tokens == 1 || cache_position == 0) && this->mask_all_ones(*mask))
-            return {};
-        return mask;
-    }
-    bool adapter_uses_decode_sequence_length() const noexcept { return false; }
-    bool adapter_pass_cache_positions(bool, bool) const noexcept { return true; }
-    bool adapter_pass_attention_mask() const noexcept { return true; }
-};
 
 } // namespace mfq::models::minicpmo45

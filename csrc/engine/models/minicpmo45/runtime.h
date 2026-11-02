@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ops.h"
+#include "engine/backends/cuda/executor/execution.h"
+#include "text/forward.h"
 #include "audio.h"
 #include "tts.h"
 
@@ -16,7 +17,10 @@ inline auto minicpmo45_parse_bounds(mfq_tensor_backend::Tensor bounds, const cha
 }
 
 struct MiniCPMO45Runtime {
-    mfq::cuda::MiniCPMO45CausalLm language;
+    const mfq::cuda::minicpmo45::text::Model& language;
+    mfq::cuda::minicpmo45::text::State& language_state;
+    mfq::cuda::Executor& language_executor;
+    CudaExecutionContext& execution;
     MiniCPMO45VisionEncoder vision;
     MiniCPMO45Resampler resampler;
     MiniCPMO45AudioEncoder audio;
@@ -25,9 +29,11 @@ struct MiniCPMO45Runtime {
     const mfq::cuda::Executor::Mode tts_mode;
     mfq::cuda::Projector projector;
 
-    static MiniCPMO45Runtime load(CudaExecutionContext& execution, const std::string& model_path,
-                                  const std::string& config_path, int64_t context_size);
-    static MiniCPMO45Runtime load_with_language(mfq::cuda::MiniCPMO45CausalLm language);
+    static MiniCPMO45Runtime load(const mfq::cuda::minicpmo45::text::Model& language,
+                                  mfq::cuda::minicpmo45::text::State& language_state,
+                                  mfq::cuda::Executor& language_executor,
+                                  const mfq::cuda::weight_loader::Loader& weights,
+                                  CudaExecutionContext& execution);
 
     struct EncodeOps {
         using Tensor = mfq_tensor_backend::Tensor;
@@ -39,7 +45,12 @@ struct MiniCPMO45Runtime {
         static Tensor device_ids(Tensor t) {
             return t.to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64).contiguous();
         }
-        Tensor embed(Tensor ids) { return runtime.language.embed_forward(ids); }
+        Tensor embed(Tensor ids) {
+            return mfq::cuda::minicpmo45::text::embed(
+                runtime.language, runtime.language_executor, runtime.execution.collectives,
+                runtime.execution.layer_placement.primary_device(), std::move(ids),
+                runtime.execution.forward_mode());
+        }
         auto vision(Tensor pixels, Tensor mask, Tensor sizes) {
             return runtime.vision.forward_steps(runtime.projector,
                                           pixels.to(mfq_tensor_backend::kCUDA), mask, sizes);
@@ -80,24 +91,6 @@ struct MiniCPMO45Runtime {
             minicpmo45_parse_bounds(audio_bounds, "audio")};
         auto encoding = mfq::models::minicpmo45::encode(ops, input);
         while (auto step = encoding.next()) co_yield std::move(step);
-    }
-
-    auto forward(mfq_tensor_backend::Tensor input_ids, mfq_tensor_backend::Tensor position_ids,
-                 mfq_tensor_backend::Tensor attention_mask, mfq_tensor_backend::Tensor pixels,
-                 mfq_tensor_backend::Tensor patch_mask, mfq_tensor_backend::Tensor target_sizes,
-                 mfq_tensor_backend::Tensor image_bounds, mfq_tensor_backend::Tensor audio_features,
-                 mfq_tensor_backend::Tensor audio_lengths,
-                 mfq_tensor_backend::Tensor audio_bounds) {
-        if (input_ids.dim() == 1)
-            input_ids = input_ids.unsqueeze(0);
-        input_ids =
-            input_ids.to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64).contiguous();
-        auto result = mfq::finish_steps(encode(input_ids, pixels, patch_mask, target_sizes, image_bounds,
-                             audio_features, audio_lengths, audio_bounds));
-        return mfq::models::minicpmo45::multimodal_forward(
-            language, input_ids, std::move(result),
-            position_ids.defined() ? std::optional{position_ids} : std::nullopt,
-            attention_mask.defined() ? std::optional{attention_mask} : std::nullopt);
     }
 };
 
@@ -215,7 +208,7 @@ struct MiniCPMO45DuplexSession {
             mfq_tensor_backend::Tensor system_prefix_ids,
             mfq_tensor_backend::Tensor reference_audio_features = mfq_tensor_backend::Tensor(),
             mfq_tensor_backend::Tensor system_suffix_ids = mfq_tensor_backend::Tensor()) {
-        runtime.language.reset(1);
+        runtime.language_state.reset(1);
         runtime.audio.reset();
         tts_state.reset(1);
         generated_text_ids.clear();
@@ -255,7 +248,7 @@ struct MiniCPMO45DuplexSession {
             mfq_tensor_backend::Tensor token_ids = mfq_tensor_backend::Tensor()) {
         if (embeddings.dim() == 2) embeddings = embeddings.unsqueeze(0);
         if (embeddings.dim() != 3 || embeddings.size(0) != 1 ||
-                embeddings.size(2) != runtime.language.hidden_size()) {
+                embeddings.size(2) != runtime.language.metadata.hidden_size) {
             throw std::runtime_error(
                 "MiniCPM-o duplex embeddings must have shape [1,tokens,4096]");
         }
@@ -273,10 +266,13 @@ struct MiniCPMO45DuplexSession {
             }
             token_ids = token_ids.to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64).contiguous();
         }
-        auto hidden = runtime.language.hidden_forward_inputs(
-            token_ids, embeddings.to(mfq_tensor_backend::kBFloat16).contiguous());
-        auto logits = runtime.language.logits_from_hidden(
-            hidden.index({Slice(), -1, Slice()}));
+        auto hidden = mfq::cuda::minicpmo45::text::forward(
+            runtime.language, runtime.language_state, runtime.language_executor,
+            runtime.execution.collectives, runtime.execution.forward_mode(),
+            mfq::cuda::Input{token_ids, embeddings.to(mfq_tensor_backend::kBFloat16).contiguous()});
+        auto logits = mfq::cuda::minicpmo45::text::logits(
+            runtime.language, runtime.language_executor, hidden.index({Slice(), -1, Slice()}),
+            true, runtime.execution.forward_mode());
         return {logits, hidden};
     }
 
@@ -285,7 +281,7 @@ struct MiniCPMO45DuplexSession {
         if (token_ids.dim() == 1) token_ids = token_ids.unsqueeze(0);
         token_ids = token_ids.to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64).contiguous();
         return feed_embeddings(
-            runtime.language.embed_forward(token_ids), token_ids);
+            MiniCPMO45Runtime::EncodeOps{runtime}.embed(token_ids), token_ids);
     }
 
     std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> feed_id(int64_t token) {
@@ -537,7 +533,7 @@ struct MiniCPMO45DuplexSession {
                     {1, 0}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64)
                         .device(mfq_tensor_backend::kCUDA));
                 hidden_tensor = mfq_tensor_backend::empty(
-                    {1, 0, runtime.language.hidden_size()},
+                    {1, 0, runtime.language.metadata.hidden_size},
                     mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kBFloat16)
                         .device(mfq_tensor_backend::kCUDA));
             } else {

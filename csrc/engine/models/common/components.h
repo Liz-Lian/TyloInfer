@@ -1,7 +1,8 @@
 #pragma once
 
 #include "engine/models/deepseek_v41/vision.h"
-#include "engine/models/minicpmo45/ops.h"
+#include "engine/models/minicpmo45/components.h"
+#include "engine/models/minicpmo45/text/model.h"
 #include "engine/models/nemotron_h/radio_vision.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/common/vision/grid_encoder.h"
@@ -38,14 +39,9 @@ struct RuntimeComponents {
     std::optional<mfq::cuda::nemotron_h::CudaRadioPromptComponent>
         radio_vision;
     std::unique_ptr<MtpModule> mtp;
-    Model* language_override = nullptr;
     std::unique_ptr<mfq::cuda::minicpmo45::Components> composite;
     bool vision_available = false;
     bool mtp_available = false;
-
-    Model& language(Model& fallback) {
-        return language_override ? *language_override : fallback;
-    }
 
     mfq::cuda::CudaComponentState state() const noexcept {
         return mfq::cuda::cuda_component_state(
@@ -167,12 +163,13 @@ load_runtime_components(
     CudaExecutionContext& execution);
 
 
-template <>
-RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm>
+RuntimeComponents<mfq::cuda::minicpmo45::text::Model>
 load_runtime_components(
-    mfq::cuda::MiniCPMO45CausalLm& model,
-        const mfq::cuda::weight_loader::Loader& weights,
-    bool load_optional_components);
+    mfq::cuda::minicpmo45::text::Model& model,
+    mfq::cuda::minicpmo45::text::State& state,
+    mfq::cuda::Executor& executor,
+    const mfq::cuda::weight_loader::Loader& weights,
+    bool load_optional_components, CudaExecutionContext& execution);
 
 template <>
 RuntimeComponents<mfq::cuda::minicpmo45::Model>

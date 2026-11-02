@@ -17,16 +17,11 @@ struct Loaded {
     using Parts = P;
 
     std::shared_ptr<Model> model;
-    Parts components;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
+    Parts components;
 
-    Model& language() {
-        if constexpr (requires { components.language(*model); })
-            return components.language(*model);
-        else
-            return *model;
-    }
+    Model& language() { return *model; }
     State& state() {
         if constexpr (std::is_same_v<Model, State>) return language();
         else return *owned_state;

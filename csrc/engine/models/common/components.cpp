@@ -163,7 +163,6 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
                                                   const std::string &, int64_t, bool, bool,        \
                                                   std::shared_ptr<const mfq::ModelSource>, bool)
 
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV41CausalLm);
 
@@ -355,13 +354,14 @@ RuntimeComponents<mfq::cuda::nemotron_h::Model> load_runtime_components(
     return result;
 }
 
-template <>
-RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm>
+RuntimeComponents<mfq::cuda::minicpmo45::text::Model>
 load_runtime_components(
-        mfq::cuda::MiniCPMO45CausalLm& model,
+        mfq::cuda::minicpmo45::text::Model& model,
+        mfq::cuda::minicpmo45::text::State& state,
+        mfq::cuda::Executor& executor,
         const mfq::cuda::weight_loader::Loader& weights,
-        bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::MiniCPMO45CausalLm> result{model.graph, model.plan};
+        bool load_optional_components, CudaExecutionContext& execution) {
+    RuntimeComponents<mfq::cuda::minicpmo45::text::Model> result{model.graph, model.plan};
     if (!load_optional_components ||
             result.plan.vision == mfq::cuda::CudaVisionAdapter::none) {
         return result;
@@ -372,8 +372,8 @@ load_runtime_components(
             "unsupported MiniCPM-o CUDA vision adapter");
     }
 
-    result.composite = std::make_unique<mfq::cuda::minicpmo45::Components>(std::move(model));
-    result.language_override = &result.composite->language();
+    result.composite = std::make_unique<mfq::cuda::minicpmo45::Components>(
+        model, state, executor, weights, execution);
     result.vision_available = true;
     return result;
 }

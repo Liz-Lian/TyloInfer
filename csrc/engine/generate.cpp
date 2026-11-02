@@ -2,7 +2,7 @@
 #include "engine/models/gemma4/forward.h"
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/glm_dsa/forward.h"
-#include "engine/models/minicpmo45/ops.h"
+#include "engine/models/minicpmo45/text/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/qwen4_exp/generation.h"
@@ -27,7 +27,7 @@ namespace mfq::cuda::internal {
         mfq::engine::Batch*, std::string,                    \
         std::function<void()>);
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::text::Model, mfq::cuda::minicpmo45::text::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::gemma4::Model, mfq::cuda::gemma4::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm_dsa::Model, mfq::cuda::glm_dsa::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm5_next::Model, mfq::cuda::glm5_next::State)

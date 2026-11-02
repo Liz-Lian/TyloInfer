@@ -74,8 +74,8 @@ Loaded<Model, State, Components> assemble(
     bool preallocate) {
     Loaded<Model, State, Components> result{
         std::make_shared<Model>(load(
-            source, weights, placement, yarn, cpu_layers, options)), {}, {},
-        std::move(executor)};
+            source, weights, placement, yarn, cpu_layers, options)), {},
+        std::move(executor), {}};
     auto& model = *result.model;
     result.owned_state = std::make_unique<State>(model, transposed);
     if (preallocate) result.owned_state->preallocate();

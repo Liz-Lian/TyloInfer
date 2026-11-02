@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/models/minicpmo45/layer.h"
 #include "engine/models/common/model_config.h"
 #include "engine/ops.h"
 #include "engine/models/common/causal_metadata.h"
@@ -18,18 +19,6 @@ struct LayerPlacementConfig;
 namespace mfq::cuda::weight_loader { struct Loader; }
 
 namespace mfq::cuda::minicpmo45 {
-
-using Tensor = mfq_tensor_backend::Tensor;
-
-struct Layer {
-    FullAttention attention;
-    Tensor ffn_norm;
-    Ffn ffn;
-    int device = 0;
-    bool cpu = false;
-
-    std::array<Task, 2> tasks() const;
-};
 
 // The standalone TTS checkpoint uses offset RMS weights, unlike composite Tts.
 struct Model {

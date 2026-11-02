@@ -25,6 +25,8 @@
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
 #include "engine/models/minicpmo45/state.h"
+#include "engine/models/minicpmo45/text/load.h"
+#include "engine/models/minicpmo45/text/state.h"
 
 #include <chrono>
 #include <iostream>
@@ -81,7 +83,7 @@ inline constexpr auto with_model = []<typename F>(
             execution.weights, execution.tq};
         auto runtime_components =
             load_runtime_components(model, weights, load_optional_components);
-        Loaded<Model> loaded{std::move(owner), std::move(runtime_components), {}, {}};
+        Loaded<Model> loaded{std::move(owner), {}, {}, std::move(runtime_components)};
         return finish(loaded, started);
     };
     auto load_tts = [&] {
@@ -115,9 +117,9 @@ inline constexpr auto with_model = []<typename F>(
         auto executor = execution.make_executor();
         auto components = load_runtime_components(model, weights, load_optional_components);
         Loaded<minicpmo45::Model, minicpmo45::State> loaded{
-            std::move(owner), std::move(components),
+            std::move(owner),
             std::make_unique<minicpmo45::State>(std::move(state)),
-            std::move(executor)};
+            std::move(executor), std::move(components)};
         return finish(loaded, started);
     };
 
@@ -149,8 +151,30 @@ inline constexpr auto with_model = []<typename F>(
             } else {
                 throw std::runtime_error("unsupported CUDA model backbone");
             }
-        case CudaBackbone::minicpmo45:
-            return load.template operator()<MiniCPMO45CausalLm>();
+        case CudaBackbone::minicpmo45: {
+            auto started = std::chrono::steady_clock::now();
+            auto definition = mfq::models::config_json(*source, options.config_path);
+            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+            auto owner = std::make_shared<minicpmo45::text::Model>(
+                minicpmo45::text::read(source, definition, options.context_size));
+            weight_loader::Loader weights{*source, execution.config.weights,
+                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+                 execution.tensor_parallel, moe_parallel_config(execution)},
+                execution.weights, execution.tq};
+            execution.dense_cpu_layer_count = execution.n_gpu_layers >= 0
+                ? static_cast<int>(std::max<int64_t>(owner->config.num_hidden_layers - execution.n_gpu_layers, 0)) : 0;
+            minicpmo45::text::load(*owner, weights, execution.layer_placement,
+                execution.n_gpu_layers, execution.expert_parallel.enabled(), true, true, execution.yarn);
+            auto state = std::make_unique<minicpmo45::text::State>(*owner);
+            state->preallocate();
+            auto executor = execution.make_executor();
+            auto components = load_runtime_components(*owner, *state, *executor, weights,
+                load_optional_components, execution);
+            Loaded<minicpmo45::text::Model, minicpmo45::text::State> loaded{
+                std::move(owner), std::move(state), std::move(executor), std::move(components)};
+            return finish(loaded, started);
+        }
         case CudaBackbone::minicpmo_tts:
             return load_tts();
         case CudaBackbone::gemma4: {
@@ -172,7 +196,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.make_executor();
             auto components = load_runtime_components(*owner, weights, load_optional_components);
             Loaded<gemma4::Model, gemma4::State> loaded{
-                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+                std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
         }
         case CudaBackbone::glm_dsa: {
@@ -194,7 +218,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.make_executor();
             auto components = load_runtime_components(*owner, weights, load_optional_components);
             Loaded<glm_dsa::Model, glm_dsa::State> loaded{
-                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+                std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
         }
         case CudaBackbone::glm5_next: {
@@ -216,7 +240,7 @@ inline constexpr auto with_model = []<typename F>(
             auto components = load_runtime_components(*owner, weights, load_optional_components,
                 execution.projector(), execution.collectives, execution.profiler);
             Loaded<glm5_next::Model, glm5_next::State> loaded{
-                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+                std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
         }
         case CudaBackbone::qwen4_exp:
@@ -246,7 +270,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.make_executor();
             auto components = load_runtime_components(*owner, weights, load_optional_components);
             Loaded<deepseek_v4::Model, deepseek_v4::State> loaded{
-                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+                std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
         }
         case CudaBackbone::deepseek_v41:
@@ -270,7 +294,7 @@ inline constexpr auto with_model = []<typename F>(
             auto executor = execution.make_executor();
             auto components = load_runtime_components(*owner, weights, load_optional_components, execution);
             Loaded<nemotron_h::Model, nemotron_h::State> loaded{
-                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+                std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
         }
         case CudaBackbone::unsupported:

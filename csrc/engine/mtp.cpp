@@ -1,5 +1,4 @@
 #include "engine/models/glm5_next/forward.h"
-#include "engine/models/minicpmo45/ops.h"
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/qwen4_exp/mtp_ops.h"
 #include "engine/models/deepseek_v41/mtp_ops.h"
@@ -15,7 +14,6 @@
       InferenceRequest &, InferenceOutput &, int64_t,                            \
       const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>)
-TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::glm5_next::Model, mfq::cuda::glm5_next::State);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm);
