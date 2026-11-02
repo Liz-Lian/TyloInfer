@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -38,6 +39,7 @@ public:
     const std::vector<std::filesystem::path>& paths() const noexcept;
     const std::unordered_map<std::string, SafetensorsRecord>&
     records() const noexcept;
+    const TensorMetadata* find(std::string_view name) const noexcept;
     void read(
         std::size_t shard,
         std::uint64_t offset,

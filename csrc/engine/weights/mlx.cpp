@@ -25,12 +25,8 @@ MlxAffineBinding mlx_affine_binding(const Safetensors& source,
     layout.shape = *values.shape;
     layout.shape.back() = layout.shape.back() * 32 / layout.bits;
     binding.scales = module + ".scales"; binding.biases = module + ".biases";
-    const auto scales_found = source.records().find(binding.scales);
-    const auto biases_found = source.records().find(binding.biases);
-    const auto* scales = scales_found == source.records().end()
-        ? nullptr : &scales_found->second.metadata;
-    const auto* biases = biases_found == source.records().end()
-        ? nullptr : &biases_found->second.metadata;
+    const auto* scales = source.find(binding.scales);
+    const auto* biases = source.find(binding.biases);
     if (!scales || !biases || !scales->shape || !biases->shape || biases->dtype != scales->dtype)
         throw std::invalid_argument("MLX affine scales/biases are missing or incompatible: " + module);
     layout.scale_dtype = scales->dtype;

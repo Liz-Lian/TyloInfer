@@ -354,6 +354,11 @@ Safetensors::records() const noexcept {
     return impl_->physical;
 }
 
+const TensorMetadata* Safetensors::find(std::string_view name) const noexcept {
+    const auto found = impl_->physical.find(std::string(name));
+    return found == impl_->physical.end() ? nullptr : &found->second.metadata;
+}
+
 void Safetensors::read(
     std::size_t shard,
     std::uint64_t offset,

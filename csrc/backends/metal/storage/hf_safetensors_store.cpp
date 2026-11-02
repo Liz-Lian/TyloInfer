@@ -1,6 +1,6 @@
 #include "hf_safetensors_store.h"
 
-#include "tyloinfer/hf_safetensors_source.h"
+#include "engine/weights/source/safetensors.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -193,17 +193,18 @@ HfSafetensorStore::HfSafetensorStore(
     std::filesystem::path root,
     bool bypass_file_cache)
     : impl_(std::make_unique<Impl>()) {
-    const mfq::HfSafetensorsSource source(std::move(root));
+    const mfq::Safetensors source(std::move(root));
     impl_->root = source.root();
-    for (const auto& path : source.source_paths()) {
+    for (const auto& path : source.paths()) {
         auto shard = std::make_unique<Impl::Shard>();
         shard->path = path;
         shard->size = std::filesystem::file_size(path);
         shard->bypass_file_cache = bypass_file_cache;
         impl_->shards.push_back(std::move(shard));
     }
-    for (const auto& tensor : source.tensors()) {
-        const auto& location = source.location(tensor.name);
+    for (const auto& [name, stored] : source.records()) {
+        const auto& tensor = stored.metadata;
+        const auto& location = stored.location;
         HfSafetensorRecord record;
         record.name = tensor.name;
         record.dtype = tensor.dtype;

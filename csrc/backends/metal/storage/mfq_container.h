@@ -1,6 +1,6 @@
 #pragma once
 
-#include "source/hf_model_source.h"
+#include "engine/models/common/hf_source.h"
 #include "mfq_legacy_tensor_names.h"
 #include "mfq_format_compat.h"
 #include "engine/models/common/model_graph.h"
@@ -154,7 +154,7 @@ private:
     MfqHeader header_;
     std::vector<std::filesystem::path> source_paths_;
     RecordMap records_;
-    std::shared_ptr<mfq::HfModelSource> hf_source_;
+    std::shared_ptr<mfq::models::HfSource> hf_source_;
     std::shared_ptr<const mfq::ModelSource> gguf_source_;
     std::unordered_map<std::string, std::string> legacy_aliases_;
     mfq::MfqLegacyTensorLayout legacy_tensor_layout_;

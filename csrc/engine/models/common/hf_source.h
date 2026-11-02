@@ -1,24 +1,24 @@
 #pragma once
 
-#include "hf_safetensors_source.h"
+#include "source/model_source.h"
 
 #include <filesystem>
 #include <memory>
 
-namespace mfq {
+namespace mfq::models {
 
 // Canonical runtime view of an HF checkpoint. Dense and native-MX tensors are
 // exposed with the same logical payload contract as MFQ records, so backend
 // model loaders do not branch on checkpoint format.
-class HfModelSource final : public ModelSource {
+class HfSource final : public ModelSource {
 public:
-    explicit HfModelSource(std::filesystem::path root, std::string source_prefix = {});
-    ~HfModelSource() override;
+    explicit HfSource(std::filesystem::path root, std::string source_prefix = {});
+    ~HfSource() override;
 
-    HfModelSource(HfModelSource&&) noexcept;
-    HfModelSource& operator=(HfModelSource&&) noexcept;
-    HfModelSource(const HfModelSource&) = delete;
-    HfModelSource& operator=(const HfModelSource&) = delete;
+    HfSource(HfSource&&) noexcept;
+    HfSource& operator=(HfSource&&) noexcept;
+    HfSource(const HfSource&) = delete;
+    HfSource& operator=(const HfSource&) = delete;
 
     const std::vector<std::filesystem::path>& source_paths()
         const noexcept override;
@@ -48,4 +48,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq
+} // namespace mfq::models

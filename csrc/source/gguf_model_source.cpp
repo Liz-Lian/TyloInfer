@@ -90,7 +90,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
             std::vector<std::string> names;
             for (int64_t i = 0; i < gguf_get_n_tensors(ctx.get()); ++i)
                 names.emplace_back(gguf_get_tensor_name(ctx.get(), i));
-            const auto aliases = make_legacy_tensor_aliases("qwen4_exp_text",
+            const auto aliases = models::legacy_names("qwen4_exp_text",
                 json{{"model_type", "qwen4_exp_text"}, {"num_hidden_layers", meta.at("qwen4exp.block_count")}}.dump(), names);
             for (const auto& [canonical, stored] : aliases.canonical_to_stored)
                 if (canonical.rfind("predictor.", 0) == 0) predictor_names.emplace(stored, canonical);

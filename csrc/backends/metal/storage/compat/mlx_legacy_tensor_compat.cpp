@@ -41,7 +41,7 @@ std::string legacy_model_config(const MfqContainer& model) {
 void install_legacy_tensor_compatibility(MfqContainer& model) {
     if (model.model_graph()) return;
     if (!model.contains(std::string(kModelConfigAsset))) return;
-    auto compatibility = mfq::make_legacy_tensor_aliases(
+    auto compatibility = mfq::models::legacy_names(
         model.header().architecture,
         legacy_model_config(model),
         stored_tensor_names(model));

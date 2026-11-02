@@ -8,7 +8,8 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/source/json.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/safetensors.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/tensor.h
-    hf_model_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/hf_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/assets.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/mlx.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/gguf.cpp
     gguf_model_source.cpp
@@ -20,14 +21,13 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/source/safetensors.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/hf.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/hf.h
-    hf_safetensors_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.cpp
     tq_fixture_source.cpp
     model_source.h
     read.h
     mfq_model_source.h
-    hf_model_source.h
-    hf_safetensors_source.h
+    ${PROJECT_SOURCE_DIR}/engine/models/common/hf_source.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/source/assets.h
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.h
     tq_fixture_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.h

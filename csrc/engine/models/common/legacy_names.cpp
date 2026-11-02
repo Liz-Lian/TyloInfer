@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace mfq {
+namespace mfq::models {
 namespace {
 
 using json = nlohmann::json;
@@ -146,7 +146,7 @@ std::int64_t config_integer(
 }
 
 void add_alias(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const std::unordered_set<std::string>& stored_names,
         std::string canonical,
         std::string stored) {
@@ -164,7 +164,7 @@ void add_alias(
 }
 
 void add_derived_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const std::unordered_set<std::string>& names) {
     const auto base = result.canonical_to_stored;
     for (const auto& [canonical, stored] : base) {
@@ -179,7 +179,7 @@ void add_derived_aliases(
 }
 
 void add_qwen_hf_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     const auto add = [&](std::string canonical, std::string stored) {
@@ -304,7 +304,7 @@ void add_qwen_hf_aliases(
 }
 
 void add_qwen4_hf_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     // Qwen3.5 and Qwen4 share the ordinary text/vision vocabulary. Add the
@@ -439,7 +439,7 @@ void add_qwen4_hf_aliases(
 }
 
 void add_glm5_hf_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     const auto add = [&](std::string canonical, std::string stored) {
@@ -625,7 +625,7 @@ void add_glm5_hf_aliases(
 }
 
 void add_qwen_gguf_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     result.layout.norm_weight_offset = 0.0;
@@ -694,7 +694,7 @@ void add_qwen_gguf_aliases(
 }
 
 void add_minicpmo_text_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     result.layout.norm_weight_offset = 0.0;
@@ -854,7 +854,7 @@ void add_minicpmo_text_aliases(
 }
 
 void add_glm_dsa_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     result.layout.norm_weight_offset = 0.0;
@@ -903,7 +903,7 @@ void add_glm_dsa_aliases(
 }
 
 void add_deepseek_v4_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const std::unordered_set<std::string>& names) {
     result.layout.norm_weight_offset = 0.0;
     const auto add = [&](std::string canonical, std::string stored) {
@@ -1162,7 +1162,7 @@ void add_deepseek_v4_aliases(
 }
 
 void add_deepseek_v41_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const std::unordered_set<std::string>& names) {
     result.layout.norm_weight_offset = 0.0;
     const auto add = [&](std::string canonical, std::string stored) {
@@ -1354,7 +1354,7 @@ void add_deepseek_v41_aliases(
 }
 
 void add_gemma4_aliases(
-        MfqLegacyTensorAliases& result,
+        Names& result,
         const json& config,
         const std::unordered_set<std::string>& names) {
     result.layout.norm_weight_offset = 0.0;
@@ -1403,7 +1403,7 @@ void add_gemma4_aliases(
 
 } // namespace
 
-MfqLegacyTensorAliases make_legacy_tensor_aliases(
+Names legacy_names(
         std::string_view artifact_architecture,
         std::string_view model_config_json,
         const std::vector<std::string>& stored_names) {
@@ -1419,7 +1419,7 @@ MfqLegacyTensorAliases make_legacy_tensor_aliases(
     }
     const std::unordered_set<std::string> names(
         stored_names.begin(), stored_names.end());
-    MfqLegacyTensorAliases result;
+    Names result;
     if (qwen4_family(artifact_architecture, config)) {
         add_qwen4_hf_aliases(result, config, names);
         add_derived_aliases(result, names);
@@ -1465,4 +1465,4 @@ MfqLegacyTensorAliases make_legacy_tensor_aliases(
     return result;
 }
 
-} // namespace mfq
+} // namespace mfq::models

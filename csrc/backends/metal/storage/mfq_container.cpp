@@ -199,7 +199,7 @@ struct MfqContainer::RandomAccessFiles : std::enable_shared_from_this<RandomAcce
 
 void MfqContainer::load_hf_directory(
     const std::filesystem::path& requested_path, const std::string& source_prefix) {
-    hf_source_ = std::make_shared<mfq::HfModelSource>(requested_path, source_prefix);
+    hf_source_ = std::make_shared<mfq::models::HfSource>(requested_path, source_prefix);
     header_.version = 2;
     header_.architecture = std::string(hf_source_->architecture());
     header_.extra_json = hf_source_->metadata();

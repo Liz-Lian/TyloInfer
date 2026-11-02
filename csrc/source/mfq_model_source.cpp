@@ -260,10 +260,10 @@ MfqModelSource::MfqModelSource(std::filesystem::path requested, FileReadMode mod
     std::sort(impl_->assets.begin(), impl_->assets.end());
 
     std::unordered_map<std::string, std::string> stored_to_canonical;
-    MfqLegacyTensorAliases aliases;
+    models::Names aliases;
     if (!has_asset(kModelGraphAsset) && has_asset(kModelConfigAsset)) {
         const auto config = read_asset(kModelConfigAsset);
-        aliases = make_legacy_tensor_aliases(
+        aliases = models::legacy_names(
             architecture(),
             std::string_view(
                 reinterpret_cast<const char*>(config.data()), config.size()),
