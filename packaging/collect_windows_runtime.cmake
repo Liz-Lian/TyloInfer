@@ -6,7 +6,7 @@ foreach(required SERVER DESTINATION DUMPBIN)
     endif()
 endforeach()
 
-# 在构建后递归解析 PE 导入，不把整个开发环境或 Python DLL 打入产品。
+# Resolve PE imports recursively after building to avoid bundling the development environment or Python DLLs.
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_PLATFORM windows+pe)
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_TOOL dumpbin)
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND "${DUMPBIN}")
@@ -44,7 +44,7 @@ if(unresolved)
 endif()
 foreach(name IN LISTS conflicts_FILENAMES)
     string(TOLOWER "${name}" lower_name)
-    # 开发库目录可能自带旧 CRT；产品统一使用已暂存的 VS redistributable。
+    # Development library directories may contain older CRTs; use the staged VS redistributable consistently.
     if(NOT lower_name MATCHES "^(vcruntime|msvcp|concrt|vcomp)[0-9][a-z0-9_]*\\.dll$"
             OR NOT EXISTS "${DESTINATION}/${name}")
         message(FATAL_ERROR "Conflicting native runtime dependency ${name}: ${conflicts_${name}}")
@@ -58,7 +58,7 @@ foreach(library IN LISTS resolved)
     endif()
     file(COPY_FILE "${library}" "${DESTINATION}/${name}" ONLY_IF_DIFFERENT)
 endforeach()
-# 最终仅允许服务同目录与系统库满足导入，防止开发环境掩盖缺失的传递依赖。
+# Resolve final imports only from the server directory and system libraries so development paths cannot hide missing transitive dependencies.
 file(GLOB staged_libraries "${DESTINATION}/*.dll")
 file(GET_RUNTIME_DEPENDENCIES
     EXECUTABLES "${SERVER}"

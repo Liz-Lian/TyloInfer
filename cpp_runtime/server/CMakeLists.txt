@@ -16,7 +16,7 @@ file(STRINGS "${_storage_file}" _schema_version_line REGEX "^SCHEMA_VERSION = [0
 if(NOT _schema_version_line STREQUAL "SCHEMA_VERSION = 19")
     message(FATAL_ERROR "Update native SQLite migrations to match Python SCHEMA_VERSION")
 endif()
-# 将输入逐字节嵌入，避免 MSVC 对单个字符串长度的限制并保留原始编码。
+# Embed input byte by byte to preserve its encoding and avoid MSVC's string literal length limit.
 # /** Reads a file as escaped character initializers without changing its bytes. */
 function(tyloinfer_server_read_bytes path output)
     file(READ "${path}" _bytes HEX)

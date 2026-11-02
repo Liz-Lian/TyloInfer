@@ -32,7 +32,7 @@ describe('业务职责边界', () => {
     for (const request of ['datasets', 'evaluations', 'runtimeLogs', 'generationPresets', 'artifactLineage']) {
       expect(runtime).not.toContain(`.${request}(`);
     }
-    // 原生加载任务只携带资产 ID，运行时只读取轻量目录来解析任务名称，不触发重扫或组件扫描。
+    // Native load jobs contain only asset IDs; resolve their names from the lightweight catalog without rescanning models or components.
     expect(runtime).toContain('modelsApi.modelArtifacts()');
     expect(runtime).not.toMatch(/modelsApi\.modelArtifacts\([^)]*true/);
   });

@@ -281,7 +281,7 @@ void routes(const fs::path& executable) {
         CHECK(progress); server.post("/api/v1/jobs/" + id + "/retry", {}, 409);
         origin.mode = 7; auto cancel = payload; cancel["destination"] = "models/cancel-api";
         const auto cancel_id = server.post("/api/v1/jobs", {{"kind", "download.huggingface"}, {"payload", cancel}}).at("id").get<std::string>();
-        // 先确认收到部分权重，取消后的重试才应携带 Range。
+        // Confirm that some weights arrived so a retry after cancellation must send Range.
         wait([&] { const auto job = server.get("/api/v1/jobs/" + cancel_id); return job["progress_data"].is_object() && job["progress_data"].value("downloaded_bytes", 0) > 32768; });
         server.post("/api/v1/jobs/" + cancel_id + "/cancel", {}, 200);
         CHECK(server.complete(cancel_id)["status"] == "cancelled"); CHECK(!fs::exists(temporary.root / "models/cancel-api"));

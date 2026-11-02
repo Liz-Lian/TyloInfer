@@ -1461,7 +1461,7 @@ def test_cuda_ops_and_execution_are_real_compilation_units() -> None:
     assert "struct QuantLinear" not in CUDA_RUNTIME_SOURCE
     assert "cuda_quantized_ops" not in CUDA_BACKEND_SOURCE
     includes = re.findall(r'#include\s+["<]([^">]+\.inc)[">]', CUDA_BACKEND_SOURCE)
-    # 第三方码表是静态数据，不是拆分的实现单元。
+    # The third-party lookup table is static data rather than a separate implementation unit.
     codebook = '../../../third_party/agention-gyro/codebook_f16.inc'
     assert (cuda / 'tests' / codebook).is_file()
     assert set(includes) == {

@@ -1,6 +1,6 @@
 import type { RuntimeStatus } from '../shared/api/types';
 
-// 原生能力以实际注册路由为准；模型架构声明不代表服务已提供对应功能。
+// Derive native capabilities from registered routes; model architecture declarations do not imply server support.
 const nativeCapabilities = {
   agent: false,
   resources: false,

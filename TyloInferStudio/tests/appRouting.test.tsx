@@ -21,7 +21,7 @@ const runtime = vi.hoisted(() => ({
   refreshRuntime: vi.fn(async () => true), reloadService: vi.fn(), retryJobStreams: vi.fn(), addJob: vi.fn(),
 }));
 
-// 保留真实 App、外壳、两个业务 Provider 和页面，只隔离运行状态来源与无关的更新检查。
+// Keep the real App, shell, both feature providers and pages; isolate runtime state sources and unrelated update checks.
 vi.mock('../src/app/RuntimeProvider', () => ({
   RuntimeProvider: ({ children }: { children: ReactNode }) => children,
   useRuntime: () => runtime,

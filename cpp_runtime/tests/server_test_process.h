@@ -46,7 +46,7 @@ public:
         environment["PATH"] = "";
 #endif
 #ifdef _WIN32
-        // Windows 通过 PATH 查找共享库，开发构建需要继承依赖 DLL 的路径。
+        // Windows resolves shared libraries through PATH, so development builds must inherit dependency DLL paths.
         const auto quote = [](const std::wstring& argument) {
             std::wstring result = L"\"";
             std::size_t slashes = 0;

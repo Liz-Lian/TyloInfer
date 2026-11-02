@@ -62,7 +62,7 @@ extract:
   IfErrors failed
   GetTempFileName $StagingRoot "$CacheRoot"
   IfErrors failed
-  ; 只删除刚预留的单个空文件，旧缓存和失败载荷留待手动清理。
+  ; Delete only the newly reserved empty file; leave old caches and failed payloads for manual cleanup.
   Delete "$StagingRoot"
   IfErrors failed
   CreateDirectory "$StagingRoot"

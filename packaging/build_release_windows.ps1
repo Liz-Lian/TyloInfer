@@ -1,4 +1,4 @@
-# 构建原生 CUDA 服务、Studio NSIS 安装包与单文件便携包。Python 仅用于构建期校验。
+# Build the native CUDA server, Studio NSIS installer and single-file portable package. Use Python only for build-time validation.
 
 #requires -Version 7
 [CmdletBinding()]
@@ -222,7 +222,7 @@ function Copy-VisualCppRuntimeDlls {
     }
     Copy-RuntimeDlls $crtDirectory.FullName $DestinationDirectory
 
-    # 打包 VS 提供的 OpenMP 库，避免在用户机器上依赖构建环境。
+    # Bundle the VS OpenMP library so user machines do not depend on the build environment.
     Get-ChildItem -LiteralPath $x64Directory -Directory |
         Where-Object { $_.Name -match '^Microsoft\.VC\d+\.OpenMP$' } |
         ForEach-Object {
@@ -244,7 +244,7 @@ function Get-ReleaseJobs {
         return [int] $env:TYLOINFER_RELEASE_JOBS
     }
 
-    # 大型 CUDA 编译单元占用数 GiB 内存，按物理内存限制并行度。
+    # Large CUDA translation units consume several GiB each; limit parallelism based on physical memory.
     $memoryJobs = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 5GB)
     return [math]::Max(1, [math]::Min([int] $memoryJobs, [Environment]::ProcessorCount))
 }
@@ -307,7 +307,7 @@ function Initialize-BuildEnvironment {
     $Context.Tools.Npm = Require-Command "npm.cmd"
     $null = Require-Command "cl"
     $null = Require-Command "nvcc"
-    # 本地未安装 NSIS 时由 Tauri 下载锁定版本。
+    # Let Tauri download the pinned NSIS version when it is not installed locally.
     Initialize-ReleasePathMapping $Context
 }
 
@@ -342,7 +342,7 @@ namespace MfqRelease {
     }
     foreach ($mapping in $mappings) {
         $mapping
-        # 本机依赖生成器也可能使用 Windows 8.3 短路径。
+        # Native dependency generators may also use Windows 8.3 short paths.
         $shortPath = [System.Text.StringBuilder]::new(32768)
         $length = [MfqRelease.BuildPaths]::GetShortPathName($mapping.Source, $shortPath, $shortPath.Capacity)
         if ($length -gt 0 -and $length -lt $shortPath.Capacity -and $shortPath.ToString() -ne $mapping.Source) {
@@ -373,7 +373,7 @@ Apply Rust and native path remapping while preserving encoded argument boundarie
 function Initialize-ReleasePathMapping {
     param([Parameter(Mandatory)][hashtable] $Context)
 
-    # 编码参数保留带空格路径的参数边界。
+    # Encode arguments to preserve argument boundaries for paths containing spaces.
     $separator = [char]31
     $rustArguments = @()
     if ($env:CARGO_ENCODED_RUSTFLAGS) {
@@ -388,7 +388,7 @@ function Initialize-ReleasePathMapping {
     }
     $rustArguments += @("-C", "link-arg=/PDBALTPATH:tyloinfer.pdb")
     $env:CARGO_ENCODED_RUSTFLAGS = $rustArguments -join $separator
-    # Rust 构建的本机依赖也会展开 __FILE__。
+    # Native dependencies built by Rust also expand __FILE__.
     $nativeFlags = @(Get-ReleaseNativeFlags $Context) -join ' '
     $env:CFLAGS = "$env:CFLAGS $nativeFlags".Trim()
     $env:CXXFLAGS = "$env:CXXFLAGS $nativeFlags".Trim()
@@ -425,7 +425,7 @@ function Initialize-ReleaseDirectories {
     ) | Out-Null
     $env:TEMP = $Context.TemporaryDirectory
     $env:TMP = $Context.TemporaryDirectory
-    # 全局 npm 缓存可能属于其他安装或不可写，发行过程默认使用本 worktree 的缓存。
+    # Default release builds to this worktree's npm cache because the global cache may belong to another installation or be unwritable.
     if ([string]::IsNullOrWhiteSpace($env:npm_config_cache)) {
         $env:npm_config_cache = Join-Path $Context.ScriptDirectory 'build/npm-cache'
     }

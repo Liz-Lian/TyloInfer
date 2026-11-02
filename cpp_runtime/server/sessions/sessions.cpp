@@ -644,7 +644,7 @@ std::optional<std::vector<common_chat_msg_diff>> Sessions::Reply::next(const std
                     if (diff.tool_call_index != std::string::npos) {
                         if (state_->output.tool_calls.size() <= diff.tool_call_index) state_->output.tool_calls.resize(diff.tool_call_index + 1);
                         auto& call = state_->output.tool_calls[diff.tool_call_index];
-                        // 引擎的名称和 ID 是完整值，只有 arguments 是增量。
+                        // The engine emits complete names and IDs; only arguments are incremental.
                         if (!diff.tool_call_delta.id.empty()) call.id = diff.tool_call_delta.id;
                         if (!diff.tool_call_delta.name.empty()) call.name = diff.tool_call_delta.name;
                         call.arguments += diff.tool_call_delta.arguments;

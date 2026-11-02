@@ -54,7 +54,7 @@ Json repository(const Hub::Repo& repo) {
         if (extension == ".safetensors") key = path_utf8(path.parent_path() / "checkpoint");
         else { std::smatch match; if (std::regex_match(file.name, match, shard)) key = match[1].str() + match[2].str(); }
         auto& group = groups[key];
-        // HF 目录名也是模型名；保留来源，避免多个仓库都被下载为 checkpoint。
+        // HF directory names become model names; include the source so repositories do not all download as checkpoint.
         const auto label = extension == ".safetensors" ? std::string(provider(repo.source.provider)) + "/" + repo.source.repo + "/" + key : key;
         if (group.is_null()) group = {{"id", key}, {"label", label}, {"format", format}, {"files", Json::array()}, {"byte_size", 0},
             {"configuration", {{"status", "unknown"}, {"recommendation", "unknown"}, {"reasons", Json::array()}}}};

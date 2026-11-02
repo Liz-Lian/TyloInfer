@@ -72,7 +72,7 @@ pub fn command(
     }
     #[cfg(windows)]
     {
-        // 原生服务及其 DLL 位于同一目录，同时保留开发工具链的搜索路径。
+        // Keep the native server and its DLLs together while preserving the development toolchain search paths.
         let directory = executable.parent().ok_or("Native server executable has no parent directory")?;
         let mut paths = vec![directory.to_path_buf()];
         if let Some(existing) = std::env::var_os("PATH") {

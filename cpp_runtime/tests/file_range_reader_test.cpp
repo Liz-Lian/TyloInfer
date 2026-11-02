@@ -317,7 +317,7 @@ int main() {
                     require(std::equal(output.begin()+i*9+1,output.begin()+i*9+8,expected.begin()+i*8192+3),"disjoint read changed bytes");
                 }
                 const auto stats=disjoint.stats();
-                // 共享池允许复用带有余量的缓存块，峰值应遵循借用上限。
+                // The shared pool may reuse oversized blocks, but peak usage must respect the borrowing limit.
                 const auto pool_limit=stats.physical_bytes+std::max<std::uint64_t>(stats.physical_bytes,65536);
                 require(stats.logical_bytes==56 && !stats.staging_bytes && stats.staging_peak_bytes<=pool_limit,
                     "disjoint direct ranges exceeded the bounded staging pool");
