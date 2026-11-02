@@ -4,7 +4,7 @@
 #include "engine/weights/source/gguf.h"
 #include "engine/models/common/hf_source.h"
 #include "gguf_model_source.h"
-#include "mfq_model_source.h"
+#include "engine/models/common/mfq_source.h"
 #include "tq_fixture_source.h"
 
 #include <cstdlib>
@@ -34,7 +34,7 @@ std::shared_ptr<const ModelSource> open_model_source(
         return std::make_shared<models::HfSource>(path);
     }
     if (is_gguf_file(path)) return std::make_shared<GgufModelSource>(path);
-    return std::make_shared<MfqModelSource>(path);
+    return std::make_shared<models::MfqSource>(path);
 }
 
 const mfq::TensorMetadata& require_tensor(

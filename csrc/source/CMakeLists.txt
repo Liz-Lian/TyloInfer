@@ -1,6 +1,7 @@
 add_library(mfq-model-source STATIC
     model_source.cpp
-    mfq_model_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mapped.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/buffered.cpp
@@ -25,7 +26,8 @@ add_library(mfq-model-source STATIC
     tq_fixture_source.cpp
     model_source.h
     read.h
-    mfq_model_source.h
+    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq_source.h
+    ${PROJECT_SOURCE_DIR}/engine/models/common/mfq.h
     ${PROJECT_SOURCE_DIR}/engine/models/common/hf_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/assets.h
     ${PROJECT_SOURCE_DIR}/engine/weights/tq/source.h

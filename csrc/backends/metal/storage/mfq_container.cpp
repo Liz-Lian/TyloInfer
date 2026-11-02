@@ -2,7 +2,7 @@
 
 #include "mlx_legacy_tensor_compat.h"
 
-#include "source/mfq_model_source.h"
+#include "engine/models/common/mfq_source.h"
 #include "source/gguf_model_source.h"
 #include "engine/weights/encoding/tq_rows.h"
 #include "nlohmann/json.hpp"
@@ -261,7 +261,7 @@ MfqContainer::MfqContainer(std::filesystem::path path, std::string hf_source_pre
         legacy_tensor_layout_.qwen_gdn_gguf_layout = header_.architecture == "qwen35" || header_.architecture == "qwen35moe";
         return;
     }
-    mfq::MfqModelSource source(std::move(path));
+    mfq::models::MfqSource source(std::move(path));
     header_.version = source.header().version;
     header_.architecture = source.header().architecture;
     header_.extra_json = source.header().metadata;

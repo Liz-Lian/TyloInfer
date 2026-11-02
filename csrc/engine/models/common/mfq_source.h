@@ -1,29 +1,29 @@
 #pragma once
 
-#include "model_source.h"
+#include "source/model_source.h"
 #include "engine/weights/source/mfq.h"
 
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
 
-namespace mfq {
+namespace mfq::models {
 
-class MfqModelSource final : public ModelSource {
+class MfqSource final : public ModelSource {
 public:
-    explicit MfqModelSource(std::filesystem::path path,
-                            FileReadMode mode = model_file_read_mode());
-    ~MfqModelSource() override;
+    explicit MfqSource(std::filesystem::path path,
+                       FileReadMode mode = model_file_read_mode());
+    ~MfqSource() override;
 
-    MfqModelSource(MfqModelSource&&) noexcept;
-    MfqModelSource& operator=(MfqModelSource&&) noexcept;
-    MfqModelSource(const MfqModelSource&) = delete;
-    MfqModelSource& operator=(const MfqModelSource&) = delete;
+    MfqSource(MfqSource&&) noexcept;
+    MfqSource& operator=(MfqSource&&) noexcept;
+    MfqSource(const MfqSource&) = delete;
+    MfqSource& operator=(const MfqSource&) = delete;
 
-    const MfqSourceHeader& header() const noexcept;
+    const archive::Header& header() const noexcept;
     const std::vector<std::filesystem::path>& source_paths()
         const noexcept override;
-    const std::vector<MfqStoredRecord>& records() const noexcept;
+    const std::vector<archive::Record>& records() const noexcept;
 
     std::string_view architecture() const noexcept override;
     const std::unordered_map<std::string, std::string>& metadata()
@@ -56,4 +56,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq
+} // namespace mfq::models
