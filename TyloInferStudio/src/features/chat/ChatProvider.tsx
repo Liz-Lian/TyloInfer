@@ -110,7 +110,7 @@ function useChatDomain() {
     [],
   );
 
-  /** 发起文本或工具结果生成，UI 快照与请求身份由独立控制器管理。 */
+  /** Validate service support before publishing optimistic input and starting text generation. */
   const generate = useCallback(
     async (
       session: Session,
@@ -127,6 +127,12 @@ function useChatDomain() {
         return;
       const inference = inferenceRef.current;
       if (!inference.availableModelNames.includes(inference.selectedModel)) return;
+      if (inference.nativeTextOnly && (session.mode !== 'text' || input.some(part => !['text', 'reasoning', 'tool_call', 'tool_result'].includes(part.type)))) {
+        throw new Error(trRef.current('原生服务当前仅支持文本聊天，暂不支持附件或语音。', 'The native server supports text chat only. Attachments and voice are unavailable.'));
+      }
+      if (inference.nativeTextOnly && inference.sampling.reasoning_effort) {
+        throw new Error(trRef.current('原生服务暂不支持思考档位。请将思考档位设为标准后重试。', 'The native server does not support reasoning effort. Set reasoning effort to Standard and retry.'));
+      }
       setError(null);
       if (optimistic)
         setMessages((current) => [
@@ -163,7 +169,7 @@ function useChatDomain() {
     ],
   );
 
-  /** 准备附件或语音输入后发送；服务切换后丢弃旧操作的返回，不清除新草稿。 */
+  /** Prepare supported input and preserve unaccepted drafts when native service checks fail. */
   const send = useCallback(
     async (text: string, accepted: () => void) => {
       if (!active || !conversation.conversationReady || busy || recoveryNeeded) return;
@@ -175,6 +181,9 @@ function useChatDomain() {
       const resumeCapture = Boolean(controller?.capturing);
       const currentInference = inferenceRef.current;
       try {
+        if (currentInference.nativeTextOnly && attachments.getAttachments().length) {
+          throw new Error(trRef.current('原生服务暂不支持文档或媒体上传。请移除附件后重试。', 'The native server does not support document or media uploads. Remove attachments and retry.'));
+        }
         if (
           active.mode !== 'text' &&
           currentInference.realtimeAvailable &&
@@ -424,9 +433,7 @@ const ChatContext: Context<ReturnType<typeof useChatDomain> | null> =
 if (import.meta.hot?.data) import.meta.hot.data.chatContext = ChatContext;
 
 /**
- * 维持聊天领域实例，页面卸载不会取消正在进行的文本生成。
- *
- * @param props 组件属性，包含子节点
+ * Keep conversation and generation lifecycles mounted across route changes.
  */
 export function ChatProvider({ children }: { children: ReactNode }) {
   return (
@@ -443,9 +450,7 @@ function ChatLifecycleProvider({ children }: { children: ReactNode }) {
 }
 
 /**
- * 从聊天页面或工具栏读取聊天领域接口。
- *
- * @returns 聊天领域上下文，包含会话、推理、语音与生成操作
+ * Read conversation, inference and generation controls from the chat provider.
  */
 export function useChat() {
   const value = useContext(ChatContext);

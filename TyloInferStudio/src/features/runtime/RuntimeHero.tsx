@@ -10,9 +10,11 @@ import { openAIEndpoint } from './endpoint';
 import { getApiBaseUrl } from '../../shared/api/client';
 import { ModelVendorMark } from '../../app/ModelVendorMark';
 import { ModelLoadProgress } from '../models/ModelLoadProgress';
+import { modelLoadJobName } from './modelSelection';
 
+/** Present the selected native instance and active lifecycle job without synthetic telemetry. */
 export function RuntimeHero() {
-  const { runtime, instances, studio } = useRuntime();
+  const { runtime, instances, studio, artifactNames } = useRuntime();
   const jobs = useJobStore((state) => state.jobs);
   const { tr } = useSettings();
   const navigate = useNavigate();
@@ -41,8 +43,7 @@ export function RuntimeHero() {
       currentInstance?.state === 'failed'
         ? currentInstance
         : [...instances].reverse().find((instance) => instance.state === 'failed');
-    const jobModel =
-      typeof activeLoadJob?.payload.model === 'string' ? activeLoadJob.payload.model : '';
+    const jobModel = activeLoadJob ? modelLoadJobName(activeLoadJob, artifactNames) : '';
     const runtimeState = String(runtime?.runtime_state || '').toLowerCase();
 
     if (runtime?.reloading || runtimeState === 'loading' || loadingInstance || activeLoadJob) {
@@ -70,10 +71,7 @@ export function RuntimeHero() {
       };
     }
     if (latestLifecycleJob?.kind === 'model.load' && ['failed', 'interrupted'].includes(latestLifecycleJob.status)) {
-      const failedJobModel =
-        typeof latestLifecycleJob.payload.model === 'string'
-          ? latestLifecycleJob.payload.model
-          : '';
+      const failedJobModel = modelLoadJobName(latestLifecycleJob, artifactNames);
       return {
         name: failedJobModel || runtimeModelName,
         state: 'failed' as const,
@@ -81,7 +79,7 @@ export function RuntimeHero() {
       };
     }
     return { name: runtimeModelName, state: 'idle' as const };
-  }, [instances, jobs, runtime, runtimeModelName]);
+  }, [instances, jobs, runtime, runtimeModelName, artifactNames]);
   const modelHeroStatus =
     modelHero.state === 'loading'
       ? tr('加载中', 'Loading')
@@ -105,10 +103,11 @@ export function RuntimeHero() {
         <p className="runtime-endpoint">{openAIEndpoint(studio?.service_url || getApiBaseUrl())}</p>
         <small>
           {runtime?.model
-            ? `${runtime?.model_type || 'TQ'} · ${formatNumber(runtime?.max_context)} ${tr('上下文', 'context')} · ${formatDuration(runtime?.uptime_seconds)}`
+            ? [runtime.model_type, `${formatNumber(runtime.max_context)} ${tr('上下文', 'context')}`,
+              runtime.uptime_seconds == null ? null : formatDuration(runtime.uptime_seconds)].filter(Boolean).join(' · ')
             : tr('加载本地模型后即可开始推理。', 'Load a local model to begin inference.')}
         </small>
-        {modelHero.state === 'loading' && <ModelLoadProgress model={modelHero.name} />}
+        {modelHero.state === 'loading' && <ModelLoadProgress model={modelHero.name} artifactNames={artifactNames} />}
       </div>
       <div className="runtime-hero-actions">
         <ModelVendorMark name={modelHero.name} size={34}

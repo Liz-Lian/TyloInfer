@@ -5,6 +5,7 @@ import type { useModelCatalog } from './useModelCatalog';
 import { ModelVendorMark } from '../../app/ModelVendorMark';
 import { ModelLoadProgress } from './ModelLoadProgress';
 
+/** List adapted runtime instances with their actual residency and load state. */
 export function LoadedModels({ catalog, unlistedOnly = false }: { catalog: ReturnType<typeof useModelCatalog>; unlistedOnly?: boolean }) {
   const { tr } = useSettings();
   const { busy, artifacts, availableModelNames, modelFilter, filteredInstances,
@@ -44,7 +45,7 @@ export function LoadedModels({ catalog, unlistedOnly = false }: { catalog: Retur
                         : instance.idle_ttl_seconds != null
                           ? ` · TTL ${instance.idle_ttl_seconds}s` : ''}
                     </small>
-                    {instance.state === 'loading' && <ModelLoadProgress model={instance.model} />}
+                    {instance.state === 'loading' && <ModelLoadProgress model={instance.model} artifactId={instance.artifact_id} />}
                   </div>
                   <div className="model-row-actions">
                     <ModelVendorMark name={instance.model} architecture={artifacts.find((item) => item.name === instance.model)?.architecture} />

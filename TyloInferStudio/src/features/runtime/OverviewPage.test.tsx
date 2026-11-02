@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { RuntimeStatus, ServingStatistics } from '../../shared/api/contracts/runtime';
+import type { RuntimeStatus, ServingStatistics, RuntimeInstance } from '../../shared/api/contracts/runtime';
 import { OverviewPage } from './OverviewPage';
 
-const state = vi.hoisted(() => ({ runtime: null as RuntimeStatus | null, models: [], instances: [],
+const state = vi.hoisted(() => ({ runtime: null as RuntimeStatus | null, models: [], instances: [] as RuntimeInstance[],
   connectionRevision: 0, refreshRuntime: vi.fn(), listener: vi.fn().mockResolvedValue({ anthropic_port: null }),
   data: null as ServingStatistics | null, scope: 'session' }));
 vi.mock('../../app/RuntimeProvider', () => ({ useRuntime: () => state }));
@@ -14,7 +14,7 @@ vi.mock('./RuntimeHero', () => ({ RuntimeHero: () => null }));
 vi.mock('./MemoryHierarchy', () => ({ MemoryHierarchy: () => null }));
 vi.mock('./useServingStatistics', () => ({ useServingStatistics: (scope: string) => { state.scope = scope; return { data: state.data, error: null }; } }));
 
-beforeEach(() => { state.runtime = null; state.models = []; state.data = null; });
+beforeEach(() => { state.runtime = null; state.models = []; state.instances = []; state.data = null; });
 afterEach(() => { vi.restoreAllMocks(); });
 
 it('places the combined appearance control beside Refresh in the overview header', async () => {
@@ -33,6 +33,27 @@ it('uses placeholders without statistics, not unsupported or old request speed',
   expect(screen.queryByText('Processed tokens / total prefill time')).not.toBeInTheDocument();
   expect(screen.queryByText('Generated tokens / total decode time')).not.toBeInTheDocument();
   expect(screen.getByText('Concurrency').closest('.metric-tile')).toHaveTextContent('--');
+});
+
+it('shows native aggregate statistics as unavailable and uses its shared Anthropic endpoint', async () => {
+  state.runtime = { source: 'native-instances', active_requests: 2 };
+  state.listener.mockClear();
+  await act(async () => { render(<OverviewPage />); });
+  expect(state.listener).not.toHaveBeenCalled();
+  expect(screen.getByText(/does not provide aggregate statistics/)).toBeInTheDocument();
+  expect(screen.getByText('http://127.0.0.1:8090/v1/messages')).toBeInTheDocument();
+  expect(screen.getByText('Prefill').closest('.metric-tile')).toHaveTextContent('--');
+});
+
+it('renders multiple native instances with reported backend and request counts', async () => {
+  state.runtime = { source: 'native-instances' };
+  state.instances = ['First', 'Second'].map((model, index) => ({ id: `native-${index}`, model,
+    state: 'ready', devices: [], backend: 'cuda', active_requests: index, context_size: 8192 }));
+  const { container } = render(<OverviewPage />);
+  await act(async () => {});
+  expect(screen.getByRole('button', { name: /First/ })).toHaveTextContent('cuda · 8,192 ctx · 0 active requests');
+  expect(screen.getByRole('button', { name: /Second/ })).toHaveTextContent('cuda · 8,192 ctx · 1 active requests');
+  expect(container).not.toHaveTextContent('undefined sessions');
 });
 
 it('switches session and all-time and displays weighted completed statistics', async () => {

@@ -86,6 +86,7 @@ export function ChatInputArea({ page }: { page: ChatPageState }) {
         onError={(cause) => conversation.setError(errorMessage(cause))}
         toolbar={<ChatToolbar />}
       />
+      {inference.nativeTextOnly && <p role="status">{tr('原生服务当前支持文本聊天；文档、媒体、语音及思考档位暂不可用。', 'The native server supports text chat. Documents, media, voice and reasoning effort are currently unavailable.')}</p>}
       <p>{tr('模型输出可能存在错误，请核对重要信息。',
         'Model output may be inaccurate. Verify important information.')}</p>
     </div>

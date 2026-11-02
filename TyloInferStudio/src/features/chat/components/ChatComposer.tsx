@@ -137,9 +137,9 @@ export function ChatComposer({
         />
         <button
           aria-label={tr('添加附件', 'Add attachment')}
-          disabled={!editable || busy}
+          disabled={!editable || busy || !attachmentAccept}
           onClick={() => fileInput.current?.click()}
-          title={tr('添加文档或媒体', 'Add document or media')}
+          title={attachmentAccept ? tr('添加文档或媒体', 'Add document or media') : tr('原生服务暂不支持附件', 'Attachments are unavailable on the native server')}
           type="button"
         >
           <Icon name="paperclip" />

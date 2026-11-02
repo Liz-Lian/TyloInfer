@@ -117,28 +117,26 @@ export const modelsApi = {
     ).data;
   },
 
-  /** 提交模型加载任务，配置上下文和空闲卸载策略。 */
+  /** Submit a native artifact load, rejecting explicit options the server cannot honor. */
   loadModel(
-    model: string,
+    artifactId: string,
     contextSize: number | null = null,
     prefillChunkSize: number | 'auto' = 'auto',
     policy: { pin?: boolean; idle_ttl_seconds?: number | null; device_ids?: string[]; context_management?: ModelLoadContextSettings; gguf_companions?: string[] } = {},
   ): Promise<{ operation_id: string; status: 'accepted' }> {
+    if (prefillChunkSize !== 'auto' || policy.device_ids?.length || policy.gguf_companions?.length
+      || policy.context_management && !policy.context_management.automatic) {
+      return Promise.reject(new Error('The native server supports context size, pin and idle timeout only. Explicit device, KV, companion and prefill settings are not supported.'));
+    }
     return request('/api/v1/models/load', {
       method: 'POST',
       body: JSON.stringify({
-        model,
-        context_size: contextSize,
-        prefill_chunk_size: prefillChunkSize,
-        pin: policy.pin ?? false,
-        ...(policy.context_management ? { context_management: {
-          automatic: policy.context_management.automatic, ssd_kv: policy.context_management.ssd_kv,
-          ram_preallocated: policy.context_management.ram_preallocated, vram_preallocated: policy.context_management.vram_preallocated,
-          kv_quantization: policy.context_management.kv_quantization,
-        } } : {}),
-        ...(policy.device_ids?.length ? { device_ids: policy.device_ids } : {}),
-        ...(policy.gguf_companions?.length ? { gguf_companions: policy.gguf_companions } : {}),
-        idle_ttl_seconds: policy.pin ? null : (policy.idle_ttl_seconds ?? null),
+        artifact_id: artifactId,
+        requirements: contextSize == null ? {} : { context_size: contextSize },
+        policy: {
+          pin: policy.pin ?? false,
+          ...(!policy.pin && policy.idle_ttl_seconds != null ? { idle_ttl_seconds: policy.idle_ttl_seconds } : {}),
+        },
       }),
     });
   },

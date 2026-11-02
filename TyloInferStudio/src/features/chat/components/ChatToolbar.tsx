@@ -44,7 +44,7 @@ export function ChatToolbar() {
   const mode = active?.mode ?? 'text';
   return (
     <>
-      {capabilities &&
+      {!inference.nativeTextOnly && capabilities &&
         (capabilities.model_capabilities.features.audio_input ||
           capabilities.model_capabilities.features.full_duplex) && (
           <select
@@ -105,6 +105,7 @@ export function ChatToolbar() {
           title={
             visionAvailable
               ? tr('视觉输入', 'Vision input')
+              : inference.nativeTextOnly ? tr('原生服务暂不支持媒体输入', 'The native server does not support media input')
               : tr('当前模型文件没有视觉权重', 'The current model artifact has no vision weights')
           }
           type="button"
@@ -149,15 +150,14 @@ export function ChatToolbar() {
         </button>
       )}
       {active?.mode === 'text' &&
-        thinkingSupported &&
-        effectiveSettings.enableThinking &&
-        reasoningValues.length > 0 && (
+        (thinkingSupported && effectiveSettings.enableThinking && reasoningValues.length > 0 || inference.nativeTextOnly && Boolean(effectiveSettings.reasoningEffort)) && (
           <select
             aria-label={tr('思考档位', 'Reasoning effort')}
             onChange={(event) => updateGlobalInference({ reasoningEffort: event.target.value })}
             value={effectiveSettings.reasoningEffort}
           >
             <option value="">{tr('标准', 'Standard')}</option>
+            {inference.nativeTextOnly && effectiveSettings.reasoningEffort && <option value={effectiveSettings.reasoningEffort} disabled>{effectiveSettings.reasoningEffort} · {tr('暂不支持', 'Unsupported')}</option>}
             {reasoningValues.map((value) => (
               <option key={value} value={value}>
                 {value}

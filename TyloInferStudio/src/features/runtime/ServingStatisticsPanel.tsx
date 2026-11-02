@@ -6,8 +6,10 @@ import './serving.css';
 
 type StatisticsProps = { data: ServingStatistics | null; scope: ServingStatistics['scope'] };
 
-export function ServingStatisticsPanel({ data, error, scope, onScopeChange }: StatisticsProps & {
+/** Render available aggregate measurements and distinguish missing resources from refresh failures. */
+export function ServingStatisticsPanel({ data, error, unavailable, scope, onScopeChange }: StatisticsProps & {
   error: string | null;
+  unavailable?: string;
   onScopeChange: (scope: ServingStatistics['scope']) => void;
 }) {
   const { tr } = useSettings();
@@ -24,6 +26,7 @@ export function ServingStatisticsPanel({ data, error, scope, onScopeChange }: St
       </div>
     </div>
     {error && <p className="serving-error" role="status">{tr('统计暂未更新', 'Statistics could not be refreshed')} · {error}</p>}
+    {unavailable && <p className="configuration-effect" role="status">{unavailable}</p>}
     <div className="metric-grid">
       <MetricTile label={tr('预填充', 'Prefill')} value={formatNumber(totals?.prefill_tps ?? undefined, 1)} unit="tok/s"
         detail={tr('输入处理', 'Prompt processing')} icon="text-forward" />

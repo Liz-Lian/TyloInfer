@@ -23,6 +23,7 @@ import { toast } from '../../stores/toastStore';
 import { ModelVendorMark } from '../../app/ModelVendorMark';
 import { AppearanceControls } from '../../app/AppearanceControls';
 
+/** Render native instance availability and leave unavailable service telemetry unreported. */
 export function OverviewPage() {
   const {
     runtime,
@@ -37,7 +38,8 @@ export function OverviewPage() {
   } = useRuntime();
   const { tr } = useSettings();
   const [scope, setScope] = useState<'session' | 'alltime'>('session');
-  const { data: servingStatistics, error: statisticsError } = useServingStatistics(scope, connectionRevision);
+  const native = runtime?.source === 'native-instances';
+  const { data: servingStatistics, error: statisticsError } = useServingStatistics(scope, connectionRevision, !native);
   const [endpointCopied, setEndpointCopied] = useState<string | null>(null);
   const [listener, setListener] = useState<{ url: string; revision: number; port: number | null } | null>(null);
   const serviceUrl = studio?.service_url || getApiBaseUrl();
@@ -49,6 +51,7 @@ export function OverviewPage() {
     [],
   );
   useEffect(() => {
+    if (native) { setListener(null); return; }
     let disposed = false;
     let pending = false;
     const endpoint = getApiBaseUrl();
@@ -70,12 +73,12 @@ export function OverviewPage() {
     const poll = setInterval(() => void refresh(), 5000);
     window.addEventListener('focus', refresh);
     return () => { disposed = true; clearInterval(poll); window.removeEventListener('focus', refresh); };
-  }, [serviceUrl, connectionRevision]);
+  }, [serviceUrl, connectionRevision, native]);
   const availableModelNames = runtimeModelNames(models, instances);
   const anthropicPort = listener?.url === serviceUrl && listener.revision === connectionRevision ? listener.port : null;
   const endpoints = [
     { id: 'openai', label: tr('OpenAI 兼容端点', 'OpenAI-compatible endpoint'), url: openAIEndpoint(serviceUrl) },
-    { id: 'anthropic', label: tr('Anthropic 兼容端点', 'Anthropic-compatible endpoint'), url: anthropicEndpoint(serviceUrl, anthropicPort) },
+    { id: 'anthropic', label: tr('Anthropic 兼容端点', 'Anthropic-compatible endpoint'), url: native ? `${openAIEndpoint(serviceUrl)}/messages` : anthropicEndpoint(serviceUrl, anthropicPort) },
   ];
   async function copyEndpoint(id: string, endpoint: string) {
     try {
@@ -124,9 +127,9 @@ export function OverviewPage() {
                 const stateLabel =
                   instance?.state === 'busy' ? tr('使用中', 'Busy') : tr('就绪', 'Ready');
                 const details = [
-                  instance?.devices.join(' + '),
+                  instance?.devices.join(' + ') || instance?.backend,
                   instance?.context_size ? `${formatNumber(instance.context_size)} ctx` : null,
-                  instance
+                  instance?.active_requests != null ? tr(`${instance.active_requests} 个活动请求`, `${instance.active_requests} active requests`) : instance?.active_sessions != null
                     ? tr(
                         `${instance.active_sessions} 个会话`,
                         `${instance.active_sessions} sessions`,
@@ -163,7 +166,7 @@ export function OverviewPage() {
           </TMPanel>
         </>
       )}
-      <ServingStatisticsPanel data={servingStatistics} error={statisticsError} scope={scope} onScopeChange={setScope} />
+      <ServingStatisticsPanel data={servingStatistics} error={statisticsError} unavailable={native ? tr('原生服务暂未提供汇总统计。', 'The native server does not provide aggregate statistics yet.') : undefined} scope={scope} onScopeChange={setScope} />
       <SectionLabel title={tr('资源概览', 'Resource overview')} />
       {runtime ? (
         <MemoryHierarchy instances={instances} runtime={runtime} connectionRevision={connectionRevision}

@@ -53,6 +53,8 @@ export interface RuntimeRequestMetrics {
 }
 
 export interface RuntimeStatus {
+  /** Identifies the limited native projection, whose absent telemetry must remain unknown. */
+  source?: 'native-instances';
   gpu_devices?: { id: string; name: string; memory_total_bytes?: number | null;
     memory_available_bytes?: number | null; unified_memory?: boolean }[];
   memory_architecture?: 'unified' | 'discrete' | 'unknown';
@@ -260,8 +262,17 @@ export interface RuntimeInstance {
   model: string;
   state: 'loading' | 'ready' | 'busy' | 'unloading' | 'failed';
   devices: string[];
-  active_sessions: number;
-  queued_requests: number;
+  active_sessions?: number;
+  queued_requests?: number;
+  /** Native artifact identity, distinct from the human-readable model name. */
+  artifact_id?: string;
+  backend?: string;
+  active_requests?: number;
+  max_requests?: number;
+  capabilities?: ModelCapabilities;
+  metrics_age_ms?: number;
+  metrics?: Record<string, unknown>;
+  session_metrics?: Record<string, unknown>;
   resident_bytes?: number | null;
   kv_bytes?: number | null;
   memory?: RuntimeMemoryResources | null;

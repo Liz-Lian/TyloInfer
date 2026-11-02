@@ -12,9 +12,11 @@ import { ModelLoadContext } from './ModelLoadContext';
 import { ModelLoadPolicy } from './ModelLoadPolicy';
 import type { useModelCatalog } from './useModelCatalog';
 
+/** Show per-model preferences and explain operations unavailable on the native service. */
 export function ModelSettingsDialog({ catalog }: { catalog: ReturnType<typeof useModelCatalog> }) {
   const { tr } = useSettings();
   const { refreshRuntime } = useRuntime();
+  const native = catalog.runtime?.source === 'native-instances';
   const connectionScope = useConnectionScope();
   const [section, setSection] = useState('context');
   const [pinned, setPinned] = useState(false);
@@ -34,8 +36,9 @@ export function ModelSettingsDialog({ catalog }: { catalog: ReturnType<typeof us
   }, [name, instance?.id, catalog.connectionRevision]);
   if (!name) return null;
 
+  /** Apply residency changes only when the connected service supports instance mutation. */
   async function applyResidency() {
-    if (!instance || !loaded || saving) return;
+    if (!instance || !loaded || saving || native) return;
     const current = connectionScope();
     setSaving(true); setSaved(false); setError('');
     try {
@@ -65,32 +68,32 @@ export function ModelSettingsDialog({ catalog }: { catalog: ReturnType<typeof us
     </div>
     <div className="model-settings-body">
       <section role="tabpanel" id="model-settings-section-context" aria-labelledby="model-settings-tab-context" hidden={section !== 'context'}>
-        {loaded || wasLoaded.current ? <>
+        {native && (loaded || wasLoaded.current) ? <p role="status">{tr('原生服务暂不支持修改运行实例的上下文或 KV。可先卸载，再设置加载上下文并重新加载。', 'The native server cannot change context or KV on a running instance. Unload it, set the load context and load it again.')}</p> : loaded || wasLoaded.current ? <>
           <p className="configuration-effect">{tr('保存到服务端；应用上下文或 KV 更改会重载此模型并清除活动 KV。', 'Saved on the server. Applying context or KV changes reloads this model and clears its active KV cache.')}</p>
           <ModelContextSettings scope="model" modelName={name} />
         </> : artifact ? <>
-          <p className="configuration-effect">{tr('下次加载此模型时生效；不影响其它模型。YaRN 和流式注意力可在加载后配置。', 'Applies on this model’s next load only. YaRN and streaming attention can be configured once loaded.')}</p>
+          <p className="configuration-effect">{native ? tr('下次加载生效。原生服务支持上下文大小、固定与空闲卸载；设备、KV 和配套资产配置暂不支持。', 'Applies on the next load. The native server supports context size, pin and idle timeout; device, KV and companion settings are unavailable.') : tr('下次加载此模型时生效；不影响其它模型。YaRN 和流式注意力可在加载后配置。', 'Applies on this model’s next load only. YaRN and streaming attention can be configured once loaded.')}</p>
           <ModelLoadContext value={catalog.loadContext} onChange={catalog.setLoadContext} disabled={catalog.busy || !!instance}
             models={[artifact]} runtime={catalog.runtime} deviceIds={catalog.loadDeviceIds} />
         </> : <p role="status">{tr('模型已不在本地目录中。', 'This model is no longer in the local catalog.')}</p>}
       </section>
       <section role="tabpanel" id="model-settings-section-residency" aria-labelledby="model-settings-tab-residency" hidden={section !== 'residency'}>
         {loaded || wasLoaded.current ? <>
-          <p className="configuration-effect">{tr('立即应用到此运行实例，无需重载。', 'Applies immediately to this running instance without reloading.')}</p>
+          <p className="configuration-effect" role="status">{native ? tr('原生服务暂不支持修改运行实例的驻留策略。请卸载后修改加载策略，再重新加载。', 'The native server cannot update residency on a running instance. Unload it, change the load policy and load it again.') : tr('立即应用到此运行实例，无需重载。', 'Applies immediately to this running instance without reloading.')}</p>
           <SettingRow title={tr('计算设备', 'Compute device')}
             detail={tr('更换设备需先卸载模型。', 'Unload the model before changing its device.')}
             trailing={<span>{instance?.devices?.join(' · ') || '—'}</span>} />
           <SettingRow title={tr('固定到内存', 'Pin in memory')} detail={tr('跳过 LRU 与空闲卸载', 'Skip LRU and idle eviction')}
-            trailing={<Switch label={tr('固定到内存', 'Pin in memory')} checked={pinned} disabled={saving || !loaded}
+            trailing={<Switch label={tr('固定到内存', 'Pin in memory')} checked={pinned} disabled={native || saving || !loaded}
               onCheckedChange={value => { setPinned(value); setSaved(false); }} />} />
           <SettingRow title={tr('空闲卸载', 'Idle unload')} detail={tr('每次使用后重新计时', 'Resets after each use')}
-            trailing={<select aria-label={tr('空闲卸载', 'Idle unload')} value={ttl ?? ''} disabled={saving || !loaded || pinned}
+            trailing={<select aria-label={tr('空闲卸载', 'Idle unload')} value={ttl ?? ''} disabled={native || saving || !loaded || pinned}
               onChange={event => { setTtl(event.target.value ? Number(event.target.value) : null); setSaved(false); }}>
               <option value="">{tr('永不', 'Never')}</option>
               {[...new Set([300, 900, 3600, ...(ttl != null ? [ttl] : [])])].sort((a, b) => a - b).map(value => <option value={value} key={value}>{value / 60} min</option>)}
             </select>} />
           <div className="model-settings-actions"><span role="status">{saved ? tr('已应用', 'Applied') : ''}</span>
-            <button type="button" disabled={saving || !loaded || pinned === !!instance?.pinned && (pinned || ttl === (instance?.idle_ttl_seconds ?? null))}
+            <button type="button" disabled={native || saving || !loaded || pinned === !!instance?.pinned && (pinned || ttl === (instance?.idle_ttl_seconds ?? null))}
               onClick={() => void applyResidency()}>{saving ? tr('应用中…', 'Applying…') : tr('应用', 'Apply')}</button></div>
           {error && <p role="alert">{error}</p>}
         </> : <>

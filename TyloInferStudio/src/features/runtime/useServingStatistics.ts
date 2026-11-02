@@ -4,10 +4,12 @@ import { runtimeApi } from '../../shared/api/resources/runtime';
 import type { ServingStatistics } from '../../shared/api/contracts/runtime';
 import { errorMessage } from '../../app/formatters';
 
-export function useServingStatistics(scope: 'session' | 'alltime', revision: number) {
+/** Poll aggregate statistics only when the connected service implements that resource. */
+export function useServingStatistics(scope: 'session' | 'alltime', revision: number, enabled = true) {
   const [data, setData] = useState<ServingStatistics | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!enabled) { setData(null); setError(null); return; }
     let disposed = false;
     let running = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -47,6 +49,6 @@ export function useServingStatistics(scope: 'session' | 'alltime', revision: num
       document.removeEventListener('visibilitychange', visible);
       window.removeEventListener('focus', visible);
     };
-  }, [scope, revision]);
-  return { data: data?.scope === scope ? data : null, error };
+  }, [scope, revision, enabled]);
+  return { data: enabled && data?.scope === scope ? data : null, error };
 }

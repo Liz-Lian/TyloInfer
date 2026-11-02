@@ -17,7 +17,15 @@ import { hasSeparateVram } from './memoryArchitecture';
 import { contextCacheEstimate, quantizedCacheProfile } from '../models/cacheData';
 import { useModelCacheProfiles } from '../models/useModelCacheProfiles';
 
-export function ModelContextSettings({ scope = 'all', modelName }: { scope?: 'all' | 'global' | 'model'; modelName?: string }) {
+/** Explain native context limits before mounting controls that require mutation endpoints. */
+export function ModelContextSettings(props: { scope?: 'all' | 'global' | 'model'; modelName?: string }) {
+  const { runtime } = useRuntime();
+  const { tr } = useSettings();
+  if (runtime?.source === 'native-instances') return <p role="status">{tr('原生服务暂不支持全局上下文策略、运行实例重载或 KV 配置。可在模型卸载后设置下次加载的上下文大小。', 'The native server does not support global context policies, instance reloads or KV settings. Set the next-load context size after unloading the model.')}</p>;
+  return <ConfigurableModelContextSettings {...props} />;
+}
+
+function ConfigurableModelContextSettings({ scope = 'all', modelName }: { scope?: 'all' | 'global' | 'model'; modelName?: string }) {
   const { instances, runtime, ready, connectionRevision, reloadingInstances, reloadModelContext, addJob } = useRuntime();
   const connectionScope = useConnectionScope();
   const { tr } = useSettings();

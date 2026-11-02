@@ -6,10 +6,11 @@ import { jobsApi } from '../../shared/api/resources/jobs';
 import { useJobStore } from '../../stores/jobStore';
 import { studioConfirm } from '../../studio';
 import { mergeRequestRecords, requestRecords } from './useLogHistory';
-import type { JobResource, RuntimeInstance, RuntimeLogEntry, RuntimeMetricSnapshot } from '../../shared/api/types';
+import type { JobResource, RuntimeInstance, RuntimeLogEntry, RuntimeMetricSnapshot, RuntimeStatus } from '../../shared/api/types';
 
 const state = vi.hoisted(() => ({ ready: true, connectionRevision: 0, refreshRuntime: vi.fn().mockResolvedValue(true),
   refreshError: null as string | null,
+  runtime: null as RuntimeStatus | null, artifactNames: {} as Record<string, string>,
   instances: [] as RuntimeInstance[] }));
 vi.mock('../../app/RuntimeProvider', () => ({ useRuntime: () => state }));
 vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (_zh: string, en: string) => en }) }));
@@ -31,6 +32,7 @@ function job(id = 'job-a'): JobResource {
 }
 beforeEach(() => {
   state.ready = true; state.connectionRevision = 0;
+  state.runtime = null; state.artifactNames = {};
   state.refreshError = null; state.refreshRuntime.mockReset().mockResolvedValue(true);
   state.instances = [{ id: 'a', model: 'Qwen3.8', state: 'ready', devices: ['metal'], active_sessions: 0, queued_requests: 0 },
     { id: 'b', model: 'DeepSeek', state: 'ready', devices: ['metal'], active_sessions: 0, queued_requests: 0 }];
@@ -41,6 +43,22 @@ beforeEach(() => {
   vi.mocked(studioConfirm).mockResolvedValue(true);
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+it('shows native job names and phases without requesting nonexistent runtime history', async () => {
+  state.runtime = { source: 'native-instances' };
+  state.artifactNames = { 'artifact-a': 'Native Model' };
+  useJobStore.getState().setJobs([{ ...job(), status: 'running', payload: { artifact_id: 'artifact-a' },
+    progress: 0.9, progress_data: { phase: 'loading' } }]);
+  render(<LogsPage />);
+  expect(screen.getByText(/native server provides job events only/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab', { name: /Jobs/ }));
+  expect(await screen.findByText('Native Model')).toBeInTheDocument();
+  expect(screen.getByText('Loading weights')).toBeInTheDocument();
+  expect(screen.getByRole('progressbar')).not.toHaveAttribute('value');
+  expect(screen.queryByText('90%')).not.toBeInTheDocument();
+  expect(runtimeApi.runtimeLogs).not.toHaveBeenCalled();
+  expect(runtimeApi.runtimeMetrics).not.toHaveBeenCalled();
+});
 
 it('keeps a known model name when subsequent request snapshots omit it', () => {
   const first = requestRecords([snapshot(1)])[0];

@@ -14,6 +14,7 @@ import type {
   ServingStatistics,
 } from '../types';
 import { request, apiUrl, errorFromResponse, authorizedHeaders } from '../client';
+import { adaptNativeInstance, type NativeRuntimeInstance } from '../nativeRuntime';
 
 export interface RuntimeMemoryPolicy {
   total_limit_bytes?: number | null;
@@ -210,9 +211,9 @@ export const runtimeApi = {
     return (await request<{ data: RuntimeModel[] }>('/api/v1/runtime/models')).data;
   },
 
-  /** 获取所有加载中或已加载的运行实例。 */
+  /** Read and adapt native instances while preserving unreported telemetry as unknown. */
   async runtimeInstances(): Promise<RuntimeInstance[]> {
-    return (await request<{ data: RuntimeInstance[] }>('/api/v1/runtime/instances')).data;
+    return (await request<{ data: NativeRuntimeInstance[] }>('/api/v1/runtime/instances')).data.map(adaptNativeInstance);
   },
 
   configureInstance(instanceId: string, policy: { pinned: boolean; idle_ttl_seconds: number | null }): Promise<RuntimeInstance> {

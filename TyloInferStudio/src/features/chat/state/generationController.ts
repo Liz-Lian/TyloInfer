@@ -267,8 +267,8 @@ export class GenerationController {
       );
       if (response?.status === 'completed' && !storedOutput)
         throw new Error('The completed response is not yet available in history');
-      if (response?.status === 'failed' && !run.error)
-        run.error = 'The server could not complete this response';
+      if (response?.status === 'failed')
+        run.error = response.error?.message || run.error || 'The server could not complete this response';
       if (response) this.accept(run);
       this.callbacks.onSynchronized(persisted);
       const hasPartial = Boolean(

@@ -10,6 +10,7 @@ function gib(bytes: number | null) {
   return bytes == null ? '—' : `${formatNumber(bytes / 2 ** 30, 1)} GiB`;
 }
 
+/** Estimate memory only when the service supplies a cache profile and memory budget. */
 export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, valid, disabled, onSparseChange }: {
   models: ModelArtifact[]; runtime?: RuntimeStatus | null; deviceIds: string[];
   value: LoadContextDefaults; valid: boolean; disabled: boolean;
@@ -21,8 +22,10 @@ export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, val
   const choices = models.filter(model => model.complete && model.loadable);
   const selected = choices.length === 1 ? choices[0] : choices.find(model => model.id === selectedId);
   const key = selected ? `${selected.id}:${selected.modified_at}:${selected.total_bytes}` : '';
+  const native = runtime?.source === 'native-instances';
   useEffect(() => {
     onSparseChange?.(null);
+    if (native) { setData({ key, profile: null }); return; }
     if (!selected) { setSelectedId(''); return; }
     const controller = new AbortController();
     let active = true;
@@ -30,7 +33,7 @@ export function ModelLoadMemoryEstimate({ models, runtime, deviceIds, value, val
       .then(profile => { if (active) { setData({ key, profile }); onSparseChange?.(profile ? profile.components.some(component => component.group === 'QSA') : null); } })
       .catch(() => { if (active) setData({ key, profile: null }); });
     return () => { active = false; controller.abort(); };
-  }, [selected?.id, key]);
+  }, [selected?.id, key, native]);
   const available = availableLoadMemory(runtime, deviceIds);
   const loading = !!selected && data?.key !== key;
   const estimate = selected && data?.key === key && data.profile && valid

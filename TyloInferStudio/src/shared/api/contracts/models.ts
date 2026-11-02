@@ -22,6 +22,7 @@ export interface ModelArtifact {
   loadable: boolean;
   modified_at: string;
   error?: string | null;
+  support_error?: string | null;
 }
 
 export interface ModelDeletionPlan {

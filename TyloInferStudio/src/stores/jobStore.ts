@@ -73,18 +73,12 @@ export interface JobState {
    */
   addJob: (job: JobResource) => void;
   /**
-   * 局部更新单个任务字段，例如进度或状态变更；若活跃任务列表未变则保留原数组引用。
-   *
-   * @param id 任务唯一标识
-   * @param patch 待合并的任务局部属性
+   * Merge progress, native result or failure details into a job without accepting older snapshots.
    */
   updateJob: (id: string, patch: Partial<JobResource>) => void;
   /**
-   * 启动单个任务的 SSE 事件流监听，进度和状态直接更新到 store，隔离高频重渲染。
-   *
-   * @param id 任务唯一标识
-   * @param options 监听参数，包含终态通知与异常回调
-   * @returns 停止当前任务事件流的清理函数
+   * Subscribe to a job's SSE stream and apply phase, result and error events immediately.
+   * Returns a cleanup function that stops only the subscription owned by this call.
    */
   streamJobEvents: (id: string, options?: StreamJobEventsOptions) => () => void;
   /**
@@ -184,8 +178,14 @@ export const useJobStore = create<JobState>()((set, get) => ({
               : null;
           get().updateJob(id, {
             ...(status ? { status } : {}),
-            ...(typeof event.progress === 'number' ? { progress: event.progress } : {}),
+            ...(typeof event.progress === 'number' ? { progress: event.progress }
+              : event.type === 'progress' && typeof event.data.progress === 'number' ? { progress: event.data.progress } : {}),
             ...(event.type === 'progress' ? { progress_data: event.data } : {}),
+            ...(event.type === 'state' && 'result' in event.data ? { result: event.data.result as JobResource['result'] } : {}),
+            ...(event.type === 'state' && 'error' in event.data ? { error: event.data.error as JobResource['error'] } : {}),
+            ...(event.type === 'state' && typeof event.data.cancel_requested === 'boolean'
+              ? { cancel_requested: event.data.cancel_requested } : {}),
+            ...(status === 'succeeded' ? { progress: 1 } : {}),
             updated_at: event.created_at,
           });
           if (status && TERMINAL_STATUSES.has(status)) {

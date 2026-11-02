@@ -6,6 +6,7 @@ import { useSettings } from '../settings/SettingsProvider';
 import { MemoryHierarchy } from './MemoryHierarchy';
 import { hasSeparateVram, residentMemoryCapacity, memoryPoolUsage, residentWeightsAndBuffers } from './memoryArchitecture';
 
+/** Show known instance activity and preserve unknown memory and queue measurements. */
 export function ResourceAllocationPanel() {
   const { runtime, instances, ready, connectionRevision, refreshRuntime, refreshError } = useRuntime();
   const { tr } = useSettings();
@@ -52,8 +53,11 @@ export function ResourceAllocationPanel() {
     { label: tr('当前剩余可用', 'Available headroom'), value: bytes(available),
       detail: separate ? tr('受显存预算与可用显存共同约束', 'Limited by VRAM budget and available VRAM') : tr('受预算与系统可用内存共同约束', 'Limited by budget and available system memory') },
     { label: tr('已加载模型', 'Loaded models'), value: String(loaded.length),
-      detail: tr(`${loaded.reduce((sum, item) => sum + item.active_sessions, 0)} 个活动会话 · ${loaded.reduce((sum, item) => sum + item.queued_requests, 0)} 个排队请求`,
-        `${loaded.reduce((sum, item) => sum + item.active_sessions, 0)} active sessions · ${loaded.reduce((sum, item) => sum + item.queued_requests, 0)} queued requests`)
+      detail: runtime?.source === 'native-instances'
+        ? tr(`${loaded.reduce((sum, item) => sum + (item.active_requests ?? 0), 0)} 个活动请求 · 会话数与队列未上报`,
+          `${loaded.reduce((sum, item) => sum + (item.active_requests ?? 0), 0)} active requests · sessions and queue not reported`)
+        : tr(`${loaded.reduce((sum, item) => sum + (item.active_sessions ?? 0), 0)} 个活动会话 · ${loaded.reduce((sum, item) => sum + (item.queued_requests ?? 0), 0)} 个排队请求`,
+        `${loaded.reduce((sum, item) => sum + (item.active_sessions ?? 0), 0)} active sessions · ${loaded.reduce((sum, item) => sum + (item.queued_requests ?? 0), 0)} queued requests`)
         + (unloading ? tr(` · ${unloading} 个卸载中`, ` · ${unloading} unloading`) : '') },
   ];
   return <>

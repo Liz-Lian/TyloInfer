@@ -53,8 +53,8 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     expect(sessions).toContain('sessionsApi.createSession(undefined, mode)');
     expect(sessions).toContain('modelAvailable');
     expect(sessions).toContain('historyLoadedId === activeId');
-    expect(runtime).toContain('isRuntimeReady(status.runtime_state)');
-    expect(runtime).toContain('Promise.resolve<RuntimeModel[]>([])');
+    expect(runtime).toContain('projectNativeRuntime(nextInstances, selectedRef.current)');
+    expect(runtime).not.toContain('runtimeApi.runtimeStatus(');
     expect(APP).toContain('No model loaded');
   });
 
@@ -238,7 +238,8 @@ describe('Studio 过渡源码与静态样式契约（非行为测试）', () => 
     expect(jobs).toContain('get().streamJobEvents(id,');
     expect(jobs).toContain('.streamJobEvents(');
     expect(API).toContain('/api/v1/jobs/${id}/events/stream');
-    expect(API).toContain('readEventStream(response, onEvent, signal)');
+    expect(API).toContain('readEventStream<JobEventResource | ApiErrorBody>');
+    expect(API).toContain("if ('error' in event) throw new ApiError(502, event)");
     expect(APP).not.toContain('window.setInterval(() => void refreshRuntime(true), 2500)');
   });
 

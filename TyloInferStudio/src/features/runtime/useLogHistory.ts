@@ -40,8 +40,10 @@ export function requestRecords(snapshots: RuntimeMetricSnapshot[]): RequestLogRe
   return mergeRequestRecords(records);
 }
 
+/** Keep supported histories current while exposing the native service's missing log resources. */
 export function useLogHistory(paused: boolean) {
-  const { ready, connectionRevision } = useRuntime();
+  const { ready, connectionRevision, runtime } = useRuntime();
+  const native = runtime?.source === 'native-instances';
   const jobs = useJobStore((state) => state.jobs);
   const [logs, setLogs] = useState<RuntimeLogEntry[]>([]);
   const [requests, setRequests] = useState<RequestLogRecord[]>([]);
@@ -61,6 +63,12 @@ export function useLogHistory(paused: boolean) {
     const forced = manual.current !== refreshVersion;
     manual.current = refreshVersion;
     if (!ready || (paused && !forced)) { setLoading(false); return; }
+    if (native) {
+      setLogs([]); setRequests([]); setLoading(false);
+      setJobSnapshot(useJobStore.getState().jobs);
+      setError('');
+      return;
+    }
     let disposed = false;
     let polling = false;
     let manualPending = forced;
@@ -111,7 +119,7 @@ export function useLogHistory(paused: boolean) {
     document.addEventListener('visibilitychange', visible);
     void poll();
     return () => { disposed = true; controller.abort(); clearTimeout(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [ready, connectionRevision, paused, refreshVersion]);
+  }, [ready, connectionRevision, paused, refreshVersion, native]);
   return { logs, requests, jobs: jobSnapshot, loading, error, updatedAt, ready,
     refresh: () => setRefreshVersion((version) => version + 1) };
 }

@@ -13,22 +13,25 @@ import { toast } from '../../stores/toastStore';
 import { useJobStore } from '../../stores/jobStore';
 import { useLogHistory } from './useLogHistory';
 import { JobDetails, LogDetails, RequestDetails } from './LogDetails';
+import { modelLoadJobName } from './modelSelection';
+import { isNativePhaseLoad, nativeLoadPhase } from '../jobs/jobProgress';
 
 type LogTab = 'events' | 'requests' | 'jobs';
 
-function jobModelName(job: JobResource): string | undefined {
+function jobModelName(job: JobResource, artifactNames: Record<string, string> = {}): string | undefined {
   const resolved = job.result?.model;
   return typeof resolved === 'string' && resolved ? resolved
-    : typeof job.payload.model === 'string' ? job.payload.model : undefined;
+    : modelLoadJobName(job, artifactNames) || undefined;
 }
 
+/** Display instance and job history within the current connection scope. */
 export function LogsPage() {
   const { instances, connectionRevision } = useRuntime();
   return <LogConsole key={connectionRevision} instances={instances || []} />;
 }
 
 function LogConsole({ instances }: { instances: ReturnType<typeof useRuntime>['instances'] }) {
-  const { refreshRuntime, refreshError } = useRuntime();
+  const { refreshRuntime, refreshError, artifactNames, runtime } = useRuntime();
   const connectionScope = useConnectionScope();
   const { tr } = useSettings();
   const [tab, setTab] = useState<LogTab>('events');
@@ -53,7 +56,7 @@ function LogConsole({ instances }: { instances: ReturnType<typeof useRuntime>['i
       sourceNames.set(item.instance_id, item.fields.model);
   });
   history.jobs.forEach((job) => {
-    const model = jobModelName(job);
+    const model = jobModelName(job, artifactNames);
     if (!model) return;
     for (const id of [job.payload.instance_id, job.result?.instance_id]) {
       if (typeof id === 'string' && id && !sourceNames.has(id)) sourceNames.set(id, model);
@@ -190,6 +193,7 @@ function LogConsole({ instances }: { instances: ReturnType<typeof useRuntime>['i
           <button type="button" disabled={!visible.length} onClick={exportRecords}><Icon name="download" size={13} />{tr('导出', 'Export')}</button></div>
       </div>
       {error && <p className="logs-error" role="status">{error}{tr(' · 保留上次成功读取的记录', ' · Showing previously retrieved records')}</p>}
+      {runtime?.source === 'native-instances' && <p className="configuration-effect" role="status">{tr('原生服务当前仅提供任务事件，尚无运行日志与请求历史接口。', 'The native server provides job events only. Runtime log and request history endpoints are unavailable.')}</p>}
       <div id="logs-records" className="logs-records" role="tabpanel" aria-labelledby={`logs-tab-${tab}`}>
         {visible.length === 0 && <div className="logs-empty"><Icon name="scroll" size={28} /><strong>
           {history.loading ? tr('正在读取记录…', 'Loading records…') : !history.ready ? tr('服务未连接', 'Service disconnected') : tr('没有匹配的记录', 'No matching records')}</strong>
@@ -212,10 +216,10 @@ function LogConsole({ instances }: { instances: ReturnType<typeof useRuntime>['i
         {tab === 'jobs' && jobs.map((job) => <div className="log-record log-job-record" key={job.id}>
           <button type="button" className="log-record-toggle" aria-expanded={selected === job.id} onClick={() => toggle(job.id)}>
             <time>{time(job.updated_at)}</time><span className={`log-job-state ${job.status}`}>{statusLabel(job.status)}</span>
-            <span className="log-record-copy"><strong>{jobLabel(job.kind)}</strong><small>{String(jobModelName(job)
+            <span className="log-record-copy"><strong>{jobLabel(job.kind)}</strong><small>{String(jobModelName(job, artifactNames)
               || (typeof job.payload.instance_id === 'string' && sourceNames.get(job.payload.instance_id))
               || job.payload.repo_id || job.payload.repository || job.payload.dataset || job.id)}</small></span>
-            <span className="log-job-progress"><progress max={1} value={Math.max(0, Math.min(1, job.progress))} />{formatNumber(job.progress * 100)}%</span>
+            <span className="log-job-progress"><progress max={1} value={isNativePhaseLoad(job) && !isTerminalJob(job) ? undefined : Math.max(0, Math.min(1, job.progress))} />{isNativePhaseLoad(job) && !isTerminalJob(job) ? nativeLoadPhase(job, tr) : `${formatNumber(job.progress * 100)}%`}</span>
             <span className="log-record-chevron">›</span></button>
           {selected === job.id && <JobDetails job={job} onRemove={() => void cleanup(job.id)} busy={cleanupBusy} refreshAt={history.updatedAt} />}
         </div>)}

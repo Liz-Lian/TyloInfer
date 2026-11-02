@@ -18,6 +18,7 @@ import { readLoadContext, saveLoadContext, type LoadContextDefaults } from './lo
 type LoadPreferences = { context: LoadContextDefaults; pinned: boolean; deviceIds: string[]; idleTtl: number | null };
 const defaultPreferences = (name: string): LoadPreferences => ({ context: readLoadContext(name), pinned: false, deviceIds: [], idleTtl: null });
 
+/** Manage model registration, artifact loads and per-model browser preferences. */
 export function useModelCatalog() {
   const {
     runtime,
@@ -182,6 +183,7 @@ export function useModelCatalog() {
       ),
     [artifacts, modelFilter],
   );
+  /** Resolve the selected display name to a catalog ID and submit its explicit load preferences. */
   async function loadArtifact(name: string, companions?: string[]) {
     const current = connectionScope();
     if (busy) return;
@@ -191,7 +193,9 @@ export function useModelCatalog() {
         throw new Error(tr('配套资产不能单独作为模型加载。', 'Companion assets cannot be loaded as standalone models.'));
       }
       const options = loadPreferences[name] ?? defaultPreferences(name);
-      await modelsApi.loadModel(name, options.context.context_size, 'auto', {
+      const artifact = artifacts.find(item => item.name === name);
+      if (!artifact) throw new Error(tr('模型已不在本地目录中，请刷新。', 'The model is no longer in the catalog. Refresh and try again.'));
+      await modelsApi.loadModel(artifact.id, options.context.context_size, 'auto', {
         pin: options.pinned,
         device_ids: options.deviceIds,
         idle_ttl_seconds: options.idleTtl,
@@ -211,6 +215,7 @@ export function useModelCatalog() {
     }
   }
 
+  /** Refresh registered artifacts and automatically load a single supported model by ID. */
   async function finishModelRegistration(names: string[], current: () => boolean) {
     if (!current()) return;
     const request = ++artifactRequest.current;
@@ -231,7 +236,7 @@ export function useModelCatalog() {
       const artifact = registered[0];
       if (!artifact.loadable) {
         throw new Error(
-          artifact.error ||
+          artifact.support_error || artifact.error ||
             tr(
               '所选模型不完整或无法加载。',
               'The selected model is incomplete or cannot be loaded.',
@@ -243,7 +248,7 @@ export function useModelCatalog() {
         runtime?.model === artifact.name;
       if (!loaded && !artifact.gguf_companion_required) {
         const options = loadPreferences[artifact.name] ?? defaultPreferences(artifact.name);
-        await modelsApi.loadModel(artifact.name, options.context.context_size, 'auto', {
+        await modelsApi.loadModel(artifact.id, options.context.context_size, 'auto', {
           pin: options.pinned,
           device_ids: options.deviceIds,
           idle_ttl_seconds: options.idleTtl,

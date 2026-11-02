@@ -14,14 +14,14 @@ import { setVoiceLevel } from '../voice/voiceLevelStore';
 import { ChatComposer } from './components/ChatComposer';
 import { ChatToolbar } from './components/ChatToolbar';
 import { SavedMessageList } from './SavedMessageList';
-import type { JobResource, Message, RuntimeModel, Session } from '../../shared/api/types';
+import type { JobResource, Message, RuntimeModel, RuntimeStatus, Session } from '../../shared/api/types';
 import { sessionsApi } from '../../shared/api/resources/sessions';
 import { studioConfirm } from '../../studio';
 import { TooltipProvider } from '../../shared/ui/Tooltip';
 import { useJobStore } from '../../stores/jobStore';
 
 const mockRuntime = {
-  runtime: null,
+  runtime: null as RuntimeStatus | null,
   models: [] as RuntimeModel[],
   instances: [],
   jobs: [],
@@ -52,6 +52,7 @@ const mockSettings = {
   topK: 40,
   repetitionPenalty: 1.1,
   maxTokens: 2048,
+  reasoningEffort: '',
 };
 const mockUpdateSettings = vi.fn();
 const mockTr = (_zh: string, en: string) => en;
@@ -146,11 +147,30 @@ describe('ChatProvider model-independent conversations', () => {
     useConversationStore.getState().reset();
     mockRuntime.models = [{ id: 'model-a' }, { id: 'model-b' }] as RuntimeModel[];
     mockRuntime.selectedModel = 'model-a';
+    mockRuntime.runtime = null;
+    mockSettings.reasoningEffort = '';
     vi.mocked(sessionsApi.listSessions).mockResolvedValue([session]);
   });
   afterEach(() => {
+    mockRuntime.runtime = null;
+    mockSettings.reasoningEffort = '';
     mockRuntime.models = [];
     mockRuntime.selectedModel = '';
+  });
+
+  it('rejects saved native reasoning effort before starting generation or accepting the draft', async () => {
+    mockRuntime.runtime = { source: 'native-instances' };
+    mockSettings.reasoningEffort = 'high';
+    const { result } = renderHook(() => useChat(), { wrapper });
+    await waitFor(() => expect(result.current.conversation.conversationReady).toBe(true));
+    const start = vi.spyOn(result.current.generation, 'start');
+    const accepted = vi.fn();
+    await act(async () => { await result.current.send('unsent', accepted); });
+    expect(start).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+    expect(result.current.conversation.error).toContain('does not support reasoning effort');
+    expect(useConversationStore.getState().messages).toEqual([]);
+    expect(mockSettings.reasoningEffort).toBe('high');
   });
 
   it('sends using the selected model without replacing or rebinding an old conversation', async () => {

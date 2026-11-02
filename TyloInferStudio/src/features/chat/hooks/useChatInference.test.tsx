@@ -1,13 +1,14 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
-import type { RuntimeStatus } from '../../../shared/api/types';
+import type { RuntimeStatus, RuntimeCapabilities } from '../../../shared/api/types';
 import { DEFAULT_SETTINGS } from '../../settings/configuration';
 import { useChatInference } from './useChatInference';
 
 const context = vi.hoisted(() => ({
   runtime: {} as RuntimeStatus,
   instances: [{ model: 'model', state: 'ready', mtp_supported: true, mtp_available: true }],
-  selectedModel: 'model', models: [], capabilities: null, realtime: null,
+  selectedModel: 'model', models: [], capabilities: null as RuntimeCapabilities | null, realtime: null,
+  artifactNames: { 'artifact-a': 'model' },
 }));
 const settings = { ...DEFAULT_SETTINGS };
 vi.mock('../../../app/RuntimeProvider', () => ({ useRuntime: () => context }));
@@ -16,6 +17,24 @@ vi.mock('../../settings/SettingsProvider', () => ({ useSettings: () => ({ settin
 beforeEach(() => {
   Object.assign(settings, DEFAULT_SETTINGS);
   context.runtime = { mtp_service_enabled: true, sampling_defaults: { enable_mtp: true } };
+  context.capabilities = null;
+});
+
+it('keeps model declarations separate from native upload and voice service availability', () => {
+  context.runtime = { source: 'native-instances' };
+  context.capabilities = { model: 'model', model_type: 'test', vision_available: false, mtp_available: false,
+    duplex_available: false, model_capabilities: { architecture_family: 'test', source: 'registry', features: {
+      text: true, image_input: true, video_input: true, audio_input: true, audio_output: true, full_duplex: true, mtp: false,
+    } } };
+  settings.inheritModelDefaults = false;
+  settings.reasoningEffort = 'high';
+  const { result } = renderHook(() => useChatInference('text'));
+  expect(result.current.nativeTextOnly).toBe(true);
+  expect(result.current.visionSupported).toBe(true);
+  expect(result.current.visionAvailable).toBe(false);
+  expect(result.current.attachmentAccept).toBe('');
+  expect(result.current.realtimeAvailable).toBe(false);
+  expect(result.current.sampling.reasoning_effort).toBe('high');
 });
 
 it('disables chat MTP when the service forbids it without overwriting the chat preference', () => {

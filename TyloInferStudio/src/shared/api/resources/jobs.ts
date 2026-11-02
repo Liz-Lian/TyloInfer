@@ -1,6 +1,7 @@
 /** 封装 jobs 领域资源请求，不保存组件状态。 */
 import type { RuntimeLogEntry, JobResource, JobEventResource, JobKindResource } from '../types';
-import { request, apiUrl, errorFromResponse, authorizedHeaders } from '../client';
+import { ApiError, request, apiUrl, errorFromResponse, authorizedHeaders } from '../client';
+import type { ApiErrorBody } from '../types';
 import { readEventStream } from '../eventStream';
 
 export const jobsApi = {
@@ -75,7 +76,7 @@ export const jobsApi = {
       }));
   },
 
-  /** 持续消费任务 SSE；终止订阅时由调用方取消信号。 */
+  /** Consume job SSE until cancellation, propagating native stream error envelopes. */
   async streamJobEvents(
     id: string,
     onEvent: (event: JobEventResource) => void,
@@ -87,6 +88,9 @@ export const jobsApi = {
       signal,
     });
     if (!response.ok) throw await errorFromResponse(response);
-    await readEventStream(response, onEvent, signal);
+    await readEventStream<JobEventResource | ApiErrorBody>(response, (event) => {
+      if ('error' in event) throw new ApiError(502, event);
+      onEvent(event);
+    }, signal);
   },
 };

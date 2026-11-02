@@ -13,6 +13,18 @@ vi.mock('../../app/RuntimeProvider', () => ({ useRuntime: () => state }));
 vi.mock('../settings/SettingsProvider', () => ({ useSettings: () => ({ tr: (_zh: string, en: string) => en }) }));
 afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
+it('shows native active requests without inventing session, queue or memory measurements', async () => {
+  state.runtime = { source: 'native-instances' };
+  state.instances = [{ id: 'native-a', model: 'Native Model', state: 'busy', devices: [], active_requests: 2 }];
+  const { container } = render(<ResourceAllocationPanel />);
+  await act(async () => {});
+  expect(screen.getByText('2 active requests · sessions and queue not reported')).toBeInTheDocument();
+  expect(container).not.toHaveTextContent('NaN');
+  expect(container.querySelector('[data-tier="weights"] .memory-tier-heading')).toHaveTextContent('Breakdown not reported / --');
+  state.instances = [];
+  state.runtime = null;
+});
+
 it('uses the live shared memory budget and headroom rather than total physical memory', async () => {
   state.runtime = { runtime_memory_budget_bytes: 16 * 2 ** 30, runtime_memory_effective_budget_bytes: 8 * 2 ** 30,
     runtime_memory_committed_bytes: 5 * 2 ** 30, runtime_memory_headroom_bytes: 2 * 2 ** 30, runtime_memory_budget_mode: 'automatic' };

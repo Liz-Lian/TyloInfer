@@ -51,3 +51,14 @@ it('does not render invalid or excessive percentages', () => {
   act(() => useJobStore.setState({ jobs: [job(1.5)] }));
   expect(screen.getByRole('progressbar')).toHaveAttribute('value', '1');
 });
+
+it('matches native artifact IDs and reports phases and deferred cancellation without percentages', () => {
+  const native = { ...job(0.75), payload: { artifact_id: 'artifact-a' }, progress_data: { phase: 'loading' } };
+  useJobStore.setState({ jobs: [native] });
+  render(<ModelLoadProgress model="test-model" artifactId="artifact-a" />);
+  expect(screen.getByText('Loading weights')).toBeInTheDocument();
+  expect(screen.getByRole('progressbar')).not.toHaveAttribute('value');
+  expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  act(() => useJobStore.setState({ jobs: [{ ...native, status: 'cancelling' }] }));
+  expect(screen.getByText('Cancelling after native loading returns')).toBeInTheDocument();
+});

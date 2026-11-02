@@ -10,6 +10,8 @@ import {
 } from 'react';
 import { runtimeApi, type QsaKvStorageSettings, type KvQuantizationSettings, type KvMemorySettings } from '../shared/api/resources/runtime';
 import { jobsApi } from '../shared/api/resources/jobs';
+import { modelsApi } from '../shared/api/resources/models';
+import { projectNativeRuntime } from '../shared/api/nativeRuntime';
 import { ApiError, browserServiceUrl, getApiToken, onAuthenticationRequired, onServerInstanceChanged, setApiBaseUrl, setApiToken, setApiServerInstance } from '../shared/api/client';
 import type {
   JobResource,
@@ -21,13 +23,15 @@ import type {
   VoiceOutputComponentStatus,
 } from '../shared/api/types';
 import { studioStatus, studioCredential, startLocalStudio, connectExistingStudio, type StudioStatus } from '../studio';
-import { isRuntimeReady, runtimeSelectionNames } from '../features/runtime/modelSelection';
+import { runtimeSelectionNames } from '../features/runtime/modelSelection';
 import { errorMessage } from './formatters';
 import { useJobStore } from '../stores/jobStore';
 
 interface RuntimeContextValue {
   runtime: RuntimeStatus | null;
   models: RuntimeModel[];
+  /** Catalog lookup for native loading jobs; artifact IDs stay in their original payloads. */
+  artifactNames: Record<string, string>;
   instances: RuntimeInstance[];
   capabilities: RuntimeCapabilities | null;
   realtime: RealtimeCapabilities | null;
@@ -35,6 +39,7 @@ interface RuntimeContextValue {
   studio: StudioStatus | null;
   selectedModel: string;
   setSelectedModel: (model: string) => void;
+  /** Refresh the native instance projection, catalog identities and job snapshots. */
   refreshRuntime: (quiet?: boolean) => Promise<boolean>;
   addJob: (job: JobResource) => void;
   reloadService: () => Promise<boolean>;
@@ -53,9 +58,11 @@ interface RuntimeContextValue {
 
 const RuntimeContext = createContext<RuntimeContextValue | null>(null);
 
+/** Keep native connection, instance snapshots and background jobs synchronized for Studio. */
 export function RuntimeProvider({ children }: { children: ReactNode }) {
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [models, setModels] = useState<RuntimeModel[]>([]);
+  const [artifactNames, setArtifactNames] = useState<Record<string, string>>({});
   const [instances, setInstances] = useState<RuntimeInstance[]>([]);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [realtime, setRealtime] = useState<RealtimeCapabilities | null>(null);
@@ -100,37 +107,21 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     const jobVersion = ++jobRequestVersion.current;
     if (!quiet) setLoading(true);
     try {
-      const [nextInstances, nextJobs] = await Promise.all([runtimeApi.runtimeInstances(), jobsApi.jobs(100)]);
-      if (!mounted.current || version !== requestVersion.current) return false;
-      const instance = nextInstances.find(
-        (item) => item.model === selectedRef.current && item.state !== 'failed',
-      );
-      const [statusResult, voiceResult] = await Promise.allSettled([
-        runtimeApi.runtimeStatus(instance?.id),
-        runtimeApi.voiceOutputComponent(),
-      ]);
-      if (statusResult.status !== 'fulfilled') throw statusResult.reason;
-      const status = statusResult.value;
-      if (!mounted.current || version !== requestVersion.current) return false;
-      const [modelResult, capabilityResult, realtimeResult] = await Promise.allSettled([
-        isRuntimeReady(status.runtime_state)
-          ? runtimeApi.runtimeModels()
-          : Promise.resolve<RuntimeModel[]>([]),
-        isRuntimeReady(status.runtime_state)
-          ? runtimeApi.runtimeCapabilities(instance?.id)
-          : Promise.resolve(null),
-        isRuntimeReady(status.runtime_state) ? runtimeApi.realtimeCapabilities() : Promise.resolve(null),
+      const [nextInstances, nextJobs, artifacts] = await Promise.all([
+        runtimeApi.runtimeInstances(), jobsApi.jobs(100), modelsApi.modelArtifacts(),
       ]);
       if (!mounted.current || version !== requestVersion.current) return false;
-      const nextModels = modelResult.status === 'fulfilled' ? modelResult.value : [];
+      const { runtime: status, models: nextModels, capabilities: nextCapabilities } = projectNativeRuntime(nextInstances, selectedRef.current);
+      const nextArtifactNames = Object.fromEntries(artifacts.map(item => [item.id, item.name]));
       setInstances(nextInstances);
+      setArtifactNames(nextArtifactNames);
       if (jobVersion === jobRequestVersion.current) useJobStore.getState().setJobs(nextJobs);
       setRuntime(status);
       setModels(nextModels);
-      setCapabilities(capabilityResult.status === 'fulfilled' ? capabilityResult.value : null);
-      setRealtime(realtimeResult.status === 'fulfilled' ? realtimeResult.value : null);
-      if (voiceResult.status === 'fulfilled') setVoiceComponent(voiceResult.value);
-      const names = runtimeSelectionNames(nextModels, nextInstances, useJobStore.getState().jobs);
+      setCapabilities(nextCapabilities);
+      setRealtime(null);
+      setVoiceComponent(null);
+      const names = runtimeSelectionNames(nextModels, nextInstances, useJobStore.getState().jobs, nextArtifactNames);
       setSelectedModel((current) =>
         names.includes(current)
           ? current
@@ -213,6 +204,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       useJobStore.getState().setJobs([]);
       setInstances([]);
       setModels([]);
+      setArtifactNames({});
       setRuntime(null);
       setCapabilities(null);
       setRealtime(null);
@@ -350,6 +342,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     () => ({
       runtime,
       models,
+      artifactNames,
       instances,
       capabilities,
       realtime,
@@ -375,6 +368,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     [
       runtime,
       models,
+      artifactNames,
       instances,
       capabilities,
       realtime,
@@ -401,6 +395,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   return <RuntimeContext.Provider value={value}>{children}</RuntimeContext.Provider>;
 }
 
+/** Read the current native connection and runtime view from the application provider. */
 export function useRuntime(): RuntimeContextValue {
   const value = useContext(RuntimeContext);
   if (!value) throw new Error('RuntimeProvider is missing');

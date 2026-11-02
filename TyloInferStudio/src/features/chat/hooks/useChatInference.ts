@@ -4,13 +4,13 @@ import { useRuntime } from '../../../app/RuntimeProvider';
 import { useSettings } from '../../settings/SettingsProvider';
 import { modeTemplateSettings, type GenerationSettings } from '../../settings/configuration';
 import { DOCUMENT_ACCEPT } from '../attachments';
-import { runtimeModelNames } from '../../runtime/modelSelection';
+import { modelLoadJobName, runtimeModelNames } from '../../runtime/modelSelection';
 import type { SessionMode, SamplingParams } from '../../../shared/api/types';
 import { useJobStore } from '../../../stores/jobStore';
 
 const EMPTY_REASONING_VALUES: string[] = [];
 
-/** 返回仅属于聊天的派生能力，实例变化时自动重新解析模型默认设置。 */
+/** Derive chat controls from instance declarations and the connected service's supported routes. */
 export function useChatInference(mode: SessionMode) {
   const runtimeContext = useRuntime();
   const {
@@ -20,12 +20,14 @@ export function useChatInference(mode: SessionMode) {
     selectedModel: model,
     instances,
     models,
+    artifactNames,
   } = runtimeContext;
+  const native = runtime?.source === 'native-instances';
   const modelLoadingJob = useJobStore((state) =>
     state.jobs.some(
       (job) =>
         job.kind === 'model.load' &&
-        job.payload.model === model &&
+        modelLoadJobName(job, artifactNames) === model &&
         ['queued', 'running', 'cancelling'].includes(job.status),
     ),
   );
@@ -38,14 +40,14 @@ export function useChatInference(mode: SessionMode) {
     [settings, mode, runtime, realtime],
   );
   const instance = instances.find((item) => item.model === model && item.state !== 'failed');
-  const thinkingSupported = runtime?.chat_template_capabilities?.thinking?.supported === true;
+  const thinkingSupported = native || runtime?.chat_template_capabilities?.thinking?.supported === true;
   const reasoningValues =
     runtime?.chat_template_capabilities?.reasoning_effort?.values ?? EMPTY_REASONING_VALUES;
   const visionSupported = Boolean(
     capabilities?.model_capabilities.features.image_input ||
     capabilities?.model_capabilities.features.video_input,
   );
-  const visionAvailable = Boolean(capabilities?.vision_available || visionSupported);
+  const visionAvailable = !native && Boolean(capabilities?.vision_available || visionSupported);
   const mtpSupported =
     instance?.mtp_supported ??
     (capabilities?.model === model && capabilities?.model_capabilities.features.mtp === true);
@@ -53,7 +55,7 @@ export function useChatInference(mode: SessionMode) {
   const mtpAvailable = mtpServiceEnabled && (
     instance?.mtp_available ??
     (capabilities?.model === model && capabilities?.mtp_available === true));
-  const attachmentAccept = [
+  const attachmentAccept = native ? '' : [
     effectiveSettings.enableVision && capabilities?.model_capabilities.features.image_input
       ? 'image/*'
       : '',
@@ -82,7 +84,7 @@ export function useChatInference(mode: SessionMode) {
     }),
     [effectiveSettings, thinkingSupported, mtpSupported, mtpAvailable],
   );
-  /** 即时切换当前推理设置，同时退出默认值继承。 */
+  /** Apply an explicit chat preference and stop inheriting model sampling defaults. */
   const updateGlobalInference = useCallback(
     (patch: Partial<GenerationSettings>) => {
       updateSettings({
@@ -115,6 +117,7 @@ export function useChatInference(mode: SessionMode) {
       availableModelNames,
       selectedModelLoading: instance?.state === 'loading' || modelLoadingJob,
       realtimeAvailable: realtime?.available === true,
+      nativeTextOnly: native,
     }),
     [
       runtimeContext,
@@ -133,6 +136,7 @@ export function useChatInference(mode: SessionMode) {
       instance?.state,
       modelLoadingJob,
       realtime?.available,
+      native,
     ],
   );
 }
