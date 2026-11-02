@@ -5,6 +5,8 @@
 #include "engine/models/minicpmo45/ops.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/nemotron_h/ops.h"
+#include "engine/models/qwen4_exp/generation.h"
+#include "engine/models/deepseek_v41/generation.h"
 
 #include "engine/generate_impl.h"
 

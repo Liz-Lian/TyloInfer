@@ -12,8 +12,7 @@
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/models/common/prefetch.h"
-#include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/qwen4_exp/ops.h"
+#include "engine/models/common/generation_ops.h"
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
@@ -25,7 +24,6 @@
 #include <functional>
 #include <iostream>
 #include <optional>
-#include <type_traits>
 #include <utility>
 namespace mfq::cuda::internal {
 namespace generation_detail {
@@ -187,43 +185,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         };
         auto ids = full_ids.narrow(1, chunk.offset, chunk.count).contiguous();
         ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
-        Tensor hidden;
-        bool layer_major=false,short_windows=false;
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-            // TQ groups all prompt rows by expert without expanding an entire
-            // layer. Splitting these batches into verification windows would
-            // repeatedly transfer the same expert when it is not resident.
-            const bool verification_windows=!weights.tq || chunk.count<=8;
-            if(verification_windows && (!prepared || !prepared->transformed()) && model.reuse_decode_graphs &&
-                    model.graph_registry && chunk.count<=128) {
-                // The same bounded prompt windows as MTP avoid materializing
-                // a whole expert layer before a short prompt has any scratch.
-                short_windows=true;
-                for(int64_t offset=0;offset<chunk.count;) {
-                    if(output && output->stopped())break;
-                    const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
-                    auto part=ids.narrow(1,offset,rows);
-                    Tensor window_logits;
-                    if(auto result=qwen4_decode_graph_hidden(model,part,nullptr,rows>1?1:0,
-                            nullptr,{},&window_logits))
-                        hidden=std::move(*result);
-                    else hidden=model.hidden_forward(part,mfq_nullopt,mfq_nullopt,nullptr,
-                        mfq_nullopt,nullptr,rows>1?1:0);
-                    if(rows>1)state.commit_speculative();
-                    offset+=rows;
-                }
-            } else if((!prepared || !prepared->transformed()) &&
-                qwen4_layer_major_prefill_eligible(model,chunk.count)) {
-                layer_major=true;
-                hidden=qwen4_layer_major_prefill_hidden(model,ids,prefill_compute_chunk,true,
-                    [&] {return output && output->stopped();},nullptr,false,finish_prefill);
-            }
-        }
-        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>) {
-            if(!prepared || !prepared->transformed())
-                hidden=deepseek_v41_prefill_hidden(model,ids,prefill_compute_chunk,
-                    [&] {return output && output->stopped();});
-        }
+        auto [hidden,layer_major,short_windows]=generation_prefill(model,*this,chunk,ids,finish_prefill);
         if(output && output->stopped()) {
             finish_prefill();
             return timer.elapsed_ms();
@@ -232,10 +194,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
             // The layer-major path has already advanced every physical cache.
         } else if (prepared && prepared->transformed()) {
             MoePrefillWorkspaceLoan workspace(weights.moe);
-            bool borrowed=false;
-            if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
-                borrowed=workspace.begin((std::size_t(4)<<30)+
-                    std::size_t(chunk.count)*model.hidden_size()*model.hc_mult()*sizeof(float)*4)>0;
+            const bool borrowed=generation_workspace(model,workspace,chunk.count);
             if constexpr (has_forward<Model, State>) {
                 mfq::cuda::Input input;
                 input.ids = ids;
@@ -451,16 +410,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     }
     std::int64_t advance() {
         if (!graph_active) {
-            if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-                if(known_token_host.defined()) {
-                    const bool greedy=sampler.greedy() && !has_penalties && !constraint;
-                    if(auto result=qwen4_decode_graph_logits(model,pending.reshape({1,1}),greedy?2:1,known_token_host)) {
-                        pending=greedy?std::move(*result):mfq::engine::sample_logits(sampler,
-                            result->contiguous().view({1,-1}),counts,constraint);
-                        return pending.template item<int64_t>();
-                    }
-                }
-            }
+            if(auto result=generation_decode(model,*this))return *result;
             pending = sample_token(model, state, executor, collectives, mode, profiler,
                                    pending.reshape({1, 1}), sampler, counts, constraint);
             return pending.template item<int64_t>();

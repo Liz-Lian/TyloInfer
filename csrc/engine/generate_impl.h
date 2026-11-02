@@ -6,8 +6,6 @@
 #include "engine/generation/generation.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/common/session/cache.h"
-#include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/qwen4_exp/ops.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/workspace.h"
 #include "engine/weights/moe/expert_cache.h"
@@ -24,7 +22,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
 #include <utility>
 
 namespace mfq::cuda::internal {
@@ -90,17 +87,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     void prepare_request(const mfq::engine::InferenceRequest& input) {
         trace_expert_cache("begin");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
-            model.decode_reserve_until=std::min<int64_t>(metadata.max_position_embeddings,
-                int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
-            if(!batching && input.prompt.size()>1024) {
-                finish_moe_expert_exchanges(weights.moe);
-                if(state.cache_pos==0 && !model.graph_registry)
-                    release_moe_decode_buffers(weights.moe);
-                else release_moe_prefill_buffers(weights.moe);
-                mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
-            }
-        }
+        generation_request(model,*this,input);
 #endif
     }
     void reserve_workspace(std::size_t bytes) {
@@ -135,10 +122,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         if(short_streamed_prefill(tokens))return std::min<int64_t>(4,limit);
         if(tokens<=128)return std::min<int64_t>(std::max<std::size_t>(1,tokens),limit);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        bool allow_borrow=false;
-        if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
-            allow_borrow=qwen4_layer_major_prefill_eligible(model,std::min<std::size_t>(tokens,8192)) &&
-                (!prepared || !prepared->transformed());
+        const bool allow_borrow=generation_borrow(model,tokens,prepared?&*prepared:nullptr);
         auto budget=moe_prefill_workspace_budget(weights.moe,allow_borrow);
         const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
         auto available=mfq::engine::prefill_budget_add(
@@ -182,19 +166,10 @@ template <class Model, class State, class Predictor> struct RequestOps {
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(weights.moe);
-        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>)
-            if(streamed)graph.invalidate();
+        generation_prefill_begin(model,graph,streamed);
         const bool retained=streamed && lend_moe_decode_cache_for_prefill(weights.moe,
             mfq::cuda::runtime_options::workspace_reserve_bytes());
-        if constexpr(std::is_same_v<Model,DeepseekV41CausalLm>) {
-            if(streamed && !retained) {
-                // Private FFN graphs retain their transfer arenas after a
-                // request. Retire consumers before a new grouped prefill;
-                // otherwise these arenas can reduce its ring to one expert.
-                release_moe_decode_buffers(weights.moe);
-                mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
-            }
-        }
+        generation_prefill_end(model,*this,streamed,retained);
 #endif
         if(tokens>1024 || moe_expert_cache_ssd_experts(weights.moe))
             reserve_workspace(mfq::cuda::runtime_options::workspace_reserve_bytes());
