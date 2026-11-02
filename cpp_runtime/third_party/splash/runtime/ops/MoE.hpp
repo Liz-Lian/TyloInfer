@@ -273,6 +273,7 @@ struct MoeBuffers final {
 struct MoE final {
   [[nodiscard]] static MoePlan prefillPlan(MoeShape shape, uint32_t rows, MoeConfig config);
   [[nodiscard]] static MoePlan decodePlan(MoeShape shape, uint32_t lanes, MoeConfig config);
+  [[nodiscard]] static MoePlan decodeRowsPlan(MoeShape shape, uint32_t rows, MoeConfig config);
   // A step's routing (addRouting: the router, the selection and the
   // grouping into tiles), the load of its streamed experts, and its routed
   // work (addRouted: the gather, the expert passes and the combine). Steps

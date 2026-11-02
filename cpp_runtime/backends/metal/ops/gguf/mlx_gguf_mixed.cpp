@@ -33,20 +33,24 @@ const std::string& mixed_header(bool staged = false) {
     const auto make = [](bool staged) {
         std::string result = staged ? MlxGgufStagedPrefill::scalar_decoder_header() : kGgufDecode;
         result += R"METAL(
-template<int F, typename X>
+template<int F, int L = 8, typename X>
 float mixed_dot(device const uchar* row, X x, uint K, uint lane) {
     float sum = 0.f;
     if constexpr (F == 143) {
         for (uint k = 0u; k < K; k += 128u) sum += gguf_ptq_dot128<8>(row, x, k, lane);
     } else if constexpr (F == 42) {
         for (uint k = lane * 16u; k < K; k += 128u) sum += gguf_q2_dot<16>(row, x, k);
+    } else if constexpr (F == 10 || F == 11) {
+        for (uint k = lane * 16u; k < K; k += L * 16u) sum += gguf_low_k_dot16<F>(row, x, k);
+    } else if constexpr (F == 16 || F == 17 || F == 18 || F == 21 || F == 22) {
+        for (uint k = lane * 16u; k < K; k += L * 16u) sum += gguf_iq_dot16<F>(row, x, k, GgufConstantLookup<F>{});
+    } else if constexpr (F >= 144 && F <= 151) {
+        for (uint k = lane * 16u; k < K; k += 128u) sum += gguf_gyro_dot<F, 16>(row, x, k);
     } else {
         for (uint k = lane * 4u; k < K; k += 32u)
             sum += dot(gguf_values4<F>(row, k), float4(x[k], x[k + 1u], x[k + 2u], x[k + 3u]));
     }
-    sum += simd_shuffle_xor(sum, 4u);
-    sum += simd_shuffle_xor(sum, 2u);
-    sum += simd_shuffle_xor(sum, 1u);
+    for (ushort shift = L / 2; shift; shift /= 2) sum += simd_shuffle_xor(sum, shift);
     return sum;
 }
 template<int MASK, typename X>
@@ -436,14 +440,14 @@ switch (layout[expert * 2u]) {
 const fast::CustomKernelFunction& weighted_kernel() {
     static const auto kernel = indirect_weight_metal_kernel("tinfer_gguf_mixed_down_reduce",
         {"addresses", "layout", "x", "ids", "probabilities", "params"}, {"y"}, R"METAL(
-uint lane = thread_index_in_simdgroup % 8u;
-uint column = thread_index_in_simdgroup / 8u;
+uint lane = thread_index_in_simdgroup % L;
+uint column = thread_index_in_simdgroup / L;
 uint group = simdgroup_index_in_threadgroup;
-uint row = threadgroup_position_in_grid.x * 4u + column;
+uint row = threadgroup_position_in_grid.x * (32u / L) + column;
 uint token = threadgroup_position_in_grid.y;
-uint K = params[0], N = params[1], E = params[2], R = params[3];
+uint K = params[0], N = params[1], E = params[2], R = params[3], groups = G == 8 ? 8u : params[5];
 float sum = 0.f;
-for (uint route = group; route < R; route += 8u) {
+for (uint route = group; route < R; route += groups) {
     int expert = ids[token * R + route];
     if (row < N && expert >= 0 && uint(expert) < E) {
         auto matrix = mixed_matrix<MIXED || INDIRECT>(addresses, uint(expert), N, params[4]);
@@ -452,17 +456,17 @@ for (uint route = group; route < R; route += 8u) {
             float value;
             if constexpr (MIXED) value = mixed_dispatch<MASK>(layout[expert * 2u],
                 matrix + ulong(row) * layout[expert * 2u + 1u], input, K, lane);
-            else value = mixed_dot<F>(matrix + ulong(row) * params[4], input, K, lane);
+            else value = mixed_dot<F, L>(matrix + ulong(row) * params[4], input, K, lane);
             sum += float(T(value)) * probabilities[token * R + route];
         }
     }
 }
-threadgroup float partial[32];
-if (lane == 0u) partial[group * 4u + column] = sum;
+threadgroup float partial[G * (32u / L)];
+if (lane == 0u) partial[group * (32u / L) + column] = sum;
 threadgroup_barrier(mem_flags::mem_threadgroup);
 if (group == 0u && lane == 0u && row < N) {
     float value = 0.f;
-    for (uint g = 0u; g < 8u; ++g) value += partial[g * 4u + column];
+    for (uint g = 0u; g < groups; ++g) value += partial[g * (32u / L) + column];
     y[ulong(token) * N + row] = T(value);
 }
 )METAL", mixed_header());
@@ -585,7 +589,7 @@ array MlxGgufWeight::mixed_swiglu(const MlxGgufWeight& up, const array& input, c
     const int n = output_size();
     const bool staged = planes_.has_value() || up.planes_.has_value();
     const auto params = array({uint32_t(input_size()), uint32_t(n), uint32_t(expert_count()), uint32_t(ids.shape(1)),
-        std::bit_cast<uint32_t>(limit), planes_ ? 0u : uint32_t(row_bytes_), up.planes_ ? 0u : uint32_t(up.row_bytes_)});
+        limit > 0.f ? std::bit_cast<uint32_t>(limit) : 0u, planes_ ? 0u : uint32_t(row_bytes_), up.planes_ ? 0u : uint32_t(up.row_bytes_)});
     std::vector<array> inputs{bytes_, mixed_layout_ ? *mixed_layout_ : params,
         up.bytes_, up.mixed_layout_ ? *up.mixed_layout_ : params, contiguous(input), contiguous(astype(ids, int32)),
         params};
@@ -607,20 +611,29 @@ array MlxGgufWeight::routed_weighted_matmul(const array& input, const array& ids
         input.size() / input_size() != ids.size() ||
         (input.dtype() != float16 && input.dtype() != bfloat16 && input.dtype() != float32))
         throw std::invalid_argument("GGUF weighted routed projection geometry mismatch");
-    if (ids.shape(0) == 0) return zeros({0, output_size()}, input.dtype());
+    if (ids.size() == 0) return zeros({ids.shape(0), output_size()}, input.dtype());
     if (rotation_) { auto plain = *this; plain.rotation_.reset(); return plain.routed_weighted_matmul(rotate_input(input), ids, probabilities, plan); }
     if (ids.shape(0) == 1 && ids.shape(1) > 0 && MlxGgufStagedPrefill::prefers_weighted_down(*this))
         return MlxGgufStagedPrefill::weighted_down(*this, input, ids, probabilities, input.dtype());
-    if (planes_ || ids.shape(0) > 8 || (!mixed_layout_ && (format_ < 147 || format_ > 149 || ids.shape(0) > 6)))
+    const bool raw_down = format_ == 10 || format_ == 11 || (format_ >= 16 && format_ <= 18) ||
+        format_ == 21 || format_ == 22;
+    if (planes_ || ids.shape(0) > 8 || (!mixed_layout_ &&
+        ((!raw_down && (format_ < 147 || format_ > 149)) || ids.shape(0) > 6)))
         return moe_weighted_reduce(routed_matmul(input, ids, false, plan), probabilities);
     const int n = output_size();
+    const bool iq_grid = (format_ >= 16 && format_ <= 18) || format_ == 21 || format_ == 22;
+    const int lanes = !mixed_layout_ && raw_down &&
+        (iq_grid ? input_size() <= 1024 : input_size() <= n) ? 4 : 8;
+    const int group_capacity = !mixed_layout_ && raw_down ? 16 : 8;
+    const int groups = group_capacity == 8 ? 8 : std::min(group_capacity, std::max(1, ids.shape(1)));
+    const int threads = groups * 32;
     const auto params = array({uint32_t(input_size()), uint32_t(n), uint32_t(expert_count()), uint32_t(ids.shape(1)),
-        uint32_t(row_bytes_)});
+        uint32_t(row_bytes_), uint32_t(groups)});
     return weighted_kernel()({bytes_, mixed_layout_ ? *mixed_layout_ : params, contiguous(input), contiguous(astype(ids, int32)),
         contiguous(astype(probabilities, float32)),
         params},
-        {{ids.shape(0), n}}, {input.dtype()}, {((n + 3) / 4) * 256, ids.shape(0), 1}, {256, 1, 1},
+        {{ids.shape(0), n}}, {input.dtype()}, {((n + 32 / lanes - 1) / (32 / lanes)) * threads, ids.shape(0), 1}, {threads, 1, 1},
         {{"MASK", mixed_mask_}, {"T", input.dtype()}, {"F", mixed_layout_ ? 0 : format_}, {"MIXED", bool(mixed_layout_)},
-            {"INDIRECT", indirect_}}, std::nullopt, false, {}).front();
+            {"INDIRECT", indirect_}, {"L", lanes}, {"G", group_capacity}}, std::nullopt, false, {}).front();
 }
 }

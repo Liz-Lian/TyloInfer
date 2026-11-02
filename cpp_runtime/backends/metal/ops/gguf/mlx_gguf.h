@@ -17,6 +17,10 @@ struct MlxNativeGgufWeight;
 struct MlxGgufRotation;
 
 bool is_gguf_dtype(std::string_view dtype) noexcept;
+inline bool gguf_gate_up_reversed(int gate, int up) noexcept {
+    const auto tqp = [](int format) { return format >= 147 && format <= 149; };
+    return tqp(gate) == tqp(up) ? gate > up : tqp(gate);
+}
 std::size_t gguf_packed_row_bytes(std::string_view dtype, int width);
 using MlxGgufRoutePlan = MlxExpertRouteTiles;
 MlxGgufRoutePlan gguf_route_plan(const mlx::core::array& ids, int experts, bool wide_mixed = false);
@@ -78,6 +82,8 @@ private:
         bool shared_input, const MlxGgufRoutePlan* plan, const mlx::core::array* gathered_input = nullptr) const;
     mlx::core::array mixed_swiglu(const MlxGgufWeight& up, const mlx::core::array& input,
         const mlx::core::array& ids, float limit, const MlxGgufRoutePlan* plan) const;
+    mlx::core::array routed_swiglu_inputs(const MlxGgufWeight& up, const mlx::core::array& input,
+        const mlx::core::array& up_input, const mlx::core::array& ids, float limit, bool separate_input) const;
     mlx::core::array rotate_input(const mlx::core::array& input) const;
     mlx::core::array unrotate_rows(const mlx::core::array& input, mlx::core::Dtype dtype) const;
     mlx::core::array bytes_;

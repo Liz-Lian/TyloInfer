@@ -3,6 +3,7 @@
 #include "mlx_eval_timing.h"
 #include "mlx_kernel_prepare.h"
 #include "mlx_moe_ops.h"
+#include "mlx_gguf_prefill.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -287,14 +288,10 @@ MlxDeepseekV41Moe::MlxDeepseekV41Moe(
             preparation->collect([&] {
                 for (const auto rows : preparation->row_buckets()) {
                     const auto input = mlx::core::zeros({rows, hidden_}, preparation->activation_dtype());
-                    const auto ids = mlx::core::zeros({rows, top_k_}, mlx::core::int32);
-                    std::optional<MlxGgufRoutePlan> plan;
-                    if (rows > 8) plan = gguf_route_plan(ids, experts_, gguf_->at(0).has_mixed_formats() &&
-                        gguf_->at(1).has_mixed_formats() && gguf_->at(2).has_mixed_formats());
-                    const auto hidden = gguf_->at(0).routed_swiglu(gguf_->at(1), input, ids,
-                        plan ? &*plan : nullptr, swiglu_limit_);
-                    preparation->add(gguf_->at(2).routed_weighted_matmul(hidden, ids,
-                        mlx::core::zeros({rows, top_k_}, mlx::core::float32), plan ? &*plan : nullptr));
+                    const auto ids = mlx::core::reshape(mlx::core::remainder(mlx::core::arange(rows * top_k_, mlx::core::int32),
+                        mlx::core::array(experts_, mlx::core::int32)), {rows, top_k_});
+                    preparation->add(gguf_routed_ffn(*gguf_, input, ids,
+                        mlx::core::zeros({rows, top_k_}, mlx::core::float32), swiglu_limit_, true));
                 }
             });
         }
@@ -745,11 +742,7 @@ MlxDeepseekV41MoeResult MlxDeepseekV41Moe::forward(
     if (gguf_expert_cache_) {
         routed = gguf_expert_cache_->apply_ffn(expert_cache_layer_, source, routes.ids, routes.weights, &shared, swiglu_limit_);
     } else if (gguf_) {
-        std::optional<MlxGgufRoutePlan> plan;
-        if (rows > 8) plan = gguf_route_plan(routes.ids, experts_, gguf_->at(0).has_mixed_formats() &&
-            gguf_->at(1).has_mixed_formats() && gguf_->at(2).has_mixed_formats());
-        auto hidden = gguf_->at(0).routed_swiglu(gguf_->at(1), source, routes.ids, plan ? &*plan : nullptr, swiglu_limit_);
-        routed = gguf_->at(2).routed_weighted_matmul(hidden, routes.ids, routes.weights, plan ? &*plan : nullptr);
+        routed = gguf_routed_ffn(*gguf_, source, routes.ids, routes.weights, swiglu_limit_, true);
     } else if (tq_expert_cache_) {
         routed = tq_expert_cache_->apply_ffn(expert_cache_layer_, source, routes.ids,
             routes.weights, swiglu_limit_, false, &shared);

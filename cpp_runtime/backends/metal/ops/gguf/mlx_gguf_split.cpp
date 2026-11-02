@@ -7,18 +7,21 @@
 #include <mlx/primitives.h>
 #include <algorithm>
 #include <climits>
+#include <cstring>
 
 namespace mfq::metal {
 namespace {
 using namespace mlx::core;
 constexpr int kDeviceScratchElements = 64;
 
-using WorkspaceSizes = std::array<std::pair<std::size_t, int>, 4>;
+using WorkspaceSizes = std::array<MlxGgufWorkspace, 4>;
 
 class SplitWorkspaceKernel final : public Primitive, public MlxPreparableKernel {
 public:
-    SplitWorkspaceKernel(std::shared_ptr<Primitive> kernel, WorkspaceSizes sizes)
-        : Primitive(kernel->stream()), kernel_(std::move(kernel)), sizes_(sizes) {}
+    SplitWorkspaceKernel(std::shared_ptr<Primitive> kernel, std::span<const MlxGgufWorkspace> sizes)
+        : Primitive(kernel->stream()), kernel_(std::move(kernel)), count_(sizes.size()) {
+        std::copy(sizes.begin(), sizes.end(), sizes_.begin());
+    }
     const char* name() const override { return "GgufSplitWorkspace"; }
     std::string preparation_key() const override { return mlx_kernel_preparation_key(*kernel_); }
     void prepare_gpu() override { prepare_mlx_kernel_gpu(*kernel_); }
@@ -28,18 +31,17 @@ public:
     void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs) override {
         auto checked = inputs;
         std::vector<array> workspaces;
-        workspaces.reserve(8);
-        for (int i = 0; i < 4; ++i) {
-            const auto [elements, counters] = sizes_[i];
-            if (elements) {
-                checked[i * 5 + 3] = array(allocator::malloc(elements * sizeof(float)), Shape{int(elements)}, float32);
-                checked[i * 5 + 4] = array(allocator::malloc(std::size_t(counters) * sizeof(uint32_t)), Shape{counters}, uint32);
-                std::fill_n(checked[i * 5 + 4].data<uint32_t>(), counters, 0u);
-                workspaces.push_back(checked[i * 5 + 3]);
-                workspaces.push_back(checked[i * 5 + 4]);
-            } else {
-                checked[i * 5 + 3] = checked[(i - 1) * 5 + 3];
-                checked[i * 5 + 4] = checked[(i - 1) * 5 + 4];
+        workspaces.reserve(count_ * 2);
+        for (int i = 0; i < count_; ++i) {
+            const auto [data_input, counter_input, elements, counters] = sizes_[i];
+            if (elements || counters) {
+                if (elements) {
+                    checked[data_input] = array(allocator::malloc(elements * sizeof(float)), Shape{int(elements)}, float32);
+                    workspaces.push_back(checked[data_input]);
+                }
+                checked[counter_input] = array(allocator::malloc(std::size_t(counters) * sizeof(uint32_t)), Shape{counters}, uint32);
+                std::memset(checked[counter_input].data<uint32_t>(), 0, std::size_t(counters) * sizeof(uint32_t));
+                workspaces.push_back(checked[counter_input]);
             }
         }
         kernel_->eval_gpu(checked, outputs);
@@ -47,7 +49,8 @@ public:
     }
 private:
     std::shared_ptr<Primitive> kernel_;
-    WorkspaceSizes sizes_;
+    WorkspaceSizes sizes_{};
+    int count_;
 };
 
 int partition_count(int outputs, int width, int cores) {
@@ -187,6 +190,17 @@ void plane_split(device const uchar* p0, Auxiliary p1, Scales meta,
 }
 }
 
+void gguf_private_workspaces(std::span<array> outputs, std::span<const MlxGgufWorkspace> workspaces) {
+    if (outputs.empty() || workspaces.size() > 4) throw std::invalid_argument("invalid GGUF workspace outputs");
+    for (const auto& workspace : workspaces)
+        if ((workspace.elements || workspace.counters) && (workspace.counter_input < 0 || workspace.counter_input >= outputs.front().inputs().size() ||
+            (workspace.elements && (workspace.data_input < 0 || workspace.data_input >= outputs.front().inputs().size())) ||
+            workspace.elements > INT_MAX || workspace.counters < 1))
+            throw std::invalid_argument("invalid GGUF private workspace geometry");
+    auto primitive = std::make_shared<SplitWorkspaceKernel>(outputs.front().primitive_ptr(), workspaces);
+    for (auto& output : outputs) output.primitive_ptr() = primitive;
+}
+
 std::optional<std::vector<array>> MlxGgufStagedPrefill::project_split_many(
     std::span<const MlxGgufWeight> weights, const array& input) {
     if (weights.empty() || weights.size() > 4 || input.ndim() < 1 ||
@@ -224,7 +238,7 @@ std::optional<std::vector<array>> MlxGgufStagedPrefill::project_split_many(
             : std::size_t(kDeviceScratchElements);
         if (count > INT_MAX) throw std::overflow_error("GGUF split projection scratch exceeds the array limit");
         const int counter_count = s > 1 ? std::max(kDeviceScratchElements, n / 64) : kDeviceScratchElements;
-        if (i < weights.size()) workspace_sizes[i] = {count, counter_count};
+        if (i < weights.size()) workspace_sizes[i] = {i * 5 + 3, i * 5 + 4, count, counter_count};
         inputs.insert(inputs.end(), {weight.bytes_, (*weight.planes_)[0], (*weight.planes_)[1],
             scratch, counters});
         auto shape = input.shape(); shape.back() = n;
@@ -240,8 +254,7 @@ std::optional<std::vector<array>> MlxGgufStagedPrefill::project_split_many(
     inputs.push_back(contiguous(input)); inputs.push_back(array(params.begin(), Shape{10}));
     auto outputs = split_kernel(decoder_header())(inputs, shapes, std::vector<Dtype>(4, input.dtype()),
         {int(tiles * 64), 1, 1}, {64, 1, 1}, arguments, std::nullopt, false, {});
-    auto primitive = std::make_shared<SplitWorkspaceKernel>(outputs.front().primitive_ptr(), workspace_sizes);
-    for (auto& output : outputs) output.primitive_ptr() = primitive;
+    gguf_private_workspaces(outputs, workspace_sizes);
     outputs.erase(outputs.begin() + weights.size(), outputs.end());
     return outputs;
 }
