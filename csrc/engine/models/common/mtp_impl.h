@@ -15,9 +15,7 @@
 #include "engine/requests/policy.h"
 #include "engine/requests/output.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/qwen4_exp/ops.h"
-#include "engine/models/qwen4_exp/predictor.h"
+#include "engine/models/common/mtp_ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/models/input.h"
@@ -42,6 +40,25 @@ using mfq::cuda::internal::PrefillCudaTimer;
 using namespace mfq::engine;
 
 namespace mtp_detail {
+using mfq::cuda::generation_workspace;
+using mfq::cuda::mtp_stream_prompt_history;
+using mfq::cuda::mtp_host_prompt_history;
+using mfq::cuda::mtp_bootstrap_before_publication;
+using mfq::cuda::mtp_retains_partial_target_prefix;
+using mfq::cuda::mtp_history_merge_limit;
+using mfq::cuda::mtp_history_flush_threshold;
+using mfq::cuda::mtp_parked_history_flush_threshold;
+using mfq::cuda::mtp_predictor_prefill_chunk_size;
+using mfq::cuda::mtp_cache_only_prompt_history;
+using mfq::cuda::mtp_initialize;
+using mfq::cuda::mtp_target_forward;
+using mfq::cuda::mtp_prefill;
+using mfq::cuda::mtp_predictor_step;
+using mfq::cuda::mtp_predictor_compact;
+using mfq::cuda::mtp_predictor_history_step;
+using mfq::cuda::mtp_begin_predictor_prefill;
+using mfq::cuda::mtp_predictor_prefill_begin;
+using mfq::cuda::mtp_predictor_prefill;
 
 using Tensor = mfq_tensor_backend::Tensor;
 
@@ -202,17 +219,10 @@ template <class Model, class State> struct CudaMtpOps {
   }
   bool stream_prompt_history(int64_t tokens) const {
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
-    return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && tokens>16384 && (!option || option[0]!='0');
+    return mtp_stream_prompt_history(model,tokens,option);
   }
   bool host_prompt_history(int64_t tokens) const {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HOST_PROMPT_HISTORY");
-      if(option)return option[0]!='0';
-      const auto bytes=std::size_t(tokens)*model.hidden_size()*model.hc_mult()*sizeof(uint16_t);
-      return bytes+(std::size_t(32)<<20)>
-          mfq::cuda::default_context(mfq_current_cuda_device())->available_memory();
-    }
-    return false;
+    return mtp_host_prompt_history(model,tokens);
   }
   void trace_prompt_prefill(double target_ms,double predictor_ms,double workspace_ms) const {
     // Block predictors seed only their bounded target window and skip the
@@ -224,28 +234,21 @@ template <class Model, class State> struct CudaMtpOps {
   }
   bool bootstrap_before_publication() const {
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_EARLY_BOOTSTRAP");
-    return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && (!option || option[0]!='0');
+    return mtp_bootstrap_before_publication(model,option);
   }
   bool retains_partial_target_prefix(int accepted) const {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      if(model.speculative_prefix_retention && accepted>=0)return true;
-    return mtp.retains_partial_target_prefix();
+    return mtp_retains_partial_target_prefix(model,mtp,accepted);
   }
   std::size_t predictor_history_merge_limit() const {
-    return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>?128:0;
+    return mtp_history_merge_limit(model);
   }
   std::size_t predictor_history_flush_threshold() const {
-    // During plain-decode calibration, consume a full warmed graph tile
-    // while that short cycle has room. Re-entry otherwise pays for several
-    // history replays immediately before drafting and target verification.
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
-    return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && (!option || option[0]!='0')?4:512;
+    return mtp_history_flush_threshold(model,option);
   }
   std::size_t predictor_parked_history_flush_threshold() const {
-    // Amortize the target/predictor expert-exchange boundary while bounding
-    // final and re-entry maintenance by four warmed, headless graph tiles.
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
-    return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> && (!option || option[0]!='0')?16:512;
+    return mtp_parked_history_flush_threshold(model,option);
   }
   void trace_cycle(uint64_t cycle,int depth,int accepted,double draft_ms,double verify_ms,double commit_ms) {
       const auto* option=mfq::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
@@ -291,9 +294,7 @@ template <class Model, class State> struct CudaMtpOps {
     input_ids = ids_for(prompt);
     sampler_.emplace(sampling);
     penalties = sampler().has_penalties();
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp))
-        predictor->compact_graph_sampling=captured_compact_requested();
+    mtp_initialize(model,*this);
     if (penalties) {
       counts = mfq::cuda::SamplingOps::token_counts(input_ids, metadata.vocab_size);
     }
@@ -344,23 +345,8 @@ template <class Model, class State> struct CudaMtpOps {
       const auto costs_after=target_costs();
       for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]=costs_after[i]-costs_before[i];
     };
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(!transformed_prompt) {
-        bool initialized=false;
-        const auto host_ids = known_ids_device.defined() &&
-            ids.data_ptr() == known_ids_device.data_ptr() && ids.sizes() == known_ids_device.sizes()
-            ? known_ids_host : Tensor{};
-        Tensor logits;
-        if(auto hidden=mfq::cuda::qwen4_decode_graph_hidden(model,ids,raw,confirmed,&initialized,host_ids,&logits,&projected_target_greedy,captured_compact_requested())) {
-          target_transfer_bytes=moe_expert_streamed_bytes(weights.moe)-transfer_before;
-          target_maintenance=target_maintenance || initialized;
-          projected_target_hidden = *hidden; projected_target_logits = std::move(logits);
-          projected_target_compact=mfq::cuda::qwen4_decode_graph_compact_topk(model);
-          finish_profile();
-          return std::move(*hidden);
-        }
-      }
-    }
+    if(auto result=mtp_target_forward(model,*this,ids,raw,confirmed,transfer_before,finish_profile))
+      return std::move(*result);
     Tensor hidden;
     if constexpr (has_forward<Model, State>) {
       mfq::cuda::Input input;
@@ -425,54 +411,11 @@ template <class Model, class State> struct CudaMtpOps {
     Tensor raw;
     auto ids = input_ids.narrow(1, chunk.offset, chunk.count).contiguous();
     mfq::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(!transformed_prompt && model.reuse_decode_graphs && model.graph_registry && chunk.count<=128) {
-        // Reuse bounded routed windows for short prompts as well as continuations.
-        // A whole-layer prefill can exceed the remaining workspace after MTP
-        // graphs have been retained by an earlier request. Initialize a fresh
-        // causal state with a retained scalar window when available; initial
-        // loading without warmed state still uses an eager bootstrap row.
-        std::vector<Tensor> hidden_rows,raw_rows;
-        for(int64_t offset=0;offset<chunk.count;) {
-          const auto rows=state.cache_pos==0?int64_t(1):std::min<int64_t>(4,chunk.count-offset);
-          Tensor part;
-          hidden_rows.push_back(target_forward(ids.narrow(1,offset,rows),&part,rows>1?1:0).clone());
-          raw_rows.push_back(std::move(part));
-          if(rows>1)state.commit_speculative();
-          offset+=rows;
-        }
-        auto hidden=hidden_rows.size()==1?std::move(hidden_rows.front()):concatenate(hidden_rows,1);
-        raw=raw_rows.size()==1?std::move(raw_rows.front()):concatenate(raw_rows,1);
-        TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
-        return {std::move(hidden),std::move(raw),timer.elapsed_ms()};
-      }
-      if(!transformed_prompt && mfq::cuda::qwen4_layer_major_prefill_eligible(model,chunk.count)) {
-        // Sampling consumes only the final normalized row. Teacher-forced
-        // predictor priming uses the separate, full raw hidden sequence.
-        // Decide where the cross-phase history will live before target prefill.
-        // It outlives the borrowed expert workspace; predictor priming consumes
-        // bounded tiles, so a host copy avoids a sequence-sized VRAM reservation.
-        const bool host_history=host_prompt_history(chunk.count);
-        auto hidden=mfq::cuda::qwen4_layer_major_prefill_hidden(model,ids,prefill_compute_chunk,true,
-            [&] { return output && output->stopped(); }, &raw,host_history,finish_prefill);
-        finish_prefill();
-        return {std::move(hidden),std::move(raw),timer.elapsed_ms()};
-      }
-    }
-    if constexpr(std::is_same_v<Model,mfq::cuda::DeepseekV41CausalLm>) {
-      if(!transformed_prompt) {
-        auto hidden=mfq::cuda::deepseek_v41_prefill_hidden(model,ids,prefill_compute_chunk,
-            [&] {return output && output->stopped();},&raw);
-        finish_prefill();
-        return {std::move(hidden),std::move(raw),timer.elapsed_ms()};
-      }
-    }
+    if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
+      return std::move(*result);
     MoePrefillWorkspaceLoan workspace(weights.moe);
     const bool host_history=host_prompt_history(chunk.count);
-    bool borrowed=false;
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      if(transformed_prompt)borrowed=workspace.begin((std::size_t(4)<<30)+
-          std::size_t(chunk.count)*model.hidden_size()*model.hc_mult()*sizeof(float)*4)>0;
+    const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     Tensor hidden;
     if (transformed_prompt) {
       auto embeddings = prepared->embeddings.narrow(1, chunk.offset, chunk.count)
@@ -528,88 +471,8 @@ template <class Model, class State> struct CudaMtpOps {
                : result;
   }
   MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);
-          predictor && predictor->layers.size()==1 && model.reuse_decode_graphs &&
-          model.graph_registry && ids.size(1)>1 && ids.size(1)<=128) {
-        const auto prefix=ids.size(1)-1;
-#ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
-        static thread_local std::array<bool,129> checked{};
-        Tensor expected_hidden,expected_chain;
-        const auto check_start=mtp.cache_position();
-        if(!checked[ids.size(1)]) {
-          const auto start=mtp.cache_position();
-          auto expected=mtp.step_positioned(hidden,ids,positions);
-          expected_hidden=expected.sample_hidden.narrow(1,prefix,1).clone();
-          expected_chain=expected.chain_hidden.narrow(1,prefix,1).clone();
-          mtp.trim_cache_to(start);
-        }
-#endif
-        // Earlier teacher-forced rows contribute only predictor attention KV.
-        // Their FFN/readout has no consumer; draft from the final row alone.
-        const auto* chain_option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
-        if(prefix>1 && (!chain_option || chain_option[0]!='0')) {
-          predictor_history_step(hidden.narrow(1,0,prefix),ids.narrow(1,0,prefix),
-              positions.defined()?positions.narrow(-1,0,prefix):Tensor{},true);
-          static bool reported=false;
-          if(!reported) {
-            reported=true;std::cerr<<"runtime_mtp_history_chain enabled=1 rows="<<prefix
-                <<" scalar_projections=1\n";
-          }
-        } else for(int64_t row=0;row<prefix;++row)
-            predictor_history_step(hidden.narrow(1,row,1),ids.narrow(1,row,1),
-                positions.defined()?positions.narrow(-1,row,1):Tensor{});
-        auto result=predictor_step(hidden.narrow(1,prefix,1),ids.narrow(1,prefix,1),
-            positions.defined()?positions.narrow(-1,prefix,1):Tensor{});
-#ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
-        if(expected_hidden.defined()) {
-          const auto difference=[&](const MtpStep& reference) {
-            double maximum=0;bool close=true;
-            for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
-                    {result.sample_hidden,reference.sample_hidden},{result.chain_hidden,reference.chain_hidden}}}) {
-              const auto actual=pair.first.to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kFloat32).contiguous();
-              const auto expected=pair.second.to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kFloat32).contiguous();
-              TYLOINFER_RUNTIME_CHECK(actual.sizes()==expected.sizes(),"MTP history-tail shape differs from full predictor");
-              for(int64_t i=0;i<actual.numel();++i) {
-                const auto error=std::abs(double(actual.template data_ptr<float>()[i])-expected.template data_ptr<float>()[i]);
-                maximum=std::max(maximum,error);
-                close=close && std::isfinite(error) && error<=.003+.003*std::abs(expected.template data_ptr<float>()[i]);
-              }
-            }
-            return std::make_pair(maximum,close);
-          };
-          const auto [batch_error,batch_close]=difference({expected_hidden,expected_chain});
-          double scalar_error=0;
-          if(!batch_close) {
-            mtp.trim_cache_to(check_start);
-            MtpStep scalar;
-            for(int64_t row=0;row<ids.size(1);++row)
-              scalar=mtp.step_positioned(hidden.narrow(1,row,1),ids.narrow(1,row,1),
-                  positions.defined()?positions.narrow(-1,row,1):Tensor{});
-            const auto [error,close]=difference(scalar);scalar_error=error;
-            std::fprintf(stderr,"runtime_mtp_history_tail_scalar_check rows=%lld batch_max_error=%.8f scalar_max_error=%.8f close=%d\n",
-                static_cast<long long>(ids.size(1)),batch_error,scalar_error,int(close));
-            TYLOINFER_RUNTIME_CHECK(close,"MTP history-tail differs from scalar predictor");
-          }
-          checked[ids.size(1)]=true;target_maintenance=true;
-          std::fprintf(stderr,"runtime_mtp_history_tail_check rows=%lld batch_max_error=%.8f scalar_max_error=%.8f PASS\n",
-              static_cast<long long>(ids.size(1)),batch_error,scalar_error);
-        }
-#endif
-        return result;
-      }
-      if(model.reuse_decode_graphs && model.graph_registry && ids.size(1)>4 && ids.size(1)<=128) {
-        MtpStep last;
-        for(int64_t offset=0;offset<ids.size(1);offset+=4) {
-          const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
-          auto part_positions=positions.defined()?positions.narrow(-1,offset,rows):Tensor{};
-          if(offset+rows<ids.size(1))
-            predictor_history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),part_positions);
-          else last=predictor_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),part_positions);
-        }
-        return last;
-      }
-    }
+    if(auto result=mtp_predictor_step(model,*this,hidden,ids,positions))
+      return std::move(*result);
     auto result=positions.defined()
                ? mtp.step_positioned(std::move(hidden), std::move(ids),
                                      std::move(positions))
@@ -618,56 +481,25 @@ template <class Model, class State> struct CudaMtpOps {
     target_maintenance=target_maintenance || initialized;
     projected_predictor_logits = result.sample_logits;
     projected_predictor_compact={};
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);predictor && result.sample_logits.defined())
-        projected_predictor_compact=predictor->graph_compact_topk();
+    mtp_predictor_compact(model,*this,result);
     projected_predictor_greedy = result.greedy_token;
     projected_predictor_hidden = result.sample_logits.defined()
         ? result.sample_hidden.narrow(1, result.sample_hidden.size(1)-1, 1).contiguous() : Tensor{};
     return result;
   }
   void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions,bool scalar_chain=false) {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);
-          predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
-        for(int64_t offset=0;offset<ids.size(1);offset+=4) {
-          const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
-          predictor->history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),
-              positions.defined()?positions.narrow(-1,offset,rows):Tensor{},scalar_chain);
-        }
-        target_maintenance=mtp.take_graph_initialization() || target_maintenance;
-        return;
-      }
-    }
+    if(mtp_predictor_history_step(model,*this,hidden,ids,positions,scalar_chain))return;
     (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
   }
   int64_t predictor_prefill_chunk_size(int64_t requested) const {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      // The predictor retains its expert image across these compute tiles.
-      return std::min<int64_t>(1024,requested);
-    return std::min<int64_t>(512,requested);
+    return mtp_predictor_prefill_chunk_size(model,requested);
   }
   bool cache_only_prompt_history() const {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_CACHE_ONLY_PRIME");
-      const auto* predictor=dynamic_cast<const mfq::cuda::qwen4_exp::Predictor*>(&mtp);
-      return (!option || option[0]!='0') && predictor && predictor->layers.size()==1;
-    }
-    return false;
+    return mtp_cache_only_prompt_history(model,*this);
   }
   double begin_predictor_prefill(int64_t pairs) {
     const auto started=std::chrono::steady_clock::now();
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(cache_only_prompt_history())return 0;
-      if(pairs<=128 || !model.reuse_decode_graphs || !model.graph_registry)return 0;
-      prepare_moe_decode_residency(weights.moe);
-      const auto rows=std::min<int64_t>(1024,pairs);
-      const auto bytes=(std::size_t(1)<<30)+std::size_t(rows)*model.config.hidden*
-          model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(weights.moe,true);
-      auto loan=std::make_unique<MoePrefillWorkspaceLoan>(weights.moe);
-      if(loan->begin(bytes))predictor_loan=std::move(loan);
-    }
-    return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+    return mtp_begin_predictor_prefill(model,*this,pairs,started);
   }
   double end_predictor_prefill() {
     if(predictor_loan){predictor_loan->finish();predictor_loan.reset();}
@@ -677,36 +509,11 @@ template <class Model, class State> struct CudaMtpOps {
     return 0;
   }
   double predictor_prefill(Tensor hidden, Tensor ids, Tensor positions) {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(!cache_only_prompt_history() && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128)
-        end_predictor_prefill();
-    }
+    mtp_predictor_prefill_begin(model,*this,ids);
     PrefillCudaTimer timer;
     bool prefill_finished=false;
     if(!cache_only_prompt_history())hidden=hidden.to(mfq_tensor_backend::kCUDA);
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(cache_only_prompt_history()) {
-        auto& predictor=static_cast<mfq::cuda::qwen4_exp::Predictor&>(mtp);
-        MoePrefillWorkspaceLoan workspace(weights.moe);
-        if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
-            std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
-        {
-          auto resident_hidden=hidden.to(mfq_tensor_backend::kCUDA);
-          (void)predictor.evaluate(resident_hidden,ids,0,true,positions,{},true);
-        }
-        TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
-        prefill_finished=true;
-        workspace.finish();
-      } else if(model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
-        // The short tail uses decode graphs, whose expert addresses must again
-        // contain weights. The final long compute tile has already retired.
-        for(int64_t offset=0;offset<ids.size(1);offset+=4) {
-          const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
-          predictor_history_step(hidden.narrow(1,offset,rows),ids.narrow(1,offset,rows),
-              positions.defined()?positions.narrow(-1,offset,rows):Tensor{});
-        }
-      } else (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
-    } else (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
+    mtp_predictor_prefill(model,*this,hidden,ids,positions,timer,prefill_finished);
     if(!prefill_finished)
       TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
     return timer.elapsed_ms();

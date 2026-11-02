@@ -4,6 +4,8 @@
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/ops.h"
 #include "engine/models/nemotron_h/ops.h"
+#include "engine/models/qwen4_exp/mtp_ops.h"
+#include "engine/models/deepseek_v41/mtp_ops.h"
 
 #include "engine/mtp_impl.h"
 
