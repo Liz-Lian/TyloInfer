@@ -1,5 +1,6 @@
 #include "mlx_gguf.h"
 #include "mlx_gguf_rotation.h"
+#include "mlx_cached_kernel.h"
 #include "mfq_container.h"
 #include "mlx_weight_residency.h"
 #include "nlohmann/json.hpp"
@@ -12,7 +13,7 @@ namespace mfq::metal {
 using namespace mlx::core;
 namespace {
 array rotate128(const array& input, const MlxGgufRotation& rotation, int width, bool inverse, Dtype dtype) {
-    static const auto kernel = fast::metal_kernel("tinfer_gguf_hadamard128", {"x", "signs", "params"}, {"y"}, R"METAL(
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_hadamard128", {"x", "signs", "params"}, {"y"}, R"METAL(
 uint block = thread_position_in_grid.x / 32u, lane = thread_index_in_simdgroup;
 if (block >= params[0]) return;
 uint at = block * 128u + lane * 4u, col = at % params[1];
