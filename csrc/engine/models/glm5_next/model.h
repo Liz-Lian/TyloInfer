@@ -1,6 +1,11 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
-#include "engine/models/glm5_next/causal_lm.h"
+#include "engine/models/glm5_next/weights.h"
+#include "engine/models/glm5_next/state.h"
+#include "engine/models/common/causal_metadata.h"
+#include "engine/models/common/capabilities.h"
+#include "engine/models/source.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/models/common/attention_ops.h"
 #include "engine/backends/cuda/kernels/glm5_next.h"
 #include <array>
@@ -29,48 +34,30 @@ class Kda {
                               std::isfinite(eps) && eps > 0,
                           "invalid GLM KDA configuration");
     }
-    void reset() {
-        conv_ = Tensor();
-        recurrent_ = Tensor();
-        commit();
-    }
-    const Tensor &conv_state() const { return conv_; }
-    const Tensor &recurrent_state() const { return recurrent_; }
-    bool pending() const { return rollback_conv_.defined(); }
-    void commit() {
-        rollback_conv_ = Tensor();
-        rollback_recurrent_ = Tensor();
-    }
-    void rollback() {
-        TYLOINFER_RUNTIME_CHECK(pending(), "GLM KDA has no speculative checkpoint");
-        conv_ = rollback_conv_;
-        recurrent_ = rollback_recurrent_;
-        commit();
-    }
-    Tensor forward(const Projector& project, const Tensor &hidden, bool use_cache,
-                   int64_t confirmed = 0) {
+    Tensor forward(const Projector& project, KdaState& state, const Tensor &hidden, bool use_cache,
+                   int64_t confirmed = 0) const {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0,
                           "recurrent attention requires nonempty [B,T,H] input");
         return mfq::models::recurrent_window(
-            hidden.size(1), use_cache, confirmed, pending(),
+            hidden.size(1), use_cache, confirmed, state.pending(),
             [&](int64_t start, int64_t count) {
-                return forward_chunk(project, hidden.narrow(1, start, count), use_cache);
+                return forward_chunk(project, state, hidden.narrow(1, start, count), use_cache);
             },
             [&] {
-                rollback_conv_ = conv_;
-                rollback_recurrent_ = recurrent_;
+                state.rollback_conv = state.conv;
+                state.rollback_recurrent = state.recurrent;
             },
-            [&] { rollback(); },
+            [&] { state.rollback(); },
             [](Tensor prefix, Tensor suffix) { return tb::cat({prefix, suffix}, 1); });
     }
-    Tensor forward_chunk(const Projector& project, const Tensor &hidden, bool use_cache) {
+    Tensor forward_chunk(const Projector& project, KdaState& state, const Tensor &hidden, bool use_cache) const {
         const auto b = hidden.size(0), t = hidden.size(1), channels = heads_ * width_;
         const auto options = hidden.options().dtype(tb::kFloat32);
-        TYLOINFER_RUNTIME_CHECK(!use_cache || !conv_.defined() ||
-                              (conv_.size(0) == b && conv_.device() == hidden.device()),
+        TYLOINFER_RUNTIME_CHECK(!use_cache || !state.conv.defined() ||
+                              (state.conv.size(0) == b && state.conv.device() == hidden.device()),
                           "reset GLM KDA before changing batch/device");
-        auto previous = use_cache && conv_.defined()
-                            ? conv_
+        auto previous = use_cache && state.conv.defined()
+                            ? state.conv
                             : tb::zeros({b, kernel_ - 1, 3 * channels}, options);
         return mfq::models::gated_delta_attention(
             use_cache,
@@ -116,7 +103,7 @@ class Kda {
                 auto q = convolution[0], k = convolution[1], v = convolution[2];
                 auto forget = gates[0], beta = gates[1];
                 Tensor attended, next_recurrent;
-                auto initial = use_cache && recurrent_.defined() ? recurrent_ : Tensor{};
+                auto initial = use_cache && state.recurrent.defined() ? state.recurrent : Tensor{};
                 if (width_ == 32 || width_ == 64 || width_ == 128) {
                     auto result =
                         gdn_cuda(q, k, v, forget, beta,
@@ -159,8 +146,8 @@ class Kda {
                 return result;
             },
             [&](const auto &convolution, const Tensor &next) {
-                conv_ = convolution[3];
-                recurrent_ = next;
+                state.conv = convolution[3];
+                state.recurrent = next;
             });
     }
 
@@ -168,7 +155,6 @@ class Kda {
     KdaWeights w_;
     int64_t heads_, width_, kernel_;
     double lower_bound_, eps_;
-    Tensor conv_, recurrent_, rollback_conv_, rollback_recurrent_;
 };
 
 struct MlaWeights {
@@ -187,29 +173,17 @@ struct MlaConfig {
 class SparseMla {
   public:
     SparseMla(MlaWeights weights, MlaConfig config)
-        : w_(std::move(weights)), c_(config), latent_(config.maximum, config.latent),
-          index_(config.maximum, 2 * config.index_width) {
+        : w_(std::move(weights)), c_(config) {
         TYLOINFER_RUNTIME_CHECK(c_.heads > 0 && c_.nope > 0 && c_.value_width > 0 && c_.index_heads > 0 &&
                               c_.pool > 0 && c_.budget > 0 && c_.budget % c_.pool == 0,
                           "invalid Flash-Next MLA configuration");
     }
-    void reset() {
-        latent_.reset();
-        index_.reset();
-    }
-    int64_t position() const { return latent_.position(); }
-    void truncate(int64_t keep) {
-        TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= latent_.position() && keep <= index_.position(),
-                          "invalid Flash-Next MLA cache truncation");
-        latent_.truncate(keep);
-        index_.truncate(keep);
-    }
-    Tensor forward(const Projector& project, const Tensor &hidden, bool use_cache) {
+    Tensor forward(const Projector& project, MlaState& state, const Tensor &hidden, bool use_cache) const {
         TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.dim() == 3 && hidden.size(0) > 0 &&
                               hidden.size(1) > 0,
                           "GLM MLA requires nonempty [B,T,H] input");
-        const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? position() : 0;
-        TYLOINFER_RUNTIME_CHECK(offset == (use_cache ? index_.position() : 0) && t <= c_.maximum - offset,
+        const auto b = hidden.size(0), t = hidden.size(1), offset = use_cache ? state.position() : 0;
+        TYLOINFER_RUNTIME_CHECK(offset == (use_cache ? state.index.position() : 0) && t <= c_.maximum - offset,
                           "GLM MLA cache position/capacity mismatch");
         struct Projection {
             Tensor rank, query, latent, index;
@@ -238,8 +212,8 @@ class SparseMla {
                 return Projection{qr, query, latent, packed};
             },
             [&](Projection &p) {
-                p.latent = latent_.append(p.latent);
-                p.index = index_.append(p.index);
+                p.latent = state.latent.append(p.latent);
+                p.index = state.index.append(p.index);
             },
             [&](const Projection &p) {
                 return w_.embed_query(project, p.query).permute({0, 2, 1, 3}).to(tb::kFloat32);
@@ -274,14 +248,41 @@ class SparseMla {
                 return project.run(*w_.output, value.reshape({b, t, c_.heads * c_.value_width}));
             },
             [&] {
-                latent_.truncate(offset);
-                index_.truncate(offset);
+                state.latent.truncate(offset);
+                state.index.truncate(offset);
             });
     }
 
   private:
     MlaWeights w_;
     MlaConfig c_;
-    SequenceCache latent_, index_;
+};
+
+struct Mhc {
+    Tensor function, base, scale;
+    std::vector<Tensor> pre(const Tensor& x, const mfq::models::glm5_next::Config& c) const {
+        return mfq_glm5_next::mhc_pre(x, function, base, scale, c.sinkhorn, c.hc_eps, c.eps);
+    }
+};
+
+struct Layer {
+    mfq::models::glm5_next::Config config;
+    Mhc attention_hc, ffn_hc;
+    Tensor attention_norm, ffn_norm;
+    attention_ops::Transform ffn;
+    std::unique_ptr<Kda> kda;
+    std::unique_ptr<SparseMla> mla;
+    int device = 0;
+};
+
+struct Model {
+    std::shared_ptr<const mfq::ModelSource> source;
+    mfq::ModelGraph graph;
+    CudaModelPlan plan;
+    mfq::models::glm5_next::Config config;
+    mfq::models::CausalLmMetadata metadata;
+    QuantLinear embed, lm_head;
+    Tensor output_norm;
+    std::vector<Layer> layers;
 };
 } // namespace mfq::cuda::glm5_next

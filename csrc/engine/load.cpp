@@ -5,6 +5,7 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/gemma4/forward.h"
+#include "engine/models/glm5_next/forward.h"
 #include "engine/models/nemotron_h/forward.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/engine_impl.h"
@@ -43,7 +44,7 @@ using State = std::variant<
     std::unique_ptr<Text<Loaded<minicpmo45::Model, minicpmo45::State>>>,
     std::unique_ptr<Text<Loaded<gemma4::Model, gemma4::State>>>,
     std::unique_ptr<Text<Loaded<GlmDsaCausalLm>>>,
-    std::unique_ptr<Text<Loaded<Glm5CausalLm>>>,
+    std::unique_ptr<Text<Loaded<glm5_next::Model, glm5_next::State>>>,
     std::unique_ptr<Text<Loaded<Qwen4CausalLm>>>,
     std::unique_ptr<Text<Loaded<DeepseekV4CausalLm>>>,
     std::unique_ptr<Text<Loaded<DeepseekV41CausalLm>>>,

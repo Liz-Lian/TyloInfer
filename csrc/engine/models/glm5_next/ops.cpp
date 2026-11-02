@@ -1,12 +1,16 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
-#include "engine/backends/cuda/executor/execution.h"
-#include "ops.h"
 #include "model.h"
 #include "mtp.h"
+#include "load.h"
+#include "forward.h"
+#include "engine/backends/cuda/native/collectives.h"
+#include "engine/backends/cuda/native/scope.h"
+#include <algorithm>
+#include <span>
 #include "engine/models/common/load.h"
+#include "engine/models/common/session/paged.h"
 #include "engine/ops.h"
 #include "engine/models/common/transformer_layer.h"
-#include "engine/models/common/session_codec.h"
 
 namespace mfq::cuda::glm5_next {
 using Config = mfq::models::glm5_next::Config;
@@ -82,14 +86,7 @@ static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed do
     };
 }
 
-struct Mhc {
-    Tensor function, base, scale;
-    std::vector<Tensor> pre(const Tensor &x, const mfq::models::glm5_next::Config &c) const {
-        return mfq_glm5_next::mhc_pre(x, function, base, scale, c.sinkhorn, c.hc_eps, c.eps);
-    }
-};
-
-struct BlockLoader : weight_loader::Loader {
+struct LayerLoader : weight_loader::Loader {
     using KdaWeights = glm5_next::KdaWeights;
     using MlaWeights = glm5_next::MlaWeights;
 
@@ -119,98 +116,235 @@ struct BlockLoader : weight_loader::Loader {
     }
 };
 
-struct Glm5NextBlock final : Block {
-    using Tensor = mfq_tensor_backend::Tensor;
-    mfq::models::glm5_next::Config config;
-    Mhc attention_hc, ffn_hc;
-    Tensor attention_norm, ffn_norm;
-    Transform ffn;
-    std::unique_ptr<Kda> kda;
-    std::unique_ptr<SparseMla> mla;
+static Tensor execute(const Layer& layer, LayerState& activity, const Projector& project,
+                      const Tensor &x, int64_t position, int64_t confirmed = 0) {
+    const auto& [config, attention_hc, ffn_hc, attention_norm, ffn_norm, ffn, kda, mla, device] = layer;
+    if (mla)
+        TYLOINFER_RUNTIME_CHECK(std::get<MlaState>(activity).position() == position,
+                               "GLM MLA/model cache positions diverged");
+    return mfq::models::glm5_next::decoder_layer(
+        x, bool(kda), [&](const Tensor &hidden) { return attention_hc.pre(hidden, config); },
+        [&](Tensor branch, int role) {
+            return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
+        },
+        [&](Tensor branch) { return kda->forward(project, std::get<KdaState>(activity), branch, true, confirmed); },
+        [&](Tensor branch) { return mla->forward(project, std::get<MlaState>(activity), branch, true); },
+        [](Tensor branch, const Tensor &residual, const auto &mix) {
+            return mfq_glm5_next::mhc_post(branch, residual, mix[0], mix[1]);
+        },
+        [&](const Tensor &hidden) { return ffn_hc.pre(hidden, config); },
+        [&](Tensor branch) { return ffn(project, branch); });
+}
 
-    Glm5NextBlock(const weight_loader::Loader& weights,
-                  const Config &c, int layer) {
-        BlockLoader loader{weights};
-        loader.role = "glm5_next";
-        mfq::models::glm5_next::load_block(*this, loader, c, layer);
-    }
-    void reset(int64_t) override {
-        if (kda)
-            kda->reset();
-        if (mla)
-            mla->reset();
-    }
-    bool supports_speculation() const noexcept override { return true; }
-    void commit_speculative() override {
-        if (kda)
-            kda->commit();
-    }
-    void rollback_speculative(int64_t keep) override {
-        if (kda)
-            kda->rollback();
-        if (mla)
-            mla->truncate(keep);
-    }
-    Tensor execute(const Projector& project, const Tensor &x, int64_t position,
-                   int64_t confirmed = 0) {
-        if (mla)
-            TYLOINFER_RUNTIME_CHECK(mla->position() == position,
-                              "GLM MLA/model cache positions diverged");
-        return mfq::models::glm5_next::decoder_layer(
-            x, bool(kda), [&](const Tensor &hidden) { return attention_hc.pre(hidden, config); },
-            [&](Tensor branch, int role) {
-                return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
-            },
-            [&](Tensor branch) { return kda->forward(project, branch, true, confirmed); },
-            [&](Tensor branch) { return mla->forward(project, branch, true); },
-            [](Tensor branch, const Tensor &residual, const auto &mix) {
-                return mfq_glm5_next::mhc_post(branch, residual, mix[0], mix[1]);
-            },
-            [&](const Tensor &hidden) { return ffn_hc.pre(hidden, config); },
-            [&](Tensor branch) { return ffn(project, branch); });
-    }
-    Tensor forward(CudaExecutionContext &execution, Tensor x, Tensor, int64_t position,
-                   const MfqOptional<Tensor> &, const RopeCache &,
-                   const MfqOptional<Tensor> & = mfq_nullopt,
-                   const MfqOptional<Tensor> &mask = mfq_nullopt) override {
-        TYLOINFER_RUNTIME_CHECK(!mask.has_value(), "GLM requires its causal unpadded attention geometry");
-        return execute(execution.projector(), x, position);
-    }
-    Tensor forward_context(CudaExecutionContext &execution, Tensor x, const Context &context,
-                           const RopeCache &) override {
-        return execute(execution.projector(), x, context.cache_position, context.confirmed_prefix);
-    }
-};
+Layer load_layer(const weight_loader::Loader& weights, const Config& config, int index) {
+    MfqCudaGuard guard(weights.placement.device);
+    Layer layer;
+    layer.device = weights.placement.device;
+    LayerLoader loader{weights};
+    loader.role = "glm5_next";
+    mfq::models::glm5_next::load_layer_weights(layer, loader, config, index);
+    return layer;
+}
 
-Glm5NextMtp::Glm5NextMtp(Projector project, Collectives& copies, CudaProfiler& profiler,
+Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+           int64_t context) {
+    validate_model_source(*source);
+    Model model;
+    model.source = std::move(source);
+    model.graph = mfq::models::graph(*model.source);
+    model.plan = cuda_model_plan(model.graph);
+    mfq::models::require_model(model.graph.backbone == "glm5_next",
+                               "model backbone does not match the requested causal model");
+    mfq::models::glm5_next::load_config(definition, model.config, model.metadata);
+    mfq::models::require_model(model.config.layers == model.graph.topology.text_layers,
+                               "model graph/config text-layer topology mismatch");
+    if (context > 0) {
+        mfq::models::require_model(context <= model.metadata.max_position_embeddings,
+                                   "--ctx-size exceeds max_position_embeddings");
+        model.config.maximum = context;
+        model.metadata.max_position_embeddings = context;
+    }
+    return model;
+}
+
+void load(Model& model, const weight_loader::Loader& weights,
+          LayerPlacementConfig& placement, int gpu_layers, bool load_layers,
+          bool load_input_output) {
+    validate_native_placement(weights.placement.tensor, placement, gpu_layers);
+    placement.prepare(model.config.layers);
+    MfqCudaGuard guard(placement.primary_device());
+    if (load_input_output) {
+        const bool separate = !model.config.tied_embeddings && weights.has("model.output.weight");
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
+        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+                                 : model.embed;
+        if (load_layers) {
+            model.layers.reserve(static_cast<size_t>(model.config.layers));
+            for (int index = 0; index < model.config.layers; ++index)
+                model.layers.push_back(load_layer(weights.for_layer(placement.device_for_layer(index), false),
+                                                  model.config, index));
+        }
+    } else {
+        if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+        model.output_norm = weights.tensor("model.output_norm.weight");
+    }
+}
+
+State::State(const Model& model) {
+    layers.reserve(model.layers.size());
+    for (const auto& layer : model.layers) {
+        if (layer.kda) layers.emplace_back(std::in_place_type<KdaState>);
+        else layers.emplace_back(std::in_place_type<MlaState>, model.config.maximum,
+                                 model.config.latent, model.config.index_width);
+    }
+}
+
+void State::reset(int64_t next_batch) {
+    cache_pos = decode_position_delta = 0;
+    speculative_start = -1;
+    speculative_confirmed = 0;
+    batch = next_batch;
+    for (auto& layer : layers)
+        std::visit([](auto& activity) { activity.reset(); }, layer);
+}
+
+void State::commit_speculative() {
+    mfq::models::require_model(speculative_start >= 0, "no speculative transaction");
+    for (auto& layer : layers)
+        if (auto* kda = std::get_if<KdaState>(&layer)) kda->commit();
+    speculative_start = -1;
+    speculative_confirmed = 0;
+}
+
+TextSessionState State::capture_text_session_state(const std::vector<int64_t>&) const {
+    throw std::runtime_error("text session state is unsupported by this model");
+}
+void State::restore_text_session_state(const TextSessionState&) {
+    throw CudaSessionStateError("text session state is unsupported by this model");
+}
+
+static Tensor normalize_ids(Collectives& copies, int primary, Tensor ids) {
+    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+                               "token IDs must have shape [tokens] or [batch,tokens]");
+    if (ids.dim() == 1) ids = ids.unsqueeze(0);
+    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0, "token IDs must not be empty");
+    return copies.copy(ids.to(tb::kInt64), primary).contiguous();
+}
+
+Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
+             Tensor ids, const Executor::Mode& mode) {
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    Inputs inputs;
+    inputs.values = {normalize_ids(copies, primary, std::move(ids))};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
+}
+
+Tensor normalize(const Model& model, Executor&, Tensor hidden, int64_t, int64_t) {
+    return rms_norm(hidden.mean(2), model.output_norm, model.metadata.rms_norm_eps);
+}
+
+Tensor softcap(const Model&, Executor&, Tensor value) { return value; }
+
+Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
+              const Executor::Mode& mode) {
+    return executor.projector(mode.ffn).run(model.lm_head, hidden);
+}
+
+bool supports_speculation(const Model& model) noexcept { return !model.layers.empty(); }
+
+Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
+               const Executor::Mode& mode, Input input) {
+    MfqCudaGuard guard(mode.primary);
+    auto ids = normalize_ids(copies, mode.primary, std::move(input.ids));
+    auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
+        : embed(model, executor, copies, mode.primary, ids, mode);
+    const auto B = ids.size(0), T = ids.size(1);
+    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+        embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
+        "inputs_embeds shape must match [batch,tokens,hidden_size]");
+    mfq::models::require_model(T > 0 && state.cache_pos + T <= model.metadata.max_position_embeddings &&
+        !input.positions.has_value() && !input.cache_positions.has_value() && !input.attention_mask.has_value(),
+        "GLM Flash-Next currently requires contiguous causal cache positions without an external mask");
+    mfq::models::require_model(state.speculative_start < 0,
+        "commit or roll back the pending speculative pass before forwarding");
+    mfq::models::require_model(input.confirmed >= 0 &&
+        (input.confirmed == 0 || (input.confirmed < T && B == 1 && state.cache_pos > 0 &&
+                                  supports_speculation(model))),
+        "unsupported speculative backbone geometry");
+    if (input.confirmed > 0) {
+        state.speculative_start = state.cache_pos;
+        state.speculative_confirmed = input.confirmed;
+    }
+    if (state.cache_pos == 0) state.reset(B);
+    auto hidden = copies.copy(std::move(embeddings), mode.primary).contiguous()
+        .to(tb::kFloat16).unsqueeze(2).expand({B, T, model.config.streams, model.config.hidden})
+        .contiguous();
+    const auto trace = [&](const Tensor& value) {
+        if (input.trace) input.trace->push_back(copies.copy(value, mode.primary).to(tb::kFloat32).clone());
+    };
+    trace(hidden);
+    auto project = executor.projector(mode.ffn);
+    for (size_t index = 0; index < model.layers.size(); ++index) {
+        const auto& layer = model.layers[index];
+        MfqCudaGuard layer_guard(layer.device);
+        hidden = execute(layer, state.layers[index], project,
+                         copies.copy(std::move(hidden), layer.device), state.cache_pos, input.confirmed);
+        trace(hidden);
+    }
+    state.cache_pos += T;
+    hidden = copies.copy(std::move(hidden), mode.primary);
+    auto finalized = normalize(model, executor, std::move(hidden), B, T);
+    if (input.raw_hidden) *input.raw_hidden = finalized;
+    return finalized;
+}
+
+void replay(const Model& model, State& state, Executor&, int64_t accepted) {
+    mfq::models::require_model(state.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
+    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
+    for (size_t index = 0; index < state.layers.size(); ++index) {
+        MfqCudaGuard guard(model.layers[index].device);
+        if (auto* kda = std::get_if<KdaState>(&state.layers[index])) kda->rollback();
+        else std::get<MlaState>(state.layers[index]).truncate(keep);
+    }
+    state.cache_pos = keep;
+    state.speculative_start = -1;
+    state.speculative_confirmed = 0;
+}
+
+
+Mtp::Mtp(Projector project, Collectives& copies, CudaProfiler& profiler,
                         QuantLinear embedding, int primary)
     : project_(std::move(project)), copies_(copies), profiler_(profiler),
       embedding_(std::move(embedding)), primary_(primary) {}
-Glm5NextMtp::~Glm5NextMtp() = default;
-Glm5NextMtp::Glm5NextMtp(Glm5NextMtp&&) noexcept = default;
+Mtp::~Mtp() = default;
+Mtp::Mtp(Mtp&&) noexcept = default;
 
-std::optional<Glm5NextMtp> Glm5NextMtp::load_if_present(const weight_loader::Loader& weights,
+std::optional<Mtp> Mtp::load_if_present(const weight_loader::Loader& weights,
                                                       Projector projector, Collectives& copies,
                                                       CudaProfiler& profiler, QuantLinear embedding,
                                                       const mfq::models::glm5_next::Config &main) {
-    Glm5NextMtp result{std::move(projector), copies, profiler, std::move(embedding),
+    Mtp result{std::move(projector), copies, profiler, std::move(embedding),
                        weights.placement.device};
-    BlockLoader loader{weights};
+    LayerLoader loader{weights};
     loader.role = "glm5_next";
     if (!mfq::models::glm5_next::load_predictor(result, loader, main))
         return std::nullopt;
+    result.states.reserve(result.layers.size());
+    for (size_t i = 0; i < result.layers.size(); ++i)
+        result.states.emplace_back(main.maximum, main.latent, main.index_width);
     return result;
 }
 
-void Glm5NextMtp::reset(int64_t next_batch) {
+void Mtp::reset(int64_t next_batch) {
     TYLOINFER_RUNTIME_CHECK(next_batch > 0, "GLM5-Next MTP batch must be positive");
-    for (auto &layer : layers)
-        layer.attention->reset();
+    for (auto &state : states)
+        state.reset();
     std::fill(lengths.begin(), lengths.end(), 0);
     batch = next_batch;
 }
 
-std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const Tensor &hidden,
+std::pair<Tensor, Tensor> Mtp::evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth, bool cache,
                                        const Tensor &supplied_positions,
                                        const Tensor &supplied_embeddings) {
@@ -262,7 +396,7 @@ std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const Tensor &hidden,
                     return stage == 0 ? normalized : normalized.to(dtype);
                 },
                 [&](Tensor value) {
-                    return block.attention->forward(project_, value, cache);
+                    return block.attention->forward(project_, states[layer], value, cache);
                 },
                 [&](Tensor value) { return block.ffn(project_, value); },
                 [](Tensor residual, Tensor branch) {
@@ -273,84 +407,32 @@ std::pair<Tensor, Tensor> Glm5NextMtp::evaluate(const Tensor &hidden,
         [&](int64_t layer, const auto &pos) {});
 }
 
-Tensor Glm5NextMtp::forward(Tensor hidden, Tensor ids) {
+Tensor Mtp::forward(Tensor hidden, Tensor ids) {
     return evaluate(hidden, ids).first;
 }
 
-MtpStep Glm5NextMtp::step(Tensor hidden, Tensor ids) {
+MtpStep Mtp::step(Tensor hidden, Tensor ids) {
     auto result = evaluate(hidden, ids);
     return {std::move(result.first), std::move(result.second)};
 }
 
-int64_t Glm5NextMtp::cache_position() const noexcept {
+int64_t Mtp::cache_position() const noexcept {
     return lengths.empty() ? 0 : lengths.front();
 }
 
-void Glm5NextMtp::trim_cache_to(int64_t position) {
+void Mtp::trim_cache_to(int64_t position) {
     TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= cache_position(),
                       "GLM5-Next MTP cache trim position is invalid");
     constexpr size_t index = 0;
     if (index < layers.size() && layers[index].attention)
-        layers[index].attention->truncate(position);
+        states[index].truncate(position);
     lengths[index] = position;
 }
 
-bool Glm5NextMtp::teacher_forced_prompt_prime() const noexcept { return false; }
+bool Mtp::teacher_forced_prompt_prime() const noexcept { return false; }
 
-bool Glm5NextMtp::target_bootstrap_decode() const noexcept { return true; }
+bool Mtp::target_bootstrap_decode() const noexcept { return true; }
 
-bool Glm5NextMtp::preserve_output_dtype() const noexcept { return true; }
+bool Mtp::preserve_output_dtype() const noexcept { return true; }
 
 } // namespace mfq::cuda::glm5_next
-
-namespace mfq::cuda {
-
-void Glm5Model::adapter_validate_load_options() const {
-    validate_native_placement(execution->tensor_parallel, execution->layer_placement,
-                              execution->n_gpu_layers);
-}
-
-std::unique_ptr<Block> Glm5Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int,
-                                                     const std::string &) {
-    return std::make_unique<glm5_next::Glm5NextBlock>(weights, config, layer);
-}
-
-mfq_tensor_backend::Tensor Glm5Model::collapse_hidden(mfq_tensor_backend::Tensor hidden, int64_t,
-                                                      int64_t) const {
-    return hidden.mean(2);
-}
-
-mfq_tensor_backend::Tensor
-Glm5Model::normalize_hidden(mfq_tensor_backend::Tensor hidden,
-                            const mfq_tensor_backend::Tensor &output_norm, int64_t, int64_t) const {
-    return glm5_next::rms_norm(hidden, output_norm, metadata.rms_norm_eps);
-}
-
-mfq_tensor_backend::Tensor
-Glm5Model::adapter_raw_hidden(const mfq_tensor_backend::Tensor &,
-                              const mfq_tensor_backend::Tensor &finalized) const {
-    return finalized;
-}
-
-mfq_tensor_backend::Tensor Glm5Model::adapter_last_logits(const QuantLinear &lm_head,
-                                                          mfq_tensor_backend::Tensor hidden) const {
-    return adapter_logits(lm_head, std::move(hidden));
-}
-
-mfq_tensor_backend::Tensor Glm5Model::adapter_next_token(const QuantLinear &lm_head,
-                                                         mfq_tensor_backend::Tensor hidden) const {
-    return mfq_tensor_backend::argmax(adapter_logits(lm_head, std::move(hidden)), -1)
-        .to(mfq_tensor_backend::kInt64);
-}
-
-} // namespace mfq::cuda
-
-namespace mfq::cuda {
-
-template struct CudaSessionCodec<Glm5Model>;
-
-} // namespace mfq::cuda
-
-namespace mfq::models {
-template struct glm5_next::CausalLm<cuda::CudaCausalOps<cuda::Glm5Model>>;
-} // namespace mfq::models

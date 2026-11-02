@@ -10,6 +10,7 @@
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"
+#include "engine/models/glm5_next/forward.h"
 #include "engine/models/nemotron_h/mtp.h"
 #include "engine/models/deepseek_v41/dspark.h"
 
@@ -164,7 +165,6 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
 
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::GlmDsaCausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Glm5CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV41CausalLm);
@@ -253,12 +253,12 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
     return result;
 }
 
-template <>
-RuntimeComponents<mfq::cuda::Glm5CausalLm> load_runtime_components(
-        mfq::cuda::Glm5CausalLm& model,
+RuntimeComponents<mfq::cuda::glm5_next::Model> load_runtime_components(
+        mfq::cuda::glm5_next::Model& model,
         const mfq::cuda::weight_loader::Loader& weights,
-        bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::Glm5CausalLm> result{model.graph, model.plan};
+        bool load_optional_components, mfq::cuda::Projector projector,
+        mfq::cuda::Collectives& copies, CudaProfiler& profiler) {
+    RuntimeComponents<mfq::cuda::glm5_next::Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
     if (result.plan.vision != mfq::cuda::CudaVisionAdapter::none ||
             (result.plan.predictor != mfq::cuda::CudaPredictorAdapter::none &&
@@ -270,14 +270,13 @@ RuntimeComponents<mfq::cuda::Glm5CausalLm> load_runtime_components(
     if (result.plan.predictor ==
             mfq::cuda::CudaPredictorAdapter::none) return result;
     TYLOINFER_RUNTIME_CHECK(
-        model.supports_speculation(),
+        mfq::cuda::glm5_next::supports_speculation(model),
         "invalid Flash-Next predictor model");
-    auto predictor = mfq::cuda::glm5_next::Glm5NextMtp::load_if_present(
-        weights, model.execution->projector(), model.execution->collectives,
-        model.execution->profiler, model.embed, model.config);
+    auto predictor = mfq::cuda::glm5_next::Mtp::load_if_present(
+        weights, std::move(projector), copies, profiler, model.embed, model.config);
     if (predictor) {
         result.mtp =
-            std::make_unique<mfq::cuda::glm5_next::Glm5NextMtp>(
+            std::make_unique<mfq::cuda::glm5_next::Mtp>(
                 std::move(*predictor));
     }
     result.mtp_available = static_cast<bool>(result.mtp);

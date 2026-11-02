@@ -8,7 +8,7 @@
 #include "engine/models/deepseek_v4/ops.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/gemma4/model.h"
-#include "engine/models/glm5_next/ops.h"
+#include "engine/models/glm5_next/model.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/nemotron_h/model.h"
@@ -145,12 +145,12 @@ load_runtime_components(
         const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
-template <>
-RuntimeComponents<mfq::cuda::Glm5CausalLm>
+RuntimeComponents<mfq::cuda::glm5_next::Model>
 load_runtime_components(
-    mfq::cuda::Glm5CausalLm& model,
-        const mfq::cuda::weight_loader::Loader& weights,
-    bool load_optional_components);
+    mfq::cuda::glm5_next::Model& model,
+    const mfq::cuda::weight_loader::Loader& weights,
+    bool load_optional_components, mfq::cuda::Projector projector,
+    mfq::cuda::Collectives& copies, CudaProfiler& profiler);
 
 template <>
 RuntimeComponents<mfq::cuda::DeepseekV41CausalLm>
