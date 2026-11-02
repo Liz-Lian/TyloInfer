@@ -1,14 +1,11 @@
 #include "packed_nint.h"
-#include "backends/cpu/native/host_parallel.h"
+#include "engine/backends/cpu/native/features.h"
+#include "engine/backends/cpu/native/host_parallel.h"
 
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <vector>
-
-#if defined(TYLOINFER_CPU_PACKED_AVX2) && defined(_MSC_VER)
-#include <intrin.h>
-#endif
 
 namespace mfq::cpu {
 namespace {
@@ -41,27 +38,6 @@ std::uint32_t code(const PackedNintView& w, std::uint64_t bit, int bits) {
     return (word >> shift) & ((1u << bits)-1);
 }
 } // namespace
-
-bool packed_nint_has_avx2() {
-    static const bool supported = [] {
-#if defined(TYLOINFER_CPU_PACKED_AVX2) && defined(_MSC_VER)
-        int leaf[4];
-        __cpuid(leaf, 0);
-        if (leaf[0] < 7) return false;
-        __cpuidex(leaf, 1, 0);
-        if ((leaf[2] & ((1<<27) | (1<<28))) != ((1<<27) | (1<<28))) return false;
-        if ((_xgetbv(0) & 6) != 6) return false;
-        __cpuidex(leaf, 7, 0);
-        return (leaf[1] & (1<<5)) != 0;
-#elif defined(TYLOINFER_CPU_PACKED_AVX2) && (defined(__GNUC__) || defined(__clang__))
-        __builtin_cpu_init();
-        return static_cast<bool>(__builtin_cpu_supports("avx2"));
-#else
-        return false;
-#endif
-    }();
-    return supported;
-}
 
 void detail::packed_nint_scalar_rows(const PackedNintView& w, const float* input,
     std::int64_t batch, std::int64_t input_stride, float* output,
@@ -101,7 +77,7 @@ void packed_nint_matmul(const PackedNintView& w, const float* input,
     if (!input || !output) throw std::invalid_argument("missing packed NINT activation storage");
     auto rows = detail::packed_nint_scalar_rows;
 #ifdef TYLOINFER_CPU_PACKED_AVX2
-    if (kernel == PackedNintKernel::automatic && packed_nint_has_avx2())
+    if (kernel == PackedNintKernel::automatic && has_avx2())
         rows = detail::packed_nint_avx2_rows;
 #endif
     host_parallel_for(0, w.outputs, 1, threads, [&](auto begin, auto end) {
@@ -110,7 +86,7 @@ void packed_nint_matmul(const PackedNintView& w, const float* input,
 }
 PackedNintRows packed_nint_rows_kernel() noexcept {
 #ifdef TYLOINFER_CPU_PACKED_AVX2
-    if (packed_nint_has_avx2()) return detail::packed_nint_avx2_rows;
+    if (has_avx2()) return detail::packed_nint_avx2_rows;
 #endif
     return detail::packed_nint_scalar_rows;
 }

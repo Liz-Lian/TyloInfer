@@ -4,8 +4,8 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
 #include "vq.h"
 #include "nint.h"
-#include "quant_dot.h"
-#include "nvq_group.h"
+#include "engine/backends/cpu/ops/projection/quant_dot.h"
+#include "engine/backends/cpu/ops/projection/nvq_group.h"
 #include "cpu_rows.h"
 
 #include <algorithm>

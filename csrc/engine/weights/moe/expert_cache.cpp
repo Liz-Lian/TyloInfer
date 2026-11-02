@@ -9,7 +9,7 @@
 #include "engine/weights/moe/pinned_expert_arena.h"
 #include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
-#include "backends/cpu/native/host_parallel.h"
+#include "engine/backends/cpu/native/host_parallel.h"
 #include "native/error.h"
 #include "engine/weights/source/mapped.h"
 #include <thread>

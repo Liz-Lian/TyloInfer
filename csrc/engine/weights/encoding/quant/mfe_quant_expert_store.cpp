@@ -1,7 +1,7 @@
 #include "mfe_quant_expert_store.h"
 #include "mfe_index.h"
 #include "packed_nint_expert_store.h"
-#include "backends/cpu/native/host_parallel.h"
+#include "engine/backends/cpu/native/host_parallel.h"
 
 #include <algorithm>
 #include <cstring>

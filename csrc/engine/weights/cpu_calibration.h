@@ -1,7 +1,7 @@
 #pragma once
 
 #include "cpu_cost_model.h"
-#include "backends/cpu/execution/cpu_measurement.h"
+#include "engine/backends/cpu/native/measure.h"
 
 #include <chrono>
 #include <functional>

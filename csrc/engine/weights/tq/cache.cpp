@@ -9,7 +9,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/backends/cuda/executor/graph_registry.h"
 #include "env.h"
-#include "backends/cpu/native/host_memory.h"
+#include "engine/backends/cpu/native/host_memory.h"
 
 #include <algorithm>
 #include <chrono>

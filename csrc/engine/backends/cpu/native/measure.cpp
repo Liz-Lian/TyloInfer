@@ -1,4 +1,4 @@
-#include "cpu_measurement.h"
+#include "measure.h"
 
 #include <chrono>
 #include <cmath>

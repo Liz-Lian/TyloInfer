@@ -2,8 +2,8 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/format.h"
 #include "engine/weights/tensor_parallel.h"
-#include "nvq_group.h"
-#include "nvq_dense_pack.h"
+#include "engine/backends/cpu/ops/projection/nvq_group.h"
+#include "engine/weights/encoding/quant/nvq_dense.h"
 
 #include <algorithm>
 #include <array>
@@ -32,7 +32,7 @@ bool prepare_nvq_dense_groups(NvqWeight& w) {
     const int bits=w.kernel_format==12?9:(w.kernel_format==13 || w.kernel_format==15)?10:w.kernel_format==14?12:8;
     if((int64_t(rows)*(int64_t(pairs)*((d4?2:1)*bits+7)+int64_t(groups)*4))&7)return false;
     std::vector<uint8_t> compact;
-#define PACK(B,P) mfq::cpu::dense::pack<B,P>(w.indices_packed.data_ptr<uint8_t>(),w.indices_packed.numel(), \
+#define PACK(B,P) mfq::nvq::dense::pack<B,P>(w.indices_packed.data_ptr<uint8_t>(),w.indices_packed.numel(), \
         w.aux_packed.data_ptr<uint8_t>(),w.aux_packed.numel(),w.sub_scale_packed.data_ptr<uint8_t>(), \
         w.sub_scale_packed.numel(),rows,pairs,groups)
     switch(w.kernel_format) {

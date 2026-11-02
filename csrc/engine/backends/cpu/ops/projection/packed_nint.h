@@ -22,7 +22,6 @@ struct PackedNintView {
 };
 
 enum class PackedNintKernel { automatic, scalar };
-bool packed_nint_has_avx2();
 using PackedNintRows=void(*)(const PackedNintView&,const float*,
     std::int64_t,std::int64_t,float*,std::int64_t,std::int64_t,std::int64_t);
 // Canonical row storage is validated by its loader; select once per expert job.

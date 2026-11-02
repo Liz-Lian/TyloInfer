@@ -1,6 +1,6 @@
 #pragma once
-#include "packed_nint.h"
-#include "nvq_group.h"
+#include "engine/backends/cpu/ops/projection/packed_nint.h"
+#include "engine/backends/cpu/ops/projection/nvq_group.h"
 #include "engine/weights/nint.h"
 #include "engine/weights/vq.h"
 #include "engine/weights/mx.h"

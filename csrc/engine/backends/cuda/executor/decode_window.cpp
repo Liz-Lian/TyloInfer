@@ -5,7 +5,7 @@
 #include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/native/device.h"
 #include "native/error.h"
-#include "backends/cpu/execution/cpu_expert_pool.h"
+#include "engine/backends/cpu/executor/expert_pool.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>

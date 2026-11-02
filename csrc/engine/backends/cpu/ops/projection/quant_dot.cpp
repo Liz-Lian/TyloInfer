@@ -1,5 +1,5 @@
 #include "quant_dot.h"
-#include "packed_nint.h"
+#include "engine/backends/cpu/native/features.h"
 
 namespace mfq::cpu {
 float scaled_i8_dot_scalar(const std::int8_t* weights, const float* input, int count, float scale) {
@@ -13,7 +13,7 @@ float scaled_i8_dot_scalar(const std::int8_t* weights, const float* input, int c
 
 ScaledI8Dot scaled_i8_dot_kernel() {
 #ifdef TYLOINFER_CPU_PACKED_AVX2
-    if (packed_nint_has_avx2()) return detail::scaled_i8_dot_avx2;
+    if (has_avx2()) return detail::scaled_i8_dot_avx2;
 #endif
     return scaled_i8_dot_scalar;
 }

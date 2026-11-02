@@ -5,8 +5,8 @@
 #include "engine/weights/moe/pinned_expert_arena.h"
 #include "engine/weights/quant.h"
 #include "engine/backends/cuda/ops/projection/cpu_rows.h"
-#include "backends/cpu/execution/cpu_expert_pool.h"
-#include "backends/cpu/native/host_copy.h"
+#include "engine/backends/cpu/executor/expert_pool.h"
+#include "engine/backends/cpu/native/host_copy.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/format.h"
 

@@ -1,5 +1,5 @@
 #include "host_memory_copy.h"
-#include "packed_nint.h"
+#include "engine/backends/cpu/native/features.h"
 #include <cstring>
 
 namespace mfq::cpu {
@@ -14,7 +14,7 @@ void copy_cached(void* destination,const void* source,std::size_t bytes) noexcep
 }
 HostMemoryCopyBatch::HostMemoryCopyBatch(bool streaming) noexcept:copy_(copy_cached) {
 #if defined(TYLOINFER_CPU_PACKED_AVX2)
-    if(streaming && packed_nint_has_avx2()) {
+    if(streaming && has_avx2()) {
         copy_=detail::host_memory_copy_avx2;
         finish_=detail::host_memory_copy_finish_avx2;
     }

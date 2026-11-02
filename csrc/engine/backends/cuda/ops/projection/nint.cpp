@@ -4,7 +4,7 @@
 #include "nint.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/weights/format.h"
-#include "packed_nint.h"
+#include "engine/backends/cpu/ops/projection/packed_nint.h"
 #include "cpu_rows.h"
 #include "engine/weights/nint_cache.h"
 #include "engine/backends/cuda/executor/decode_window.h"

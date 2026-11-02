@@ -5,10 +5,10 @@
 #include "engine/backends/cuda/native/dma_batch.h"
 #include "engine/weights/moe/cached_source_internal.h"
 #include "engine/backends/cuda/native/memory.h"
-#include "backends/cpu/execution/cpu_expert_pool.h"
+#include "engine/backends/cpu/executor/expert_pool.h"
 #include "native/error.h"
 #include "engine/weights/routes.h"
-#include "host_memory_copy.h"
+#include "engine/backends/cpu/native/host_memory_copy.h"
 #include "resident_allocations.h"
 #include "engine/weights/ranker.h"
 #include <algorithm>

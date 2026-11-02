@@ -4,7 +4,7 @@
 #include <cstring>
 
 #include "cuda_runtime_config.h"
-#include "backends/cpu/native/host_memory.h"
+#include "engine/backends/cpu/native/host_memory.h"
 #include "engine/models/deepseek_v41/session_codec.h"
 #include "engine/models/qwen4_exp/session_codec.h"
 #include "engine/models/common/session/state.h"

@@ -13,6 +13,7 @@ add_library(mfq-quant-readers STATIC
     quant/nint_blob.cpp
     quant/nint_blob.h
     quant/nvq_rows.cpp
+    quant/nvq_dense.h
     quant/vq_blob.cpp
     quant/vq_blob.h
     quant/mfe_quant_expert_store.cpp
