@@ -25,6 +25,7 @@ public:
     const std::filesystem::path& root() const noexcept;
     const std::vector<std::filesystem::path>& source_paths()
         const noexcept override;
+    const Safetensors& files() const noexcept;
     const HfTensorLocation& location(std::string_view name) const;
     void drop_file_cache() const noexcept override;
 
@@ -43,12 +44,6 @@ public:
     bool has_asset(std::string_view name) const noexcept override;
     std::vector<std::byte> read_asset(std::string_view name) const override;
     std::optional<ModelGraph> model_graph() const override;
-
-    void read_shard_range_into(
-        std::size_t shard,
-        std::uint64_t offset,
-        std::byte* destination,
-        std::size_t size) const;
 
 private:
     struct Impl;

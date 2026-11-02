@@ -5,7 +5,7 @@
 
 namespace mfq {
 
-MlxAffineBinding mlx_affine_binding(const HfSafetensorsSource& source,
+MlxAffineBinding mlx_affine_binding(const Safetensors& source,
     const nlohmann::json& quantization, const TensorMetadata& values) {
     if (!quantization.is_object() || values.dtype != "U32" || !values.shape ||
         values.shape->empty() || values.name.size() < 7 || values.name.substr(values.name.size() - 7) != ".weight")
@@ -25,8 +25,12 @@ MlxAffineBinding mlx_affine_binding(const HfSafetensorsSource& source,
     layout.shape = *values.shape;
     layout.shape.back() = layout.shape.back() * 32 / layout.bits;
     binding.scales = module + ".scales"; binding.biases = module + ".biases";
-    const auto* scales = source.find_tensor(binding.scales);
-    const auto* biases = source.find_tensor(binding.biases);
+    const auto scales_found = source.records().find(binding.scales);
+    const auto biases_found = source.records().find(binding.biases);
+    const auto* scales = scales_found == source.records().end()
+        ? nullptr : &scales_found->second.metadata;
+    const auto* biases = biases_found == source.records().end()
+        ? nullptr : &biases_found->second.metadata;
     if (!scales || !biases || !scales->shape || !biases->shape || biases->dtype != scales->dtype)
         throw std::invalid_argument("MLX affine scales/biases are missing or incompatible: " + module);
     layout.scale_dtype = scales->dtype;

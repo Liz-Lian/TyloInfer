@@ -1,7 +1,7 @@
 #pragma once
 
-#include "source/hf_safetensors_source.h"
 #include "engine/weights/encoding/mlx_affine.h"
+#include "engine/weights/source/safetensors.h"
 #include "nlohmann/json.hpp"
 
 namespace mfq {
@@ -12,7 +12,7 @@ struct MlxAffineBinding {
     std::string scales, biases;
 };
 
-MlxAffineBinding mlx_affine_binding(const HfSafetensorsSource& source,
+MlxAffineBinding mlx_affine_binding(const Safetensors& source,
     const nlohmann::json& quantization, const TensorMetadata& values);
 
 } // namespace mfq

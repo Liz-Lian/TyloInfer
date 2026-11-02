@@ -5,7 +5,8 @@
 #include "engine/weights/encoding/mx_blob.h"
 #include "engine/weights/encoding/quant/mfe_blob.h"
 #include "engine/models/common/legacy_names.h"
-#include "engine/weights/source/mlx.h"
+#include "engine/weights/source/hf.h"
+#include "engine/weights/mlx.h"
 #include "engine/models/common/mlx_names.h"
 #include "nlohmann/json.hpp"
 
@@ -130,18 +131,6 @@ MfqLegacyTensorAliases source_compatibility(
 } // namespace
 
 struct HfModelSource::Impl {
-    struct Segment {
-        std::uint64_t offset = 0;
-        std::vector<std::byte> inline_bytes;
-        std::string source_name;
-        std::uint64_t source_offset = 0;
-        std::uint64_t nbytes = 0;
-    };
-    struct Record {
-        TensorMetadata metadata;
-        std::vector<Segment> segments;
-    };
-
     explicit Impl(std::filesystem::path root, std::string source_prefix)
         : source(std::move(root), {}, std::move(source_prefix)) {}
 
@@ -149,7 +138,7 @@ struct HfModelSource::Impl {
     MfqLegacyTensorAliases legacy_tensor_compatibility;
     std::vector<TensorMetadata> tensors;
     std::unordered_map<std::string, std::size_t> tensor_indices;
-    std::unordered_map<std::string, Record> records;
+    std::unordered_map<std::string, hf::Record> records;
 };
 
 HfModelSource::HfModelSource(std::filesystem::path root, std::string source_prefix)
@@ -242,13 +231,14 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
             throw std::runtime_error("HF tensor shape is missing: " + source_name);
         }
 
-        Impl::Record record;
+        hf::Record record;
         record.metadata.name = canonical;
         record.metadata.stored_dtype = values->dtype;
         record.metadata.shape = values->shape;
         const auto item_size = dense_item_size(values->dtype);
         if (values->dtype == "U32") {
-            const auto binding = mlx_affine_binding(impl_->source, mlx_quantization, *values);
+            const auto binding = mlx_affine_binding(
+                impl_->source.files(), mlx_quantization, *values);
             const auto& layout = binding.layout;
             record.metadata.dtype = "MLX-AFFINE";
             record.metadata.shape = layout.shape;
@@ -409,7 +399,7 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
             throw std::runtime_error(
                 "native HF expert projection has missing expert IDs: " + name);
         }
-        Impl::Record aggregate;
+        hf::Record aggregate;
         aggregate.metadata.name = name;
         aggregate.metadata.dtype = "MFE";
         aggregate.metadata.stored_dtype = "MFE";
@@ -423,7 +413,7 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
             logical_offset = checked_add(
                 logical_offset, count, "virtual MFE metadata");
         };
-        const auto append_source_segment = [&](const Impl::Segment& segment) {
+        const auto append_source_segment = [&](const hf::Segment& segment) {
             if (!segment.inline_bytes.empty()) {
                 append_inline(segment.inline_bytes);
             } else {
@@ -527,17 +517,7 @@ std::optional<TensorFileRange> HfModelSource::tensor_file_range_at(std::string_v
     std::uint64_t offset, std::size_t size) const {
     const auto found = impl_->records.find(std::string(name));
     if (found == impl_->records.end()) throw std::out_of_range("HF tensor not found: " + std::string(name));
-    const auto& record = found->second;
-    if (offset > record.metadata.nbytes || size > record.metadata.nbytes - offset)
-        throw std::out_of_range("HF tensor file range is out of bounds");
-    for (const auto& segment : record.segments) {
-        if (!segment.inline_bytes.empty() || offset < segment.offset || offset - segment.offset > segment.nbytes ||
-            size > segment.nbytes - (offset - segment.offset)) continue;
-        const auto& location = impl_->source.location(segment.source_name);
-        return TensorFileRange{impl_->source.source_paths().at(location.shard),
-            location.offset + segment.source_offset + offset - segment.offset, size};
-    }
-    return std::nullopt;
+    return found->second.file_range(impl_->source.files(), offset, size);
 }
 
 void HfModelSource::read_range_into(
@@ -549,36 +529,8 @@ void HfModelSource::read_range_into(
     if (found == impl_->records.end()) {
         throw std::runtime_error("model tensor not found: " + std::string(name));
     }
-    const auto& record = found->second;
-    if (relative_offset > record.metadata.nbytes ||
-        size > record.metadata.nbytes - relative_offset) {
-        throw std::out_of_range("model tensor byte range is out of bounds: " +
-                                std::string(name));
-    }
-    const auto request_end = relative_offset + size;
-    for (const auto& segment : record.segments) {
-        const auto segment_end = checked_add(
-            segment.offset,
-            segment.inline_bytes.empty() ? segment.nbytes
-                                         : segment.inline_bytes.size(),
-            "HF virtual tensor segment");
-        const auto begin = std::max(relative_offset, segment.offset);
-        const auto end = std::min<std::uint64_t>(request_end, segment_end);
-        if (begin >= end) continue;
-        const auto target_offset = static_cast<std::size_t>(begin - relative_offset);
-        const auto count = static_cast<std::size_t>(end - begin);
-        if (!segment.inline_bytes.empty()) {
-            std::copy_n(
-                segment.inline_bytes.data() + (begin - segment.offset), count,
-                destination + target_offset);
-        } else {
-            impl_->source.read_range_into(
-                segment.source_name,
-                segment.source_offset + begin - segment.offset,
-                destination + target_offset,
-                count);
-        }
-    }
+    found->second.read(
+        impl_->source.files(), relative_offset, destination, size);
 }
 
 const std::vector<std::string>& HfModelSource::assets() const noexcept {

@@ -232,6 +232,9 @@ const std::vector<std::filesystem::path>&
 HfSafetensorsSource::source_paths() const noexcept {
     return impl_->files.paths();
 }
+const Safetensors& HfSafetensorsSource::files() const noexcept {
+    return impl_->files;
+}
 void HfSafetensorsSource::drop_file_cache() const noexcept {
     impl_->files.drop_file_cache();
 }
@@ -278,17 +281,9 @@ void HfSafetensorsSource::read_range_into(
         throw std::out_of_range("model tensor byte range is out of bounds: " +
                                 std::string(name));
     }
-    read_shard_range_into(source.location.shard,
-                          source.location.offset + relative_offset,
-                          destination, size);
-}
-
-void HfSafetensorsSource::read_shard_range_into(
-    std::size_t shard,
-    std::uint64_t offset,
-    std::byte* destination,
-    std::size_t size) const {
-    impl_->files.read(shard, offset, destination, size);
+    impl_->files.read(source.location.shard,
+                      source.location.offset + relative_offset,
+                      destination, size);
 }
 
 const std::vector<std::string>& HfSafetensorsSource::assets() const noexcept {
