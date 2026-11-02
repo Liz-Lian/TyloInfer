@@ -75,26 +75,4 @@ void load_linear_attention(Attention& attention, Loader& ops, const Config& conf
 }
 
 
-template <class Loader>
-auto load_block(Loader& ops, const Config& config, int layer, const std::string& type,
-                std::string_view tensor_root = "model") {
-    const auto prefix = std::string(tensor_root) + ".block." + std::to_string(layer) + ".";
-    if (Config::attention_kind(type) == Config::AttentionKind::full) {
-        auto block = ops.full_block();
-        models::load_full_attention(*block, ops, config, layer, prefix,
-                                    config.legacy_tensor_layout.norm_weight_offset,
-                                    config.attention_output_gate);
-        block->ffn = load_ffn<typename Loader::Ffn>(ops, config, layer, tensor_root);
-        return ops.finish(std::move(block));
-    }
-    auto block = ops.linear_block();
-    block->qwen_config = config;
-    block->tiled_v_heads = config.legacy_tensor_layout.qwen_gdn_gguf_layout;
-    block->attn_norm = ops.dense(prefix + "attention.norm.weight");
-    block->ffn_norm = ops.dense(prefix + "mlp.norm.weight");
-    load_linear_attention(*block, ops, config, layer, tensor_root);
-    block->ffn = load_ffn<typename Loader::Ffn>(ops, config, layer, tensor_root);
-    return ops.finish(std::move(block));
-}
-
 } // namespace mfq::models::qwen35
