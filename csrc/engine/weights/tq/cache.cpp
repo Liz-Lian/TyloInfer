@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/weights/encoding/tq_table.h"
 #include "engine/backends/cuda/executor/tq.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/executor/graph_registry.h"
 #include "env.h"
 #include "engine/backends/cpu/native/host_memory.h"

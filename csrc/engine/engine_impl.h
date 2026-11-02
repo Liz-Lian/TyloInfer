@@ -14,7 +14,7 @@
 #include "engine/generation/batch.h"
 #include "engine/models/common/generation.h"
 #include "engine/backends/cuda/executor/options.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "engine/backends/cuda/executor/execution.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
 #include "engine/models/common/session/cache.h"

@@ -5,7 +5,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/native/scope.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/input.h"

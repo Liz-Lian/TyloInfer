@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/models/common/generation.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "engine/backends/cuda/executor/execution.h"
 #include "engine/generation/mtp/state.h"
 
 namespace mfq::cuda::diagnostics {

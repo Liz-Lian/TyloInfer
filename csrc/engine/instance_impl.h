@@ -6,7 +6,7 @@
 #include "engine/load.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/native/scope.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/models/common/text.h"
 #include "engine/state/kv_memory.h"
