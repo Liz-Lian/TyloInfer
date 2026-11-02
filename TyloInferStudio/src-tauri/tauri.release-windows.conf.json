@@ -10,16 +10,10 @@
         "uninstallerIcon": "icons/icon.ico"
       }
     },
-    "externalBin": [
-      "../../packaging/sidecars/mfq-runtime",
-      "../../packaging/sidecars/mfq-diagnostics"
-    ],
     "resources": {
       "../dist": "web-ui",
-      "../../packaging/windows-runtime/": "",
-      "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
-      "../../packaging/Resources/licenses": "licenses",
-      "../../packaging/Resources/agent-runtime": "agent-runtime"
+      "../../packaging/Resources/tyloinfer-server": "tyloinfer-server",
+      "../../packaging/Resources/licenses": "licenses"
     }
   }
 }

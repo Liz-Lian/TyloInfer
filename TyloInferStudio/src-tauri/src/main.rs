@@ -1,15 +1,17 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
+mod native_server;
 mod updater;
 #[cfg(target_os = "windows")]
 mod windows_icon;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 use url::Url;
@@ -19,19 +21,21 @@ const LOG_FILE: &str = "tyloinfer-server.log";
 const LOG_ROTATE_BYTES: u64 = 16 * 1024 * 1024;
 const CREDENTIAL_SERVICE: &str = "TyloInfer";
 const CREDENTIAL_ACCOUNT: &str = "tyloinfer-server-api-key";
+const SERVER_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Reports whether the frontend should render the Windows titlebar controls.
 #[tauri::command]
 fn studio_custom_titlebar() -> bool {
     cfg!(target_os = "windows")
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum RuntimeMode {
     Local,
     Remote,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 struct StudioConfig {
     mode: RuntimeMode,
     remote_url: String,
@@ -109,61 +113,125 @@ struct SelectedModelDirectory {
 #[derive(Default)]
 struct StudioState {
     start_lock: Mutex<()>,
-    server_input: std::sync::Mutex<Option<(u32, String, ChildStdin)>>,
-    server_child: std::sync::Mutex<Option<Child>>,
+    managed_server: std::sync::Mutex<Option<ManagedServer>>,
     external_server: std::sync::Mutex<Option<(String, ServerIdentity)>>,
+    shutting_down: AtomicBool,
+}
+
+/// Keeps the process handle after lifecycle EOF until the child has actually exited.
+struct ManagedServer {
+    child: Child,
+    input: Option<ChildStdin>,
+    instance_id: String,
+    port: u16,
 }
 
 impl StudioState {
+    /// Releases ownership only after observing process exit, including failed launches.
     fn reap_exited_server(&self) {
-        if let Ok(mut child) = self.server_child.lock() {
-            if let Some(process) = child.as_mut() {
-                if process.try_wait().ok().flatten().is_some() {
-                    self.release_server(process.id());
-                    child.take();
+        if let Ok(mut server) = self.managed_server.lock() {
+            if let Some(process) = server.as_mut() {
+                if process.child.try_wait().ok().flatten().is_some() {
+                    server.take();
                 }
             }
         }
     }
 
-    fn own_server(&self, child: &mut Child, instance_id: &str) -> Result<(), String> {
-        let input = child.stdin.take().ok_or("TyloInfer Server lifecycle pipe is unavailable")?;
-        let mut owned = self.server_input.lock().map_err(|error| error.to_string())?;
-        if owned.is_some() { return Err("Studio already owns a server. Stop it before starting another one.".into()); }
-        *owned = Some((child.id(), instance_id.to_string(), input));
+    /// Registers a child before readiness polling so cancellation and cleanup retain its handle.
+    fn spawn_server(&self, command: &mut Command, instance_id: &str, port: u16) -> Result<u32, String> {
+        let mut server = self.managed_server.lock().map_err(|error| error.to_string())?;
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err("Studio is shutting down; no backend will be started.".into());
+        }
+        if server.is_some() {
+            return Err("Studio's server is already starting or stopping. Retry after it exits; a second backend will not be launched.".into());
+        }
+        let mut child = command.spawn().map_err(|error| format!("failed to start native TyloInfer Server: {error}"))?;
+        let pid = child.id();
+        let input = child.stdin.take();
+        let has_input = input.is_some();
+        *server = Some(ManagedServer { child, input, instance_id: instance_id.into(), port });
+        if !has_input { return Err("TyloInfer Server lifecycle pipe is unavailable".into()); }
+        Ok(pid)
+    }
+
+    /// Checks the original child rather than treating another listener as a successful launch.
+    fn check_starting_server(&self, pid: u32) -> Result<(), String> {
+        let mut server = self.managed_server.lock().map_err(|error| error.to_string())?;
+        let process = server.as_mut().filter(|process| process.child.id() == pid)
+            .ok_or("TyloInfer Server stopped before startup completed.")?;
+        if let Some(status) = process.child.try_wait().map_err(|error| error.to_string())? {
+            server.take();
+            return Err(format!("TyloInfer Server could not start ({status})."));
+        }
+        if process.input.is_none() { return Err("TyloInfer Server is stopping.".into()); }
         Ok(())
     }
 
-    fn release_server(&self, pid: u32) {
-        if let Ok(mut input) = self.server_input.lock() {
-            if input.as_ref().is_some_and(|(owner, _, _)| *owner == pid) {
-                input.take();
-            }
-        }
-    }
-
+    /// Closes only Studio's lifecycle pipe and waits before updates or port changes.
     fn stop_owned_server(&self) -> Result<(), String> {
-        let mut child = self.server_child.lock().map_err(|error| error.to_string())?;
-        let Some(process) = child.as_mut() else { return Ok(()); };
-        self.release_server(process.id());
-        for _ in 0..120 {
-            if process.try_wait().map_err(|error| format!("could not wait for TyloInfer Server: {error}"))?.is_some() {
-                child.take();
-                return Ok(());
+        self.stop_owned_server_with_timeout(SERVER_STOP_TIMEOUT)
+    }
+
+    /// Preserves a timed-out child's handle, preventing a second backend on retry.
+    fn stop_owned_server_with_timeout(&self, timeout: Duration) -> Result<(), String> {
+        let target = {
+            let mut server = self.managed_server.lock().map_err(|error| error.to_string())?;
+            let Some(process) = server.as_mut() else { return Ok(()); };
+            process.input.take();
+            (process.child.id(), process.instance_id.clone())
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            {
+                let mut server = self.managed_server.lock().map_err(|error| error.to_string())?;
+                let Some(process) = server.as_mut() else { return Ok(()); };
+                if process.child.id() != target.0 || process.instance_id != target.1 { return Ok(()); }
+                if process.child.try_wait().map_err(|error| format!("could not wait for TyloInfer Server: {error}"))?.is_some() {
+                    server.take();
+                    return Ok(());
+                }
             }
-            std::thread::sleep(Duration::from_millis(250));
+            if Instant::now() >= deadline { break; }
+            std::thread::sleep(Duration::from_millis(50).min(deadline.saturating_duration_since(Instant::now())));
         }
-        Err("TyloInfer Server did not stop within 30 seconds; finish active requests and retry".into())
+        Err(format!("TyloInfer Server did not stop within {} seconds. Studio retained its process handle; finish active requests and retry after it exits.", timeout.as_secs()))
     }
 
+    /// Returns the port of any tracked child, including a child still draining after EOF.
+    fn managed_port(&self) -> Result<Option<u16>, String> {
+        Ok(self.managed_server.lock().map_err(|error| error.to_string())?.as_ref().map(|server| server.port))
+    }
+
+    /// Distinguishes an unusable draining process from an active managed connection.
+    fn server_stopping(&self) -> bool {
+        self.managed_server.lock().ok().is_some_and(|server| server.as_ref().is_some_and(|server| server.input.is_none()))
+    }
+
+    /// Identifies a draining owned process so it cannot be accepted as an external service.
+    fn tracks(&self, server: &ServerIdentity) -> bool {
+        self.managed_server.lock().ok().is_some_and(|process| process.as_ref().is_some_and(
+            |process| process.child.id() == server.pid && process.instance_id == server.instance_id && server.launch_mode == "studio"))
+    }
+
+    /// Requires the spawned PID, instance ID, launch mode, and an open lifecycle pipe.
     fn owns(&self, server: &ServerIdentity) -> bool {
-        self.server_input.lock().ok().is_some_and(|input| input.as_ref().is_some_and(
-            |(pid, instance, _)| *pid == server.pid && *instance == server.instance_id && server.launch_mode == "studio"))
+        self.managed_server.lock().ok().is_some_and(|process| process.as_ref().is_some_and(
+            |process| process.child.id() == server.pid && process.instance_id == server.instance_id
+                && process.input.is_some() && server.launch_mode == "studio"))
     }
 
+    /// Restricts external-service consent to the exact endpoint and verified identity.
     fn accepts(&self, url: &str, server: &ServerIdentity) -> bool {
         self.external_server.lock().ok().is_some_and(|accepted| accepted.as_ref().is_some_and(
             |(endpoint, identity)| endpoint == url && identity == server))
+    }
+
+    /// Prevents further spawns before closing and draining Studio's lifecycle pipe on exit.
+    fn shutdown(&self) -> Result<(), String> {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        self.stop_owned_server()
     }
 }
 
@@ -211,9 +279,22 @@ fn load_config(app: &AppHandle) -> Result<StudioConfig, String> {
 }
 
 fn save_config(app: &AppHandle, config: &StudioConfig) -> Result<(), String> {
-    let path = config_path(app)?;
+    save_config_at(&config_path(app)?, config)
+}
+
+/// Replaces configuration atomically so failed writes preserve the previous endpoint.
+fn save_config_at(path: &Path, config: &StudioConfig) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?;
-    fs::write(path, bytes).map_err(|error| error.to_string())
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut output = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+        output.write_all(&bytes)?;
+        output.sync_all()?;
+        drop(output);
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() { let _ = fs::remove_file(temporary); }
+    result.map_err(|error| format!("could not save Studio configuration: {error}"))
 }
 
 fn local_service_url(config: &StudioConfig) -> String {
@@ -245,24 +326,14 @@ fn server_client(base_url: &str, timeout: Duration) -> Result<reqwest::Client, S
     builder.build().map_err(|error| error.to_string())
 }
 
-fn check_local_ports(data_dir: &Path, openai_port: u16) -> Result<(), String> {
-    let anthropic_port = fs::read(data_dir.join("listener.json")).ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|value| value.get("anthropic_port").and_then(|port| port.as_u64()))
-        .and_then(|port| u16::try_from(port).ok())
-        .filter(|port| *port > 0)
-        .unwrap_or(8091);
-    if openai_port == anthropic_port {
-        return Err(format!("OpenAI and Anthropic cannot share port {openai_port}. Choose different API ports."));
-    }
-    for (protocol, port) in [("OpenAI", openai_port), ("Anthropic", anthropic_port)] {
-        std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::AddrInUse => format!("The {protocol} API port {port} is already in use. Close the other service or choose a different port."),
-                std::io::ErrorKind::PermissionDenied => format!("Permission denied for the {protocol} API port {port}. Choose a different port."),
-                _ => format!("Could not use the {protocol} API port {port}: {error}"),
-            })?;
-    }
+/// Checks the single listener shared by the native OpenAI and Anthropic APIs.
+fn check_local_port(port: u16) -> Result<(), String> {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AddrInUse => format!("The API port {port} is already in use. Close the other service or choose a different port."),
+            std::io::ErrorKind::PermissionDenied => format!("Permission denied for the API port {port}. Choose a different port."),
+            _ => format!("Could not use the API port {port}: {error}"),
+        })?;
     Ok(())
 }
 
@@ -346,88 +417,22 @@ fn configure_detached(command: &mut Command) {
     }
 }
 
-fn usable_program(path: &Path) -> bool {
-    let Ok(candidate) = path.canonicalize() else { return false; };
-    let Ok(current) = std::env::current_exe().and_then(fs::canonicalize) else { return false; };
-    candidate.is_file() && candidate != current
+/// Resolves the native server from the release resource layout or a development build.
+fn server_program(app: &AppHandle) -> Result<PathBuf, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let explicit = std::env::var_os(native_server::EXECUTABLE_OVERRIDE);
+    native_server::discover(resource_dir.as_deref(), &repository, cfg!(debug_assertions), explicit.as_deref())
 }
 
-fn executable_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    #[cfg(windows)]
-    let names = [
-        format!("{name}.exe"),
-        format!("{name}.cmd"),
-        name.to_string(),
-    ];
-    #[cfg(not(windows))]
-    let names = [name.to_string()];
-    for directory in std::env::split_paths(&path) {
-        for candidate in &names {
-            let path = directory.join(candidate);
-            if usable_program(&path) {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
-fn packaged_executable(app: &AppHandle, names: &[&str]) -> Option<PathBuf> {
-    let mut directories = Vec::new();
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(parent) = current.parent() {
-            directories.push(parent.to_path_buf());
-        }
-    }
-    if let Ok(resource) = app.path().resource_dir() {
-        directories.push(resource);
-    }
-    for directory in directories {
-        for name in names {
-            let candidate = directory.join(name);
-            if usable_program(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn mfq_program(app: &AppHandle) -> Result<(PathBuf, bool), String> {
-    #[cfg(windows)]
-    let bundled_names = ["tyloinfer.exe", "tyloinfer.cmd", "tyloinfer"];
-    #[cfg(not(windows))]
-    let bundled_names = ["tyloinfer"];
+/// Uses the packaged web UI, or the built frontend in a development checkout when present.
+fn server_web_root(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(resource_dir) = app.path().resource_dir() {
-        #[cfg(windows)]
-        let bundled_cli = resource_dir.join("tyloinfer-cli").join("tyloinfer-cli.exe");
-        #[cfg(not(windows))]
-        let bundled_cli = resource_dir.join("tyloinfer-cli").join("tyloinfer-cli");
-        if usable_program(&bundled_cli) {
-            return Ok((bundled_cli, false));
-        }
+        let web_root = resource_dir.join("web-ui");
+        if web_root.is_dir() { return Some(web_root); }
     }
-    if let Some(path) = packaged_executable(app, &bundled_names) {
-        return Ok((path, false));
-    }
-    if let Some(path) = executable_on_path("tyloinfer") {
-        return Ok((path, false));
-    }
-    let python_name = if cfg!(windows) { "python" } else { "python3" };
-    executable_on_path(python_name)
-        .map(|path| (path, true))
-        .ok_or_else(|| "TyloInfer is not bundled and neither tyloinfer nor Python is on PATH".into())
-}
-
-fn packaged_runtime(app: &AppHandle) -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    let names = ["mfq-decode-metal"];
-    #[cfg(target_os = "windows")]
-    let names = ["mfq-runtime.exe"];
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let names = ["mfq-runtime"];
-    packaged_executable(app, &names)
+    let web_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist");
+    (cfg!(debug_assertions) && web_root.join("index.html").is_file()).then_some(web_root)
 }
 
 fn packaged_resource(app: &AppHandle, name: &str) -> Option<PathBuf> {
@@ -449,11 +454,14 @@ async fn status_for(app: &AppHandle, config: StudioConfig) -> Result<StudioStatu
     let service_url = service_url(&config);
     let client = server_client(&service_url, Duration::from_secs(2))?;
     let probe = probe_server(&client, &service_url).await;
-    let (server, connection_error) = match probe {
+    let (server, mut connection_error) = match probe {
         Ok(server) => (server, None),
         Err(error) => (None, Some(error)),
     };
     let state = app.state::<StudioState>();
+    if server.as_ref().is_some_and(|server| state.tracks(server)) && state.server_stopping() {
+        connection_error = Some("Studio's server is stopping. Wait for it to exit before reconnecting.".into());
+    }
     let owned = server.as_ref().is_some_and(|server| state.owns(server));
     let accepted = server.as_ref().is_some_and(|server| state.accepts(&service_url, server));
     let connection = if connection_error.is_some() { "incompatible" }
@@ -461,7 +469,7 @@ async fn status_for(app: &AppHandle, config: StudioConfig) -> Result<StudioStatu
         else if server.is_some() && accepted { "external" }
         else if server.is_some() { "confirmation_required" }
         else { "offline" };
-    let reachable = owned || accepted;
+    let reachable = connection_error.is_none() && (owned || accepted);
     let managed_pid = server.as_ref().filter(|_| owned).map(|server| server.pid);
     Ok(StudioStatus {
         config,
@@ -474,70 +482,36 @@ async fn status_for(app: &AppHandle, config: StudioConfig) -> Result<StudioStatu
     })
 }
 
+/// Waits off the async executor for lifecycle EOF to drain an owned native process.
+async fn stop_local(app: &AppHandle) -> Result<(), String> {
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || app.state::<StudioState>().stop_owned_server())
+        .await.map_err(|error| error.to_string())?
+}
+
+/// Starts only the native server and accepts readiness from the exact spawned instance.
 async fn start_local(app: &AppHandle, config: StudioConfig) -> Result<StudioStatus, String> {
-    app.state::<StudioState>().reap_exited_server();
+    let state = app.state::<StudioState>();
+    state.reap_exited_server();
     let service_url = local_service_url(&config);
     let client = server_client(&service_url, Duration::from_millis(500))?;
     if let Some(server) = probe_server(&client, &service_url).await? {
-        if !app.state::<StudioState>().owns(&server) {
-            return Err("An independently managed TyloInfer Server is already running. Connect to it explicitly, or stop it before starting Studio's backend.".into());
+        if !state.owns(&server) {
+            return Err("An independently managed or stopping TyloInfer Server is already running. Connect to an external service explicitly, or wait for Studio's backend to stop.".into());
         }
         return status_for(app, config).await;
     }
-
-    let state = app.state::<StudioState>();
-    if state.server_input.lock().map_err(|error| error.to_string())?.is_some() {
-        return Err("Studio's server is already starting or unavailable. Retry after it stops; a second backend will not be launched.".into());
+    if state.managed_port()?.is_some() {
+        return Err("Studio's server is already starting or stopping. Retry after it exits; a second backend will not be launched.".into());
     }
 
     let data_dir = app_data_dir(app)?;
-    check_local_ports(&data_dir, config.local_service_port)?;
-    let (program, python_module) = mfq_program(app)?;
-    let log_path = data_dir.join(LOG_FILE);
-    let stdout = open_log(&log_path)?;
-    let log_offset = stdout.metadata().map_err(|error| error.to_string())?.len();
-    let stderr = stdout.try_clone().map_err(|error| error.to_string())?;
-    let mut command = Command::new(program);
+    check_local_port(config.local_service_port)?;
+    let program = server_program(app)?;
+    let web_root = server_web_root(app);
     let instance_id = uuid::Uuid::new_v4().to_string();
-    if python_module {
-        command.arg("-m").arg("tyloinfer.cli");
-    }
-    command
-        .arg("serve")
-        .arg("--exit-on-stdin-close")
-        .arg("--studio-instance-id")
-        .arg(&instance_id)
-        .arg("--no-access-log")
-        .arg("--data-dir")
-        .arg(&data_dir)
-        .arg("--work-dir")
-        .arg(&data_dir)
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(config.local_service_port.to_string());
-    if let Some(runtime) = packaged_runtime(app) {
-        command.arg("--running-executable").arg(runtime);
-    }
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let agent_runtime = resource_dir.join("agent-runtime");
-        if agent_runtime.is_dir() {
-            command.env("TYLOINFER_AGENT_RUNTIME", agent_runtime);
-        }
-    }
-    #[cfg(windows)]
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        // The CUDA, PyTorch, and MSVC DLLs are bundled as resources rather
-        // than alongside the signed Studio executable.  Put that directory
-        // first in the worker's inherited DLL search path.
-        let mut paths = vec![resource_dir];
-        if let Some(existing) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&existing));
-        }
-        if let Ok(path) = std::env::join_paths(paths) {
-            command.env("PATH", path);
-        }
-    }
+    let mut command = native_server::command(&program, &data_dir, config.local_service_port,
+        &instance_id, web_root.as_deref())?;
     if let Some(metallib) = packaged_resource(app, "mlx.metallib") {
         command.env("TYLOINFER_MLX_METALLIB", metallib);
     }
@@ -545,46 +519,108 @@ async fn start_local(app: &AppHandle, config: StudioConfig) -> Result<StudioStat
     if let Some(video_library) = packaged_framework("libmfq_avfoundation_video.dylib") {
         command.env("TYLOINFER_AVFOUNDATION_VIDEO_LIBRARY", video_library);
     }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .current_dir(&data_dir);
+    let log_path = data_dir.join(LOG_FILE);
+    let stdout = open_log(&log_path)?;
+    let log_offset = stdout.metadata().map_err(|error| error.to_string())?.len();
+    let stderr = stdout.try_clone().map_err(|error| error.to_string())?;
+    command.stdin(Stdio::piped()).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
     configure_detached(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to start TyloInfer Server: {error}"))?;
-    state.own_server(&mut child, &instance_id)?;
-    let result = async {
-        for _ in 0..3600 {
-            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-                return Err(startup_failure(&log_path, log_offset,
-                    &format!("TyloInfer Server could not start ({status}).")));
-            }
+    let result: Result<StudioStatus, String> = async {
+        let pid = state.spawn_server(&mut command, &instance_id, config.local_service_port)?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+        loop {
+            state.check_starting_server(pid)?;
             if let Some(server) = probe_server(&client, &service_url).await? {
                 if !state.owns(&server) {
                     return Err("Another server appeared on the port during startup. Studio did not connect to it.".into());
                 }
-                return status_for(app, config).await;
+                let status = status_for(app, config.clone()).await?;
+                if status.connection == "managed" { return Ok(status); }
+                return Err("TyloInfer Server stopped or changed identity before startup completed.".into());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err("TyloInfer Server did not become ready within 30 minutes.".into());
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Err(startup_failure(&log_path, log_offset,
-            "TyloInfer Server did not become ready within 30 minutes."))
     }.await;
-    if result.is_err() {
-        state.release_server(child.id());
-    } else {
-        *state.server_child.lock().map_err(|error| error.to_string())? = Some(child);
+    match result {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            let cleanup = stop_local(app).await;
+            let summary = match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}\nCleanup: {cleanup}"),
+            };
+            Err(startup_failure(&log_path, log_offset, &summary))
+        }
     }
-    result
 }
 
+/// Applies endpoint changes and rolls an owned process back if startup or persistence fails.
+async fn apply_config(app: &AppHandle, config: StudioConfig, start_requested: bool) -> Result<StudioStatus, String> {
+    let previous = load_config(app)?;
+    if matches!(config.mode, RuntimeMode::Remote) {
+        let status = status_for(app, config.clone()).await?;
+        save_config(app, &config)?;
+        return Ok(status);
+    }
+    let state = app.state::<StudioState>();
+    state.reap_exited_server();
+    let owned_port = state.managed_port()?;
+    if previous.local_service_port != config.local_service_port && owned_port.is_none() {
+        let previous_url = local_service_url(&previous);
+        let client = server_client(&previous_url, Duration::from_secs(2))?;
+        if probe_server(&client, &previous_url).await?.is_some() {
+            return Err("This server is managed outside Studio. Change its port through its own service settings.".into());
+        }
+    }
+    let restart = owned_port.is_some_and(|port| port != config.local_service_port || state.server_stopping());
+    if restart {
+        if owned_port != Some(config.local_service_port) { check_local_port(config.local_service_port)?; }
+        server_program(app)?;
+        stop_local(app).await?;
+    }
+    let had_server = state.managed_port()?.is_some();
+    let result: Result<StudioStatus, String> = async {
+        let current = status_for(app, config.clone()).await?;
+        let status = if restart || start_requested || current.connection == "offline" {
+            start_local(app, config.clone()).await?
+        } else { current };
+        save_config(app, &config)?;
+        Ok(status)
+    }.await;
+    match result {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            if !had_server && !state.server_stopping() {
+                if let Err(cleanup) = stop_local(app).await {
+                    return Err(format!("{error}\nConfiguration was not changed. Cleanup: {cleanup}"));
+                }
+            }
+            if restart {
+                if state.managed_port()?.is_some() {
+                    return Err(format!("{error}\nConfiguration was not changed. The previous endpoint can be restored after the stopping process exits; retry the port change then."));
+                }
+                let rollback = StudioConfig { mode: RuntimeMode::Local,
+                    local_service_port: owned_port.unwrap(), ..previous };
+                return match start_local(app, rollback).await {
+                    Ok(_) => Err(format!("{error}\nConfiguration was not changed; Studio restored its server on port {}.", owned_port.unwrap())),
+                    Err(rollback) => Err(format!("{error}\nConfiguration was not changed. Could not restore the previous server: {rollback}\nRetry starting the local server after resolving the error.")),
+                };
+            }
+            Err(format!("{error}\nConfiguration was not changed."))
+        }
+    }
+}
+
+/// Returns the verified connection state without granting consent to an external instance.
 #[tauri::command]
 async fn studio_status(app: AppHandle) -> Result<StudioStatus, String> {
     status_for(&app, load_config(&app)?).await
 }
 
+/// Persists settings only after a local restart succeeds; external services are never reconfigured.
 #[tauri::command]
 async fn studio_configure(
     app: AppHandle,
@@ -593,37 +629,10 @@ async fn studio_configure(
 ) -> Result<StudioStatus, String> {
     let config = validate_config(config)?;
     let _guard = state.start_lock.lock().await;
-    let previous = load_config(&app)?;
-    if matches!(config.mode, RuntimeMode::Local)
-        && previous.local_service_port != config.local_service_port
-    {
-        let previous_url = local_service_url(&previous);
-        let client = server_client(&previous_url, Duration::from_secs(10))?;
-        if let Some(server) = probe_server(&client, &previous_url).await? {
-            if !state.owns(&server) {
-                return Err("This server is managed outside Studio. Change its port through its own service settings.".into());
-            }
-            let token = studio_credential_get()?;
-            let request = client.put(format!("{previous_url}/api/v1/runtime/listener"))
-                .header("X-TyloInfer-Instance-ID", &server.instance_id)
-                .json(&serde_json::json!({ "port": config.local_service_port }));
-            let response = with_server_credential(request, &token).send().await.map_err(|error| error.to_string())?;
-            if !response.status().is_success() {
-                return Err(format!("failed to change server port: {}", response.text().await.unwrap_or_default()));
-            }
-        }
-    }
-    let status = match config.mode {
-        RuntimeMode::Remote => status_for(&app, config.clone()).await?,
-        RuntimeMode::Local => {
-            let current = status_for(&app, config.clone()).await?;
-            if current.connection == "offline" { start_local(&app, config.clone()).await? } else { current }
-        }
-    };
-    save_config(&app, &config)?;
-    Ok(status)
+    apply_config(&app, config, false).await
 }
 
+/// Confirms a particular external instance after the user reviews its identity and workspace.
 #[tauri::command]
 async fn studio_connect_existing(app: AppHandle, state: State<'_, StudioState>,
     instance_id: String, workspace_id: String) -> Result<StudioStatus, String> {
@@ -636,23 +645,26 @@ async fn studio_connect_existing(app: AppHandle, state: State<'_, StudioState>,
     if server.instance_id != instance_id || server.workspace_id != workspace_id {
         return Err("The server instance changed. Refresh and confirm the new server before connecting.".into());
     }
+    if state.tracks(&server) && state.server_stopping() {
+        return Err("Studio's server is stopping. Wait for it to exit before reconnecting.".into());
+    }
     *state.external_server.lock().map_err(|error| error.to_string())? = Some((endpoint, server));
     status_for(&app, config).await
 }
 
+/// Starts or reconnects to Studio's owned native process and saves local mode on success.
 #[tauri::command]
 async fn studio_start_local(
     app: AppHandle,
     state: State<'_, StudioState>,
 ) -> Result<StudioStatus, String> {
+    let _guard = state.start_lock.lock().await;
     let mut config = load_config(&app)?;
     config.mode = RuntimeMode::Local;
-    let _guard = state.start_lock.lock().await;
-    let status = start_local(&app, config.clone()).await?;
-    save_config(&app, &config)?;
-    Ok(status)
+    apply_config(&app, config, true).await
 }
 
+/// Registers a selected folder with the confirmed local server using the stored credential.
 #[tauri::command]
 async fn studio_select_model_directory(
     app: AppHandle,
@@ -711,6 +723,7 @@ async fn studio_select_model_directory(
     }))
 }
 
+/// Shows a native confirmation dialog for frontend operations.
 #[tauri::command]
 fn studio_confirm(message: String) -> bool {
     matches!(
@@ -723,6 +736,7 @@ fn studio_confirm(message: String) -> bool {
     )
 }
 
+/// Reads the server credential from the platform credential store.
 #[tauri::command]
 fn studio_credential_get() -> Result<String, String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
@@ -734,6 +748,7 @@ fn studio_credential_get() -> Result<String, String> {
     }
 }
 
+/// Saves or clears the server credential without writing secrets to Studio configuration.
 #[tauri::command]
 fn studio_credential_set(token: String) -> Result<(), String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
@@ -749,6 +764,7 @@ fn studio_credential_set(token: String) -> Result<(), String> {
     }
 }
 
+/// Opens a validated HTTPS model or release link with the platform browser.
 #[tauri::command]
 fn studio_open_external(url: String) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|error| format!("invalid external URL: {error}"))?;
@@ -826,46 +842,36 @@ fn main() {
             updater::studio_update_install,
             updater::studio_update_delete
         ])
-        .run(tauri::generate_context!())
-        .expect("TyloInfer failed");
+        .build(tauri::generate_context!())
+        .expect("TyloInfer failed")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                let state = app.state::<StudioState>();
+                if let Err(error) = state.shutdown() {
+                    eprintln!("{error}");
+                }
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn program_discovery_rejects_the_studio_executable() {
-        let current = std::env::current_exe().unwrap();
-        assert!(!usable_program(&current));
-        let directory = std::env::temp_dir().join(format!("tyloinfer-program-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&directory).unwrap();
-        let cli = directory.join("tyloinfer-cli");
-        fs::write(&cli, b"test CLI fixture").unwrap();
-        assert!(usable_program(&cli));
-        assert!(!usable_program(&directory));
-        assert!(!usable_program(&directory.join("missing")));
-        #[cfg(unix)]
-        {
-            let alias = directory.join("tyloinfer");
-            std::os::unix::fs::symlink(&current, &alias).unwrap();
-            assert!(!usable_program(&alias));
-        }
-        fs::remove_dir_all(directory).unwrap();
-    }
-
     #[cfg(unix)]
-    fn pipe_child() -> Child {
-        Command::new("/bin/cat").stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap()
+    fn pipe_command() -> Command {
+        let mut command = Command::new("/bin/cat");
+        command.stdin(Stdio::piped()).stdout(Stdio::null());
+        command
     }
 
     #[cfg(windows)]
-    fn pipe_child() -> Child {
+    fn pipe_command() -> Command {
         let root = std::env::var_os("SystemRoot").expect("Windows system directory");
         let mut command = Command::new(PathBuf::from(root).join("System32/sort.exe"));
         command.stdin(Stdio::piped()).stdout(Stdio::null());
         configure_detached(&mut command);
-        command.spawn().unwrap()
+        command
     }
 
     fn wait_for_pipe_child(child: &mut Child) {
@@ -882,45 +888,60 @@ mod tests {
     }
 
     #[test]
-    fn dropping_studio_closes_only_its_owned_server_pipe() {
-        let mut owned = pipe_child();
-        let mut external = pipe_child();
-        let state = StudioState::default();
-        state.own_server(&mut owned, "owned-instance").unwrap();
-        assert!(owned.stdin.is_none());
-        assert!(owned.try_wait().unwrap().is_none());
-        drop(state);
-        wait_for_pipe_child(&mut owned);
-        assert!(external.try_wait().unwrap().is_none());
-        drop(external.stdin.take());
-        wait_for_pipe_child(&mut external);
-    }
-
-    #[test]
-    fn startup_cleanup_does_not_close_a_different_owned_server() {
-        let mut owned = pipe_child();
-        let state = StudioState::default();
-        state.own_server(&mut owned, "owned-instance").unwrap();
-        state.release_server(owned.id().wrapping_add(1));
-        assert!(owned.try_wait().unwrap().is_none());
-        state.release_server(owned.id());
-        wait_for_pipe_child(&mut owned);
-    }
-
-    #[test]
     fn update_shutdown_waits_for_owned_server_and_preserves_external_server() {
         let state = StudioState::default();
-        let mut owned = pipe_child();
-        let mut external = pipe_child();
-        state.own_server(&mut owned, "owned-instance").unwrap();
-        *state.server_child.lock().unwrap() = Some(owned);
+        let mut external = pipe_command().spawn().unwrap();
+        let pid = state.spawn_server(&mut pipe_command(), "owned-instance", 8090).unwrap();
+        assert!(state.managed_server.lock().unwrap().as_ref().unwrap().child.stdin.is_none());
+        state.check_starting_server(pid).unwrap();
+        assert!(state.spawn_server(&mut pipe_command(), "duplicate", 8092).is_err());
         state.stop_owned_server().unwrap();
-        assert!(state.server_child.lock().unwrap().is_none());
-        assert!(state.server_input.lock().unwrap().is_none());
+        assert!(state.managed_server.lock().unwrap().is_none());
         state.stop_owned_server().unwrap();
         assert!(external.try_wait().unwrap().is_none());
         drop(external.stdin.take());
         wait_for_pipe_child(&mut external);
+    }
+
+    #[test]
+    fn exit_shutdown_prevents_new_launches() {
+        let state = StudioState::default();
+        state.spawn_server(&mut pipe_command(), "owned-instance", 8090).unwrap();
+        state.shutdown().unwrap();
+        assert!(state.managed_port().unwrap().is_none());
+        assert!(state.spawn_server(&mut pipe_command(), "late-start", 8090).unwrap_err().contains("shutting down"));
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for the lifecycle timeout test"]
+    fn delayed_exit_fixture() {
+        let mut input = Vec::new();
+        std::io::stdin().read_to_end(&mut input).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    #[test]
+    fn failed_startup_retains_a_draining_child_and_blocks_duplicates_until_exit() {
+        let state = StudioState::default();
+        let instance = uuid::Uuid::new_v4().to_string();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "tests::delayed_exit_fixture", "--ignored"])
+            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        configure_detached(&mut command);
+        let pid = state.spawn_server(&mut command, &instance, 8090).unwrap();
+        let server = ServerIdentity { pid, instance_id: instance, launch_mode: "studio".into(), ..test_identity() };
+        assert!(state.owns(&server));
+        let error = state.stop_owned_server_with_timeout(Duration::ZERO).unwrap_err();
+        assert!(error.contains("retained its process handle"));
+        assert_eq!(state.managed_port().unwrap(), Some(8090));
+        assert!(state.tracks(&server));
+        assert!(!state.owns(&server));
+        assert!(state.server_stopping());
+        assert!(state.check_starting_server(pid).is_err());
+        assert!(state.spawn_server(&mut pipe_command(), "duplicate", 8092).is_err());
+        state.stop_owned_server().unwrap();
+        state.spawn_server(&mut pipe_command(), "retry", 8092).unwrap();
+        state.stop_owned_server().unwrap();
     }
 
     fn startup_test_dir() -> PathBuf {
@@ -930,6 +951,75 @@ mod tests {
         let path = std::env::temp_dir().join(format!("mfq-startup-test-{}-{nonce}-{sequence}", std::process::id()));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    async fn launch_native_smoke(state: &StudioState, executable: &Path, directory: &Path, port: u16) -> Result<ServerIdentity, String> {
+        let instance = uuid::Uuid::new_v4().to_string();
+        let mut command = native_server::command(executable, directory, port, &instance, None)?;
+        let log_path = directory.join(LOG_FILE);
+        let log = open_log(&log_path)?;
+        let offset = log.metadata().map_err(|error| error.to_string())?.len();
+        let stderr = log.try_clone().map_err(|error| error.to_string())?;
+        command.env("TYLOINFER_SERVER_API_KEY", "studio-smoke-test-key")
+            .stdin(Stdio::piped()).stdout(Stdio::from(log)).stderr(Stdio::from(stderr));
+        configure_detached(&mut command);
+        let pid = state.spawn_server(&mut command, &instance, port)?;
+        let endpoint = format!("http://127.0.0.1:{port}");
+        let client = server_client(&endpoint, Duration::from_millis(500))?;
+        let result: Result<ServerIdentity, String> = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                state.check_starting_server(pid)?;
+                if let Some(server) = probe_server(&client, &endpoint).await? {
+                    if !state.owns(&server) { return Err("native smoke instance identity mismatch".into()); }
+                    return Ok(server);
+                }
+                if tokio::time::Instant::now() >= deadline { return Err("native smoke startup timed out".into()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }.await;
+        result.map_err(|error| startup_failure(&log_path, offset, &error))
+    }
+
+    #[test]
+    #[ignore = "requires TYLOINFER_TEST_SERVER_EXECUTABLE pointing to a built native server"]
+    fn native_server_lifecycle_smoke() {
+        let executable = PathBuf::from(std::env::var_os("TYLOINFER_TEST_SERVER_EXECUTABLE").expect("built native server executable"));
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("target")
+            .join(format!("native-server-smoke-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let available_port = || {
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port()
+        };
+        let first_port = available_port();
+        let state = StudioState::default();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let result: Result<(), String> = runtime.block_on(async {
+            let first = launch_native_smoke(&state, &executable, &directory, first_port).await?;
+            let endpoint = format!("http://127.0.0.1:{first_port}");
+            let client = server_client(&endpoint, Duration::from_secs(2))?;
+            let unauthorized = client.get(format!("{endpoint}/api/v1/models")).send().await.map_err(|error| error.to_string())?;
+            if unauthorized.status() != reqwest::StatusCode::UNAUTHORIZED { return Err("native server did not enforce the inherited root credential".into()); }
+            let authenticated = with_server_credential(client.get(format!("{endpoint}/api/v1/models")), "studio-smoke-test-key")
+                .header("X-TyloInfer-Instance-ID", &first.instance_id).send().await.map_err(|error| error.to_string())?;
+            if !authenticated.status().is_success() { return Err("native server rejected the authenticated Studio request".into()); }
+            state.stop_owned_server()?;
+            check_local_port(first_port)?;
+            let old_port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, first_port)).map_err(|error| error.to_string())?;
+            let second_port = available_port();
+            let second = launch_native_smoke(&state, &executable, &directory, second_port).await?;
+            drop(old_port);
+            if first.instance_id == second.instance_id || first.workspace_id != second.workspace_id {
+                return Err("native port restart did not preserve workspace identity with a fresh instance".into());
+            }
+            state.stop_owned_server()?;
+            check_local_port(second_port)?;
+            Ok(())
+        });
+        let cleanup = state.stop_owned_server();
+        eprintln!("Native smoke artifacts: {}", directory.display());
+        result.unwrap();
+        cleanup.unwrap();
     }
 
     fn test_identity() -> ServerIdentity {
@@ -972,17 +1062,22 @@ mod tests {
     #[test]
     fn ownership_needs_both_spawned_pid_and_instance_id_and_clears_after_exit() {
         let state = StudioState::default();
-        let mut child = pipe_child();
-        let server = ServerIdentity { pid: child.id(), launch_mode: "studio".into(), ..test_identity() };
-        state.own_server(&mut child, &server.instance_id).unwrap();
+        let mut server = test_identity();
+        server.launch_mode = "studio".into();
+        server.pid = state.spawn_server(&mut pipe_command(), &server.instance_id, 8090).unwrap();
         assert!(state.owns(&server));
         assert!(!state.owns(&ServerIdentity { instance_id: uuid::Uuid::new_v4().to_string(), ..server.clone() }));
+        assert!(!state.owns(&ServerIdentity { pid: server.pid.wrapping_add(1), ..server.clone() }));
         assert!(!state.owns(&ServerIdentity { launch_mode: "cli".into(), ..server.clone() }));
-        child.kill().unwrap();
-        child.wait().unwrap();
-        *state.server_child.lock().unwrap() = Some(child);
+        {
+            let mut owned = state.managed_server.lock().unwrap();
+            let child = &mut owned.as_mut().unwrap().child;
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
         state.reap_exited_server();
         assert!(!state.owns(&server));
+        assert!(state.managed_port().unwrap().is_none());
     }
 
     #[test]
@@ -1041,29 +1136,48 @@ mod tests {
     }
 
     #[test]
-    fn startup_rejects_shared_api_ports_without_spawning_a_server() {
-        let directory = startup_test_dir();
-        fs::write(directory.join("listener.json"), r#"{"anthropic_port":19290}"#).unwrap();
-        let error = check_local_ports(&directory, 19290).unwrap_err();
-        assert!(error.contains("cannot share port 19290"));
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn startup_identifies_the_occupied_api_port() {
-        let directory = startup_test_dir();
+    fn startup_checks_only_the_single_native_api_port() {
         let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let occupied_port = occupied.local_addr().unwrap().port();
         let available = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let available_port = available.local_addr().unwrap().port();
         drop(available);
-        fs::write(directory.join("listener.json"), format!(r#"{{"anthropic_port":{occupied_port}}}"#)).unwrap();
-        let error = check_local_ports(&directory, available_port).unwrap_err();
-        assert!(error.contains(&format!("Anthropic API port {occupied_port} is already in use")));
-        fs::write(directory.join("listener.json"), format!(r#"{{"anthropic_port":{available_port}}}"#)).unwrap();
-        let error = check_local_ports(&directory, occupied_port).unwrap_err();
-        assert!(error.contains(&format!("OpenAI API port {occupied_port} is already in use")));
-        fs::remove_dir_all(directory).unwrap();
+        check_local_port(available_port).unwrap();
+        let error = check_local_port(occupied_port).unwrap_err();
+        assert!(error.contains(&format!("API port {occupied_port} is already in use")));
+    }
+
+    #[test]
+    fn configuration_replace_keeps_one_complete_endpoint_file() {
+        let directory = startup_test_dir();
+        let path = directory.join(CONFIG_FILE);
+        let previous = StudioConfig::default();
+        save_config_at(&path, &previous).unwrap();
+        let next = StudioConfig { local_service_port: 8091, ..previous };
+        save_config_at(&path, &next).unwrap();
+        assert_eq!(serde_json::from_slice::<StudioConfig>(&fs::read(&path).unwrap()).unwrap(), next);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configuration_save_failure_keeps_previous_settings_and_removes_the_temporary_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = startup_test_dir();
+        let path = directory.join(CONFIG_FILE);
+        let previous = StudioConfig::default();
+        save_config_at(&path, &previous).unwrap();
+        let locked = OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let next = StudioConfig { local_service_port: 8091, ..previous.clone() };
+        assert!(save_config_at(&path, &next).is_err());
+        drop(locked);
+        assert_eq!(serde_json::from_slice::<StudioConfig>(&fs::read(&path).unwrap()).unwrap(), previous);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        save_config_at(&path, &next).unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1076,7 +1190,7 @@ mod tests {
     #[test]
     fn server_requests_use_the_trimmed_credential_without_empty_auth_headers() {
         let client = reqwest::Client::new();
-        for path in ["/api/v1/runtime/listener", "/api/v1/models/directories/register"] {
+        for path in ["/api/v1/models/directories/register"] {
             let url = format!("http://127.0.0.1:8090{path}");
             let authenticated = with_server_credential(client.post(&url), " test-credential ").build().unwrap();
             assert_eq!(authenticated.headers()[reqwest::header::AUTHORIZATION], "Bearer test-credential");
