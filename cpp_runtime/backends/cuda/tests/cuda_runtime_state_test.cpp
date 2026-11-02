@@ -888,7 +888,7 @@ static void check_batching(const char* model_path, const char* tokenizer) {
           "batched repeat changed output");
     EngineRequest cancelled; cancelled.id = "cancel";
     cancelled.token_ids = {101, 202, 303}; cancelled.input.sampling = sampling;
-    check(engine->admit(cancelled) == Admission::accepted, "cancel admission");
+    check(engine->admit(EngineRequest(cancelled)) == Admission::accepted, "cancel admission");
     engine->cancel("cancel");
     auto result = engine->step({});
     check(std::count_if(result.events.begin(), result.events.end(), [](const auto& event) {
@@ -896,7 +896,7 @@ static void check_batching(const char* model_path, const char* tokenizer) {
           }) == 1 && std::holds_alternative<Cancelled>(result.events.back().data),
           "cancel before prefill did not release");
     cancelled.token_ids.assign(32, 101);
-    check(engine->admit(cancelled) == Admission::accepted, "prefill cancel admission");
+    check(engine->admit(std::move(cancelled)) == Admission::accepted, "prefill cancel admission");
     for (int tick = 0; tick < 8; ++tick) {
         result = engine->step({"cancel"});
         if (!result.events.empty()) break;

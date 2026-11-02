@@ -529,9 +529,7 @@ struct GgufModelSource::Impl {
 // A GGUF holding only PLE/Engram tables is a companion table, not a model.
 bool gguf_is_table_component(const std::filesystem::path& path) {
     static const std::regex table(R"(^(per_layer_token_embd\.weight|blk\.\d+\.engram_embd\.weight)$)");
-    const auto part = raw_parts(path).front();
-    Gguf ctx(gguf_init_from_file(part.string().c_str(), {true, nullptr}), gguf_free);
-    if (!ctx) throw std::runtime_error("invalid GGUF file: " + part.filename().string());
+    const auto ctx = GgufFile(path).load(nullptr);
     const auto tensors = gguf_get_n_tensors(ctx.get());
     if (!tensors) return true;
     for (int64_t i = 0; i < tensors; ++i)

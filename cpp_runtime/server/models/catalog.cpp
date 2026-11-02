@@ -52,8 +52,7 @@ bool is_model_file(const fs::path& path) {
     return is_container(path) || is_gguf_name(path) || is_gguf_part(path);
 }
 
-// A GGUF that only carries PLE/Engram tables is a companion, not a loadable model.
-// shortcut: an unreadable GGUF stays in the scan so inspect() reports its read error.
+// Leave unreadable GGUFs visible so inspect() can report their errors.
 bool is_gguf_table(const fs::path& path) {
     if (!is_gguf_name(path) && !is_gguf_part(path)) return false;
     try { return mfq::gguf_is_table_component(path); } catch (...) { return false; }
