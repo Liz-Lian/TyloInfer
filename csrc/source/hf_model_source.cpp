@@ -4,7 +4,7 @@
 #include "engine/weights/encoding/fp8_sq_blob.h"
 #include "engine/weights/encoding/mx_blob.h"
 #include "engine/weights/encoding/quant/mfe_blob.h"
-#include "engine/models/common/legacy_names.h"
+#include "engine/models/common/hf.h"
 #include "engine/weights/source/hf.h"
 #include "engine/weights/mlx.h"
 #include "engine/models/common/mlx_names.h"
@@ -64,70 +64,6 @@ std::uint64_t dense_item_size(std::string_view dtype) {
     return 0;
 }
 
-MfqLegacyTensorAliases source_compatibility(
-    const HfSafetensorsSource& source) {
-    if (source.has_asset(kHfSourceMapAsset)) {
-        const auto bytes = source.read_asset(kHfSourceMapAsset);
-        json payload;
-        try {
-            payload = json::parse(
-                reinterpret_cast<const char*>(bytes.data()),
-                reinterpret_cast<const char*>(bytes.data() + bytes.size()));
-        } catch (const json::exception& error) {
-            throw std::runtime_error(
-                std::string("invalid native HF source map: ") + error.what());
-        }
-        const auto aliases = payload.find("canonical_to_source");
-        if (!payload.is_object() ||
-            payload.value("schema", std::string{}) != "mfq.hf-source-map" ||
-            payload.value("version", 0) != 1 || aliases == payload.end() ||
-            !aliases->is_object()) {
-            throw std::runtime_error("unsupported native HF source map contract");
-        }
-        MfqLegacyTensorAliases result;
-        for (const auto& [canonical, raw_source] : aliases->items()) {
-            if (canonical.empty() || !raw_source.is_string() ||
-                raw_source.get_ref<const std::string&>().empty() ||
-                !result.canonical_to_stored.emplace(
-                    canonical, raw_source.get<std::string>()).second) {
-                throw std::runtime_error(
-                    "native HF source map has an invalid entry");
-            }
-        }
-        return result;
-    }
-
-    if (!source.has_asset(kModelConfigAsset)) return {};
-    const auto config = source.read_asset(kModelConfigAsset);
-    std::vector<std::string> names;
-    names.reserve(source.tensors().size());
-    std::unordered_map<std::string, std::string> normalized_to_source;
-    for (const auto& tensor : source.tensors()) {
-        auto normalized = mlx_hf_tensor_name(tensor.name);
-        if (!normalized_to_source.emplace(normalized, tensor.name).second)
-            throw std::invalid_argument("duplicate normalized HF tensor: " + normalized);
-        names.push_back(std::move(normalized));
-    }
-    auto compatibility = make_legacy_tensor_aliases(
-        source.architecture(),
-        std::string_view(reinterpret_cast<const char*>(config.data()), config.size()),
-        names);
-    for (auto& [canonical, stored] : compatibility.canonical_to_stored)
-        stored = normalized_to_source.at(stored);
-    std::unordered_set<std::string> claimed;
-    for (const auto& [canonical, stored] :
-         compatibility.canonical_to_stored) {
-        static_cast<void>(canonical);
-        claimed.insert(stored);
-    }
-    for (const auto& tensor : source.tensors()) {
-        if (claimed.find(tensor.name) == claimed.end()) {
-            compatibility.canonical_to_stored.emplace(tensor.name, tensor.name);
-        }
-    }
-    return compatibility;
-}
-
 } // namespace
 
 struct HfModelSource::Impl {
@@ -135,7 +71,7 @@ struct HfModelSource::Impl {
         : source(std::move(root), {}, std::move(source_prefix)) {}
 
     HfSafetensorsSource source;
-    MfqLegacyTensorAliases legacy_tensor_compatibility;
+    TensorLayout layout;
     std::vector<TensorMetadata> tensors;
     std::unordered_map<std::string, std::size_t> tensor_indices;
     std::unordered_map<std::string, hf::Record> records;
@@ -145,10 +81,9 @@ HfModelSource::HfModelSource(std::filesystem::path root, std::string source_pref
     : impl_(std::make_unique<Impl>(std::move(root), source_prefix)) {
     const bool has_explicit_source_map =
         impl_->source.has_asset(kHfSourceMapAsset);
-    impl_->legacy_tensor_compatibility =
-        source_compatibility(impl_->source);
-    auto& canonical_to_source =
-        impl_->legacy_tensor_compatibility.canonical_to_stored;
+    auto mapping = models::hf_names(impl_->source);
+    impl_->layout = mapping.layout;
+    auto& canonical_to_source = mapping.canonical_to_stored;
     if (!source_prefix.empty()) {
         for (auto it = canonical_to_source.begin(); it != canonical_to_source.end();) {
             if (it->second.rfind(source_prefix, 0) != 0) it = canonical_to_source.erase(it);
@@ -510,7 +445,7 @@ const TensorMetadata* HfModelSource::find_tensor(
 }
 
 TensorLayout HfModelSource::tensor_layout() const noexcept {
-    return impl_->legacy_tensor_compatibility.layout;
+    return impl_->layout;
 }
 
 std::optional<TensorFileRange> HfModelSource::tensor_file_range_at(std::string_view name,

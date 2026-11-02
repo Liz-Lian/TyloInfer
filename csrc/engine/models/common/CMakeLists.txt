@@ -5,6 +5,8 @@ add_library(mfq-model-graph STATIC
     model_config.h
     gguf.cpp
     gguf.h
+    hf.cpp
+    hf.h
     legacy_graph.cpp
     legacy_graph.h
     legacy_names.cpp
