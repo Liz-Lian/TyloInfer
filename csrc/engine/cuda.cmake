@@ -80,6 +80,8 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}
 # Remaining legacy bindings are shared by native and optional Torch builds.
 # Concrete Engine selection is compiled from engine/load.cpp.
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
+    ${PROJECT_SOURCE_DIR}/engine/generate.cpp
+    ${PROJECT_SOURCE_DIR}/engine/mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
@@ -126,6 +128,7 @@ endif()
 set_target_properties(mfq-cuda-runtime PROPERTIES
     CUDA_ARCHITECTURES "${TYLOINFER_CUDA_ARCHITECTURES}"
     CUDA_RUNTIME_LIBRARY Shared
+    POSITION_INDEPENDENT_CODE ON
 )
 
 include(${PROJECT_SOURCE_DIR}/diagnostics/cuda.cmake)

@@ -14,7 +14,7 @@
 #include "engine/scheduler/table.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
-#include "engine/models/common/generation.h"
+#include "engine/generate.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/state/kv_memory.h"

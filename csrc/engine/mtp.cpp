@@ -5,7 +5,7 @@
 #include "engine/models/minicpmo45/ops.h"
 #include "engine/models/nemotron_h/ops.h"
 
-#include "engine/models/common/mtp_impl.h"
+#include "engine/mtp_impl.h"
 
 #define TYLOINFER_INSTANTIATE_MTP(MODEL)                                             \
   template Generation run_mtp_generation<MODEL, MODEL>(                         \

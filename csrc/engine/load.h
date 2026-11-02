@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/config.h"
+#include "engine/backends/cuda/executor/options.h"
 
 #include <chrono>
 #include <cstddef>
@@ -11,12 +12,6 @@
 namespace mfq::engine { class Engine; }
 
 namespace mfq::cuda {
-
-struct CudaDecodeGraphConfig {
-    bool enabled = true;
-    bool trace = false;
-    std::int32_t minimum_generation_tokens = 16;
-};
 
 struct CudaContinuousBatchConfig : mfq::engine::ContinuousBatchConfig {
     bool greedy = true;

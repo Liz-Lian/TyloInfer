@@ -1,7 +1,7 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/qwen35/mtp.h"
-#include "engine/models/common/generation_impl.h"
-#include "engine/models/common/mtp_impl.h"
+#include "engine/generate_impl.h"
+#include "engine/mtp_impl.h"
 
 namespace mfq::cuda::internal {
 #define TYLOINFER_INSTANTIATE_QWEN35_GENERATION(PREDICTOR) \

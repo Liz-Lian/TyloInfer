@@ -4,7 +4,7 @@
 #include <map>
 
 #include "engine/load.h"
-#include "engine/models/common/generation.h"
+#include "engine/generate.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/batch.h"
