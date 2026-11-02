@@ -1,7 +1,7 @@
 #pragma once
 #include "env.h"
 
-#include "backends/cuda/engine/executor/generation.h"
+#include "engine/models/common/generation.h"
 #include "engine/executor/scope.h"
 #include "generation_result.h"
 #include "engine/models/deepseek_v4/ops.h"

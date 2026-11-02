@@ -1,4 +1,6 @@
 set(TYLOINFER_MODELS_CUDA_SOURCES
+    ${PROJECT_SOURCE_DIR}/engine/models/common/generation.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/model.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/state.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/forward.cpp

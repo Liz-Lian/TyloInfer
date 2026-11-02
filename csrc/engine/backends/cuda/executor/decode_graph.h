@@ -67,6 +67,9 @@ struct DecodeGraphCache {
                  bool candidate_greedy,
                  const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) const;
     void ensure_storage(int64_t vocab_size);
+    void initialize_inputs(const mfq_tensor_backend::Tensor& pending, int64_t position,
+                           const mfq_tensor_backend::Tensor& random_host);
+    void upload_random(const mfq_tensor_backend::Tensor& random_host);
     void invalidate();
     void set_key(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,

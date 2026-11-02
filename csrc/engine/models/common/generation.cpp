@@ -6,7 +6,7 @@
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/nemotron_h/ops.h"
 
-#include "backends/cuda/engine/executor/generation_impl.h"
+#include "engine/models/common/generation_impl.h"
 
 namespace mfq::cuda::internal {
 #define TYLOINFER_INSTANTIATE_FLOW(MODEL, STATE)                                                                \

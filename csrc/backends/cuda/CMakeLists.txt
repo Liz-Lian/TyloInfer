@@ -499,6 +499,7 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/executor/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/pipelines.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq.cpp
@@ -568,13 +569,10 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/engine/models ${CMAKE_CURRENT_BINARY_DIR}
 set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/setup.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
-    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/generation.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
     ${PROJECT_SOURCE_DIR}/commands/cli.cpp
     ${PROJECT_SOURCE_DIR}/commands/reference.cpp

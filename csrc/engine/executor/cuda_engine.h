@@ -12,7 +12,7 @@
 #include "../scheduler/table.h"
 #include "../weights/workspace.h"
 #include "engine/generation/batch.h"
-#include "backends/cuda/engine/executor/generation.h"
+#include "engine/models/common/generation.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/state/kv_memory.h"

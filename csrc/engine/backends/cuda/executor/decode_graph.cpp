@@ -116,6 +116,50 @@ void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
     }
 }
 
+void DecodeGraphCache::initialize_inputs(
+        const mfq_tensor_backend::Tensor& pending, int64_t position,
+        const mfq_tensor_backend::Tensor& random_host) {
+    cudaStream_t graph_stream = stream.stream();
+    std::int64_t length = position + 1;
+    std::int64_t step = 1;
+    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_input.data_ptr<int64_t>(),
+        pending.data_ptr<int64_t>(),
+        sizeof(int64_t),
+        cudaMemcpyDeviceToDevice,
+        graph_stream));
+    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(generated.data_ptr<int64_t>(),
+        pending.data_ptr<int64_t>(),
+        sizeof(int64_t),
+        cudaMemcpyDeviceToDevice,
+        graph_stream));
+    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_pos.data_ptr<int64_t>(),
+        &position,
+        sizeof(int64_t),
+        cudaMemcpyHostToDevice,
+        graph_stream));
+    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_len.data_ptr<int64_t>(),
+        &length,
+        sizeof(int64_t),
+        cudaMemcpyHostToDevice,
+        graph_stream));
+    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(static_step.data_ptr<int64_t>(),
+        &step,
+        sizeof(int64_t),
+        cudaMemcpyHostToDevice,
+        graph_stream));
+    *random_host.data_ptr<float>() = 0.5f;
+    upload_random(random_host);
+    TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream));
+}
+
+void DecodeGraphCache::upload_random(const mfq_tensor_backend::Tensor& random_host) {
+    TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(random.data_ptr<float>(),
+        random_host.data_ptr<float>(),
+        sizeof(float),
+        cudaMemcpyHostToDevice,
+        stream.stream()));
+}
+
 void DecodeGraphCache::invalidate() {
     if (graph) graph->reset();
     graph.reset();

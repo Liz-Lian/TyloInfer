@@ -3,7 +3,7 @@
 
 #include "env.h"
 #include "engine/weights/routed_cache.h"
-#include "backends/cuda/engine/executor/generation.h"
+#include "engine/models/common/generation.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/generation/generation.h"
@@ -315,46 +315,11 @@ template <typename Model, typename State> struct CudaGenerationOps {
         graph.ensure_compute_streams(collectives);
         MfqCudaGuard graph_device_guard(graph.stream.device_index());
         auto graph_stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
-        cudaStream_t graph_stream = graph.stream.stream();
         if (has_penalties) {
             sample_token_counts_add_cuda(counts, pending.contiguous());
         }
 
-        std::int64_t position = state.cache_pos;
-        std::int64_t length = position + 1;
-        std::int64_t step = 1;
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.static_input.template data_ptr<int64_t>(),
-            pending.template data_ptr<int64_t>(),
-            sizeof(int64_t),
-            cudaMemcpyDeviceToDevice,
-            graph_stream));
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.generated.template data_ptr<int64_t>(),
-            pending.template data_ptr<int64_t>(),
-            sizeof(int64_t),
-            cudaMemcpyDeviceToDevice,
-            graph_stream));
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.static_pos.template data_ptr<int64_t>(),
-            &position,
-            sizeof(int64_t),
-            cudaMemcpyHostToDevice,
-            graph_stream));
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.static_len.template data_ptr<int64_t>(),
-            &length,
-            sizeof(int64_t),
-            cudaMemcpyHostToDevice,
-            graph_stream));
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.static_step.template data_ptr<int64_t>(),
-            &step,
-            sizeof(int64_t),
-            cudaMemcpyHostToDevice,
-            graph_stream));
-        *sampler.ops().random_host().template data_ptr<float>() = 0.5f;
-        TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.random.template data_ptr<float>(),
-            sampler.ops().random_host().template data_ptr<float>(),
-            sizeof(float),
-            cudaMemcpyHostToDevice,
-            graph_stream));
-        TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream));
+        graph.initialize_inputs(pending, state.cache_pos, sampler.ops().random_host());
 
         const std::int64_t requested = state.cache_pos + generation_limit;
         const std::int64_t planned =
@@ -503,14 +468,9 @@ template <typename Model, typename State> struct CudaGenerationOps {
         }
         MfqCudaGuard graph_device_guard(graph.stream.device_index());
         auto graph_stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
-        cudaStream_t graph_stream = graph.stream.stream();
         if (!sampler.greedy()) {
             *sampler.ops().random_host().template data_ptr<float>() = sampler.next_uniform_float();
-            TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(graph.random.template data_ptr<float>(),
-                sampler.ops().random_host().template data_ptr<float>(),
-                sizeof(float),
-                cudaMemcpyHostToDevice,
-                graph_stream));
+            graph.upload_random(sampler.ops().random_host());
         }
         graph.graph->replay();
         const auto token = graph.static_next.template item<int64_t>();

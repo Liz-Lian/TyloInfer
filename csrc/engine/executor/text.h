@@ -7,7 +7,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/budget.h"
 #include "engine/backends/cuda/executor/tq.h"
-#include "backends/cuda/engine/executor/generation.h"
+#include "engine/models/common/generation.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/state/kv_offload.h"
