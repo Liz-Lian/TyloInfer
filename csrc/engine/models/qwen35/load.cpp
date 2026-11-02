@@ -1,4 +1,5 @@
 #include "engine/models/source.h"
+#include "engine/ops.h"
 #include "engine/models/qwen35/load.h"
 
 #include "backend.h"
@@ -153,7 +154,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config,
 
 Model load(std::shared_ptr<const mfq::ModelSource> source,
            const weight_loader::Loader& weights, LayerPlacementConfig& placement,
-           mfq::models::YarnScaling& yarn, int& cpu_layers,
+           mfq::ops::YarnScaling& yarn, int& cpu_layers,
            const LoadOptions& options) {
     mfq::cuda::validate_model_source(*source);
     Model model;

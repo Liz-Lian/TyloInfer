@@ -4,7 +4,7 @@
 #include "../common/weight_loading.h"
 #include "../common/causal_forward.h"
 #include "../common/causal_model.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 #include "../common/transformer_layer.h"
 #include <algorithm>
 #include <array>

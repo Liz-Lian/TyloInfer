@@ -1,7 +1,7 @@
 #pragma once
 
 #include "model_config.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -50,8 +50,8 @@ Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
             throw std::runtime_error(
                 "this FFN type does not support ungated routed experts at layer " +
                 std::to_string(layer));
-        if constexpr (requires { result.activation = mfq::cuda::MlpActivation::relu_squared; })
-            result.activation = mfq::cuda::MlpActivation::relu_squared;
+        if constexpr (requires { result.activation = mfq::ops::MlpActivation::relu_squared; })
+            result.activation = mfq::ops::MlpActivation::relu_squared;
         ops.experts(result, ExpertProjection::up, up, layer);
     } else {
         const bool split = has_gate, fused = has_gate_up;
@@ -98,8 +98,8 @@ Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
             throw std::runtime_error(
                 "ungated shared expert requires Up without a Gate at layer " +
                 std::to_string(layer));
-        if constexpr (requires { result.shared->activation = mfq::cuda::MlpActivation::relu_squared; })
-            result.shared->activation = mfq::cuda::MlpActivation::relu_squared;
+        if constexpr (requires { result.shared->activation = mfq::ops::MlpActivation::relu_squared; })
+            result.shared->activation = mfq::ops::MlpActivation::relu_squared;
         result.shared->gate_up = ops.gate_up({shared_up}, result.shared->down);
     } else {
         result.shared->gate_up = ops.gate_up({shared_gate, shared_up}, result.shared->down);

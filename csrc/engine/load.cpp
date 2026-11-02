@@ -1,4 +1,5 @@
 #include "engine/load.h"
+#include "engine/ops.h"
 #include "engine/models/load.h"
 #include "engine/models/batch.h"
 #include "engine/models/qwen35/forward.h"
@@ -56,7 +57,7 @@ auto load_qwen(
     std::shared_ptr<const ModelSource> source,
     const weight_loader::Loader& weights,
     LayerPlacementConfig& placement,
-    mfq::models::YarnScaling& yarn,
+    mfq::ops::YarnScaling& yarn,
     int& cpu_layers,
     const CudaEngineOptions& options,
     int gpu_layers,

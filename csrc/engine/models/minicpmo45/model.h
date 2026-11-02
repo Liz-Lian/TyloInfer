@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/model_config.h"
+#include "engine/ops.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/backends/cuda/executor/task.h"
@@ -46,6 +47,6 @@ struct Model {
 
 Model read(std::shared_ptr<const mfq::ModelSource>, std::string_view definition, int64_t context);
 void load(Model&, const weight_loader::Loader&, const LayerPlacementConfig&, int cpu_layers,
-          const mfq::models::YarnScaling&);
+          const mfq::ops::YarnScaling&);
 
 } // namespace mfq::cuda::minicpmo45

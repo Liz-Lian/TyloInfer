@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/models/source.h"
+#include "engine/ops.h"
 
 #include "engine/models/common/loaded.h"
 #include "engine/engine.h"
@@ -23,9 +24,7 @@ class Collectives;
 class Executor;
 }
 
-namespace mfq::models {
-struct YarnScaling;
-}
+namespace mfq::ops { struct YarnScaling; }
 
 struct LayerPlacementConfig;
 
@@ -67,7 +66,7 @@ Loaded<Model, State, Components> assemble(
     std::shared_ptr<const mfq::ModelSource> source,
     const weight_loader::Loader& weights,
     LayerPlacementConfig& placement,
-    mfq::models::YarnScaling& yarn,
+    mfq::ops::YarnScaling& yarn,
     int& cpu_layers,
     const LoadOptions& options,
     std::unique_ptr<Executor> executor,

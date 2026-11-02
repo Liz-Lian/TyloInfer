@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/ops/projection/projection.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 
 #include <cstddef>
 
@@ -20,14 +20,14 @@ mfq_tensor_backend::Tensor dense_routed_projection(
 namespace mfq::cuda {
 
 mfq_tensor_backend::Tensor expert_activation(
-    mfq::cuda::MlpActivation activation, mfq_tensor_backend::Tensor gate,
+    mfq::ops::MlpActivation activation, mfq_tensor_backend::Tensor gate,
     mfq_tensor_backend::Tensor up, double limit);
 
 // Read-only projection view; routing, cache leases and branch scheduling stay with the caller.
 struct Mlp {
     const QuantLinearGroup& gate_up;
     const QuantLinear& down;
-    mfq::cuda::MlpActivation activation;
+    mfq::ops::MlpActivation activation;
     bool geglu;
     double swiglu_limit;
 

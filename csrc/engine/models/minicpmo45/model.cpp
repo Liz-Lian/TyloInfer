@@ -1,4 +1,5 @@
 #include "engine/models/source.h"
+#include "engine/ops.h"
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_graph.h"
@@ -54,7 +55,7 @@ Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view defi
 }
 
 void load(Model& model, const weight_loader::Loader& weights, const LayerPlacementConfig& placement,
-          int cpu_layers, const mfq::models::YarnScaling& yarn) {
+          int cpu_layers, const mfq::ops::YarnScaling& yarn) {
     namespace tb = mfq_tensor_backend;
     const auto& config = model.config;
     MfqCudaGuard guard(weights.placement.device);

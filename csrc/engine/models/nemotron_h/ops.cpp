@@ -1,5 +1,5 @@
 #include "backends/cuda/engine/executor/execution.h"
-#include "engine/backends/cuda/ops/attention/attention.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/models/common/load.h"
 #include "engine/backends/cuda/executor/ffn.h"
@@ -63,7 +63,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
     const auto bias = conv_bias.defined()
                           ? conv_bias
                           : mfq_tensor_backend::empty({0}, f32);
-    return mfq::cuda::attention_layer(
+    return mfq::ops::attention_layer(
         std::move(x),
         [&](Tensor x) {
             return profiler.measure("mamba.norm", [&] {
@@ -235,7 +235,7 @@ Tensor MoeMixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tensor,
                               const MfqOptional<Tensor>&, const RopeCache&,
                               const MfqOptional<Tensor>&, const MfqOptional<Tensor>&) {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    return mfq::cuda::attention_layer(
+    return mfq::ops::attention_layer(
         std::move(x),
         [&](Tensor x) {
             return execution.profiler.measure("moe.norm", [&] {

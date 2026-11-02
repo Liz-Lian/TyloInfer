@@ -1,7 +1,6 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
-#include "engine/backends/cuda/ops/attention/attention.h"
+#include "engine/ops.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/backends/cuda/executor/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
@@ -280,7 +279,7 @@ struct GlmDsaBlock : Block {
         }
 
         x = x.to(mfq_tensor_backend::kFloat16).contiguous();
-        return mfq::cuda::attention_layer(
+        return mfq::ops::attention_layer(
             std::move(x),
             [&](mfq_tensor_backend::Tensor x) {
                 return profiler.measure("glm.attn_norm", [&]() {
@@ -455,7 +454,7 @@ struct GlmDsaBlock : Block {
                     });
             },
             [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn_out) {
-                return mfq::cuda::residual_ffn(
+                return mfq::ops::residual_ffn(
                     std::move(residual), std::move(attn_out),
                     [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn_out) {
                         auto attn_pair = profiler.measure("glm.attn_residual_ffn_norm", [&]() {
@@ -469,7 +468,7 @@ struct GlmDsaBlock : Block {
                             attn_pair[0].reshape({B, T, H}), attn_pair[1].reshape({B * T, H})};
                     },
                     [&](mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor ffn_input) {
-                        return mfq::cuda::feed_forward(
+                        return mfq::ops::feed_forward(
                             std::move(hidden), std::move(ffn_input),
                             [](const auto &, const auto &) {
                                 return std::optional<mfq_tensor_backend::Tensor>{};

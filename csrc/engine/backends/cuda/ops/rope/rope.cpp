@@ -1,4 +1,6 @@
 #include "rope.h"
+#include "engine/ops.h"
+#include "yarn.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 
@@ -18,7 +20,7 @@ RopeCache::RopeCache(
         int64_t frequency_dim,
         int64_t active_pairs,
         mfq_tensor_backend::Device device,
-        bool official_reciprocal_frequencies, mfq::models::YarnScaling yarn)
+        bool official_reciprocal_frequencies, mfq::ops::YarnScaling yarn)
     : rotary_dim(dim) {
     int64_t half = rotary_dim / 2;
     const int64_t denominator = frequency_dim > 0 ? frequency_dim : rotary_dim;
@@ -57,7 +59,7 @@ RopeCache::RopeCache(
     }
     if(yarn.enabled()) {
         std::vector<float> values(static_cast<std::size_t>(half));
-        for(int pair=0;pair<half;++pair)values[pair]=float(yarn.frequency(pair,denominator,base));
+        for(int pair=0;pair<half;++pair)values[pair]=float(mfq::cuda::yarn_frequency(yarn, pair,denominator,base));
         freq.copy_(mfq_tensor_backend::tensor(values).to(device));
     }
     if (active_pairs < half) {
@@ -67,7 +69,7 @@ RopeCache::RopeCache(
     auto ang = pos.unsqueeze(1) * freq.unsqueeze(0);
     cos = mfq_tensor_backend::cos(ang).contiguous();
     sin = mfq_tensor_backend::sin(ang).contiguous();
-    if(yarn.enabled()) { cos=cos*yarn.attention_factor();sin=sin*yarn.attention_factor(); }
+    if(yarn.enabled()) { cos=cos*mfq::cuda::yarn_attention_factor(yarn);sin=sin*mfq::cuda::yarn_attention_factor(yarn); }
     sections = mfq_tensor_backend::empty({0}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCPU));
     empty_sections = sections;
 }
@@ -268,7 +270,7 @@ using Tensor = tb::Tensor;
 
 RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
                                std::vector<int64_t> sections, bool interleaved,
-                               bool fused,mfq::models::YarnScaling yarn)
+                               bool fused,mfq::ops::YarnScaling yarn)
     : dimension_(dimension), maximum_(maximum), base_(base), sections_(std::move(sections)),
       interleaved_(interleaved),yarn_(yarn) {
     fused_ = fused && !yarn_.enabled();
@@ -294,7 +296,7 @@ RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const Tensor& valu
             -(pair.to(tb::kFloat32) * 2) / double(dimension_));
         if(yarn_.enabled()) {
             std::vector<float> frequencies(static_cast<std::size_t>(pairs));
-            for(int j=0;j<pairs;++j)frequencies[j]=float(yarn_.frequency(j,dimension_,base_));
+            for(int j=0;j<pairs;++j)frequencies[j]=float(mfq::cuda::yarn_frequency(yarn_, j,dimension_,base_));
             next.frequencies=tb::tensor(frequencies).to(value.device());
         }
         std::vector<int32_t> selected(static_cast<size_t>(pairs), 0);
@@ -413,7 +415,7 @@ mfq_tensor_backend::Tensor RotaryEmbedding::forward(const Tensor &value, const T
     }
     cosine = cosine.unsqueeze(1);
     sine = sine.unsqueeze(1);
-    if(yarn_.enabled()) { cosine=cosine*yarn_.attention_factor();sine=sine*yarn_.attention_factor(); }
+    if(yarn_.enabled()) { cosine=cosine*mfq::cuda::yarn_attention_factor(yarn_);sine=sine*mfq::cuda::yarn_attention_factor(yarn_); }
     auto first = f.narrow(-1, 0, pairs), second = f.narrow(-1, pairs, pairs);
     return tb::cat({first * cosine - second * sine, second * cosine + first * sine,
                     f.narrow(-1, dimension_, f.size(-1) - dimension_)},

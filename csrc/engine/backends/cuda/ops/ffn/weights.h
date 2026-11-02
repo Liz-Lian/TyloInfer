@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/moe/experts.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 
 #include <memory>
 
@@ -17,7 +17,7 @@ struct Ffn {
     std::unique_ptr<Ffn> important_neurons;
     bool geglu = false;
     // Dense Ffn and shared/routed experts share the explicit activation label.
-    mfq::cuda::MlpActivation activation = mfq::cuda::MlpActivation::silu_gated;
+    mfq::ops::MlpActivation activation = mfq::ops::MlpActivation::silu_gated;
     bool is_moe = false;
     bool moe_split_gate_up = false;
     // Routed experts without a gate projection use the activation above.

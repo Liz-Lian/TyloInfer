@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/ops/ffn/mlp.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
 #include "engine/backends/cuda/ops/ffn/residual.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
@@ -25,7 +25,7 @@
 namespace mfq::cuda {
 
 using Tensor = mfq_tensor_backend::Tensor;
-using ActivationKind = mfq::cuda::MlpActivation;
+using ActivationKind = mfq::ops::MlpActivation;
 
 bool uses_expert_cache(const Ffn& f) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -136,7 +136,7 @@ Tensor FfnExec::run_experts(const Ffn& f, Tensor x, const MoeRoutePlan& route,
             moe_route_to_device(collectives_, route, gate_shard.device);
         using Tensor = mfq_tensor_backend::Tensor;
         Tensor gate_up_pair;
-        auto down_pair = mfq::cuda::gated_mlp(
+        auto down_pair = mfq::ops::gated_mlp(
             local_x, false, f.swiglu_limit, [](const auto &...) { return std::optional<Tensor>{}; },
             [&](const Tensor &input, auto, double limit) -> std::optional<Tensor> {
                 if (limit <= 0.0 && !mode_.materialized &&
@@ -216,7 +216,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
         const int64_t rows = xh.numel() / xh.size(-1);
         const bool use_f32_down = rows >= 16 && mmq_.mode == KlMmqMode::Fp16 &&
                                   dense_.important_fp32;
-        return mfq::cuda::additive_branches(
+        return mfq::ops::additive_branches(
             [&](size_t index) {
                 const auto &branch = index == 0 ? f : *f.important_neurons;
                 if (use_f32_down) {
@@ -340,7 +340,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                 });
             return shared_gate_logits;
         };
-        return mfq::cuda::mixture_of_experts(
+        return mfq::ops::mixture_of_experts(
             [&] {
                 return profiler.measure("moe.router", [&]() {
                     return f.moe_router_projection?project_.run(*f.moe_router_projection, xf32):
@@ -669,7 +669,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
                     }));
                     active_down = &staged_down.value();
                 }
-                auto down_pair = mfq::cuda::gated_mlp(
+                auto down_pair = mfq::ops::gated_mlp(
                     xf, false, f.swiglu_limit,
                     [](const auto &...) { return std::optional<Tensor>{}; },
                     [&](const Tensor &, auto, double) -> std::optional<Tensor> {
@@ -732,7 +732,7 @@ Tensor FfnExec::run_impl(const Ffn& f, Tensor x,
 #endif
             },
             [&](ExpertOutput experts, Tensor shared_half, const auto &selected) {
-                return mfq::cuda::combine_experts(
+                return mfq::ops::combine_experts(
                     experts.values, shared_half, experts.reduced, f.moe_shared_ungated,
                     [&](Tensor pairs, Tensor shared) -> std::optional<Tensor> {
                         if (mode_.unfused || !options_.reduce_fusion || f.moe_shared_ungated ||

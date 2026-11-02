@@ -4,7 +4,7 @@
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/models/common/weight_loading.h"
-#include "engine/models/common/yarn.h"
+#include "engine/ops.h"
 
 #include <memory>
 #include <string>
@@ -62,7 +62,7 @@ void validate_native_placement(const ParallelConfig&, const LayerPlacementConfig
 
 namespace mfq::cuda {
 
-std::string configure_yarn(mfq::models::YarnScaling& yarn, bool extend, std::string definition,
+std::string configure_yarn(mfq::ops::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context);
 
 void validate_model_source(const mfq::ModelSource& source);

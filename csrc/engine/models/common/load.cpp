@@ -1,4 +1,5 @@
 #include "engine/models/source.h"
+#include "engine/ops.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/native/env.h"
@@ -189,7 +190,7 @@ mfq::cuda::Ffn load_moe_weights(const mfq::cuda::weight_loader::Loader& weights,
 
 namespace mfq::cuda {
 
-std::string configure_yarn(mfq::models::YarnScaling& yarn, bool extend, std::string definition,
+std::string configure_yarn(mfq::ops::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context) {
     yarn = {};
     if(extend) {

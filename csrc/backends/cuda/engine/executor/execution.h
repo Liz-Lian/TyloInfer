@@ -19,7 +19,7 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/attention/scratch.h"
 #include "engine/weights/tensor_parallel.h"
-#include "engine/models/common/yarn.h"
+#include "engine/ops.h"
 
 #include <cuda_runtime_api.h>
 
@@ -98,7 +98,7 @@ struct CudaExecutionContext {
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
     mfq::cuda::ContextSet& contexts;
     bool yarn_context_extension=false;
-    mfq::models::YarnScaling yarn;
+    mfq::ops::YarnScaling yarn;
 
     CudaProfiler profiler;
     CudaExecutionConfig config;

@@ -1,4 +1,5 @@
 #include "full.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "kv.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -77,7 +78,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
     const bool apply_rotary = !no_rope;
     if (x.is_cuda())
         scratch.split(B * nh, kDecodeAttentionMaxParts, hd, x.device());
-    return mfq::cuda::attention_layer(
+    return mfq::ops::attention_layer(
         x,
         [&](mfq_tensor_backend::Tensor x) {
             return profiler.measure("full.attn_norm", [&]() {

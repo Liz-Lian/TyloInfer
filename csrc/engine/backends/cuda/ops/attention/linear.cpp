@@ -1,4 +1,5 @@
 #include "linear.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
@@ -58,7 +59,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
     const int64_t vsz = (value_heads * value_dim);
     const int64_t conv_dim = 2 * ksz + vsz;
 
-    return mfq::cuda::attention_layer(
+    return mfq::ops::attention_layer(
         std::move(x),
         [&](mfq_tensor_backend::Tensor x) {
           return qwen_rms_norm(
@@ -285,7 +286,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
     int64_t ksz = (key_heads * key_dim),
             vsz = (value_heads * value_dim);
 
-    return mfq::cuda::attention_layer(
+    return mfq::ops::attention_layer(
         std::move(x),
         [&](mfq_tensor_backend::Tensor x) {
           return profiler.measure("linear.attn_norm", [&]() {

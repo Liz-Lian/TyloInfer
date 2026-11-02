@@ -1,5 +1,5 @@
 #include "mlp.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
@@ -12,7 +12,7 @@
 #include <vector>
 
 using Tensor = mfq_tensor_backend::Tensor;
-using ActivationKind = mfq::cuda::MlpActivation;
+using ActivationKind = mfq::ops::MlpActivation;
 
 Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Tensor &ids,
                                std::size_t gather_budget_bytes) {
@@ -119,7 +119,7 @@ mfq_tensor_backend::Tensor Mlp::sharded(
         auto local_x = collectives.copy(flat, gate_shard.device);
         using Tensor = mfq_tensor_backend::Tensor;
         auto unfused = [](const auto &...) { return std::optional<Tensor>{}; };
-        partials[index] = mfq::cuda::gated_mlp(
+        partials[index] = mfq::ops::gated_mlp(
             local_x, geglu, swiglu_limit, unfused, unfused,
             [&](Tensor input) {
                 auto gate =
@@ -130,7 +130,7 @@ mfq_tensor_backend::Tensor Mlp::sharded(
             },
             [&](Tensor gate_output, Tensor up_output, auto activation_kind, double limit) {
                 mfq_tensor_backend::Tensor activation;
-                if (activation_kind == mfq::cuda::GatedActivation::gelu) {
+                if (activation_kind == mfq::ops::GatedActivation::gelu) {
                     activation = gelu_mul_cuda(gate_output.contiguous(), up_output.contiguous());
                 } else if (limit > 0.0) {
                     auto clipped_gate = mfq_tensor_backend::clamp_max(
@@ -161,7 +161,7 @@ mfq_tensor_backend::Tensor Mlp::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
         mfq_tensor_backend::Tensor xh) const {
     using Tensor = mfq_tensor_backend::Tensor;
-    using Activation = mfq::cuda::GatedActivation;
+    using Activation = mfq::ops::GatedActivation;
     if (activation == ActivationKind::relu_squared) {
         TYLOINFER_RUNTIME_CHECK(!parallel(),
                           "relu-squared MLP does not support tensor parallelism");
@@ -174,7 +174,7 @@ mfq_tensor_backend::Tensor Mlp::forward(
         return profiler.measure("ffn.down",
                                 [&]() { return project.run(down, hidden); });
     }
-    return mfq::cuda::gated_mlp(
+    return mfq::ops::gated_mlp(
         xh, geglu, swiglu_limit,
         [&](const Tensor &input, Activation activation, double limit) -> std::optional<Tensor> {
             if (activation != Activation::silu || limit > 0.0)
@@ -243,9 +243,9 @@ mfq_tensor_backend::Tensor Mlp::forward(
 
 mfq_tensor_backend::Tensor Mlp::bf16(
         const Projector& project, CudaProfiler& profiler, bool fused, Tensor input) const {
-    using Activation = mfq::cuda::GatedActivation;
+    using Activation = mfq::ops::GatedActivation;
     const auto unfused = [](const auto&...) { return std::optional<Tensor>{}; };
-    return mfq::cuda::gated_mlp(
+    return mfq::ops::gated_mlp(
         std::move(input), false, 0.0, unfused, unfused,
         [&](Tensor input) {
             return profiler.measure("full.minicpmo45_ffn_gate_up", [&] {

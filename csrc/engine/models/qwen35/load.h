@@ -3,7 +3,7 @@
 
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/predictor.h"
-#include "engine/models/common/yarn.h"
+#include "engine/ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include <cstdint>
@@ -31,7 +31,7 @@ struct LoadOptions {
 
 Model load(std::shared_ptr<const mfq::ModelSource> source,
            const weight_loader::Loader& weights, LayerPlacementConfig& placement,
-           mfq::models::YarnScaling& yarn, int& cpu_layers,
+           mfq::ops::YarnScaling& yarn, int& cpu_layers,
            const LoadOptions& options);
 
 Layer load_layer(const weight_loader::Loader&, const Config&,

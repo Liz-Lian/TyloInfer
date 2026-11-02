@@ -4,7 +4,7 @@
 #include "engine/models/common/legacy_names.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/common/model_config.h"
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 
 #include <cstdint>
 #include <optional>
@@ -46,11 +46,11 @@ struct Config : ModelConfig {
             return AttentionKind::linear;
         throw std::runtime_error("unsupported Qwen attention type: " + std::string(type));
     }
-    mfq::cuda::MoeRouting routing() const {
+    mfq::ops::MoeRouting routing() const {
         if (expert_gating_func == "sqrtsoftplus")
-            return {mfq::cuda::RouterActivation::sqrt_softplus, norm_topk_prob, false, routed_scaling_factor};
+            return {mfq::ops::RouterActivation::sqrt_softplus, norm_topk_prob, false, routed_scaling_factor};
         // Full softmax -> top-k -> renormalize equals softmax on selected logits.
-        return {mfq::cuda::RouterActivation::softmax, false, true, 1.0};
+        return {mfq::ops::RouterActivation::softmax, false, true, 1.0};
     }
     static bool valid_positions(int64_t rank, int64_t rows, int64_t columns, int64_t batch,
                                 int64_t tokens, bool mrope) {

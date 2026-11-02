@@ -1,10 +1,11 @@
 #pragma once
 
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace mfq::ops {
 
 enum class GatedActivation { silu, gelu };
 
@@ -109,4 +110,19 @@ auto feed_forward(Tensor residual, Tensor normalized, Fused fused, FeedForward p
     return add(std::move(residual), std::move(output));
 }
 
-} // namespace mfq::cuda
+// Operators may fuse adjacent arithmetic, but the model owns their order and
+// the residual branch. All values keep their backend's native tensor type.
+template <class Tensor, class Norm, class Attention, class Tail>
+auto attention_layer(Tensor hidden, Norm normalize, Attention attention, Tail tail) {
+    auto normalized = normalize(hidden);
+    auto projected = attention(std::move(normalized));
+    return tail(std::move(hidden), std::move(projected));
+}
+
+struct YarnScaling {
+    double factor=1, beta_fast=32, beta_slow=1;
+    std::int64_t original_context=0;
+    bool enabled() const { return factor>1; }
+};
+
+} // namespace mfq::ops

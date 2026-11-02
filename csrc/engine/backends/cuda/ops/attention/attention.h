@@ -10,15 +10,6 @@
 
 namespace mfq::cuda {
 
-// Operators may fuse adjacent arithmetic, but the model owns their order and
-// the residual branch. All values keep their backend's native tensor type.
-template <class Tensor, class Norm, class Attention, class Tail>
-auto attention_layer(Tensor hidden, Norm normalize, Attention attention, Tail tail) {
-    auto normalized = normalize(hidden);
-    auto projected = attention(std::move(normalized));
-    return tail(std::move(hidden), std::move(projected));
-}
-
 // The visible pair is the logical KV view returned by a cache append.  The
 // physical pair and page metadata are kept separate because decode kernels
 // consume the cache storage directly.

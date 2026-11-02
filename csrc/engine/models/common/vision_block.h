@@ -1,7 +1,7 @@
 #pragma once
 #include <utility>
 
-#include "engine/backends/cuda/ops/ffn/math.h"
+#include "engine/ops.h"
 #include "transformer_layer.h"
 
 namespace mfq::models {
