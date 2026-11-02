@@ -123,8 +123,19 @@ void addExperts(metal::CommandGraph &graph, const MoeScratch &scratch, const Blo
   const uint32_t intermediate = shape.expertIntermediateSize;
   if (oneGateUpPass(plan)) {
     const BlockExpertProjection &gate = weights.gate, &up = weights.up;
-    // One pair table where gate and up share their formats, one each otherwise.
-    const bool mixed = gate.routed.formatId != up.routed.formatId || gate.shared.formatId != up.shared.formatId;
+    const auto noPairTable = [](uint32_t format) {
+      switch (format) {
+      case GGUF_FMT_Q2K: case GGUF_FMT_Q3K: case GGUF_FMT_Q4K: case GGUF_FMT_Q5K: case GGUF_FMT_Q6K:
+      case GGUF_FMT_IQ2XXS: case GGUF_FMT_IQ2XS: case GGUF_FMT_IQ2S: case GGUF_FMT_IQ3XXS: case GGUF_FMT_IQ3S:
+        return true;
+      default: return false;
+      }
+    };
+    const auto distinctTables = [&](uint32_t a, uint32_t b) {
+      return a != b && !(noPairTable(a) && noPairTable(b));
+    };
+    const bool mixed = distinctTables(gate.routed.formatId, up.routed.formatId) ||
+                       distinctTables(gate.shared.formatId, up.shared.formatId);
     graph.add(kernel + (mixed ? "_gate_up_mixed" : "_gate_up"),
               {scratch.groupedInput, scratch.tileDescriptors, scratch.tileCount,
                gate.routed.plane0, gate.routed.plane1Slot(), gate.routed.meta,
@@ -217,6 +228,8 @@ void MoE::addRouting(metal::CommandGraph &graph, const MoeBuffers &buffers,
     // A verify step's rows are its lanes' blocks.
     if (plan.phase() != MoePhase::Decode)
       throw std::invalid_argument("only a verify step's MoE routes its verify rows");
+    if (rows % SPLASH_TARGET_VERIFY_ROWS)
+      throw std::invalid_argument("verified MoE rows must contain whole lanes");
     requireBytes(buffers.verifyRows, uint64_t{rows / SPLASH_TARGET_VERIFY_ROWS} * sizeof(uint32_t),
                  "MoE verify rows");
     grouping.push_back(buffers.verifyRows);
@@ -290,7 +303,13 @@ MoePlan MoE::prefillPlan(MoeShape shape, uint32_t rows, MoeConfig config) {
 MoePlan MoE::decodePlan(MoeShape shape, uint32_t lanes, MoeConfig config) {
   if (!lanes || lanes > SPLASH_MAXIMUM_BATCH_WIDTH)
     throw std::invalid_argument("invalid MoE decode batch width");
-  return MoePlan(shape, lanes * SPLASH_TARGET_VERIFY_ROWS, config, MoePhase::Decode);
+  return decodeRowsPlan(shape, lanes * SPLASH_TARGET_VERIFY_ROWS, config);
+}
+
+MoePlan MoE::decodeRowsPlan(MoeShape shape, uint32_t rows, MoeConfig config) {
+  if (!rows || rows > SPLASH_MAXIMUM_BATCH_WIDTH * SPLASH_TARGET_VERIFY_ROWS)
+    throw std::invalid_argument("invalid MoE decode rows");
+  return MoePlan(shape, rows, config, MoePhase::Decode);
 }
 
 } // namespace splash::ops

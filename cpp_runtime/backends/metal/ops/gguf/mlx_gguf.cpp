@@ -68,18 +68,10 @@ if (expert >= 0 && uint(expert) < params[4]) {
                 const uint token = source_row(m);
                 acc[m] += gguf_ptq_dot128<8>(weight, x + ulong(token) * K, k - local * V, local);
             }
-        } else if constexpr (F == 8) {
-            auto block = reinterpret_cast<device const block_q8_0*>(weight) + k / 32u;
-            const float scale = float(block->d);
+        } else if constexpr (F == 8 || F == 15) {
             for (uint m = 0u; m < count; ++m) {
                 const uint token = source_row(m);
-                auto source = x + ulong(token) * K + k;
-                float sum = 0.f;
-                for (uint j = 0u; j < 32u; j += 4u) {
-                    const float4 codes(block->qs[j], block->qs[j + 1u], block->qs[j + 2u], block->qs[j + 3u]);
-                    sum += dot(codes, float4(source[j], source[j + 1u], source[j + 2u], source[j + 3u]));
-                }
-                acc[m] += scale * sum;
+                acc[m] += gguf_q8_dot32<F>(weight, x + ulong(token) * K, k);
             }
         } else if constexpr (F == 7) {
             auto block = reinterpret_cast<device const block_q5_1*>(weight) + k / 32u;
@@ -107,6 +99,11 @@ if (expert >= 0 && uint(expert) < params[4]) {
                 const uint token = source_row(m);
                 acc[m] += gguf_dot32<F>(weight, x + ulong(token) * K, k);
             }
+        } else if constexpr ((F == 10 || F == 11) && V >= 16) {
+            for (uint m = 0u; m < count; ++m) {
+                const uint token = source_row(m);
+                acc[m] += gguf_low_k_dot16<F>(weight, x + ulong(token) * K, k);
+            }
         } else if constexpr (F == 14) {
             for (uint m = 0u; m < count; ++m) {
                 const uint token = source_row(m);
@@ -119,6 +116,13 @@ if (expert >= 0 && uint(expert) < params[4]) {
                 acc[m] += w * float(x[ulong(token) * K + k]);
             }
         } else {
+            if constexpr (F >= 144 && F <= 151) {
+                if (count == 1u) {
+                    const uint token = source_row(0u);
+                    acc[0] += gguf_gyro_dot<F, V>(weight, x + ulong(token) * K, k);
+                    continue;
+                }
+            }
             if constexpr (F == 20 || F == 23) {
                 if (count == 1u) {
                     const uint token = source_row(0u);
@@ -148,7 +152,9 @@ for (uint m = 0u; m < count; ++m) {
     float value = acc[m];
     if constexpr (L == 32) value = simd_sum(value);
     else for (ushort shift = L / 2; shift > 0; shift /= 2) value += simd_shuffle_xor(value, shift);
-    if (local == 0u) y[(GROUPED ? ulong(m) * params[4] + route : ROUTED ? ulong(route) : ulong(m)) * N + row] = T(value);
+    if (local == 0u) {
+        y[(GROUPED ? ulong(m) * params[4] + route : ROUTED ? ulong(route) : ulong(m)) * N + row] = T(value);
+    }
 }
 )METAL";
 
@@ -309,14 +315,26 @@ uint lane = thread_index_in_simdgroup;
 uint local = lane % L;
 uint row = thread_position_in_grid.x / L, route = thread_position_in_grid.y;
 uint K = params[0], N = params[1], gate_stride = params[3], up_stride = params[7];
-threadgroup uint gate_table[GgufConstantLookup<FG>::storage_size];
-threadgroup uint up_table[FG == FU ? 1u : GgufConstantLookup<FU>::storage_size];
-gguf_load_lookup<FG>(gate_table, thread_index_in_threadgroup, 128u);
-if constexpr (FG != FU) gguf_load_lookup<FU>(up_table, thread_index_in_threadgroup, 128u);
-if constexpr (GgufConstantLookup<FG>::words || GgufConstantLookup<FU>::words)
+constexpr bool SG = SIGNED_IQ3 && (FG == 18 || (FG == 21 && (FU != 18 || COMPACT_IQ3S)));
+constexpr bool SU = SIGNED_IQ3 && (FU == 18 || (FU == 21 && (FG != 18 || COMPACT_IQ3S)));
+constexpr bool CG = SG || (CONSTANT_IQ2 && (FG == 16 || FG == 17 || FG == 22));
+constexpr bool CU = SU || (CONSTANT_IQ2 && (FU == 16 || FU == 17 || FU == 22));
+threadgroup uint gate_table[CG ? 1u : GgufConstantLookup<FG>::storage_size];
+threadgroup uint up_table[FG == FU || CU ? 1u : GgufConstantLookup<FU>::storage_size];
+if constexpr (!CG) gguf_load_lookup<FG>(gate_table, thread_index_in_threadgroup, 128u);
+if constexpr (FG != FU && !CU) gguf_load_lookup<FU>(up_table, thread_index_in_threadgroup, 128u);
+if constexpr ((!CG && GgufConstantLookup<FG>::words) || (!CU && GgufConstantLookup<FU>::words))
     threadgroup_barrier(mem_flags::mem_threadgroup);
-const GgufThreadgroupLookup<FG> gate_lookup{gate_table};
-const GgufThreadgroupLookup<FU> up_lookup{FG == FU ? gate_table : up_table};
+const auto gate_lookup = [&] {
+    if constexpr (SG) return GgufSignedIq3Lookup<FG>{};
+    else if constexpr (CG) return GgufConstantLookup<FG>{};
+    else return GgufThreadgroupLookup<FG>{gate_table};
+}();
+const auto up_lookup = [&] {
+    if constexpr (SU) return GgufSignedIq3Lookup<FU>{};
+    else if constexpr (CU) return GgufConstantLookup<FU>{};
+    else return GgufThreadgroupLookup<FU>{FG == FU ? gate_table : up_table};
+}();
 if (row >= N) return;
 int expert = ROUTED ? ids[route] : 0;
 float g = 0.f, u = 0.f;
@@ -326,26 +344,57 @@ if (expert >= 0 && uint(expert) < params[4]) {
     if (wg && wu) {
         wg += ulong(row) * gate_stride; wu += ulong(row) * up_stride;
         auto input = x + ulong(ROUTED ? route / params[5] : route) * K;
+        auto up_input = (SEPARATE_INPUT ? x_up : x) + ulong(ROUTED ? route / params[5] : route) * K;
         for (uint k = local * V; k < K; k += L * V) {
             if constexpr (FG == 143 && FU == 143) {
                 g += gguf_ptq_dot128<8>(wg, input, k - local * V, local);
-                u += gguf_ptq_dot128<8>(wu, input, k - local * V, local);
+                u += gguf_ptq_dot128<8>(wu, up_input, k - local * V, local);
+            } else if constexpr ((FG == 8 || FG == 15) && (FU == 8 || FU == 15)) {
+                g += gguf_q8_dot32<FG>(wg, input, k);
+                u += gguf_q8_dot32<FU>(wu, up_input, k);
             } else if constexpr ((FG == 12 || FG == 13) && (FU == 12 || FU == 13)) {
                 g += gguf_dot32<FG>(wg, input, k);
-                u += gguf_dot32<FU>(wu, input, k);
+                u += gguf_dot32<FU>(wu, up_input, k);
             } else if constexpr ((FG == 20 || FG == 23) && (FU == 20 || FU == 23)) {
                 g += gguf_iq4_dot32<FG>(wg, input, k);
-                u += gguf_iq4_dot32<FU>(wu, input, k);
+                u += gguf_iq4_dot32<FU>(wu, up_input, k);
             } else if constexpr ((FG == 16 || FG == 17 || FG == 18 || FG == 21 || FG == 22)
                 && (FU == 16 || FU == 17 || FU == 18 || FU == 21 || FU == 22)) {
-                g += gguf_iq_dot16<FG>(wg, input, k, gate_lookup);
-                u += gguf_iq_dot16<FU>(wu, input, k, up_lookup);
+                g += gguf_iq_dot_values<FG, V>(wg, input, k, gate_lookup);
+                u += gguf_iq_dot_values<FU, V>(wu, up_input, k, up_lookup);
             } else {
-                for (uint offset = 0u; offset < V; offset += 4u) {
+                if constexpr (FG == 8 || FG == 15) g += gguf_q8_dot32<FG>(wg, input, k);
+                else if constexpr (V == 32 && (FG == 12 || FG == 13)) g += gguf_dot32<FG>(wg, input, k);
+                else if constexpr (V >= 16 && (FG == 10 || FG == 11)) {
+                    for (uint offset = 0u; offset < V; offset += 16u) g += gguf_low_k_dot16<FG>(wg, input, k + offset);
+                }
+                else if constexpr (V == 32 && (FG == 20 || FG == 23)) g += gguf_iq4_dot32<FG>(wg, input, k);
+                else if constexpr (V >= 16 && (FG == 14 || FG == 16 || FG == 17 || FG == 18 || FG == 21 || FG == 22)) {
+                    for (uint offset = 0u; offset < V; offset += 16u) {
+                        if constexpr (FG == 14) g += gguf_q6_dot16(wg, input, k + offset);
+                        else g += gguf_iq_dot16<FG>(wg, input, k + offset, gate_lookup);
+                    }
+                } else if constexpr (FG >= 144 && FG <= 151) g += gguf_gyro_dot<FG, V>(wg, input, k);
+                else for (uint offset = 0u; offset < V; offset += 4u) {
                     float4 gate_value = gguf_values4<FG>(wg, k + offset, gate_lookup);
-                    float4 up_value = gguf_values4<FU>(wu, k + offset, up_lookup);
                     const float4 value(input[k + offset], input[k + offset + 1u], input[k + offset + 2u], input[k + offset + 3u]);
                     g += dot(gate_value, value);
+                }
+                if constexpr (FU == 8 || FU == 15) u += gguf_q8_dot32<FU>(wu, up_input, k);
+                else if constexpr (V == 32 && (FU == 12 || FU == 13)) u += gguf_dot32<FU>(wu, up_input, k);
+                else if constexpr (V >= 16 && (FU == 10 || FU == 11)) {
+                    for (uint offset = 0u; offset < V; offset += 16u) u += gguf_low_k_dot16<FU>(wu, up_input, k + offset);
+                }
+                else if constexpr (V == 32 && (FU == 20 || FU == 23)) u += gguf_iq4_dot32<FU>(wu, up_input, k);
+                else if constexpr (V >= 16 && (FU == 14 || FU == 16 || FU == 17 || FU == 18 || FU == 21 || FU == 22)) {
+                    for (uint offset = 0u; offset < V; offset += 16u) {
+                        if constexpr (FU == 14) u += gguf_q6_dot16(wu, up_input, k + offset);
+                        else u += gguf_iq_dot16<FU>(wu, up_input, k + offset, up_lookup);
+                    }
+                } else if constexpr (FU >= 144 && FU <= 151) u += gguf_gyro_dot<FU, V>(wu, up_input, k);
+                else for (uint offset = 0u; offset < V; offset += 4u) {
+                    float4 up_value = gguf_values4<FU>(wu, k + offset, up_lookup);
+                    const float4 value(up_input[k + offset], up_input[k + offset + 1u], up_input[k + offset + 2u], up_input[k + offset + 3u]);
                     u += dot(up_value, value);
                 }
             }
@@ -357,20 +406,90 @@ else for (ushort shift = L / 2; shift > 0; shift /= 2) {
     g += simd_shuffle_xor(g, shift); u += simd_shuffle_xor(u, shift);
 }
 g = float(T(g)); u = float(T(u));
+if (params[9]) { const float value = g; g = u; u = value; }
 if (params[8]) { float limit = as_type<float>(params[8]); g = min(g, limit); u = clamp(u, -limit, limit); }
 if (!local) y[ulong(route) * N + row] = T((g / (1.f + exp(-g))) * u);
 )METAL";
 
+constexpr const char* swiglu_independent_source = R"METAL(
+const uint lane = thread_index_in_simdgroup, local = lane % 8u;
+const uint group = simdgroup_index_in_threadgroup;
+const uint row = threadgroup_position_in_grid.x * 4u + lane / 8u;
+const uint route = threadgroup_position_in_grid.y, K = params[0], N = params[1];
+const int expert = ROUTED ? ids[route] : 0;
+float sum = 0.f;
+if (row < N && expert >= 0 && uint(expert) < params[4]) {
+    auto gate_matrix = gguf_matrix<IG>(gate, uint(expert), N, params[3]);
+    auto up_matrix = gguf_matrix<IU>(up, uint(expert), N, params[7]);
+    if (gate_matrix && up_matrix && group == 0u) {
+        auto matrix = gate_matrix;
+        auto source = x + ulong(ROUTED ? route / params[5] : route) * K;
+        if (matrix) {
+            auto weight = matrix + ulong(row) * params[3];
+            constexpr uint step = FG == 8 || FG == 12 || FG == 13 || FG == 15 || FG == 20 || FG == 23 ? 32u : 16u;
+            for (uint k = local * step; k < K; k += 8u * step) {
+                if constexpr (FG == 8 || FG == 15) sum += gguf_q8_dot32<FG>(weight, source, k);
+                else if constexpr (FG == 14) sum += gguf_q6_dot16(weight, source, k);
+                else if constexpr (FG == 12 || FG == 13) sum += gguf_dot32<FG>(weight, source, k);
+                else if constexpr (FG == 10 || FG == 11) sum += gguf_low_k_dot16<FG>(weight, source, k);
+                else if constexpr (FG == 16 || FG == 17 || FG == 22) sum += gguf_iq_dot16<FG>(weight, source, k, GgufConstantLookup<FG>{});
+                else sum += gguf_iq4_dot32<FG>(weight, source, k);
+            }
+        }
+    } else if (gate_matrix && up_matrix) {
+        auto matrix = up_matrix;
+        auto source = (SEPARATE_INPUT ? x_up : x) + ulong(ROUTED ? route / params[5] : route) * K;
+        if (matrix) {
+            auto weight = matrix + ulong(row) * params[7];
+            constexpr uint step = FU == 8 || FU == 12 || FU == 13 || FU == 15 || FU == 20 || FU == 23 ? 32u : 16u;
+            for (uint k = local * step; k < K; k += 8u * step) {
+                if constexpr (FU == 8 || FU == 15) sum += gguf_q8_dot32<FU>(weight, source, k);
+                else if constexpr (FU == 14) sum += gguf_q6_dot16(weight, source, k);
+                else if constexpr (FU == 12 || FU == 13) sum += gguf_dot32<FU>(weight, source, k);
+                else if constexpr (FU == 10 || FU == 11) sum += gguf_low_k_dot16<FU>(weight, source, k);
+                else if constexpr (FU == 16 || FU == 17 || FU == 22) sum += gguf_iq_dot16<FU>(weight, source, k, GgufConstantLookup<FU>{});
+                else sum += gguf_iq4_dot32<FU>(weight, source, k);
+            }
+        }
+    }
+}
+for (ushort shift = 4; shift; shift /= 2) sum += simd_shuffle_xor(sum, shift);
+threadgroup T gates[4];
+if (group == 0u && !local) gates[lane / 8u] = T(sum);
+threadgroup_barrier(mem_flags::mem_threadgroup);
+if (group == 1u && !local && row < N) {
+    float g = float(gates[lane / 8u]), u = float(T(sum));
+    if (params[9]) { const float value = g; g = u; u = value; }
+    if (params[8]) { const float limit = as_type<float>(params[8]); g = min(g, limit); u = clamp(u, -limit, limit); }
+    y[ulong(route) * N + row] = T((g / (1.f + exp(-g))) * u);
+}
+)METAL";
+
 class GgufSwiGLU final : public Primitive, public MlxPreparableKernel {
 public:
-    GgufSwiGLU(Stream stream, std::array<std::uint32_t, 9> params, int gate_format, int up_format,
+    GgufSwiGLU(Stream stream, std::array<std::uint32_t, 10> params, int gate_format, int up_format,
         Dtype dtype, int lanes, int values, bool indirect_gate, bool indirect_up, const array& gate, const array& up,
-        bool routed = true)
+        bool routed = true, bool separate_input = false)
         : Primitive(stream), params_(params), gate_format_(gate_format), up_format_(up_format), dtype_(dtype),
-          lanes_(lanes), values_(values), indirect_gate_(indirect_gate), indirect_up_(indirect_up), routed_(routed),
-          key_("tinfer_gguf_swiglu_fast_" + std::to_string(gate_format) + "_" + std::to_string(up_format) + "_" +
+          lanes_(lanes), values_(values), indirect_gate_(indirect_gate), indirect_up_(indirect_up), routed_(routed), separate_input_(separate_input),
+          constant_iq2_((gate_format != up_format || gate_format == 22) && params[0] <= 4096 &&
+              (gate_format == 16 || gate_format == 17 || gate_format == 22 || up_format == 16 || up_format == 17 || up_format == 22)),
+          compact_iq3s_(params[0] <= 4096 && params[2] > 1 &&
+              ((gate_format == 18 && up_format == 21) || (gate_format == 21 && up_format == 18))),
+          signed_iq3_(values >= 16 && params[0] <= 4096 &&
+              (compact_iq3s_ || (gate_format == 18 && up_format == 18) ||
+                  ((gate_format == 18 && (up_format == 16 || up_format == 17 || up_format == 22)) ||
+                   (up_format == 18 && (gate_format == 16 || gate_format == 17 || gate_format == 22))) ||
+                  (params[2] == 1 && gate_format != up_format &&
+                      (gate_format == 18 || gate_format == 21 || up_format == 18 || up_format == 21) &&
+                      !(gate_format >= 144 && gate_format <= 151) && !(up_format >= 144 && up_format <= 151)))),
+          independent_(params[0] > params[1] && independent_formats(gate_format, up_format, constant_iq2_ && params[2] == 1)),
+          key_("tinfer_gguf_swiglu_fast_v6_" + std::to_string(gate_format) + "_" + std::to_string(up_format) + "_" +
               type_to_name(dtype) + "_" + std::to_string(lanes) + "_" + std::to_string(values) + "_" +
-              std::to_string(indirect_gate) + std::to_string(indirect_up) + (routed ? "_routed" : "_dense")) {
+              std::to_string(indirect_gate) + std::to_string(indirect_up) + (routed ? "_routed" : "_dense") +
+              (separate_input ? "_separate_input" : "") + (constant_iq2_ ? "_constant_iq2" : "") + (signed_iq3_ ? "_signed_iq3" : "") +
+              (compact_iq3s_ ? "_compact_iq3s" : "") +
+              (independent_ ? "_independent" : "")) {
         if (indirect_gate || indirect_up) {
             auto& registry = indirect_weight_registry();
             std::lock_guard lock(registry.mutex);
@@ -394,19 +513,41 @@ public:
         auto* library = device.get_library(key_, options, [this] {
             const std::string type = dtype_ == float16 ? "half" : dtype_ == bfloat16 ? "bfloat16_t" : "float";
             auto source = std::string(detail::kMlxUtilsSource) + indirect_decode_header();
+            source += "\nconstant constexpr bool COMPACT_IQ3S=" + std::to_string(compact_iq3s_) + ";\n";
+            if (signed_iq3_) {
+                source += kGgufStagedCodebooks;
+                source += R"METAL(
+template<int F> struct GgufSignedIq3Lookup {
+    enum { signed_values = 1 };
+    uint sign(uint index) const { return gguf_sign_mask(index); }
+    uint word(uint index, uint part) const { return GgufConstantLookup<F>{}.word(index, part); }
+    float4 values(uint index, uint signs, uint shift) const {
+        if constexpr (F == 18) return float4(gguf_iq3_vectors[index | (((signs >> shift) & 15u) << 8u)]);
+        else if constexpr (COMPACT_IQ3S) {
+            const ushort4 mask = (ushort4(signs >> shift) & ushort4(1u, 2u, 4u, 8u)) << ushort4(15u, 14u, 13u, 12u);
+            return float4(as_type<half4>(as_type<ushort4>(gguf_iq3s_vectors[index]) ^ mask));
+        } else return float4(gguf_iq3s_vectors[index | (((signs >> shift) & 15u) << 9u)]);
+    }
+};
+)METAL";
+            } else source += "\ntemplate<int F> using GgufSignedIq3Lookup = GgufConstantLookup<F>;\n";
             source += "\nusing T = " + type + ";\n";
             source += "constant constexpr int FG=" + std::to_string(gate_format_) + ", FU=" + std::to_string(up_format_) +
                 ", L=" + std::to_string(lanes_) + ", V=" + std::to_string(values_) + ";\n";
             source += "constant constexpr bool IG=" + std::to_string(indirect_gate_) +
-                ", IU=" + std::to_string(indirect_up_) + ", ROUTED=" + std::to_string(routed_) + ";\n";
+                ", IU=" + std::to_string(indirect_up_) + ", ROUTED=" + std::to_string(routed_) +
+                ", SEPARATE_INPUT=" + std::to_string(separate_input_) +
+                ", CONSTANT_IQ2=" + std::to_string(constant_iq2_) + ", SIGNED_IQ3=" + std::to_string(signed_iq3_) + ";\n";
             source += "kernel void " + key_ + "(device const " + (indirect_gate_ ? "ulong" : "uchar") +
                 "* gate [[buffer(0)]], device const " + (indirect_up_ ? "ulong" : "uchar") + R"METAL(* up [[buffer(1)]],
-    device const T* x [[buffer(2)]], device const int* ids [[buffer(3)]], device T* y [[buffer(4)]],
-    constant uint* params [[buffer(5)]], uint thread_index_in_simdgroup [[thread_index_in_simdgroup]],
+    device const T* x [[buffer(2)]], device const int* ids [[buffer(3)]], device const T* x_up [[buffer(4)]], device T* y [[buffer(5)]],
+    constant uint* params [[buffer(6)]], uint thread_index_in_simdgroup [[thread_index_in_simdgroup]],
     uint thread_index_in_threadgroup [[thread_index_in_threadgroup]],
+    uint simdgroup_index_in_threadgroup [[simdgroup_index_in_threadgroup]],
+    uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]],
     uint3 thread_position_in_grid [[thread_position_in_grid]]) {
 )METAL";
-            source += swiglu_source;
+            source += independent_ ? swiglu_independent_source : swiglu_source;
             source += "}\n";
             return source;
         });
@@ -425,9 +566,13 @@ public:
             command->addCompletedHandler([owners = owners_](MTL::CommandBuffer*) {});
         }
         encoder.set_compute_pipeline_state(pipeline());
-        for (int index = 0; index < 4; ++index) encoder.set_input_array(inputs[index], index);
-        encoder.set_output_array(output, 4);
-        encoder.set_bytes(params_, 5);
+        for (int index = 0; index < 5; ++index) encoder.set_input_array(inputs[index], index);
+        encoder.set_output_array(output, 5);
+        encoder.set_bytes(params_, 6);
+        if (independent_) {
+            encoder.dispatch_threadgroups(MTL::Size((params_[1] + 3) / 4, params_[2] * params_[5], 1), MTL::Size(64, 1, 1));
+            return;
+        }
         const auto rows = 128u / lanes_;
         encoder.dispatch_threads(MTL::Size(((params_[1] + rows - 1) / rows) * 128, params_[2] * params_[5], 1),
             MTL::Size(128, 1, 1));
@@ -437,9 +582,17 @@ public:
         return key_ == value.key_ && params_ == value.params_;
     }
 private:
-    std::array<std::uint32_t, 9> params_;
+    static bool independent_formats(int gate, int up, bool single_iq2) {
+        const auto native32 = [](int format) { return format == 12 || format == 13 || format == 20 || format == 23; };
+        const auto low_grid = [](int low, int grid) { return (low == 10 && grid == 22) ||
+            (low == 11 && (grid == 17 || grid == 22)); };
+        return ((gate == 8 || gate == 14 || gate == 15) && native32(up)) ||
+            ((up == 8 || up == 14 || up == 15) && native32(gate)) ||
+            (single_iq2 && (low_grid(gate, up) || low_grid(up, gate)));
+    }
+    std::array<std::uint32_t, 10> params_;
     int gate_format_, up_format_; Dtype dtype_; int lanes_, values_;
-    bool indirect_gate_, indirect_up_, routed_;
+    bool indirect_gate_, indirect_up_, routed_, separate_input_, constant_iq2_, compact_iq3s_, signed_iq3_, independent_;
     std::string key_;
     std::vector<std::shared_ptr<MlxWeightResidency>> owners_;
 };
@@ -579,32 +732,43 @@ void check_input(const array& input, int width) {
         (input.dtype() != float16 && input.dtype() != bfloat16 && input.dtype() != float32))
         throw std::invalid_argument("GGUF projection requires matching floating-point input");
 }
-int projection_values(int format) {
+int projection_values(int format, int rows = 1) {
+    if ((format == 10 || format == 11) && rows > 1) return 1;
     if (format == 39) return 32;
     if (format >= 144 && format <= 151) return 16;
-    if (format == 8 || format == 7 || format == 12 || format == 13 || format == 20 || format == 23) return 32;
-    if (format == 14 || format == 16 || format == 17 || format == 18 || format == 21 || format == 22 || format == 42 || format == 143) return 16;
+    if (format == 8 || format == 15 || format == 7 || format == 12 || format == 13 || format == 20 || format == 23) return 32;
+    if (format == 10 || format == 11 || format == 14 || format == 16 || format == 17 || format == 18 || format == 21 || format == 22 || format == 42 || format == 143) return 16;
     return 1;
 }
-int projection_lanes(int format, int width, int outputs) {
+int projection_lanes(int format, int width, int outputs, int rows = 1) {
+    if ((format == 10 || format == 11) && rows > 1) return 32;
     if (format == 39) return width > outputs ? 8 : 4;
     if (format >= 147 && format <= 149) return 8;
     if (format >= 144 && format <= 151) return width > outputs ? 8 : 4;
     if (format == 143) return 8;
-    if (format == 7 || format == 12 || format == 13 || format == 14 || format == 20 || format == 23)
+    if (format == 7 || format == 10 || format == 11 || format == 12 || format == 13 || format == 14 || format == 15 || format == 20 || format == 23)
         return width > outputs ? 8 : 4;
     if (format == 16 || format == 17 || format == 18 || format == 21 || format == 22 || format == 42 || format == 143)
         return width <= 1024 ? 4 : 8;
     return format == 8 ? (width <= 512 ? 4 : 8) : 32;
 }
-std::pair<int, int> swiglu_geometry(int gate, int up) {
+std::pair<int, int> swiglu_geometry(int gate, int up, int width, int outputs) {
     if (gate == 39 && up == 39) return {4, 32};
     if (gate == 143 && up == 143) return {8, 16};
+    const auto q8 = [](int format) { return format == 8 || format == 15; };
+    if (q8(gate) || q8(up)) return {width > outputs ? 8 : 4, 32};
     const auto iq = [](int format) { return format == 16 || format == 17 || format == 18 || format == 21 || format == 22; };
     const auto kquant = [](int format) { return format == 12 || format == 13; };
-    if (kquant(gate) && kquant(up)) return {4, 32};
-    if ((gate == 20 || gate == 23) && (up == 20 || up == 23)) return {4, 32};
-    if (iq(gate) && iq(up)) return {8, 16};
+    if (kquant(gate) && kquant(up)) return {width > outputs ? 8 : 4, 32};
+    if ((gate == 20 || gate == 23) && (up == 20 || up == 23)) return {width > outputs ? 8 : 4, 32};
+    if (iq(gate) && iq(up)) return {8, gate == 18 || up == 18 ? 32 : 16};
+    const auto blocked = [&](int format) { return iq(format) || kquant(format) || format == 10 || format == 11 || format == 14 || format == 20 || format == 23; };
+    const auto gyro = [](int format) { return format >= 144 && format <= 151; };
+    if (gyro(gate) && gyro(up)) return {8, 16};
+    if ((blocked(gate) && (blocked(up) || gyro(up))) || (gyro(gate) && blocked(up))) {
+        const bool full_block = kquant(gate) || kquant(up) || gate == 20 || gate == 23 || up == 20 || up == 23;
+        return {8, full_block ? 32 : 16};
+    }
     return {32, 4};
 }
 } // namespace
@@ -805,7 +969,7 @@ array MlxGgufWeight::matmul(const array& input) const {
     }
     if (m <= 6) return array(shape, input.dtype(), std::make_shared<GgufProjection>(default_stream(Device::gpu),
         std::array<std::uint32_t, 7>{uint32_t(input_size()), uint32_t(output_size()), uint32_t(m), uint32_t(row_bytes_), 1, 1, 0},
-        format_, input.dtype(), projection_values(format_), projection_lanes(format_, input_size(), output_size()), false, false, bytes_),
+        format_, input.dtype(), projection_values(format_, m), projection_lanes(format_, input_size(), output_size(), m), false, false, bytes_),
         std::vector<array>{bytes_, x});
     if (m >= 64 && use_nax() && input_size() % 64 == 0 && MlxGgufStagedPrefill::supports(*this))
         return MlxGgufStagedPrefill::dense(*this, x);
@@ -855,12 +1019,12 @@ array MlxGgufWeight::swiglu(const MlxGgufWeight& up, const array& input) const {
     }
     if (planes_ || up.planes_) return moe_swiglu_pair(matmul(input), up.matmul(input));
     if (rows > 6) return moe_swiglu_pair(matmul(input), up.matmul(input));
-    const auto [lanes, values] = swiglu_geometry(format_, up.format_);
+    const auto [lanes, values] = swiglu_geometry(format_, up.format_, input_size(), output_size());
     return array(shape, input.dtype(), std::make_shared<GgufSwiGLU>(default_stream(Device::gpu),
-        std::array<std::uint32_t, 9>{uint32_t(input_size()), uint32_t(output_size()), uint32_t(rows), uint32_t(row_bytes_),
-            1, 1, 1, uint32_t(up.row_bytes_), 0},
+        std::array<std::uint32_t, 10>{uint32_t(input_size()), uint32_t(output_size()), uint32_t(rows), uint32_t(row_bytes_),
+            1, 1, 1, uint32_t(up.row_bytes_), 0, 0},
         format_, up.format_, input.dtype(), lanes, values, false, false, bytes_, up.bytes_, false),
-        std::vector<array>{bytes_, up.bytes_, contiguous(input), bytes_});
+        std::vector<array>{bytes_, up.bytes_, contiguous(input), bytes_, contiguous(input)});
 }
 array MlxGgufWeight::dequantize(Dtype dtype) const {
     if (indirect_) throw std::invalid_argument("GGUF streamed expert tables cannot be expanded as one dense tensor");
@@ -888,8 +1052,8 @@ array MlxGgufWeight::grouped_row_matmul(const array& input, int groups) const {
     if (rows <= 8 && !planes_) {
         return array(shape, input.dtype(), std::make_shared<GgufProjection>(default_stream(Device::gpu),
             std::array<std::uint32_t, 7>{uint32_t(input_size()), uint32_t(output_size() / groups), uint32_t(rows),
-                uint32_t(row_bytes_), uint32_t(groups), 1, 0}, format_, input.dtype(), projection_values(format_),
-            projection_lanes(format_, input_size(), output_size() / groups), false, false, bytes_, true),
+                uint32_t(row_bytes_), uint32_t(groups), 1, 0}, format_, input.dtype(), projection_values(format_, rows),
+            projection_lanes(format_, input_size(), output_size() / groups, rows), false, false, bytes_, true),
             std::vector<array>{bytes_, contiguous(input)});
     }
     auto grouped = *this;
@@ -955,7 +1119,17 @@ array MlxGgufWeight::routed_swiglu(const MlxGgufWeight& up, const array& input,
     const auto tokens = expert_ids.shape(0), routes = expert_ids.shape(1);
     const Shape shape{tokens, routes, output_size()};
     if (!expert_ids.size()) return zeros(shape, input.dtype());
+    if (use_nax() && (!same_rotation(up) || bool(planes_) != bool(up.planes_) || limit > 0.f) &&
+        (planes_ || up.planes_ || tokens > 8) &&
+        MlxGgufStagedPrefill::supports_grouped(*this) && MlxGgufStagedPrefill::supports_grouped(up)) {
+        const MlxGgufPrefillPlan grouped(input, expert_ids, expert_count(),
+            expert_ids.size() <= std::size_t(expert_count()) ? 8 : gguf_prefill_tile_rows(*this, up, *this, expert_ids));
+        return grouped.restore(grouped.gate_up(*this, up, nullptr, nullptr, limit));
+    }
     if (rotation_ || up.rotation_) {
+        if (!same_rotation(up) && tokens <= 6 && !planes_ && !up.planes_ && !mixed_layout_ && !up.mixed_layout_)
+            return routed_swiglu_inputs(up, rotation_ ? rotate_input(input) : input,
+                up.rotation_ ? up.rotate_input(input) : input, expert_ids, limit, true);
         if (!same_rotation(up)) return activate(routed_matmul(input, expert_ids, true, plan),
             up.routed_matmul(input, expert_ids, true, plan));
         auto gate_plain = *this, up_plain = up;
@@ -965,19 +1139,19 @@ array MlxGgufWeight::routed_swiglu(const MlxGgufWeight& up, const array& input,
     if ((mixed_layout_ && up.mixed_layout_) || ((mixed_layout_ || up.mixed_layout_) &&
         (tokens == 1 || (tokens <= 4 && use_nax()))))
         return mixed_swiglu(up, input, expert_ids, limit, plan);
-    if (mixed_layout_ || up.mixed_layout_ || (limit > 0.f && (planes_ || up.planes_))) return activate(routed_matmul(input, expert_ids, true, plan),
+    if (mixed_layout_ || up.mixed_layout_) return activate(routed_matmul(input, expert_ids, true, plan),
         up.routed_matmul(input, expert_ids, true, plan));
     if (planes_ && up.planes_) {
         const MlxGgufPrefillPlan grouped(input, expert_ids, expert_count(),
             expert_ids.size() <= std::size_t(expert_count()) ? 8 : gguf_prefill_tile_rows(*this, up, *this, expert_ids));
-        return grouped.restore(grouped.gate_up(*this, up));
+        return grouped.restore(grouped.gate_up(*this, up, nullptr, nullptr, limit));
     }
     if (planes_ || up.planes_) return activate(routed_matmul(input, expert_ids, true, plan),
         up.routed_matmul(input, expert_ids, true, plan));
     if (tokens > 8 && use_nax() && MlxGgufStagedPrefill::supports_grouped(*this) && MlxGgufStagedPrefill::supports_grouped(up)) {
         const MlxGgufPrefillPlan grouped(input, expert_ids, expert_count(),
             expert_ids.size() <= std::size_t(expert_count()) ? 8 : 32);
-        return limit > 0.f ? activate(grouped.project(*this), grouped.project(up)) : grouped.restore(grouped.gate_up(*this, up));
+        return grouped.restore(grouped.gate_up(*this, up, nullptr, nullptr, limit));
     }
     if (tokens > 6) {
         std::optional<MlxGgufRoutePlan> owned;
@@ -985,11 +1159,21 @@ array MlxGgufWeight::routed_swiglu(const MlxGgufWeight& up, const array& input,
         return activate(routed_matmul(input, expert_ids, true, plan),
             up.routed_matmul(input, expert_ids, true, plan));
     }
-    const auto [lanes, values] = swiglu_geometry(format_, up.format_);
-    return array(shape, input.dtype(), std::make_shared<GgufSwiGLU>(default_stream(Device::gpu),
-        std::array<std::uint32_t, 9>{uint32_t(input_size()), uint32_t(output_size()), uint32_t(tokens), uint32_t(row_bytes_),
-            uint32_t(expert_count()), uint32_t(routes), 1, uint32_t(up.row_bytes_), std::bit_cast<uint32_t>(limit)},
-        format_, up.format_, input.dtype(), lanes, values, indirect_, up.indirect_, bytes_, up.bytes_),
-        std::vector<array>{bytes_, up.bytes_, contiguous(input), contiguous(astype(expert_ids, int32))});
+    return routed_swiglu_inputs(up, input, input, expert_ids, limit, false);
+}
+
+array MlxGgufWeight::routed_swiglu_inputs(const MlxGgufWeight& up, const array& input, const array& up_input,
+    const array& expert_ids, float limit, bool separate_input) const {
+    const auto tokens = expert_ids.shape(0), routes = expert_ids.shape(1);
+    const bool reverse = gguf_gate_up_reversed(format_, up.format_);
+    const auto& first = reverse ? up : *this;
+    const auto& second = reverse ? *this : up;
+    const auto [lanes, values] = swiglu_geometry(first.format_, second.format_, input_size(), output_size());
+    return array(Shape{tokens, routes, output_size()}, input.dtype(), std::make_shared<GgufSwiGLU>(default_stream(Device::gpu),
+        std::array<std::uint32_t, 10>{uint32_t(input_size()), uint32_t(output_size()), uint32_t(tokens), uint32_t(first.row_bytes_),
+            uint32_t(expert_count()), uint32_t(routes), 1, uint32_t(second.row_bytes_), limit > 0.f ? std::bit_cast<uint32_t>(limit) : 0u, uint32_t(reverse)},
+        first.format_, second.format_, input.dtype(), lanes, values, first.indirect_, second.indirect_, first.bytes_, second.bytes_, true, separate_input),
+        std::vector<array>{first.bytes_, second.bytes_, contiguous(reverse ? up_input : input),
+            contiguous(astype(expert_ids, int32)), contiguous(reverse ? input : up_input)});
 }
 } // namespace mfq::metal

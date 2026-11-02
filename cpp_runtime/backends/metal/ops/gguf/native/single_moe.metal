@@ -40,6 +40,7 @@ kernel void moe_native_single_gate_up(device bfloat* input [[buffer(0)]], device
         gate, output, ulong(group.y) * p.output_size);
 }
 
+template <ushort Splits>
 kernel void moe_native_single_gate_up_split(device bfloat* input [[buffer(0)]], device const uint* ids [[buffer(1)]],
     device const uint* slots [[buffer(2)]], device uchar* g0 [[buffer(3)]], device uchar* g1 [[buffer(4)]],
     device uchar* gm [[buffer(5)]], device uchar* sg0 [[buffer(6)]], device uchar* sg1 [[buffer(7)]],
@@ -55,27 +56,32 @@ kernel void moe_native_single_gate_up_split(device bfloat* input [[buffer(0)]], 
     const auto us = moe_gguf_segment(ids[group.y], p.experts, p.input_size, p.output_size,
         formats.z, formats.w, slots, u0, u1, um, su0, su1, sumeta);
     threadgroup half2 tables[2 * kQuantPairTableEntries];
-    threadgroup bfloat gate[16];
+    constexpr uint columns = 32 / Splits;
+    threadgroup bfloat gate[columns];
     bool initialized = false;
     quant_format_switch(gs.format, [&](auto f) { initialized |= quant_pair_entries<decltype(f)>(tables, tid, 64); });
     quant_format_switch(us.format, [&](auto f) { initialized |= quant_pair_entries<decltype(f)>(tables + kQuantPairTableEntries, tid, 64); });
     if (initialized) threadgroup_barrier(mem_flags::mem_threadgroup);
-    const uint split = lane / 16;
+    const uint split = lane / columns;
     const bool up = simdgroup == 1;
     const auto weight = up ? us : gs;
-    const uint per = p.input_size / 64;
+    const uint per = p.input_size / (32 * Splits);
     float sums[1];
     quant_format_switch(weight.format, [&](auto f) {
         column_dot<decltype(f), 1>(input, 1, p.input_size, weight.w0, weight.w1, weight.meta,
-            group.x * 16 + (lane & 15), split * per, (split + 1) * per,
+            group.x * columns + lane % columns, split * per, (split + 1) * per,
             tables + (up ? kQuantPairTableEntries : 0), sums);
     });
-    const float value = sums[0] + simd_shuffle_xor(sums[0], 16);
+    float value = sums[0];
+    for (uint offset = columns; offset < 32; offset *= 2) value += simd_shuffle_xor(value, offset);
     if (!split && !up) gate[lane] = bfloat(value);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (!split && up) output[ulong(group.y) * p.output_size + group.x * 16 + lane] =
+    if (!split && up) output[ulong(group.y) * p.output_size + group.x * columns + lane] =
         bfloat(float(bfloat(value)) * splash_silu(float(gate[lane])));
 }
+
+template [[host_name("moe_native_single_gate_up_split")]] kernel decltype(moe_native_single_gate_up_split<2>) moe_native_single_gate_up_split<2>;
+template [[host_name("moe_native_single_gate_up_split4")]] kernel decltype(moe_native_single_gate_up_split<4>) moe_native_single_gate_up_split<4>;
 
 kernel void moe_native_single_down(device const bfloat* input [[buffer(0)]], device const uint* ids [[buffer(1)]],
     device const uint* slots [[buffer(2)]], device uchar* w0 [[buffer(3)]], device uchar* w1 [[buffer(4)]],

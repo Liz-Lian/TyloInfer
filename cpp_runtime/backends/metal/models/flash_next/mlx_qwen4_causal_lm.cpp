@@ -443,16 +443,16 @@ public:
             const auto hidden = gguf_->routed_swiglu(*gguf_up_, input, ids, &plan);
             return down.gguf_->routed_weighted_matmul(hidden, ids, weights, &plan);
         }
-        if (!gguf_->same_rotation(*gguf_up_)) return std::nullopt;
-        if (gguf_->has_hadamard() && (shared_gate || shared_up || shared_down || shared_logits)) return std::nullopt;
-        if (!gguf_->has_staged_planes() && gguf_short_sparse_routes(ids, gguf_->expert_count())) {
+        if ((gguf_->has_hadamard() || gguf_up_->has_hadamard() || down.gguf_->has_hadamard()) &&
+            (shared_gate || shared_up || shared_down || shared_logits)) return std::nullopt;
+        const bool compact = gguf_compact_ffn_available(*gguf_, *gguf_up_, *down.gguf_, ids);
+        if (!compact && !gguf_->has_staged_planes() && !gguf_up_->has_staged_planes() && gguf_short_sparse_routes(ids, gguf_->expert_count())) {
             if (ids.shape(0) <= 6 || shared_gate || shared_up || shared_down || shared_logits) return std::nullopt;
             const auto plan = gguf_route_plan(ids, gguf_->expert_count());
             return down.gguf_->routed_weighted_matmul(gguf_->routed_swiglu(*gguf_up_, input, ids, &plan), ids, weights, &plan);
         }
         const int tile = gguf_prefill_tile_rows(*gguf_, *gguf_up_, *down.gguf_, ids);
-        if (!gguf_expert_prefill_available(input) &&
-            !(tile == 8 && gguf_->has_staged_planes() && gguf_up_->has_staged_planes() && down.gguf_->has_staged_planes()))
+        if (!gguf_expert_prefill_available(input) && !compact)
             return std::nullopt;
         if (tile == 16 && (gguf_->has_staged_planes() || gguf_up_->has_staged_planes() || down.gguf_->has_staged_planes()))
             return std::nullopt;

@@ -145,7 +145,8 @@ int main() {
                 while (!pending.empty()) {
                     const auto value = pending.back(); pending.pop_back();
                     if (!value.has_primitive()) continue;
-                    if (std::string_view(value.primitive().name()) == "CustomKernel") {
+                    if (std::string_view(value.primitive().name()) == "CustomKernel" ||
+                        dynamic_cast<const MlxPreparableKernel*>(&value.primitive())) {
                         const auto key = mlx_kernel_preparation_key(value.primitive());
                         if (key.find("tinfer_gguf_hadamard128") != std::string::npos) return key;
                     }

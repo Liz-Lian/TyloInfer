@@ -24,14 +24,20 @@ struct Projection {
 };
 using Layer = std::array<Projection, 3>;
 
+std::optional<MlxGgufPrefillPlan> ffn_plan(const std::array<MlxGgufWeight, 3>& w,
+    const array& input, const array& ids) {
+    if (w[0].has_mixed_formats() || w[1].has_mixed_formats() || w[2].has_mixed_formats()) return std::nullopt;
+    if (!gguf_compact_ffn_available(w[0], w[1], w[2], ids) &&
+        !(gguf_expert_prefill_available(input) && !gguf_short_sparse_routes(ids, w[0].expert_count()))) return std::nullopt;
+    const int tile = gguf_prefill_tile_rows(w[0], w[1], w[2], ids);
+    if (tile == 16 && (w[0].has_staged_planes() || w[1].has_staged_planes() || w[2].has_staged_planes())) return std::nullopt;
+    return MlxGgufPrefillPlan(input, ids, w[0].expert_count(), tile);
+}
+
 array ffn(const std::array<MlxGgufWeight, 3>& w, const array& input,
     const array& ids, const array& weights, bool float_accumulation = false, float limit = 0.f) {
-    if (limit == 0.f && gguf_expert_prefill_available(input) && !gguf_short_sparse_routes(ids, w[0].expert_count()) &&
-        !w[0].has_mixed_formats() && !w[1].has_mixed_formats() && !w[2].has_mixed_formats() &&
-        w[0].same_rotation(w[1])) {
-        const MlxGgufPrefillPlan plan(input, ids, w[0].expert_count());
-        return plan.down(w[2], plan.gate_up(w[0], w[1]), weights, float_accumulation);
-    }
+    if (const auto plan = ffn_plan(w, input, ids))
+        return plan->down(w[2], plan->gate_up(w[0], w[1], nullptr, nullptr, limit), weights, float_accumulation);
     std::optional<MlxGgufRoutePlan> plan;
     if (ids.shape(0) > 6) plan = gguf_route_plan(ids, w[0].expert_count(),
         w[0].has_mixed_formats() && w[1].has_mixed_formats() && w[2].has_mixed_formats());
@@ -193,11 +199,9 @@ array MlxGgufExpertCache::apply_ffn(std::size_t layer_index, const array& input,
     std::optional<MlxGgufPrefillPlan> prefill;
     auto output = impl_->cache->apply(layer_index, ids, 2, [&] {
         const auto& weights = impl_->layer_weights(layer_index);
-        if (limit == 0.f && gguf_expert_prefill_available(input) && !gguf_short_sparse_routes(ids, weights[0].expert_count()) && !weights[0].has_mixed_formats() &&
-            !weights[1].has_mixed_formats() && !weights[2].has_mixed_formats() &&
-            weights[0].same_rotation(weights[1])) {
-            if (!prefill) prefill.emplace(input, ids, weights[0].expert_count());
-            return prefill->gate_up(weights[0], weights[1]);
+        if (!prefill) prefill = ffn_plan(weights, input, ids);
+        if (prefill) {
+            return prefill->gate_up(weights[0], weights[1], nullptr, nullptr, limit);
         }
         if (!plan && ids.shape(0) > 6) plan = gguf_route_plan(ids, weights[0].expert_count(),
             weights[0].has_mixed_formats() && weights[1].has_mixed_formats() && weights[2].has_mixed_formats());
