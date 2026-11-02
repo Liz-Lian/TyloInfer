@@ -165,7 +165,6 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
 
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMO45CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen4CausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV41CausalLm);
 
 #undef TYLOINFER_INSTANTIATE_CAUSAL_LM
@@ -394,6 +393,6 @@ load_runtime_components(
 
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::gemma4::Model);
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::glm_dsa::Model);
-TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::DeepseekV4CausalLm);
+TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::deepseek_v4::Model);
 
 #undef TYLOINFER_INSTANTIATE_COMPONENTS

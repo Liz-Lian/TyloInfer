@@ -1,4 +1,4 @@
-#include "engine/models/deepseek_v4/ops.h"
+#include "engine/models/deepseek_v4/forward.h"
 #include "engine/models/gemma4/forward.h"
 #include "engine/models/glm5_next/forward.h"
 #include "engine/models/glm_dsa/forward.h"
@@ -32,7 +32,7 @@ TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::gemma4::Model, mfq::cuda::gemma4::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm_dsa::Model, mfq::cuda::glm_dsa::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm5_next::Model, mfq::cuda::glm5_next::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV4CausalLm, mfq::cuda::DeepseekV4CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::deepseek_v4::Model, mfq::cuda::deepseek_v4::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::nemotron_h::Model, mfq::cuda::nemotron_h::State)
 #undef TYLOINFER_INSTANTIATE_FLOW

@@ -1,4 +1,5 @@
 #include "rope.h"
+#include "tail.h"
 #include "engine/ops.h"
 #include "yarn.h"
 
@@ -267,6 +268,51 @@ mfq_tensor_backend::Tensor RopeCache::apply_bf16(
 namespace mfq::cuda {
 namespace tb = mfq_tensor_backend;
 using Tensor = tb::Tensor;
+
+TailRope::TailRope(int64_t max_position_embeddings, double rope_base, int64_t compress_ratio,
+                   double compress_rope_base, int64_t original_positions, double rope_factor,
+                   double beta_fast, double beta_slow) {
+    constexpr int64_t rotary_dim = 64;
+    const int64_t half = rotary_dim / 2;
+    const int64_t positions = std::max<int64_t>(1, max_position_embeddings);
+    const double base =
+        compress_ratio > 0 && compress_rope_base > 0.0 ? compress_rope_base : rope_base;
+    auto opts = mfq_tensor_backend::TensorOptions()
+                    .device(mfq_tensor_backend::kCUDA)
+                    .dtype(mfq_tensor_backend::kFloat32);
+    auto dims = mfq_tensor_backend::arange(0, rotary_dim, 2, opts);
+    auto freqs = mfq_tensor_backend::pow(mfq_tensor_backend::full({half}, base, opts),
+                                         -dims / static_cast<double>(rotary_dim));
+    if (compress_ratio > 0 && original_positions > 0) {
+        auto correction = [&](double rotations) {
+            return static_cast<double>(rotary_dim) *
+                   std::log(static_cast<double>(original_positions) /
+                            (rotations * 6.28318530717958647692)) /
+                   (2.0 * std::log(base));
+        };
+        const double low = std::max(0.0, std::floor(correction(beta_fast)));
+        const double high =
+            std::min(static_cast<double>(rotary_dim - 1), std::ceil(correction(beta_slow)));
+        const double denominator = high == low ? 0.001 : high - low;
+        auto ramp = mfq_tensor_backend::clamp(
+            (mfq_tensor_backend::arange(half, opts) - low) / denominator, 0.0, 1.0);
+        auto smooth = 1.0 - ramp;
+        freqs = freqs / rope_factor * (1.0 - smooth) + freqs * smooth;
+    }
+    auto angles = mfq_tensor_backend::arange(positions, opts).unsqueeze(1) * freqs.unsqueeze(0);
+    cos_ = mfq_tensor_backend::cos(angles).contiguous();
+    sin_ = mfq_tensor_backend::sin(angles).contiguous();
+    negative_sin_ = (-sin_).contiguous();
+}
+
+Tensor TailRope::forward(Tensor x, Tensor positions, bool inverse) const {
+    if (x.dim() != 4 || x.size(-1) < 64) {
+        throw std::runtime_error("DeepSeek V4 RoPE expects contiguous [B,H,T,D>=64]");
+    }
+    return dsv4_tail_rope_cuda(
+        x, positions.contiguous().to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64),
+        cos_, inverse ? negative_sin_ : sin_, 64);
+}
 
 RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
                                std::vector<int64_t> sections, bool interleaved,

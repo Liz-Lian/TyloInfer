@@ -5,8 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 
-struct Dsv4PoolState;
-
 namespace mfq::models::deepseek_v4 {
 
 struct PoolSnapshot {
@@ -43,8 +41,5 @@ struct BlockSnapshot {
         indexer_compressor.tensors(visit);
     }
 };
-
-PoolSnapshot capture_pool(const Dsv4PoolState&, int64_t, size_t&);
-void restore_pool(Dsv4PoolState&, const PoolSnapshot&);
 
 } // namespace mfq::models::deepseek_v4

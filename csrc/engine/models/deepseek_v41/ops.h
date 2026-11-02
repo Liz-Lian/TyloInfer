@@ -1,13 +1,14 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/rope/tail.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/session/size.h"
-#include "../deepseek_v4/ops.h"
+#include "engine/backends/cuda/ops/projection/projection.h"
 #include "dspark.h"
 #include "engram.h"
 #include "engine/backends/cuda/kernels/deepseek_v41.h"
@@ -230,9 +231,9 @@ inline Tensor weighted_rms(const Tensor &input, const Tensor &weight, double eps
 }
 
 inline Tensor rotate_token_major_tail(Tensor input, const Tensor &positions,
-                                      const Dsv4RopeTable &rope, bool inverse = false) {
+                                      const TailRope &rope, bool inverse = false) {
     TYLOINFER_RUNTIME_CHECK(input.dim() == 3, "DeepSeek-V4.1 RoPE input must be [B,T,D]");
-    return dsv4_rotate_rope_tail(input.unsqueeze(1).contiguous(), positions, rope, inverse)
+    return rope.forward(input.unsqueeze(1).contiguous(), positions, inverse)
         .squeeze(1)
         .contiguous();
 }
@@ -379,7 +380,7 @@ struct Block final : ::Block {
     QuantLinear index_score;
     mfq::cuda::Ffn mlp;
     Tensor vision_router_bias;
-    Dsv4RopeTable rope;
+    TailRope rope;
     std::unique_ptr<Engram> engram;
     Tensor speculative_local_slots;
     Tensor speculative_slot_ids;
@@ -538,8 +539,8 @@ struct Block final : ::Block {
     }
 
     Tensor output_projection(CudaExecutionContext &execution, Tensor attention) const {
-        return mfq::cuda::deepseek_v4::output_projection(execution, attention, output_a, output_b,
-                                                         config.o_groups, true, false);
+        return execution.projector().low_rank(attention, output_a, output_b,
+                                               config.o_groups, true, false);
     }
 
     std::optional<Tensor> update_compressed_source(CudaExecutionContext &execution,
@@ -648,7 +649,7 @@ struct Block final : ::Block {
                         .reshape({batch, tokens, config.index_n_heads, config.index_head_dim})
                         .transpose(1, 2)
                         .contiguous();
-                query = dsv4_rotate_rope_tail(query, positions, rope, false)
+                query = rope.forward(query, positions, false)
                             .transpose(1, 2)
                             .contiguous();
                 query = dsv4_fp4_sim_cuda(query.to(mfq_tensor_backend::kFloat16).contiguous());
@@ -704,7 +705,7 @@ struct Block final : ::Block {
                                  .transpose(1, 2)
                                  .contiguous()
                                  .to(mfq_tensor_backend::kFloat32);
-                query = dsv4_rotate_rope_tail(query, positions, rope, false);
+                query = rope.forward(query, positions, false);
 
                 return query;
             },
@@ -802,8 +803,7 @@ struct Block final : ::Block {
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
             },
             [&](Tensor attended) {
-                return dsv4_rotate_rope_tail(attended.transpose(1, 2).contiguous(), positions, rope,
-                                             true)
+                return rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
                     .transpose(1, 2)
                     .contiguous();
             },

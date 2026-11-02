@@ -13,6 +13,8 @@
 #include "engine/models/gemma4/state.h"
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/glm_dsa/state.h"
+#include "engine/models/deepseek_v4/load.h"
+#include "engine/models/deepseek_v4/state.h"
 #include "engine/models/glm5_next/load.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/state.h"
@@ -219,8 +221,34 @@ inline constexpr auto with_model = []<typename F>(
         }
         case CudaBackbone::qwen4_exp:
             return load.template operator()<Qwen4CausalLm>();
-        case CudaBackbone::deepseek_v4:
-            return load.template operator()<DeepseekV4CausalLm>();
+        case CudaBackbone::deepseek_v4: {
+            auto started = std::chrono::steady_clock::now();
+            auto definition = mfq::models::config_json(*source, options.config_path);
+            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+            auto owner = std::make_shared<deepseek_v4::Model>(
+                deepseek_v4::read(source, definition, options.context_size));
+            deepseek_v4::validate_offload(owner->config, execution.dsv4_cpu_offload_layers);
+            if (!execution.dsv4_cpu_offload_layers.empty()) {
+                execution.dsv4_cpu_offload_host_bytes = 0;
+                execution.drop_file_cache = true;
+            }
+            weight_loader::Loader weights{*source, execution.config.weights,
+                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+                 execution.tensor_parallel, moe_parallel_config(execution)},
+                execution.weights, execution.tq};
+            execution.dense_cpu_layer_count = 0;
+            deepseek_v4::load(*owner, weights, execution.layer_placement, execution.collectives,
+                model_parallel_primary_device(execution), execution.dsv4_cpu_offload_layers,
+                execution.dsv4_cpu_offload_host_bytes, execution.n_gpu_layers);
+            auto state = std::make_unique<deepseek_v4::State>(*owner);
+            state->preallocate();
+            auto executor = execution.make_executor();
+            auto components = load_runtime_components(*owner, weights, load_optional_components);
+            Loaded<deepseek_v4::Model, deepseek_v4::State> loaded{
+                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+            return finish(loaded, started);
+        }
         case CudaBackbone::deepseek_v41:
             return load.template operator()<DeepseekV41CausalLm>();
         case CudaBackbone::nemotron_h: {

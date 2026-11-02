@@ -23,6 +23,7 @@ public:
         int trace_layer = -1;
         int primary = 0;
         bool gemma4_fused_norms = true;
+        bool groupwise_output = true;
     };
 
     struct Options {

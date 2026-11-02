@@ -40,6 +40,12 @@ void MlaScratch::ensure_meta() {
         attention_meta = tb::empty({kMetaFloats}, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32));
 }
 
+void MlaScratch::ensure_compressed() {
+    ensure_meta();
+    if (!hadamard_signs.defined())
+        hadamard_signs = tb::ones({128}, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt8));
+}
+
 void MlaScratch::ensure_dense_workspace(int64_t B, int64_t M, int64_t logical_len) {
     const int64_t stride = (logical_len + 63) / 64 * 64;
     auto cuda = tb::TensorOptions().device(tb::kCUDA);
@@ -80,6 +86,7 @@ std::vector<Tensor> Executor::storage() const {
         append(value.attention_meta);
         for (const auto& [key, plan] : value.head_routes) { (void)key; route(plan); }
         route(value.transient_head_route);
+        append(value.hadamard_signs);
     }
     return result;
 }

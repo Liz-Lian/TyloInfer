@@ -56,7 +56,8 @@ mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
             gemma_stage_trace,
             gemma_trace_layer,
             layer_placement.primary_device(),
-            config.gemma4_fused_norms};
+            config.gemma4_fused_norms,
+            config.dsv4_groupwise_output_a};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {

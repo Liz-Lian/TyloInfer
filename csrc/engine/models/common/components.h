@@ -5,7 +5,7 @@
 #include "engine/models/nemotron_h/radio_vision.h"
 #include "engine/models/qwen4_exp/ops.h"
 #include "engine/models/common/vision/grid_encoder.h"
-#include "engine/models/deepseek_v4/ops.h"
+#include "engine/models/deepseek_v4/model.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/gemma4/model.h"
 #include "engine/models/glm5_next/model.h"

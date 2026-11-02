@@ -121,7 +121,7 @@ struct DeepseekV41Dspark final : MtpModule {
         // residency updates also run when ordinary decoding skips DSpark.
         result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.",
                                   -1 - stage, config.dspark_top_k);
-        result->rope = Dsv4RopeTable(config.max_position_embeddings, config.rope_theta, 0);
+        result->rope = TailRope(config.max_position_embeddings, config.rope_theta, 0);
         result->cuda_device = weights.placement.device;
 
         const auto function_width = config.hc_mult * config.hidden;
@@ -381,7 +381,7 @@ struct DeepseekV41Dspark final : MtpModule {
                                  .transpose(1, 2)
                                  .contiguous()
                                  .to(mfq_tensor_backend::kFloat32);
-                query = dsv4_rotate_rope_tail(query, positions, stage.rope, false);
+                query = stage.rope.forward(query, positions, false);
                 return query;
             },
             [&] {
@@ -404,8 +404,7 @@ struct DeepseekV41Dspark final : MtpModule {
                     1.0 / std::sqrt(static_cast<double>(config.head_dim)));
             },
             [&](Tensor attended) {
-                return dsv4_rotate_rope_tail(attended.transpose(1, 2).contiguous(), positions,
-                                             stage.rope, true)
+                return stage.rope.forward(attended.transpose(1, 2).contiguous(), positions, true)
                     .transpose(1, 2)
                     .contiguous();
             },
@@ -547,7 +546,7 @@ void run_dspark_self_check() {
     auto stage = std::make_unique<Block>();
     stage->key_value = projection(512, 32);
     stage->key_value_norm = mfq_tensor_backend::ones({512}, options);
-    stage->rope = Dsv4RopeTable(1024, 10000., 0);
+    stage->rope = TailRope(1024, 10000., 0);
     predictor.stages.push_back(std::move(stage));
     auto history = mfq_tensor_backend::randn({1, 257, 64}, options).to(mfq_tensor_backend::kFloat16);
     predictor.reset();

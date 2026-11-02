@@ -1,0 +1,57 @@
+#pragma once
+
+#include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/rope/tail.h"
+#include "engine/models/common/causal_metadata.h"
+#include "engine/models/common/capabilities.h"
+#include "engine/models/deepseek_v4/config.h"
+#include "engine/models/source.h"
+
+#include <memory>
+#include <vector>
+
+namespace mfq::cuda::deepseek_v4 {
+using Tensor = mfq_tensor_backend::Tensor;
+using Config = mfq::models::deepseek_v4::Config;
+struct PoolState;
+
+struct Compressor {
+    int64_t ratio = 0, head_dim = 0, cache_quant_mode = 0;
+    bool overlap = false;
+    DenseLinearGroup projection;
+    Tensor ape, norm;
+
+    std::vector<Tensor> project(Tensor x, int64_t batch, int64_t tokens) const;
+    void update(PoolState&, Tensor kv, Tensor gate, Tensor length, const TailRope&) const;
+    int64_t prefill(PoolState&, const Tensor& kv, const Tensor& gate, const TailRope&) const;
+};
+
+struct Layer {
+    int layer = -1, device = 0;
+    int64_t max_positions = 0, compress_ratio = 0, hidden_size = 4096, heads = 64;
+    int64_t head_dim = 512, groups = 8, hc_mult = 4, hc_iterations = 20;
+    double eps = 1e-6, hc_eps = 1e-6;
+    Tensor attn_norm, ffn_norm, q_a_norm, kv_norm, sinks;
+    Tensor hc_attn_fn, hc_attn_scale, hc_attn_base, hc_ffn_fn, hc_ffn_scale, hc_ffn_base;
+    QuantLinear q_a, q_b, kv, output_a, output_b;
+    Compressor compressor, indexer_compressor;
+    QuantLinear indexer_q;
+    Tensor indexer_weight;
+    Ffn ffn;
+    TailRope attention_rope;
+};
+
+struct OutputHeadWeights { Tensor function, scale, base; };
+
+struct Model {
+    std::shared_ptr<const mfq::ModelSource> source;
+    mfq::ModelGraph graph;
+    CudaModelPlan plan;
+    Config config;
+    mfq::models::CausalLmMetadata metadata;
+    QuantLinear embed, lm_head;
+    Tensor output_norm;
+    OutputHeadWeights output_head;
+    std::vector<Layer> layers;
+};
+} // namespace mfq::cuda::deepseek_v4

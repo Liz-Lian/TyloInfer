@@ -80,6 +80,66 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
 
 namespace mfq::cuda {
 
+using mfq_tensor_backend::indexing::Slice;
+
+mfq_tensor_backend::Tensor Projector::low_rank(mfq_tensor_backend::Tensor attention,
+                                               const QuantLinear &output_a,
+                                               const QuantLinear &output_b, int64_t groups,
+                                               bool groupwise_output, bool profile) const {
+    const auto batch = attention.size(0);
+    const auto tokens = attention.size(1);
+    const auto rows = batch * tokens;
+    const auto rank = output_a.out() / groups;
+    auto grouped = attention.contiguous()
+                       .reshape({rows, groups, output_a.neuron_len()})
+                       .to(mfq_tensor_backend::kFloat16);
+    const auto measure = [&](const char *name, auto &&operation) {
+        return profile ? profiler_.measure(name, operation) : operation();
+    };
+    if (output_a.is_tq()) {
+        auto low_rank = measure("dsv4.output_a", [&] {
+            const auto resources = tq_.get(grouped.get_device());
+            return output_a.tq.forward_groupwise(&resources->blas(), grouped, groups);
+        });
+        return measure("dsv4.output_b", [&] {
+            return run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
+        });
+    }
+    if (groupwise_output && output_a.is_nint() && output_a.nint.bits == 8 &&
+        output_a.nint.gs == 48 && output_a.nint.out == groups * rank) {
+        auto low_rank = measure("dsv4.output_a", [&]() {
+            return nint_matmul_groupwise_u8(profiler_, output_a.nint, grouped, groups);
+        });
+        return measure("dsv4.output_b", [&]() {
+            return run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
+        });
+    }
+    if (groupwise_output && output_a.is_mxfp8() && output_a.out() == groups * rank) {
+        auto low_rank = measure("dsv4.output_a", [&]() {
+            return groupwise(output_a, grouped, groups);
+        });
+        return measure("dsv4.output_b", [&]() {
+            return run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
+        });
+    }
+    auto expanded = measure("dsv4.output_a", [&]() {
+        return run(output_a, grouped.reshape({rows * groups, grouped.size(-1)}))
+            .reshape({rows, groups, groups, rank});
+    });
+    std::vector<mfq_tensor_backend::Tensor> diagonal;
+    diagonal.reserve(static_cast<std::size_t>(groups));
+    for (std::int64_t group = 0; group < groups; ++group) {
+        diagonal.push_back(expanded.index({Slice(), group, group, Slice()}));
+    }
+    auto low_rank = mfq_tensor_backend::stack(diagonal, 1)
+                        .reshape({rows, output_a.out()})
+                        .to(mfq_tensor_backend::kFloat16)
+                        .contiguous();
+    return measure("dsv4.output_b", [&]() {
+        return run(output_b, low_rank).reshape({batch, tokens, output_b.out()});
+    });
+}
+
 std::vector<mfq_tensor_backend::Tensor>
 Projector::grouped(
         const QuantLinearProjectionRefs& projections,

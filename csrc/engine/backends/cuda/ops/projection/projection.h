@@ -53,6 +53,9 @@ public:
                                     mfq_tensor_backend::Tensor gate, InputGateMode mode) const;
     mfq_tensor_backend::Tensor groupwise(const QuantLinear& weight,
                                        mfq_tensor_backend::Tensor input, int64_t groups) const;
+    mfq_tensor_backend::Tensor low_rank(mfq_tensor_backend::Tensor attention,
+                                      const QuantLinear& output_a, const QuantLinear& output_b,
+                                      int64_t groups, bool groupwise, bool profile) const;
     mfq_tensor_backend::Tensor swiglu(const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
     mfq_tensor_backend::Tensor geglu(const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
     std::vector<mfq_tensor_backend::Tensor> grouped(

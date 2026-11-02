@@ -108,7 +108,7 @@ std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::L
     }
     if(shared->router_prefetch.empty())shared->router_prefetch.resize(config.n_layers,nullptr);
     shared->router_prefetch.at(static_cast<std::size_t>(layer))=&result->mlp;
-    result->rope = Dsv4RopeTable(
+    result->rope = TailRope(
         config.max_position_embeddings, config.rope_theta, result->ratio,
         config.compress_rope_theta, config.rope_scaling.original_max_position_embeddings,
         config.rope_scaling.factor, config.rope_scaling.beta_fast, config.rope_scaling.beta_slow);

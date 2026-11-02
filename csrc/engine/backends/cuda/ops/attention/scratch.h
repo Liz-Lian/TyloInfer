@@ -13,10 +13,11 @@ struct MlaScratch {
     std::map<int64_t, MoeRoutePlan> head_routes;
     MoeRoutePlan transient_head_route;
     int64_t transient_head_route_key = -1;
-    mfq_tensor_backend::Tensor dense_mask, decode_mask, kv_max, attention_meta;
+    mfq_tensor_backend::Tensor dense_mask, decode_mask, kv_max, attention_meta, hadamard_signs;
 
     const MoeRoutePlan& head_route(int64_t rows, int heads);
     void ensure_meta();
+    void ensure_compressed();
     void ensure_dense_workspace(int64_t batch, int64_t rows, int64_t logical_len);
     void ensure_decode_workspace(int64_t batch, int64_t planned_len);
 };
