@@ -3,7 +3,7 @@
 #include "mlx_legacy_tensor_compat.h"
 
 #include "engine/models/common/mfq_source.h"
-#include "source/gguf_model_source.h"
+#include "engine/models/common/gguf_source.h"
 #include "engine/weights/encoding/tq_rows.h"
 #include "nlohmann/json.hpp"
 
@@ -244,7 +244,7 @@ MfqContainer::MfqContainer(std::filesystem::path path, std::string hf_source_pre
         return;
     }
     if (mfq::is_gguf_file(path)) {
-        gguf_source_ = std::make_shared<mfq::GgufModelSource>(path, std::move(gguf_companions));
+        gguf_source_ = std::make_shared<mfq::models::GgufSource>(path, std::move(gguf_companions));
         header_.version = 2;
         header_.architecture = std::string(gguf_source_->architecture());
         header_.extra_json = gguf_source_->metadata();

@@ -1,14 +1,14 @@
 #pragma once
 
-#include "model_source.h"
+#include "source/model_source.h"
 
-namespace mfq {
+namespace mfq::models {
 
-class GgufModelSource final : public ModelSource {
+class GgufSource final : public ModelSource {
 public:
-    explicit GgufModelSource(const std::filesystem::path& path,
-        std::vector<std::filesystem::path> companions = {});
-    ~GgufModelSource() override;
+    explicit GgufSource(const std::filesystem::path& path,
+                        std::vector<std::filesystem::path> companions = {});
+    ~GgufSource() override;
     const std::vector<std::filesystem::path>& source_paths() const noexcept override;
     std::string_view architecture() const noexcept override;
     const std::unordered_map<std::string, std::string>& metadata() const noexcept override;
@@ -24,9 +24,10 @@ public:
     bool has_asset(std::string_view name) const noexcept override;
     std::vector<std::byte> read_asset(std::string_view name) const override;
     std::optional<ModelGraph> model_graph() const override;
+
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };
 
-} // namespace mfq
+} // namespace mfq::models

@@ -15,8 +15,10 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/source/assets.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/mlx.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/gguf.cpp
-    gguf_model_source.cpp
-    gguf_model_source.h
+    ${PROJECT_SOURCE_DIR}/engine/weights/gguf.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/gguf.h
+    ${PROJECT_SOURCE_DIR}/engine/models/common/gguf_source.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/gguf_source.h
     ${PROJECT_SOURCE_DIR}/engine/weights/mlx.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/gguf.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/mfq.h
