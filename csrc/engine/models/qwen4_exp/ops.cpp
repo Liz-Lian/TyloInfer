@@ -15,7 +15,7 @@
 #include "ops.h"
 #include "model.h"
 #include "engine/models/qwen4_exp/snapshot.h"
-#include "mtp.h"
+#include "predictor.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/group.h"
 #include "engine/weights/tq/source.h"
@@ -801,14 +801,14 @@ struct Qwen4MtpGraph {
     int64_t capacity=0;
     bool failed=false;
     Tensor last_compact;
-    bool reusable(const Qwen4ExpMtp& predictor) const {
+    bool reusable(const Predictor& predictor) const {
         return predictor.reuse_decode_graphs && !failed && streamed_decode_graphs(*predictor.execution) &&
             !predictor.layers.empty() && predictor.layers[0]->qsa && predictor.layers[0]->qsa->graph_capacity()>0;
     }
-    void restore_legacy(Qwen4ExpMtp& predictor) {
+    void restore_legacy(Predictor& predictor) {
         last_compact={};cells.clear();predictor.layers[0]->qsa->leave_graph();
     }
-    MtpStep run(Qwen4ExpMtp& predictor,const Tensor& hidden,const Tensor& ids,
+    MtpStep run(Predictor& predictor,const Tensor& hidden,const Tensor& ids,
                const Tensor& positions = {},bool history_only=false,bool scalar_history=false) {
         using ProfileTime=std::chrono::steady_clock;
         const auto profile_started=ProfileTime::now();
@@ -923,21 +923,21 @@ struct Qwen4MtpGraph {
         } catch(...) {failed=true;throw;}
     }
 };
-Tensor Qwen4ExpMtp::graph_compact_topk() const {
+Tensor Predictor::graph_compact_topk() const {
     return graph_registry?graph_registry->last_compact:Tensor{};
 }
 
-Qwen4ExpMtp::Qwen4ExpMtp() = default;
-Qwen4ExpMtp::~Qwen4ExpMtp() = default;
-Qwen4ExpMtp::Qwen4ExpMtp(Qwen4ExpMtp&&) noexcept = default;
-Qwen4ExpMtp& Qwen4ExpMtp::operator=(Qwen4ExpMtp&&) noexcept = default;
+Predictor::Predictor() = default;
+Predictor::~Predictor() = default;
+Predictor::Predictor(Predictor&&) noexcept = default;
+Predictor& Predictor::operator=(Predictor&&) noexcept = default;
 
-std::optional<Qwen4ExpMtp> Qwen4ExpMtp::load_if_present(CudaExecutionContext &execution,
+std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execution,
                                                       const weight_loader::Loader& weights,
                                                       const mfq::models::qwen4_exp::Config &main,
                                                       QuantLinear embedding, QuantLinear output,
                                                       double softcap) {
-    Qwen4ExpMtp result;
+    Predictor result;
     result.execution = &execution;
     result.embedding = std::move(embedding);
     result.output = std::move(output);
@@ -950,17 +950,17 @@ std::optional<Qwen4ExpMtp> Qwen4ExpMtp::load_if_present(CudaExecutionContext &ex
     return result;
 }
 
-Tensor Qwen4ExpMtp::embed(Tensor ids) const {
+Tensor Predictor::embed(Tensor ids) const {
     return mfq::cuda::embed(embedding, std::move(ids), execution->collectives,
                            execution->profiler, primary);
 }
 
-Tensor Qwen4ExpMtp::logits(Tensor hidden) const {
+Tensor Predictor::logits(Tensor hidden) const {
     return mfq::cuda::logits(output, std::move(hidden), execution->projector(),
                             execution->profiler, softcap);
 }
 
-void Qwen4ExpMtp::reset(int64_t next_batch) {
+void Predictor::reset(int64_t next_batch) {
     TYLOINFER_RUNTIME_CHECK(next_batch > 0, "Qwen4-Exp MTP batch must be positive");
     const bool retain=next_batch==1 && graph_registry && graph_registry->reusable(*this);
     if(!retain)graph_registry.reset();
@@ -976,7 +976,7 @@ void Qwen4ExpMtp::reset(int64_t next_batch) {
     batch = next_batch;
 }
 
-std::pair<Tensor, Tensor> Qwen4ExpMtp::evaluate(const Tensor &hidden,
+std::pair<Tensor, Tensor> Predictor::evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth, bool cache,
                                        const Tensor &supplied_positions,
                                        const Tensor &supplied_embeddings, bool history_only) {
@@ -1061,15 +1061,15 @@ std::pair<Tensor, Tensor> Qwen4ExpMtp::evaluate(const Tensor &hidden,
         [&](int64_t layer, const auto &pos) { positions[layer] = pos[1]; });
 }
 
-Tensor Qwen4ExpMtp::forward(Tensor hidden, Tensor ids) {
+Tensor Predictor::forward(Tensor hidden, Tensor ids) {
     return evaluate(hidden, ids).first;
 }
 
-MtpStep Qwen4ExpMtp::step(Tensor hidden, Tensor ids) {
+MtpStep Predictor::step(Tensor hidden, Tensor ids) {
     return step_positioned(std::move(hidden),std::move(ids),{});
 }
 
-MtpStep Qwen4ExpMtp::step_positioned(Tensor hidden, Tensor ids, Tensor positions) {
+MtpStep Predictor::step_positioned(Tensor hidden, Tensor ids, Tensor positions) {
     if (positions.defined()) {
         if (positions.dim()==1) positions=positions.reshape({1,1,-1}).expand({3,ids.size(0),ids.size(1)});
         else if (positions.dim()==2) positions=positions.unsqueeze(1);
@@ -1091,7 +1091,7 @@ MtpStep Qwen4ExpMtp::step_positioned(Tensor hidden, Tensor ids, Tensor positions
     return {std::move(result.first), std::move(result.second)};
 }
 
-void Qwen4ExpMtp::history_step(Tensor hidden,Tensor ids,Tensor positions,bool scalar_chain) {
+void Predictor::history_step(Tensor hidden,Tensor ids,Tensor positions,bool scalar_chain) {
     if(ids.dim()==1)ids=ids.unsqueeze(0);
     if(positions.defined()) {
         if(positions.dim()==1)positions=positions.reshape({1,1,-1}).expand({3,ids.size(0),ids.size(1)});
@@ -1118,11 +1118,11 @@ void Qwen4ExpMtp::history_step(Tensor hidden,Tensor ids,Tensor positions,bool sc
     } else (void)step_positioned(std::move(hidden),std::move(ids),std::move(positions));
 }
 
-int64_t Qwen4ExpMtp::cache_position() const noexcept {
+int64_t Predictor::cache_position() const noexcept {
     return lengths.empty() ? 0 : lengths.front();
 }
 
-void Qwen4ExpMtp::trim_cache_to(int64_t position) {
+void Predictor::trim_cache_to(int64_t position) {
     TYLOINFER_RUNTIME_CHECK(position >= 0 && position <= cache_position(),
                       "Qwen4-Exp MTP cache trim position is invalid");
     constexpr size_t index = 0;
@@ -1133,11 +1133,18 @@ void Qwen4ExpMtp::trim_cache_to(int64_t position) {
     lengths[index] = position;
 }
 
-bool Qwen4ExpMtp::teacher_forced_prompt_prime() const noexcept { return true; }
+bool Predictor::teacher_forced_prompt_prime() const noexcept { return true; }
 
-bool Qwen4ExpMtp::target_bootstrap_decode() const noexcept { return true; }
+bool Predictor::target_bootstrap_decode() const noexcept { return true; }
 
-bool Qwen4ExpMtp::preserve_output_dtype() const noexcept { return true; }
+bool Predictor::preserve_output_dtype() const noexcept { return true; }
+
+std::unique_ptr<mfq::engine::mtp::DepthPolicy> Predictor::depth_policy(
+        int maximum_depth, mfq::engine::mtp::PolicyState& state) const {
+    const auto* option = mfq::cuda::env_lookup("TYLOINFER_MTP_METAL_POLICY");
+    const bool batch = !option || option[0] != '0';
+    return std::make_unique<mfq::engine::mtp::AdaptivePolicy>(maximum_depth, &state, true, batch);
+}
 
 mfq::models::qwen4_exp::BlockSnapshot capture_block_session(const Qwen4Block& block,int64_t position,std::size_t& bytes) {
     mfq::models::qwen4_exp::BlockSnapshot state;
@@ -1166,11 +1173,11 @@ void restore_block_session(Qwen4Block& block,const mfq::models::qwen4_exp::Block
     if(block.ple)block.ple->restore_session(state.ple_convolution,{state.ple_batch,state.ple_tokens},block.retain_graph_storage);
 }
 
-bool Qwen4ExpMtp::supports_session_state() const noexcept {
+bool Predictor::supports_session_state() const noexcept {
     return execution && !execution->offload && !layers.empty();
 }
 
-MtpSessionState Qwen4ExpMtp::capture_session_state(int64_t target_position,const Tensor& hidden) const {
+MtpSessionState Predictor::capture_session_state(int64_t target_position,const Tensor& hidden) const {
     const auto position=target_position-1;
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && position>0 && position<=cache_position() &&
         hidden.defined() && hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==1 && hidden.size(2)==hidden_norm.numel(),
@@ -1188,7 +1195,7 @@ MtpSessionState Qwen4ExpMtp::capture_session_state(int64_t target_position,const
     return state;
 }
 
-void Qwen4ExpMtp::restore_session_state(const MtpSessionState& state) {
+void Predictor::restore_session_state(const MtpSessionState& state) {
     const auto* snapshot=std::get_if<mfq::models::qwen4_exp::MtpSnapshot>(&state.payload);
     TYLOINFER_RUNTIME_CHECK(supports_session_state() && state.cache_pos>0 &&
         snapshot && snapshot->blocks.size()==layers.size() && snapshot->positions.size()==layers.size() &&
@@ -1600,7 +1607,7 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
         }
     };
     if(model.graph_registry)append(model.graph_registry->cells,"target","kind","confirmed");
-    const auto* predictor=dynamic_cast<const qwen4_exp::Qwen4ExpMtp*>(mtp);
+    const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp);
     if(predictor && predictor->graph_registry)append(predictor->graph_registry->cells,"predictor","dtype","mode");
     return result;
 }
@@ -1637,7 +1644,7 @@ void qwen4_release_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp) {
     if(model.graph_registry)model.graph_registry->restore_legacy();
     model.graph_registry.reset();
     for(auto& block:model.blocks)static_cast<qwen4_exp::Qwen4Block&>(*block).retain_graph_storage=false;
-    if(auto* predictor=dynamic_cast<qwen4_exp::Qwen4ExpMtp*>(mtp)) {
+    if(auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(mtp)) {
         if(predictor->graph_registry)predictor->graph_registry->restore_legacy(*predictor);
         predictor->graph_registry.reset();
         for(auto& layer:predictor->layers)layer->retain_graph_storage=false;
@@ -1645,7 +1652,7 @@ void qwen4_release_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp) {
 }
 
 std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm& model,const MtpModule* mtp,int maximum_draft_depth) {
-    const auto* predictor=dynamic_cast<const qwen4_exp::Qwen4ExpMtp*>(mtp);
+    const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp);
     const auto* reuse=mfq::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
     if(!predictor || (reuse && reuse[0]=='0') || (warmup && warmup[0]=='0') ||
@@ -1665,7 +1672,7 @@ std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm& model,const MtpModule* 
 void qwen4_warmup_decode_graphs(Qwen4CausalLm& model,MtpModule* mtp,int maximum_draft_depth) {
     const auto* reuse=mfq::cuda::env_lookup("TYLOINFER_QWEN4_REUSE_GRAPHS");
     model.reuse_decode_graphs=!reuse || reuse[0]!='0';
-    auto* predictor=dynamic_cast<qwen4_exp::Qwen4ExpMtp*>(mtp);
+    auto* predictor=dynamic_cast<qwen4_exp::Predictor*>(mtp);
     if(predictor)predictor->reuse_decode_graphs=model.reuse_decode_graphs;
     const bool tq=bool(model.execution->weights.tq);
     // Keep TQ startup to the target decode window. Wider verification shapes
@@ -1885,7 +1892,7 @@ mfq::models::SnapshotSize snapshot_size(const Qwen4CausalLm& model,const MtpModu
         if(block.ple)bytes+=session_tensor_bytes(block.ple->conv_state());
     };
     for(const auto& block:model.blocks)count_block(static_cast<const qwen4_exp::Qwen4Block&>(*block),model.cache_pos);
-    if(const auto* predictor=dynamic_cast<const qwen4_exp::Qwen4ExpMtp*>(mtp)) {
+    if(const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp)) {
         for(std::size_t i=0;i<predictor->layers.size();++i) {
             const auto count=std::min(model.cache_pos-1,predictor->lengths[i]);
             count_block(*predictor->layers[i],count);
@@ -1921,7 +1928,7 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
             for(const auto& tensor:checkpoint.gdn_state)add(tensor);
             for(const auto& tensor:checkpoint.ple_conv)add(tensor);
         }
-    if(const auto* predictor=dynamic_cast<const qwen4_exp::Qwen4ExpMtp*>(mtp)) {
+    if(const auto* predictor=dynamic_cast<const qwen4_exp::Predictor*>(mtp)) {
         for(const auto& block:predictor->layers)block_cache(*block);
         for(const auto& positions:predictor->positions)add(positions);
         if(predictor->graph_registry)add(predictor->graph_registry->position_storage);

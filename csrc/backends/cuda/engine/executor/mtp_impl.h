@@ -13,9 +13,8 @@
 #include "engine/requests/inference.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/deepseek_v41/policy.h"
 #include "engine/models/qwen4_exp/ops.h"
-#include "engine/models/qwen4_exp/mtp.h"
+#include "engine/models/qwen4_exp/predictor.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/models/input.h"
@@ -76,7 +75,6 @@ void replay_target(Model& model, State& state, mfq::cuda::Executor* executor,
 }
 
 template <class Model, class State> struct CudaMtpOps {
-  using DepthController = mfq::models::deepseek_v41::DepthController;
   using Tensor = mfq_tensor_backend::Tensor;
   Model &model;
   State &state;
@@ -157,14 +155,6 @@ template <class Model, class State> struct CudaMtpOps {
     const bool initialized=captures!=target_graph_captures;
     target_graph_captures=captures;
     return std::exchange(target_maintenance,false) || initialized;
-  }
-  bool gradual_mtp_warmup() const {return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>;}
-  bool metal_mtp_policy() const {
-    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_METAL_POLICY");
-      return !option || option[0]!='0';
-    }
-    return false;
   }
   bool prefetch_target_ids(int32_t token,const std::vector<int32_t>& drafts) {
     if constexpr(requires {model.adapter_prefetch_token_rows(model,early_ple_ids_host);}) {
@@ -299,7 +289,7 @@ template <class Model, class State> struct CudaMtpOps {
     sampler_.emplace(sampling);
     penalties = sampler().has_penalties();
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp))
+      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp))
         predictor->compact_graph_sampling=captured_compact_requested();
     if (penalties) {
       counts = mfq::cuda::SamplingOps::token_counts(input_ids, metadata.vocab_size);
@@ -536,7 +526,7 @@ template <class Model, class State> struct CudaMtpOps {
   }
   MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
+      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);
           predictor && predictor->layers.size()==1 && model.reuse_decode_graphs &&
           model.graph_registry && ids.size(1)>1 && ids.size(1)<=128) {
         const auto prefix=ids.size(1)-1;
@@ -626,7 +616,7 @@ template <class Model, class State> struct CudaMtpOps {
     projected_predictor_logits = result.sample_logits;
     projected_predictor_compact={};
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);predictor && result.sample_logits.defined())
+      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);predictor && result.sample_logits.defined())
         projected_predictor_compact=predictor->graph_compact_topk();
     projected_predictor_greedy = result.greedy_token;
     projected_predictor_hidden = result.sample_logits.defined()
@@ -635,7 +625,7 @@ template <class Model, class State> struct CudaMtpOps {
   }
   void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions,bool scalar_chain=false) {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
+      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);
           predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
         for(int64_t offset=0;offset<ids.size(1);offset+=4) {
           const auto rows=std::min<int64_t>(4,ids.size(1)-offset);
@@ -657,7 +647,7 @@ template <class Model, class State> struct CudaMtpOps {
   bool cache_only_prompt_history() const {
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_CACHE_ONLY_PRIME");
-      const auto* predictor=dynamic_cast<const mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
+      const auto* predictor=dynamic_cast<const mfq::cuda::qwen4_exp::Predictor*>(&mtp);
       return (!option || option[0]!='0') && predictor && predictor->layers.size()==1;
     }
     return false;
@@ -693,7 +683,7 @@ template <class Model, class State> struct CudaMtpOps {
     if(!cache_only_prompt_history())hidden=hidden.to(mfq_tensor_backend::kCUDA);
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(cache_only_prompt_history()) {
-        auto& predictor=static_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp&>(mtp);
+        auto& predictor=static_cast<mfq::cuda::qwen4_exp::Predictor&>(mtp);
         MoePrefillWorkspaceLoan workspace(weights.moe);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);

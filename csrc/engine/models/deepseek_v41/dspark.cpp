@@ -5,6 +5,7 @@
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"
+#include "engine/models/deepseek_v41/policy.h"
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/mtp.h"
@@ -290,7 +291,17 @@ struct DeepseekV41Dspark final : MtpModule {
     bool target_bootstrap_decode() const noexcept override { return false; }
     bool preserve_output_dtype() const noexcept override { return true; }
     bool blockwise_drafting() const noexcept override { return true; }
-    bool dspark_policy() const noexcept override { return true; }
+    std::unique_ptr<mfq::engine::mtp::DepthPolicy> depth_policy(
+            int maximum_depth, mfq::engine::mtp::PolicyState&) const override {
+        return std::make_unique<mfq::models::deepseek_v41::Policy>(maximum_depth);
+    }
+    MfqSamplingParams draft_sampling(MfqSamplingParams sampling, bool compact) const override {
+        if (compact) {
+            sampling.temperature = 0.6;
+            sampling.top_p = 0.95;
+        }
+        return sampling;
+    }
     bool retains_partial_target_prefix() const noexcept override { return true; }
 
     int maximum_draft_depth() const noexcept override {

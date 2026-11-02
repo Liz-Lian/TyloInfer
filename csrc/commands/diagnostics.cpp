@@ -1,7 +1,7 @@
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_config.h"
 #include "env.h"
-#include "engine/models/qwen4_exp/mtp.h"
+#include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"
 #include "engine/weights/loader.h"
 #include "cli.h"
@@ -676,7 +676,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
                     std::is_same_v<Model, mfq::cuda::Glm5CausalLm>) {
                 using Predictor=std::conditional_t<
                     std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>,
-                    mfq::cuda::qwen4_exp::Qwen4ExpMtp,
+                    mfq::cuda::qwen4_exp::Predictor,
                     mfq::cuda::glm5_next::Glm5NextMtp>;
                 auto* predictor=dynamic_cast<Predictor*>(runtime_components.mtp.get());
                 TYLOINFER_RUNTIME_CHECK(predictor != nullptr,

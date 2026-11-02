@@ -3,8 +3,10 @@
 #include "engine/models/common/session/state.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/generation/mtp/policy.h"
+#include "engine/requests/sampling.h"
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -16,7 +18,7 @@ struct MtpStep {
     int32_t greedy_token=-1;
 };
 
-// Architecture-specific predictors implement device math and cache state only.
+// Predictors provide model math, cache state and speculative policy behavior.
 struct MtpModule {
     virtual ~MtpModule() = default;
     virtual void reset(int64_t batch = 1) = 0;
@@ -48,7 +50,13 @@ struct MtpModule {
         return mfq::engine::mtp::kMaximumDraftDepth;
     }
     virtual bool blockwise_drafting() const noexcept { return false; }
-    virtual bool dspark_policy() const noexcept { return false; }
+    virtual std::unique_ptr<mfq::engine::mtp::DepthPolicy> depth_policy(
+            int maximum_depth, mfq::engine::mtp::PolicyState& state) const {
+        return std::make_unique<mfq::engine::mtp::AdaptivePolicy>(maximum_depth, &state);
+    }
+    virtual MfqSamplingParams draft_sampling(MfqSamplingParams sampling, bool) const {
+        return sampling;
+    }
     virtual bool split_target_verification() const noexcept { return false; }
     virtual bool retains_partial_target_prefix() const noexcept {
         return false;

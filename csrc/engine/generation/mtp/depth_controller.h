@@ -501,45 +501,58 @@ struct ParkState {
     void probe_succeeded() noexcept { reentry = false; cooldown_tokens = 128; }
 };
 
-template<class DsparkController>
-class GenerationPolicy {
+class DepthPolicy {
 public:
     using Clock = BatchDepthPolicy::Clock;
-    GenerationPolicy(int maximum_depth, bool dspark, PolicyState* state = nullptr,bool gradual_warmup=false,
-            bool metal_batch_policy=false)
+    virtual ~DepthPolicy() = default;
+    virtual int depth() const noexcept = 0;
+    virtual int maximum_depth() const noexcept = 0;
+    virtual bool parked() const noexcept = 0;
+    virtual std::optional<double> measured_cycle_ms(int depth) const = 0;
+    virtual void observe_window(int used, int accepted, Clock::time_point started,
+                                Clock::time_point finished, bool time_sample = true) = 0;
+    virtual void observe_plain_window(Clock::time_point started, Clock::time_point finished,
+                                      bool time_sample = true) = 0;
+    virtual std::uint64_t parks() const noexcept = 0;
+    virtual std::uint64_t reentries() const noexcept = 0;
+};
+
+class AdaptivePolicy final : public DepthPolicy {
+public:
+    using Clock = BatchDepthPolicy::Clock;
+    AdaptivePolicy(int maximum_depth, PolicyState* state = nullptr,bool gradual_warmup=false,
+            bool batch_policy=false)
         : state_(state ? *state : local_state_),gradual_warmup_(gradual_warmup) {
-        if (dspark) dspark_.emplace(maximum_depth);
-        else if(metal_batch_policy) {
+        if(batch_policy) {
             batch_.emplace(std::vector<std::string>{"cuda-mtp"},maximum_depth);
             state_.seed_batch(*batch_);
             seeded_batch_park_=batch_->remaining()!=0;
         }
         else controller_.emplace(state_.begin(maximum_depth,gradual_warmup_,gradual_warmup_?60.0:0.0));
-        if(gradual_warmup_ && !dspark)
+        if(gradual_warmup_)
             std::fprintf(stderr,"runtime_mtp_depth_policy name=%s maximum_depth=%d\n",
                 batch_?"metal_batch_v1":"cuda_adaptive",maximum_depth);
     }
-    ~GenerationPolicy() {
+    ~AdaptivePolicy() override {
         if (controller_) state_.remember(*controller_);
         if (batch_) state_.retire_batch(*batch_);
     }
-    int depth() const noexcept {
-        return batch_ ? batch_->depth() : dspark_ ? dspark_->depth() : park_.parked ? 0 : controller_->depth();
+    int depth() const noexcept override {
+        return batch_ ? batch_->depth() : park_.parked ? 0 : controller_->depth();
     }
-    int maximum_depth() const noexcept {
-        return batch_ ? batch_->maximum() : dspark_ ? dspark_->maximum_depth() : controller_->maximum_depth();
+    int maximum_depth() const noexcept override {
+        return batch_ ? batch_->maximum() : controller_->maximum_depth();
     }
-    bool parked() const noexcept { return batch_ ? batch_->remaining()!=0 : !dspark_ && park_.parked; }
-    bool dspark() const noexcept { return dspark_.has_value(); }
-    std::optional<double> measured_cycle_ms(int depth) const {
-        return batch_ ? batch_->cost(depth) : dspark_ ? dspark_->measured_cycle_ms(depth) : controller_->measured_cycle_ms(depth);
+    bool parked() const noexcept override { return batch_ ? batch_->remaining()!=0 : park_.parked; }
+    std::optional<double> measured_cycle_ms(int depth) const override {
+        return batch_ ? batch_->cost(depth) : controller_->measured_cycle_ms(depth);
     }
     void observe_window(int used,int accepted,Clock::time_point started,Clock::time_point finished,
-            bool time_sample=true) {
+            bool time_sample=true) override {
         if(batch_)observe_batch(used,accepted,started,finished,time_sample);
         else observe(used,accepted,std::chrono::duration<double,std::milli>(finished-started).count(),time_sample);
     }
-    void observe_plain_window(Clock::time_point started,Clock::time_point finished,bool time_sample=true) {
+    void observe_plain_window(Clock::time_point started,Clock::time_point finished,bool time_sample=true) override {
         if(batch_)observe_batch(0,0,started,finished,time_sample);
         else observe_plain(std::chrono::duration<double,std::milli>(finished-started).count(),time_sample);
     }
@@ -550,7 +563,6 @@ public:
                 std::chrono::duration<double,std::milli>(elapsed_ms)),finished,time_sample);
             return;
         }
-        if (dspark_) { dspark_->observe(used, accepted, elapsed_ms, time_sample); return; }
         const bool was_warmup = controller_->warming_up();
         controller_->observe(used, accepted, elapsed_ms, time_sample);
         trace_decision("observe",used,accepted,elapsed_ms,time_sample);
@@ -581,8 +593,8 @@ public:
             trace_decision("reentry",0,0,elapsed_ms,time_sample,true);
         }
     }
-    std::uint64_t parks() const noexcept { return batch_ ? batch_->parks()+seeded_batch_park_ : parks_; }
-    std::uint64_t reentries() const noexcept { return reentries_; }
+    std::uint64_t parks() const noexcept override { return batch_ ? batch_->parks()+seeded_batch_park_ : parks_; }
+    std::uint64_t reentries() const noexcept override { return reentries_; }
 private:
     void observe_batch(int used,int accepted,Clock::time_point started,Clock::time_point finished,bool valid) {
         const bool was_parked=batch_->remaining()!=0;
@@ -621,7 +633,6 @@ private:
     PolicyState& state_;
     bool gradual_warmup_=false;
     std::optional<DepthController> controller_;
-    std::optional<DsparkController> dspark_;
     std::optional<v1::BatchDepthPolicy> batch_;
     bool seeded_batch_park_=false;
     ParkState park_;

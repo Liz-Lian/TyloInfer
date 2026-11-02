@@ -99,24 +99,13 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         std::vector<CompactDistribution> compact_probabilities;
     };
     const bool compact_stochastic = !greedy && sampling.top_k > 0 && sampling.top_k <= 64;
-    auto draft_sampling = sampling;
-    if (compact_stochastic && mtp.dspark_policy()) {
-        draft_sampling.temperature = 0.6;
-        draft_sampling.top_p = 0.95;
-    }
+    auto draft_sampling = mtp.draft_sampling(sampling, compact_stochastic);
     const int maximum_depth = std::min(mtp.maximum_draft_depth(),
         (!greedy && !compact_stochastic)
             ? 1
             : std::clamp<int>(sampling.mtp_max_draft_tokens, 1, policy::kMaximumDraftDepth));
-    policy::GenerationPolicy<typename Ops::DepthController> depth_controller(
-        maximum_depth, mtp.dspark_policy(), &mtp_state.policy,[&] {
-            if constexpr(requires {ops.gradual_mtp_warmup();})return ops.gradual_mtp_warmup();
-            return false;
-        }(),[&] {
-            if constexpr(requires {ops.metal_mtp_policy();})return ops.metal_mtp_policy();
-            return false;
-        }());
-    mtp_state.stats.park_count=depth_controller.parks();
+    auto depth_controller = mtp.depth_policy(maximum_depth, mtp_state.policy);
+    mtp_state.stats.park_count=depth_controller->parks();
 
     {
         Tensor raw, hidden;
@@ -460,14 +449,14 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 }
                 return result;
             }
-            if (!depth_controller.dspark() && requested_depth == 0) {
+            if (requested_depth == 0) {
                 pending_hidden.push_back(hidden_rows);
                 pending_ids.insert(pending_ids.end(), next_ids.begin(), next_ids.end());
                 std::size_t threshold=512;
                 if constexpr(requires { ops.predictor_history_flush_threshold(); })
                     threshold=ops.predictor_history_flush_threshold();
                 if constexpr(requires { ops.predictor_parked_history_flush_threshold(); })
-                    if(depth_controller.parked())threshold=ops.predictor_parked_history_flush_threshold();
+                    if(depth_controller->parked())threshold=ops.predictor_parked_history_flush_threshold();
                 if (pending_ids.size() >= threshold) { maintenance = true; flush_history(); }
                 return result;
             }
@@ -519,7 +508,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
 
         auto cycle_started = Clock::now();
         auto draft =
-            prepare_draft(initial_hidden, {pending}, bounded_depth(depth_controller.depth()), true);
+            prepare_draft(initial_hidden, {pending}, bounded_depth(depth_controller->depth()), true);
         double draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
         mtp_state.stats.head_ms+=draft_ms;
         while (generated < limit) {
@@ -527,7 +516,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 finish();
                 co_return;
             }
-            if (depth_controller.parked()) {
+            if (depth_controller->parked()) {
                 const auto plain_started=Clock::now();
                 Tensor raw_step;
                 auto hidden_step = ops.target_forward(ops.ids_for({pending}), &raw_step);
@@ -543,18 +532,18 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
                 if constexpr(requires { ops.take_target_maintenance(); }) {
                     const bool initialized=ops.take_target_maintenance();time_sample=time_sample && !initialized;
                 }
-                depth_controller.observe_plain_window(cycle_started,Clock::now(),time_sample);
-                if(const auto measured=depth_controller.measured_cycle_ms(0))
+                depth_controller->observe_plain_window(cycle_started,Clock::now(),time_sample);
+                if(const auto measured=depth_controller->measured_cycle_ms(0))
                     mtp_state.stats.measured_depth_ms[0]=*measured;
-                mtp_state.stats.selected_depth = depth_controller.depth();
-                mtp_state.stats.reentry_probes = depth_controller.reentries();
+                mtp_state.stats.selected_depth = depth_controller->depth();
+                mtp_state.stats.reentry_probes = depth_controller->reentries();
                 pending = next;
                 finish();
                 co_yield std::move(delta);
                 cycle_started = Clock::now();
                 maintenance = false;
                 draft = prepare_draft(committed_last_hidden, {pending},
-                    output.stopped()?0:bounded_depth(depth_controller.depth()), false);
+                    output.stopped()?0:bounded_depth(depth_controller->depth()), false);
                 draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
                 mtp_state.stats.head_ms+=draft_ms;
                 if(output.stopped()){finish();co_return;}
@@ -792,11 +781,11 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             if constexpr(requires { ops.take_target_maintenance(); }) {
                 const bool initialized=ops.take_target_maintenance();time_sample=time_sample && !initialized;
             }
-            depth_controller.observe_window(draft_count,accepted,cycle_started,cycle_finished,time_sample);
-            mtp_state.stats.park_count = depth_controller.parks();
-            mtp_state.stats.selected_depth = depth_controller.depth();
-            for (int depth = 0; depth <= depth_controller.maximum_depth(); ++depth) {
-                if (const auto measured = depth_controller.measured_cycle_ms(depth)) {
+            depth_controller->observe_window(draft_count,accepted,cycle_started,cycle_finished,time_sample);
+            mtp_state.stats.park_count = depth_controller->parks();
+            mtp_state.stats.selected_depth = depth_controller->depth();
+            for (int depth = 0; depth <= depth_controller->maximum_depth(); ++depth) {
+                if (const auto measured = depth_controller->measured_cycle_ms(depth)) {
                     mtp_state.stats.measured_depth_ms.at(static_cast<size_t>(depth)) = *measured;
                 }
             }
@@ -824,7 +813,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             maintenance = false;
             draft = prepare_draft(ops.slice(verified_raw, 1, 0, accepted + 1),
                 next_ids,
-                output.stopped()?0:bounded_depth(depth_controller.depth()),
+                output.stopped()?0:bounded_depth(depth_controller->depth()),
                 false);
             draft_ms=std::chrono::duration<double,std::milli>(Clock::now()-cycle_started).count();
             mtp_state.stats.head_ms+=draft_ms;

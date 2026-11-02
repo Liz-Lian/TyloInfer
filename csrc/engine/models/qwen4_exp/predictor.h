@@ -14,7 +14,7 @@ using attention_ops::Linear;
 struct Qwen4Block;
 struct Qwen4MtpGraph;
 
-struct Qwen4ExpMtp final : MtpModule {
+struct Predictor final : MtpModule {
     using Tensor = mfq_tensor_backend::Tensor;
 
     mfq::models::qwen4_exp::Config config;
@@ -39,12 +39,12 @@ struct Qwen4ExpMtp final : MtpModule {
     bool take_graph_initialization() noexcept override { return std::exchange(graph_initialized,false); }
     uint64_t graph_replay_count() const noexcept override { return graph_replays; }
 
-    Qwen4ExpMtp();
-    ~Qwen4ExpMtp() override;
-    Qwen4ExpMtp(Qwen4ExpMtp&&) noexcept;
-    Qwen4ExpMtp& operator=(Qwen4ExpMtp&&) noexcept;
+    Predictor();
+    ~Predictor() override;
+    Predictor(Predictor&&) noexcept;
+    Predictor& operator=(Predictor&&) noexcept;
 
-    static std::optional<Qwen4ExpMtp> load_if_present(CudaExecutionContext &execution,
+    static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
                                                       const weight_loader::Loader& weights,
                                                       const mfq::models::qwen4_exp::Config &main,
                                                       QuantLinear embedding, QuantLinear output,
@@ -77,6 +77,8 @@ struct Qwen4ExpMtp final : MtpModule {
     bool target_bootstrap_decode() const noexcept override;
 
     bool preserve_output_dtype() const noexcept override;
+    std::unique_ptr<mfq::engine::mtp::DepthPolicy> depth_policy(
+        int maximum_depth, mfq::engine::mtp::PolicyState& state) const override;
     bool supports_session_state() const noexcept override;
     MtpSessionState capture_session_state(int64_t,const Tensor&) const override;
     void restore_session_state(const MtpSessionState&) override;

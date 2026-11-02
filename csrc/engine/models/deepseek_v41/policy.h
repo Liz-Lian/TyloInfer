@@ -291,4 +291,27 @@ private:
     std::vector<int> warmup_;
 };
 
+class Policy final : public mfq::engine::mtp::DepthPolicy {
+public:
+    explicit Policy(int maximum_depth) : controller_(maximum_depth) {}
+
+    int depth() const noexcept override { return controller_.depth(); }
+    int maximum_depth() const noexcept override { return controller_.maximum_depth(); }
+    bool parked() const noexcept override { return false; }
+    std::optional<double> measured_cycle_ms(int depth) const override {
+        return controller_.measured_cycle_ms(depth);
+    }
+    void observe_window(int used, int accepted, Clock::time_point started,
+                        Clock::time_point finished, bool time_sample = true) override {
+        controller_.observe(used, accepted,
+            std::chrono::duration<double, std::milli>(finished - started).count(), time_sample);
+    }
+    void observe_plain_window(Clock::time_point, Clock::time_point, bool = true) override {}
+    std::uint64_t parks() const noexcept override { return 0; }
+    std::uint64_t reentries() const noexcept override { return 0; }
+
+private:
+    DepthController controller_;
+};
+
 } // namespace mfq::models::deepseek_v41

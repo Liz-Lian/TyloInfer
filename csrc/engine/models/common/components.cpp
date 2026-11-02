@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/components.h"
-#include "engine/models/qwen4_exp/mtp.h"
+#include "engine/models/qwen4_exp/predictor.h"
 #include "engine/models/glm5_next/mtp.h"
 #include "engine/models/nemotron_h/mtp.h"
 #include "engine/models/deepseek_v41/dspark.h"
@@ -242,12 +242,12 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
     TYLOINFER_RUNTIME_CHECK(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
-    auto predictor = mfq::cuda::qwen4_exp::Qwen4ExpMtp::load_if_present(
+    auto predictor = mfq::cuda::qwen4_exp::Predictor::load_if_present(
         *model.execution, weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);
     if (predictor) {
         result.mtp =
-            std::make_unique<mfq::cuda::qwen4_exp::Qwen4ExpMtp>(
+            std::make_unique<mfq::cuda::qwen4_exp::Predictor>(
                 std::move(*predictor));
     }
     result.mtp_available = static_cast<bool>(result.mtp);
