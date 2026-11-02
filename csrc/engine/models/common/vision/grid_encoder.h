@@ -2,6 +2,7 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/models/common/vision/weights.h"
+#include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/models/common/gated_mlp.h"
 #include "engine/models/common/transformer_layer.h"
@@ -41,8 +42,8 @@ class CudaGridVisionEncoder {
 
   private:
     struct Attention {
-        vision::Affine qkv;
-        vision::Affine output;
+        BiasWeight qkv;
+        BiasWeight output;
         std::int64_t hidden = 0;
         std::int64_t heads = 0;
         std::int64_t head_dim = 0;
@@ -54,12 +55,12 @@ class CudaGridVisionEncoder {
             const std::vector<std::int32_t>& positions,
             const std::vector<std::int32_t>& segment_lengths) const {
             const std::int64_t tokens = input.size(0);
-            auto projected = qkv(projector, input).reshape({tokens, 3, heads, head_dim});
+            auto projected = mfq::cuda::affine(projector, qkv, input).reshape({tokens, 3, heads, head_dim});
             auto query = vision::apply_axial_rope(projected.select(1, 0), positions, theta);
             auto key = vision::apply_axial_rope(projected.select(1, 1), positions, theta);
             auto value = projected.select(1, 2);
             auto attended = vision::segmented_attention(query, key, value, segment_lengths);
-            return output(projector, attended.reshape({tokens, hidden}));
+            return mfq::cuda::affine(projector, output, attended.reshape({tokens, hidden}));
         }
     };
 
@@ -67,7 +68,7 @@ class CudaGridVisionEncoder {
         vision::LayerNorm norm1;
         Attention attention;
         vision::LayerNorm norm2;
-        vision::Affine mlp_up, mlp_down;
+        BiasWeight mlp_up, mlp_down;
 
         template <class Visitor>
         void visit_tensors(Visitor visit) {
@@ -87,9 +88,9 @@ class CudaGridVisionEncoder {
                 [&](Tensor x) { return attention(projector, x, positions, segment_lengths); },
                 [&](Tensor x) {
                     return mfq::models::mlp(
-                        std::move(x), [&](Tensor value) { return mlp_up(projector, std::move(value)); },
+                        std::move(x), [&](Tensor value) { return mfq::cuda::affine(projector, mlp_up, std::move(value)); },
                         [](Tensor value) { return mfq_tensor_backend::gelu(value, "tanh"); },
-                        [&](Tensor value) { return mlp_down(projector, std::move(value)); });
+                        [&](Tensor value) { return mfq::cuda::affine(projector, mlp_down, std::move(value)); });
                 },
                 [](Tensor residual, Tensor branch) {
                     return residual + branch.to(residual.scalar_type());
@@ -178,9 +179,9 @@ class CudaGridVisionPromptComponent {
                     [](Tensor value, int64_t rows, int64_t width) {
                         return value.reshape({rows, width});
                     },
-                    [&](Tensor value) { return up(projector, std::move(value)); },
+                    [&](Tensor value) { return mfq::cuda::affine(projector, up, std::move(value)); },
                     [](Tensor value) { return mfq_tensor_backend::gelu(value, "none"); },
-                    [&](Tensor value) { return down(projector, std::move(value)); });
+                    [&](Tensor value) { return mfq::cuda::affine(projector, down, std::move(value)); });
             };
             if (encoder_.host_weights()) {
                 const auto bytes = vision::weight_bytes(merger_norm_) +
@@ -254,14 +255,14 @@ class CudaGridVisionPromptComponent {
 
   private:
     CudaGridVisionPromptComponent(CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm,
-                                  vision::Affine merger_up, vision::Affine merger_down,
+                                  BiasWeight merger_up, BiasWeight merger_down,
                                   int64_t image_token_id, int64_t video_token_id,
                                   std::string input_contract, std::string position_policy);
 
     CudaGridVisionEncoder encoder_;
     vision::LayerNorm merger_norm_;
-    vision::Affine merger_up_;
-    vision::Affine merger_down_;
+    BiasWeight merger_up_;
+    BiasWeight merger_down_;
     int64_t image_token_id_ = -1;
     int64_t video_token_id_ = -1;
     std::string input_contract_;

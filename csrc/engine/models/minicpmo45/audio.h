@@ -4,19 +4,19 @@
 #include "vision.h"
 
 struct MiniCPMO45WhisperAttention {
-    MiniCPMO45Linear q;
-    MiniCPMO45Linear k;
-    MiniCPMO45Linear v;
-    MiniCPMO45Linear output;
+    mfq::cuda::BiasWeight q;
+    mfq::cuda::BiasWeight k;
+    mfq::cuda::BiasWeight v;
+    mfq::cuda::BiasWeight output;
     int64_t heads = 16;
     int64_t head_dim = 64;
 
     static MiniCPMO45WhisperAttention load(const mfq::cuda::weight_loader::Loader& weights, const std::string &prefix) {
         MiniCPMO45WhisperAttention result;
-        result.q = mfq::cuda::vision::load_biased(weights, prefix + ".query");
-        result.k = mfq::cuda::vision::load_biased(weights, prefix + ".key", false);
-        result.v = mfq::cuda::vision::load_biased(weights, prefix + ".value");
-        result.output = mfq::cuda::vision::load_biased(weights, prefix + ".output");
+        result.q = weights.biased(prefix + ".query.weight", prefix + ".query.bias");
+        result.k = weights.biased(prefix + ".key.weight");
+        result.v = weights.biased(prefix + ".value.weight", prefix + ".value.bias");
+        result.output = weights.biased(prefix + ".output.weight", prefix + ".output.bias");
         return result;
     }
 
@@ -33,9 +33,9 @@ struct MiniCPMO45WhisperAttention {
         using Tensor = mfq_tensor_backend::Tensor;
         return mfq::models::minicpmo45::encoder_attention(
             input, key_cache && value_cache,
-            [&](const Tensor &x) { return reshape(q.forward(projector, x)); },
-            [&](const Tensor &x) { return reshape(k.forward(projector, x)); },
-            [&](const Tensor &x) { return reshape(v.forward(projector, x)); },
+            [&](const Tensor &x) { return reshape(mfq::cuda::biased(projector, q, x)); },
+            [&](const Tensor &x) { return reshape(mfq::cuda::biased(projector, k, x)); },
+            [&](const Tensor &x) { return reshape(mfq::cuda::biased(projector, v, x)); },
             [&](Tensor &key, Tensor &value) {
                 if (key_cache->defined()) {
                     key = mfq_tensor_backend::cat({*key_cache, key}, 2).contiguous();
@@ -55,7 +55,7 @@ struct MiniCPMO45WhisperAttention {
             },
             [&](Tensor attended) {
                 attended = attended.transpose(1, 2).reshape({batch, tokens, heads * head_dim});
-                return output.forward(projector, attended);
+                return mfq::cuda::biased(projector, output, attended);
             });
     }
 };
@@ -66,8 +66,8 @@ struct MiniCPMO45WhisperLayer {
     mfq_tensor_backend::Tensor attention_norm_bias;
     mfq_tensor_backend::Tensor final_norm_weight;
     mfq_tensor_backend::Tensor final_norm_bias;
-    MiniCPMO45Linear fc1;
-    MiniCPMO45Linear fc2;
+    mfq::cuda::BiasWeight fc1;
+    mfq::cuda::BiasWeight fc2;
     mfq_tensor_backend::Tensor key_cache;
     mfq_tensor_backend::Tensor value_cache;
 
@@ -83,8 +83,8 @@ struct MiniCPMO45WhisperLayer {
         result.final_norm_weight =
             weights.native(prefix + ".mlp.norm.weight");
         result.final_norm_bias = weights.native(prefix + ".mlp.norm.bias");
-        result.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
-        result.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
+        result.fc1 = weights.biased(prefix + ".mlp.up.weight", prefix + ".mlp.up.bias");
+        result.fc2 = weights.biased(prefix + ".mlp.down.weight", prefix + ".mlp.down.bias");
         return result;
     }
 
@@ -111,9 +111,9 @@ struct MiniCPMO45WhisperLayer {
             },
             [&](Tensor x) {
                 return mfq::models::mlp(
-                    x, [&](Tensor x) { return fc1.forward(projector, x); },
+                    x, [&](Tensor x) { return mfq::cuda::biased(projector, fc1, x); },
                     [](Tensor x) { return mfq_tensor_backend::gelu(x); },
-                    [&](Tensor x) { return fc2.forward(projector, x); });
+                    [&](Tensor x) { return mfq::cuda::biased(projector, fc2, x); });
             },
             [](Tensor x, Tensor branch) { return (x + branch).contiguous(); });
     }
@@ -128,8 +128,8 @@ struct MiniCPMO45AudioEncoder {
     std::vector<MiniCPMO45WhisperLayer> layers;
     mfq_tensor_backend::Tensor final_norm_weight;
     mfq_tensor_backend::Tensor final_norm_bias;
-    MiniCPMO45Linear projector1;
-    MiniCPMO45Linear projector2;
+    mfq::cuda::BiasWeight projector1;
+    mfq::cuda::BiasWeight projector2;
 
     static MiniCPMO45AudioEncoder load(const mfq::cuda::weight_loader::Loader& weights) {
         MiniCPMO45AudioEncoder result;
@@ -146,8 +146,8 @@ struct MiniCPMO45AudioEncoder {
         result.final_norm_weight =
             weights.native("audio.output_norm.weight");
         result.final_norm_bias = weights.native("audio.output_norm.bias");
-        result.projector1 = mfq::cuda::vision::load_biased(weights, "audio.projector.input");
-        result.projector2 = mfq::cuda::vision::load_biased(weights, "audio.projector.output");
+        result.projector1 = weights.biased("audio.projector.input.weight", "audio.projector.input.bias");
+        result.projector2 = weights.biased("audio.projector.output.weight", "audio.projector.output.bias");
         result.layers.reserve(24);
         for (int index = 0; index < 24; ++index) {
             result.layers.push_back(MiniCPMO45WhisperLayer::load(weights, index));
@@ -233,9 +233,9 @@ struct MiniCPMO45AudioEncoder {
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, final_norm_weight, final_norm_bias, 1e-5);
             },
-            [&](Tensor hidden) { return projector1.forward(projector, hidden); },
+            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector1, hidden); },
             [](Tensor hidden) { return mfq_tensor_backend::relu(hidden); },
-            [&](Tensor hidden) { return projector2.forward(projector, hidden); },
+            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector2, hidden); },
             [&](Tensor hidden) {
                 if (hidden.size(1) < 5) {
                     throw std::runtime_error(
@@ -335,9 +335,9 @@ struct MiniCPMO45AudioEncoder {
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, final_norm_weight, final_norm_bias, 1e-5);
             },
-            [&](Tensor hidden) { return projector1.forward(projector, hidden); },
+            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector1, hidden); },
             [](Tensor hidden) { return mfq_tensor_backend::relu(hidden); },
-            [&](Tensor hidden) { return projector2.forward(projector, hidden); },
+            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector2, hidden); },
             [&](Tensor hidden) {
                 return mfq_tensor_backend::avg_pool1d(
                            hidden.transpose(1, 2), std::vector<int64_t>{5}, std::vector<int64_t>{5})

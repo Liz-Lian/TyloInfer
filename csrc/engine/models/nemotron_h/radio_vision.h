@@ -4,7 +4,8 @@
 
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
-#include "engine/models/common/vision/load.h"
+#include "engine/backends/cuda/ops/projection/bias.h"
+#include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/models/nemotron_h/vision.h"
 #include "engine/weights/loader.h"
 
@@ -110,16 +111,16 @@ class RadioEncoder {
 
   private:
     struct Layer {
-        BiasLinear query;
-        BiasLinear key;
-        BiasLinear value;
-        BiasLinear output;
+        BiasWeight query;
+        BiasWeight key;
+        BiasWeight value;
+        BiasWeight output;
         mfq_tensor_backend::Tensor norm1_weight;
         mfq_tensor_backend::Tensor norm1_bias;
         mfq_tensor_backend::Tensor norm2_weight;
         mfq_tensor_backend::Tensor norm2_bias;
-        BiasLinear fc1;
-        BiasLinear fc2;
+        BiasWeight fc1;
+        BiasWeight fc2;
         int64_t heads = 0;
         int64_t head_dim = 0;
         double layer_norm_eps = 1e-6;
@@ -138,43 +139,44 @@ class RadioEncoder {
             };
             const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
             auto normalized = vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
-            auto q = split_heads(query.forward(projector, normalized));
-            auto k = split_heads(key.forward(projector, normalized));
-            auto v = split_heads(value.forward(projector, normalized));
+            auto q = split_heads(mfq::cuda::biased(projector, query, normalized));
+            auto k = split_heads(mfq::cuda::biased(projector, key, normalized));
+            auto v = split_heads(mfq::cuda::biased(projector, value, normalized));
             auto attended = vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
-            auto branch = output.forward(projector, attended.transpose(1, 2).reshape(
+            auto branch = mfq::cuda::biased(projector, output, attended.transpose(1, 2).reshape(
                 {batch, tokens, heads * head_dim}));
             input = (input + branch.to(input.scalar_type())).contiguous();
             normalized = vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
-            branch = fc2.forward(projector,
-                mfq_tensor_backend::gelu(fc1.forward(projector, normalized), "none"));
+            branch = mfq::cuda::biased(projector, fc2,
+                mfq_tensor_backend::gelu(mfq::cuda::biased(projector, fc1, normalized), "none"));
             return (input + branch.to(input.scalar_type())).contiguous();
         }
     };
 
-    static std::array<BiasLinear, 3> split_fused_qkv(const BiasLinear &fused, int64_t width) {
+    static std::array<BiasWeight, 3> split_fused_qkv(const BiasWeight &fused, int64_t width) {
         if (width <= 0 || fused.weight.out() != 3 * width) {
             throw std::runtime_error("fused vision qkv projection is not [3*w, hidden]");
         }
-        return {fused.rows(0, width), fused.rows(width, width), fused.rows(2 * width, width)};
+        return {bias_rows(fused, 0, width), bias_rows(fused, width, width),
+                bias_rows(fused, 2 * width, width)};
     }
 
     static Layer load_layer(const mfq::cuda::weight_loader::Loader& weights,
                             const RadioVisionConfig &config, std::int64_t index) {
         const std::string prefix = "vision.block." + std::to_string(index);
-        const auto fused = mfq::cuda::vision::load_biased(weights, prefix + ".attention.qkv");
+        const auto fused = weights.biased(prefix + ".attention.qkv.weight", prefix + ".attention.qkv.bias");
         const auto split = split_fused_qkv(fused, config.hidden_size);
         Layer block;
         block.query = split[0];
         block.key = split[1];
         block.value = split[2];
-        block.output = mfq::cuda::vision::load_biased(weights, prefix + ".attention.output");
+        block.output = weights.biased(prefix + ".attention.output.weight", prefix + ".attention.output.bias");
         block.norm1_weight = weights.native(prefix + ".norm1.weight");
         block.norm1_bias = weights.native(prefix + ".norm1.bias");
         block.norm2_weight = weights.native(prefix + ".norm2.weight");
         block.norm2_bias = weights.native(prefix + ".norm2.bias");
-        block.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
-        block.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
+        block.fc1 = weights.biased(prefix + ".mlp.up.weight", prefix + ".mlp.up.bias");
+        block.fc2 = weights.biased(prefix + ".mlp.down.weight", prefix + ".mlp.down.bias");
         block.heads = config.num_heads;
         block.head_dim = config.head_dim();
         block.layer_norm_eps = config.layer_norm_eps;
@@ -247,8 +249,8 @@ class RadioProjector {
             weights.native("vision.projector.norm.bias");
         result.mlp_norm =
             weights.native("vision.projector.mlp.norm.weight");
-        result.up = mfq::cuda::vision::load_biased(weights, "vision.projector.mlp.up", false);
-        result.down = mfq::cuda::vision::load_biased(weights, "vision.projector.mlp.down", false);
+        result.up = weights.biased("vision.projector.mlp.up.weight");
+        result.down = weights.biased("vision.projector.mlp.down.weight");
         if (result.norm_weight.numel() != config.hidden_size ||
             result.norm_bias.numel() != config.hidden_size ||
             result.mlp_norm.numel() != config.shuffle_width() ||
@@ -297,9 +299,9 @@ class RadioProjector {
                                         config.projector_norm_eps, 0.0)
                               .reshape(hidden.sizes())
                               .to(dtype);
-        auto projected = up.forward(projector, std::move(normalized));
+        auto projected = mfq::cuda::biased(projector, up, std::move(normalized));
         projected = relu_squared_cuda(projected.contiguous());
-        return down.forward(projector, std::move(projected))
+        return mfq::cuda::biased(projector, down, std::move(projected))
             .reshape({patches / (stride * stride), config.text_hidden_size})
             .contiguous();
     }
@@ -308,8 +310,8 @@ class RadioProjector {
     Tensor norm_weight;
     Tensor norm_bias;
     Tensor mlp_norm;
-    BiasLinear up;
-    BiasLinear down;
+    BiasWeight up;
+    BiasWeight down;
     RadioVisionConfig config_;
 };
 

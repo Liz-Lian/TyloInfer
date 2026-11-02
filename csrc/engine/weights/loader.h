@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
+#include "engine/weights/bias.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/weights/source/read.h"
 #include "engine/weights/placement.h"
@@ -97,6 +98,9 @@ struct Loader {
     Tensor tensor(const std::string& name) const;
     Tensor native(const std::string& name) const;
     Tensor host(const std::string& name) const;
+    Tensor norm(const std::string& name, std::int64_t width) const;
+    BiasWeight biased(const std::string& weight_name, const std::string& bias_name = {}) const;
+    BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
     QuantLinear projection(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<mfq::TensorParallelSlice>* slices = nullptr) const;

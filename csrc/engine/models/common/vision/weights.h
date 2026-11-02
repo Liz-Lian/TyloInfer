@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/projection/bias.h"
+#include "engine/weights/bias.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/weights/moe/expert_cache.h"
 
@@ -66,8 +66,8 @@ void visit_linear(QuantLinear& weight, Visitor visit) {
 }
 
 template <class Visitor>
-void visit_tensors(Affine& weight, Visitor visit) {
-    visit_linear(weight.linear, visit);
+void visit_tensors(BiasWeight& weight, Visitor visit) {
+    visit_linear(weight.weight, visit);
     if (weight.bias.defined()) visit(weight.bias);
 }
 

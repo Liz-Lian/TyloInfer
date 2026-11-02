@@ -1,7 +1,8 @@
 #pragma once
 
 #include "engine/backends/cuda/ops/vision/attention.h"
-#include "engine/models/common/vision/load.h"
+#include "engine/backends/cuda/ops/projection/bias.h"
+#include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/weights/format.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/transformer_layer.h"
@@ -23,9 +24,6 @@
 inline constexpr const char *MINICPMO45_RESAMPLER_POS_EMBED_ASSET =
     "__mfq_asset__/minicpmo45-resampler-pos-embed-v1.bf16";
 
-// The SigLIP tower shares its projection and normalization primitives with the
-// other CUDA vision encoders; the name stays because audio and TTS reuse them.
-using MiniCPMO45Linear = mfq::cuda::BiasLinear;
 
 inline mfq_tensor_backend::Tensor
 minicpmo45_embedding(const QuantLinear &embedding, mfq_tensor_backend::Tensor ids,
@@ -43,16 +41,16 @@ inline mfq_tensor_backend::Tensor minicpmo45_layer_norm(
 
 struct MiniCPMO45VisionEncoder {
     struct Layer {
-        mfq::cuda::BiasLinear query;
-        mfq::cuda::BiasLinear key;
-        mfq::cuda::BiasLinear value;
-        mfq::cuda::BiasLinear output;
+        mfq::cuda::BiasWeight query;
+        mfq::cuda::BiasWeight key;
+        mfq::cuda::BiasWeight value;
+        mfq::cuda::BiasWeight output;
         mfq_tensor_backend::Tensor norm1_weight;
         mfq_tensor_backend::Tensor norm1_bias;
         mfq_tensor_backend::Tensor norm2_weight;
         mfq_tensor_backend::Tensor norm2_bias;
-        mfq::cuda::BiasLinear fc1;
-        mfq::cuda::BiasLinear fc2;
+        mfq::cuda::BiasWeight fc1;
+        mfq::cuda::BiasWeight fc2;
         int64_t heads = 0;
         int64_t head_dim = 0;
         double layer_norm_eps = 1e-6;
@@ -71,16 +69,16 @@ struct MiniCPMO45VisionEncoder {
             };
             const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
             auto normalized = mfq::cuda::vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
-            auto q = split_heads(query.forward(projector, normalized));
-            auto k = split_heads(key.forward(projector, normalized));
-            auto v = split_heads(value.forward(projector, normalized));
+            auto q = split_heads(mfq::cuda::biased(projector, query, normalized));
+            auto k = split_heads(mfq::cuda::biased(projector, key, normalized));
+            auto v = split_heads(mfq::cuda::biased(projector, value, normalized));
             auto attended = mfq::cuda::vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
-            auto branch = output.forward(projector, attended.transpose(1, 2).reshape(
+            auto branch = mfq::cuda::biased(projector, output, attended.transpose(1, 2).reshape(
                 {batch, tokens, heads * head_dim}));
             input = (input + branch.to(input.scalar_type())).contiguous();
             normalized = mfq::cuda::vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
-            branch = fc2.forward(projector,
-                mfq_tensor_backend::gelu(fc1.forward(projector, normalized), "tanh"));
+            branch = mfq::cuda::biased(projector, fc2,
+                mfq_tensor_backend::gelu(mfq::cuda::biased(projector, fc1, normalized), "tanh"));
             return (input + branch.to(input.scalar_type())).contiguous();
         }
     };
@@ -90,16 +88,16 @@ struct MiniCPMO45VisionEncoder {
             int64_t heads, int64_t head_dim) {
         const std::string prefix = "vision.block." + std::to_string(index);
         Layer result;
-        result.query = mfq::cuda::vision::load_biased(weights, prefix + ".attention.query");
-        result.key = mfq::cuda::vision::load_biased(weights, prefix + ".attention.key");
-        result.value = mfq::cuda::vision::load_biased(weights, prefix + ".attention.value");
-        result.output = mfq::cuda::vision::load_biased(weights, prefix + ".attention.output");
+        result.query = weights.biased(prefix + ".attention.query.weight", prefix + ".attention.query.bias");
+        result.key = weights.biased(prefix + ".attention.key.weight", prefix + ".attention.key.bias");
+        result.value = weights.biased(prefix + ".attention.value.weight", prefix + ".attention.value.bias");
+        result.output = weights.biased(prefix + ".attention.output.weight", prefix + ".attention.output.bias");
         result.norm1_weight = weights.native(prefix + ".norm1.weight");
         result.norm1_bias = weights.native(prefix + ".norm1.bias");
         result.norm2_weight = weights.native(prefix + ".norm2.weight");
         result.norm2_bias = weights.native(prefix + ".norm2.bias");
-        result.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
-        result.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
+        result.fc1 = weights.biased(prefix + ".mlp.up.weight", prefix + ".mlp.up.bias");
+        result.fc2 = weights.biased(prefix + ".mlp.down.weight", prefix + ".mlp.down.bias");
         result.heads = heads;
         result.head_dim = head_dim;
         result.layer_norm_eps = 1e-6;
@@ -224,7 +222,7 @@ struct MiniCPMO45VisionEncoder {
 struct MiniCPMO45Resampler {
     mfq_tensor_backend::Tensor query;
     mfq_tensor_backend::Tensor position_embedding;
-    MiniCPMO45Linear kv_projection;
+    mfq::cuda::BiasWeight kv_projection;
     mfq_tensor_backend::Tensor q_norm_weight;
     mfq_tensor_backend::Tensor q_norm_bias;
     mfq_tensor_backend::Tensor kv_norm_weight;
@@ -273,7 +271,7 @@ struct MiniCPMO45Resampler {
         }
         result.query = weights.native("vision.resampler.query");
         result.kv_projection =
-            mfq::cuda::vision::load_biased(weights, "vision.resampler.key_value", false);
+            weights.biased("vision.resampler.key_value.weight");
         result.q_norm_weight =
             weights.native("vision.resampler.query_norm.weight");
         result.q_norm_bias =
@@ -357,7 +355,7 @@ struct MiniCPMO45Resampler {
         };
         using Tensor = mfq_tensor_backend::Tensor;
         return mfq::models::minicpmo45::resample(
-            [&] { return kv_projection.forward(projector, input); },
+            [&] { return mfq::cuda::biased(projector, kv_projection, input); },
             [&](Tensor kv) {
                 return minicpmo45_layer_norm(kv, kv_norm_weight, kv_norm_bias, 1e-6);
             },

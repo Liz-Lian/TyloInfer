@@ -1018,3 +1018,58 @@ QuantLinear mfq::cuda::weight_loader::Loader::embedding(const std::string& name,
     return projection(name);
 
 }
+
+namespace mfq::cuda {
+
+BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count) {
+    const auto& weight = value.weight;
+    const auto& bias = value.bias;
+
+    if (!weight.is_dense()) {
+        throw std::runtime_error("fused vision projection must stay dense to be split");
+    }
+    if (begin < 0 || count <= 0 || begin + count > weight.dense.size(0)) {
+        throw std::runtime_error("fused vision projection row range is invalid");
+    }
+    BiasWeight result;
+    result.weight = weight;
+    result.weight.dense = weight.dense.narrow(0, begin, count).contiguous();
+    if (bias.defined()) {
+        result.bias = bias.narrow(0, begin, count).contiguous();
+    }
+    return result;
+}
+
+} // namespace mfq::cuda
+
+namespace mfq::cuda::weight_loader {
+
+BiasWeight Loader::biased(const std::string& weight_name,
+                          const std::string& bias_name) const {
+    BiasWeight result;
+    result.weight = projection(weight_name);
+    if (!bias_name.empty() && has(bias_name)) result.bias = tensor(bias_name);
+    return result;
+}
+
+BiasWeight Loader::affine(const std::string& weight_name,
+                          const std::string& bias_name) const {
+    BiasWeight result{projection(weight_name), {}};
+    if (has(bias_name)) {
+        result.bias = tensor(bias_name);
+        if (result.bias.dim() != 1 || result.bias.size(0) != result.weight.out()) {
+            throw std::runtime_error("vision affine bias shape mismatch: " + bias_name);
+        }
+    }
+    return result;
+}
+
+Loader::Tensor Loader::norm(const std::string& name, std::int64_t width) const {
+    auto weight = tensor(name).to(mfq_tensor_backend::kFloat32).contiguous();
+    if (weight.dim() != 1 || weight.size(0) != width) {
+        throw std::runtime_error("vision RMSNorm width mismatch: " + name);
+    }
+    return weight;
+}
+
+} // namespace mfq::cuda::weight_loader

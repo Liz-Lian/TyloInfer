@@ -100,10 +100,10 @@ struct Tts {
     RopeCache rope;
     QuantLinear text_embedding;
     QuantLinear code_embedding;
-    MiniCPMO45Linear semantic_projector1;
-    MiniCPMO45Linear semantic_projector2;
-    MiniCPMO45Linear speaker_projector1;
-    MiniCPMO45Linear speaker_projector2;
+    mfq::cuda::BiasWeight semantic_projector1;
+    mfq::cuda::BiasWeight semantic_projector2;
+    mfq::cuda::BiasWeight speaker_projector1;
+    mfq::cuda::BiasWeight speaker_projector2;
     std::vector<Layer> layers;
     mfq_tensor_backend::Tensor output_norm;
     mfq_tensor_backend::Tensor code_head;
@@ -119,10 +119,10 @@ struct Tts {
             mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, result.device));
         result.text_embedding = weights.projection("tts.text_embedding.weight");
         result.code_embedding = weights.projection("tts.code_embedding.0.weight");
-        result.semantic_projector1 = mfq::cuda::vision::load_biased(weights, "tts.semantic_projector.input");
-        result.semantic_projector2 = mfq::cuda::vision::load_biased(weights, "tts.semantic_projector.output");
-        result.speaker_projector1 = mfq::cuda::vision::load_biased(weights, "tts.speaker_projector.input");
-        result.speaker_projector2 = mfq::cuda::vision::load_biased(weights, "tts.speaker_projector.output");
+        result.semantic_projector1 = weights.biased("tts.semantic_projector.input.weight", "tts.semantic_projector.input.bias");
+        result.semantic_projector2 = weights.biased("tts.semantic_projector.output.weight", "tts.semantic_projector.output.bias");
+        result.speaker_projector1 = weights.biased("tts.speaker_projector.input.weight", "tts.speaker_projector.input.bias");
+        result.speaker_projector2 = weights.biased("tts.speaker_projector.output.weight", "tts.speaker_projector.output.bias");
         result.output_norm = weights.native("tts.output_norm.weight");
         auto head_g = weights.native("tts.code_output.0.weight_norm.magnitude");
         auto head_v = weights.native("tts.code_output.0.weight_norm.direction");
@@ -157,11 +157,9 @@ struct Tts {
 
     mfq_tensor_backend::Tensor semantic_projection(const Projector& projector,
                                                   mfq_tensor_backend::Tensor hidden) const {
-        auto projected = semantic_projector1.forward(
-            projector, hidden);
+        auto projected = mfq::cuda::biased(projector, semantic_projector1, hidden);
         projected = mfq_tensor_backend::relu(projected);
-        projected = semantic_projector2.forward(
-            projector, projected);
+        projected = mfq::cuda::biased(projector, semantic_projector2, projected);
         auto norm = mfq_tensor_backend::sqrt(
             mfq_tensor_backend::sum(projected.to(mfq_tensor_backend::kFloat32).square(), -1, true))
             .clamp_min(1e-12);
@@ -170,10 +168,8 @@ struct Tts {
 
     mfq_tensor_backend::Tensor speaker_projection(const Projector& projector,
                                                  mfq_tensor_backend::Tensor hidden) const {
-        return speaker_projector2.forward(
-            projector,
-            mfq_tensor_backend::relu(
-                speaker_projector1.forward(projector, hidden)));
+        return mfq::cuda::biased(projector, speaker_projector2, mfq_tensor_backend::relu(
+                mfq::cuda::biased(projector, speaker_projector1, hidden)));
     }
 
     mfq_tensor_backend::Tensor condition(
