@@ -11,6 +11,8 @@
 #include "engine/models/qwen35/load.h"
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/state.h"
+#include "engine/models/glm_dsa/load.h"
+#include "engine/models/glm_dsa/state.h"
 #include "engine/models/glm5_next/load.h"
 #include "engine/models/nemotron_h/load.h"
 #include "engine/models/nemotron_h/state.h"
@@ -171,8 +173,28 @@ inline constexpr auto with_model = []<typename F>(
                 std::move(owner), std::move(components), std::move(state), std::move(executor)};
             return finish(loaded, started);
         }
-        case CudaBackbone::glm_dsa:
-            return load.template operator()<GlmDsaCausalLm>();
+        case CudaBackbone::glm_dsa: {
+            auto started = std::chrono::steady_clock::now();
+            auto definition = mfq::models::config_json(*source, options.config_path);
+            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+            auto owner = std::make_shared<glm_dsa::Model>(
+                glm_dsa::read(source, definition, options.context_size));
+            weight_loader::Loader weights{*source, execution.config.weights,
+                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+                 execution.tensor_parallel, moe_parallel_config(execution)},
+                execution.weights, execution.tq};
+            execution.dense_cpu_layer_count = 0;
+            glm_dsa::load(*owner, weights, execution.layer_placement,
+                          execution.n_gpu_layers, true, true, execution.yarn);
+            auto state = std::make_unique<glm_dsa::State>(*owner);
+            state->preallocate();
+            auto executor = execution.make_executor();
+            auto components = load_runtime_components(*owner, weights, load_optional_components);
+            Loaded<glm_dsa::Model, glm_dsa::State> loaded{
+                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+            return finish(loaded, started);
+        }
         case CudaBackbone::glm5_next: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);

@@ -24,9 +24,6 @@ struct TextSessionState;
 namespace mfq::models::qwen4_exp {
 template <class Backend> struct CausalLm;
 }
-namespace mfq::models::glm_dsa {
-template <class Backend> struct CausalLm;
-}
 namespace mfq::models::deepseek_v4 {
 template <class Backend> struct CausalLm;
 }
@@ -91,7 +88,6 @@ struct CausalResources {
 };
 
 struct MiniCPMO45Model;
-struct GlmDsaModel;
 struct Qwen4Model;
 struct DeepseekV4Model;
 struct DeepseekV41Model;
@@ -328,7 +324,6 @@ template <typename Model> struct CudaCausalOps : Model {
 };
 
 using MiniCPMO45CausalLm = mfq::models::minicpmo45::CausalLm<CudaCausalOps<MiniCPMO45Model>>;
-using GlmDsaCausalLm = mfq::models::glm_dsa::CausalLm<CudaCausalOps<GlmDsaModel>>;
 using Qwen4CausalLm = mfq::models::qwen4_exp::CausalLm<CudaCausalOps<Qwen4Model>>;
 using DeepseekV4CausalLm = mfq::models::deepseek_v4::CausalLm<CudaCausalOps<DeepseekV4Model>>;
 using DeepseekV41CausalLm = mfq::models::deepseek_v41::CausalLm<CudaCausalOps<DeepseekV41Model>>;

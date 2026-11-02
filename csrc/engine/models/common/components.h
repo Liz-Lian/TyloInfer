@@ -9,7 +9,7 @@
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/gemma4/model.h"
 #include "engine/models/glm5_next/model.h"
-#include "engine/models/glm_dsa/ops.h"
+#include "engine/models/glm_dsa/model.h"
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/nemotron_h/model.h"
 #include "engine/models/common/mtp.h"

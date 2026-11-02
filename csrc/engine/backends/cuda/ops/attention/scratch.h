@@ -1,11 +1,25 @@
 #pragma once
 
 #include "backend.h"
+#include "engine/backends/cuda/ops/ffn/routes.h"
 
 #include <cstdint>
+#include <map>
 #include <utility>
 
 namespace mfq::cuda {
+
+struct MlaScratch {
+    std::map<int64_t, MoeRoutePlan> head_routes;
+    MoeRoutePlan transient_head_route;
+    int64_t transient_head_route_key = -1;
+    mfq_tensor_backend::Tensor dense_mask, decode_mask, kv_max, attention_meta;
+
+    const MoeRoutePlan& head_route(int64_t rows, int heads);
+    void ensure_meta();
+    void ensure_dense_workspace(int64_t batch, int64_t rows, int64_t logical_len);
+    void ensure_decode_workspace(int64_t batch, int64_t planned_len);
+};
 
 struct AttentionScratch {
     mfq_tensor_backend::Tensor partial_o, partial_m, partial_l;

@@ -4,6 +4,7 @@
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 
 #include <memory>
+#include <map>
 
 namespace mfq::cuda {
 
@@ -47,7 +48,7 @@ public:
 
     mfq_tensor_backend::Tensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
-    std::span<const AttentionScratch> scratch() const noexcept { return scratch_; }
+    std::vector<mfq_tensor_backend::Tensor> storage() const;
     Projector projector(const Ffn::Mode& mode);
     mfq_tensor_backend::Tensor full_ffn(
         const Ffn& ffn, const mfq_tensor_backend::Tensor& ffn_norm,
@@ -61,6 +62,7 @@ public:
     const FullAttention::Options& attention_options() const noexcept { return options_.attention; }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
+    MlaScratch& mla_scratch(int device) { return mla_scratch_[device]; }
 
 private:
     friend class Ffn;
@@ -74,6 +76,7 @@ private:
     int primary_;
     const Ffn::Options& ffn_options_;
     std::vector<AttentionScratch> scratch_;
+    std::map<int, MlaScratch> mla_scratch_;
 };
 
 } // namespace mfq::cuda

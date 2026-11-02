@@ -15,6 +15,75 @@ namespace mfq::cuda {
 namespace tb = mfq_tensor_backend;
 using Tensor = tb::Tensor;
 
+const MoeRoutePlan& MlaScratch::head_route(int64_t rows, int heads) {
+    const int64_t key = rows * 4096 + heads;
+    const auto build = [&] {
+        auto options = tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32);
+        auto ids = tb::remainder(tb::arange(rows, options), heads).reshape({rows, 1}).contiguous();
+        return build_moe_route_plan(ids, heads);
+    };
+    if (rows != heads) {
+        if (transient_head_route_key != key) {
+            transient_head_route = build();
+            transient_head_route_key = key;
+        }
+        return transient_head_route;
+    }
+    auto found = head_routes.find(key);
+    if (found != head_routes.end()) return found->second;
+    return head_routes.emplace(key, build()).first->second;
+}
+
+void MlaScratch::ensure_meta() {
+    constexpr int64_t kMetaFloats = 8 * 1024 * 1024;
+    if (!attention_meta.defined() || attention_meta.numel() < kMetaFloats)
+        attention_meta = tb::empty({kMetaFloats}, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32));
+}
+
+void MlaScratch::ensure_dense_workspace(int64_t B, int64_t M, int64_t logical_len) {
+    const int64_t stride = (logical_len + 63) / 64 * 64;
+    auto cuda = tb::TensorOptions().device(tb::kCUDA);
+    if (!dense_mask.defined() || dense_mask.size(0) < M || dense_mask.size(1) < stride)
+        dense_mask = tb::empty({M, stride}, cuda.dtype(tb::kFloat16));
+    if (!kv_max.defined() || kv_max.numel() < B * M)
+        kv_max = tb::empty({B * M}, cuda.dtype(tb::kInt32));
+    ensure_meta();
+}
+
+void MlaScratch::ensure_decode_workspace(int64_t B, int64_t planned_len) {
+    const int64_t stride = (planned_len + 63) / 64 * 64;
+    auto cuda = tb::TensorOptions().device(tb::kCUDA);
+    if (!decode_mask.defined() || decode_mask.size(0) != B || decode_mask.size(1) < stride)
+        decode_mask = tb::empty({B, stride}, cuda.dtype(tb::kFloat16));
+    if (!kv_max.defined() || kv_max.numel() < B)
+        kv_max = tb::empty({B}, cuda.dtype(tb::kInt32));
+    ensure_meta();
+}
+
+std::vector<Tensor> Executor::storage() const {
+    std::vector<Tensor> result;
+    const auto append = [&](const Tensor& tensor) { if (tensor.defined()) result.push_back(tensor); };
+    const auto route = [&](const MoeRoutePlan& value) {
+        append(value.ids); append(value.ids_dst); append(value.expert_bounds);
+        append(value.tile_bounds); append(value.tile_experts);
+        append(value.mma_tile_bounds); append(value.mma_tile_experts);
+        append(value.wide_tile_bounds); append(value.wide_tile_experts);
+        append(value.counts); append(value.cursors);
+    };
+    for (const auto& value : scratch_) {
+        append(value.partial_o); append(value.partial_m); append(value.partial_l);
+        append(value.mask); append(value.kv_max); append(value.meta);
+    }
+    for (const auto& [device, value] : mla_scratch_) {
+        (void)device;
+        append(value.dense_mask); append(value.decode_mask); append(value.kv_max);
+        append(value.attention_meta);
+        for (const auto& [key, plan] : value.head_routes) { (void)key; route(plan); }
+        route(value.transient_head_route);
+    }
+    return result;
+}
+
 namespace {
 
 void record(Trace* trace, std::string_view name, const Tensor& value) {

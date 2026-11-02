@@ -1,34 +1,174 @@
-#include "engine/backends/cuda/executor/execution.h"
 #include "engine/models/session.h"
 #include "engine/models/common/load.h"
 #include "engine/weights/loader.h"
-#include "ops.h"
 #include "engine/models/glm_dsa/snapshot.h"
-#include "engine/models/common/session_codec.h"
+#include "engine/models/glm_dsa/model.h"
+#include "engine/models/glm_dsa/state.h"
+#include "engine/models/glm_dsa/forward.h"
+#include "engine/models/glm_dsa/load.h"
+#include "engine/models/glm_dsa/weights.h"
+#include "engine/backends/cuda/native/collectives.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
+#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
+#include "engine/ops.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <iostream>
+#include <span>
+
+using mfq_tensor_backend::indexing::Slice;
+
+namespace mfq::models::glm_dsa {
+template <class Input, class QueryNorm, class Query, class Prepare, class Cache, class Index,
+          class Absorb, class Attend, class Unembed, class Output>
+auto attention(bool full_indexer, Input input, QueryNorm query_norm, Query query, Prepare prepare,
+               Cache cache, Index index, Absorb absorb, Attend attend, Unembed unembed,
+               Output output) {
+    auto first = input();
+    require_model(first.size() == (full_indexer ? 4u : 2u),
+                  "GLM DSA input projection count mismatch");
+    auto second = query(query_norm(first[0]));
+    require_model(second.size() == (full_indexer ? 2u : 1u), "GLM DSA q projection count mismatch");
+    auto qkv = prepare(first[1], second[0]);
+    cache(qkv);
+    if (full_indexer)
+        index(first[2], first[3], second[1]);
+    return output(unembed(attend(absorb(qkv))));
+}
+
+template <class Dense, class DensePrefix, class Sparse, class Concat>
+auto indexed_attention(bool indexed, int64_t tokens, int64_t prefix, int64_t sparse_rows,
+                       Dense dense, DensePrefix dense_prefix, Sparse sparse, Concat concat) {
+    if (!indexed)
+        return dense();
+    require_model(prefix >= 0 && sparse_rows > 0 && prefix + sparse_rows == tokens,
+                  "GLM DSA shared index state has the wrong row count");
+    if (prefix == 0)
+        return sparse();
+    auto first = dense_prefix();
+    auto rest = sparse();
+    return concat(std::move(first), std::move(rest));
+}
+
+
+} // namespace mfq::models::glm_dsa
+
 
 namespace mfq::cuda::glm_dsa {
 
-void load_ffn(const weight_loader::Loader& weights,
-              const Config& config, int layer, mfq::cuda::Ffn& ffn) {
-    TransformerWeightLoader loader{weights};
-    mfq::models::glm_dsa::load_ffn(loader, config, layer, ffn);
+State::State(const Model& model) : layers(model.layers.size()) {
+    layout_.reserve(model.layers.size());
+    for (const auto& layer : model.layers) {
+        layout_.push_back({layer.device, layer.full_indexer});
+        selections.try_emplace(layer.device);
+    }
 }
 
-std::unique_ptr<::Block> load_block(const weight_loader::Loader& weights,
-                                    const Config& config, int layer, const std::string& type,
-                                    const std::shared_ptr<::GlmDsaSharedState>& state) {
-    if (!state) throw std::runtime_error("invalid GLM DSA block loader state");
-    auto block = std::make_unique<GlmDsaBlock>();
-    block->shared_state = state;
-    TransformerWeightLoader loader{weights};
-    mfq::models::glm_dsa::load_block(*block, loader, config, layer, type);
-    return block;
+void State::reset(int64_t next_batch) {
+    cache_pos = decode_position_delta = 0;
+    batch = next_batch;
+    for (auto& [device, selection] : selections) {
+        MfqCudaGuard guard(device);
+        selection = {};
+    }
+    for (size_t i = 0; i < layers.size(); ++i) {
+        auto& layer = layers[i];
+        if (layer.kv_cache.defined() && layer.kv_cache.size(0) == next_batch) continue;
+        MfqCudaGuard guard(layout_[i].device);
+        layer = {};
+    }
 }
 
-} // namespace mfq::cuda::glm_dsa
+std::vector<Tensor> State::storage() const {
+    std::vector<Tensor> result;
+    for (const auto& layer : layers) {
+        if (layer.kv_cache.defined()) result.push_back(layer.kv_cache);
+        if (layer.index_cache.defined()) result.push_back(layer.index_cache);
+    }
+    for (const auto& [device, selection] : selections) {
+        (void)device;
+        if (selection.topk_indices.defined()) result.push_back(selection.topk_indices);
+    }
+    return result;
+}
 
-namespace mfq::cuda {
-void GlmDsaModel::adapter_validate_model_geometry() const {
+TextSessionStateKind State::text_session_state_kind() const {
+    return layers.empty() ? TextSessionStateKind::Unsupported : TextSessionStateKind::GlmDsa;
+}
+bool State::supports_text_session_state() const {
+    return text_session_state_kind() != TextSessionStateKind::Unsupported;
+}
+
+TextSessionState State::capture_text_session_state(const std::vector<int64_t>& tokens) const {
+    if (!supports_text_session_state() || cache_pos <= 0 ||
+        static_cast<size_t>(cache_pos) != tokens.size())
+        throw std::runtime_error("GLM DSA text session state is unavailable");
+    TextSessionState state;
+    state.tokens = tokens;
+    state.cache_pos = cache_pos;
+    state.decode_position_delta = decode_position_delta;
+    state.payload = std::vector<mfq::models::glm_dsa::BlockSnapshot>{};
+    auto& saved_layers = std::get<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(state.payload);
+    saved_layers.reserve(layers.size());
+    for (size_t i = 0; i < layers.size(); ++i) {
+        MfqCudaGuard guard(layout_[i].device);
+        const auto& layer = layers[i];
+        if (!layer.kv_cache.defined() || layer.kv_cache.dim() != 4 ||
+            layer.kv_cache.size(0) != 1 || cache_pos > layer.kv_cache.size(2))
+            throw std::runtime_error("GLM DSA session MLA cache is unavailable");
+        mfq::models::glm_dsa::BlockSnapshot saved;
+        saved.full_indexer = layout_[i].full_indexer;
+        saved.kv_capacity = layer.kv_cache.size(2);
+        saved.kv_cache = layer.kv_cache.narrow(2, 0, cache_pos).clone();
+        state.bytes += session_tensor_bytes(saved.kv_cache);
+        if (saved.full_indexer) {
+            if (!layer.index_cache.defined() || layer.index_cache.dim() != 3 ||
+                layer.index_cache.size(0) != 1 || cache_pos > layer.index_cache.size(1))
+                throw std::runtime_error("GLM DSA session index cache is unavailable");
+            saved.index_capacity = layer.index_cache.size(1);
+            saved.index_cache = layer.index_cache.narrow(1, 0, cache_pos).clone();
+            state.bytes += session_tensor_bytes(saved.index_cache);
+        }
+        saved_layers.push_back(std::move(saved));
+    }
+    return state;
+}
+
+void State::restore_text_session_state(const TextSessionState& state) {
+    const auto* saved_layers = std::get_if<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(&state.payload);
+    if (!supports_text_session_state() || state.kind() != TextSessionStateKind::GlmDsa ||
+        state.cache_pos <= 0 || static_cast<size_t>(state.cache_pos) != state.tokens.size() ||
+        saved_layers == nullptr || saved_layers->size() != layers.size())
+        throw CudaSessionStateError("GLM DSA text session state is incompatible");
+    for (size_t i = 0; i < layers.size(); ++i) {
+        MfqCudaGuard guard(layout_[i].device);
+        auto& layer = layers[i];
+        const auto& saved = (*saved_layers)[i];
+        if (layout_[i].full_indexer != saved.full_indexer || !saved.kv_cache.defined() ||
+            saved.kv_cache.dim() != 4 || saved.kv_cache.size(0) != 1 ||
+            saved.kv_cache.size(2) != state.cache_pos)
+            throw CudaSessionStateError("GLM DSA saved MLA cache is invalid");
+        restore_session_prefix_tensor(layer.kv_cache, saved.kv_cache, 2, saved.kv_capacity);
+        if (saved.full_indexer) {
+            if (!saved.index_cache.defined() || saved.index_cache.dim() != 3 ||
+                saved.index_cache.size(0) != 1 || saved.index_cache.size(1) != state.cache_pos)
+                throw CudaSessionStateError("GLM DSA saved index cache is invalid");
+            restore_session_prefix_tensor(layer.index_cache, saved.index_cache, 1, saved.index_capacity);
+        } else layer.index_cache = {};
+    }
+    for (auto& [device, selection] : selections) {
+        MfqCudaGuard guard(device);
+        selection = {};
+    }
+    cache_pos = state.cache_pos;
+    decode_position_delta = state.decode_position_delta;
+    batch = 1;
+}
+
+static void validate_geometry(const Config& config) {
     if (config.q_lora_rank <= 0 || config.kv_lora_rank <= 0 || config.qk_nope_head_dim <= 0 ||
         config.qk_rope_head_dim <= 0 || config.v_head_dim <= 0 || config.index_head_dim <= 0 ||
         config.index_n_heads <= 0 || config.index_topk <= 0 || config.num_experts <= 0 ||
@@ -46,104 +186,558 @@ void GlmDsaModel::adapter_validate_model_geometry() const {
     }
 }
 
-bool GlmDsaModel::adapter_uses_common_rope() const noexcept { return true; }
-
-std::unique_ptr<Block> GlmDsaModel::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer,
-                                                       int device, const std::string &type) {
-    auto &state = block_states[device];
-    if (!state)
-        state = std::make_shared<GlmDsaSharedState>();
-    return glm_dsa::load_block(weights, config, layer, type, state);
+namespace {
+Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
+    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+                               "token IDs must have shape [tokens] or [batch,tokens]");
+    if (ids.dim() == 1) ids = ids.unsqueeze(0);
+    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+                               "token IDs must not be empty");
+    return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
 }
 
-TextSessionStateKind CudaSessionCodec<GlmDsaModel>::kind(const Model &model) {
-    return !model.blocks.empty() &&
-                   std::all_of(model.blocks.begin(), model.blocks.end(),
-                               [](const std::unique_ptr<::Block> &block) {
-                                   return dynamic_cast<const GlmDsaBlock *>(block.get()) != nullptr;
-                               })
-               ? TextSessionStateKind::GlmDsa
-               : TextSessionStateKind::Unsupported;
+} // namespace
+
+Layer load_layer(const weight_loader::Loader& weights, const Config& config, int index,
+                 const std::string& type) {
+    MfqCudaGuard guard(weights.placement.device);
+    Layer layer;
+    layer.device = weights.placement.device;
+    TransformerWeightLoader loader{weights};
+    mfq::models::glm_dsa::load_layer_weights(layer, loader, config, index, type);
+    return layer;
 }
 
-bool CudaSessionCodec<GlmDsaModel>::supports_paged(const Model &) { return false; }
-
-TextSessionState CudaSessionCodec<GlmDsaModel>::capture(const Model &model,
-                                                        const std::vector<int64_t> &tokens) {
-    if (kind(model) != TextSessionStateKind::GlmDsa || model.cache_pos <= 0 ||
-        static_cast<size_t>(model.cache_pos) != tokens.size()) {
-        throw std::runtime_error("GLM DSA text session state is unavailable");
+Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+           int64_t context) {
+    validate_model_source(*source);
+    Model model;
+    model.source = std::move(source);
+    model.graph = mfq::models::graph(*model.source);
+    model.plan = cuda_model_plan(model.graph);
+    mfq::models::require_model(model.graph.backbone == "glm_dsa",
+                               "model backbone does not match the requested causal model");
+    auto& c = model.config;
+    auto& m = model.metadata;
+    mfq::models::glm_dsa::load_config(definition, c, m);
+    validate_geometry(c);
+    mfq::models::require_model(c.num_hidden_layers == model.graph.topology.text_layers,
+                               "model graph/config text-layer topology mismatch");
+    if (context > 0) {
+        mfq::models::require_model(context <= m.max_position_embeddings,
+                                   "--ctx-size exceeds max_position_embeddings");
+        c.max_position_embeddings = m.max_position_embeddings = context;
     }
-    TextSessionState state;
-    state.tokens = tokens;
-    state.cache_pos = model.cache_pos;
-    state.payload = std::vector<mfq::models::glm_dsa::BlockSnapshot>{};
-    auto &layers = std::get<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(state.payload);
-    layers.reserve(model.blocks.size());
-    for (const auto &block : model.blocks) {
-        MfqCudaGuard guard(block->cuda_device);
-        const auto *glm = dynamic_cast<const GlmDsaBlock *>(block.get());
-        if (glm == nullptr || !glm->kv_cache.defined() || glm->kv_cache.dim() != 4 ||
-            glm->kv_cache.size(0) != 1 || model.cache_pos > glm->kv_cache.size(2)) {
-            throw std::runtime_error("GLM DSA session MLA cache is unavailable");
+    return model;
+}
+
+void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
+          int gpu_layers, bool load_layers, bool load_input_output, const mfq::ops::YarnScaling& yarn) {
+    const auto& c = model.config;
+    placement.prepare(c.num_hidden_layers);
+    const int cpu_layers = gpu_layers < 0 ? 0 :
+        static_cast<int>(std::max<int64_t>(c.num_hidden_layers - gpu_layers, 0));
+    if (cpu_layers > 0) {
+        if (weights.placement.tensor.enabled() || weights.placement.experts.enabled() || placement.enabled())
+            throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
+        throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
+    }
+    MfqCudaGuard guard(placement.primary_device());
+    const auto make_rope = [&](int device) {
+        return RopeCache(c.max_position_embeddings, c.rotary_dim, c.rope_base, 0, -1,
+                         mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device),
+                         model.metadata.rope_interleaved, yarn);
+    };
+    model.rope = make_rope(placement.primary_device());
+    if (placement.enabled()) {
+        for (int device : placement.devices) {
+            MfqCudaGuard layer_guard(device);
+            model.device_ropes.emplace(device, make_rope(device));
         }
-        mfq::models::glm_dsa::BlockSnapshot saved;
-        saved.full_indexer = glm->full_indexer;
-        saved.kv_capacity = glm->kv_cache.size(2);
-        saved.kv_cache = glm->kv_cache.narrow(2, 0, model.cache_pos).clone();
-        state.bytes += session_tensor_bytes(saved.kv_cache);
-        if (glm->full_indexer) {
-            if (!glm->index_cache.defined() || glm->index_cache.dim() != 3 ||
-                glm->index_cache.size(0) != 1 || model.cache_pos > glm->index_cache.size(1)) {
-                throw std::runtime_error("GLM DSA session index cache is unavailable");
+    }
+    if (load_input_output) {
+        const bool separate = !c.tie_word_embeddings && weights.has("model.output.weight");
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
+        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+            : weights.placement.tensor.enabled()
+                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
+                : model.embed;
+        if (load_layers) {
+            model.layers.reserve(static_cast<size_t>(c.num_hidden_layers));
+            for (int index = 0; index < c.num_hidden_layers; ++index) {
+                const int device = placement.device_for_layer(index);
+                MfqCudaGuard layer_guard(device);
+                const auto& type = model.metadata.layer_types.at(static_cast<size_t>(index));
+                std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
+                model.layers.push_back(load_layer(weights.for_layer(device, false), c, index, type));
             }
-            saved.index_capacity = glm->index_cache.size(1);
-            saved.index_cache = glm->index_cache.narrow(1, 0, model.cache_pos).clone();
-            state.bytes += session_tensor_bytes(saved.index_cache);
         }
-        layers.push_back(std::move(saved));
+    } else {
+        if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+        model.output_norm = weights.tensor("model.output_norm.weight");
     }
-    return state;
 }
 
-void CudaSessionCodec<GlmDsaModel>::restore(Model &model, const TextSessionState &state) {
-    const auto *layers = std::get_if<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(&state.payload);
-    if (kind(model) != TextSessionStateKind::GlmDsa ||
-        state.kind() != TextSessionStateKind::GlmDsa || state.cache_pos <= 0 ||
-        static_cast<size_t>(state.cache_pos) != state.tokens.size() || layers == nullptr ||
-        layers->size() != model.blocks.size()) {
-        throw CudaSessionStateError("GLM DSA text session state is incompatible");
-    }
-    for (size_t index = 0; index < model.blocks.size(); ++index) {
-        auto &block = model.blocks[index];
-        MfqCudaGuard guard(block->cuda_device);
-        auto *glm = dynamic_cast<GlmDsaBlock *>(block.get());
-        const auto &saved = (*layers)[index];
-        if (glm == nullptr || glm->full_indexer != saved.full_indexer ||
-            !saved.kv_cache.defined() || saved.kv_cache.dim() != 4 || saved.kv_cache.size(0) != 1 ||
-            saved.kv_cache.size(2) != state.cache_pos) {
-            throw CudaSessionStateError("GLM DSA saved MLA cache is invalid");
-        }
-        restore_session_prefix_tensor(glm->kv_cache, saved.kv_cache, 2, saved.kv_capacity);
-        if (saved.full_indexer) {
-            if (!saved.index_cache.defined() || saved.index_cache.dim() != 3 ||
-                saved.index_cache.size(0) != 1 || saved.index_cache.size(1) != state.cache_pos) {
-                throw CudaSessionStateError("GLM DSA saved index cache is invalid");
-            }
-            restore_session_prefix_tensor(glm->index_cache, saved.index_cache, 1,
-                                          saved.index_capacity);
-        } else {
-            glm->index_cache = mfq_tensor_backend::Tensor();
-        }
-        glm->shared_state->reset();
-    }
-    model.cache_pos = state.cache_pos;
+Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, Tensor ids, const Executor::Mode& mode) {
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    Inputs inputs;
+    inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
 }
 
-} // namespace mfq::cuda
+Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
+                 std::int64_t batch, std::int64_t tokens) {
+    hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
+    const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps,
+                               model.metadata.norm_weight_offset},
+                    -1, {}, "model.output_norm"};
+    Inputs inputs;
+    inputs.values = {std::move(hidden)};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
+}
 
-namespace mfq::cuda {} // namespace mfq::cuda
+Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
+    const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
+    Inputs inputs;
+    inputs.values = {std::move(logits)};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
+}
 
-namespace mfq::models {
-template struct glm_dsa::CausalLm<cuda::CudaCausalOps<cuda::GlmDsaModel>>;
-} // namespace mfq::models
+Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+              const Executor::Mode& mode) {
+    std::array<Task, 2> tasks{
+        Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
+        Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
+    Inputs inputs;
+    inputs.values = {std::move(hidden)};
+    return executor.run(std::span<const Task>{tasks.data(), capped ? tasks.size() : 1},
+                        std::move(inputs), mode);
+}
+Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+               const Executor::Mode& mode, Input input) {
+    namespace tb = mfq_tensor_backend;
+    MfqCudaGuard guard(mode.primary);
+    auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids));
+    auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
+        : embed(model, executor, collectives, mode.primary, ids, mode);
+    const auto B = ids.size(0), T = ids.size(1);
+    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+                                   embeddings.size(1) == T &&
+                                   embeddings.size(2) == model.metadata.hidden_size,
+                               "inputs_embeds shape must match [batch,tokens,hidden_size]");
+    mfq::models::require_model(input.confirmed >= 0 && input.confirmed == 0,
+                               "unsupported speculative backbone geometry");
+    if (state.cache_pos == 0) state.reset(B);
+
+    const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary))
+                             .dtype(tb::kInt64);
+    auto physical = input.cache_positions.has_value()
+        ? collectives.copy(input.cache_positions->to(tb::kInt64), mode.primary).contiguous()
+        : tb::arange(state.cache_pos, state.cache_pos + T, options);
+    auto semantic = input.positions.has_value()
+        ? collectives.copy(input.positions->to(tb::kInt64), mode.primary).contiguous()
+        : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
+    mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
+                                   (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
+                               "cache_positions must have shape [tokens] or [batch,tokens]");
+    mfq::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
+                                   (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
+                               "position_ids must have shape [tokens] or [batch,tokens]");
+    if (input.attention_mask.has_value()) {
+        const auto& mask = *input.attention_mask;
+        mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
+                                       mask.size(1) >= state.cache_pos + T,
+                                   "attention_mask must cover [batch,cached_plus_current_tokens]");
+    }
+    if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
+        input.lengths = tb::full({B}, state.cache_pos + 1, options);
+    AttentionStep step{semantic, input.lengths,
+                       input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
+                       {}, state.cache_pos, input.kv_length, input.attention_parts};
+    auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
+    const auto trace = [&](const Tensor& value) {
+        if (input.trace)
+            input.trace->push_back(collectives.copy(value, mode.primary).to(tb::kFloat32).clone());
+    };
+    trace(hidden);
+    for (std::size_t index = 0; index < model.layers.size(); ++index) {
+        const auto& layer = model.layers[index];
+        {
+            MfqCudaGuard layer_guard(layer.device);
+            auto local = step;
+            local.positions = collectives.copy(step.positions, layer.device);
+            if (step.sequence_lengths.has_value())
+                local.sequence_lengths = collectives.copy(*step.sequence_lengths, layer.device);
+            if (step.cache_positions.has_value())
+                local.cache_positions = collectives.copy(*step.cache_positions, layer.device);
+            const auto& rope = model.device_ropes.empty() ? model.rope : model.device_ropes.at(layer.device);
+            hidden = forward_layer(layer, state.layers[index], state.selections.at(layer.device), executor,
+                                   collectives.copy(std::move(hidden), layer.device), local, rope, mode);
+        }
+        trace(hidden);
+    }
+    if (!input.positions.has_value() || input.advance) state.cache_pos += T;
+    hidden = collectives.copy(std::move(hidden), mode.primary);
+    auto finalized = normalize(model, executor, hidden, B, T);
+    if (input.raw_hidden) *input.raw_hidden = std::move(hidden);
+    return finalized;
+}
+
+namespace {
+Tensor headwise_project(const Projector& projector, MlaScratch& scratch, const Experts& weight,
+                        Tensor x, int64_t B, int64_t T, int64_t heads) {
+#if TYLOINFER_ENABLE_MFQ_COMPAT
+
+    if (x.dim() != 4 || x.size(0) != B || x.size(1) != T || x.size(2) != heads ||
+        x.size(3) != weight.neuron_len || weight.n_experts != heads) {
+        throw std::runtime_error("GLM head-wise MFE projection shape mismatch");
+    }
+    const int64_t rows = B * T * heads;
+    const auto &route = scratch.head_route(rows, static_cast<int>(heads));
+    auto y = projector.run(weight, x.contiguous().reshape({rows, weight.neuron_len}), route);
+    return y.reshape({B, T, heads, weight.out_per_expert});
+
+#else
+    throw std::runtime_error("Legacy head-wise projections require a compatibility build");
+#endif
+}
+
+Tensor dense_attention(MlaScratch& scratch, const Tensor& kv_cache, Tensor q,
+                       int64_t logical_len, int64_t B, const MfqOptional<Tensor>& seq_len,
+                       double scale, int64_t planned_kv_length) {
+    if (seq_len.has_value() && q.size(2) == 1 && B == 1) {
+        const int64_t planned_len = planned_kv_length > 0 ? planned_kv_length : logical_len;
+        scratch.ensure_decode_workspace(B, planned_len);
+        return attention_glm_mla576_decode_cuda(
+            q, kv_cache, seq_len.value(), scale, planned_len, scratch.decode_mask,
+            scratch.kv_max, scratch.attention_meta);
+    }
+    scratch.ensure_dense_workspace(B, q.size(2), logical_len);
+    return attention_glm_mla576_cached_cuda(q, kv_cache, logical_len, scratch.dense_mask,
+                                            scratch.kv_max, scratch.attention_meta,
+                                            scale);
+}
+
+void update_indexer(const Config& c, Selection& selection, const Tensor& index_cache,
+                    CudaProfiler& profiler, Tensor index_q, Tensor index_weights, int64_t B,
+                    int64_t T, int64_t cache_pos, const MfqOptional<Tensor>& seq_len,
+                    int64_t planned_kv_length) {
+    const int64_t logical_len = cache_pos + T;
+    if (logical_len <= c.index_topk) {
+        selection.topk_indices = mfq_tensor_backend::Tensor();
+        selection.dense_prefix_rows = T;
+        return;
+    }
+
+    if (seq_len.has_value() && T == 1 && B == 1) {
+        const int64_t planned_len = planned_kv_length > 0 ? planned_kv_length : logical_len;
+        auto scores = profiler.measure("glm.indexer_scores", [&]() {
+            return glm_dsa_indexer_scores_decode_cuda(index_q, index_cache, index_weights,
+                                                      seq_len.value(), planned_len);
+        });
+        auto selected = profiler.measure("glm.indexer_topk", [&]() {
+            return mfq_tensor_backend::topk(scores, c.index_topk, -1, true, false);
+        });
+        selection.topk_indices =
+            std::get<1>(selected).to(mfq_tensor_backend::kInt32).contiguous();
+        selection.dense_prefix_rows = 0;
+        return;
+    }
+
+    const int64_t prefix_rows =
+        std::max<int64_t>(0, std::min<int64_t>(T, c.index_topk - cache_pos));
+    const int64_t sparse_rows = T - prefix_rows;
+    if (sparse_rows <= 0) {
+        selection.topk_indices = mfq_tensor_backend::Tensor();
+        selection.dense_prefix_rows = T;
+        return;
+    }
+    auto indices = mfq_tensor_backend::empty({B, sparse_rows, c.index_topk},
+                                             mfq_tensor_backend::TensorOptions()
+                                                 .device(mfq_tensor_backend::kCUDA)
+                                                 .dtype(mfq_tensor_backend::kInt32));
+    constexpr int64_t kMaxScoreElements = 32 * 1024 * 1024;
+    int64_t rows_per_chunk =
+        std::max<int64_t>(1, kMaxScoreElements / std::max<int64_t>(1, B * logical_len));
+    rows_per_chunk = std::min<int64_t>(rows_per_chunk, 256);
+    if (rows_per_chunk >= 64)
+        rows_per_chunk = rows_per_chunk / 64 * 64;
+    for (int64_t start = 0; start < sparse_rows; start += rows_per_chunk) {
+        const int64_t count = std::min<int64_t>(rows_per_chunk, sparse_rows - start);
+        auto q_chunk = index_q.narrow(1, prefix_rows + start, count).contiguous();
+        auto w_chunk = index_weights.narrow(1, prefix_rows + start, count).contiguous();
+        auto scores = profiler.measure("glm.indexer_scores", [&]() {
+            return glm_dsa_indexer_scores_cuda(q_chunk, index_cache, w_chunk,
+                                               cache_pos + prefix_rows + start, logical_len);
+        });
+        auto selected = profiler.measure("glm.indexer_topk", [&]() {
+            return mfq_tensor_backend::topk(scores, c.index_topk, -1, true, false);
+        });
+        indices.narrow(1, start, count)
+            .copy_(std::get<1>(selected).to(mfq_tensor_backend::kInt32));
+    }
+    selection.topk_indices = indices;
+    selection.dense_prefix_rows = prefix_rows;
+}
+
+} // namespace
+
+Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection,
+                     Executor& executor, Tensor x, const AttentionStep& step,
+                     const RopeCache& rope, const Executor::Mode& mode) {
+    auto& profiler = executor.profiler();
+    auto& scratch = executor.mla_scratch(layer.device);
+    const auto project = executor.projector(mode.ffn);
+    const auto& c = layer.config;
+    const auto& attn_norm = layer.attn_norm;
+    const auto& ffn_norm = layer.ffn_norm;
+    const auto& q_a_norm = layer.q_a_norm;
+    const auto& kv_a_norm = layer.kv_a_norm;
+    const auto& index_k_norm = layer.index_k_norm;
+    const auto& index_k_bias = layer.index_k_bias;
+    const auto& input_proj = layer.input_proj;
+    const auto& q_proj = layer.q_proj;
+    const auto& embed_q = layer.embed_q;
+    const auto& unembed_out = layer.unembed_out;
+    const auto& o_proj = layer.o_proj;
+    const auto& ffn = layer.ffn;
+    const bool full_indexer = layer.full_indexer;
+    auto& kv_cache = state.kv_cache;
+    auto& index_cache = state.index_cache;
+    const auto& pos = step.positions;
+    const auto& seq_len = step.sequence_lengths;
+    const auto cache_pos = step.cache_position;
+    const auto planned_kv_length = step.planned_kv_length;
+    const int64_t B = x.size(0);
+    const int64_t T = x.size(1);
+    const int64_t H = x.size(2);
+    constexpr int64_t kHeads = 64;
+    constexpr int64_t kNope = 192;
+    constexpr int64_t kRope = 64;
+    constexpr int64_t kLatent = 512;
+    constexpr int64_t kMlaWidth = kLatent + kRope;
+    constexpr int64_t kValue = 256;
+    const int64_t logical_len = cache_pos + T;
+    if (!kv_cache.defined()) {
+        auto options = mfq_tensor_backend::TensorOptions()
+                           .device(mfq_tensor_backend::kCUDA)
+                           .dtype(mfq_tensor_backend::kFloat16);
+        kv_cache =
+            mfq_tensor_backend::empty({B, 1, c.max_position_embeddings, kMlaWidth}, options);
+        if (full_indexer) {
+            index_cache = mfq_tensor_backend::empty(
+                {B, c.max_position_embeddings, c.index_head_dim}, options);
+        }
+    }
+
+    x = x.to(mfq_tensor_backend::kFloat16).contiguous();
+    return mfq::ops::attention_layer(
+        std::move(x),
+        [&](mfq_tensor_backend::Tensor x) {
+            return profiler.measure("glm.attn_norm", [&]() {
+                return rms_norm_f16_cuda(x.reshape({B * T, H}), attn_norm, c.rms_norm_eps, 0.0)
+                    .reshape({B, T, H});
+            });
+        },
+        [&](mfq_tensor_backend::Tensor xn) {
+            using Tensor = mfq_tensor_backend::Tensor;
+            struct Projection {
+                Tensor query, rotary, rows;
+            };
+            return mfq::models::glm_dsa::attention(
+                full_indexer,
+                [&] {
+                    return profiler.measure(
+                        "glm.input_proj", [&]() { return project.run(input_proj, xn); });
+                },
+                [&](Tensor projected) {
+                    return profiler.measure("glm.q_a_norm", [&]() {
+                        return rms_norm_f16_cuda(projected.reshape({B * T, c.q_lora_rank})
+                                                     .to(mfq_tensor_backend::kFloat16)
+                                                     .contiguous(),
+                                                 q_a_norm, 1e-6, 0.0)
+                            .reshape({B, T, c.q_lora_rank});
+                    });
+                },
+                [&](Tensor qr) {
+                    return profiler.measure("glm.q_proj",
+                                            [&]() { return project.run(q_proj, qr); });
+                },
+                [&](Tensor key_value, Tensor query) {
+                    auto q_main = query.to(mfq_tensor_backend::kFloat16)
+                                      .reshape({B, T, kHeads, kNope + kRope});
+                    auto q_nope =
+                        q_main.index({Slice(), Slice(), Slice(), Slice(0, kNope)}).contiguous();
+                    auto q_pe =
+                        q_main.index({Slice(), Slice(), Slice(), Slice(kNope, kNope + kRope)})
+                            .permute({0, 2, 1, 3})
+                            .contiguous();
+                    q_pe = profiler.measure("glm.q_rope", [&]() {
+                        return glm_interleaved_rope_cuda(q_pe, pos.contiguous(), rope.cos,
+                                                         rope.sin, kRope);
+                    });
+
+                    auto compressed = key_value.to(mfq_tensor_backend::kFloat16)
+                                          .reshape({B, T, kLatent + kRope});
+                    auto kv_latent = profiler.measure("glm.kv_a_norm", [&]() {
+                        auto raw = compressed.index({Slice(), Slice(), Slice(0, kLatent)})
+                                       .contiguous();
+                        return rms_norm_f16_cuda(raw.reshape({B * T, kLatent}), kv_a_norm, 1e-6,
+                                                 0.0)
+                            .reshape({B, T, kLatent});
+                    });
+                    auto k_pe =
+                        compressed.index({Slice(), Slice(), Slice(kLatent, kLatent + kRope)})
+                            .reshape({B, T, 1, kRope})
+                            .permute({0, 2, 1, 3})
+                            .contiguous();
+                    k_pe = profiler.measure("glm.k_rope", [&]() {
+                        return glm_interleaved_rope_cuda(k_pe, pos.contiguous(), rope.cos,
+                                                         rope.sin, kRope);
+                    });
+                    auto kv_rows =
+                        mfq_tensor_backend::cat(
+                            {kv_latent, k_pe.permute({0, 2, 1, 3}).reshape({B, T, kRope})}, -1)
+                            .contiguous();
+                    return Projection{q_nope, q_pe, kv_rows};
+                },
+                [&](const Projection &p) {
+                    profiler.measure("glm.kv_write", [&]() {
+                        return glm_dsa_cache_write_cuda(
+                            kv_cache.view({B, c.max_position_embeddings, kMlaWidth}), p.rows,
+                            pos.contiguous());
+                    });
+                },
+                [&](Tensor index_key, Tensor index_weight, Tensor index_query) {
+                    auto index_k = profiler.measure("glm.indexer_k_norm", [&]() {
+                        return glm_dsa_indexer_layer_norm_cuda(
+                            index_key.to(mfq_tensor_backend::kFloat16)
+                                .reshape({B, T, c.index_head_dim})
+                                .contiguous(),
+                            index_k_norm, index_k_bias, 1e-5);
+                    });
+                    index_k =
+                        glm_interleaved_rope_cuda(index_k.reshape({B, T, 1, c.index_head_dim})
+                                                      .permute({0, 2, 1, 3})
+                                                      .contiguous(),
+                                                  pos.contiguous(), rope.cos, rope.sin, kRope)
+                            .permute({0, 2, 1, 3})
+                            .reshape({B, T, c.index_head_dim})
+                            .contiguous();
+                    profiler.measure("glm.indexer_k_write", [&]() {
+                        return glm_dsa_cache_write_cuda(index_cache, index_k, pos.contiguous());
+                    });
+                    auto index_q = index_query.to(mfq_tensor_backend::kFloat16)
+                                       .reshape({B, T, c.index_n_heads, c.index_head_dim})
+                                       .permute({0, 2, 1, 3})
+                                       .contiguous();
+                    index_q = glm_interleaved_rope_cuda(index_q, pos.contiguous(), rope.cos,
+                                                        rope.sin, kRope)
+                                  .permute({0, 2, 1, 3})
+                                  .contiguous();
+                    auto index_weights = index_weight.reshape({B, T, c.index_n_heads})
+                                             .to(mfq_tensor_backend::kFloat32)
+                                             .contiguous();
+                    update_indexer(c, selection, index_cache, profiler, index_q, index_weights,
+                                   B, T, cache_pos, seq_len, planned_kv_length);
+                },
+                [&](const Projection &p) {
+                    auto q_absorbed =
+                        profiler
+                            .measure("glm.embed_q",
+                                     [&]() {
+                                         return headwise_project(project, scratch, embed_q,
+                                                                 p.query, B, T, kHeads);
+                                     })
+                            .permute({0, 2, 1, 3})
+                            .contiguous();
+                    auto q_mla = mfq_tensor_backend::cat({q_absorbed, p.rotary}, -1)
+                                     .to(mfq_tensor_backend::kFloat32)
+                                     .contiguous();
+                    return q_mla;
+                },
+                [&](Tensor q_mla) {
+                    const double scale = 1.0 / std::sqrt(static_cast<double>(kNope + kRope));
+                    const bool indexed = selection.topk_indices.defined();
+                    const int64_t prefix = selection.dense_prefix_rows;
+                    const int64_t sparse_rows =
+                        indexed ? selection.topk_indices.size(1) : 0;
+                    return mfq::models::glm_dsa::indexed_attention(
+                        indexed, T, prefix, sparse_rows,
+                        [&] {
+                            return profiler.measure("glm.attention_dense", [&]() {
+                                return dense_attention(scratch, kv_cache, q_mla, logical_len, B,
+                                                       seq_len, scale, planned_kv_length);
+                            });
+                        },
+                        [&] {
+                            return profiler.measure("glm.attention_dense_prefix", [&]() {
+                                return dense_attention(
+                                    scratch, kv_cache, q_mla.narrow(2, 0, prefix).contiguous(),
+                                    cache_pos + prefix, B, mfq_nullopt, scale, planned_kv_length);
+                            });
+                        },
+                        [&] {
+                            scratch.ensure_meta();
+                            return profiler.measure("glm.attention_sparse", [&]() {
+                                return attention_glm_mla_sparse_cuda(
+                                    q_mla.narrow(2, prefix, sparse_rows).contiguous(),
+                                    kv_cache.view({B, c.max_position_embeddings, kMlaWidth}),
+                                    selection.topk_indices, scratch.attention_meta,
+                                    scale);
+                            });
+                        },
+                        [](Tensor first, Tensor rest) {
+                            return mfq_tensor_backend::cat({first, rest}, 1);
+                        });
+                },
+                [&](Tensor attended) {
+                    return profiler.measure("glm.unembed_out", [&]() {
+                        return headwise_project(
+                            project, scratch, unembed_out,
+                            attended.to(mfq_tensor_backend::kFloat16).contiguous(), B, T,
+                            kHeads);
+                    });
+                },
+                [&](Tensor value_heads) {
+                    return profiler.measure("glm.o_proj", [&]() {
+                        return project.run(o_proj, value_heads.reshape({B, T, kHeads * kValue}).contiguous());
+                    });
+                });
+        },
+        [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn_out) {
+            return mfq::ops::residual_ffn(
+                std::move(residual), std::move(attn_out),
+                [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn_out) {
+                    auto attn_pair = profiler.measure("glm.attn_residual_ffn_norm", [&]() {
+                        return acc_rms_norm_f16_cuda(residual.reshape({B * T, H}),
+                                                     attn_out.reshape({B * T, H})
+                                                         .to(mfq_tensor_backend::kFloat16)
+                                                         .contiguous(),
+                                                     ffn_norm, c.rms_norm_eps, 0.0);
+                    });
+                    return std::array<mfq_tensor_backend::Tensor, 2>{
+                        attn_pair[0].reshape({B, T, H}), attn_pair[1].reshape({B * T, H})};
+                },
+                [&](mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor ffn_input) {
+                    return mfq::ops::feed_forward(
+                        std::move(hidden), std::move(ffn_input),
+                        [](const auto &, const auto &) {
+                            return std::optional<mfq_tensor_backend::Tensor>{};
+                        },
+                        [&](mfq_tensor_backend::Tensor ffn_input) {
+                            return ffn.forward(ffn_input, executor, mode.ffn).reshape({B * T, H});
+                        },
+                        [&](mfq_tensor_backend::Tensor hidden,
+                            mfq_tensor_backend::Tensor ffn_out) {
+                            return profiler.measure("glm.ffn_residual", [&]() {
+                                return acc_cuda(hidden.reshape({B * T, H}), ffn_out)
+                                    .reshape({B, T, H});
+                            });
+                        });
+                });
+        });
+}
+} // namespace mfq::cuda::glm_dsa

@@ -345,14 +345,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 for (const auto& tensor : state.storage()) append(tensor);
             }
             if (executor) {
-                for (const auto& attention : executor->scratch()) {
-                    append(attention.partial_o);
-                    append(attention.partial_m);
-                    append(attention.partial_l);
-                    append(attention.mask);
-                    append(attention.kv_max);
-                    append(attention.meta);
-                }
+                for (const auto& tensor : executor->storage()) append(tensor);
             }
             return result;
         };
