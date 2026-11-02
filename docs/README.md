@@ -9,6 +9,7 @@ TyloInfer provides TQ inference, CUDA/Metal runtimes, and local serving.
 - [Run MFQ Server and Studio](cli/serve.md)
 - [Create a self-contained release](packaging.md)
 - [Check model and backend support](runtime/support.md)
+- [Native server migration baseline and remaining work](backend-plan.md)
 
 ## Models and runtimes
 
