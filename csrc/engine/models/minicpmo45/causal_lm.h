@@ -328,22 +328,4 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
     bool adapter_pass_attention_mask() const noexcept { return true; }
 };
 
-template <class Backend>
-struct TtsCausalLm : models::CausalModelBase<Backend, TtsCausalLm<Backend>> {
-    using Tensor = typename Backend::Tensor;
-    static bool accepts_backbone(std::string_view backbone) { return backbone == "minicpmo_tts"; }
-    template <class Graph, class Source>
-    void adapter_load_config(std::string_view payload, const Graph &graph, const Source &source) {
-        auto &config = this->config;
-        auto &metadata = this->metadata;
-
-        config = mfq::models::ModelConfig::from_json(payload);
-        set_standard_metadata(metadata, config);
-        metadata.norm_weight_offset = 1.0;
-    }
-    void adapter_set_max_position_embeddings(int64_t value) {
-        this->config.max_position_embeddings = value;
-    }
-};
-
 } // namespace mfq::models::minicpmo45

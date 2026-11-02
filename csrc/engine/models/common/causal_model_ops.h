@@ -39,9 +39,6 @@ template <class Backend> struct CausalLm;
 namespace mfq::models::minicpmo45 {
 template <class Backend> struct CausalLm;
 }
-namespace mfq::models::minicpmo45 {
-template <class Backend> struct TtsCausalLm;
-}
 namespace mfq::models::nemotron_h {
 template <class Backend> struct CausalLm;
 }
