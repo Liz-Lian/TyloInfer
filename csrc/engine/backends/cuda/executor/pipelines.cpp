@@ -1,4 +1,4 @@
-#include "moe_ffn_pipeline.h"
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/weights/encoding/format_features.h"
 #include "engine/backends/cuda/executor/ffn.h"
 

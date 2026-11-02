@@ -19,7 +19,7 @@
 #include "engine/weights/group.h"
 #include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"
-#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/weights/nint_row_pipeline.h"

@@ -3,7 +3,7 @@
 #include "env.h"
 #include "engine/weights/routed_cache.h"
 #include "backends/cuda/engine/executor/generation.h"
-#include "backends/cuda/engine/executor/token_row_prefetch.h"
+#include "engine/models/common/prefetch.h"
 #include "engine/generation/mtp/sequence.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"

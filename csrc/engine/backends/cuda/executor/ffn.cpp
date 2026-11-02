@@ -2,7 +2,7 @@
 #include "engine/weights/encoding/format_features.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
-#include "backends/cuda/engine/executor/moe_ffn_pipeline.h"
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/projection/parallel.h"
 #include "engine/backends/cuda/ops/ffn/mlp.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"

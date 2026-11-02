@@ -11,7 +11,7 @@
 #include "engine/backends/cuda/kernels/qwen4_exp.h"
 #include "engine/backends/cuda/kernels/ple_fused.h"
 #include "engine/weights/nint_row_pipeline.h"
-#include "backends/cuda/engine/executor/layer_inputs.h"
+#include "engine/weights/row_stage.h"
 #include "engine/state/kv_offload.h"
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/executor/decode_window.h"
