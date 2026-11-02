@@ -10,7 +10,7 @@
 #include "engine/models/common/prompt.h"
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/requests/policy.h"
-#include "engine/requests/inference.h"
+#include "engine/requests/output.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/qwen4_exp/ops.h"

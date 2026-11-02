@@ -1,7 +1,6 @@
 #pragma once
 #include "env.h"
 #include "cuda_activity_trace.h"
-#include "engine/requests/inference.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/native/scope.h"

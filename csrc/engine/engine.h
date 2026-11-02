@@ -1,6 +1,7 @@
 #pragma once
 
-#include "requests/processor.h"
+#include "requests/request.h"
+#include "requests/result.h"
 
 #include <chrono>
 #include <optional>
@@ -19,41 +20,6 @@ struct MfqModelCapabilities {
 };
 
 namespace mfq::engine {
-
-using RequestId = std::string;
-using Clock = std::chrono::steady_clock;
-using Metrics = std::vector<std::pair<std::string, double>>;
-
-struct EngineRequest {
-    RequestId id;
-    InferenceInput input;
-    std::optional<Clock::time_point> deadline;
-    int priority = 0;
-    // Diagnostics only. Production submits owned text/media and is tokenized
-    // on admission, never against a tokenizer from before a queued reload.
-    std::vector<std::int64_t> token_ids;
-};
-
-struct PrefillProgress {
-    MfqPrefillTiming timing;
-    // Prompt state is ready for caching before decode timing starts.
-    bool session_boundary = false;
-};
-using OutputDelta = TokenOutput;
-struct UsageUpdate { std::size_t prompt_tokens = 0, completion_tokens = 0; };
-// Text/tool output travels only in deltas, so terminals have a bounded size.
-struct Completed { std::string finish_reason; UsageUpdate usage; InferenceMetrics metrics; };
-struct Cancelled { UsageUpdate usage; InferenceMetrics metrics; };
-struct Failed { std::string code, message; bool retryable = false; };
-using EventData = std::variant<PrefillProgress, OutputDelta, UsageUpdate,
-                               Completed, Cancelled, Failed>;
-struct EngineEvent { RequestId id; EventData data; };
-
-inline bool terminal(const EventData& event) {
-    return std::holds_alternative<Completed>(event) ||
-        std::holds_alternative<Cancelled>(event) ||
-        std::holds_alternative<Failed>(event);
-}
 
 struct EngineInfo {
     std::size_t max_requests = 1;
@@ -78,55 +44,6 @@ struct EngineStepResult {
     std::optional<Clock::time_point> wake_at;
 };
 enum class Admission { accepted, deferred };
-struct SessionCommand {
-    enum class Kind { fork, close, clear, trim, budget, refresh, memory_budget, metrics } kind;
-    std::string source, target;
-    std::uint64_t bytes = 0;
-    std::optional<std::uint64_t> disk_bytes;
-    std::optional<std::uint64_t> weight_bytes;
-    std::optional<std::uint64_t> ram_bytes;
-};
-struct SessionResult { std::uint64_t count = 0; Metrics metrics; };
-struct DecodeTokens {
-    std::vector<std::int64_t> tokens;
-    std::unordered_set<std::int64_t> excluded;
-};
-struct PrepareDuplex { std::string prompt; MfqDuplexSessionParams parameters; };
-struct PrepareDuplexStep { std::string text; MfqDuplexStepInput input; };
-struct StopDuplex {};
-struct RuntimeMetrics {};
-struct CountTokens { std::string prompt; };
-struct TokenCount {
-    std::size_t prompt_tokens = 0;
-    std::int64_t context_size = 0;
-};
-struct ScoreText {
-    std::string prompt;
-    std::vector<std::string> continuations;
-    bool next_token = false;
-};
-struct ScoreTokens {
-    std::vector<std::vector<std::int64_t>> sequences;
-    std::vector<std::vector<std::int64_t>> targets;
-    std::size_t prompt_tokens = 0;
-    bool next_token = false;
-};
-struct TokenLikelihood {
-    std::vector<std::int64_t> token_ids;
-    std::vector<double> token_logprobs;
-    double log_likelihood = 0;
-};
-struct LikelihoodResult {
-    std::size_t prompt_tokens = 0;
-    std::vector<TokenLikelihood> scores;
-};
-using ControlRequest = std::variant<DecodeTokens, PrepareDuplex,
-    PrepareDuplexStep, MfqDuplexSessionParams, MfqDuplexStepInput, StopDuplex,
-    RuntimeMetrics, CountTokens, ScoreText, ScoreTokens>;
-using ControlResult = std::variant<std::monostate,
-    std::string, MfqDuplexSessionParams, MfqDuplexStepInput, MfqDuplexStepResult,
-    Metrics, TokenCount, LikelihoodResult>;
-
 // Only the scheduler loop calls these methods. Execution returns owned values;
 // no caller code or response writer can run on the device execution stack.
 class Engine {

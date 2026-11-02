@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../generation/step.h"
+#include "../requests/processor.h"
 #include "components/error.h"
 
 #include <memory>

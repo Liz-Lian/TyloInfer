@@ -1,7 +1,7 @@
 #pragma once
 
-#include "inference.h"
-#include "chat.h"
+#include "request.h"
+#include "tokenizer.h"
 
 #include <cstdint>
 #include <memory>
@@ -15,51 +15,7 @@ namespace mfq { class ModelSource; }
 
 namespace mfq::engine {
 
-enum class InferenceInputErrorCode {
-    Invalid,
-    Unsupported,
-    ContextLength,
-};
-
-class InferenceInputError final : public std::runtime_error {
-public:
-    InferenceInputError(
-        InferenceInputErrorCode code,
-        std::string message,
-        std::string field = {});
-
-    InferenceInputErrorCode code;
-    std::string field;
-};
-
-struct ChatInput {
-    common_chat_templates_inputs template_inputs;
-    std::optional<std::string> preformatted_prompt;
-    std::optional<bool> parallel_tool_calls;
-    common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-};
-
-struct InferenceInput {
-    bool chat = true;
-    bool stream = false;
-    bool include_usage = false;
-    std::string prompt;
-    std::optional<ChatInput> chat_input;
-    std::vector<std::string> stops;
-    MfqSamplingParams sampling;
-    MfqPromptCachePlan cache_plan;
-    std::optional<MfqMultimodalInput> media;
-    bool prefix_cache_enabled = true;
-    std::optional<std::size_t> benchmark_prompt_tokens;
-};
-
-struct ChatTemplateCapabilities {
-    bool thinking = false;
-    std::vector<std::string> reasoning_effort_values;
-};
-
-// Engine-owned model text semantics: template application, tokenization,
-// grammar constraints, output parsing, stop handling, and media placeholders.
+// Engine-owned input preparation: template application, tokenization, and constraints.
 class TextProcessor {
 public:
     static std::unique_ptr<TextProcessor> load(const ModelSource& source,

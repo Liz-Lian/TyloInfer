@@ -1,6 +1,7 @@
 add_library(mfq-engine STATIC
     config.cpp
     generation/mtp/metrics.cpp
+    models/prepare.cpp
     models/common/axial_patch_vision.cpp
     models/common/vision/grid_vision.cpp
     models/deepseek_v4/config.cpp
@@ -14,7 +15,7 @@ add_library(mfq-engine STATIC
     models/qwen4_exp/config.cpp
     requests/constraint.cpp
     requests/emitter.cpp
-    requests/inference.cpp
+    requests/output.cpp
     requests/policy.cpp
     requests/processor.cpp
     requests/tokenizer.cpp

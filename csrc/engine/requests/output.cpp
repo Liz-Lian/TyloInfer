@@ -1,37 +1,12 @@
-#include "inference.h"
+#include "output.h"
 
 #include "emitter.h"
-#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <memory>
 #include <utility>
 
 namespace mfq::engine {
-
-std::unordered_set<std::int64_t> model_stop_token_ids(std::string_view config, std::int64_t vocabulary) {
-    std::unordered_set<std::int64_t> result;
-    if (vocabulary <= 0) return result;
-    const auto root = nlohmann::json::parse(config.begin(), config.end(), nullptr, false);
-    if (!root.is_object()) return result;
-    const auto* text = &root;
-    if (root.contains("text_config") && root["text_config"].is_object()) text = &root["text_config"];
-    auto found = text->find("eos_token_id");
-    if (found == text->end() || found->is_null()) {
-        text = &root;
-        found = text->find("eos_token_id");
-    }
-    if (found == text->end()) return result;
-    const auto add = [&](const auto& value) {
-        if (!value.is_number_integer()) return;
-        if (value.is_number_unsigned() && value.template get<std::uint64_t>() >= std::uint64_t(vocabulary)) return;
-        const auto id = value.template get<std::int64_t>();
-        if (id >= 0 && id < vocabulary) result.insert(id);
-    };
-    if (found->is_array()) for (const auto& value : *found) add(value);
-    else add(*found);
-    return result;
-}
 
 void InferenceMetrics::mark_prefill(const MfqPrefillTiming& timing) {
     prefill_tokens = timing.prompt_tokens;

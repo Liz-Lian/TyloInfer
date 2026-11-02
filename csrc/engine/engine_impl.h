@@ -9,6 +9,8 @@
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/budget.h"
 #include "engine/requests/processor.h"
+#include "engine/requests/output.h"
+#include "engine/models/prepare.h"
 #include "engine/scheduler/table.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
@@ -469,7 +471,7 @@ private:
         text_ = engine::TextProcessor::load(
             *source_, options_.tokenizer_model, info_.vocab_size, info_.model_type);
         info_.chat = text_->chat_template_capabilities();
-        info_.stop_token_ids = engine::model_stop_token_ids(
+        info_.stop_token_ids = mfq::models::stop_token_ids(
             mfq::models::config_json(*source_, options_.config_path), info_.vocab_size);
         requests_ = engine::RequestExecutor(info_.max_requests);
     }

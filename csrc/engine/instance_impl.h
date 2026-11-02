@@ -15,6 +15,7 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/engine.h"
 #include "engine/requests/processor.h"
+#include "engine/models/prepare.h"
 #include "engine/weights/memory.h"
 
 #include <algorithm>
@@ -102,7 +103,7 @@ struct Backend {
             info.reload = true;
             auto text = TextProcessor::load(*state.source, options.tokenizer_model,
                 info.vocab_size, info.model_type);
-            info.stop_token_ids = model_stop_token_ids(
+            info.stop_token_ids = mfq::models::stop_token_ids(
                 mfq::models::config_json(*state.source, options.config_path), info.vocab_size);
             return std::pair{std::move(info), std::move(text)};
         });

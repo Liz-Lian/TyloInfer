@@ -7,6 +7,7 @@
 #include "cli.h"
 #include "diagnostics/token_generation.h"
 #include "engine/models/load.h"
+#include "engine/models/prepare.h"
 #include "diagnostics/backend_checks.h"
 #include "diagnostics/model_checks.h"
 #include "diagnostics/runtime_checks.h"
@@ -1183,7 +1184,7 @@ struct DiagnosticsCommand : mfq::cuda::DiagnosticsCommandOptions {
         if (!ignore_eos && tokenizer_model.empty() && decode_inputs.empty()) {
             const auto* source = diagnostic_source(model);
             if (!source) throw std::runtime_error("diagnostics model source is unavailable");
-            stop_ids = mfq::engine::model_stop_token_ids(
+            stop_ids = mfq::models::stop_token_ids(
                 mfq::models::config_json(*source, config_path),
                 diagnostic_vocab_size(model));
             if (stop_ids.empty()) std::cerr << "warning: no model EOS token IDs; generation is limited only by --gen\n";
