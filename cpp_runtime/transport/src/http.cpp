@@ -1,4 +1,5 @@
-#include "common.h"
+#include "protocol.h"
+#include "transport.h"
 
 #include "httplib.h"
 
@@ -16,7 +17,7 @@
 
 namespace {
 
-using namespace mfq::transport_detail;
+using namespace mfq::protocol;
 
 static json error_body(const std::string & message, const std::string & type, const std::string & param = {}) {
     return {
@@ -80,7 +81,7 @@ int run_mfq_http_transport(
     }
 
     const MfqSamplingParams sampling_defaults =
-        default_sampling_params(config);
+        default_sampling_params(config.runtime_profile);
     const json duplex_sampling_defaults =
         duplex_profile_json(config.runtime_profile.duplex);
     const json tts_sampling_defaults =

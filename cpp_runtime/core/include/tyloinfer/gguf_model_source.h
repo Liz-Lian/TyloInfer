@@ -5,6 +5,7 @@
 namespace mfq {
 
 bool is_gguf_file(const std::filesystem::path& path);
+bool gguf_is_table_component(const std::filesystem::path& path);
 
 class GgufModelSource final : public ModelSource {
 public:

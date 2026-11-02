@@ -133,7 +133,8 @@ class Engine {
 public:
     virtual ~Engine() = default;
     virtual EngineInfo info() const = 0;
-    virtual Admission admit(EngineRequest request) = 0;
+    // A deferred admission leaves the input intact; an accepted one takes ownership.
+    virtual Admission admit(EngineRequest&& request) = 0;
     virtual void cancel(const RequestId& id) = 0;
     virtual EngineStepResult step(const std::vector<RequestId>& eligible) = 0;
     virtual EngineStatus status() const = 0;

@@ -3,6 +3,7 @@
 
 #include "token_constraint.h"
 #include "tokenizer.h"
+#include "hf_tokenizer.h"
 
 #include "chat/common.h"
 #include "json-schema-to-grammar.h"
@@ -369,7 +370,8 @@ std::unique_ptr<TextProcessor> TextProcessor::load(const ModelSource& source,
             reinterpret_cast<const std::uint8_t*>(bytes.data()),
             reinterpret_cast<const std::uint8_t*>(bytes.data()) + bytes.size()), vocabulary, model_type);
     }
-    return std::make_unique<TextProcessor>(tokenizer_path, vocabulary, model_type);
+    if (!tokenizer_path.empty()) return std::make_unique<TextProcessor>(tokenizer_path, vocabulary, model_type);
+    return std::make_unique<TextProcessor>(hf_tokenizer_gguf(source), vocabulary, model_type);
 }
 
 TextProcessor::TextProcessor(

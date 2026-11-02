@@ -831,7 +831,8 @@ static void check_media_steps(mfq::engine::Engine& engine, const char* model_pat
     media.pixel_shape = {side * side, vision.patch_width()};
     media.pixel_values.assign(side * side * vision.patch_width(), 0.1F);
     const auto run = [&] {
-        check(engine.admit(image) == Admission::accepted, "image admission");
+        auto input = image;
+        check(engine.admit(std::move(input)) == Admission::accepted, "image admission");
         std::vector<int64_t> tokens;
         int terminals = 0, preparation_steps = 0;
         bool preparing = true;

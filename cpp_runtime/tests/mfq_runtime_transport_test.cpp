@@ -1,5 +1,5 @@
 #include "scheduler.h"
-#include "common.h"
+#include "protocol.h"
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -14,7 +14,7 @@ struct FakeEngine final : Engine {
     struct Work { EngineRequest request; int steps = 0; bool cancelled = false; };
     std::map<std::string, Work> active;
     std::array<std::atomic<int>, 16> advances{};
-    std::atomic<int> released{0}, reloads{0};
+    std::atomic<int> released{0}, reloads{0}, shutdowns{0};
     std::atomic<bool> blocked{false}, resume{false};
     std::thread::id owner;
     bool fail = false;
@@ -23,7 +23,7 @@ struct FakeEngine final : Engine {
         if (owner == std::thread::id{}) owner = std::this_thread::get_id();
         assert(owner == std::this_thread::get_id());
     }
-    Admission admit(EngineRequest request) override {
+    Admission admit(EngineRequest&& request) override {
         check_thread();
         if (active.size() == 2) return Admission::deferred;
         auto id = request.id; active.emplace(id, Work{std::move(request)});
@@ -86,7 +86,7 @@ struct FakeEngine final : Engine {
         if (context == 13) throw std::runtime_error("load failed");
         ++reloads; return context;
     }
-    void shutdown() override { check_thread(); assert(active.empty()); }
+    void shutdown() override { check_thread(); released += active.size(); active.clear(); ++shutdowns; }
     ControlResult control(ControlRequest) override { check_thread(); return Metrics{{"released", released.load()}}; }
 };
 EngineRequest request(int id, int tokens = 12) {
@@ -122,25 +122,25 @@ void test_decode_timing() {
     metrics.saw_token = true;
     InferenceResult result;
     result.completion_tokens = 6;
-    const auto values = mfq::transport_detail::request_metric_values(result, metrics);
+    const auto values = mfq::protocol::request_metric_values(result, metrics);
     assert(std::abs(values.ttft_ms - 10.0) < 1e-12);
     assert(std::abs(values.decode_ms - 50.0) < 1e-12);
     assert(std::abs(values.decode_tps - 100.0) < 1e-12);
     assert(values.generation_ms >= 80.0);
     assert(values.generation_ms - values.ttft_ms - values.decode_ms >= 20.0);
     result.cancelled = true;
-    assert(mfq::transport_detail::request_metric_values(result, metrics).decode_ms == values.decode_ms);
+    assert(mfq::protocol::request_metric_values(result, metrics).decode_ms == values.decode_ms);
     InferenceMetrics single;
     single.mark_token();
     result.completion_tokens = 1;
-    const auto one = mfq::transport_detail::request_metric_values(result, single);
+    const auto one = mfq::protocol::request_metric_values(result, single);
     assert(one.decode_ms == 0.0 && one.decode_tps == 0.0);
     result.completion_tokens = 0;
-    const auto empty = mfq::transport_detail::request_metric_values(result, InferenceMetrics{});
+    const auto empty = mfq::protocol::request_metric_values(result, InferenceMetrics{});
     assert(empty.decode_ms == 0.0 && empty.decode_tps == 0.0);
 }
 void test_token_count_contract() {
-    using namespace mfq::transport_detail;
+    using namespace mfq::protocol;
     assert(parse_token_count_request({{"prompt", "raw <s> text"}}).prompt == "raw <s> text");
     for (const auto& invalid : std::vector<json>{
             json::array(), json::object(), {{"prompt", ""}}, {{"prompt", 1}},
@@ -156,7 +156,7 @@ void test_token_count_contract() {
 }
 
 void test_benchmark_input_contract() {
-    using namespace mfq::transport_detail;
+    using namespace mfq::protocol;
     json params = {{"input", {{"messages", json::array({{{"role", "user"}, {"content", "test input"}}})}, {"preformatted_prompt", "test input"},
         {"benchmark_prompt_tokens", 32}}}, {"cache", {{"enabled", false}}}};
     auto body = runtime_generate_body(params);
@@ -166,6 +166,16 @@ void test_benchmark_input_contract() {
     body.erase("mfq_prefix_cache_enabled");
     const auto normal = parse_input(body, true, {});
     assert(normal.prefix_cache_enabled && !normal.benchmark_prompt_tokens);
+    for (const auto& field : {"top_k", "mtp_max_draft_tokens"}) {
+        for (int64_t value : {-4294967295LL, 2147483648LL, 4294967296LL, 4294967297LL}) {
+            auto invalid = body;
+            invalid[field] = value;
+            bool rejected = false;
+            try { parse_input(invalid, true, {}); }
+            catch (const ApiError& error) { rejected = error.status == 400 && error.param == field; }
+            assert(rejected);
+        }
+    }
     for (const auto& invalid : std::vector<json>{
             {{"mfq_benchmark_prompt_tokens", 0}, {"mfq_prefix_cache_enabled", false}, {"mfq_preformatted_prompt", "test"}},
             {{"mfq_benchmark_prompt_tokens", 32}, {"mfq_prefix_cache_enabled", true}, {"mfq_preformatted_prompt", "test"}},
@@ -176,7 +186,7 @@ void test_benchmark_input_contract() {
     }
 }
 void test_probability_contract() {
-    using namespace mfq::transport_detail;
+    using namespace mfq::protocol;
     const auto request = parse_score_request({{"prompt", "Q:\nA:"}, {"continuations", {"A", "B"}}, {"mode", "next_token"}});
     assert(request.next_token && request.prompt == "Q:\nA:" && request.continuations.size() == 2);
     for (const auto& invalid : std::vector<json>{
@@ -195,7 +205,7 @@ void test_probability_contract() {
 }
 
 void test_live_request_metrics() {
-    using namespace mfq::transport_detail;
+    using namespace mfq::protocol;
     RuntimeRequestMetrics store;
     {
         ActiveRequest first(store), second(store);
@@ -303,6 +313,7 @@ int main() {
         auto bad = request(1); bad.token_ids = {63};
         auto second = scheduler.submit(bad);
         drain(first, false, true); drain(second, false, true);
+        assert(engine.shutdowns > 0); // failure is visible only after physical teardown
         assert(!scheduler.status().healthy);
         assert(engine.active.empty());
     }
@@ -360,5 +371,34 @@ int main() {
         while (engine.released == 0) std::this_thread::yield();
         scheduler.shutdown();
         drain(slow); // shutdown must not wait for the consumer to drain
+    }
+    {
+        FakeEngine engine;
+        MfqScheduler scheduler(engine, {8, 4096, 2, 8192, 8});
+        auto first = scheduler.submit(request(0, 100));
+        auto second = scheduler.submit(request(1, 100));
+        bool exhausted = false;
+        try { scheduler.submit(request(2)); } catch (const MfqResourceExhausted&) { exhausted = true; }
+        assert(exhausted);
+        scheduler.cancel_request("0"); drain(first, true);
+        (void)scheduler.status();
+        auto large = request(2);
+        large.input.prompt.assign(8192, 'x');
+        exhausted = false;
+        try { scheduler.submit(large); } catch (const MfqResourceExhausted&) { exhausted = true; }
+        assert(exhausted);
+        large.input.prompt.clear();
+        large.input.media.emplace();
+        large.input.media->audio_features.resize(8192);
+        exhausted = false;
+        try { scheduler.submit(large); } catch (const MfqResourceExhausted&) { exhausted = true; }
+        assert(exhausted);
+        auto third = scheduler.submit(request(2));
+        bool duplicate = false;
+        try { scheduler.submit(request(2)); } catch (const MfqResourceExhausted&) { duplicate = true; }
+        assert(duplicate);
+        scheduler.cancel_all(); drain(second, true); drain(third, true);
+        (void)scheduler.status();
+        assert(scheduler.snapshot().requests == 0 && scheduler.snapshot().input_bytes == 0);
     }
 }

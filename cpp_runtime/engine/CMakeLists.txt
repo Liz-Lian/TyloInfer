@@ -21,6 +21,7 @@ if(TARGET mfq-tokenizer)
         src/request_executor.cpp
         src/token_constraint.cpp
         src/tokenizer.cpp
+        src/hf_tokenizer.cpp
         src/text_processor.cpp
     )
     target_include_directories(mfq-engine PRIVATE

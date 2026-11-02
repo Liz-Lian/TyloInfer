@@ -441,13 +441,20 @@ int main() {
         RequestExecutor executor(2);
         assert(executor.admit(request("a"), nullptr, info(), ops) == Admission::accepted);
         assert(executor.admit(request("b"), nullptr, info(), ops) == Admission::accepted);
-        assert(executor.admit(request("c"), nullptr, info(), ops) == Admission::deferred);
+        auto pending = request("c");
+        const auto tokens = pending.token_ids;
+        assert(executor.admit(std::move(pending), nullptr, info(), ops) == Admission::deferred);
+        assert(pending.token_ids == tokens && pending.id == "c");
         executor.cancel("a");
         auto cancelled = executor.step({}, ops);
         assert(std::holds_alternative<Cancelled>(terminal_event(cancelled)));
         assert(cancelled.events.back().id == "a" && executor.status().available == 1);
         assert(ops.advances == 0 && ops.live == 0);
         executor.cancel("b");
+        executor.step({}, ops);
+        assert(executor.admit(std::move(pending), nullptr, info(), ops) == Admission::accepted);
+        assert(pending.token_ids.empty());
+        executor.cancel("c");
         executor.step({}, ops);
     }
     // Request errors are recoverable; device or cleanup failures stop admission.

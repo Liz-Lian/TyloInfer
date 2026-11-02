@@ -1,6 +1,7 @@
 #pragma once
 
-#include "transport.h"
+#include "runtime_profile.h"
+#include "scheduler.h"
 
 #include "inference.h"
 #include "text_processor.h"
@@ -20,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::transport_detail {
+namespace mfq::protocol {
 
 class ApiError final : public std::runtime_error {
 public:
@@ -120,8 +121,6 @@ double number_field(
     const json & body,
     const char * name,
     double fallback);
-MfqSamplingParams default_sampling_params(
-    const MfqRuntimeTransportConfig & config);
 json sampling_params_json(const MfqSamplingParams & sampling);
 MfqModelCapabilityProfile architecture_capability_profile(
     const std::string & model_type);
@@ -175,12 +174,13 @@ std::vector<float> decode_audio_features(
     const std::string & encoded,
     int32_t frames);
 
-} // namespace mfq::transport_detail
+} // namespace mfq::protocol
 
-namespace mfq::transport_detail {
+namespace mfq::protocol {
 class CompletionStream {
 public:
-    CompletionStream(const MfqScheduler& scheduler, const RequestWork& work, std::string id);
+    CompletionStream(const MfqScheduler& scheduler, RequestWork work, std::string id);
+    CompletionStream(std::shared_ptr<MfqScheduledRequest> request, bool streaming, std::function<void()> cancel);
     ~CompletionStream();
     std::optional<std::vector<common_chat_msg_diff>> next();
     void cancel();
@@ -189,10 +189,11 @@ public:
     RequestMetrics metrics;
     std::size_t prompt_tokens = 0;
 private:
-    const MfqScheduler& scheduler_;
-    std::string id_;
+    std::function<void()> cancel_;
+    bool streaming_ = false;
     std::shared_ptr<MfqScheduledRequest> request_;
     bool terminal_ = false;
+    std::size_t result_bytes_ = 0;
     std::size_t generated_tokens_ = 0;
     std::size_t processed_tokens_ = 0;
     double prefill_ms_ = 0.0;
@@ -201,4 +202,4 @@ private:
     std::chrono::steady_clock::time_point first_token_;
 };
 
-} // namespace mfq::transport_detail
+} // namespace mfq::protocol

@@ -202,15 +202,12 @@ if(TARGET mfq-paged-prefix-cache)
     add_test(NAME mfq-paged-prefix-cache-test COMMAND mfq-paged-prefix-cache-test)
 endif()
 
-if(TARGET mfq-runtime-communication)
+if(TARGET mfq-protocol)
     mfq_add_core_test(mfq-runtime-transport-test mfq_runtime_transport_test.cpp)
-    target_link_libraries(mfq-runtime-transport-test PRIVATE mfq-runtime-communication mfq-json)
-    target_include_directories(mfq-runtime-transport-test PRIVATE
-        ${PROJECT_SOURCE_DIR}/transport/src
-    )
+    target_link_libraries(mfq-runtime-transport-test PRIVATE mfq-protocol)
 
     add_executable(mfq-runtime-profile-test mfq_runtime_profile_test.cpp)
-    target_link_libraries(mfq-runtime-profile-test PRIVATE mfq-runtime-communication)
+    target_link_libraries(mfq-runtime-profile-test PRIVATE mfq-protocol)
     target_compile_features(mfq-runtime-profile-test PRIVATE cxx_std_17)
     add_test(NAME mfq-runtime-profile-test COMMAND mfq-runtime-profile-test)
 endif()

@@ -1,10 +1,5 @@
 # Native CUDA backend.
 
-if(NOT TARGET mfq-runtime-communication)
-    message(FATAL_ERROR
-        "The CUDA runtime requires TYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON")
-endif()
-
 set(TYLOINFER_CUDA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 set(TYLOINFER_CUDA_KERNEL_ROOT "${TYLOINFER_REPOSITORY_ROOT}/tyloinfer/kernels/cuda")
 
@@ -1072,21 +1067,23 @@ if(MSVC)
     endforeach()
 endif()
 
-add_executable(mfq-runtime
-    ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
-)
-target_link_libraries(mfq-runtime PRIVATE
-    mfq-cuda-runtime mfq-runtime-communication)
-target_include_directories(mfq-runtime PRIVATE
-    ${TYLOINFER_CUDA_ROOT}
-    ${TYLOINFER_CUDA_ROOT}/include
-    ${TYLOINFER_CUDA_ROOT}/engine
-)
-target_compile_features(mfq-runtime PRIVATE cxx_std_20)
-set_target_properties(mfq-runtime PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-)
+if(TARGET mfq-runtime-communication)
+    add_executable(mfq-runtime
+        ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
+        ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
+    )
+    target_link_libraries(mfq-runtime PRIVATE
+        mfq-cuda-runtime mfq-runtime-communication)
+    target_include_directories(mfq-runtime PRIVATE
+        ${TYLOINFER_CUDA_ROOT}
+        ${TYLOINFER_CUDA_ROOT}/include
+        ${TYLOINFER_CUDA_ROOT}/engine
+    )
+    target_compile_features(mfq-runtime PRIVATE cxx_std_20)
+    set_target_properties(mfq-runtime PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
+    )
+endif()
 
 add_executable(mfq-diagnostics
     ${TYLOINFER_CUDA_ROOT}/apps/diagnostics_main.cpp
@@ -1128,19 +1125,8 @@ if(BUILD_TESTING)
     add_test(NAME mfq-diagnostics-help COMMAND mfq-diagnostics --help)
     add_test(NAME mfq-eval-help COMMAND mfq-eval --help)
     add_test(NAME mfq-eval-kl-help COMMAND mfq-eval kl --help)
-    add_test(NAME mfq-runtime-cli-options COMMAND mfq-runtime --transport stdio --continuous-batching 2 --help)
     add_test(NAME mfq-diagnostics-cli-options COMMAND mfq-diagnostics --ids 1,2 --gen 3 --help)
     add_test(NAME mfq-eval-cli-options COMMAND mfq-eval kl --kl-base x --kl-evaluator optimized --help)
-    add_test(NAME mfq-runtime-rejects-check
-        COMMAND mfq-runtime --check-mfq-container)
-    add_test(NAME mfq-runtime-rejects-kl
-        COMMAND mfq-runtime --kl-base reference.bin)
-    add_test(NAME mfq-runtime-rejects-bad-number
-        COMMAND mfq-runtime --port 3x --help)
-    add_test(NAME mfq-runtime-rejects-missing-value
-        COMMAND mfq-runtime --model --help)
-    add_test(NAME mfq-runtime-rejects-token-input
-        COMMAND mfq-runtime --ids 1,2 --help)
     add_test(NAME mfq-diagnostics-rejects-bad-ids
         COMMAND mfq-diagnostics --ids 1,x --help)
     add_test(NAME mfq-diagnostics-rejects-kl
@@ -1152,12 +1138,28 @@ if(BUILD_TESTING)
     add_test(NAME mfq-eval-rejects-bad-number
         COMMAND mfq-eval kl --kl-chunks 1x --help)
     set_tests_properties(
-        mfq-runtime-rejects-check mfq-runtime-rejects-kl
-        mfq-runtime-rejects-bad-number mfq-runtime-rejects-missing-value
-        mfq-runtime-rejects-token-input mfq-diagnostics-rejects-bad-ids
+        mfq-diagnostics-rejects-bad-ids
         mfq-diagnostics-rejects-kl mfq-diagnostics-rejects-missing-value
         mfq-eval-rejects-check mfq-eval-rejects-bad-number
         PROPERTIES WILL_FAIL TRUE)
+    if(TARGET mfq-runtime)
+        add_test(NAME mfq-runtime-cli-options COMMAND mfq-runtime --transport stdio --continuous-batching 2 --help)
+        add_test(NAME mfq-runtime-rejects-check
+            COMMAND mfq-runtime --check-mfq-container)
+        add_test(NAME mfq-runtime-rejects-kl
+            COMMAND mfq-runtime --kl-base reference.bin)
+        add_test(NAME mfq-runtime-rejects-bad-number
+            COMMAND mfq-runtime --port 3x --help)
+        add_test(NAME mfq-runtime-rejects-missing-value
+            COMMAND mfq-runtime --model --help)
+        add_test(NAME mfq-runtime-rejects-token-input
+            COMMAND mfq-runtime --ids 1,2 --help)
+        set_tests_properties(
+            mfq-runtime-rejects-check mfq-runtime-rejects-kl
+            mfq-runtime-rejects-bad-number mfq-runtime-rejects-missing-value
+            mfq-runtime-rejects-token-input
+            PROPERTIES WILL_FAIL TRUE)
+    endif()
 endif()
 
 option(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME
@@ -1212,7 +1214,7 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
     )
 endif()
 
-if(NOT WIN32)
+if(NOT WIN32 AND TARGET mfq-runtime)
     set(TYLOINFER_SYSTEM_RUNTIME_DIR
         "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}" CACHE PATH
         "directory containing the host libstdc++ runtime")

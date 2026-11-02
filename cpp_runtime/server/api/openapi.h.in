@@ -1,0 +1,5 @@
+#pragma once
+
+namespace mfq::server {
+inline constexpr const char* openapi_document = R"openapi(@TYLOINFER_SERVER_OPENAPI@)openapi";
+}

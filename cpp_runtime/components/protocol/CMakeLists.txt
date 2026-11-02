@@ -1,0 +1,11 @@
+# Protocol parsing and encoding shared by the public server and legacy transports.
+add_library(mfq-protocol STATIC protocol.cpp)
+target_include_directories(mfq-protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mfq-protocol PUBLIC mfq-runtime-scheduler mfq-json)
+target_compile_definitions(mfq-protocol PRIVATE NOMINMAX)
+if(WIN32)
+    target_link_libraries(mfq-protocol PRIVATE advapi32)
+endif()
+if(MSVC)
+    target_compile_options(mfq-protocol PRIVATE /utf-8 /EHsc)
+endif()

@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(TYLOINFER_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
+option(TYLOINFER_BUILD_SERVER "Build the native public server" OFF)
+
 option(TYLOINFER_ENABLE_MFQ_COMPAT "Include legacy MFQ inference formats" OFF)
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
     add_compile_definitions(TYLOINFER_ENABLE_MFQ_COMPAT=1)
@@ -77,17 +79,20 @@ add_subdirectory(core)
 add_subdirectory(backends/cpu)
 add_subdirectory(models)
 
-if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION OR TYLOINFER_BUILD_METAL_RUNTIME)
+if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION OR TYLOINFER_BUILD_SERVER
+        OR TYLOINFER_BUILD_METAL_RUNTIME OR TYLOINFER_BUILD_CUDA_RUNTIME
+        OR TYLOINFER_BUILD_HIP_RUNTIME)
     add_subdirectory(components/tokenizer)
 endif()
 
-if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
+if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION OR TYLOINFER_BUILD_SERVER)
     add_subdirectory(components/http)
 endif()
 
 add_subdirectory(engine)
 if(TARGET mfq-tokenizer)
     add_subdirectory(scheduler)
+    add_subdirectory(components/protocol)
 endif()
 
 if(TYLOINFER_BUILD_RUNTIME_COMMUNICATION)
@@ -106,6 +111,10 @@ endif()
 
 if(TYLOINFER_BUILD_HIP_RUNTIME)
     add_subdirectory(backends/hip hip)
+endif()
+
+if(TYLOINFER_BUILD_SERVER)
+    add_subdirectory(server)
 endif()
 
 if(BUILD_TESTING)

@@ -174,6 +174,92 @@ def model_sources() -> str:
     )
 
 
+def test_server_model_interfaces_are_independent_of_wire_protocols() -> None:
+    server = ROOT / "cpp_runtime" / "server"
+    for path in (server / "models").glob("*.h"):
+        source = path.read_text(encoding="utf-8")
+        assert "nlohmann" not in source, path
+        assert "CompletionStream" not in source, path
+        assert "protocol.h" not in source, path
+        assert "gpu_layers" not in source and "moe_gpu_cache_gb" not in source, path
+    catalog = (server / "models" / "catalog.cpp").read_text(encoding="utf-8")
+    assert "EngineFactory" not in catalog
+    assert '"api/errors.h"' not in catalog
+    storage = (server / "storage" / "storage.h").read_text(encoding="utf-8")
+    for method in ("create_key", "authenticate_key", "rotate_key", "revoke_key", "list_keys"):
+        assert method not in storage
+    assert not (ROOT / "cpp_runtime" / "apps" / "server_engine.cpp").exists()
+    factory = (server / "models" / "factory.h").read_text(encoding="utf-8")
+    entry = (ROOT / "cpp_runtime" / "apps" / "server_main.cpp").read_text(encoding="utf-8")
+    for source in (factory, entry):
+        assert "prefill_chunk_size" not in source
+        assert "continuous_batching" not in source
+
+
+def test_native_auth_owns_keys_without_http_policy() -> None:
+    server = ROOT / "cpp_runtime" / "server"
+    for path in (server / "auth").glob("*.*"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in ('"api/', "httplib::", "/api/v1", "ApiError", "ApiKeys"):
+            assert forbidden not in source, path
+    routes = (server / "api" / "auth.cpp").read_text(encoding="utf-8")
+    assert "sqlite" not in routes and "SELECT " not in routes
+
+
+def test_native_models_own_alias_storage_and_resolution() -> None:
+    server = ROOT / "cpp_runtime/server"
+    aliases = (server / "models/aliases.cpp").read_text(encoding="utf-8")
+    assert "runtime_model_aliases" in aliases
+    assert "httplib" not in aliases and '"api/' not in aliases
+    for name in ("api/models.cpp", "api/inference.cpp", "api/anthropic.cpp", "storage/storage.cpp"):
+        source = (server / name).read_text(encoding="utf-8")
+        assert "runtime_model_aliases" not in source and "resolve_model_alias" not in source
+
+
+def test_native_jobs_own_history_without_business_modules() -> None:
+    server = ROOT / "cpp_runtime" / "server"
+    for path in (server / "jobs").glob("*.*"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in ('"api/', '"models/', '"sessions/', '"backends/', "httplib::", "Adapter"):
+            assert forbidden not in source, path
+    routes = (server / "api" / "jobs.cpp").read_text(encoding="utf-8")
+    assert "sqlite" not in routes and "UPDATE jobs" not in routes
+
+
+def test_native_hub_owns_downloads_without_jobs_or_http_requests() -> None:
+    server = ROOT / "cpp_runtime" / "server"
+    for path in (server / "hub").glob("*.*"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in ('#include "api/', '#include "jobs/', '#include "models/', '"storage/storage.h"', 'httplib::', 'Adapter', 'popen(', 'std::system('):
+            assert forbidden not in source, path
+    for path in (server / "jobs").glob("*.*"):
+        assert '"hub/' not in path.read_text(encoding="utf-8"), path
+    routes = (server / "api" / "hub.cpp").read_text(encoding="utf-8")
+    assert "curl_" not in routes and "sqlite" not in routes and "fs::rename" not in routes
+
+
+def test_native_sessions_own_chat_state_without_http_or_jobs() -> None:
+    server = ROOT / "cpp_runtime" / "server"
+    for path in (server / "sessions").glob("*.*"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in ('"api/', '"jobs/', "httplib::", "CompletionStream", '"backends/'):
+            assert forbidden not in source, path
+    routes = (server / "api" / "sessions.cpp").read_text(encoding="utf-8")
+    assert "sqlite" not in routes
+    assert "INSERT INTO" not in routes and "UPDATE sessions" not in routes
+
+
+def test_native_compat_uses_requests_without_execution_or_storage_layers() -> None:
+    api = ROOT / "cpp_runtime/server/api"
+    for name in ("anthropic.cpp", "inference.cpp"):
+        source = (api / name).read_text(encoding="utf-8")
+        for forbidden in ('"backends/', '"sessions/', '"jobs/', "sqlite", "Adapter", "popen("):
+            assert forbidden not in source, name
+    source = (api / "anthropic.cpp").read_text(encoding="utf-8")
+    for forbidden in ("/v1/chat/completions", "stream_chat_completion", "istringstream", "MfqTokenizer", "StopSequenceEmitter"):
+        assert forbidden not in source
+
+
 def test_cuda_ops_and_core_do_not_depend_on_engine_or_foreign_environment() -> None:
     for path in (*CUDA_OPS.rglob("*"), *CUDA_CORE.rglob("*")):
         if path.suffix not in {".h", ".cpp", ".cu"}:
@@ -569,7 +655,7 @@ def test_cuda_runtime_hides_model_session_and_batch_implementation() -> None:
         ROOT / "cpp_runtime" / "engine" / "src" / "token_constraint.cpp"
     ).read_text(encoding="utf-8")
     transport = (
-        ROOT / "cpp_runtime" / "transport" / "src" / "common.cpp"
+        ROOT / "cpp_runtime" / "components" / "protocol" / "protocol.cpp"
     ).read_text(encoding="utf-8")
     assert "class GrammarConstraint" in constraint
     assert "class MfqGrammarConstraint" not in transport
@@ -657,7 +743,7 @@ def test_cuda_runtime_composes_transport_scheduler_and_engine() -> None:
     for method in ("info(", "admit(", "cancel(", "step(", "status(", "session(", "reload(", "shutdown("):
         assert method in engine_contract
     assert "std::function" not in engine_contract
-    transport_common = (ROOT / "cpp_runtime" / "transport" / "src" / "common.cpp").read_text(encoding="utf-8")
+    transport_common = (ROOT / "cpp_runtime" / "components" / "protocol" / "protocol.cpp").read_text(encoding="utf-8")
     request_metrics = transport_common.split("void add_request_runtime_metrics(", 1)[1].split("RequestMetricValues request_metric_values(", 1)[0]
     assert "metrics.mtp" in request_metrics
     assert "scheduler" not in request_metrics

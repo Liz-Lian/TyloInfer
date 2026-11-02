@@ -14,6 +14,7 @@ class MfqScheduler;
 class MfqScheduledRequest {
 public:
     std::vector<mfq::engine::EngineEvent> wait();
+    std::vector<mfq::engine::EngineEvent> wait_for(std::chrono::milliseconds timeout);
     bool done() const;
 
 private:
@@ -28,11 +29,15 @@ private:
 
 class MfqScheduler {
 public:
-    struct Limits { std::size_t events = 64, bytes = 1024 * 1024; };
+    struct Limits {
+        std::size_t events = 64, bytes = 1024 * 1024;
+        std::size_t requests = 64, input_bytes = 16 * 1024 * 1024, commands = 128;
+    };
     struct Snapshot {
         mfq::engine::EngineStatus status;
         mfq::engine::Metrics runtime, session;
         mfq::engine::Clock::time_point captured;
+        std::size_t requests = 0, input_bytes = 0;
     };
     explicit MfqScheduler(mfq::engine::Engine& engine);
     MfqScheduler(mfq::engine::Engine& engine, Limits limits);
@@ -64,6 +69,8 @@ private:
         std::shared_ptr<MfqScheduledRequest> outbox;
         bool admitted = false, cancelling = false;
         bool finished = false;
+        std::string session_id;
+        std::size_t input_bytes = 0;
         std::optional<mfq::engine::Failed> failure;
         // At most one engine quantum waits here; it prevents further execution.
         std::deque<mfq::engine::EngineEvent> pending;
@@ -87,6 +94,8 @@ private:
     mutable std::mutex mutex_;
     std::shared_ptr<std::condition_variable> wake_ = std::make_shared<std::condition_variable>();
     mutable std::deque<Command> mailbox_;
+    mutable std::size_t input_bytes_ = 0, request_count_ = 0;
+    std::exception_ptr shutdown_error_;
     mfq::engine::EngineInfo info_;
     Snapshot snapshot_;
     mutable bool snapshot_requested_ = false;

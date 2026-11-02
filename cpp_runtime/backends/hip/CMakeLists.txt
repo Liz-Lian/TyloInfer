@@ -7,11 +7,6 @@
 # excluded from the source lists until they gain MFMA or direct-path
 # implementations.
 
-if(NOT TARGET mfq-runtime-communication)
-    message(FATAL_ERROR
-        "The HIP runtime requires TYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON")
-endif()
-
 enable_language(HIP)
 
 set(TYLOINFER_HIP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -354,21 +349,23 @@ target_compile_definitions(mfq-hip-diagnostics PRIVATE
     TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 target_link_libraries(mfq-hip-diagnostics PUBLIC mfq-hip-runtime)
 
-add_executable(mfq-runtime
-    ${TYLOINFER_HIP_ROOT}/apps/runtime_main.cpp
-    ${TYLOINFER_HIP_ROOT}/commands/runtime.cpp
-)
-target_link_libraries(mfq-runtime PRIVATE
-    mfq-hip-runtime mfq-runtime-communication)
-target_include_directories(mfq-runtime PRIVATE
-    ${TYLOINFER_HIP_ROOT}
-    ${TYLOINFER_HIP_ROOT}/include
-    ${TYLOINFER_HIP_ROOT}/engine
-)
-target_compile_features(mfq-runtime PRIVATE cxx_std_20)
-set_target_properties(mfq-runtime PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
-)
+if(TARGET mfq-runtime-communication)
+    add_executable(mfq-runtime
+        ${TYLOINFER_HIP_ROOT}/apps/runtime_main.cpp
+        ${TYLOINFER_HIP_ROOT}/commands/runtime.cpp
+    )
+    target_link_libraries(mfq-runtime PRIVATE
+        mfq-hip-runtime mfq-runtime-communication)
+    target_include_directories(mfq-runtime PRIVATE
+        ${TYLOINFER_HIP_ROOT}
+        ${TYLOINFER_HIP_ROOT}/include
+        ${TYLOINFER_HIP_ROOT}/engine
+    )
+    target_compile_features(mfq-runtime PRIVATE cxx_std_20)
+    set_target_properties(mfq-runtime PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
+    )
+endif()
 
 add_executable(mfq-diagnostics
     ${TYLOINFER_HIP_ROOT}/apps/diagnostics_main.cpp
@@ -483,13 +480,13 @@ if(BUILD_TESTING)
         ${TYLOINFER_HIP_ROOT}/tests/mfq_nint_q8_test.cu)
     target_link_libraries(mfq-hip-nint-q8-test PRIVATE
         mfq-hip-core mfq-hip-native-kernels mfq-hip-storage
-        mfq-hip-runtime mfq-runtime-communication mfq-model-graph)
+        mfq-hip-runtime mfq-protocol mfq-model-graph)
     add_executable(mfq-hip-nint-bench ${TYLOINFER_REPOSITORY_ROOT}/bench/hip_nint_bench.cpp)
     target_include_directories(mfq-hip-nint-bench PRIVATE ${TYLOINFER_HIP_TEST_INCLUDES})
     target_compile_definitions(mfq-hip-nint-bench PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1)
     target_link_libraries(mfq-hip-nint-bench PRIVATE
         mfq-hip-core mfq-hip-native-kernels mfq-hip-storage
-        mfq-hip-runtime mfq-runtime-communication mfq-model-graph)
+        mfq-hip-runtime mfq-protocol mfq-model-graph)
     target_compile_features(mfq-hip-nint-bench PRIVATE cxx_std_20)
     mfq_add_hip_test(mfq-hip-nint-rows-test
         ${TYLOINFER_HIP_ROOT}/tests/mfq_nint_rows_test.cu)
@@ -510,8 +507,10 @@ endif()
 set(TYLOINFER_SYSTEM_RUNTIME_DIR
     "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}" CACHE PATH
     "directory containing the host libstdc++ runtime")
-set_property(TARGET mfq-runtime PROPERTY
-    BUILD_RPATH "${TYLOINFER_SYSTEM_RUNTIME_DIR}")
+if(TARGET mfq-runtime)
+    set_property(TARGET mfq-runtime PROPERTY
+        BUILD_RPATH "${TYLOINFER_SYSTEM_RUNTIME_DIR}")
+endif()
 
 if(BUILD_TESTING)
     # This bridge contains host code only. Match the runtime's C++ compiler
@@ -531,7 +530,7 @@ if(BUILD_TESTING)
     set_target_properties(mfq-hip-flash-next-test PROPERTIES HIP_STANDARD 20
         HIP_ARCHITECTURES "${TYLOINFER_HIP_ARCHITECTURES}" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/hip-tests")
     target_link_libraries(mfq-hip-flash-next-test PRIVATE mfq-hip-runtime mfq-hip-native-kernels
-        mfq-hip-core mfq-core mfq-json mfq-model-graph mfq-runtime-communication)
+        mfq-hip-core mfq-core mfq-json mfq-model-graph mfq-protocol)
     add_test(NAME mfq-hip-flash-next COMMAND mfq-hip-flash-next-test)
     set_tests_properties(mfq-hip-flash-next PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 endif()

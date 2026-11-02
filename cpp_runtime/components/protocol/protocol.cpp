@@ -1,4 +1,4 @@
-#include "common.h"
+#include "protocol.h"
 
 #include "nlohmann/json.hpp"
 #include "chat.h"
@@ -40,7 +40,7 @@
 #include <unistd.h>
 #endif
 
-namespace mfq::transport_detail {
+namespace mfq::protocol {
 
 
 int64_t unix_time_seconds() {
@@ -325,34 +325,6 @@ double number_field(const json & body, const char * name, double fallback) {
         throw ApiError(400, "invalid_request_error", std::string(name) + " must be a number", name);
     }
     return body[name].get<double>();
-}
-
-MfqSamplingParams default_sampling_params(
-        const MfqRuntimeTransportConfig & config) {
-    MfqSamplingParams defaults;
-    const auto & profile = config.runtime_profile.chat;
-    if (profile.max_tokens) defaults.max_tokens = *profile.max_tokens;
-    if (profile.temperature) defaults.temperature = *profile.temperature;
-    if (profile.top_k) defaults.top_k = *profile.top_k;
-    if (profile.top_p) defaults.top_p = *profile.top_p;
-    if (profile.presence_penalty) {
-        defaults.presence_penalty = *profile.presence_penalty;
-    }
-    if (profile.frequency_penalty) {
-        defaults.frequency_penalty = *profile.frequency_penalty;
-    }
-    if (profile.repetition_penalty) {
-        defaults.repetition_penalty = *profile.repetition_penalty;
-    }
-    if (profile.enable_thinking) {
-        defaults.enable_thinking = *profile.enable_thinking;
-    }
-    if (profile.enable_vision) defaults.enable_vision = *profile.enable_vision;
-    if (profile.enable_mtp) defaults.enable_mtp = *profile.enable_mtp;
-    if (profile.mtp_max_draft_tokens) {
-        defaults.mtp_max_draft_tokens = *profile.mtp_max_draft_tokens;
-    }
-    return defaults;
 }
 
 json sampling_params_json(const MfqSamplingParams & sampling) {
@@ -990,8 +962,7 @@ RequestInput parse_input(
     work.sampling.temperature = number_field(
         body, "temperature", defaults.temperature);
     work.sampling.top_p = number_field(body, "top_p", defaults.top_p);
-    work.sampling.top_k = static_cast<int32_t>(integer_field(
-        body, "top_k", defaults.top_k));
+    const int64_t top_k = integer_field(body, "top_k", defaults.top_k);
     work.sampling.presence_penalty = number_field(
         body, "presence_penalty", defaults.presence_penalty);
     work.sampling.frequency_penalty = number_field(
@@ -1004,27 +975,28 @@ RequestInput parse_input(
         body, "enable_vision", defaults.enable_vision);
     work.sampling.enable_mtp = boolean_field(
         body, "enable_mtp", defaults.enable_mtp);
-    work.sampling.mtp_max_draft_tokens = static_cast<int32_t>(integer_field(
+    const int64_t mtp_max_draft_tokens = integer_field(
         body,
         "mtp_max_draft_tokens",
-        defaults.mtp_max_draft_tokens));
+        defaults.mtp_max_draft_tokens);
     if (work.sampling.temperature < 0.0 || work.sampling.temperature > 10.0) {
         throw ApiError(400, "invalid_request_error", "temperature must be in [0, 10]", "temperature");
     }
     if (work.sampling.top_p <= 0.0 || work.sampling.top_p > 1.0) {
         throw ApiError(400, "invalid_request_error", "top_p must be in (0, 1]", "top_p");
     }
-    if (work.sampling.top_k < 0 || work.sampling.top_k > 1024) {
+    if (top_k < 0 || top_k > 1024) {
         throw ApiError(400, "invalid_request_error", "top_k must be in [0, 1024]", "top_k");
     }
-    if (work.sampling.mtp_max_draft_tokens < 1 ||
-        work.sampling.mtp_max_draft_tokens > 7) {
+    if (mtp_max_draft_tokens < 1 || mtp_max_draft_tokens > 7) {
         throw ApiError(
             400,
             "invalid_request_error",
             "mtp_max_draft_tokens must be in [1, 7]",
             "mtp_max_draft_tokens");
     }
+    work.sampling.top_k = static_cast<int32_t>(top_k);
+    work.sampling.mtp_max_draft_tokens = static_cast<int32_t>(mtp_max_draft_tokens);
     if (work.sampling.temperature > 0.0 && work.sampling.top_k == 0 && work.sampling.top_p < 1.0) {
         throw ApiError(400, "invalid_request_error", "top_p below 1 requires top_k above 0 in this sampler", "top_p");
     }
@@ -2240,7 +2212,36 @@ std::vector<float> decode_audio_features(
     return features;
 }
 
-} // namespace mfq::transport_detail
+} // namespace mfq::protocol
+
+MfqSamplingParams default_sampling_params(
+        const MfqRuntimeProfile & runtime_profile) {
+    MfqSamplingParams defaults;
+    const auto & profile = runtime_profile.chat;
+    if (profile.max_tokens) defaults.max_tokens = *profile.max_tokens;
+    if (profile.temperature) defaults.temperature = *profile.temperature;
+    if (profile.top_k) defaults.top_k = *profile.top_k;
+    if (profile.top_p) defaults.top_p = *profile.top_p;
+    if (profile.presence_penalty) {
+        defaults.presence_penalty = *profile.presence_penalty;
+    }
+    if (profile.frequency_penalty) {
+        defaults.frequency_penalty = *profile.frequency_penalty;
+    }
+    if (profile.repetition_penalty) {
+        defaults.repetition_penalty = *profile.repetition_penalty;
+    }
+    if (profile.enable_thinking) {
+        defaults.enable_thinking = *profile.enable_thinking;
+    }
+    if (profile.enable_vision) defaults.enable_vision = *profile.enable_vision;
+    if (profile.enable_mtp) defaults.enable_mtp = *profile.enable_mtp;
+    if (profile.mtp_max_draft_tokens) {
+        defaults.mtp_max_draft_tokens = *profile.mtp_max_draft_tokens;
+    }
+    return defaults;
+}
+
 
 MfqRuntimeProfile resolve_mfq_runtime_profile(
         const std::string & mfq_path,
@@ -2250,7 +2251,7 @@ MfqRuntimeProfile resolve_mfq_runtime_profile(
         const std::string & embedded_profile_json,
         const std::string & model_config_json,
         const std::string & explicit_profile_path) {
-    using namespace mfq::transport_detail;
+    using namespace mfq::protocol;
     std::vector<std::string> identities{
         model_architecture, model_type, model_name,
     };
@@ -2295,21 +2296,23 @@ MfqRuntimeProfile resolve_mfq_runtime_profile(
     return result;
 }
 
-namespace mfq::transport_detail {
-CompletionStream::CompletionStream(const MfqScheduler& scheduler, const RequestWork& work, std::string id)
-    : scheduler_(scheduler), id_(std::move(id)),
-      request_(scheduler_.submit(mfq::engine::EngineRequest{id_, work})) {}
+namespace mfq::protocol {
+CompletionStream::CompletionStream(const MfqScheduler& scheduler, RequestWork work, std::string id)
+    : cancel_([&scheduler, id] { scheduler.cancel_request(id); }), streaming_(work.stream),
+      request_(scheduler.submit(mfq::engine::EngineRequest{std::move(id), std::move(work)})) {}
+CompletionStream::CompletionStream(std::shared_ptr<MfqScheduledRequest> request, bool streaming, std::function<void()> cancel)
+    : cancel_(std::move(cancel)), streaming_(streaming), request_(std::move(request)) {}
 CompletionStream::~CompletionStream() {
     if (!terminal_) try { cancel(); } catch (...) {}
 }
 void CompletionStream::cancel() {
-    scheduler_.cancel_request(id_);
+    cancel_();
     result.client_connected = false;
 }
 std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {
     if (terminal_) return {};
     std::vector<common_chat_msg_diff> diffs;
-    for (auto& event : request_->wait()) {
+    for (auto& event : request_->wait_for(std::chrono::milliseconds(100))) {
         std::visit([&](auto& data) {
             using T = std::decay_t<decltype(data)>;
             if constexpr (std::is_same_v<T, mfq::engine::OutputDelta>) {
@@ -2318,6 +2321,13 @@ std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {
                     generated_tokens_ += data.token_ids.size();
                 }
                 for (const auto& diff : data.diffs) {
+                    if (streaming_) continue;
+                    result_bytes_ += diff.content_delta.size() + diff.reasoning_content_delta.size() +
+                        diff.tool_call_delta.id.size() + diff.tool_call_delta.name.size() + diff.tool_call_delta.arguments.size();
+                    if (result_bytes_ > 16 * 1024 * 1024) {
+                        cancel();
+                        throw ApiError(413, "output_limit", "collected output exceeds 16 MiB; use streaming");
+                    }
                     result.text += diff.content_delta;
                     result.reasoning_text += diff.reasoning_content_delta;
                     if (diff.tool_call_index == std::string::npos) continue;
@@ -2350,7 +2360,7 @@ std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {
                 if (data.code == "invalid_request") throw ApiError(400, "invalid_request_error", data.message);
                 if (data.code == "unsupported_input") throw ApiError(501, "unsupported_parameter", data.message);
                 if (data.code == "resource_exhausted") throw ApiError(503, "resource_exhausted", data.message);
-                throw std::runtime_error(data.message);
+                throw ApiError(500, data.code, data.message);
             }
         }, event.data);
     }
@@ -2368,4 +2378,4 @@ json CompletionStream::progress() const {
         {"updated_at", unix_time_seconds()}};
 }
 
-} // namespace mfq::transport_detail
+} // namespace mfq::protocol

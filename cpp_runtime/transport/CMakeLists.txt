@@ -4,8 +4,6 @@ find_package(Threads REQUIRED)
 
 add_library(mfq-runtime-communication STATIC
     include/transport.h
-    src/common.cpp
-    src/common.h
     src/http.cpp
     src/stdio.cpp
 )
@@ -15,7 +13,7 @@ target_include_directories(mfq-runtime-communication PUBLIC
 )
 target_link_libraries(mfq-runtime-communication
     PUBLIC
-        mfq-runtime-scheduler
+        mfq-protocol
     PRIVATE
         mfq-http
         mfq-json
