@@ -2,7 +2,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/ops.h"
 #include "engine/weights/moe/experts.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/models/common/transformer_layer.h"
@@ -10,7 +10,6 @@
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/block.h"
-#include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/models/glm_dsa/config.h"
 
 #include <memory>
@@ -474,7 +473,8 @@ struct GlmDsaBlock : Block {
                                 return std::optional<mfq_tensor_backend::Tensor>{};
                             },
                             [&](mfq_tensor_backend::Tensor ffn_input) {
-                                return execution.ffn().run(ffn, ffn_input).reshape({B * T, H});
+                                auto executor = execution.executor();
+                                return ffn.forward(ffn_input, executor, execution.forward_mode().ffn).reshape({B * T, H});
                             },
                             [&](mfq_tensor_backend::Tensor hidden,
                                 mfq_tensor_backend::Tensor ffn_out) {

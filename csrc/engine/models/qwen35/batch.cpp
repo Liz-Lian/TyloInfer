@@ -1,6 +1,6 @@
 #include "engine/models/qwen35/batch.h"
 
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "components/error.h"
 
 #include <algorithm>

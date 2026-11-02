@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/deepseek_v41/causal_lm.h"
@@ -14,7 +14,6 @@
 #include "engine/backends/cuda/kernels/deepseek_v4_attention.h"
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/models/deepseek_v41/config.h"
-#include "engine/backends/cuda/ops/ffn/weights.h"
 
 #include <algorithm>
 #include <array>
@@ -873,19 +872,23 @@ struct Block final : ::Block {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
                         auto bias=mfq_tensor_backend::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
-                        return execution.ffn().run(
-                            mlp, value.reshape({-1,config.hidden}), current_ids, bias)
+                        auto executor = execution.executor();
+                        return mlp.forward(
+                            value.reshape({-1,config.hidden}), executor, execution.forward_mode().ffn, current_ids, bias)
                             .reshape({batch,tokens,config.hidden});
                     }
                     if(layer+1<static_cast<int64_t>(shared->router_prefetch.size()))
-                        if(const auto* next=shared->router_prefetch[layer+1])
-                            execution.ffn().prefetch(
-                                *next, value,
+                        if(const auto* next=shared->router_prefetch[layer+1]) {
+                            auto executor = execution.executor();
+                            next->prefetch(
+                                value, executor, execution.forward_mode().ffn,
                                 moe_expert_cache_ssd_router_prefetch(
                                     execution.weights.moe),
                                 current_ids);
-                    return execution.ffn().run(
-                            mlp, value.reshape({-1, config.hidden}), current_ids)
+                        }
+                    auto executor = execution.executor();
+                    return mlp.forward(
+                            value.reshape({-1, config.hidden}), executor, execution.forward_mode().ffn, current_ids)
                         .reshape({batch, tokens, config.hidden});
                 });
             });

@@ -8,10 +8,34 @@
 
 class MoeFfnPipeline;
 struct TqMoeBanks;
+struct MoeRoutePlan;
 
 namespace mfq::cuda {
 
-struct Ffn {
+class Executor;
+class Projector;
+
+class Ffn {
+public:
+    struct Options {
+        bool small_heterogeneous = true;
+        bool delayed_readback = true;
+        bool bundle_prefetch = true;
+        bool swiglu_fusion = true;
+        bool reduce_fusion = true;
+    };
+
+    struct Mode {
+        bool materialized = false;
+        bool unfused = false;
+        bool serial = false;
+        bool batch_serial = false;
+        int tile = 0;
+        int tiles = 1;
+        bool reuse_input = true;
+        bool projection_major = false;
+    };
+
     QuantLinearGroup gate_up;
     QuantLinear down;
     std::unique_ptr<Ffn> important_neurons;
@@ -55,6 +79,28 @@ struct Ffn {
     double swiglu_limit = 0.0;
     int moe_layer = -1;
     std::weak_ptr<MoeFfnPipeline> moe_pipeline;
+
+    mfq_tensor_backend::Tensor forward(
+        mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
+        MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt,
+        MfqOptional<mfq_tensor_backend::Tensor> router_bias = mfq_nullopt) const;
+    void prefetch(
+        const mfq_tensor_backend::Tensor& input, Executor& executor, const Mode& mode,
+        bool enabled, MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt) const;
+
+private:
+    mfq_tensor_backend::Tensor forward_impl(
+        mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
+        const Projector& project, MfqOptional<mfq_tensor_backend::Tensor> input_ids,
+        bool allow_important_neurons,
+        MfqOptional<mfq_tensor_backend::Tensor> router_bias) const;
+    mfq_tensor_backend::Tensor forward_experts(
+        mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
+        const Projector& project, const MoeRoutePlan& route,
+        mfq_tensor_backend::Tensor route_weights) const;
 };
+
+bool uses_expert_cache(const Ffn& ffn);
+bool expert_parallel(const Ffn& ffn);
 
 } // namespace mfq::cuda

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/common/block.h"
-#include "engine/backends/cuda/ops/ffn/weights.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/state/kv_cache.h"
 

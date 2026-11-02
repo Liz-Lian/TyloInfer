@@ -1,6 +1,6 @@
 #pragma once
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_quant_ops.h"
@@ -12,7 +12,6 @@
 #include "engine/backends/cuda/kernels/deepseek_v4_hc.h"
 #include "engine/models/common/block.h"
 #include "engine/models/deepseek_v4/config.h"
-#include "engine/backends/cuda/ops/ffn/weights.h"
 
 #include <iomanip>
 #include <iostream>
@@ -771,8 +770,9 @@ struct Dsv4Block : Block {
                 return std::make_pair(normalized, pre);
             },
             [&](const auto &mix) {
-                auto feed_forward = execution.ffn().run(
-                    ffn, mix.first.reshape({batch * tokens, hidden_size}), current_ids);
+                auto executor = execution.executor();
+                auto feed_forward = ffn.forward(
+                    mix.first.reshape({batch * tokens, hidden_size}), executor, execution.forward_mode().ffn, current_ids);
                 feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
                 return feed_forward;
             },

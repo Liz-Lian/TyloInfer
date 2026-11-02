@@ -22,7 +22,7 @@ struct CudaExecutionConfig {
     bool expert_parallel_cuda_graph = true;
     bool tensor_parallel_shared_linear_attention_input = true;
     bool tensor_parallel_mirror_linear_attention_scalars = true;
-    mfq::cuda::FfnExec::Options ffn;
+    mfq::cuda::Ffn::Options ffn;
     bool gemma4_fused_norms = true;
     bool dsv4_groupwise_output_a = true;
     mfq::cuda::GatedResidual::Options residual;

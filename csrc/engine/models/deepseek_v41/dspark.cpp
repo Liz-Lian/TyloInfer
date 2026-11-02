@@ -2,7 +2,7 @@
 #include "engine/models/session.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/weights/loader.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"
@@ -475,7 +475,9 @@ struct DeepseekV41Dspark final : MtpModule {
                     },
                     [&](Tensor value) {
                         const auto rows = value.size(1);
-                        return execution->ffn().run(stage.mlp, value.reshape({-1, config.hidden}),
+                        auto executor = execution->executor();
+                        return stage.mlp.forward(value.reshape({-1, config.hidden}), executor,
+                                     execution->forward_mode().ffn,
                                      draft_ids.narrow(1, 0, rows))
                             .reshape({batch, rows, config.hidden});
                     });

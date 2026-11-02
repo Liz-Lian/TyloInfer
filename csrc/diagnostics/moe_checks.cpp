@@ -2,7 +2,7 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/weights/moe/experts.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "env.h"
 #include "engine/weights/loader.h"
 #include "model_checks.h"

@@ -10,7 +10,7 @@ struct CudaProfiler;
 struct KlMmqState;
 struct MoeOptions;
 namespace mfq { struct MoeDispatchPlan; }
-namespace mfq::cuda { class Projector; class RouteStats; struct Experts; struct Ffn; }
+namespace mfq::cuda { class Projector; class RouteStats; struct Experts; class Ffn; }
 
 struct MoeFfnOptions {
     bool fused_activation = true;

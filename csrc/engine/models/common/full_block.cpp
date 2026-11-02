@@ -1,5 +1,5 @@
 #include "engine/models/common/full_block.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/options.h"
 
@@ -82,7 +82,9 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
 mfq_tensor_backend::Tensor FullBlock::forward_ffn(
     CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
     mfq_tensor_backend::Tensor output, int64_t, int64_t, int64_t) {
-    return execution.ffn().full(
+    auto executor = execution.executor();
+    return executor.full_ffn(
         ffn, ffn_norm, *this, std::move(residual), std::move(output),
+        execution.forward_mode().ffn,
         layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
 }

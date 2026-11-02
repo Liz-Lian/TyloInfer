@@ -1,6 +1,6 @@
 #include "engine/models/common/load.h"
 #include "engine/weights/moe/experts.h"
-#include "engine/backends/cuda/executor/ffn.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
@@ -111,7 +111,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
         gemma4_moe, layer_scale.defined(), fused_norms, residual,
         [&] {
             return profiler.measure("gemma.ffn_dense", [&] {
-                return executor.ffn(mode).run(ffn, dense_input).reshape({B * T, H});
+                return ffn.forward(dense_input, executor, mode.ffn).reshape({B * T, H});
             });
         },
         [&] {
@@ -159,14 +159,14 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
                             if (tracing || !gemma_moe_gate_up.supports_projection_glu_epilogue())
                                 return {};
                             auto hidden = profiler.measure("gemma.moe_gate_up_geglu", [&] {
-                                return executor.projector(mode).glu(gemma_moe_gate_up, input, route, true);
+                                return executor.projector(mode.ffn).glu(gemma_moe_gate_up, input, route, true);
                             });
                             prefetch_down();
                             return hidden;
                         },
                         [&](Tensor input) {
                             packed = profiler.measure("gemma.moe_gate_up", [&] {
-                                return executor.projector(mode).run(gemma_moe_gate_up, input, route);
+                                return executor.projector(mode.ffn).run(gemma_moe_gate_up, input, route);
                             });
                             prefetch_down();
                             trace_stage(mode, layer, "moe_gate_up", packed);
@@ -183,14 +183,14 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const Execut
                         },
                         [&](Tensor hidden) {
                             return profiler.measure("gemma.moe_down", [&] {
-                                return executor.projector(mode).run(gemma_moe_down, hidden, route);
+                                return executor.projector(mode.ffn).run(gemma_moe_down, hidden, route);
                             });
                         },
                         [&](const Tensor &, const Tensor &, auto, double) -> std::optional<Tensor> {
                             if (tracing || packed.size(0) > 4)
                                 return {};
                             return profiler.measure("gemma.moe_geglu_down", [&] {
-                                return executor.projector(mode).gated(gemma_moe_down, packed, route, true);
+                                return executor.projector(mode.ffn).gated(gemma_moe_down, packed, route, true);
                             });
                         });
                     trace_stage(mode, layer, "moe_down", down_pair);
@@ -318,7 +318,7 @@ Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
                         attention.kv_quantization);
     }
     cache.quantization = attention.kv_quantization;
-    auto result = attention.forward(executor.projector(mode), executor.profiler(),
+    auto result = attention.forward(executor.projector(mode.ffn), executor.profiler(),
         executor.attention_options(), std::move(input), step, cache.view(),
         executor.attention_scratch(scratch_index), attention.attention_rope,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);

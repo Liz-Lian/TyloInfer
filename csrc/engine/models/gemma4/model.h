@@ -4,7 +4,7 @@
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/ops/attention/full.h"
-#include "engine/backends/cuda/ops/ffn/weights.h"
+#include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/models/source.h"
 

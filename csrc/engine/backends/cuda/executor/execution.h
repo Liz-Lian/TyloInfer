@@ -4,7 +4,6 @@
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/placement.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/backends/cuda/executor/ffn.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/scope.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
@@ -77,7 +76,7 @@ struct CudaExecutionContext {
     mfq::cuda::Pipelines pipelines;
 
     mfq::cuda::Projector projector();
-    mfq::cuda::FfnExec ffn();
+    mfq::cuda::Executor executor();
     std::unique_ptr<mfq::cuda::Executor> make_executor();
     mfq::cuda::Executor::Mode forward_mode() const;
     void drain();

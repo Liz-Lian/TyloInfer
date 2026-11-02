@@ -12,7 +12,7 @@
 
 namespace mfq::cuda {
 
-struct Ffn;
+class Ffn;
 
 namespace task {
 

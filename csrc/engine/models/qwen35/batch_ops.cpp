@@ -281,7 +281,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     mode.ffn.batch_serial = cached_moe_enabled_ && batch > 1;
     if (graph_decode) {
         mode.ffn.serial = true;
-        mode.projection_major = true;
+        mode.ffn.projection_major = true;
     }
     try {
         if (graph_decode) {

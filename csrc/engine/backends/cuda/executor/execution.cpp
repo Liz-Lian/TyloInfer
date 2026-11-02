@@ -32,13 +32,9 @@ mfq::cuda::Projector CudaExecutionContext::projector() {
             decode_graph_tp_projection_major};
 }
 
-mfq::cuda::FfnExec CudaExecutionContext::ffn() {
-    return {projector(), profiler, kl_mmq, *tq, branches, collectives, routes,
-            config.tasks.projection, config.tasks.attention, config.tasks.dense, config.ffn,
-            {force_moe_materialized_swiglu, force_moe_unfused_reduce,
-             decode_graph_serial_branches, continuous_batch_cache_serial,
-             continuous_batch_ffn_tile, continuous_batch_ffn_tiles,
-             config.moe_ffn.reuse_input}};
+mfq::cuda::Executor CudaExecutionContext::executor() {
+    return {profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
+            model_parallel_primary_device(*this)};
 }
 
 std::unique_ptr<mfq::cuda::Executor> CudaExecutionContext::make_executor() {
@@ -51,7 +47,7 @@ mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
     return {{force_moe_materialized_swiglu, force_moe_unfused_reduce,
              decode_graph_serial_branches, continuous_batch_cache_serial,
              continuous_batch_ffn_tile, continuous_batch_ffn_tiles,
-             config.moe_ffn.reuse_input},
+             config.moe_ffn.reuse_input, decode_graph_tp_projection_major},
             {config.tasks.projection.grouped &&
                  config.tensor_parallel_shared_linear_attention_input,
              config.linear_conv_prefill_fused},
@@ -60,7 +56,6 @@ mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
             gemma_stage_trace,
             gemma_trace_layer,
             layer_placement.primary_device(),
-            decode_graph_tp_projection_major,
             config.gemma4_fused_norms};
 }
 
