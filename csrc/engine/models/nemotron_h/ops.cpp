@@ -1,13 +1,19 @@
-#include "engine/backends/cuda/executor/execution.h"
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
+#include "engine/backends/cuda/native/collectives.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "engine/models/session.h"
 #include "engine/ops.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/models/common/load.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/weights/loader.h"
-#include "ops.h"
+#include "weights.h"
 #include "model.h"
-#include "engine/models/common/session_codec.h"
+#include "load.h"
+#include "state.h"
+#include "forward.h"
+#include "engine/backends/cuda/executor/options.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
@@ -15,7 +21,10 @@
 #include "engine/models/common/recurrent_attention.h"
 #include "engine/models/common/transformer_layer.h"
 
+#include <algorithm>
 #include <array>
+#include <iostream>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -33,10 +42,13 @@ Tensor next_convolution_state(const Tensor& conv_input, int64_t kernel) {
 
 } // namespace
 
-Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tensor, int64_t,
-                                 const MfqOptional<Tensor>&, const RopeCache&,
-                                 const MfqOptional<Tensor>&, const MfqOptional<Tensor>&) {
-    auto& profiler = execution.profiler;
+static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor& executor,
+                            Tensor x, const Executor::Mode& mode) {
+    const auto& [layer, mamba_heads, mamba_head_dim, ssm_state_size, mamba_groups, conv_kernel,
+                 rms_norm_eps, time_step_limit_lo, time_step_limit_hi, mixer_norm, in_proj,
+                 conv_weight, conv_bias, a_log, d, dt_bias, scan_norm, out_proj] = weights;
+    auto& [mixer, speculative_xbc, speculative_dt] = activity;
+    auto& profiler = executor.profiler();
     auto& state = mixer.view();
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t heads = mamba_heads;
@@ -78,7 +90,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                 true,
                 [&]() {
                     auto projected = profiler.measure("mamba.in_proj", [&] {
-                        return execution.projector().run(in_proj, xn).to(mfq_tensor_backend::kFloat32);
+                        return executor.projector(mode.ffn).run(in_proj, xn).to(mfq_tensor_backend::kFloat32);
                     });
                     TYLOINFER_RUNTIME_CHECK(projected.size(-1) == projection_width,
                                       "mamba fused projection width disagrees with config");
@@ -141,7 +153,7 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
                 [&](Tensor normalized) {
                     return profiler.measure(
                         "mamba.out_proj",
-                        [&] { return execution.projector().run(out_proj, normalized); });
+                        [&] { return executor.projector(mode.ffn).run(out_proj, normalized); });
                 },
                 [&](const Tensor& final_state) {
                     if (final_state.defined())
@@ -157,32 +169,17 @@ Tensor Mamba2MixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tens
         });
 }
 
-Tensor Mamba2MixerBlock::forward_context(CudaExecutionContext& execution, Tensor x,
-                                         const Block::Context& context, const RopeCache& rope) {
-    if (context.confirmed_prefix == 0)
-        return Block::forward_context(execution, std::move(x), context, rope);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && !mixer.pending() && context.confirmed_prefix > 0 &&
-                          context.confirmed_prefix < x.size(1) && mixer.defined(),
-                      "invalid Nemotron-H speculative mamba transaction");
-    mixer.begin(context.cache_position, context.confirmed_prefix, x.size(1));
-    try {
-        return forward(execution, std::move(x), context.full_positions, context.cache_position,
-                       context.sequence_lengths, rope, context.cache_positions,
-                       context.attention_mask);
-    } catch (...) {
-        mixer.abort();
-        clear_speculative();
-        throw;
-    }
+static void clear_speculative(MambaState& activity) noexcept {
+    activity.speculative_xbc = Tensor();
+    activity.speculative_dt = Tensor();
+    activity.mixer.commit();
 }
 
-void Mamba2MixerBlock::clear_speculative() noexcept {
-    speculative_xbc = Tensor();
-    speculative_dt = Tensor();
-    mixer.commit();
-}
-
-void Mamba2MixerBlock::replay_recurrent(int64_t retained_tokens) {
+static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t retained_tokens) {
+    const auto& [layer, mamba_heads, mamba_head_dim, ssm_state_size, mamba_groups, conv_kernel,
+                 rms_norm_eps, time_step_limit_lo, time_step_limit_hi, mixer_norm, in_proj,
+                 conv_weight, conv_bias, a_log, d, dt_bias, scan_norm, out_proj] = weights;
+    auto& [mixer, speculative_xbc, speculative_dt] = activity;
     TYLOINFER_RUNTIME_CHECK(retained_tokens > 0 &&
                           speculative_xbc.defined() && speculative_dt.defined() &&
                           retained_tokens <= speculative_xbc.size(1) &&
@@ -218,37 +215,37 @@ void Mamba2MixerBlock::replay_recurrent(int64_t retained_tokens) {
     state.recurrent.copy_(scanned[1]);
 }
 
-void Mamba2MixerBlock::rollback_speculative(int64_t keep_position) {
+static void rollback_speculative(const Mamba& weights, MambaState& activity, int64_t keep_position) {
+    auto& mixer = activity.mixer;
     try {
         const int64_t retained = mixer.rewind(keep_position);
         // Only the convolution and scan states are replayed; the normalized
         // output and the projection are not recomputed.
-        replay_recurrent(retained);
-        clear_speculative();
+        replay_recurrent(weights, activity, retained);
+        clear_speculative(activity);
     } catch (...) {
         mixer.abort();
-        clear_speculative();
+        clear_speculative(activity);
         throw;
     }
 }
 
-Tensor MoeMixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tensor, int64_t,
-                              const MfqOptional<Tensor>&, const RopeCache&,
-                              const MfqOptional<Tensor>&, const MfqOptional<Tensor>&) {
+static Tensor moe_forward(const Moe& weights, Executor& executor, Tensor x,
+                          const Executor::Mode& mode) {
+    const auto& [layer, rms_norm_eps, ffn_norm, ffn] = weights;
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     return mfq::ops::attention_layer(
         std::move(x),
         [&](Tensor x) {
-            return execution.profiler.measure("moe.norm", [&] {
+            return executor.profiler().measure("moe.norm", [&] {
                 return qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
                                      ffn_norm, rms_norm_eps, 0.0)
                     .reshape({B, T, H});
             });
         },
         [&](Tensor xn) {
-            return execution.profiler.measure("moe.ffn", [&] {
-                auto executor = execution.executor();
-                return ffn.forward(xn.reshape({B * T, H}), executor, execution.forward_mode().ffn).reshape({B, T, H});
+            return executor.profiler().measure("moe.ffn", [&] {
+                return ffn.forward(xn.reshape({B * T, H}), executor, mode.ffn).reshape({B, T, H});
             });
         },
         [&](Tensor residual, Tensor mixed) {
@@ -260,193 +257,225 @@ Tensor MoeMixerBlock::forward(CudaExecutionContext& execution, Tensor x, Tensor,
         });
 }
 
-Tensor AttentionMixerBlock::forward_ffn(CudaExecutionContext& execution, Tensor residual,
-                                       Tensor attention_output, int64_t batch, int64_t tokens,
-                                       int64_t hidden) {
+static Tensor attention_residual(Executor& executor, Tensor residual, Tensor attention_output,
+                                 int64_t batch, int64_t tokens, int64_t hidden) {
     auto rr = residual.reshape({-1, hidden});
     auto aa = attention_output.reshape({-1, hidden});
-    if (execution.config.tasks.dense.fp32_residual) {
+    if (executor.fp32_residual()) {
         rr = rr.to(mfq_tensor_backend::kFloat32);
         aa = aa.to(mfq_tensor_backend::kFloat32);
     } else if (aa.scalar_type() != rr.scalar_type()) {
         aa = aa.to(rr.scalar_type()).contiguous();
     }
-    return execution.profiler.measure("attention.residual", [&] {
+    return executor.profiler().measure("attention.residual", [&] {
         return acc_cuda(rr, aa).reshape({batch, tokens, hidden});
     });
 }
 
-struct BlockLoader : TransformerWeightLoader {
-    using Ffn = mfq::cuda::Ffn;
-    auto full_block() const {
-        auto block = std::make_unique<AttentionMixerBlock>();
-        block->kv_quantization = cuda_kv_quantization();
-        return block;
-    }
-    auto mamba_block() const { return std::make_unique<Mamba2MixerBlock>(); }
-    auto moe_block() const { return std::make_unique<MoeMixerBlock>(); }
-    template <class T> static std::unique_ptr<::Block> finish(std::unique_ptr<T> block) {
-        return block;
-    }
-};
-
-std::unique_ptr<::Block> load_block(Pipelines& pipelines,
-                                    const weight_loader::Loader& weights, const Config& config, int layer,
-                                    const std::string& type, std::string_view tensor_root) {
-    BlockLoader loader{{weights}};
-    switch (Config::mixer_kind(type)) {
-        case mfq::models::nemotron_h::MixerKind::linear_attention: {
-            auto block = loader.mamba_block();
-            mfq::models::nemotron_h::load_linear_attention(*block, loader, config, layer,
-                                                           tensor_root);
-            block->conv_weight = block->conv_weight.to(mfq_tensor_backend::kFloat32).contiguous();
-            block->a_log = block->a_log.to(mfq_tensor_backend::kFloat32).contiguous();
-            block->d = block->d.to(mfq_tensor_backend::kFloat32).contiguous();
-            block->dt_bias = block->dt_bias.to(mfq_tensor_backend::kFloat32).contiguous();
-            block->scan_norm = block->scan_norm.to(mfq_tensor_backend::kFloat32).contiguous();
-            if (block->conv_bias.defined())
-                block->conv_bias = block->conv_bias.to(mfq_tensor_backend::kFloat32).contiguous();
-            return BlockLoader::finish(std::move(block));
-        }
-        case mfq::models::nemotron_h::MixerKind::full_attention: {
-            auto block = loader.full_block();
-            mfq::models::nemotron_h::load_attention(*block, loader, config, layer, tensor_root);
-            return BlockLoader::finish(std::move(block));
-        }
-        case mfq::models::nemotron_h::MixerKind::moe: {
-            auto block = loader.moe_block();
-            mfq::models::nemotron_h::load_moe(*block, loader, config, layer, tensor_root);
-            // An expert cache turns the routed bank into the two-stage MFE
-            // pipeline; without one the same FFN keeps the direct path.
-            pipelines.prepare(block->ffn);
-            return BlockLoader::finish(std::move(block));
-        }
-        case mfq::models::nemotron_h::MixerKind::mlp: {
-            auto block = loader.moe_block();
-            mfq::models::nemotron_h::load_dense_mlp(*block, loader, config, layer, tensor_root);
-            return BlockLoader::finish(std::move(block));
-        }
-    }
-    throw std::runtime_error("unsupported Nemotron-H mixer type: " + type);
+static Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
+    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+                               "token IDs must have shape [tokens] or [batch,tokens]");
+    if (ids.dim() == 1) ids = ids.unsqueeze(0);
+    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+                               "token IDs must not be empty");
+    return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
 }
 
-bool supports_text_session_state(const std::vector<std::unique_ptr<::Block>>& blocks) {
-    return !blocks.empty() &&
-           std::all_of(blocks.begin(), blocks.end(), [](const std::unique_ptr<::Block>& block) {
-               return dynamic_cast<const Mamba2MixerBlock*>(block.get()) != nullptr ||
-                      dynamic_cast<const MoeMixerBlock*>(block.get()) != nullptr ||
-                      dynamic_cast<const FullBlock*>(block.get()) != nullptr;
+Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
+             int primary, Tensor ids, const Executor::Mode& mode) {
+    const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};
+    Inputs inputs;
+    inputs.values = {normalize_ids(collectives, primary, std::move(ids))};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
+}
+
+Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
+                 std::int64_t batch, std::int64_t tokens) {
+    hidden = hidden.reshape({batch, tokens, model.metadata.hidden_size});
+    const Task task{task::Norm{0, 0, model.output_norm, model.metadata.rms_norm_eps,
+                               model.metadata.norm_weight_offset},
+                    -1, {}, "model.output_norm"};
+    Inputs inputs;
+    inputs.values = {std::move(hidden)};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
+}
+
+Tensor softcap(const Model& model, Executor& executor, Tensor value) {
+    const Task task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}};
+    Inputs inputs;
+    inputs.values = {std::move(value)};
+    return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), {});
+}
+
+Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
+              const Executor::Mode& mode) {
+    std::array<Task, 2> tasks{
+        Task{task::Project{0, 0, model.lm_head}, -1, {}, "model.lm_head"},
+        Task{task::Softcap{0, 0, model.metadata.final_logit_softcapping}}};
+    Inputs inputs;
+    inputs.values = {std::move(hidden)};
+    return executor.run(std::span<const Task>{tasks.data(), capped ? tasks.size() : 1},
+                        std::move(inputs), mode);
+}
+
+bool supports_speculation(const Model& model) noexcept {
+    return !model.layers.empty() &&
+           std::all_of(model.layers.begin(), model.layers.end(), [](const Layer& layer) {
+               const auto* full = std::get_if<FullAttention>(&layer.weights);
+               return full == nullptr || !full->sliding;
            });
 }
 
-TextSessionState capture_text_session_state(const std::vector<std::unique_ptr<::Block>>& blocks,
-                                            const std::vector<std::int64_t>& tokens,
-                                            std::int64_t cache_position) {
-    if (!supports_text_session_state(blocks) || cache_position <= 0 ||
-        static_cast<std::size_t>(cache_position) != tokens.size()) {
-        throw std::runtime_error(
-            "Nemotron-H session token count does not match the cache");
-    }
-    TextSessionState state;
-    state.tokens = tokens;
-    state.cache_pos = cache_position;
-    state.payload = std::vector<HybridBlockSessionState>{};
-    auto& layers = std::get<std::vector<HybridBlockSessionState>>(state.payload);
-    layers.reserve(blocks.size());
-    for (const auto& block : blocks) {
-        MfqCudaGuard guard(block->cuda_device);
-        HybridBlockSessionState saved;
-        if (const auto* full = dynamic_cast<const FullBlock*>(block.get())) {
-            saved.kind = HybridBlockSessionStateKind::FullAttention;
-            saved.full_attention =
-                capture_kv(full->cache, cache_position, state.bytes);
-        } else if (const auto* mamba = dynamic_cast<const Mamba2MixerBlock*>(block.get())) {
-            if (mamba->mixer.pending() || !mamba->mixer.defined()) {
-                throw std::runtime_error("Nemotron-H mamba session state is unavailable");
-            }
-            saved.kind = HybridBlockSessionStateKind::Recurrent;
-            saved.mixer = mamba->mixer.snapshot();
-            state.bytes += session_tensor_bytes(saved.mixer.convolution);
-            state.bytes += session_tensor_bytes(saved.mixer.recurrent);
-        } else if (dynamic_cast<const MoeMixerBlock*>(block.get()) != nullptr) {
-            saved.kind = HybridBlockSessionStateKind::Stateless;
-        } else {
-            throw std::runtime_error("Nemotron-H session layer type changed");
+Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
+                     std::size_t scratch_index, Tensor input, const AttentionStep& step,
+                     std::int64_t confirmed, const Executor::Mode& mode) {
+    MfqCudaGuard guard(layer.device);
+    if (const auto* mamba = std::get_if<Mamba>(&layer.weights)) {
+        auto& activity = std::get<MambaState>(state);
+        if (confirmed == 0)
+            return mamba_forward(*mamba, activity, executor, std::move(input), mode);
+        TYLOINFER_RUNTIME_CHECK(input.is_cuda() && !activity.mixer.pending() && confirmed > 0 &&
+                               confirmed < input.size(1) && activity.mixer.defined(),
+                               "invalid Nemotron-H speculative mamba transaction");
+        activity.mixer.begin(step.cache_position, confirmed, input.size(1));
+        try {
+            return mamba_forward(*mamba, activity, executor, std::move(input), mode);
+        } catch (...) {
+            activity.mixer.abort();
+            clear_speculative(activity);
+            throw;
         }
-        layers.push_back(std::move(saved));
     }
-    return state;
+    if (const auto* moe = std::get_if<Moe>(&layer.weights))
+        return moe_forward(*moe, executor, std::move(input), mode);
+    const auto& attention = std::get<FullAttention>(layer.weights);
+    auto& cache = std::get<KVCache>(state);
+    const auto B = input.size(0), T = input.size(1), H = input.size(2);
+    TYLOINFER_RUNTIME_CHECK(confirmed == 0 || !attention.sliding,
+                            "block does not support speculative verification");
+    const auto capacity = attention.sliding ? attention.attention_window
+        : (mode.kv_capacity > 0 ? std::max<std::int64_t>(step.cache_position + T, mode.kv_capacity)
+                                : attention.max_position_embeddings);
+    if (!cache.defined())
+        cache = KVCache(B, attention.kv_heads, capacity, attention.attention_head_dim,
+                        attention.sliding, input.device(),
+                        attention.official_bf16 ? mfq_tensor_backend::kBFloat16 :
+                                                 mfq_tensor_backend::kFloat16,
+                        attention.kv_quantization);
+    cache.quantization = attention.kv_quantization;
+    auto mixed = attention.forward(executor.projector(mode.ffn), executor.profiler(),
+        executor.attention_options(), std::move(input), step, cache.view(),
+        executor.attention_scratch(scratch_index), attention.attention_rope,
+        attention.layer == mode.trace_layer ? mode.trace : nullptr);
+    return attention_residual(executor, std::move(mixed[0]), std::move(mixed[1]), B, T, H);
 }
 
-void restore_text_session_state(std::vector<std::unique_ptr<::Block>>& blocks,
-                                const TextSessionState& state) {
-    const auto* layers = std::get_if<std::vector<HybridBlockSessionState>>(&state.payload);
-    if (state.kind() != TextSessionStateKind::HybridAttention || state.cache_pos <= 0 ||
-        state.tokens.size() != static_cast<std::size_t>(state.cache_pos) || layers == nullptr ||
-        layers->size() != blocks.size()) {
-        throw CudaSessionStateError("Nemotron-H session state is incompatible");
+Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
+               const Executor::Mode& mode, Input input) {
+    namespace tb = mfq_tensor_backend;
+    MfqCudaGuard guard(mode.primary);
+    auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids));
+    auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
+        : embed(model, executor, collectives, mode.primary, ids, mode);
+    const auto B = ids.size(0), T = ids.size(1);
+    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+                               embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
+                               "inputs_embeds shape must match [batch,tokens,hidden_size]");
+    mfq::models::require_model(state.speculative_start < 0,
+                               "commit or roll back the pending speculative pass before forwarding");
+    mfq::models::require_model(input.confirmed >= 0 &&
+        (input.confirmed == 0 || (input.confirmed < T && B == 1 && state.cache_pos > 0 &&
+         !input.positions.has_value() && !input.cache_positions.has_value() &&
+         !input.attention_mask.has_value() && supports_speculation(model))),
+        "unsupported speculative backbone geometry");
+    if (input.confirmed > 0) {
+        mfq::models::require_model(state.cache_pos + T <= model.metadata.max_position_embeddings,
+                                   "speculative pass exceeds context capacity");
+        state.speculative_start = state.cache_pos;
+        state.speculative_confirmed = input.confirmed;
     }
-    for (std::size_t index = 0; index < blocks.size(); ++index) {
-        auto& block = blocks[index];
-        const auto& saved = (*layers)[index];
-        MfqCudaGuard guard(block->cuda_device);
-        if (saved.kind == HybridBlockSessionStateKind::FullAttention) {
-            auto* full = dynamic_cast<FullBlock*>(block.get());
-            if (full == nullptr)
-                throw CudaSessionStateError("Nemotron-H full-attention layer changed");
-            validate_kv(saved.full_attention);
-            continue;
-        }
-        if (saved.kind == HybridBlockSessionStateKind::Stateless) {
-            if (dynamic_cast<MoeMixerBlock*>(block.get()) == nullptr)
-                throw CudaSessionStateError("Nemotron-H stateless layer changed");
-            continue;
-        }
-        auto* mamba = dynamic_cast<Mamba2MixerBlock*>(block.get());
-        const auto convolution_width =
-            mamba != nullptr ? mamba->mamba_heads * mamba->mamba_head_dim +
-                                   2 * mamba->mamba_groups * mamba->ssm_state_size
-                             : 0;
-        if (saved.kind != HybridBlockSessionStateKind::Recurrent || mamba == nullptr ||
-            !saved.mixer.convolution.defined() || !saved.mixer.recurrent.defined() ||
-            saved.mixer.convolution.scalar_type() != mfq_tensor_backend::kFloat32 ||
-            saved.mixer.recurrent.scalar_type() != mfq_tensor_backend::kFloat32 ||
-            saved.mixer.convolution.dim() != 3 || saved.mixer.convolution.size(0) != 1 ||
-            saved.mixer.convolution.size(1) != mamba->conv_kernel - 1 ||
-            saved.mixer.convolution.size(2) != convolution_width ||
-            saved.mixer.recurrent.dim() != 4 || saved.mixer.recurrent.size(0) != 1 ||
-            saved.mixer.recurrent.size(1) != mamba->mamba_heads ||
-            saved.mixer.recurrent.size(2) != mamba->mamba_head_dim ||
-            saved.mixer.recurrent.size(3) != mamba->ssm_state_size ||
-            !saved.mixer.convolution.is_cuda() || !saved.mixer.recurrent.is_cuda() ||
-            saved.mixer.convolution.get_device() != block->cuda_device ||
-            saved.mixer.recurrent.get_device() != block->cuda_device) {
-            throw CudaSessionStateError("Nemotron-H mamba session topology changed");
-        }
+    if (state.cache_pos == 0) state.reset(B);
+    const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary))
+                             .dtype(tb::kInt64);
+    auto physical = input.cache_positions.has_value()
+        ? collectives.copy(input.cache_positions->to(tb::kInt64), mode.primary).contiguous()
+        : tb::arange(state.cache_pos, state.cache_pos + T, options);
+    auto semantic = input.positions.has_value()
+        ? collectives.copy(input.positions->to(tb::kInt64), mode.primary).contiguous()
+        : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
+    mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
+        (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
+        "cache_positions must have shape [tokens] or [batch,tokens]");
+    mfq::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
+        (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
+        "position_ids must have shape [tokens] or [batch,tokens]");
+    if (input.attention_mask.has_value()) {
+        const auto& mask = *input.attention_mask;
+        mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
+                                   mask.size(1) >= state.cache_pos + T,
+                                   "attention_mask must cover [batch,cached_plus_current_tokens]");
     }
-    for (std::size_t index = 0; index < blocks.size(); ++index) {
-        auto& block = blocks[index];
-        const auto& saved = (*layers)[index];
-        MfqCudaGuard guard(block->cuda_device);
-        if (auto* full = dynamic_cast<FullBlock*>(block.get())) {
-            restore_kv(full->cache, saved.full_attention, full->attention_head_dim,
-                full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
-                full->kv_quantization);
-        } else if (auto* mamba = dynamic_cast<Mamba2MixerBlock*>(block.get())) {
-            mamba->mixer.restore(saved.mixer);
-            mamba->clear_speculative();
-        }
+    if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
+        input.lengths = tb::full({B}, state.cache_pos + 1, options);
+    AttentionStep step{semantic, input.lengths,
+        input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
+        {}, state.cache_pos, input.kv_length, input.attention_parts};
+    auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
+    const auto trace = [&](const Tensor& value) {
+        if (input.trace)
+            input.trace->push_back(collectives.copy(value, mode.primary).to(tb::kFloat32).clone());
+    };
+    trace(hidden);
+    for (std::size_t index = 0; index < model.layers.size(); ++index) {
+        const auto& layer = model.layers[index];
+        MfqCudaGuard layer_guard(layer.device);
+        auto local = step;
+        local.positions = collectives.copy(step.positions, layer.device);
+        if (step.sequence_lengths.has_value())
+            local.sequence_lengths = collectives.copy(*step.sequence_lengths, layer.device);
+        if (step.cache_positions.has_value())
+            local.cache_positions = collectives.copy(*step.cache_positions, layer.device);
+        hidden = forward_layer(layer, state.layers[index], executor, index,
+            collectives.copy(std::move(hidden), layer.device), local, input.confirmed, mode);
+        trace(hidden);
     }
+    if (!input.positions.has_value() || input.advance) state.cache_pos += T;
+    hidden = collectives.copy(std::move(hidden), mode.primary);
+    auto finalized = normalize(model, executor, std::move(hidden), B, T);
+    if (input.raw_hidden) *input.raw_hidden = finalized;
+    return finalized;
 }
 
-} // namespace mfq::cuda::nemotron_h
+void replay(const Model& model, State& state, Executor&, std::int64_t accepted) {
+    mfq::models::require_model(state.speculative_start >= 0 && accepted >= 0,
+                               "no speculative transaction");
+    const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
+    for (std::size_t index = 0; index < state.layers.size(); ++index) {
+        auto* activity = std::get_if<MambaState>(&state.layers[index]);
+        if (activity == nullptr) continue;
+        MfqCudaGuard guard(model.layers[index].device);
+        rollback_speculative(std::get<Mamba>(model.layers[index].weights), *activity, keep);
+    }
+    state.cache_pos = keep;
+    state.speculative_start = -1;
+    state.speculative_confirmed = 0;
+}
 
-namespace mfq::cuda {
+struct LayerLoader : TransformerWeightLoader {
+    using Ffn = mfq::cuda::Ffn;
+};
 
-void NemotronHModel::adapter_validate_components(const mfq::ModelGraph& graph) const {
-    // A declared vision component must resolve to the RADIO adapter this
-    // backend implements; anything else stays reported as unsupported instead
-    // of loading a partial graph.
+template <class MambaWeights> void convert_mamba_weights(MambaWeights& block) {
+    block.conv_weight = block.conv_weight.to(mfq_tensor_backend::kFloat32).contiguous();
+    block.a_log = block.a_log.to(mfq_tensor_backend::kFloat32).contiguous();
+    block.d = block.d.to(mfq_tensor_backend::kFloat32).contiguous();
+    block.dt_bias = block.dt_bias.to(mfq_tensor_backend::kFloat32).contiguous();
+    block.scan_norm = block.scan_norm.to(mfq_tensor_backend::kFloat32).contiguous();
+    if (block.conv_bias.defined())
+        block.conv_bias = block.conv_bias.to(mfq_tensor_backend::kFloat32).contiguous();
+}
+
+void validate_components(const mfq::ModelGraph& graph) {
     if (graph.component("vision") != nullptr &&
         cuda_model_plan(graph).vision != CudaVisionAdapter::radio)
         throw std::runtime_error(
@@ -458,59 +487,345 @@ void NemotronHModel::adapter_validate_components(const mfq::ModelGraph& graph) c
             "implementation under the predictor tensor root");
 }
 
-std::unique_ptr<Block> NemotronHModel::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer,
-                                                          int, const std::string& type) {
-    return nemotron_h::load_block(execution->pipelines, weights, config, layer, type);
-}
-
-mfq_tensor_backend::Tensor
-NemotronHModel::adapter_raw_hidden(const mfq_tensor_backend::Tensor&,
-                                   const mfq_tensor_backend::Tensor& finalized) const {
-    // llama.cpp (src/models/nemotron-h-moe.cpp), vLLM and SGLang all hand the
-    // MTP head the backbone hidden state after output_norm, unlike DeepSeek-V3.
-    // The predictor therefore receives the same normalized hidden that the
-    // lm_head sees, and its own hnorm renormalizes it.
-    return finalized;
-}
-
-TextSessionStateKind CudaSessionCodec<NemotronHModel>::kind(const Model& model) {
-    const auto full = FullAttentionSessionCodec<NemotronHModel>::kind(model);
-    if (full != TextSessionStateKind::Unsupported)
-        return full;
-    return nemotron_h::supports_text_session_state(model.blocks)
-               ? TextSessionStateKind::HybridAttention
-               : TextSessionStateKind::Unsupported;
-}
-
-bool CudaSessionCodec<NemotronHModel>::supports_paged(const Model& model) {
-    return FullAttentionSessionCodec<NemotronHModel>::supports_paged(model);
-}
-
-TextSessionState CudaSessionCodec<NemotronHModel>::capture(const Model& model,
-                                                           const std::vector<int64_t>& tokens) {
-    if (kind(model) == TextSessionStateKind::HybridAttention) {
-        if (model.cache_pos <= 0 || static_cast<size_t>(model.cache_pos) != tokens.size()) {
-            throw std::runtime_error("text session token count does not match the model cache");
+Layer load_layer(Pipelines& pipelines, const weight_loader::Loader& weights,
+                 const Config& config, int layer, const std::string& type,
+                 std::string_view tensor_root) {
+    MfqCudaGuard guard(weights.placement.device);
+    Layer result;
+    result.device = weights.placement.device;
+    LayerLoader loader{{weights}};
+    switch (Config::mixer_kind(type)) {
+        case mfq::models::nemotron_h::MixerKind::linear_attention: {
+            auto& mamba = result.weights.emplace<Mamba>();
+            mfq::models::nemotron_h::load_linear_attention(mamba, loader, config, layer, tensor_root);
+            convert_mamba_weights(mamba);
+            break;
         }
-        return nemotron_h::capture_text_session_state(model.blocks, tokens, model.cache_pos);
+        case mfq::models::nemotron_h::MixerKind::full_attention: {
+            auto& attention = result.weights.emplace<FullAttention>();
+            attention.kv_quantization = cuda_kv_quantization();
+            mfq::models::nemotron_h::load_attention(attention, loader, config, layer, tensor_root);
+            break;
+        }
+        case mfq::models::nemotron_h::MixerKind::moe: {
+            auto& moe = result.weights.emplace<Moe>();
+            mfq::models::nemotron_h::load_moe(moe, loader, config, layer, tensor_root);
+            pipelines.prepare(moe.ffn);
+            break;
+        }
+        case mfq::models::nemotron_h::MixerKind::mlp: {
+            auto& moe = result.weights.emplace<Moe>();
+            mfq::models::nemotron_h::load_dense_mlp(moe, loader, config, layer, tensor_root);
+            break;
+        }
     }
-    return FullAttentionSessionCodec<NemotronHModel>::capture(model, tokens);
+    return result;
 }
 
-void CudaSessionCodec<NemotronHModel>::restore(Model& model, const TextSessionState& state) {
-    if (kind(model) == TextSessionStateKind::HybridAttention &&
-        state.kind() == TextSessionStateKind::HybridAttention) {
-        nemotron_h::restore_text_session_state(model.blocks, state);
-        model.cache_pos = state.cache_pos;
-        return;
+Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+           std::int64_t context) {
+    validate_model_source(*source);
+    Model model;
+    model.source = std::move(source);
+    model.graph = mfq::models::graph(*model.source);
+    model.plan = cuda_model_plan(model.graph);
+    mfq::models::require_model(model.graph.backbone == "nemotron_h",
+                               "model backbone does not match the requested causal model");
+    mfq::models::nemotron_h::load_config(definition, model.graph, model.config, model.metadata);
+    validate_components(model.graph);
+    mfq::models::require_model(model.config.num_hidden_layers == model.graph.topology.text_layers,
+                               "model graph/config text-layer topology mismatch");
+    if (context > 0) {
+        mfq::models::require_model(context <= model.metadata.max_position_embeddings,
+                                   "--ctx-size exceeds max_position_embeddings");
+        model.config.max_position_embeddings = context;
+        model.metadata.max_position_embeddings = context;
     }
-    FullAttentionSessionCodec<NemotronHModel>::restore(model, state);
+    return model;
 }
 
-template struct FullAttentionSessionCodec<NemotronHModel>;
+void load(Model& model, const weight_loader::Loader& weights, Pipelines& pipelines,
+          LayerPlacementConfig& placement, int gpu_layers, bool expert_parallel,
+          bool load_layers, bool load_input_output) {
+    const auto& config = model.config;
+    if (expert_parallel && config.num_routed_experts <= 0)
+        throw std::runtime_error("--expert-parallel requires a model with routed experts");
+    placement.prepare(config.num_hidden_layers);
+    const int cpu_layers = gpu_layers < 0 ? 0 :
+        static_cast<int>(std::max<int64_t>(config.num_hidden_layers - gpu_layers, 0));
+    if (cpu_layers > 0) {
+        if (weights.placement.tensor.enabled() || expert_parallel || placement.enabled())
+            throw std::runtime_error(
+                "--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
+        throw std::runtime_error("--n-gpu-layers currently supports dense Qwen-style blocks only");
+    }
+    MfqCudaGuard guard(placement.primary_device());
+    if (load_input_output) {
+        const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
+        model.output_norm = weights.tensor("model.output_norm.weight");
+        model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
+            : weights.placement.tensor.enabled()
+                ? weights.projection("model.token_embedding.weight", TensorParallelAxis::Output)
+                : model.embed;
+        if (load_layers) {
+            model.layers.reserve(static_cast<std::size_t>(config.num_hidden_layers));
+            for (int index = 0; index < config.num_hidden_layers; ++index) {
+                const int device = placement.device_for_layer(index);
+                MfqCudaGuard layer_guard(device);
+                const auto& type = model.metadata.layer_types.at(static_cast<std::size_t>(index));
+                std::cerr << "loading layer " << index << ' ' << type << " CUDA" << std::endl;
+                model.layers.push_back(load_layer(pipelines, weights.for_layer(device, false),
+                                                  config, index, type));
+            }
+        }
+    } else {
+        if (load_layers) throw std::invalid_argument("streamed model setup requires deferred blocks");
+        model.output_norm = weights.tensor("model.output_norm.weight");
+    }
+}
 
-} // namespace mfq::cuda
+State::State(const Model& model) : layers(model.layers.size()) {
+    layout_.reserve(model.layers.size());
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        const auto& layer = model.layers[index];
+        if (const auto* mamba = std::get_if<Mamba>(&layer.weights)) {
+            layout_.push_back({layer.device, MambaLayout{mamba->mamba_heads, mamba->mamba_head_dim,
+                mamba->ssm_state_size, mamba->mamba_groups, mamba->conv_kernel}});
+            layers[index].emplace<MambaState>();
+        } else if (const auto* full = std::get_if<FullAttention>(&layer.weights)) {
+            layout_.push_back({layer.device, FullLayout{full->kv_heads, full->attention_head_dim,
+                full->sliding ? full->attention_window : full->max_position_embeddings,
+                full->sliding, full->official_bf16 ? mfq_tensor_backend::kBFloat16 :
+                mfq_tensor_backend::kFloat16, full->kv_quantization}});
+            layers[index].emplace<KVCache>();
+        } else {
+            layout_.push_back({layer.device, std::monostate{}});
+        }
+    }
+}
 
-namespace mfq::models {
-template struct nemotron_h::CausalLm<cuda::CudaCausalOps<cuda::NemotronHModel>>;
-} // namespace mfq::models
+void State::preallocate() {
+    if (!runtime_options::kv_vram_preallocated()) return;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        auto* cache = std::get_if<KVCache>(&layers[index]);
+        if (cache == nullptr || cache->defined()) continue;
+        const auto& layer = layout_[index];
+        const auto& full = std::get<FullLayout>(layer.mixer);
+        MfqCudaGuard guard(layer.device);
+        *cache = KVCache(1, full.heads, full.capacity, full.head_dim, full.sliding,
+            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layer.device),
+            full.dtype, full.quantization);
+    }
+}
+
+void State::reset(std::int64_t next_batch) {
+    cache_pos = decode_position_delta = 0;
+    speculative_start = -1;
+    speculative_confirmed = 0;
+    batch = next_batch;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        MfqCudaGuard guard(layout_[index].device);
+        if (auto* cache = std::get_if<KVCache>(&layers[index])) {
+            if (cache->defined() && cache->batch_size() != next_batch) *cache = KVCache();
+        } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {
+            mamba->speculative_xbc = Tensor();
+            mamba->speculative_dt = Tensor();
+            mamba->mixer.reset(next_batch);
+        }
+    }
+}
+
+void State::commit_speculative() {
+    mfq::models::require_model(speculative_start >= 0, "no speculative transaction");
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        MfqCudaGuard guard(layout_[index].device);
+        if (auto* mamba = std::get_if<MambaState>(&layers[index]))
+            clear_speculative(*mamba);
+    }
+    speculative_start = -1;
+    speculative_confirmed = 0;
+}
+
+std::vector<Tensor> State::storage() const {
+    std::vector<Tensor> result;
+    const auto append = [&result](const Tensor& tensor) {
+        if (tensor.defined()) result.push_back(tensor);
+    };
+    for (const auto& layer : layers) {
+        if (const auto* cache = std::get_if<KVCache>(&layer)) {
+            if (cache->is_paged()) {
+                append(cache->k_chunk_ptrs);
+                append(cache->v_chunk_ptrs);
+                append(cache->page_table);
+            } else {
+                append(cache->k);
+                append(cache->v);
+            }
+        } else if (const auto* mamba = std::get_if<MambaState>(&layer)) {
+            append(mamba->mixer.view().convolution);
+            append(mamba->mixer.view().recurrent);
+        }
+    }
+    return result;
+}
+
+std::vector<Tensor*> State::graph_state() {
+    std::vector<Tensor*> result;
+    for (auto& layer : layers) {
+        auto* mamba = std::get_if<MambaState>(&layer);
+        if (mamba == nullptr) continue;
+        TYLOINFER_RUNTIME_CHECK(!mamba->mixer.pending() && mamba->mixer.defined(),
+                                "decode warmup requires confirmed mamba state");
+        result.push_back(&mamba->mixer.view().convolution);
+        result.push_back(&mamba->mixer.view().recurrent);
+    }
+    return result;
+}
+
+TextSessionStateKind State::text_session_state_kind() const {
+    if (layers.empty() || layers.size() != layout_.size()) return TextSessionStateKind::Unsupported;
+    bool all_full = true;
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        const auto& mixer = layout_[index].mixer;
+        if (std::holds_alternative<FullLayout>(mixer) && std::holds_alternative<KVCache>(layers[index]))
+            continue;
+        all_full = false;
+        if ((std::holds_alternative<MambaLayout>(mixer) &&
+             std::holds_alternative<MambaState>(layers[index])) ||
+            (std::holds_alternative<std::monostate>(mixer) &&
+             std::holds_alternative<std::monostate>(layers[index])))
+            continue;
+        return TextSessionStateKind::Unsupported;
+    }
+    return all_full ? TextSessionStateKind::FullAttention : TextSessionStateKind::HybridAttention;
+}
+
+bool State::supports_text_session_state() const {
+    return text_session_state_kind() != TextSessionStateKind::Unsupported;
+}
+
+bool State::supports_paged_text_session_state() const {
+    return text_session_state_kind() == TextSessionStateKind::FullAttention &&
+           std::all_of(layout_.begin(), layout_.end(), [](const Layout& layer) {
+               return !std::get<FullLayout>(layer.mixer).sliding;
+           });
+}
+
+TextSessionState State::capture_text_session_state(const std::vector<std::int64_t>& tokens) const {
+    const auto kind = text_session_state_kind();
+    if (kind == TextSessionStateKind::Unsupported)
+        throw std::runtime_error("text session state is unsupported by this block layout");
+    if (cache_pos <= 0 || static_cast<std::size_t>(cache_pos) != tokens.size())
+        throw std::runtime_error("text session token count does not match the model cache");
+    TextSessionState saved;
+    saved.tokens = tokens;
+    saved.cache_pos = cache_pos;
+    saved.decode_position_delta = decode_position_delta;
+    if (kind == TextSessionStateKind::FullAttention) {
+        saved.payload = std::vector<KvSnapshot>{};
+        auto& snapshots = std::get<std::vector<KvSnapshot>>(saved.payload);
+        snapshots.reserve(layers.size());
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            MfqCudaGuard guard(layout_[index].device);
+            snapshots.push_back(capture_kv(std::get<KVCache>(layers[index]), cache_pos, saved.bytes));
+        }
+        return saved;
+    }
+    saved.payload = std::vector<HybridBlockSessionState>{};
+    auto& snapshots = std::get<std::vector<HybridBlockSessionState>>(saved.payload);
+    snapshots.reserve(layers.size());
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        MfqCudaGuard guard(layout_[index].device);
+        HybridBlockSessionState snapshot;
+        if (const auto* cache = std::get_if<KVCache>(&layers[index])) {
+            snapshot.kind = HybridBlockSessionStateKind::FullAttention;
+            snapshot.full_attention = capture_kv(*cache, cache_pos, saved.bytes);
+        } else if (const auto* mamba = std::get_if<MambaState>(&layers[index])) {
+            if (mamba->mixer.pending() || !mamba->mixer.defined())
+                throw std::runtime_error("Nemotron-H mamba session state is unavailable");
+            snapshot.kind = HybridBlockSessionStateKind::Recurrent;
+            snapshot.mixer = mamba->mixer.snapshot();
+            saved.bytes += session_tensor_bytes(snapshot.mixer.convolution);
+            saved.bytes += session_tensor_bytes(snapshot.mixer.recurrent);
+        } else {
+            snapshot.kind = HybridBlockSessionStateKind::Stateless;
+        }
+        snapshots.push_back(std::move(snapshot));
+    }
+    return saved;
+}
+
+void State::restore_text_session_state(const TextSessionState& saved) {
+    const auto kind = text_session_state_kind();
+    if (kind != TextSessionStateKind::HybridAttention ||
+        saved.kind() != TextSessionStateKind::HybridAttention) {
+        const auto* snapshots = std::get_if<std::vector<KvSnapshot>>(&saved.payload);
+        if (kind != TextSessionStateKind::FullAttention || saved.kind() != kind || saved.cache_pos <= 0 ||
+            static_cast<std::size_t>(saved.cache_pos) != saved.tokens.size() ||
+            snapshots == nullptr || snapshots->size() != layers.size())
+            throw CudaSessionStateError("full-attention text session state is incompatible");
+        for (const auto& snapshot : *snapshots) validate_kv(snapshot);
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            MfqCudaGuard guard(layout_[index].device);
+            const auto& full = std::get<FullLayout>(layout_[index].mixer);
+            restore_kv(std::get<KVCache>(layers[index]), (*snapshots)[index],
+                       full.head_dim, full.dtype, full.quantization);
+        }
+    } else {
+        const auto* snapshots = std::get_if<std::vector<HybridBlockSessionState>>(&saved.payload);
+        if (kind != TextSessionStateKind::HybridAttention || saved.kind() != kind ||
+            saved.cache_pos <= 0 || static_cast<std::size_t>(saved.cache_pos) != saved.tokens.size() ||
+            snapshots == nullptr || snapshots->size() != layers.size())
+            throw CudaSessionStateError("Nemotron-H session state is incompatible");
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            const auto& snapshot = (*snapshots)[index];
+            const auto& layout = layout_[index];
+            MfqCudaGuard guard(layout.device);
+            if (snapshot.kind == HybridBlockSessionStateKind::FullAttention) {
+                if (!std::holds_alternative<KVCache>(layers[index]))
+                    throw CudaSessionStateError("Nemotron-H full-attention layer changed");
+                validate_kv(snapshot.full_attention);
+                continue;
+            }
+            if (snapshot.kind == HybridBlockSessionStateKind::Stateless) {
+                if (!std::holds_alternative<std::monostate>(layers[index]))
+                    throw CudaSessionStateError("Nemotron-H stateless layer changed");
+                continue;
+            }
+            const auto* mamba = std::get_if<MambaLayout>(&layout.mixer);
+            const auto width = mamba != nullptr ? mamba->heads * mamba->head_dim +
+                2 * mamba->groups * mamba->state_size : 0;
+            const auto& conv = snapshot.mixer.convolution;
+            const auto& recurrent = snapshot.mixer.recurrent;
+            if (snapshot.kind != HybridBlockSessionStateKind::Recurrent || mamba == nullptr ||
+                !std::holds_alternative<MambaState>(layers[index]) ||
+                !conv.defined() || !recurrent.defined() ||
+                conv.scalar_type() != mfq_tensor_backend::kFloat32 ||
+                recurrent.scalar_type() != mfq_tensor_backend::kFloat32 ||
+                conv.dim() != 3 || conv.size(0) != 1 ||
+                conv.size(1) != mamba->conv_kernel - 1 || conv.size(2) != width ||
+                recurrent.dim() != 4 || recurrent.size(0) != 1 ||
+                recurrent.size(1) != mamba->heads || recurrent.size(2) != mamba->head_dim ||
+                recurrent.size(3) != mamba->state_size || !conv.is_cuda() || !recurrent.is_cuda() ||
+                conv.get_device() != layout.device || recurrent.get_device() != layout.device)
+                throw CudaSessionStateError("Nemotron-H mamba session topology changed");
+        }
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            const auto& snapshot = (*snapshots)[index];
+            MfqCudaGuard guard(layout_[index].device);
+            if (auto* cache = std::get_if<KVCache>(&layers[index])) {
+                const auto& full = std::get<FullLayout>(layout_[index].mixer);
+                restore_kv(*cache, snapshot.full_attention, full.head_dim, full.dtype, full.quantization);
+            } else if (auto* mamba = std::get_if<MambaState>(&layers[index])) {
+                mamba->mixer.restore(snapshot.mixer);
+                clear_speculative(*mamba);
+            }
+        }
+    }
+    cache_pos = saved.cache_pos;
+    decode_position_delta = saved.decode_position_delta;
+    batch = 1;
+}
+
+} // namespace mfq::cuda::nemotron_h

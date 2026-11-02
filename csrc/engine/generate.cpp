@@ -4,7 +4,7 @@
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/ops.h"
 #include "engine/models/minicpmo45/forward.h"
-#include "engine/models/nemotron_h/ops.h"
+#include "engine/models/nemotron_h/forward.h"
 #include "engine/models/qwen4_exp/generation.h"
 #include "engine/models/deepseek_v41/generation.h"
 
@@ -34,6 +34,6 @@ TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Glm5CausalLm, mfq::cuda::Glm5CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV4CausalLm, mfq::cuda::DeepseekV4CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::NemotronHCausalLm, mfq::cuda::NemotronHCausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::nemotron_h::Model, mfq::cuda::nemotron_h::State)
 #undef TYLOINFER_INSTANTIATE_FLOW
 } // namespace mfq::cuda::internal

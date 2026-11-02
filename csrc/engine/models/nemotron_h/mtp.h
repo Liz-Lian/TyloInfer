@@ -3,10 +3,13 @@
 #include "engine/weights/loader.h"
 #include "engine/models/session.h"
 
+#include "engine/backends/cuda/executor/execution.h"
+#include "engine/backends/cuda/executor/options.h"
+#include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/models/common/mtp.h"
-#include "engine/models/common/full_block.h"
-#include "engine/models/nemotron_h/causal_lm.h"
-#include "ops.h"
+#include "engine/models/nemotron_h/forward.h"
+#include "engine/models/nemotron_h/load.h"
+#include "engine/models/nemotron_h/predictor.h"
 
 #include <algorithm>
 #include <optional>
@@ -21,31 +24,32 @@ namespace mfq::cuda::nemotron_h {
 // predictor history; the MoE sub-block is stateless.
 // The semantics follow llama.cpp (src/models/nemotron-h-moe.cpp), vLLM and
 // SGLang rather than DeepSeek-V3: the backbone hands over its post-output_norm
-// hidden (see NemotronHModel::adapter_raw_hidden) and each further draft step
+// hidden and each further draft step
 // reuses this module's final_layernorm output. The final norm stays RMSNorm as
 // in vLLM/SGLang (llama.cpp uses LayerNorm; the real model will A/B the two).
-struct NemotronHMtp final : MtpModule {
+struct Mtp final : MtpModule {
     using Tensor = mfq_tensor_backend::Tensor;
 
     mfq::cuda::nemotron_h::Config config;
     QuantLinear embedding;
-    RopeCache rope;
     int primary = 0;
     QuantLinear fusion;
     Tensor embedding_norm, hidden_norm, output_norm;
-    std::vector<std::unique_ptr<Block>> blocks;
+    std::vector<Layer> layers;
+    std::vector<LayerState> states;
     std::vector<int64_t> lengths;
     CudaExecutionContext *execution = nullptr;
+    std::unique_ptr<Executor> executor;
     int64_t batch = 0;
 
     // The predictor history shares the backbone context limit, which the
     // loader may have overridden with --ctx-size.
     int64_t predictor_capacity() const noexcept { return config.max_position_embeddings; }
 
-    static std::optional<NemotronHMtp> load_if_present(CudaExecutionContext &execution,
-                                                       const weight_loader::Loader& weights,
-                                                       const mfq::models::nemotron_h::Config &main,
-                                                       QuantLinear embedding, RopeCache rope) {
+    static std::optional<Mtp> load_if_present(CudaExecutionContext &execution,
+                                              const weight_loader::Loader& weights,
+                                              const mfq::models::nemotron_h::Config &main,
+                                              QuantLinear embedding) {
         const bool fusion_present = weights.has("predictor.fusion.weight");
         if (!fusion_present) {
             TYLOINFER_RUNTIME_CHECK(!weights.has_prefix("predictor."),
@@ -54,11 +58,11 @@ struct NemotronHMtp final : MtpModule {
         }
         TYLOINFER_RUNTIME_CHECK(main.num_nextn_predict_layers == 1 && !main.mtp_mixers.empty(),
                           "Nemotron-H MTP requires one declared predictor stage");
-        NemotronHMtp result;
+        Mtp result;
         result.config = main;
         result.execution = &execution;
+        result.executor = execution.make_executor();
         result.embedding = std::move(embedding);
-        result.rope = std::move(rope);
         result.primary = weights.placement.device;
         result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
         result.hidden_norm = weights.tensor("predictor.hidden_norm.weight");
@@ -73,13 +77,25 @@ struct NemotronHMtp final : MtpModule {
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
                 std::string(mfq::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
-            auto block = mfq::cuda::nemotron_h::load_block(execution.pipelines, weights, main,
-                                                          static_cast<int>(index), type,
-                                                          "predictor");
-            block->cuda_device = weights.placement.device;
-            if (auto *full = dynamic_cast<FullBlock *>(block.get()))
-                full->preallocate_kv();
-            result.blocks.push_back(std::move(block));
+            result.layers.push_back(load_layer(execution.pipelines, weights, main,
+                                               static_cast<int>(index), type, "predictor"));
+        }
+        result.states = std::vector<LayerState>(result.layers.size());
+        for (std::size_t index = 0; index < result.layers.size(); ++index) {
+            const auto &layer = result.layers[index];
+            if (const auto *full = std::get_if<FullAttention>(&layer.weights)) {
+                auto &cache = result.states[index].emplace<KVCache>();
+                if (runtime_options::kv_vram_preallocated()) {
+                    MfqCudaGuard guard(layer.device);
+                    cache = KVCache(1, full->kv_heads,
+                        full->sliding ? full->attention_window : full->max_position_embeddings,
+                        full->attention_head_dim, full->sliding,
+                        mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layer.device),
+                        full->official_bf16 ? mfq_tensor_backend::kBFloat16 :
+                                              mfq_tensor_backend::kFloat16,
+                        full->kv_quantization);
+                }
+            }
         }
         result.lengths.assign(1, 0);
         return result;
@@ -87,8 +103,10 @@ struct NemotronHMtp final : MtpModule {
 
     void reset(int64_t next_batch = 1) override {
         TYLOINFER_RUNTIME_CHECK(next_batch > 0, "Nemotron-H MTP batch must be positive");
-        for (auto &block : blocks)
-            block->reset(next_batch);
+        for (auto &state : states)
+            if (auto *cache = std::get_if<KVCache>(&state))
+                if (!cache->defined() || cache->batch_size() != next_batch)
+                    *cache = KVCache();
         std::fill(lengths.begin(), lengths.end(), 0);
         batch = next_batch;
     }
@@ -98,7 +116,8 @@ struct NemotronHMtp final : MtpModule {
                                        const Tensor &supplied_positions = {}) {
         struct Ops {
             using Tensor = mfq_tensor_backend::Tensor;
-            NemotronHMtp &model;
+            Mtp &model;
+            Executor::Mode mode;
             static int rank(const Tensor &x) { return x.dim(); }
             static int64_t size(const Tensor &x, int axis) { return x.size(axis); }
             static int64_t elements(const Tensor &x) { return x.numel(); }
@@ -128,7 +147,8 @@ struct NemotronHMtp final : MtpModule {
                                                       .dtype(mfq_tensor_backend::kInt64));
             }
             Tensor fuse(Tensor e, Tensor h) {
-                return model.execution->projector().run(model.fusion, mfq_tensor_backend::cat({e, h}, -1));
+                return model.executor->projector(mode.ffn).run(
+                    model.fusion, mfq_tensor_backend::cat({e, h}, -1));
             }
             static Tensor lengths(int64_t batch, int64_t end, const Tensor &positions) {
                 return mfq_tensor_backend::full({batch}, end, positions.options());
@@ -140,12 +160,14 @@ struct NemotronHMtp final : MtpModule {
                 std::optional<Tensor> sequence_lengths;
                 if (tokens == 1 && model.lengths[stage] > 0)
                     sequence_lengths = lengths(x.size(0), model.lengths[stage] + 1, pos);
-                for (auto &block : model.blocks)
-                    x = block->forward(*model.execution, std::move(x), pos, model.lengths[stage],
-                                       sequence_lengths, model.rope);
+                AttentionStep step{pos, sequence_lengths, mfq_nullopt, mfq_nullopt,
+                                   model.lengths[stage], 0, 0};
+                for (std::size_t index = 0; index < model.layers.size(); ++index)
+                    x = forward_layer(model.layers[index], model.states[index], *model.executor,
+                                      index, std::move(x), step, 0, mode);
                 return x;
             }
-        } ops{*this};
+        } ops{*this, execution->forward_mode()};
         return mfq::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
                                                      true);
     }
@@ -202,13 +224,12 @@ struct NemotronHMtp final : MtpModule {
         MtpSessionState state;
         state.cache_pos = predictor_position;
         auto& snapshots = std::get<std::vector<KvSnapshot>>(state.payload);
-        for (const auto &block : blocks) {
-            const auto *full = dynamic_cast<const FullBlock *>(block.get());
-            if (full == nullptr)
+        for (std::size_t index = 0; index < layers.size(); ++index) {
+            if (!std::holds_alternative<FullAttention>(layers[index].weights))
                 continue;
-            MfqCudaGuard guard(block->cuda_device);
+            MfqCudaGuard guard(layers[index].device);
             snapshots.push_back(
-                capture_kv(full->cache, predictor_position, state.bytes));
+                capture_kv(std::get<KVCache>(states[index]), predictor_position, state.bytes));
         }
         state.last_target_hidden = last_target_hidden.clone();
         state.bytes += session_tensor_bytes(state.last_target_hidden);
@@ -216,10 +237,10 @@ struct NemotronHMtp final : MtpModule {
     }
 
     void restore_session_state(const MtpSessionState &state) override {
-        std::vector<FullBlock *> saved;
-        for (auto &block : blocks)
-            if (auto *full = dynamic_cast<FullBlock *>(block.get()))
-                saved.push_back(full);
+        std::vector<std::size_t> saved;
+        for (std::size_t index = 0; index < layers.size(); ++index)
+            if (std::holds_alternative<FullAttention>(layers[index].weights))
+                saved.push_back(index);
         const auto *blocks = std::get_if<std::vector<KvSnapshot>>(&state.payload);
         if (state.cache_pos <= 0 || blocks == nullptr || blocks->size() != saved.size() ||
             !state.last_target_hidden.defined() || state.last_target_hidden.dim() != 3 ||
@@ -228,9 +249,11 @@ struct NemotronHMtp final : MtpModule {
             throw std::runtime_error("Nemotron-H MTP session state is incompatible");
         }
         for (std::size_t index = 0; index < saved.size(); ++index) {
-            MfqCudaGuard guard(saved[index]->cuda_device);
-            const auto& attention = *saved[index];
-            restore_kv(saved[index]->cache, (*blocks)[index], attention.attention_head_dim,
+            const auto layer_index = saved[index];
+            MfqCudaGuard guard(layers[layer_index].device);
+            const auto& attention = std::get<FullAttention>(layers[layer_index].weights);
+            restore_kv(std::get<KVCache>(states[layer_index]), (*blocks)[index],
+                attention.attention_head_dim,
                 attention.official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
                 attention.kv_quantization);
         }

@@ -5,6 +5,7 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/gemma4/forward.h"
+#include "engine/models/nemotron_h/forward.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/engine_impl.h"
 #include "engine/instance_impl.h"
@@ -46,7 +47,7 @@ using State = std::variant<
     std::unique_ptr<Text<Loaded<Qwen4CausalLm>>>,
     std::unique_ptr<Text<Loaded<DeepseekV4CausalLm>>>,
     std::unique_ptr<Text<Loaded<DeepseekV41CausalLm>>>,
-    std::unique_ptr<Text<Loaded<NemotronHCausalLm>>> >;
+    std::unique_ptr<Text<Loaded<nemotron_h::Model, nemotron_h::State>>> >;
 
 } // namespace mfq::cuda::engine_detail
 

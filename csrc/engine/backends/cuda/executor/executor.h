@@ -59,6 +59,7 @@ public:
         mfq_tensor_backend::Tensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }
     const FullAttention::Options& attention_options() const noexcept { return options_.attention; }
+    bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
 
 private:

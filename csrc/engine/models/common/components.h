@@ -11,7 +11,7 @@
 #include "engine/models/glm5_next/ops.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/model.h"
-#include "engine/models/nemotron_h/ops.h"
+#include "engine/models/nemotron_h/model.h"
 #include "engine/models/common/mtp.h"
 #include "engine/engine.h"
 #include "engine/models/common/capabilities.h"
@@ -24,6 +24,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+struct CudaExecutionContext;
 
 template <typename Model>
 struct RuntimeComponents {
@@ -106,9 +108,10 @@ struct RuntimeComponents {
         if constexpr (std::is_same_v<Model, mfq::cuda::DeepseekV41CausalLm>)
             if (deepseek_vision)
                 return deepseek_vision->prepare(language, projector, tokens, media);
-        if constexpr (std::is_same_v<Model, mfq::cuda::NemotronHCausalLm>)
+        if constexpr (std::is_same_v<Model, mfq::cuda::nemotron_h::Model>)
             if (radio_vision)
-                return radio_vision->prepare(language, projector, tokens, media);
+                return radio_vision->prepare(language, projector, *executor, collectives,
+                                             primary, tokens, media);
         throw std::invalid_argument("model has no multimodal component");
     }
 
@@ -156,12 +159,12 @@ load_runtime_components(
         const mfq::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
-template <>
-RuntimeComponents<mfq::cuda::NemotronHCausalLm>
+RuntimeComponents<mfq::cuda::nemotron_h::Model>
 load_runtime_components(
-    mfq::cuda::NemotronHCausalLm& model,
+    mfq::cuda::nemotron_h::Model& model,
         const mfq::cuda::weight_loader::Loader& weights,
-    bool load_optional_components);
+    bool load_optional_components,
+    CudaExecutionContext& execution);
 
 
 template <>

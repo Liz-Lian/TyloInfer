@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/models/nemotron_h/vision.h"
+#include "engine/models/nemotron_h/forward.h"
 #include "engine/weights/loader.h"
 
 #include "engine/requests/media.h"
@@ -381,8 +382,9 @@ class CudaRadioPromptComponent {
                                         std::move(input_contract));
     }
 
-    template <typename Model>
     mfq::StepSequence<PreparedPrompt> prepare(Model &language, Projector projector,
+                                                  Executor &executor, Collectives &collectives,
+                                                  int primary,
                                                   const std::vector<std::int64_t> &token_ids,
                                                   const MfqMultimodalInput &media) const {
         const auto grids = validated_grids(media);
@@ -403,7 +405,7 @@ class CudaRadioPromptComponent {
                                       .device(mfq_tensor_backend::kCPU))
                        .reshape({1, static_cast<std::int64_t>(token_ids.size())})
                        .to(mfq_tensor_backend::kCUDA);
-        auto embeddings = language.embed_forward(ids).contiguous();
+        auto embeddings = embed(language, executor, collectives, primary, ids).contiguous();
         std::int64_t patch_offset = 0;
         std::size_t run_index = 0;
         for (const auto& grid : grids) {

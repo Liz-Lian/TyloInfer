@@ -168,7 +168,6 @@ TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Glm5CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV41CausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::NemotronHCausalLm);
 
 #undef TYLOINFER_INSTANTIATE_CAUSAL_LM
 
@@ -317,12 +316,12 @@ RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
     return result;
 }
 
-template <>
-RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
-        mfq::cuda::NemotronHCausalLm& model,
+RuntimeComponents<mfq::cuda::nemotron_h::Model> load_runtime_components(
+        mfq::cuda::nemotron_h::Model& model,
         const mfq::cuda::weight_loader::Loader& weights,
-        bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::NemotronHCausalLm> result{model.graph, model.plan};
+        bool load_optional_components,
+        CudaExecutionContext& execution) {
+    RuntimeComponents<mfq::cuda::nemotron_h::Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
     if ((result.plan.vision != mfq::cuda::CudaVisionAdapter::none &&
          result.plan.vision != mfq::cuda::CudaVisionAdapter::radio) ||
@@ -345,15 +344,15 @@ RuntimeComponents<mfq::cuda::NemotronHCausalLm> load_runtime_components(
     }
     if (result.plan.predictor ==
             mfq::cuda::CudaPredictorAdapter::none) return result;
-    TYLOINFER_RUNTIME_CHECK(model.supports_speculation(),
+    TYLOINFER_RUNTIME_CHECK(mfq::cuda::nemotron_h::supports_speculation(model),
         "invalid Nemotron-H predictor model");
-    auto predictor = mfq::cuda::nemotron_h::NemotronHMtp::load_if_present(
-        *model.execution, weights, model.config, model.embed, model.rope);
+    auto predictor = mfq::cuda::nemotron_h::Mtp::load_if_present(
+        execution, weights, model.config, model.embed);
     // The graph declares the component, so missing weights are a broken
     // container rather than a text-only model.
     TYLOINFER_RUNTIME_CHECK(predictor,
         "Nemotron-H graph declares the predictor component but the source has no MTP weights");
-    result.mtp = std::make_unique<mfq::cuda::nemotron_h::NemotronHMtp>(
+    result.mtp = std::make_unique<mfq::cuda::nemotron_h::Mtp>(
         std::move(*predictor));
     result.mtp_available = true;
     return result;
