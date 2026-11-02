@@ -1,3 +1,4 @@
+#include "engine/weights/workspace.h"
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/moe/load.h"
 #include "env.h"

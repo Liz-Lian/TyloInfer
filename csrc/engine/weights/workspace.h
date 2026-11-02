@@ -7,7 +7,24 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
+
+class MoeExpertCache;
+
+class MoePrefillWorkspaceLoan {
+public:
+    explicit MoePrefillWorkspaceLoan(std::shared_ptr<MoeExpertCache> cache):cache_(std::move(cache)){}
+    ~MoePrefillWorkspaceLoan();
+    std::size_t begin(std::size_t bytes);
+    void suspend();
+    void finish();
+    // Move the output out of borrowed storage before returning it to the cache.
+    mfq_tensor_backend::Tensor finish(mfq_tensor_backend::Tensor output);
+private:
+    std::shared_ptr<MoeExpertCache> cache_;
+    bool active_=false;
+};
 
 namespace mfq {
 namespace source { class Source; }

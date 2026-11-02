@@ -1,31 +1,15 @@
 #pragma once
 
 #include "engine/weights/bias.h"
-#include "engine/backends/cuda/ops/norm/layer.h"
-#include "engine/weights/moe/expert_cache.h"
 
 #include <cstddef>
 
-namespace mfq::cuda::vision {
+namespace mfq::cuda::fields {
 
-template <class Forward>
-Tensor workspace(
-    const std::shared_ptr<MoeExpertCache>& cache,
-    std::size_t bytes,
-    Forward forward) {
-    MoePrefillWorkspaceLoan loan(cache);
-    const bool borrowed = loan.begin(bytes) != 0;
-    auto result = forward();
-    if (borrowed) {
-        loan.suspend();
-        result = result.clone();
-        loan.finish();
-    }
-    return result;
-}
+using Tensor = mfq_tensor_backend::Tensor;
 
 template <class Visitor>
-void visit_linear(QuantLinear& weight, Visitor visit) {
+void tensors(QuantLinear& weight, Visitor visit) {
     TYLOINFER_RUNTIME_CHECK(
         !weight.tensor_parallel(),
         "streamed vision weights require one CUDA device");
@@ -66,35 +50,29 @@ void visit_linear(QuantLinear& weight, Visitor visit) {
 }
 
 template <class Visitor>
-void visit_tensors(BiasWeight& weight, Visitor visit) {
-    visit_linear(weight.weight, visit);
+void tensors(BiasWeight& weight, Visitor visit) {
+    tensors(weight.weight, visit);
     if (weight.bias.defined()) visit(weight.bias);
 }
 
-template <class Visitor>
-void visit_tensors(LayerNorm& norm, Visitor visit) {
-    visit(norm.weight);
-    visit(norm.bias);
-}
-
 template <class Weights, class Visitor>
-void visit_tensors(Weights& weights, Visitor visit) {
+void tensors(Weights& weights, Visitor visit) {
     weights.visit_tensors(visit);
 }
 
 template <class Weights>
 Weights to_cuda(Weights weights) {
-    visit_tensors(weights,
+    tensors(weights,
         [](Tensor& tensor) { tensor = tensor.to(mfq_tensor_backend::kCUDA); });
     return weights;
 }
 
 template <class Weights>
-std::size_t weight_bytes(Weights weights) {
+std::size_t bytes(Weights weights) {
     std::size_t bytes = 0;
-    visit_tensors(weights,
+    tensors(weights,
         [&](Tensor& tensor) { bytes += tensor.nbytes(); });
     return bytes;
 }
 
-} // namespace mfq::cuda::vision
+} // namespace mfq::cuda::fields

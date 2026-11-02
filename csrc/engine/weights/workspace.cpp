@@ -190,3 +190,12 @@ ExpertSpace::Metrics ExpertSpace::metrics() const {
 }
 
 } // namespace mfq::cuda
+
+mfq_tensor_backend::Tensor MoePrefillWorkspaceLoan::finish(mfq_tensor_backend::Tensor output) {
+    if (active_) {
+        suspend();
+        output = output.clone();
+        finish();
+    }
+    return output;
+}

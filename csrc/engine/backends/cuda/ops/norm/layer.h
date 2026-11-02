@@ -51,6 +51,12 @@ struct LayerNorm {
     Tensor weight, bias;
     double epsilon = 1e-6;
 
+    template <class Visitor>
+    void visit_tensors(Visitor visit) {
+        visit(weight);
+        visit(bias);
+    }
+
     Tensor operator()(const Tensor& input) const {
         if (input.dim() == 0 || input.size(-1) != weight.size(0))
             throw std::runtime_error("grid-ViT LayerNorm input width mismatch");

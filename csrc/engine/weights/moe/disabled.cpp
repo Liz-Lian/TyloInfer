@@ -1,3 +1,4 @@
+#include "engine/weights/workspace.h"
 #include "engine/weights/moe/expert_cache.h"
 
 MoePrefillWorkspaceBudget moe_prefill_workspace_budget(const std::shared_ptr<MoeExpertCache>& cache, bool allow_borrow) { return {}; }

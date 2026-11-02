@@ -1,7 +1,8 @@
 #pragma once
 #include "engine/models/common/prompt.h"
 
-#include "engine/models/common/vision/weights.h"
+#include "engine/weights/fields.h"
+#include "engine/weights/workspace.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/models/common/gated_mlp.h"
@@ -72,12 +73,12 @@ class CudaGridVisionEncoder {
 
         template <class Visitor>
         void visit_tensors(Visitor visit) {
-            vision::visit_tensors(norm1, visit);
-            vision::visit_tensors(norm2, visit);
-            vision::visit_tensors(attention.qkv, visit);
-            vision::visit_tensors(attention.output, visit);
-            vision::visit_tensors(mlp_up, visit);
-            vision::visit_tensors(mlp_down, visit);
+            fields::tensors(norm1, visit);
+            fields::tensors(norm2, visit);
+            fields::tensors(attention.qkv, visit);
+            fields::tensors(attention.output, visit);
+            fields::tensors(mlp_up, visit);
+            fields::tensors(mlp_down, visit);
         }
 
         Tensor operator()(const Projector& projector, const Tensor& input,
@@ -184,17 +185,19 @@ class CudaGridVisionPromptComponent {
                     [&](Tensor value) { return mfq::cuda::affine(projector, down, std::move(value)); });
             };
             if (encoder_.host_weights()) {
-                const auto bytes = vision::weight_bytes(merger_norm_) +
-                                   vision::weight_bytes(merger_up_) +
-                                   vision::weight_bytes(merger_down_);
-                merged = vision::workspace(
-                    cache, bytes + patches.nbytes() * 12 + (std::size_t(16) << 20),
-                    [&] {
-                        auto norm = vision::to_cuda(merger_norm_);
-                        auto up = vision::to_cuda(merger_up_);
-                        auto down = vision::to_cuda(merger_down_);
-                        return merge(norm, up, down);
-                    });
+                const auto bytes = fields::bytes(merger_norm_) +
+                                   fields::bytes(merger_up_) +
+                                   fields::bytes(merger_down_);
+                MoePrefillWorkspaceLoan loan(cache);
+                loan.begin(bytes + patches.nbytes() * 12 + (std::size_t(16) << 20));
+                Tensor output;
+                {
+                    auto norm = fields::to_cuda(merger_norm_);
+                    auto up = fields::to_cuda(merger_up_);
+                    auto down = fields::to_cuda(merger_down_);
+                    output = merge(norm, up, down);
+                }
+                merged = loan.finish(std::move(output));
             } else {
                 merged = merge(merger_norm_, merger_up_, merger_down_);
             }

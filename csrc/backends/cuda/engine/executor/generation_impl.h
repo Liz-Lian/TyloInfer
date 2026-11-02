@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/weights/workspace.h"
 
 #include "env.h"
 #include "engine/weights/routed_cache.h"

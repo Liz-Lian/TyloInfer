@@ -115,13 +115,11 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                 return output + patch_bias_.to(mfq_tensor_backend::kCUDA)
                                    .to(output.scalar_type());
             };
-            return host_weights()
-                       ? vision::workspace(
-                             cache,
-                             patch_weight_.nbytes() + patch_bias_.nbytes() +
-                                 std::size_t(count * config_.hidden_size) * 16,
-                             run)
-                       : run();
+            if (!host_weights()) return run();
+            MoePrefillWorkspaceLoan loan(cache);
+            loan.begin(patch_weight_.nbytes() + patch_bias_.nbytes() +
+                       std::size_t(count * config_.hidden_size) * 16);
+            return loan.finish(run());
         },
         [this, cache](const LearnedPositionInterpolation &interpolation) {
             auto run = [&] {
@@ -146,14 +144,11 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                         weights,
                     1);
             };
-            return host_weights()
-                       ? vision::workspace(
-                             cache,
-                             position_weight_.nbytes() +
-                                 std::size_t(interpolation.patch_count * config_.hidden_size) *
-                                     48,
-                             run)
-                       : run();
+            if (!host_weights()) return run();
+            MoePrefillWorkspaceLoan loan(cache);
+            loan.begin(position_weight_.nbytes() +
+                       std::size_t(interpolation.patch_count * config_.hidden_size) * 48);
+            return loan.finish(run());
         },
         [](Tensor hidden, Tensor learned) { return hidden + learned.to(hidden.scalar_type()); },
         [this, projector, cache](const auto &block, Tensor value, const GridVisionLayout &layout) {
@@ -162,16 +157,18 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
             const auto projection_scratch =
                 std::size_t(2) * config_.hidden_size *
                 std::max<int64_t>(3 * config_.hidden_size, config_.intermediate_size);
-            if (host_weights())
-                return vision::workspace(
-                    cache,
-                    vision::weight_bytes(block) + value.nbytes() * 16 + projection_scratch +
-                        std::size_t(value.size(0) * config_.intermediate_size) * 12 +
-                        (std::size_t(16) << 20),
-                    [&] {
-                        auto resident = vision::to_cuda(block);
-                        return resident(projector, value, layout.positions, layout.segment_lengths);
-                    });
+            if (host_weights()) {
+                MoePrefillWorkspaceLoan loan(cache);
+                loan.begin(fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
+                           std::size_t(value.size(0) * config_.intermediate_size) * 12 +
+                           (std::size_t(16) << 20));
+                Tensor output;
+                {
+                    auto resident = fields::to_cuda(block);
+                    output = resident(projector, value, layout.positions, layout.segment_lengths);
+                }
+                return loan.finish(std::move(output));
+            }
             return block(projector, std::move(value), layout.positions, layout.segment_lengths);
         });
 }

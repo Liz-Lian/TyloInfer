@@ -40,17 +40,6 @@ void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::sh
 
 // The owner outlives every temporary tensor allocated from the borrowed tails.
 // Destruction restores experts on cancellation/exception as well as success.
-class MoePrefillWorkspaceLoan {
-public:
-    explicit MoePrefillWorkspaceLoan(std::shared_ptr<MoeExpertCache> cache):cache_(std::move(cache)){}
-    ~MoePrefillWorkspaceLoan();
-    std::size_t begin(std::size_t bytes);
-    void suspend();
-    void finish();
-private:
-    std::shared_ptr<MoeExpertCache> cache_;
-    bool active_=false;
-};
 // A phase can prefer experts from [first,last). Scope exit restores normal
 // eviction on success, cancellation and exceptions, without moving weights.
 class MoePrefillLayerPriority {
