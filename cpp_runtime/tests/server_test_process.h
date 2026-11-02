@@ -14,6 +14,12 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <cerrno>
@@ -36,8 +42,11 @@ public:
             std::filesystem::path log, std::map<std::string, std::string> environment = {}) : log_(std::move(log)) {
         environment.emplace("TYLOINFER_SERVER_API_KEY", "");
         environment.emplace("TYLOINFER_SERVER_MODEL_DIRS", "");
+#ifndef _WIN32
         environment["PATH"] = "";
+#endif
 #ifdef _WIN32
+        // Windows 通过 PATH 查找共享库，开发构建需要继承依赖 DLL 的路径。
         const auto quote = [](const std::wstring& argument) {
             std::wstring result = L"\"";
             std::size_t slashes = 0;

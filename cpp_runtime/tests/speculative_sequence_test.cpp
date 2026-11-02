@@ -575,7 +575,12 @@ void early_target_prefetch() {
             events->push_back('p');return Ops::predictor_step(hidden,ids,positions);
         }
         Tensor target_forward(Tensor ids,Tensor* raw=nullptr,int64_t confirmed=0) {
-            events->push_back('t');return Ops::target_forward(ids,raw,confirmed);
+            events->push_back('t');
+            auto result=Ops::target_forward(ids,raw,confirmed);
+            // Windows 的睡眠粒度可能把 1 ms 和 12 ms 变为相同成本。
+            // 明确拉开验证成本，确保本场景能稳定进入普通解码分支。
+            if(size(ids,1)>1)std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            return result;
         }
     };
     for(int count:{1,32,96}) {

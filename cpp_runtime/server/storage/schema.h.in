@@ -1,5 +1,7 @@
 #pragma once
 
 namespace mfq::server {
-inline constexpr const char* schema_sql = R"sql(@TYLOINFER_SERVER_SCHEMA@)sql";
+inline constexpr char schema_sql[] = {
+@TYLOINFER_SERVER_SCHEMA@'\0'
+};
 }

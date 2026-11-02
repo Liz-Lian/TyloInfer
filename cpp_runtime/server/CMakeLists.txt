@@ -16,10 +16,19 @@ file(STRINGS "${_storage_file}" _schema_version_line REGEX "^SCHEMA_VERSION = [0
 if(NOT _schema_version_line STREQUAL "SCHEMA_VERSION = 19")
     message(FATAL_ERROR "Update native SQLite migrations to match Python SCHEMA_VERSION")
 endif()
-file(READ "${_schema_file}" TYLOINFER_SERVER_SCHEMA)
+# 将输入逐字节嵌入，避免 MSVC 对单个字符串长度的限制并保留原始编码。
+# /** Reads a file as escaped character initializers without changing its bytes. */
+function(tyloinfer_server_read_bytes path output)
+    file(READ "${path}" _bytes HEX)
+    string(REGEX REPLACE "(................................)" "\\1\n" _bytes "${_bytes}")
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "'\\\\x\\1'," _bytes "${_bytes}")
+    set(${output} "${_bytes}" PARENT_SCOPE)
+endfunction()
+
+tyloinfer_server_read_bytes("${_schema_file}" TYLOINFER_SERVER_SCHEMA)
 configure_file(storage/schema.h.in generated/schema.h @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.json")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.json" TYLOINFER_SERVER_OPENAPI)
+tyloinfer_server_read_bytes("${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.json" TYLOINFER_SERVER_OPENAPI)
 configure_file(api/openapi.h.in generated/openapi.h @ONLY)
 
 add_library(tyloinfer-server-core STATIC server.cpp instance.cpp api/inference.cpp api/anthropic.cpp api/models.cpp
@@ -88,6 +97,9 @@ if(BUILD_TESTING)
     set_tests_properties(tyloinfer-server-catalog-formats-test PROPERTIES TIMEOUT 60 LABELS "native-server;stage2")
     add_executable(tyloinfer-server-test ../tests/server_test.cpp)
     target_include_directories(tyloinfer-server-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_compile_definitions(tyloinfer-server-test PRIVATE
+        TYLOINFER_SERVER_OPENAPI_FILE="${CMAKE_CURRENT_SOURCE_DIR}/api/openapi.json"
+        TYLOINFER_SERVER_SCHEMA_FILE="${_schema_file}")
     target_link_libraries(tyloinfer-server-test PRIVATE mfq-http mfq-json SQLite::SQLite3)
     target_compile_features(tyloinfer-server-test PRIVATE cxx_std_17)
     if(MSVC)

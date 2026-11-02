@@ -1,5 +1,6 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
+#include "openapi.h"
 #include "schema.h"
 #include "server_test_process.h"
 
@@ -422,6 +423,15 @@ void static_files() {
     write_file(web / "api" / "secret", "not an API");
     write_file(web / "health", "not health");
     auto server = f.start({"--web-root", web.u8string() + "/"});
+    const auto openapi = read_file(fs::u8path(TYLOINFER_SERVER_OPENAPI_FILE));
+    CHECK(!openapi.empty());
+    CHECK(std::string(mfq::server::openapi_document) == openapi);
+    CHECK(std::string(mfq::server::schema_sql) == read_file(fs::u8path(TYLOINFER_SERVER_SCHEMA_FILE)));
+    const auto document = server.get("/openapi.json");
+    CHECK(document.status == 200);
+    CHECK(document.body == openapi);
+    CHECK(document.header("Content-Type").find("application/json") != std::string::npos);
+    CHECK(document.document().at("paths").is_object());
     for (const auto* path : {"/", "/chat", "/settings/profile", "/future/page?session=1"}) {
         const auto response = server.get(path, {{"Accept", "text/html"}});
         CHECK(response.status == 200);
@@ -678,7 +688,7 @@ void model_catalog() {
     CHECK(read_file(index) == saved);
     CHECK(server.get("/api/v1/models", admin).document().at("data").size() == 5);
     auto deep = f.root / "deep";
-    for (int i = 0; i < 34; ++i) deep /= "child";
+    for (int i = 0; i < 34; ++i) deep /= "d";
     fs::create_directories(deep);
     write_mfq(deep / "deep.mfq");
     CHECK(server.send("POST", "/api/v1/models/directories/register", {{"path", (f.root / "deep").u8string()}}, admin).status == 413);

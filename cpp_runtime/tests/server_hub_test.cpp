@@ -194,9 +194,11 @@ void network(const fs::path& openssl) {
         fetch.direct = true; CHECK(hub::get(fetch, "/echo", {}) == "Bearer fixture-token");
     }
     const auto cert = temporary.root / "cert.pem", key = temporary.root / "key.pem";
-    server_test::Process generate(openssl, {"req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost",
+    const auto config = temporary.root / "openssl.cnf";
+    write(config, "[req]\ndistinguished_name=dn\n[dn]\n");
+    server_test::Process generate(openssl, {"req", "-config", path_utf8(config), "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost",
         "-addext", "subjectAltName=DNS:localhost", "-keyout", path_utf8(key), "-out", path_utf8(cert)}, temporary.root / "cert.log");
-    CHECK(generate.wait() == 0);
+    if (generate.wait() != 0) throw std::runtime_error("test certificate generation failed: " + generate.output());
     int port;
     { httplib::Server reserve; port = reserve.bind_to_any_port("127.0.0.1"); CHECK(port > 0);
       std::thread listener([&] { reserve.listen_after_bind(); }); wait([&] { return reserve.is_running(); }); reserve.stop(); listener.join(); }

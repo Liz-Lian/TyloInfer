@@ -15,6 +15,12 @@ void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(m
 void u64(std::ostream& out, std::uint64_t value) {
     for (unsigned i = 0; i < 8; ++i) out.put(char(value >> (i * 8)));
 }
+/** Removes the two fixture files after every source reader has been destroyed. */
+void cleanup(const std::filesystem::path& root) {
+    std::filesystem::remove(root / "config.json");
+    std::filesystem::remove(root / "model.safetensors");
+    std::filesystem::remove(root);
+}
 }
 
 int main() {
@@ -70,11 +76,11 @@ int main() {
         try { mfq::MlxAffineLayout::parse(bytes.data(), layout.prefix_bytes - 1); }
         catch (const std::invalid_argument&) { rejected = true; }
         require(rejected, "MLX truncated metadata was accepted");
-        std::filesystem::remove_all(root);
-        std::cout << "MLX affine source overrides/logical shape/bit-exact payload/range reads PASS\n";
-        return 0;
     } catch (const std::exception& error) {
-        std::filesystem::remove_all(root);
+        cleanup(root);
         std::cerr << error.what() << '\n'; return 1;
     }
+    cleanup(root);
+    std::cout << "MLX affine source overrides/logical shape/bit-exact payload/range reads PASS\n";
+    return 0;
 }
