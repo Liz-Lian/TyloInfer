@@ -139,8 +139,6 @@ struct CudaExecutionContext {
     void reset();
 };
 
-void mfq_release_host_allocator_cache() noexcept;
-
 bool model_parallel_enabled(const CudaExecutionContext& execution);
 const ParallelConfig& model_parallel_config(
     const CudaExecutionContext& execution);

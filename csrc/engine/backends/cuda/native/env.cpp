@@ -91,6 +91,26 @@ bool env_flag(const char* name, bool when_unset) {
     return text.empty() ? when_unset : parse<int>(name, text) != 0;
 }
 
+std::optional<std::string> env_value(const char* name) {
+    const char* value = mfq::cuda::env_lookup(name);
+    if (value == nullptr || value[0] == '\0') return std::nullopt;
+    return value;
+}
+
+int env_int(
+        const char* name, int fallback, int minimum, int maximum) {
+    const auto value = env_value(name);
+    if (!value) return fallback;
+    int parsed = 0;
+    const auto [end, error] = std::from_chars(
+        value->data(), value->data() + value->size(), parsed);
+    if (error != std::errc{} || end != value->data() + value->size() ||
+            parsed < minimum || parsed > maximum) {
+        throw std::runtime_error(std::string("invalid ") + name);
+    }
+    return parsed;
+}
+
 long long env_number(const char* name, long long when_unset) {
     const auto text = require_value(name, env_lookup(name));
     return text.empty() ? when_unset : parse<long long>(name, text);

@@ -1,7 +1,7 @@
 #include "engine/weights/moe/prepare.h"
 #include "engine/weights/moe/load.h"
 #include "env.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/cached_source_internal.h"
 #include "engine/weights/moe/host_cache_policy.h"

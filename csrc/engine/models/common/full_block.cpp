@@ -1,9 +1,9 @@
 #include "engine/models/common/full_block.h"
 #include "engine/backends/cuda/executor/ffn.h"
-#include "engine/executor/attention.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 
+#include <algorithm>
 #include <utility>
 
 mfq_tensor_backend::Tensor Block::forward_context(CudaExecutionContext &execution,
@@ -61,8 +61,21 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
     const mfq::cuda::AttentionStep step{
         std::move(pos), seq_len, cache_positions, attention_mask,
         cache_pos, planned_kv_length, decode_attention_parts};
-    auto attention = mfq::cuda::run_attention(
-        execution, *this, cache, execution.attention_scratch[this], std::move(x), step, rope);
+    const auto kl_capacity = execution.kl_mmq.kv_cache_capacity;
+    const int64_t capacity = sliding ? attention_window
+        : (kl_capacity > 0 ? std::max<int64_t>(step.cache_position + x.size(1), kl_capacity)
+                           : max_position_embeddings);
+    if (!cache.defined()) {
+        cache = KVCache(x.size(0), kv_heads, capacity,
+            attention_head_dim, sliding, x.device(),
+            official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+            kv_quantization);
+    }
+    cache.quantization = kv_quantization;
+    auto attention = mfq::cuda::FullAttention::forward(
+        execution.projector(), execution.profiler, execution.config.tasks.attention,
+        std::move(x), step, cache.view(), execution.attention_scratch[this], rope,
+        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
 }
 

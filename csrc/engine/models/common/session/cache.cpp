@@ -4,7 +4,7 @@
 #include <cstring>
 
 #include "cuda_runtime_config.h"
-#include "backends/cuda/engine/executor/execution.h"
+#include "backends/cpu/native/host_memory.h"
 #include "engine/models/deepseek_v41/session_codec.h"
 #include "engine/models/qwen4_exp/session_codec.h"
 #include "engine/models/common/session/state.h"
@@ -161,7 +161,7 @@ std::size_t CudaSessionOps::token_count(const CudaPagedPayload& payload) {
 }
 
 void CudaSessionOps::release_host_cache() {
-    mfq_release_host_allocator_cache();
+    mfq::trim_host_cache();
 }
 
 TextSessionCache::TextSessionCache(const mfq::engine::SessionCacheConfig &session_config,

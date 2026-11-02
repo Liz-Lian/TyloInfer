@@ -11,7 +11,7 @@
 #include "engine/executor/text.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/engine.h"
 #include "engine/requests/processor.h"

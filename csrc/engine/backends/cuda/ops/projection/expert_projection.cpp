@@ -1,7 +1,7 @@
 #include "projection.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
-#include "engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/collectives.h"
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT

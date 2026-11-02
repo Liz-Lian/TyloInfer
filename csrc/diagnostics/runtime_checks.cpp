@@ -5,7 +5,7 @@
 
 #include "cuda_runtime_config.h"
 #include "backends/cuda/engine/executor/generation.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/models/batch.h"
 

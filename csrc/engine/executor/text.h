@@ -14,7 +14,7 @@
 #include "engine/state/kv_memory.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/weights/workspace.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/metrics.h"

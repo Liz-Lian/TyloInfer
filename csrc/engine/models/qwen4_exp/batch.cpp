@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/executor/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/budget.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "native/error.h"

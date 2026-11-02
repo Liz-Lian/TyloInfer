@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,9 @@ namespace mfq::cuda {
 const char* env_lookup(const char* name);
 
 // Strict readers: a value that is set but not parseable throws std::runtime_error.
+std::optional<std::string> env_value(const char* name);
 bool env_flag(const char* name, bool when_unset);
+int env_int(const char* name, int when_unset, int minimum, int maximum);
 long long env_number(const char* name, long long when_unset);
 std::size_t env_size(const char* name, std::size_t when_unset);
 std::string env_text(const char* name, std::string when_unset);

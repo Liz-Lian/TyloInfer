@@ -1,5 +1,5 @@
 #include "engine/weights/quant.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/format.h"
 #include "engine/weights/tensor_parallel.h"
 #include "nvq_group.h"

@@ -415,13 +415,10 @@ function(mfq_configure_cuda_backend_target target)
     endif()
 endfunction()
 
-# Remaining backend bindings use the legacy runtime include roots. Kernel/quant
+# Remaining runtime bindings share Engine and weight dependencies. Kernel/quant
 # ops have no Engine, model-family, scheduler or transport link.
 function(mfq_configure_cuda_runtime_target target)
     mfq_configure_cuda_backend_target(${target})
-    target_include_directories(${target} PRIVATE
-        ${TYLOINFER_CUDA_ROOT}/engine
-    )
     target_link_libraries(${target} PRIVATE
         mfq-model-source
         mfq-quant-readers
@@ -497,11 +494,11 @@ set_target_properties(mfq-cuda-ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/options.cpp
     ${PROJECT_SOURCE_DIR}/engine/budget.cpp
     ${PROJECT_SOURCE_DIR}/engine/executor/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/pipelines.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
-    ${TYLOINFER_CUDA_ROOT}/engine/executor/attention.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/batch_graph.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/ffn.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/tq.cpp
@@ -1033,7 +1030,6 @@ if(TARGET mfq-runtime-communication)
         ${PROJECT_SOURCE_DIR}
         ${TYLOINFER_CUDA_ROOT}
         ${TYLOINFER_CUDA_ROOT}/include
-        ${TYLOINFER_CUDA_ROOT}/engine
     )
     target_compile_features(mfq-runtime PRIVATE cxx_std_20)
     set_target_properties(mfq-runtime PROPERTIES

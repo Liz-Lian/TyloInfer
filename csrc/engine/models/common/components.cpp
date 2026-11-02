@@ -4,7 +4,7 @@
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/loader.h"
 #include "engine/models/common/components.h"
 #include "engine/models/qwen4_exp/mtp.h"

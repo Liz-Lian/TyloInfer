@@ -1,5 +1,8 @@
 #include "host_memory.h"
 #include <stdexcept>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -30,5 +33,11 @@ mfq::HostMemorySample mfq::sample_host_memory() {
         std::uint64_t(system.freeram + system.bufferram) * system.mem_unit, std::nullopt};
 #else
     throw std::runtime_error("Host memory measurement is unavailable on this platform");
+#endif
+}
+
+void mfq::trim_host_cache() noexcept {
+#if defined(__GLIBC__)
+    (void)malloc_trim(0);
 #endif
 }

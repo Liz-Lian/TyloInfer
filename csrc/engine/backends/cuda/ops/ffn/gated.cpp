@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/native/allocation.h"
 #include "engine/backends/cuda/kernels/gated_residual_fused.h"
 #include "engine/backends/cuda/kernels/float_projection.h"
-#include "engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 
 #include <algorithm>
 #include <cstdio>

@@ -14,4 +14,5 @@ struct HostMemorySample {
     }
 };
 HostMemorySample sample_host_memory();
+void trim_host_cache() noexcept;
 }

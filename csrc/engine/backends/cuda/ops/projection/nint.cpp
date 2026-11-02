@@ -8,7 +8,7 @@
 #include "cpu_rows.h"
 #include "engine/weights/nint_cache.h"
 #include "engine/backends/cuda/executor/decode_window.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 
 #include <cmath>
 #include <cstring>

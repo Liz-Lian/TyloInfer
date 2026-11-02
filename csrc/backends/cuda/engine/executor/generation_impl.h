@@ -14,7 +14,7 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/input.h"
 

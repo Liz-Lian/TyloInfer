@@ -2,7 +2,7 @@
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "decode_window.h"
-#include "backends/cuda/engine/executor/options.h"
+#include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/tq/cache.h"
 #include "engine/backends/cuda/ops/projection/tq_detail.h"
 #include "engine/backends/cuda/ops/ffn/tq.h"
