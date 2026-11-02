@@ -5,7 +5,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/ffn.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
-#include "engine/executor/scope.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
 namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 

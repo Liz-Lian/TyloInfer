@@ -1,7 +1,7 @@
 #include "memory.h"
 #include "context.h"
 #include "device.h"
-#include "native/error.h"
+#include "components/error.h"
 
 #include <stdexcept>
 #include <string>

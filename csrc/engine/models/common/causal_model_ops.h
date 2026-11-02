@@ -1,7 +1,7 @@
 #pragma once
 
-#include "cuda_model_plan.h"
-#include "engine/executor/scope.h"
+#include "engine/models/common/capabilities.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/block.h"
 #include "engine/models/common/causal_model.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"

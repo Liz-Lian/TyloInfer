@@ -8,7 +8,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_shared_gate.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "native/error.h"
+#include "components/error.h"
 #include "context.h"
 #include "engine/backends/cuda/native/memory.h"
 #include "engine/backends/cuda/native/stream.h"

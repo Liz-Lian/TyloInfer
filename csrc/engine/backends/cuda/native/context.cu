@@ -3,7 +3,7 @@
 #include "stream.h"
 #include "device.h"
 #include "resident_allocations.h"
-#include "native/error.h"
+#include "components/error.h"
 
 #include <algorithm>
 #include <atomic>

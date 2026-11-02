@@ -3,7 +3,7 @@
 #include "runtime_checks.h"
 #include <map>
 
-#include "cuda_runtime_config.h"
+#include "engine/load.h"
 #include "engine/models/common/generation.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/models/common/session/cache.h"

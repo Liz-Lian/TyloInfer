@@ -1,6 +1,6 @@
 #include "engine/models/source.h"
 #include "backends/cuda/engine/executor/execution.h"
-#include "engine/executor/scope.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"

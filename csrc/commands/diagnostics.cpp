@@ -12,7 +12,7 @@
 #include "diagnostics/runtime_checks.h"
 #include "diagnostics/flash_next_mtp.h"
 #include "minicpmo45.h"
-#include "engine/executor/scope.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"

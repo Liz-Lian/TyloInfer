@@ -1,8 +1,8 @@
 #pragma once
 
-#include "engine/executor/loaded.h"
-#include "engine/executor/load.h"
-#include "engine/executor/scope.h"
+#include "engine/models/common/loaded.h"
+#include "engine/load.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/models/common/components.h"
 #include "engine/models/common/load.h"
@@ -16,7 +16,6 @@
 #include "engine/models/qwen35/components.h"
 #include "engine/models/qwen35/state.h"
 #include "engine/models/minicpmo45/state.h"
-#include "cuda_runtime_config.h"
 
 #include <chrono>
 #include <iostream>

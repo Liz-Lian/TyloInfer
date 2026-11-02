@@ -10,7 +10,7 @@
 #include "engine/engine.h"
 #include "engine/weights/workspace.h"
 #include "engine/weights/memory.h"
-#include "native/error.h"
+#include "components/error.h"
 
 #include <algorithm>
 #include <iostream>

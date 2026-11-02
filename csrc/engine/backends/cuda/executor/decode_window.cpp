@@ -4,7 +4,7 @@
 #include "context.h"
 #include "engine/backends/cuda/native/graph.h"
 #include "engine/backends/cuda/native/device.h"
-#include "native/error.h"
+#include "components/error.h"
 #include "engine/backends/cpu/executor/expert_pool.h"
 #include <algorithm>
 #include <atomic>

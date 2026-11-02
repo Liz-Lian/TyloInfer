@@ -2,7 +2,7 @@
 #include "cli.h"
 #include "engine/models/load.h"
 #include "eval/kl.h"
-#include "engine/executor/scope.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"

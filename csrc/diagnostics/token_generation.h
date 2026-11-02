@@ -4,7 +4,7 @@
 #include "engine/requests/inference.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
-#include "engine/executor/scope.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/models/qwen35/forward.h"

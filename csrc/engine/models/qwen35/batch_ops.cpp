@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/budget.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "native/error.h"
+#include "components/error.h"
 
 #include <algorithm>
 #include <exception>

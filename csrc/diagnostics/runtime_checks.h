@@ -2,7 +2,7 @@
 #include "env.h"
 
 #include "engine/models/common/generation.h"
-#include "engine/executor/scope.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "generation_result.h"
 #include "engine/models/deepseek_v4/ops.h"
 #include "engine/models/qwen4_exp/ops.h"

@@ -1,7 +1,7 @@
 #pragma once
 #include "engine/models/source.h"
 
-#include "engine/executor/loaded.h"
+#include "engine/models/common/loaded.h"
 #include "engine/engine.h"
 #include "engine/models/common/vision/grid_encoder.h"
 #include "engine/models/qwen35/model.h"

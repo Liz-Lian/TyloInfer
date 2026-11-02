@@ -5,7 +5,7 @@
 #include "engine/models/common/ffn.h"
 #include "engine/backends/cuda/executor/task.h"
 #include "engine/models/common/model_graph.h"
-#include "cuda_model_plan.h"
+#include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"

@@ -8,7 +8,7 @@
 #include "engine/models/common/causal_metadata.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/models/common/mtp.h"
-#include "cuda_runtime_config.h"
+#include "engine/load.h"
 
 #include <functional>
 #include <optional>

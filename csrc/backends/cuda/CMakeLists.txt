@@ -196,7 +196,6 @@ target_include_directories(mfq-cuda-native-kernels PRIVATE
     ${PROJECT_SOURCE_DIR}
     ${TYLOINFER_CUDA_ROOT}
     ${TYLOINFER_REPOSITORY_ROOT}
-    ${TYLOINFER_CUDA_ROOT}/include
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
     ${TYLOINFER_CUDA_KERNEL_ROOT}
@@ -392,7 +391,6 @@ function(mfq_configure_cuda_backend_target target)
         ${PROJECT_SOURCE_DIR}
         ${TYLOINFER_REPOSITORY_ROOT}
         ${TYLOINFER_CUDA_ROOT}
-        ${TYLOINFER_CUDA_ROOT}/include
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native
         ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/tensor
         ${TYLOINFER_CUDA_KERNEL_ROOT}
@@ -496,7 +494,6 @@ set(TYLOINFER_CUDA_EXECUTION_SOURCES
     ${TYLOINFER_CUDA_ROOT}/engine/executor/execution.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/options.cpp
     ${PROJECT_SOURCE_DIR}/engine/budget.cpp
-    ${PROJECT_SOURCE_DIR}/engine/executor/load.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/pipelines.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/executor.cpp
     ${PROJECT_SOURCE_DIR}/engine/backends/cuda/executor/decode_graph.cpp

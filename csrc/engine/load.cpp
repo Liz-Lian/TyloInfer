@@ -1,18 +1,21 @@
+#include "engine/load.h"
 #include "engine/models/load.h"
 #include "engine/models/batch.h"
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/minicpmo45/forward.h"
 #include "engine/models/common/model_graph.h"
-#include "engine/executor/cuda_engine.h"
-#include "engine/executor/backend.h"
+#include "engine/engine_impl.h"
+#include "engine/instance_impl.h"
 #include "engine/instance.h"
 
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/weights/moe/expert_cache.h"
+#include "engine/state/kv_memory.h"
+#include "engine/backends/cuda/native/profile.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/weights/profile.h"
 #include "engine/weights/profile_path.h"
-#include "cuda_runtime_config.h"
 
 #include <algorithm>
 #include <charconv>
@@ -533,3 +536,31 @@ void setup_cuda_load(
 }
 
 } // namespace mfq::cuda::internal
+
+namespace mfq::cuda {
+
+void finalize_kv(KvMemoryManager* kv, RoutedCache& weights,
+        std::shared_ptr<KvOffloadStore>& offload) {
+    if (kv) {
+        kv->finalize(moe_expert_cache_minimum_bytes(weights.moe));
+        set_moe_kv_expert_loan(weights.moe, kv->expert_loan());
+        if (auto store = kv->offload()) offload = std::move(store);
+    }
+}
+
+std::chrono::steady_clock::time_point finish_load(
+        KvMemoryManager* kv, RoutedCache& weights, std::size_t graph_reserve,
+        bool report_memory) {
+    if (moe_expert_cache_has_sources(weights.moe) &&
+            !moe_expert_cache_finalized(weights.moe)) {
+        finalize_moe_expert_cache(weights.moe,
+            (kv ? kv->growth_reserve() : 0) + graph_reserve,
+            kv ? kv->expert_budget_charge() : 0);
+    }
+    mfq_cuda_synchronize();
+    const auto loaded = std::chrono::steady_clock::now();
+    report_cuda_memory(report_memory, "loaded");
+    return loaded;
+}
+
+} // namespace mfq::cuda

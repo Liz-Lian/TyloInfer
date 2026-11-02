@@ -1,5 +1,5 @@
 #include "common.h"
-#include "native/error.h"
+#include "components/error.h"
 
 #include <algorithm>
 #include <cerrno>

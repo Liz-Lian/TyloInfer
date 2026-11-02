@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/native/memory.h"
 #include "engine/backends/cuda/native/stream.h"
 #include "engine/backends/cuda/native/device.h"
-#include "native/error.h"
+#include "components/error.h"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>

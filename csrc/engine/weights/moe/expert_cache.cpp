@@ -10,7 +10,7 @@
 #include "engine/backends/cuda/native/device.h"
 #include "resident_allocations.h"
 #include "engine/backends/cpu/native/host_parallel.h"
-#include "native/error.h"
+#include "components/error.h"
 #include "engine/weights/source/mapped.h"
 #include <thread>
 #include <map>

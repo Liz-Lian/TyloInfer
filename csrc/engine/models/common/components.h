@@ -14,7 +14,7 @@
 #include "engine/models/nemotron_h/ops.h"
 #include "engine/models/common/mtp.h"
 #include "engine/engine.h"
-#include "cuda_model_plan.h"
+#include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
 
 #include <cstdint>
