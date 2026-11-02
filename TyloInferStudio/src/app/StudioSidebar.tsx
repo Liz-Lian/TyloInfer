@@ -14,7 +14,7 @@ import { studioBuild } from '../features/settings/releases';
 import { AgentWorkspaceSidebar } from '../features/agent/AgentWorkspaceSidebar';
 import { useSidebarScroll } from './useSidebarScroll';
 import { dashboardPath, labPath, resolveStudioLocation, isStudioPath,
-  type DashboardPage, type LabPage } from '../navigation';
+  primaryConversationPath, STUDIO_PATHS, type DashboardPage, type LabPage } from '../navigation';
 
 type NavItem = {
   label: [string, string];
@@ -25,6 +25,7 @@ type NavItem = {
   count?: number;
 };
 
+/** Render service-aware conversation entries while retaining supported Agent workspaces. */
 export function StudioSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -34,6 +35,7 @@ export function StudioSidebar() {
   const releaseBuild = studioUpdates.status?.current_release ?? studioBuild.release;
   const revision = version.split('+dev.')[1]?.split('.')[0];
   const { runtime } = useRuntime();
+  const native = runtime?.source === 'native-instances';
   const sidebarOpen = useUiStore((state) => state.sidebarOpen);
   const closeSidebar = useUiStore((state) => state.closeSidebar);
   const openSidebar = useUiStore((state) => state.openSidebar);
@@ -100,11 +102,11 @@ export function StudioSidebar() {
                 {group.label[1] === 'Tools' ? <button className="sidebar-group-toggle sidebar-section-heading" type="button" aria-expanded={toolsOpen}
                   aria-controls="sidebar-tools" onClick={() => setToolsOpen(value => !value)}>
                   <span>{tr(...group.label)}</span><CaretRightIcon size={10} weight="fill" />
-                </button> : <div className="sidebar-group-label sidebar-section-heading">{tr(...group.label)}</div>}
+                </button> : <div className="sidebar-group-label sidebar-section-heading">{group.label[1] === 'Agent' && native ? tr('对话', 'Conversations') : tr(...group.label)}</div>}
                 {group.label[1] === 'Agent' ? <button type="button" className="agent-new-conversation"
-                  aria-current={view === 'agent' && !location.search ? 'page' : undefined}
-                  onClick={() => open(agentWorkspace ? `/agent?workspace=${encodeURIComponent(agentWorkspace)}` : '/agent')}>
-                  <NotePencilIcon size={14} /><span>{tr('新建会话', 'New conversation')}</span>
+                  aria-current={native ? view === 'chat' ? 'page' : undefined : view === 'agent' && !location.search ? 'page' : undefined}
+                  onClick={() => open(!native && agentWorkspace ? `/agent?workspace=${encodeURIComponent(agentWorkspace)}` : primaryConversationPath(runtime?.source))}>
+                  <NotePencilIcon size={14} /><span>{native ? tr('文本聊天', 'Text chat') : tr('新建会话', 'New conversation')}</span>
                 </button> : <div id={group.label[1] === 'Tools' ? 'sidebar-tools' : undefined} className="sidebar-nav-items" hidden={group.label[1] === 'Tools' && !toolsOpen}>
                 {group.items.map((item) => (
                   <button
@@ -120,7 +122,10 @@ export function StudioSidebar() {
                   </button>
                 ))}
                 </div>}
-                {group.label[1] === 'Agent' && <AgentWorkspaceSidebar onOpen={open} />}
+                {group.label[1] === 'Agent' && (native ? <div className="sidebar-nav-items">
+                  <button type="button" aria-current={view === 'agent' ? 'page' : undefined} className={view === 'agent' ? 'active' : ''}
+                    onClick={() => open(STUDIO_PATHS.agent)}><Icon name="info" />{tr('Agent（暂不可用）', 'Agent (unavailable)')}</button>
+                </div> : <AgentWorkspaceSidebar onOpen={open} />)}
               </section>
             ))}
           </nav>

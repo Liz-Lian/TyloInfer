@@ -5,10 +5,15 @@ import {
   isStudioPath,
   labPath,
   normalizeStudioPath,
+  primaryConversationPath,
   resolveStudioLocation,
 } from '../src/navigation';
 
 describe('Studio 页面路由', () => {
+  it('uses text chat for native services and preserves the Agent entry for other services', () => {
+    expect(primaryConversationPath('native-instances')).toBe('/chat');
+    expect(primaryConversationPath()).toBe('/agent');
+  });
   it.each([
     ['/', 'dashboard', 'overview'],
     ['/models', 'dashboard', 'models'],

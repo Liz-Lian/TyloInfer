@@ -41,7 +41,7 @@ it('shows native aggregate statistics as unavailable and uses its shared Anthrop
   await act(async () => { render(<OverviewPage />); });
   expect(state.listener).not.toHaveBeenCalled();
   expect(screen.getByText(/does not provide aggregate statistics/)).toBeInTheDocument();
-  expect(screen.getByText('http://127.0.0.1:8090/v1/messages')).toBeInTheDocument();
+  expect(screen.getByText(`${window.location.origin}/v1/messages`)).toBeInTheDocument();
   expect(screen.getByText('Prefill').closest('.metric-tile')).toHaveTextContent('--');
 });
 

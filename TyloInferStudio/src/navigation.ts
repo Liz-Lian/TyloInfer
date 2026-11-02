@@ -26,6 +26,11 @@ export const STUDIO_PATHS = {
   logs: '/logs',
 } as const;
 
+/** Choose an available primary conversation entry without redirecting explicit Agent links. */
+export function primaryConversationPath(runtimeSource?: string): string {
+  return runtimeSource === 'native-instances' ? STUDIO_PATHS.chat : STUDIO_PATHS.agent;
+}
+
 const DASHBOARD_PATHS: Record<DashboardPage, string> = {
   overview: STUDIO_PATHS.overview,
   models: STUDIO_PATHS.models,

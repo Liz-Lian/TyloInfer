@@ -76,9 +76,10 @@ export function OverviewPage() {
   }, [serviceUrl, connectionRevision, native]);
   const availableModelNames = runtimeModelNames(models, instances);
   const anthropicPort = listener?.url === serviceUrl && listener.revision === connectionRevision ? listener.port : null;
+  const openAIUrl = openAIEndpoint(serviceUrl);
   const endpoints = [
-    { id: 'openai', label: tr('OpenAI 兼容端点', 'OpenAI-compatible endpoint'), url: openAIEndpoint(serviceUrl) },
-    { id: 'anthropic', label: tr('Anthropic 兼容端点', 'Anthropic-compatible endpoint'), url: native ? `${openAIEndpoint(serviceUrl)}/messages` : anthropicEndpoint(serviceUrl, anthropicPort) },
+    { id: 'openai', label: tr('OpenAI 兼容端点', 'OpenAI-compatible endpoint'), url: openAIUrl },
+    { id: 'anthropic', label: tr('Anthropic 兼容端点', 'Anthropic-compatible endpoint'), url: native ? openAIUrl ? `${openAIUrl}/messages` : null : anthropicEndpoint(serviceUrl, anthropicPort) },
   ];
   async function copyEndpoint(id: string, endpoint: string) {
     try {

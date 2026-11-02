@@ -5,7 +5,7 @@ import { useJobStore } from '../../stores/jobStore';
 import { useSettings } from '../settings/SettingsProvider';
 import { Icon, TMPanel, ModelMonogram } from '../../app/display';
 import { formatNumber, formatDuration } from '../../app/formatters';
-import { STUDIO_PATHS } from '../../navigation';
+import { primaryConversationPath, STUDIO_PATHS } from '../../navigation';
 import { openAIEndpoint } from './endpoint';
 import { getApiBaseUrl } from '../../shared/api/client';
 import { ModelVendorMark } from '../../app/ModelVendorMark';
@@ -19,7 +19,7 @@ export function RuntimeHero() {
   const { tr } = useSettings();
   const navigate = useNavigate();
   const openStudioPage = (localCheckpoints = false) => navigate(`${STUDIO_PATHS.models}${localCheckpoints ? '#local-checkpoints' : ''}`);
-  const openAgentPage = () => navigate(STUDIO_PATHS.agent);
+  const openConversationPage = () => navigate(primaryConversationPath(runtime?.source));
   const runtimeModelName = runtime?.model || 'Empty';
   const modelHero = useMemo(() => {
     const activeLoadJob = jobs.find(
@@ -100,7 +100,7 @@ export function RuntimeHero() {
             {modelHeroStatus}
           </span>
         </div>
-        <p className="runtime-endpoint">{openAIEndpoint(studio?.service_url || getApiBaseUrl())}</p>
+        <p className="runtime-endpoint">{openAIEndpoint(studio?.service_url || getApiBaseUrl()) ?? tr('API 端点暂不可用', 'API endpoint unavailable')}</p>
         <small>
           {runtime?.model
             ? [runtime.model_type, `${formatNumber(runtime.max_context)} ${tr('上下文', 'context')}`,
@@ -116,9 +116,9 @@ export function RuntimeHero() {
           <Icon name="folder" size={15} />
           {modelHero.state === 'idle' ? tr('加载', 'Load') : tr('模型', 'Models')}
         </button>
-        <button className={modelHero.state === 'ready' ? 'primary runtime-hero-chat' : undefined} onClick={openAgentPage} type="button">
+        <button className={modelHero.state === 'ready' ? 'primary runtime-hero-chat' : undefined} onClick={openConversationPage} type="button">
           <Icon name="chat" size={15} />
-          Agent
+          {runtime?.source === 'native-instances' ? tr('聊天', 'Chat') : 'Agent'}
         </button>
       </div>
     </TMPanel>

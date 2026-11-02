@@ -33,10 +33,17 @@ it('retains the normal Models action when a model is running', () => {
   expect(screen.getByTestId('location').textContent).toBe('/models');
 });
 
-it('opens the agent workspace instead of the retired chat route', () => {
+it('preserves the agent workspace entry on services without the native limitation', () => {
   render(<MemoryRouter><RuntimeHero /><Location /></MemoryRouter>);
   fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
   expect(screen.getByTestId('location').textContent).toBe('/agent');
+});
+
+it('opens text chat from the native model hero', () => {
+  state.runtime = { source: 'native-instances', model: 'model-a', runtime_state: 'ready' };
+  render(<MemoryRouter><RuntimeHero /><Location /></MemoryRouter>);
+  fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+  expect(screen.getByTestId('location').textContent).toBe('/chat');
 });
 
 it('shows an interrupted load after runtime cleanup and lets a new retry show its progress', () => {

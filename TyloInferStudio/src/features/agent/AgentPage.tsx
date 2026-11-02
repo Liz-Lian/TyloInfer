@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileIcon, FolderIcon, RobotIcon } from '@phosphor-icons/react';
-import { useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { apiUrl, authorizedHeaders, errorFromResponse, request } from '../../shared/api/client';
 import { useSettings } from '../settings/SettingsProvider';
 import { useRuntime } from '../../app/RuntimeProvider';
@@ -9,6 +9,7 @@ import { agentRpc, useAgent } from './AgentProvider';
 import { AgentQuestionCard } from './AgentQuestionCard';
 import { AgentComposer, type AgentPromptPart, type AgentSelection } from './AgentComposer';
 import { agentEvent, emptyJournal, type AgentFrame, type AgentMessage } from './agentEvents';
+import { STUDIO_PATHS } from '../../navigation';
 import './agent.css';
 
 function Message({ message }: { message: AgentMessage }) {
@@ -19,7 +20,24 @@ function Message({ message }: { message: AgentMessage }) {
   </article>;
 }
 
+/** Explain missing native Agent support without mounting workspace effects or hiding text chat. */
 export function AgentPage() {
+  const { runtime } = useRuntime();
+  const { tr } = useSettings();
+  const navigate = useNavigate();
+  if (runtime?.source === 'native-instances') return <section className="agent-page">
+    <header className="agent-page-header"><h1>Agent</h1></header>
+    <div className="agent-conversation"><div className="agent-welcome">
+      <RobotIcon size={36} />
+      <h2>{tr('当前服务不支持 Agent', 'Agent is unavailable on this server')}</h2>
+      <p>{tr('原生服务尚未提供 Agent 工作区与工具执行能力。可以使用已加载模型进行文本聊天。', 'The native server does not provide Agent workspaces or tool execution. Use a loaded model for text chat.')}</p>
+      <button type="button" className="primary" onClick={() => navigate(STUDIO_PATHS.chat)}>{tr('打开文本聊天', 'Open text chat')}</button>
+    </div></div>
+  </section>;
+  return <ConnectedAgentPage />;
+}
+
+function ConnectedAgentPage() {
   const agent = useAgent()!;
   const { tr } = useSettings();
   const { ready } = useRuntime();
@@ -32,9 +50,8 @@ export function AgentPage() {
   const [opening, setOpening] = useState(false);
   const [reconnect, setReconnect] = useState(0);
   const [controlRevision, setControlRevision] = useState(0);
-  const started = useRef(false);
   const bottom = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (ready && !started.current) { started.current = true; void agent.start(); } }, [ready, agent.start]);
+  useEffect(() => { if (ready && agent.ready) void agent.start(); }, [ready, agent.ready, agent.start]);
   const workspaceId = workspace?.workspaceId;
   useEffect(() => {
     setOpening(false);

@@ -31,14 +31,16 @@ import { useMessageActions } from './hooks/useMessageActions';
 import { useVoiceConversation } from '../voice/useVoiceConversation';
 import { isGenerationBusy } from './state/generationController';
 import { conversationActions } from './state/conversationStore';
+import { normalizeStudioPath, STUDIO_PATHS } from '../../navigation';
 
 /** 按聊天访问惰性加载数据，生成和语音控制器不会因为切换其他页面而丢失。 */
 function useChatDomain() {
   const location = useLocation();
-  const [visited, setVisited] = useState(location.pathname === '/chat');
+  const chatRoute = normalizeStudioPath(location.pathname) === STUDIO_PATHS.chat;
+  const [visited, setVisited] = useState(chatRoute);
   useEffect(() => {
-    if (location.pathname === '/chat') setVisited(true);
-  }, [location.pathname]);
+    if (chatRoute) setVisited(true);
+  }, [chatRoute]);
   const { controller: generation, phase: generationPhase } = useChatGeneration({
     onSessionState: (id, state, revision) =>
       conversationActions.setSessions((current) =>
@@ -48,7 +50,7 @@ function useChatDomain() {
       conversationActions.applySynchronized(session, messages, responses),
   });
   const conversation = useConversationSessions(
-    visited || location.pathname === '/chat',
+    visited || chatRoute,
     isGenerationBusy(generationPhase),
   );
   const {
