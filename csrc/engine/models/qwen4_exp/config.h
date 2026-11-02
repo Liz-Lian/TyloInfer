@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../common/moe.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -30,7 +30,7 @@ struct Config {
         return !predictor &&
                std::find(ple_layers.begin(), ple_layers.end(), layer + 1) != ple_layers.end();
     }
-    MoeRouting routing() const { return {RouterActivation::softmax, normalize_routes, false, 1.0}; }
+    mfq::cuda::MoeRouting routing() const { return {mfq::cuda::RouterActivation::softmax, normalize_routes, false, 1.0}; }
     static Config from_json(std::string_view payload);
 
     static Config parse(const nlohmann::json &outer) {

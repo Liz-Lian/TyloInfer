@@ -30,8 +30,7 @@
 #include <fstream>
 #include <iostream>
 #include <atomic>
-#include "engine/models/common/gated_mlp.h"
-#include "engine/models/common/moe.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/session_codec.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
@@ -245,9 +244,9 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
             return tb::sigmoid(project.run(*shared_gate_weight,source))*output;
         }
         auto unfused=[](const auto&...){return std::optional<Tensor>{};};
-        auto output=mfq::models::gated_mlp(source,false,0.0,unfused,unfused,
+        auto output=mfq::cuda::gated_mlp(source,false,0.0,unfused,unfused,
             [&](Tensor input){return std::array<Tensor,2>{project.run(*shared_g,input),project.run(*shared_u,input)};},
-            [](Tensor g,Tensor u,mfq::models::GatedActivation,double){return (g*tb::sigmoid(g))*u;},
+            [](Tensor g,Tensor u,mfq::cuda::GatedActivation,double){return (g*tb::sigmoid(g))*u;},
             [&](Tensor hidden){return project.run(*shared_d,hidden);},unfused);
         return tb::sigmoid(project.run(*shared_gate_weight,source))*output;
     };
@@ -358,12 +357,12 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
         const bool use_pipeline=false;
 #endif
         const auto routing = c.routing();
-        return mfq::models::mixture_of_experts(
+        return mfq::cuda::mixture_of_experts(
             [&] { return qwen_prefill_preserve_rows(source,[&](const Tensor& part){return execution.projector().run(*router,part);}).contiguous(); },
             [&](Tensor logits) {
                 return moe_topk_cuda(
-                    logits, c.topk, routing.activation == mfq::models::RouterActivation::sigmoid,
-                    routing.activation == mfq::models::RouterActivation::sqrt_softplus,
+                    logits, c.topk, routing.activation == mfq::cuda::RouterActivation::sigmoid,
+                    routing.activation == mfq::cuda::RouterActivation::sqrt_softplus,
                     routing.normalize, routing.delayed_softmax, mfq_nullopt, 1e-20, routing.scale);
             },
             [&](const auto &) {
@@ -378,7 +377,7 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
                 if(tq)return execution.profiler.measure("tq.moe",[&] {
                     return execution.projector().run(*tq,source,selected[0],selected[1]);
                 });
-                return mfq::models::routed_experts(
+                return mfq::cuda::routed_experts(
                     [&] { return gate_up(execution.projector(), source, selected[0]); },
                     [&](Tensor gu) {
                         auto gate = gu.narrow(-1, 0, c.moe_width),
@@ -731,8 +730,8 @@ struct Qwen4Block final : Block {
             const int prediction_count=std::min<int64_t>(logits.size(-1),
                 moe_expert_cache_ssd_experts(execution.weights.moe)?4:2);
             auto selected=moe_topk_cuda(logits,prediction_count,
-                routing.activation==mfq::models::RouterActivation::sigmoid,
-                routing.activation==mfq::models::RouterActivation::sqrt_softplus,
+                routing.activation==mfq::cuda::RouterActivation::sigmoid,
+                routing.activation==mfq::cuda::RouterActivation::sqrt_softplus,
                 routing.normalize,routing.delayed_softmax,mfq_nullopt,1e-20,routing.scale);
             prediction=next_prefetch(selected[0].to(tb::kInt32).contiguous());
         }

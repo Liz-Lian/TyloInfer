@@ -1,5 +1,6 @@
 #pragma once
 #include "config.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "../common/weight_loading.h"
 #include "../common/causal_model.h"
 #include "../common/predictor.h"
@@ -148,7 +149,7 @@ void load_dense_mlp(Block& block, Loader& ops, const Config& config, int layer,
     auto& ffn = block.ffn;
     ffn.down = ops.linear(mlp + "down.weight");
     ffn.gate_up = ops.gate_up({mlp + "up.weight"}, ffn.down);
-    ffn.activation = models::MlpActivation::relu_squared;
+    ffn.activation = mfq::cuda::MlpActivation::relu_squared;
     if (ffn.gate_up.outs.size() != 1 || ffn.gate_up.outs[0] != config.intermediate_size ||
         ffn.down.out() != config.hidden_size ||
         ffn.down.neuron_len() != config.intermediate_size) {

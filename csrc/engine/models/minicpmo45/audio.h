@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/minicpmo45/causal_lm.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "vision.h"
 
 struct MiniCPMO45WhisperAttention {
@@ -110,7 +111,7 @@ struct MiniCPMO45WhisperLayer {
                                          use_cache ? &value_cache : nullptr);
             },
             [&](Tensor x) {
-                return mfq::models::mlp(
+                return mfq::cuda::mlp(
                     x, [&](Tensor x) { return mfq::cuda::biased(projector, fc1, x); },
                     [](Tensor x) { return mfq_tensor_backend::gelu(x); },
                     [&](Tensor x) { return mfq::cuda::biased(projector, fc2, x); });

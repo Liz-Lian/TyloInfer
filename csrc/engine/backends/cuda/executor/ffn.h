@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/ffn.h"
+#include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/profile.h"

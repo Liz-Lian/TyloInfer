@@ -5,7 +5,7 @@
 #include "engine/weights/workspace.h"
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/backends/cuda/ops/vision/attention.h"
-#include "engine/models/common/gated_mlp.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"
@@ -88,7 +88,7 @@ class CudaGridVisionEncoder {
                 input, [&](const Tensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
                 [&](Tensor x) { return attention(projector, x, positions, segment_lengths); },
                 [&](Tensor x) {
-                    return mfq::models::mlp(
+                    return mfq::cuda::mlp(
                         std::move(x), [&](Tensor value) { return mfq::cuda::affine(projector, mlp_up, std::move(value)); },
                         [](Tensor value) { return mfq_tensor_backend::gelu(value, "tanh"); },
                         [&](Tensor value) { return mfq::cuda::affine(projector, mlp_down, std::move(value)); });

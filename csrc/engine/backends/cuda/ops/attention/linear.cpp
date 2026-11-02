@@ -1,7 +1,6 @@
 #include "linear.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
-#include "engine/models/common/transformer_layer.h"
-#include "engine/models/qwen35/attention.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_linear_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
@@ -16,6 +15,28 @@
 using mfq_tensor_backend::indexing::Slice;
 
 namespace mfq::cuda {
+
+namespace {
+
+template <class Tensor> struct LinearProjections {
+    Tensor qkv, qk, value, output_gate, alpha, beta;
+};
+
+// Convolution/QK normalization can be one fused native operator. GDN updates
+// its native recurrent state; the model owns its placement in the graph.
+template <class Tensor, class Project, class Gates, class Convolve, class Recur, class Normalize,
+          class Output>
+Tensor linear_attention(Tensor normalized, Project project, Gates gates, Convolve convolve,
+                        Recur recur, Normalize normalize, Output output) {
+    auto projected = project(std::move(normalized));
+    auto recurrence_gates = gates(projected);
+    auto qkv = convolve(projected);
+    auto hidden = recur(std::move(qkv), std::move(recurrence_gates));
+    auto normed = normalize(std::move(hidden));
+    return output(std::move(normed), std::move(projected.output_gate));
+}
+
+} // namespace
 
 std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
@@ -37,7 +58,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
     const int64_t vsz = (value_heads * value_dim);
     const int64_t conv_dim = 2 * ksz + vsz;
 
-    return mfq::models::attention_layer(
+    return mfq::cuda::attention_layer(
         std::move(x),
         [&](mfq_tensor_backend::Tensor x) {
           return qwen_rms_norm(
@@ -47,7 +68,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
               .reshape({B, T, H});
         },
         [&](mfq_tensor_backend::Tensor xn) {
-          return mfq::models::qwen35::linear_attention(
+          return linear_attention(
               std::move(xn),
               [&](mfq_tensor_backend::Tensor xn) {
                 mfq_tensor_backend::Tensor qkv, qk_part, v_part, z, alpha_raw,
@@ -90,11 +111,11 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                   beta_raw = parts[3];
                 }
 
-                return mfq::models::qwen35::LinearProjections<
+                return LinearProjections<
                     mfq_tensor_backend::Tensor>{qkv, qk_part,   v_part,
                                                 z,   alpha_raw, beta_raw};
               },
-              [&](const mfq::models::qwen35::LinearProjections<
+              [&](const LinearProjections<
                   mfq_tensor_backend::Tensor> &p) {
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
                 auto beta = mfq_tensor_backend::sigmoid(
@@ -115,7 +136,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                 return std::array<mfq_tensor_backend::Tensor, 2>{gate_t,
                                                                  beta_t};
               },
-              [&](const mfq::models::qwen35::LinearProjections<
+              [&](const LinearProjections<
                   mfq_tensor_backend::Tensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto conv_input = mfq_tensor_backend::cat({state.convolution, qkv}, 1);
@@ -264,7 +285,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
     int64_t ksz = (key_heads * key_dim),
             vsz = (value_heads * value_dim);
 
-    return mfq::models::attention_layer(
+    return mfq::cuda::attention_layer(
         std::move(x),
         [&](mfq_tensor_backend::Tensor x) {
           return profiler.measure("linear.attn_norm", [&]() {
@@ -276,7 +297,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
           });
         },
         [&](mfq_tensor_backend::Tensor xn) {
-          return mfq::models::qwen35::linear_attention(
+          return linear_attention(
               std::move(xn),
               [&](mfq_tensor_backend::Tensor xn) {
                 mfq_tensor_backend::Tensor qkv, qk_part, v_part, z, alpha_raw,
@@ -378,11 +399,11 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   beta_raw = parts[3];
                 }
 
-                return mfq::models::qwen35::LinearProjections<
+                return LinearProjections<
                     mfq_tensor_backend::Tensor>{qkv, qk_part,   v_part,
                                                 z,   alpha_raw, beta_raw};
               },
-              [&](const mfq::models::qwen35::LinearProjections<
+              [&](const LinearProjections<
                   mfq_tensor_backend::Tensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
@@ -407,7 +428,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                 return std::array<mfq_tensor_backend::Tensor, 2>{gate_t,
                                                                  beta_t};
               },
-              [&](const mfq::models::qwen35::LinearProjections<
+              [&](const LinearProjections<
                   mfq_tensor_backend::Tensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto bias =

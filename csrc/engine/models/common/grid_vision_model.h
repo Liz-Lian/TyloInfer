@@ -2,7 +2,7 @@
 
 #include "causal_forward.h"
 #include "../../generation/sequence.h"
-#include "gated_mlp.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "vision/grid_vision.h"
 #include "transformer_layer.h"
 #include <cmath>

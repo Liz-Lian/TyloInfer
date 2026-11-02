@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/qwen35/config.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "../common/weight_loading.h"
 
 namespace mfq::models::qwen35 {
@@ -28,7 +29,7 @@ Ffn load_ffn(Loader& ops, const Config& config, int layer, std::string_view tens
     ffn.moe_shared_gate = ops.router_parameter(prefix + "shared_expert.router.weight");
     ffn.moe_top_k = static_cast<int>(config.num_experts_per_tok);
     const auto routing = config.routing();
-    ffn.moe_use_sqrt_softplus = routing.activation == mfq::models::RouterActivation::sqrt_softplus;
+    ffn.moe_use_sqrt_softplus = routing.activation == mfq::cuda::RouterActivation::sqrt_softplus;
     ffn.moe_normalize = routing.normalize;
     ffn.moe_delayed_softmax = routing.delayed_softmax;
     ffn.moe_router_scale = routing.scale;

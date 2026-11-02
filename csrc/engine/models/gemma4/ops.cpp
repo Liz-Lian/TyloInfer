@@ -12,7 +12,7 @@
 
 #include "engine/models/common/full_block.h"
 
-#include "engine/models/common/gated_mlp.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include <array>
 #include <bit>
 #include <cmath>
@@ -160,7 +160,7 @@ mfq_tensor_backend::Tensor Gemma4Block::forward_ffn(CudaExecutionContext &execut
                         if (!projection_bundle_prefetched)
                             mfq::cuda::prefetch_experts(gemma_moe_down, route);
                     };
-                    auto down_pair = mfq::models::gated_mlp(
+                    auto down_pair = mfq::cuda::gated_mlp(
                         moe_input, true, 0.0,
                         [](const auto &...) { return std::optional<Tensor>{}; },
                         [&](const Tensor &input, auto, double) -> std::optional<Tensor> {

@@ -2,7 +2,7 @@
 
 #include "engine/models/qwen35/config.h"
 #include "engine/backends/cuda/executor/task.h"
-#include "engine/models/common/ffn.h"
+#include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/backends/cuda/ops/attention/full.h"
 
 #include <vector>

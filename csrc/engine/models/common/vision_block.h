@@ -1,7 +1,7 @@
 #pragma once
 #include <utility>
 
-#include "gated_mlp.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "transformer_layer.h"
 
 namespace mfq::models {

@@ -1,8 +1,7 @@
 #include "full.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
 #include "kv.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
-#include "engine/models/common/attention.h"
-#include "engine/models/common/transformer_layer.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
@@ -15,6 +14,36 @@
 using mfq_tensor_backend::indexing::Slice;
 
 namespace mfq::cuda {
+
+namespace {
+
+template <class Tensor> struct AttentionHeads {
+    Tensor query, key, value;
+    std::optional<Tensor> gate;
+};
+
+// The model orders these operations. Fused prepare operations return true only
+// after replacing the complete norm/rotary/cache span (or rotary/cache span).
+// A no-positional-encoding block skips both rotary callbacks but still caches.
+template <class Tensor, class Project, class FusedPrepare, class Normalize, class FusedRotaryCache,
+          class Rotary, class Cache, class Attend, class Output>
+Tensor full_attention(Tensor normalized, Project project, FusedPrepare fused_prepare,
+                      Normalize normalize, FusedRotaryCache fused_rotary_cache, Rotary rotary,
+                      Cache cache, Attend attend, Output output, bool apply_rotary = true) {
+    auto heads = project(std::move(normalized));
+    if (!fused_prepare(heads)) {
+        normalize(heads);
+        if (!(apply_rotary && fused_rotary_cache(heads))) {
+            if (apply_rotary)
+                rotary(heads);
+            cache(heads);
+        }
+    }
+    auto attended = attend(heads);
+    return output(std::move(attended), std::move(heads.gate));
+}
+
+} // namespace
 
 std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
@@ -48,7 +77,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
     const bool apply_rotary = !no_rope;
     if (x.is_cuda())
         scratch.split(B * nh, kDecodeAttentionMaxParts, hd, x.device());
-    return mfq::models::attention_layer(
+    return mfq::cuda::attention_layer(
         x,
         [&](mfq_tensor_backend::Tensor x) {
             return profiler.measure("full.attn_norm", [&]() {
@@ -88,7 +117,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                 options.fused_qk_rope_kv;
             std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> kv;
             bool attention_token_major = false;
-            return mfq::models::full_attention(
+            return full_attention(
                 std::move(xn),
                 [&](mfq_tensor_backend::Tensor xn) {
                     trace_qwen_stage("qwen.attn_norm", xn);
@@ -137,7 +166,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                     auto v = profiler.measure("full.v_view", [&]() {
                         return v_full.reshape({B, T, nkh, hd}).transpose(1, 2).contiguous();
                     });
-                    return mfq::models::AttentionHeads<mfq_tensor_backend::Tensor>{
+                    return AttentionHeads<mfq_tensor_backend::Tensor>{
                         q, k, v,
                         q_gate.defined() ? std::optional<mfq_tensor_backend::Tensor>(q_gate)
                                          : std::nullopt};

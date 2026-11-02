@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/ops/attention/full.h"
 #include "engine/weights/loader.h"
-#include "engine/models/common/ffn.h"
+#include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/models/common/weight_loading.h"
 #include "engine/models/common/yarn.h"
 

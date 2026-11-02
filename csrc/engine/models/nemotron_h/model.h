@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/models/common/block.h"
-#include "engine/models/common/ffn.h"
+#include "engine/backends/cuda/ops/ffn/weights.h"
 #include "engine/models/common/full_block.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/state/recurrent.h"

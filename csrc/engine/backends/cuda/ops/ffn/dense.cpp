@@ -1,4 +1,5 @@
 #include "dense.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "residual.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -56,7 +57,7 @@ Tensor Dense::forward(const Projector& project, CudaProfiler& profiler,
         if (important) {
             const bool fp32 = batch * tokens >= 16 && mmq.mode == KlMmqMode::Fp16 &&
                 options.important_fp32;
-            output = mfq::models::additive_branches(
+            output = mfq::cuda::additive_branches(
                 [&](size_t index) {
                     const auto& op = index == 0 ? mlp : *important;
                     return fp32 ? op.kld(project, profiler, mmq, input)

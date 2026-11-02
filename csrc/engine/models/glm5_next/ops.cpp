@@ -4,8 +4,7 @@
 #include "model.h"
 #include "mtp.h"
 #include "engine/models/common/load.h"
-#include "engine/models/common/gated_mlp.h"
-#include "engine/models/common/moe.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/session_codec.h"
 
@@ -26,12 +25,12 @@ static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t
 static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
     return [gate, up, down, limit](const Projector& project, const Tensor &x) {
         auto unfused = [](const auto &...) { return std::optional<Tensor>{}; };
-        return mfq::models::gated_mlp(
+        return mfq::cuda::gated_mlp(
             x, false, limit, unfused, unfused,
             [&](Tensor input) {
                 return std::array<Tensor, 2>{project.run(*gate, input), project.run(*up, input)};
             },
-            [](Tensor g, Tensor u, mfq::models::GatedActivation, double bound) {
+            [](Tensor g, Tensor u, mfq::cuda::GatedActivation, double bound) {
                 g = tb::clamp_max(g, bound);
                 u = tb::clamp(u, -bound, bound);
                 return (g * tb::sigmoid(g)) * u;
@@ -46,19 +45,19 @@ static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed do
                                                     const Tensor &x) {
         auto source = x.reshape({-1, c.hidden}).to(tb::kFloat16);
         const auto routing = c.routing();
-        return mfq::models::mixture_of_experts(
+        return mfq::cuda::mixture_of_experts(
             [&] {
                 return project.run(*router, source.to(tb::kFloat32)).to(tb::kFloat32).contiguous();
             },
             [&](Tensor logits) {
                 return moe_topk_cuda(
-                    logits, c.topk, routing.activation == mfq::models::RouterActivation::sigmoid,
-                    routing.activation == mfq::models::RouterActivation::sqrt_softplus,
+                    logits, c.topk, routing.activation == mfq::cuda::RouterActivation::sigmoid,
+                    routing.activation == mfq::cuda::RouterActivation::sqrt_softplus,
                     routing.normalize, routing.delayed_softmax, bias, 1e-20, routing.scale);
             },
             [&](const auto &) { return shared(project, source); },
             [&](const auto &selected) {
-                return mfq::models::routed_experts(
+                return mfq::cuda::routed_experts(
                     [&] { return gate_up(project, source, selected[0]); },
                     [&](Tensor gu) {
                         auto gate =

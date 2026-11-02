@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../common/moe.h"
+#include "engine/backends/cuda/ops/ffn/math.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -31,8 +31,8 @@ struct Config {
     bool dense_layer(int64_t layer, bool predictor = false) const {
         return !predictor && mlp_types.at(layer) == "dense";
     }
-    MoeRouting routing() const {
-        return {RouterActivation::sigmoid, normalize_routes, false, router_scale};
+    mfq::cuda::MoeRouting routing() const {
+        return {mfq::cuda::RouterActivation::sigmoid, normalize_routes, false, router_scale};
     }
     static Config from_json(std::string_view payload);
 
