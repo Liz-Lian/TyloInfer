@@ -1,10 +1,14 @@
 #include "mlx_gguf_prefill.h"
 #include "mlx_gguf_staged.h"
+#include "mlx_gguf_rotation.h"
+#include "mlx_moe_ops.h"
 #include "gguf_embedded.h"
 #include "mlx_indirect_weight_residency.h"
 #include "mlx_platform.h"
 
 #include <climits>
+#include <bit>
+#include <cmath>
 #include <stdexcept>
 
 namespace mfq::metal {
@@ -146,7 +150,7 @@ void fill_right(thread Right& right, device const uchar* matrix, uint first_n, u
 }
 
 const fast::CustomKernelFunction& mapping_kernel() {
-    static const auto kernel = fast::metal_kernel("tinfer_gguf_prefill_positions",
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_prefill_positions",
         {"ids", "order", "bounds", "offsets", "params"}, {"positions", "slots"}, R"METAL(
 uint at = thread_position_in_grid.x;
 if (at >= params[0]) return;
@@ -180,15 +184,17 @@ operation.run(left, right, destination);
 }
 
 const fast::CustomKernelFunction& gather_kernel() {
-    static const auto kernel = fast::metal_kernel("tinfer_gguf_prefill_gather",
-        {"x", "slots", "offsets", "params"}, {"y"}, R"METAL(
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_prefill_gather",
+        {"x", "slots", "offsets", "params", "descriptors"}, {"y"}, R"METAL(
 uint tile = threadgroup_position_in_grid.x;
 uint k = params[0], routes = params[1], tile_rows = params[3];
 if (tile >= uint(offsets[params[2]])) return;
 uint column = threadgroup_position_in_grid.y * 256u + (thread_index_in_threadgroup % 32u) * 8u;
 if (column >= k) return;
-for (uint local = thread_index_in_threadgroup / 32u; local < tile_rows; local += 8u) {
-    uint row = tile * tile_rows + local;
+uint live = COMPACT ? uint(descriptors[tile * 3u + 1u]) : tile_rows;
+uint capacity = COMPACT ? (tile_rows == 8u || live <= 8u ? 8u : live <= 16u ? 16u : live <= 32u ? 32u : 48u) : tile_rows;
+for (uint local = thread_index_in_threadgroup / 32u; local < capacity; local += 8u) {
+    uint row = (COMPACT ? uint(descriptors[tile * 3u + 2u]) : tile * tile_rows) + local;
     int original = slots[row];
     half4 low(0.h), high(0.h);
     if (original >= 0) {
@@ -203,8 +209,52 @@ for (uint local = thread_index_in_threadgroup / 32u; local < tile_rows; local +=
     return kernel;
 }
 
+const fast::CustomKernelFunction& rotated_gather_kernel() {
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_rotated_gate_up_gather",
+        {"x", "slots", "offsets", "params", "gate_signs", "up_signs", "descriptors"}, {"g", "u"}, R"METAL(
+uint tile = threadgroup_position_in_grid.x;
+if (tile >= uint(offsets[params[2]])) return;
+uint lane = thread_index_in_simdgroup;
+uint col = threadgroup_position_in_grid.y * 128u + lane * 4u;
+uint live = COMPACT ? uint(descriptors[tile * 3u + 1u]) : params[3];
+uint capacity = COMPACT ? (params[3] == 8u || live <= 8u ? 8u : live <= 16u ? 16u : live <= 32u ? 32u : 48u) : params[3];
+for (uint local = simdgroup_index_in_threadgroup; local < capacity; local += 8u) {
+    uint row = (COMPACT ? uint(descriptors[tile * 3u + 2u]) : tile * params[3]) + local;
+    int original = slots[row];
+    float4 gate(0.f), up(0.f);
+    if (original >= 0) {
+        ulong at = ulong(uint(original) / params[1]) * params[0] + col;
+        gate = up = float4(x[at], x[at + 1u], x[at + 2u], x[at + 3u]);
+        if constexpr (GR) {
+            if constexpr (GS) gate *= float4(gate_signs[col], gate_signs[col + 1u], gate_signs[col + 2u], gate_signs[col + 3u]);
+            gate = gguf_gather_rotate(gate, lane);
+        }
+        if constexpr (UR) {
+            if constexpr (US) up *= float4(up_signs[col], up_signs[col + 1u], up_signs[col + 2u], up_signs[col + 3u]);
+            up = gguf_gather_rotate(up, lane);
+        }
+    }
+    const ulong at = ulong(row) * params[0] + col;
+    *reinterpret_cast<device half4*>(g + at) = half4(half(S(gate.x)), half(S(gate.y)), half(S(gate.z)), half(S(gate.w)));
+    *reinterpret_cast<device half4*>(u + at) = half4(half(S(up.x)), half(S(up.y)), half(S(up.z)), half(S(up.w)));
+}
+)METAL", R"METAL(
+float4 gguf_gather_rotate(float4 value, uint lane) {
+    value = float4(value.x + value.y, value.x - value.y, value.z + value.w, value.z - value.w);
+    value = float4(value.x + value.z, value.y + value.w, value.x - value.z, value.y - value.w);
+    for (ushort mask = 1u; mask < 32u; mask *= 2u) {
+        float4 other(simd_shuffle_xor(value.x, mask), simd_shuffle_xor(value.y, mask),
+            simd_shuffle_xor(value.z, mask), simd_shuffle_xor(value.w, mask));
+        value = lane & mask ? other - value : value + other;
+    }
+    return value * 0.08838834764831845f;
+}
+)METAL");
+    return kernel;
+}
+
 const fast::CustomKernelFunction& restore_kernel() {
-    static const auto kernel = fast::metal_kernel("tinfer_gguf_grouped_restore",
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_grouped_restore",
         {"x", "positions", "params"}, {"y"}, R"METAL(
 uint at = thread_position_in_grid.x;
 uint n = params[0];
@@ -223,8 +273,8 @@ if constexpr (V == 4) {
 
 const fast::CustomKernelFunction& gate_up_kernel() {
     static const auto kernel = indirect_weight_metal_kernel("tinfer_gguf_prefill_register_gate_up",
-        {"gate", "up", "x", "bounds", "offsets", "params"}, {"y"}, R"METAL(
-uint tile = threadgroup_position_in_grid.y, experts = params[3];
+        {"gate", "up", "x", "bounds", "offsets", "params", "x_up"}, {"y"}, R"METAL(
+uint tile = threadgroup_position_in_grid.y, experts = params[3] & 0x7fffffffu;
 if (tile >= uint(offsets[experts])) return;
 uint e = 0u, high = experts;
 while (e < high) {
@@ -251,6 +301,8 @@ constexpr auto description = matmul2d_descriptor(16, 32, 32, false, true, false,
 matmul2d<description, execution_simdgroup> operation;
 tensor<device half, dextents<int, 2>, tensor_inline> activations(
     const_cast<device half*>(x), dextents<int, 2>(k, padded));
+tensor<device half, dextents<int, 2>, tensor_inline> up_activations(
+    const_cast<device half*>(SEPARATE_INPUT ? x_up : x), dextents<int, 2>(k, padded));
 auto right_g = operation.template get_right_input_cooperative_tensor<half, half, float>();
 auto right_u = operation.template get_right_input_cooperative_tensor<half, half, float>();
 auto input = activations.template slice<32, 16>(0, row0);
@@ -263,7 +315,7 @@ if constexpr (PIPELINED) {
     auto scratch = stages + simdgroup_index_in_threadgroup * 2048u;
     if (g) staged_dot<FG, 16, false>(x, g, params, params, n0 + thread_index_in_simdgroup, k, padded, row0,
         scratch, gate_table, sum_g);
-    if (u) staged_dot<FU, 16, false>(x, u, params, params, n0 + thread_index_in_simdgroup, k, padded, row0,
+    if (u) staged_dot<FU, 16, false>(SEPARATE_INPUT ? x_up : x, u, params, params, n0 + thread_index_in_simdgroup, k, padded, row0,
         scratch, SAME_TABLE ? gate_table : up_table, sum_u);
 } else {
     for (uint start = 0; start < k; start += 32u) {
@@ -271,7 +323,10 @@ if constexpr (PIPELINED) {
         fill_right<FU>(right_u, u, n0, start, n, k, params[5], GgufThreadgroupLookup<FU>{FG == FU ? gate_table : up_table});
         input = activations.template slice<32, 16>(start, row0);
         operation.run(input, right_g, sum_g);
-        operation.run(input, right_u, sum_u);
+        if constexpr (SEPARATE_INPUT) {
+            auto up_input = up_activations.template slice<32, 16>(start, row0);
+            operation.run(up_input, right_u, sum_u);
+        } else operation.run(input, right_u, sum_u);
     }
 }
 for (ushort i = 0; i < sum_g.get_capacity(); ++i) if (sum_g.is_valid_element(i)) {
@@ -279,6 +334,9 @@ for (ushort i = 0; i < sum_g.get_capacity(); ++i) if (sum_g.is_valid_element(i))
     uint column = n0 + index[0], row = row0 + index[1];
     if (column < n) {
         float a = float(T(sum_g[i])), b = float(T(sum_u[i]));
+        if (params[3] >> 31u) { const float value = a; a = b; b = value; }
+        const float limit = as_type<float>(params[6]);
+        if constexpr (CLIPPED) { a = min(a, limit); b = clamp(b, -limit, limit); }
         y[ulong(row) * n + column] = T((a / (1.f + exp(-a))) * b);
     }
 }
@@ -349,7 +407,7 @@ for (ushort i = 0; i < sum.get_capacity(); ++i) if (sum.is_valid_element(i)) {
 }
 
 const fast::CustomKernelFunction& reduce_kernel() {
-    static const auto kernel = fast::metal_kernel("tinfer_gguf_prefill_reduce",
+    static const auto kernel = cached_metal_kernel("tinfer_gguf_prefill_reduce",
         {"x", "positions", "weights", "params"}, {"y"}, R"METAL(
 uint index = thread_position_in_grid.x;
 uint n = params[0], tokens = params[1], count = params[2];
@@ -394,12 +452,49 @@ int gguf_prefill_tile_rows(const MlxGgufWeight& gate, const MlxGgufWeight& up,
     const MlxGgufWeight& down, const array& ids) {
     if (gate.expert_count() > 512 || !MlxGgufStagedPrefill::supports_grouped(gate) ||
         !MlxGgufStagedPrefill::supports_grouped(up) || !MlxGgufStagedPrefill::supports_grouped(down)) return 16;
-    if (ids.size() <= std::size_t(gate.expert_count())) return 8;
+    if (ids.shape(0) <= 6 || ids.size() <= std::size_t(gate.expert_count())) return 8;
     const auto gyro = [](const MlxGgufWeight& weight) {
         return weight.format() >= 144 && weight.format() <= 151 && weight.has_staged_planes();
     };
-    return gyro(gate) && gyro(up) && gyro(down) &&
+    return (gyro(gate) || gyro(up) || gyro(down)) &&
         ids.size() >= std::size_t(gate.expert_count()) * 48 ? 48 : 32;
+}
+
+bool gguf_compact_ffn_available(const MlxGgufWeight& gate, const MlxGgufWeight& up,
+    const MlxGgufWeight& down, const array& ids) {
+    const auto raw_k = [](const MlxGgufWeight& weight) { return weight.format() == 10 || weight.format() == 11; };
+    const auto raw_iq2 = [](const MlxGgufWeight& weight) { return weight.format() == 16 || weight.format() == 17 || weight.format() == 22; };
+    const auto q8 = [](const MlxGgufWeight& weight) { return weight.format() == 8 || weight.format() == 15; };
+    return ids.ndim() == 2 && ids.size() && ids.shape(0) > 0 && ids.shape(0) <= 6 &&
+        !mlx_metal_nax_disabled() && mlx_apple_chip_starts_with("Apple M5") &&
+        !gate.has_mixed_formats() && !up.has_mixed_formats() && !down.has_mixed_formats() &&
+        (gate.has_staged_planes() || up.has_staged_planes() || (raw_k(gate) && raw_k(up)) ||
+         (ids.shape(0) > 1 && ((raw_k(gate) && raw_iq2(up)) || (raw_k(up) && raw_iq2(gate)) ||
+                             (q8(gate) && q8(up))))) &&
+        gguf_prefill_tile_rows(gate, up, down, ids) == 8;
+}
+
+array gguf_routed_ffn(const std::array<MlxGgufWeight, 3>& w, const array& input,
+    const array& ids, const array& probabilities, float limit, bool unique_per_token) {
+    if (ids.ndim() != 2 || w[0].input_size() != w[1].input_size() || w[0].output_size() != w[1].output_size() ||
+        w[0].expert_count() != w[1].expert_count() || w[0].expert_count() != w[2].expert_count() ||
+        w[2].input_size() != w[0].output_size() || w[2].output_size() != w[0].input_size())
+        throw std::invalid_argument("GGUF FFN projections and routes disagree");
+    const bool compact_decode = gguf_compact_ffn_available(w[0], w[1], w[2], ids);
+    if ((gguf_expert_prefill_available(input) || compact_decode) &&
+        !w[0].has_mixed_formats() && !w[1].has_mixed_formats() && !w[2].has_mixed_formats()) {
+        const int tile = gguf_prefill_tile_rows(w[0], w[1], w[2], ids);
+        if (tile != 16 || (!w[0].has_staged_planes() && !w[1].has_staged_planes() && !w[2].has_staged_planes())) {
+            const auto plan = unique_per_token ? MlxGgufPrefillPlan::from_topk(input, ids, w[0].expert_count(), tile)
+                : MlxGgufPrefillPlan(input, ids, w[0].expert_count(), tile);
+            return plan.down(w[2], plan.gate_up(w[0], w[1], nullptr, nullptr, limit), probabilities);
+        }
+    }
+    std::optional<MlxGgufRoutePlan> plan;
+    if (ids.shape(0) > 6) plan = gguf_route_plan(ids, w[0].expert_count(),
+        w[0].has_mixed_formats() && w[1].has_mixed_formats() && w[2].has_mixed_formats());
+    const auto* routes = plan ? &*plan : nullptr;
+    return w[2].routed_weighted_matmul(w[0].routed_swiglu(w[1], input, ids, routes, limit), ids, probabilities, routes);
 }
 
 MlxGgufPrefillPlan::MlxGgufPrefillPlan(const array& input, const array& ids, int experts, int tile_rows,
@@ -413,7 +508,7 @@ MlxGgufPrefillPlan MlxGgufPrefillPlan::from_topk(const array& input, const array
 
 MlxGgufPrefillPlan::MlxGgufPrefillPlan(const array& input, const array& ids, int experts, int tile_rows,
     bool shared_input, bool include_shared, bool unique_per_token)
-    : source_(input), positions_(ids), input_(input), dtype_(input.dtype()),
+    : source_(input), ids_(ids), positions_(ids), input_(input), dtype_(input.dtype()),
       tokens_(ids.ndim() == 2 ? ids.shape(0) : 0), selected_(ids.ndim() == 2 ? ids.shape(1) : 0), padded_rows_(0) {
     if (input.ndim() < 2 || input.shape(-1) <= 0 || mlx_metal_nax_disabled() ||
         !mlx_apple_chip_starts_with("Apple M5") || ids.ndim() != 2 || !ids.size() ||
@@ -438,10 +533,10 @@ MlxGgufPrefillPlan::MlxGgufPrefillPlan(const array& input, const array& ids, int
     array slots = ids, offsets = ids;
     int tiles;
     if (tile_rows != 16) {
-        grouped_.emplace(gguf_group_routes(ids, experts, tile_rows, include_shared));
+        grouped_.emplace(gguf_group_routes(ids, experts, tile_rows, include_shared, true));
         if (unique_per_token) grouped_->maximum_live_rows = std::min(tile_rows, tokens_);
         tiles = grouped_->tiles;
-        padded_rows_ = tiles * tile_rows;
+        padded_rows_ = grouped_->row_capacity;
         positions_ = grouped_->route_rows;
         slots = grouped_->grouped_routes;
         offsets = grouped_->tile_offsets;
@@ -462,16 +557,22 @@ MlxGgufPrefillPlan::MlxGgufPrefillPlan(const array& input, const array& ids, int
     const auto elements = std::size_t(padded_rows_) * width;
     if (elements > INT_MAX - 127) throw std::overflow_error("GGUF prefill activation extent is too large");
     gather_.emplace(Gather{slots, offsets,
-        array({uint32_t(width), uint32_t(shared_input ? selected_ : 1), uint32_t(experts + int(include_shared)), uint32_t(tile_rows)}), tiles});
-    input_ = gather_input(input);
+        array({uint32_t(width), uint32_t(shared_input ? selected_ : 1), uint32_t(experts + int(include_shared)), uint32_t(tile_rows)}),
+        grouped_ ? grouped_->descriptors : offsets, tiles, bool(grouped_)});
+    input_.reset();
+}
+
+const array& MlxGgufPrefillPlan::grouped_input() const {
+    if (!input_) input_.emplace(gather_input(source_));
+    return *input_;
 }
 
 array MlxGgufPrefillPlan::gather_input(const array& input) const {
     const int width = input.shape(-1);
     if (!gather_) return reshape(contiguous(astype(input, float16)), {int(input.size() / width), width});
-    return gather_kernel()({contiguous(input), gather_->slots, gather_->offsets, gather_->params},
+    return gather_kernel()({contiguous(input), gather_->slots, gather_->offsets, gather_->params, gather_->descriptors},
         {{padded_rows_, width}}, {float16}, {gather_->tiles * 256, (width + 255) / 256, 1}, {256, 1, 1},
-        {}, std::nullopt, false, {}).front();
+        {{"COMPACT", gather_->compact}}, std::nullopt, false, {}).front();
 }
 
 array MlxGgufPrefillPlan::restore(const array& grouped) const {
@@ -496,43 +597,107 @@ array MlxGgufPrefillPlan::project(const MlxGgufWeight& weight) const {
         transformed.input_ = gather_input(weight.rotate_input(source_));
         return transformed.project(plain);
     }
-    if (!grouped_ || !MlxGgufStagedPrefill::supports_grouped(weight) || weight.input_size() != input_.shape(1))
+    if (!grouped_ || !MlxGgufStagedPrefill::supports_grouped(weight) || weight.input_size() != source_.shape(-1))
         throw std::invalid_argument("GGUF grouped projection weight geometry mismatch");
-    return restore(MlxGgufStagedPrefill::down(weight, input_, *grouped_, dtype_));
+    return restore(MlxGgufStagedPrefill::down(weight, grouped_input(), *grouped_, dtype_));
 }
 
 array MlxGgufPrefillPlan::gate_up(const MlxGgufWeight& gate, const MlxGgufWeight& up,
-    const MlxGgufWeight* shared_gate, const MlxGgufWeight* shared_up) const {
-    if (gate.has_hadamard() || up.has_hadamard()) {
-        if (!gate.same_rotation(up) || shared_gate || shared_up)
-            throw std::invalid_argument("GGUF fused prefill requires matching Gate/Up Hadamard transforms");
+    const MlxGgufWeight* shared_gate, const MlxGgufWeight* shared_up, float limit) const {
+    if (!std::isfinite(limit) || limit < 0.f) throw std::invalid_argument("invalid GGUF SwiGLU limit");
+    if (grouped_ && grouped_->tile_rows == 8 && tokens_ > 1 && tokens_ <= 8 && source_.dtype() == float16 &&
+        source_.size() / source_.shape(-1) == std::size_t(tokens_) &&
+        MlxGgufStagedPrefill::supports_grouped(gate) && MlxGgufStagedPrefill::supports_grouped(up) &&
+        !shared_gate && !shared_up) {
+        if (gate.shape_.size() != 3 || gate.shape_ != up.shape_ || gate.input_size() != source_.shape(-1))
+            throw std::invalid_argument("GGUF source Gate/Up weights disagree");
+        const auto source = reshape(contiguous(source_), {tokens_, source_.shape(-1)});
+        const auto first = gate.has_hadamard() ? gate.rotate_input(source) : source;
+        const bool same = gate.same_rotation(up);
+        const auto second = same ? first : up.has_hadamard() ? up.rotate_input(source) : source;
         auto gate_plain = gate, up_plain = up;
         gate_plain.rotation_.reset(); up_plain.rotation_.reset();
+        return MlxGgufStagedPrefill::gate_up(gate_plain, up_plain, first, *grouped_, dtype_,
+            shared_gate, shared_up, same ? nullptr : &second, limit, selected_);
+    }
+    if (dtype_ == float32 && bool(gate.planes_) != bool(up.planes_) && !shared_gate && !shared_up && ids_.shape(1) == selected_) {
+        const auto g = gate.routed_matmul(source_, ids_, true), u = up.routed_matmul(source_, ids_, true);
+        const auto values = limit > 0.f ? moe_limited_swiglu_pair(g, u, limit) : moe_swiglu_pair(g, u);
+        const auto flat = reshape(values, {tokens_ * selected_, gate.output_size()});
+        if (!gather_) return flat;
+        const auto valid = logical_and(gather_->slots >= array(0, int32), gather_->slots < array(tokens_ * selected_, int32));
+        const auto rows = minimum(maximum(gather_->slots, array(0, int32)), array(tokens_ * selected_ - 1, int32));
+        return where(expand_dims(valid, -1), take(flat, rows, 0), array(0.f));
+    }
+    if (gate.has_hadamard() || up.has_hadamard()) {
+        if (shared_gate || shared_up)
+            throw std::invalid_argument("GGUF rotated prefill cannot merge an untransformed shared expert");
+        auto gate_plain = gate, up_plain = up;
+        gate_plain.rotation_.reset(); up_plain.rotation_.reset();
+        if (!gate.same_rotation(up)) {
+            auto transformed = *this;
+            const int width = source_.shape(-1);
+            if (gather_ && width % 128 == 0 &&
+                (!gate.rotation_ || gate.rotation_->block == 128) && (!up.rotation_ || up.rotation_->block == 128)) {
+                static const auto one = array({1.f}, float32);
+                auto gathered = rotated_gather_kernel()({contiguous(source_), gather_->slots, gather_->offsets, gather_->params,
+                    gate.rotation_ && !gate.rotation_->pattern.empty() ? gate.rotation_->signs : one,
+                    up.rotation_ && !up.rotation_->pattern.empty() ? up.rotation_->signs : one, gather_->descriptors},
+                    {{padded_rows_, width}, {padded_rows_, width}}, {float16, float16}, {gather_->tiles * 256, width / 128, 1}, {256, 1, 1},
+                    {{"S", source_.dtype()}, {"COMPACT", gather_->compact}, {"GR", bool(gate.rotation_)}, {"UR", bool(up.rotation_)},
+                        {"GS", gate.rotation_ && !gate.rotation_->pattern.empty()}, {"US", up.rotation_ && !up.rotation_->pattern.empty()}},
+                    std::nullopt, false, {});
+                transformed.input_ = std::move(gathered[0]);
+                return transformed.gate_up_inputs(gate_plain, up_plain, &gathered[1], nullptr, nullptr, limit);
+            }
+            transformed.input_ = gate.has_hadamard() ? gather_input(gate.rotate_input(source_)) : grouped_input();
+            const auto up_input = up.has_hadamard() ? gather_input(up.rotate_input(source_)) : grouped_input();
+            return transformed.gate_up_inputs(gate_plain, up_plain, &up_input, nullptr, nullptr, limit);
+        }
         auto transformed = *this;
         transformed.input_ = gather_input(gate.rotate_input(source_));
-        return transformed.gate_up(gate_plain, up_plain);
+        return transformed.gate_up(gate_plain, up_plain, nullptr, nullptr, limit);
     }
-    if (gate.shape_.size() != 3 || gate.shape_ != up.shape_ || gate.input_size() != input_.shape(1))
+    return gate_up_inputs(gate, up, nullptr, shared_gate, shared_up, limit);
+}
+
+array MlxGgufPrefillPlan::gate_up_inputs(const MlxGgufWeight& gate, const MlxGgufWeight& up,
+    const array* up_input, const MlxGgufWeight* shared_gate, const MlxGgufWeight* shared_up, float limit) const {
+    if (gate.shape_.size() != 3 || gate.shape_ != up.shape_ || gate.input_size() != source_.shape(-1))
         throw std::invalid_argument("GGUF prefill Gate/Up weights disagree");
     if (!grouped_ && (gate.planes_ || up.planes_))
         throw std::invalid_argument("GGUF compressed planes require a grouped route plan");
+    const auto& input = grouped_input();
     if (grouped_) {
         if (!MlxGgufStagedPrefill::supports_grouped(gate) || !MlxGgufStagedPrefill::supports_grouped(up))
             throw std::invalid_argument("GGUF staged Gate/Up format is unsupported");
-        return MlxGgufStagedPrefill::gate_up(gate, up, input_, *grouped_, dtype_, shared_gate, shared_up);
+        if (!shared_gate && !shared_up && grouped_->tile_rows >= 32 && (up_input || gate.format() != up.format())) {
+            const auto g = MlxGgufStagedPrefill::down(gate, input, *grouped_, dtype_);
+            return MlxGgufStagedPrefill::down(up, up_input ? *up_input : input, *grouped_, dtype_, nullptr, &g, limit);
+        }
+        return MlxGgufStagedPrefill::gate_up(gate, up, input, *grouped_, dtype_, shared_gate, shared_up, up_input, limit);
     }
     const int n = gate.output_size();
-    return gate_up_kernel()({gate.bytes_, up.bytes_, input_, routes_->bounds, routes_->tile_offsets,
-        array({uint32_t(gate.input_size()), uint32_t(n), uint32_t(padded_rows_), uint32_t(gate.expert_count()),
-            uint32_t(gate.row_bytes_), uint32_t(up.row_bytes_)})}, {{padded_rows_, n}}, {dtype_},
+    const bool reverse = gguf_gate_up_reversed(gate.format_, up.format_);
+    const auto& first = reverse ? up : gate;
+    const auto& second = reverse ? gate : up;
+    const auto& second_input = up_input ? *up_input : input;
+    return gate_up_kernel()({first.bytes_, second.bytes_, reverse ? second_input : input, routes_->bounds, routes_->tile_offsets,
+        array({uint32_t(gate.input_size()), uint32_t(n), uint32_t(padded_rows_), uint32_t(gate.expert_count()) | (uint32_t(reverse) << 31u),
+            uint32_t(first.row_bytes_), uint32_t(second.row_bytes_), std::bit_cast<uint32_t>(limit)}), reverse ? input : second_input}, {{padded_rows_, n}}, {dtype_},
         {((n + 127) / 128) * 128, routes_->tiles, 1}, {128, 1, 1},
-        {{"FG", gate.format_}, {"FU", up.format_}, {"T", dtype_}, {"IG", gate.indirect_}, {"IU", up.indirect_},
-            {"PIPELINED", n % 32 == 0 && gate.format_ >= 144 && gate.format_ <= 151 && up.format_ >= 144 && up.format_ <= 151}},
+        {{"FG", first.format_}, {"FU", second.format_}, {"T", dtype_}, {"IG", first.indirect_}, {"IU", second.indirect_},
+            {"SEPARATE_INPUT", up_input != nullptr}, {"CLIPPED", limit > 0.f},
+            {"PIPELINED", n % 32 == 0 && MlxGgufStagedPrefill::supports_grouped_format(gate.format_) &&
+                MlxGgufStagedPrefill::supports_grouped_format(up.format_) &&
+                ((gate.format_ >= 144 && gate.format_ <= 151) || (up.format_ >= 144 && up.format_ <= 151))}},
         0.f, false, {}).front();
 }
 
 array MlxGgufPrefillPlan::down(const MlxGgufWeight& weight, const array& hidden,
     const array& probabilities, bool float_accumulation, const MlxGgufWeight* shared) const {
+    if (dtype_ == float32 && !weight.planes_ && !shared && !float_accumulation && ids_.shape(1) == selected_)
+        return weight.routed_weighted_matmul(restore(hidden), ids_, probabilities);
     if (weight.has_hadamard()) {
         if (shared) throw std::invalid_argument("GGUF rotated prefill cannot merge an untransformed shared expert");
         auto plain = weight;
@@ -544,6 +709,10 @@ array MlxGgufPrefillPlan::down(const MlxGgufWeight& weight, const array& hidden,
         probabilities.shape() != Shape{tokens_, selected_}) throw std::invalid_argument("GGUF prefill Down inputs disagree");
     if (!grouped_ && weight.planes_)
         throw std::invalid_argument("GGUF compressed planes require a grouped route plan");
+    if (grouped_ && grouped_->tile_rows == 1 && !weight.planes_ && !shared && !float_accumulation &&
+        grouped_->descriptors.size() == std::size_t(selected_))
+        return weight.routed_weighted_matmul(reshape(hidden, {1, selected_, weight.input_size()}),
+            reshape(grouped_->descriptors, {1, selected_}), probabilities);
     if (grouped_ && grouped_->tile_rows == 1 && !shared && !float_accumulation &&
         MlxGgufStagedPrefill::prefers_weighted_down(weight) && grouped_->descriptors.size() == std::size_t(selected_))
         return MlxGgufStagedPrefill::weighted_down(weight, hidden,

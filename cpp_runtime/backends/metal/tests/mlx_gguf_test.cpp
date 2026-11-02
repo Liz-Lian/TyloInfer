@@ -16,6 +16,7 @@
 #include "gguf.h"
 #include <mlx/primitives.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -128,7 +129,7 @@ for (uint g = 0u; g < groups; ++g) {
         });
 }
 )METAL", MlxGgufStagedPrefill::scalar_decoder_header());
-    for (const auto type : {GGML_TYPE_PTQ1_0, GGML_TYPE_Q2_0, GGML_TYPE_MXFP4, GGML_TYPE_Q3_K,
+    for (const auto type : {GGML_TYPE_Q8_0, GGML_TYPE_Q8_K, GGML_TYPE_PTQ1_0, GGML_TYPE_Q2_0, GGML_TYPE_MXFP4, GGML_TYPE_Q3_K,
         GGML_TYPE_TQ2_T, GGML_TYPE_TQK4, GGML_TYPE_TQK5, GGML_TYPE_TQK6, GGML_TYPE_TQK7,
         GGML_TYPE_TQP5, GGML_TYPE_TQP6, GGML_TYPE_TQP7}) {
         constexpr int K = 512, N = 35;
@@ -144,7 +145,9 @@ for (uint g = 0u; g < groups; ++g) {
             }
         }
         std::vector<float> values(K * N);
-        ggml_get_type_traits(type)->to_float(bytes.data(), values.data(), values.size());
+        if (type == GGML_TYPE_Q8_K)
+            dequantize_row_q8_K(reinterpret_cast<const block_q8_K*>(bytes.data()), values.data(), values.size());
+        else ggml_get_type_traits(type)->to_float(bytes.data(), values.data(), values.size());
         const auto actual = kernel({array(bytes.begin(), Shape{int(bytes.size())}, uint8),
             array({uint32_t(K / 32), uint32_t(N)})}, {{N, K}}, {float32}, {64, 1, 1}, {64, 1, 1},
             {{"F", int(type)}}, std::nullopt, false, {}).front();
@@ -157,13 +160,19 @@ void check_prefill_restore() {
     constexpr int E = 3, M = 9, R = 4, K = 128;
     if (!gguf_expert_prefill_available(zeros({M, K}, float16))) return;
     const auto ids = reshape(remainder(arange(M * R, int32), array(E + 2, int32)) - 1, {M, R});
-    const auto routes = gguf_group_routes(ids, E, 32);
-    const auto experts = reshape(broadcast_to(slice(routes.descriptors,
-        {0, 0}, {routes.tiles, 1}), {routes.tiles, 32}), {-1, 1});
+    const auto routes = gguf_group_routes(ids, E, 32, false, true);
+    eval(routes.descriptors, routes.count);
+    std::vector<int> expert_rows(routes.row_capacity);
+    for (int tile = 0; tile < routes.count.item<int32_t>(); ++tile) {
+        const auto* descriptor = routes.descriptors.data<int32_t>() + tile * 3;
+        const int capacity = descriptor[1] <= 8 ? 8 : descriptor[1] <= 16 ? 16 : 32;
+        std::fill_n(expert_rows.begin() + descriptor[2], capacity, descriptor[0]);
+    }
+    const array experts(expert_rows.begin(), Shape{routes.row_capacity, 1}, int32);
     for (const auto dtype : {float16, bfloat16, float32}) {
         const MlxGgufPrefillPlan plan(zeros({M, K}, dtype), ids, E, 32);
         for (const int width : {7, 128, 129}) for (const auto source_type : {float16, float32}) {
-            const int rows = routes.tiles * 32, extent = rows * width;
+            const int rows = routes.row_capacity, extent = rows * width;
             const auto values_by_expert = sin(astype(experts, float32) * .3f + arange(width, float32) * .013f);
             const auto backing = concatenate({zeros({1}, source_type), reshape(astype(values_by_expert, source_type), {-1})});
             eval(backing);
@@ -769,6 +778,9 @@ void check_heterogeneous_experts() {
                 "heterogeneous GGUF routed projection M=" + std::to_string(m));
             compare(gate.routed_swiglu(up, input, ids), moe_swiglu_pair(astype(expected_gate, dt), astype(expected_up, dt)),
                 dt == bfloat16 ? .02f : .003f, "heterogeneous GGUF fused Gate/Up M=" + std::to_string(m));
+            compare(gate.routed_swiglu(up, input, ids, nullptr, -0.f),
+                moe_swiglu_pair(astype(expected_gate, dt), astype(expected_up, dt)),
+                dt == bfloat16 ? .02f : .003f, "heterogeneous GGUF negative-zero limit M=" + std::to_string(m));
             compare(gate.routed_swiglu(up, input, ids, nullptr, .7f),
                 moe_limited_swiglu_pair(astype(expected_gate, dt), astype(expected_up, dt), .7f),
                 dt == bfloat16 ? .02f : .003f, "heterogeneous GGUF clipped Gate/Up M=" + std::to_string(m));
@@ -1111,8 +1123,12 @@ void check_split_projection() {
             for (int repeat = 0; repeat < 16; ++repeat) {
                 const auto source = input + array(float(repeat + 1) * .001f, dtype);
                 const auto current = MlxGgufStagedPrefill::project_split_many(weights, source);
-                compare((*current)[i], weights[i].matmul(source), 0.f, "GGUF split cross-threadgroup publication");
-                compare(compiled({source})[i], (*current)[i], 0.f, "GGUF split compiled workspace replay");
+                const auto context = " format=" + std::to_string(weights[i].format()) + " rows=" + std::to_string(rows) +
+                    " dtype=" + (dtype == float16 ? "F16" : dtype == bfloat16 ? "BF16" : "F32") + " repeat=" + std::to_string(repeat);
+                const auto individual = MlxGgufStagedPrefill::project_split_many(std::span(&weights[i], 1), source);
+                if (!individual) throw std::runtime_error("GGUF single split projection did not activate" + context);
+                compare((*current)[i], individual->front(), 0.f, "GGUF split cross-threadgroup publication" + context);
+                compare(compiled({source})[i], (*current)[i], 0.f, "GGUF split compiled workspace replay" + context);
             }
         }
     }
@@ -1337,15 +1353,22 @@ void check_native_affine_pairs() {
                 " GS=" + std::to_string(group) + " K=" + std::to_string(width));
     }
 }
-void check_native_grid_gate_up(int width = 1024, int inner = 256) {
+void check_native_grid_gate_up(int width = 1024, int inner = 256, bool single_only = false) {
     constexpr int experts = 16;
     MlxKernelPreparation preparation(1, 1);
-    const std::array formats{GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S};
+    const std::array formats{std::array{GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS},
+        std::array{GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S}, std::array{GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS},
+        std::array{GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S}, std::array{GGML_TYPE_IQ3_S, GGML_TYPE_IQ2_XXS},
+        std::array{GGML_TYPE_Q5_K, GGML_TYPE_IQ3_XXS}, std::array{GGML_TYPE_IQ3_XXS, GGML_TYPE_Q5_K},
+        std::array{GGML_TYPE_IQ4_XS, GGML_TYPE_IQ3_XXS}, std::array{GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_XS},
+        std::array{GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}, std::array{GGML_TYPE_Q5_K, GGML_TYPE_Q4_K},
+        std::array{GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_XS}, std::array{GGML_TYPE_Q3_K, GGML_TYPE_IQ2_XS},
+        std::array{GGML_TYPE_Q3_K, GGML_TYPE_IQ2_S}, std::array{GGML_TYPE_Q2_K, GGML_TYPE_Q3_K}};
     for (std::size_t format = 0; format < formats.size(); ++format) {
         std::vector<MlxNativeGgufWeight> native;
         std::vector<MlxGgufWeight> reference;
         for (const bool routed : {true, false}) for (int part = 0; part < 3; ++part) {
-            const auto type = part == 2 ? (inner % 256 ? GGML_TYPE_Q2_0 : GGML_TYPE_Q4_K) : routed ? formats[(format + part) % formats.size()]
+            const auto type = part == 2 ? (inner % 256 ? GGML_TYPE_Q2_0 : GGML_TYPE_Q4_K) : routed ? formats[format][part]
                 : part == 0 ? GGML_TYPE_Q5_K : GGML_TYPE_Q6_K;
             const int k = part == 2 ? inner : width, n = part == 2 ? width : inner;
             const int rows = n * (routed ? experts : 1);
@@ -1365,6 +1388,7 @@ void check_native_grid_gate_up(int width = 1024, int inner = 256) {
         for (const auto& input : {row, concatenate({row, row}, 0), concatenate({row, -row}, 0),
                 concatenate({row, -row, row}, 0), concatenate({row, row, -row, -row}, 0)}) {
             const int count = input.shape(0);
+            if (single_only && count != 1) continue;
             for (const auto dtype : {float32, bfloat16}) for (const int selected : {1, 2, experts - 1, experts}) {
                 const auto current_router = astype(router, dtype);
                 const auto scores = matmul(astype(input, float32), transpose(astype(current_router, float32)));
@@ -1435,7 +1459,8 @@ void check_native_stack() {
                 "native single-row split projection with offset input");
         }
     }
-    const std::array types{GGML_TYPE_IQ3_XXS, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K};
+    const std::array types{GGML_TYPE_IQ3_XXS, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL,
+        GGML_TYPE_Q6_K, GGML_TYPE_Q2_K, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S};
     std::vector<MlxNativeGgufWeight> routed, shared;
     std::vector<MlxGgufWeight> routed_reference, shared_reference;
     for (const bool experts : {true, false}) for (const auto type : types) {
@@ -1452,20 +1477,22 @@ void check_native_stack() {
     }
     const auto router = reshape(sin(arange(E * K, float32) * .019f), {E, K}) * .03f;
     const auto scalar = reshape(cos(arange(K, float32) * .017f), {1, K}) * .02f;
+    const auto shared_projections = std::span(shared.data(), std::size_t(3));
     MlxNativeGgufMoe moe{{routed[0], routed[1], routed[2]}, {shared[0], shared[1], shared[2]},
         router, scalar, arange(E, uint32), top_k};
+    std::array<int, 3> routed_order{0, 1, 2}, shared_order{0, 1, 2};
     const auto reference_moe = [&](const MlxNativeGgufMoe& weights, const array& input) {
         const int count = int(input.size() / K);
         const auto scores = matmul(astype(input, float32), transpose(weights.router));
         const auto ids = astype(slice(argsort(-scores, -1), {0, 0}, {count, weights.top_k}), int32);
         const auto probabilities = softmax(take_along_axis(scores, ids, -1), -1);
         const auto slots = astype(take(weights.slots, ids, 0), int32);
-        const auto gate = routed_reference[0].routed_matmul(input, slots, true);
-        const auto up = routed_reference[1].routed_matmul(input, slots, true);
+        const auto gate = routed_reference[routed_order[0]].routed_matmul(input, slots, true);
+        const auto up = routed_reference[routed_order[1]].routed_matmul(input, slots, true);
         const auto intermediate = astype(moe_swiglu_pair(gate, up), bfloat16);
-        const auto routed_out = routed_reference[2].routed_matmul(intermediate, slots, false);
-        const auto sg = shared_reference[0].matmul(input), su = shared_reference[1].matmul(input);
-        const auto shared_out = shared_reference[2].matmul(astype(moe_swiglu_pair(sg, su), bfloat16));
+        const auto routed_out = routed_reference[routed_order[2]].routed_matmul(intermediate, slots, false);
+        const auto sg = shared_reference[shared_order[0]].matmul(input), su = shared_reference[shared_order[1]].matmul(input);
+        const auto shared_out = shared_reference[shared_order[2]].matmul(astype(moe_swiglu_pair(sg, su), bfloat16));
         return astype(sum(astype(routed_out, float32) * expand_dims(probabilities, -1), 1) +
             astype(shared_out, float32) * sigmoid(matmul(astype(input, float32), transpose(weights.scalar_gate))), bfloat16);
     };
@@ -1497,12 +1524,12 @@ void check_native_stack() {
                 "native Down/combine route-count boundary and compact slot aliases");
         }
     }
-    for (const int count : {1, 2, 3, 4, 5, 6, 7, 8, 17, 32, 65}) {
+    for (const int count : {1, 2, 3, 4, 5, 6, 7, 8, 17, 32, 33, 65}) {
         const auto input = astype(reshape(sin(arange(count * K, float32) * .013f), {count, K}), bfloat16);
         const auto expected = reference_moe(moe, input);
         compare(mlx_native_gguf_moe(moe, input), expected, .025f,
             "native grouped MoE mixed formats M=" + std::to_string(count));
-        const auto actual = mlx_native_gguf_project(shared, input);
+        const auto actual = mlx_native_gguf_project(shared_projections, input);
         for (int i = 0; i < 3; ++i)
             compare(actual[i], shared_reference[i].matmul(input), .015f,
                 "native mixed projections M=" + std::to_string(count));
@@ -1517,9 +1544,9 @@ void check_native_stack() {
     }
     for (const int count : {2051, 4096, 4161}) for (const auto dtype : {bfloat16, float16, float32}) {
         const auto input = astype(reshape(sin(arange(count * K, float32) * .013f), {count, K}), dtype);
-        const auto actual = mlx_native_gguf_project(shared, input);
+        const auto actual = mlx_native_gguf_project(shared_projections, input);
         eval(actual);
-        for (std::size_t i = 0; i < shared.size(); ++i) {
+        for (std::size_t i = 0; i < shared_projections.size(); ++i) {
             compare(actual[i], shared_reference[i].matmul(input), .02f, "native chunked mixed projections");
             if (dtype == bfloat16 && actual[i].buffer().ptr() != actual.front().buffer().ptr())
                 throw std::runtime_error("native prefill projections copied chunk outputs");
@@ -1545,9 +1572,10 @@ void check_native_stack() {
             pending.push_back(mlx_native_gguf_swiglu(shared[0], shared[1], input));
             expected.push_back(astype(moe_swiglu_pair(shared_reference[0].matmul(input),
                 shared_reference[1].matmul(input)), bfloat16));
-            const auto projections = mlx_native_gguf_project(shared, input);
+            const auto projections = mlx_native_gguf_project(shared_projections, input);
             pending.insert(pending.end(), projections.begin(), projections.end());
-            for (const auto& weight : shared_reference) expected.push_back(weight.matmul(input));
+            for (std::size_t p = 0; p < shared_projections.size(); ++p)
+                expected.push_back(shared_reference[p].matmul(input));
         }
     }
     for (int iteration = 0; iteration < 5; ++iteration) {
@@ -1563,10 +1591,10 @@ void check_native_stack() {
     for (const bool strided : {false, true}) {
         auto backing = astype(reshape(sin(arange(130 * K, float32) * .017f), {130, K}), bfloat16);
         auto input = strided ? transpose(reshape(backing, {K, 130})) : slice(backing, {65, 0}, {130, K});
-        auto outputs = mlx_native_gguf_project(shared, input);
+        auto outputs = mlx_native_gguf_project(shared_projections, input);
         outputs.push_back(mlx_native_gguf_moe(moe, input));
         check_native_views(outputs);
-        for (std::size_t i = 0; i < shared.size(); ++i)
+        for (std::size_t i = 0; i < shared_projections.size(); ++i)
             compare(outputs[i], shared_reference[i].matmul(input), .015f, "native offset/strided projection");
         compare(outputs.back(), reference_moe(moe, input), .025f, "native offset/strided MoE");
     }
@@ -1629,6 +1657,20 @@ void check_native_stack() {
                 "native affine complete mixed-format MoE K=" + std::to_string(width) + " N=" +
                 std::to_string(intermediate) + " GS=" + std::to_string(group) + " shift=" +
                 std::to_string(shift) + " M=" + std::to_string(rows));
+        }
+    }
+    for (const std::array<int, 6> order : {std::array{1, 3, 2, 3, 1, 2}, std::array{3, 1, 2, 1, 3, 2},
+        std::array{3, 4, 2, 4, 3, 2}, std::array{1, 2, 2, 3, 4, 2}, std::array{1, 5, 6, 1, 5, 6},
+        std::array{5, 1, 7, 5, 1, 7}, std::array{6, 8, 5, 6, 8, 5}, std::array{6, 7, 0, 6, 7, 0}}) {
+        auto current = moe;
+        for (int p = 0; p < 3; ++p) {
+            routed_order[p] = order[p]; shared_order[p] = order[p + 3];
+            current.routed[p] = routed[order[p]]; current.shared[p] = shared[order[p + 3]];
+        }
+        for (const int count : {1, 2, 3, 4, 5, 6, 65}) {
+            const auto input = astype(reshape(sin(arange(count * K, float32) * .019f), {count, K}), bfloat16);
+            compare(mlx_native_gguf_moe(current, input), reference_moe(current, input), .025f,
+                "native mixed routed and shared projections M=" + std::to_string(count));
         }
     }
     std::cout << "native GGUF repack, grouped projections, mixed Gate/Up and complete MoE passed\n";
@@ -1799,6 +1841,9 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if (std::string_view(argv[1]) == "native-stack") { check_native_stack(); return 0; }
+            if (std::string_view(argv[1]) == "native-single") {
+                check_native_grid_gate_up(1024, 256, true); check_native_grid_gate_up(2560, 640, true); return 0;
+            }
             if (std::string_view(argv[1]) == "native-hyper") { check_native_hyper(); return 0; }
             if (std::string_view(argv[1]) == "rows") { check_row_preparation(); return 0; }
             if (std::string_view(argv[1]) == "mhc") { check_gated_residual(); return 0; }
