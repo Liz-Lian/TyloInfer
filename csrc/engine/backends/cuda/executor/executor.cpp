@@ -106,6 +106,21 @@ std::unique_ptr<Executor> Executor::fork() const {
                                       options_, ffn_options_, primary_);
 }
 
+Projector Executor::projector(const Mode& mode) {
+    return {profiler_, mmq_, tq_, branches_, collectives_, options_.projection,
+            primary_, mode.ffn.serial, mode.projection_major};
+}
+
+FfnExec Executor::ffn(const Mode& mode) {
+    return {projector(mode), profiler_, mmq_, tq_, branches_, collectives_, routes_,
+            options_.projection, options_.attention, options_.dense, ffn_options_, mode.ffn};
+}
+
+AttentionScratch& Executor::attention_scratch(std::size_t index) {
+    if (scratch_.size() <= index) scratch_.resize(index + 1);
+    return scratch_[index];
+}
+
 Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
     const auto release = releases(tasks, inputs);
     auto options = options_;
@@ -113,10 +128,8 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
     options.dense.bf16_norm = options.attention.fused_norm;
     const auto scratch_size = inputs.scratch_offset + tasks.size();
     if (scratch_.size() < scratch_size) scratch_.resize(scratch_size);
-    const Projector project(profiler_, mmq_, tq_, branches_, collectives_,
-        options_.projection, primary_, mode.ffn.serial, mode.projection_major);
-    FfnExec ffn(project, profiler_, mmq_, tq_, branches_, collectives_, routes_,
-        options_.projection, options_.attention, options_.dense, ffn_options_, mode.ffn);
+    const auto project = projector(mode);
+    auto ffn = this->ffn(mode);
     for (size_t index = 0; index < tasks.size(); ++index) {
         const auto& task = tasks[index];
         std::visit([&](const auto& op) {

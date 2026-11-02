@@ -163,7 +163,6 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
                                                   std::shared_ptr<const mfq::ModelSource>, bool)
 
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Gemma4CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Glm5CausalLm);
 TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen4CausalLm);
@@ -396,7 +395,7 @@ load_runtime_components(
 #define TYLOINFER_INSTANTIATE_COMPONENTS(TYPE)                                  \
     template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const mfq::cuda::weight_loader::Loader&, bool)
 
-TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::Gemma4CausalLm);
+TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::gemma4::Model);
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::DeepseekV4CausalLm);
 

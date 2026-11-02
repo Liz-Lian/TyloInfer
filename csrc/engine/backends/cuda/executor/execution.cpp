@@ -60,7 +60,8 @@ mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
             gemma_stage_trace,
             gemma_trace_layer,
             layer_placement.primary_device(),
-            decode_graph_tp_projection_major};
+            decode_graph_tp_projection_major,
+            config.gemma4_fused_norms};
 }
 
 CudaExecutionContext::~CudaExecutionContext() {

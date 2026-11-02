@@ -30,9 +30,6 @@ template <class Backend> struct CausalLm;
 namespace mfq::models::glm_dsa {
 template <class Backend> struct CausalLm;
 }
-namespace mfq::models::gemma4 {
-template <class Backend> struct CausalLm;
-}
 namespace mfq::models::deepseek_v4 {
 template <class Backend> struct CausalLm;
 }
@@ -103,7 +100,6 @@ struct CausalResources {
 };
 
 struct MiniCPMO45Model;
-struct Gemma4Model;
 struct GlmDsaModel;
 struct Glm5Model;
 struct Qwen4Model;
@@ -343,7 +339,6 @@ template <typename Model> struct CudaCausalOps : Model {
 };
 
 using MiniCPMO45CausalLm = mfq::models::minicpmo45::CausalLm<CudaCausalOps<MiniCPMO45Model>>;
-using Gemma4CausalLm = mfq::models::gemma4::CausalLm<CudaCausalOps<Gemma4Model>>;
 using GlmDsaCausalLm = mfq::models::glm_dsa::CausalLm<CudaCausalOps<GlmDsaModel>>;
 using Glm5CausalLm = mfq::models::glm5_next::CausalLm<CudaCausalOps<Glm5Model>>;
 using Qwen4CausalLm = mfq::models::qwen4_exp::CausalLm<CudaCausalOps<Qwen4Model>>;

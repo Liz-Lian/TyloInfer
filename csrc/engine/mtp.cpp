@@ -1,5 +1,4 @@
 #include "engine/models/deepseek_v4/ops.h"
-#include "engine/models/gemma4/ops.h"
 #include "engine/models/glm5_next/ops.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/ops.h"
@@ -19,7 +18,6 @@
       const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \
       mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>)
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::MiniCPMO45CausalLm);
-TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Gemma4CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::GlmDsaCausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Glm5CausalLm);
 TYLOINFER_INSTANTIATE_MTP(mfq::cuda::Qwen4CausalLm);

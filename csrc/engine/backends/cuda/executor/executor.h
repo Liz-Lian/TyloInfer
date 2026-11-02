@@ -21,6 +21,7 @@ public:
         int trace_layer = -1;
         int primary = 0;
         bool projection_major = false;
+        bool gemma4_fused_norms = true;
     };
 
     struct Options {
@@ -47,6 +48,11 @@ public:
     mfq_tensor_backend::Tensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
     std::span<const AttentionScratch> scratch() const noexcept { return scratch_; }
+    Projector projector(const Mode& mode);
+    FfnExec ffn(const Mode& mode);
+    CudaProfiler& profiler() noexcept { return profiler_; }
+    const FullAttention::Options& attention_options() const noexcept { return options_.attention; }
+    AttentionScratch& attention_scratch(std::size_t index);
 
 private:
     CudaProfiler& profiler_;

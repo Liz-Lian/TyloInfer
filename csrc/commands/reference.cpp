@@ -9,7 +9,8 @@
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/models/qwen35/load.h"
 #include "engine/models/qwen35/forward.h"
-#include "engine/models/common/block.h"
+#include "engine/models/gemma4/load.h"
+#include "engine/models/gemma4/forward.h"
 
 #include <algorithm>
 #include <cstring>
@@ -54,8 +55,22 @@ Model load_reference_model(CudaExecutionContext& execution,
             finalize_moe_expert_cache(execution.weights.moe);
         return model;
     } else {
-        return load_causal_lm<Model>(execution, options.model_path, options.config_path,
-                                     options.context_size, false, false, source, false);
+        CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
+        auto definition = mfq::models::config_json(*source, options.config_path);
+        definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+        auto model = mfq::cuda::gemma4::read(source, definition, options.context_size);
+        mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
+            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+             execution.tensor_parallel, moe_parallel_config(execution)},
+            execution.weights, execution.tq};
+        execution.dense_cpu_layer_count = 0;
+        mfq::cuda::gemma4::load(model, weights, execution.layer_placement,
+            execution.n_gpu_layers, execution.expert_parallel.enabled(), false, false);
+        if (moe_expert_cache_has_sources(execution.weights.moe) &&
+            !moe_expert_cache_finalized(execution.weights.moe))
+            finalize_moe_expert_cache(execution.weights.moe);
+        return model;
     }
 }
 
@@ -69,7 +84,7 @@ std::string_view reference_layer_type(const Model& model, int index) {
     if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
         return model.config.layer_types.at(static_cast<std::size_t>(index));
     else
-        return model.layer_type(index);
+        return model.metadata.layer_types.at(static_cast<std::size_t>(index));
 }
 
 template <typename Model> struct ReferenceLayers {
@@ -77,74 +92,56 @@ template <typename Model> struct ReferenceLayers {
     CudaExecutionContext& execution;
     const mfq::cuda::weight_loader::Loader& weights;
     bool resident = false;
-    std::unique_ptr<::Block> streamed;
-    std::vector<mfq::cuda::qwen35::Layer> qwen_layers;
-    std::optional<mfq::cuda::qwen35::Layer> qwen_streamed;
-    mfq::cuda::qwen35::LayerState qwen_state;
-    std::unique_ptr<mfq::cuda::Executor> qwen_executor;
+    using Layer = typename std::remove_reference_t<decltype(model.layers)>::value_type;
+    using LayerState = std::conditional_t<std::is_same_v<Model, mfq::cuda::qwen35::Model>,
+                                          mfq::cuda::qwen35::LayerState, KVCache>;
+    std::optional<Layer> streamed;
+    LayerState state;
+    std::unique_ptr<mfq::cuda::Executor> executor;
+
+    Layer load_layer(int index) {
+        const int device = execution.layer_placement.device_for_layer(index);
+        const bool cpu = index < execution.dense_cpu_layer_count;
+        auto placed = weights.for_layer(device, cpu);
+        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+            return mfq::cuda::qwen35::load_layer(placed, model.config, index,
+                std::string(reference_layer_type(model, index)),
+                execution.config.tensor_parallel_mirror_linear_attention_scalars);
+        else
+            return mfq::cuda::gemma4::load_layer(placed, model.config, index,
+                std::string(reference_layer_type(model, index)));
+    }
 
     bool load_resident() {
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-            qwen_layers.reserve(static_cast<std::size_t>(reference_num_layers(model)));
-            for (int index = 0; index < reference_num_layers(model); ++index) {
-                const int device = execution.layer_placement.device_for_layer(index);
-                const bool cpu = index < execution.dense_cpu_layer_count;
-                qwen_layers.push_back(mfq::cuda::qwen35::load_layer(
-                    weights.for_layer(device, cpu), model.config, index,
-                    std::string(reference_layer_type(model, index)),
-                    execution.config.tensor_parallel_mirror_linear_attention_scalars));
-            }
-            resident = true;
-            return true;
-        } else {
-            model.blocks.reserve(static_cast<std::size_t>(model.num_hidden_layers()));
-            for (int index = 0; index < model.num_hidden_layers(); ++index)
-                model.blocks.push_back(model.adapter_load_block(
-                    weights, index, 0, std::string(model.layer_type(index))));
-            resident = true;
-            return true;
-        }
+        model.layers.reserve(static_cast<std::size_t>(reference_num_layers(model)));
+        for (int index = 0; index < reference_num_layers(model); ++index)
+            model.layers.push_back(load_layer(index));
+        resident = true;
+        return true;
     }
 
     void load_streamed(int index) {
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-            const int device = execution.layer_placement.device_for_layer(index);
-            const bool cpu = index < execution.dense_cpu_layer_count;
-            qwen_streamed = mfq::cuda::qwen35::load_layer(
-                weights.for_layer(device, cpu), model.config, index,
-                std::string(reference_layer_type(model, index)),
-                    execution.config.tensor_parallel_mirror_linear_attention_scalars);
-            if (std::holds_alternative<mfq::cuda::qwen35::Full>(qwen_streamed->weights))
-                qwen_state.emplace<KVCache>();
-            else
-                qwen_state.emplace<mfq::cuda::qwen35::LinearState>();
-        } else {
-            streamed = model.adapter_load_block(weights, index, 0,
-                                                std::string(model.layer_type(index)));
-        }
+        streamed = load_layer(index);
     }
 
     void reset(int index) {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-            const auto& layer = resident ? qwen_layers.at(static_cast<std::size_t>(index))
-                                         : *qwen_streamed;
+            const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
+                                         : *streamed;
             if (std::holds_alternative<mfq::cuda::qwen35::Full>(layer.weights))
-                qwen_state.emplace<KVCache>();
+                state.template emplace<KVCache>();
             else
-                qwen_state.emplace<mfq::cuda::qwen35::LinearState>();
-            if (!qwen_executor) qwen_executor = execution.make_executor();
+                state.template emplace<mfq::cuda::qwen35::LinearState>();
         } else {
-            auto* block = resident ? model.blocks.at(static_cast<std::size_t>(index)).get()
-                                   : streamed.get();
-            block->reset(1);
+            state = KVCache{};
         }
+        if (!executor) executor = execution.make_executor();
     }
 
     tb::Tensor forward(int index, tb::Tensor input, const tb::Tensor& positions) {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-            const auto& layer = resident ? qwen_layers.at(static_cast<std::size_t>(index))
-                                         : *qwen_streamed;
-            auto& state = qwen_state;
+            const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
+                                         : *streamed;
             const auto* rope = &model.rope;
             if (layer.cpu) rope = &model.cpu_rope;
             else if (!model.device_ropes.empty()) {
@@ -154,40 +151,43 @@ template <typename Model> struct ReferenceLayers {
             const mfq::cuda::AttentionStep step{positions, mfq_nullopt, mfq_nullopt,
                                                 mfq_nullopt, 0, 0, 0};
             return mfq::cuda::qwen35::forward_layer(
-                execution.collectives, layer, state, *qwen_executor, 0, std::move(input), step,
+                execution.collectives, layer, state, *executor, 0, std::move(input), step,
                 0, *rope, execution.forward_mode());
         } else {
-            auto* block = resident ? model.blocks.at(static_cast<std::size_t>(index)).get()
-                                   : streamed.get();
-            return block->forward(execution, std::move(input), positions, 0,
-                                 mfq_nullopt, model.rope);
+            const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
+                                         : *streamed;
+            MfqCudaGuard guard(layer.device);
+            const mfq::cuda::AttentionStep step{
+                execution.collectives.copy(positions, layer.device), mfq_nullopt, mfq_nullopt,
+                mfq_nullopt, 0, 0, 0};
+            auto hidden = mfq::cuda::gemma4::forward_layer(layer, state, *executor, 0,
+                execution.collectives.copy(std::move(input), layer.device), step, execution.forward_mode());
+            return execution.collectives.copy(std::move(hidden), execution.layer_placement.primary_device());
         }
     }
 
     void release() {
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-            qwen_layers.clear();
-            qwen_streamed.reset();
-            qwen_state.emplace<KVCache>();
-        } else {
-            streamed.reset();
-            model.blocks.clear();
-        }
+        model.layers.clear();
+        streamed.reset();
+        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+            state.template emplace<KVCache>();
+        else
+            state = KVCache{};
     }
 
     tb::Tensor finalize(tb::Tensor hidden, std::int64_t batch, std::int64_t tokens) {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-            return mfq::cuda::qwen35::normalize(model, *qwen_executor,
+            return mfq::cuda::qwen35::normalize(model, *executor,
                                                 std::move(hidden), batch, tokens);
         else
-            return model.finalize_hidden(std::move(hidden), batch, tokens);
+            return mfq::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
     }
 
     tb::Tensor softcap(tb::Tensor logits) {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-            return mfq::cuda::qwen35::softcap(model, *qwen_executor, std::move(logits));
+            return mfq::cuda::qwen35::softcap(model, *executor, std::move(logits));
         else
-            return model.apply_final_logit_softcap(std::move(logits));
+            return mfq::cuda::gemma4::softcap(model, *executor, std::move(logits));
     }
 };
 
@@ -264,7 +264,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
             store(chunk, embedded.to(tb::kCUDA, tb::kFloat16).contiguous());
         else
-            store(chunk, model.adapter_prepare_hidden(embedded.to(tb::kCUDA), 1, context));
+            store(chunk, embedded.to(tb::kCUDA) * model.embed_scale);
     }
     auto positions = tb::arange(0, context, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64));
     mfq::cuda::weight_loader::Loader weights{source_data, execution.config.weights,
@@ -366,7 +366,7 @@ int run_reference(int argc, char** argv) {
         const auto backbone = mfq::models::graph(*source).backbone;
         if (backbone == "qwen3_5" || backbone == "generic_qwen")
             return generate<mfq::cuda::qwen35::Model>(execution, options, input, output, resident);
-        if (backbone == "gemma4") return generate<Gemma4CausalLm>(execution, options, input, output, resident);
+        if (backbone == "gemma4") return generate<mfq::cuda::gemma4::Model>(execution, options, input, output, resident);
         throw std::runtime_error("native reference architecture is unsupported: " + backbone);
     });
 }

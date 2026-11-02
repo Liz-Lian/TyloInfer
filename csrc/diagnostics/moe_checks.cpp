@@ -9,7 +9,7 @@
 
 #include "engine/models/deepseek_v4/ops.h"
 #include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/gemma4/ops.h"
+#include "engine/models/gemma4/config.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/executor/execution.h"

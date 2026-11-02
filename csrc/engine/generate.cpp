@@ -1,5 +1,5 @@
 #include "engine/models/deepseek_v4/ops.h"
-#include "engine/models/gemma4/ops.h"
+#include "engine/models/gemma4/forward.h"
 #include "engine/models/glm5_next/ops.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/ops.h"
@@ -28,7 +28,7 @@ namespace mfq::cuda::internal {
         std::function<void()>);
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::MiniCPMO45CausalLm, mfq::cuda::MiniCPMO45CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Gemma4CausalLm, mfq::cuda::Gemma4CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::gemma4::Model, mfq::cuda::gemma4::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::GlmDsaCausalLm, mfq::cuda::GlmDsaCausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Glm5CausalLm, mfq::cuda::Glm5CausalLm)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm)

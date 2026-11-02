@@ -9,6 +9,8 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/qwen35/load.h"
+#include "engine/models/gemma4/load.h"
+#include "engine/models/gemma4/state.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/state/kv_memory.h"
@@ -144,8 +146,28 @@ inline constexpr auto with_model = []<typename F>(
             return load.template operator()<MiniCPMO45CausalLm>();
         case CudaBackbone::minicpmo_tts:
             return load_tts();
-        case CudaBackbone::gemma4:
-            return load.template operator()<Gemma4CausalLm>();
+        case CudaBackbone::gemma4: {
+            auto started = std::chrono::steady_clock::now();
+            auto definition = mfq::models::config_json(*source, options.config_path);
+            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+            auto owner = std::make_shared<gemma4::Model>(
+                gemma4::read(source, definition, options.context_size));
+            weight_loader::Loader weights{*source, execution.config.weights,
+                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
+                 execution.tensor_parallel, moe_parallel_config(execution)},
+                execution.weights, execution.tq};
+            execution.dense_cpu_layer_count = 0;
+            gemma4::load(*owner, weights, execution.layer_placement, execution.n_gpu_layers,
+                         execution.expert_parallel.enabled());
+            auto state = std::make_unique<gemma4::State>(*owner);
+            state->preallocate();
+            auto executor = execution.make_executor();
+            auto components = load_runtime_components(*owner, weights, load_optional_components);
+            Loaded<gemma4::Model, gemma4::State> loaded{
+                std::move(owner), std::move(components), std::move(state), std::move(executor)};
+            return finish(loaded, started);
+        }
         case CudaBackbone::glm_dsa:
             return load.template operator()<GlmDsaCausalLm>();
         case CudaBackbone::glm5_next:

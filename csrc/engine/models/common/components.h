@@ -7,7 +7,7 @@
 #include "engine/models/common/vision/grid_encoder.h"
 #include "engine/models/deepseek_v4/ops.h"
 #include "engine/models/deepseek_v41/ops.h"
-#include "engine/models/gemma4/ops.h"
+#include "engine/models/gemma4/model.h"
 #include "engine/models/glm5_next/ops.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/minicpmo45/model.h"
