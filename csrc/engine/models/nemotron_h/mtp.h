@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/weights/loader.h"
+#include "engine/models/session.h"
 
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/full_block.h"

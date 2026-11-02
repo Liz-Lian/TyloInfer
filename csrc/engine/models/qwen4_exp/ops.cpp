@@ -1,4 +1,5 @@
 #include "engine/weights/workspace.h"
+#include "engine/models/session.h"
 #include "env.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/executor/decode_graph.h"

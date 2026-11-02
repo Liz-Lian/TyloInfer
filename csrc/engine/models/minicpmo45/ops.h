@@ -3,7 +3,7 @@
 #include "engine/generation/sequence.h"
 
 #include "engine/models/common/causal_model_ops.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session.h"
 #include "engine/requests/result.h"
 #include "engine/models/common/block.h"
 #include "engine/models/minicpmo45/causal_lm.h"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/qwen35/predictor.h"
+#include "engine/models/session.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/models/qwen35/mtp_state.h"
 #include "engine/models/common/mtp.h"

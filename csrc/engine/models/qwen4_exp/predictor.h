@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/models/common/mtp.h"
+#include "engine/models/session.h"
 #include "engine/models/common/attention_ops.h"
 #include "engine/models/qwen4_exp/config.h"
 

@@ -1,5 +1,5 @@
 #include "engine/models/deepseek_v41/session_codec.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session.h"
 #include "engine/models/deepseek_v41/snapshot.h"
 #include "engine/models/deepseek_v41/hash.h"
 

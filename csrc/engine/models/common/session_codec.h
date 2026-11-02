@@ -2,7 +2,7 @@
 
 #include "engine/models/common/causal_model_ops.h"
 #include "engine/models/common/full_block.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session.h"
 
 namespace mfq::cuda {
 

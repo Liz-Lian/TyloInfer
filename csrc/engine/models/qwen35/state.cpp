@@ -1,4 +1,5 @@
 #include "engine/models/qwen35/state.h"
+#include "engine/models/session.h"
 
 #include "engine/models/qwen35/model.h"
 

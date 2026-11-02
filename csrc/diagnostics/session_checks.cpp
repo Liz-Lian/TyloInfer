@@ -4,7 +4,7 @@
 #include "engine/models/deepseek_v4/snapshot.h"
 #include "engine/models/glm_dsa/ops.h"
 #include "engine/models/glm_dsa/snapshot.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session.h"
 
 #include <cstdint>
 #include <iostream>

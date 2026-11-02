@@ -85,6 +85,8 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/common/components.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/cache.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/common/session/paged.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/common/session/state.cpp
+    ${PROJECT_SOURCE_DIR}/engine/models/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/deepseek_v41/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp

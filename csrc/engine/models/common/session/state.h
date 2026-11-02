@@ -3,23 +3,17 @@
 #include "backend.h"
 #include "engine/state/recurrent.h"
 #include "engine/models/common/session/paged.h"
-#include "engine/models/deepseek_v4/snapshot.h"
-#include "engine/models/deepseek_v41/snapshot.h"
-#include "engine/models/glm_dsa/snapshot.h"
-#include "engine/models/qwen4_exp/snapshot.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <stdexcept>
-#include <string>
-#include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
+struct TextSessionState;
+enum class TextSessionStateKind : int;
 struct KVCache;
 namespace mfq::cuda { struct KvQuantization; }
 
@@ -43,16 +37,6 @@ inline bool session_kv_geometry_matches(const mfq_tensor_backend::Tensor& k,
     return k.scalar_type()==mfq_tensor_backend::kInt32 || k.size(3)==v.size(3);
 }
 
-enum class TextSessionStateKind : int {
-    Unsupported,
-    FullAttention,
-    HybridAttention,
-    DeepseekV4,
-    GlmDsa,
-    Qwen4,
-    DeepseekV41,
-};
-
 enum class HybridBlockSessionStateKind {
     FullAttention,
     Recurrent,
@@ -71,39 +55,6 @@ struct HybridBlockSessionState {
         full_attention.tensors(visit);
         visit(mixer.convolution);
         visit(mixer.recurrent);
-    }
-};
-
-struct MtpSessionState {
-    std::variant<
-        std::vector<KvSnapshot>,
-        mfq::models::qwen4_exp::MtpSnapshot,
-        mfq::models::deepseek_v41::MtpSnapshot> payload = std::vector<KvSnapshot>{};
-    mfq_tensor_backend::Tensor last_target_hidden;
-    int64_t cache_pos = 0;
-    size_t bytes = 0;
-};
-
-using TextSessionPayload = std::variant<
-    std::monostate,
-    std::vector<KvSnapshot>,
-    std::vector<HybridBlockSessionState>,
-    std::vector<mfq::models::deepseek_v4::BlockSnapshot>,
-    std::vector<mfq::models::glm_dsa::BlockSnapshot>,
-    mfq::models::qwen4_exp::Snapshot,
-    mfq::models::deepseek_v41::Snapshot>;
-
-struct TextSessionState {
-    std::vector<int64_t> tokens;
-    std::string input_key;
-    TextSessionPayload payload;
-    std::optional<MtpSessionState> mtp;
-    int64_t cache_pos = 0;
-    int64_t decode_position_delta = 0;
-    size_t bytes = 0;
-
-    TextSessionStateKind kind() const noexcept {
-        return static_cast<TextSessionStateKind>(payload.index());
     }
 };
 
@@ -151,9 +102,6 @@ TextSessionState decode_cuda_paged_session(
     size_t block_size);
 
 size_t session_tensor_bytes(const mfq_tensor_backend::Tensor& tensor);
-
-size_t cuda_paged_decodable_blocks(const std::vector<CudaPagedPayload>&);
-size_t cuda_paged_payload_tokens(const CudaPagedPayload&);
 
 bool session_tensor_layout_matches(
     const mfq_tensor_backend::Tensor& target,

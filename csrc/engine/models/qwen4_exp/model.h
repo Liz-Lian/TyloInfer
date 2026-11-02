@@ -16,7 +16,7 @@
 #include "engine/state/kv_memory.h"
 #include "engine/backends/cuda/executor/decode_window.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_kv_quantization.h"
-#include "engine/models/common/session/state.h"
+#include "engine/models/session.h"
 #include "engine/models/qwen4_exp/snapshot.h"
 #include <array>
 #include <cstdlib>

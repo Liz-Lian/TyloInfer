@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/models/common/session/state.h"
+#include "engine/models/session.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/generation/mtp/policy.h"
 #include "engine/requests/sampling.h"

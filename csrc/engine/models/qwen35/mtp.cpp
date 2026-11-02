@@ -1,4 +1,5 @@
 #include "engine/models/qwen35/mtp.h"
+#include "engine/models/session.h"
 
 #include "engine/models/qwen35/state.h"
 #include "engine/backends/cuda/native/collectives.h"

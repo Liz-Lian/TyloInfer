@@ -1,4 +1,5 @@
 #include "engine/backends/cuda/executor/execution.h"
+#include "engine/models/session.h"
 #include "engine/ops.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "engine/models/common/load.h"
