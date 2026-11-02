@@ -102,7 +102,7 @@ struct Origin {
         response.set_content_provider(bytes.size(), "application/octet-stream",
             [bytes, behavior](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
                 if (behavior == 1 && offset >= 65536) return false;
-                if (behavior == 7) std::this_thread::sleep_for(10ms);
+                if (behavior == 7) std::this_thread::sleep_for(100ms);
                 const auto count = std::min<std::size_t>(length, 16384);
                 return sink.write(bytes.data() + offset, count);
             }, [&](bool) { --active; });
@@ -280,15 +280,19 @@ void routes(const fs::path& executable) {
         CHECK(progress); server.post("/api/v1/jobs/" + id + "/retry", {}, 409);
         origin.mode = 7; auto cancel = payload; cancel["destination"] = "models/cancel-api";
         const auto cancel_id = server.post("/api/v1/jobs", {{"kind", "download.huggingface"}, {"payload", cancel}}).at("id").get<std::string>();
-        wait([&] { return origin.active > 0; }); server.post("/api/v1/jobs/" + cancel_id + "/cancel", {}, 200);
+        // 先确认收到部分权重，取消后的重试才应携带 Range。
+        wait([&] { const auto job = server.get("/api/v1/jobs/" + cancel_id); return job["progress_data"].is_object() && job["progress_data"].value("downloaded_bytes", 0) > 32768; });
+        server.post("/api/v1/jobs/" + cancel_id + "/cancel", {}, 200);
         CHECK(server.complete(cancel_id)["status"] == "cancelled"); CHECK(!fs::exists(temporary.root / "models/cancel-api"));
         origin.mode = 0;
+        const auto hf_ranges = origin.ranges.load();
         const auto retry = server.post("/api/v1/jobs/" + cancel_id + "/retry", {}); CHECK(retry["id"] != cancel_id);
         CHECK(server.complete(retry["id"])["status"] == "succeeded");
+        CHECK(origin.ranges > hf_ranges);
         origin.mode = 7; cancel["destination"] = "models/restart";
         interrupted = server.post("/api/v1/jobs", {{"kind", "download.modelscope"}, {"payload", cancel}}).at("id");
-#ifndef _WIN32
         wait([&] { const auto job = server.get("/api/v1/jobs/" + interrupted); return job["progress_data"].is_object() && job["progress_data"].value("downloaded_bytes", 0) > 32768; });
+#ifndef _WIN32
         server.process->signal(SIGKILL); CHECK(server.process->wait() == -SIGKILL);
 #else
         server.post("/api/v1/jobs/" + interrupted + "/cancel", {}, 200);
@@ -301,9 +305,11 @@ void routes(const fs::path& executable) {
 #ifndef _WIN32
         CHECK(server.get("/api/v1/jobs/" + interrupted)["status"] == "interrupted");
 #endif
+        const auto ms_ranges = origin.ranges.load();
         const auto retry = server.post("/api/v1/jobs/" + interrupted + "/retry", {});
         CHECK(server.complete(retry["id"])["status"] == "succeeded");
-        CHECK(origin.ranges > 0 && server.get("/api/v1/models?refresh=true")["data"].size() == 3);
+        CHECK(origin.ranges > ms_ranges);
+        CHECK(server.get("/api/v1/models?refresh=true")["data"].size() == 3);
         server.client->set_default_headers({}); const auto denied = server.client->Post("/api/v1/jobs", payload.dump(), "application/json"); CHECK(denied && denied->status == 401);
     }
 }
