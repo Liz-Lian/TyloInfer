@@ -8,9 +8,9 @@
 
 namespace mfq::cuda {
 
-inline double yarn_attention_factor(const ops::YarnScaling& yarn) { return yarn.enabled() ? 1+0.1*std::log(yarn.factor) : 1; }
+inline double yarn_attention_factor(const mfq::ops::YarnScaling& yarn) { return yarn.enabled() ? 1+0.1*std::log(yarn.factor) : 1; }
 
-inline double yarn_frequency(const ops::YarnScaling& yarn, int pair, int dimension, double theta) {
+inline double yarn_frequency(const mfq::ops::YarnScaling& yarn, int pair, int dimension, double theta) {
     const auto frequency=std::pow(theta,-2.0*pair/dimension);
     if(!yarn.enabled())return frequency;
     if(yarn.original_context<=0 || !std::isfinite(yarn.factor) || !std::isfinite(yarn.beta_fast) ||

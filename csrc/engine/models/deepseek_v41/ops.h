@@ -872,23 +872,39 @@ struct Block final : ::Block {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
                         auto bias=mfq_tensor_backend::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                        return mlp.forward(
+                            value.reshape({-1,config.hidden}), execution.forward_mode().ffn, current_ids, bias)
+#else
                         auto executor = execution.executor();
                         return mlp.forward(
                             value.reshape({-1,config.hidden}), executor, execution.forward_mode().ffn, current_ids, bias)
+#endif
                             .reshape({batch,tokens,config.hidden});
                     }
                     if(layer+1<static_cast<int64_t>(shared->router_prefetch.size()))
                         if(const auto* next=shared->router_prefetch[layer+1]) {
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                             auto executor = execution.executor();
+#endif
                             next->prefetch(
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                                value, execution.forward_mode().ffn,
+#else
                                 value, executor, execution.forward_mode().ffn,
+#endif
                                 moe_expert_cache_ssd_router_prefetch(
                                     execution.weights.moe),
                                 current_ids);
                         }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                    return mlp.forward(
+                            value.reshape({-1, config.hidden}), execution.forward_mode().ffn, current_ids)
+#else
                     auto executor = execution.executor();
                     return mlp.forward(
                             value.reshape({-1, config.hidden}), executor, execution.forward_mode().ffn, current_ids)
+#endif
                         .reshape({batch, tokens, config.hidden});
                 });
             });

@@ -10,6 +10,24 @@
 #include <algorithm>
 #include <utility>
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/ops.h"
+
+mfq::Tensor mfq::cuda::ops::embedding(mfq::Tensor ids, const mfq::weights::Matrix& weight) {
+    return quant_embedding_lookup(as_quant_linear(weight), mfq_tensor_backend::Tensor(ids));
+}
+
+mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Matrix& weight,
+                                   const mfq::ops::ProjectionOptions& options) {
+    mfq::cuda::Ffn::Mode mode;
+    mode.serial = options.serial;
+    mode.projection_major = options.projection_major;
+    return mfq::cuda::Executor::current().projector(mode).run(
+        as_quant_linear(weight), mfq_tensor_backend::Tensor(input));
+}
+#endif
+
 mfq_tensor_backend::Tensor run_quant_linear_shard(
         CudaProfiler& profiler,
         KlMmqState& kl_mmq,

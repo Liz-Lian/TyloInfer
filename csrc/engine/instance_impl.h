@@ -52,7 +52,11 @@ struct Backend {
         if (!state) throw std::runtime_error("CUDA engine is unloaded");
         return std::visit([&](auto& value) -> decltype(auto) {
             if (!value) throw std::runtime_error("CUDA engine is unloaded");
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            auto guard = value->executor->enter();
+#else
             CudaScope guard(value->execution->layer_placement.primary_device(), contexts);
+#endif
             mfq_tensor_backend::NoGradGuard no_grad;
             return run(*value);
         }, *state);

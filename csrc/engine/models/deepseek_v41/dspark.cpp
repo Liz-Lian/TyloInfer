@@ -474,8 +474,12 @@ struct DeepseekV41Dspark final : MtpModule {
                     },
                     [&](Tensor value) {
                         const auto rows = value.size(1);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                        return stage.mlp.forward(value.reshape({-1, config.hidden}),
+#else
                         auto executor = execution->executor();
                         return stage.mlp.forward(value.reshape({-1, config.hidden}), executor,
+#endif
                                      execution->forward_mode().ffn,
                                      draft_ids.narrow(1, 0, rows))
                             .reshape({batch, rows, config.hidden});

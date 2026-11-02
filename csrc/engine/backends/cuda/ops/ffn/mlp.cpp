@@ -54,6 +54,8 @@ Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Te
 
 namespace mfq::cuda {
 
+using Tensor = mfq_tensor_backend::Tensor;
+
 Tensor expert_activation(ActivationKind activation, Tensor gate, Tensor up, double limit) {
     if (activation == ActivationKind::relu_squared) {
         TYLOINFER_RUNTIME_CHECK(!gate.defined(), "relu-squared experts have no gate projection");

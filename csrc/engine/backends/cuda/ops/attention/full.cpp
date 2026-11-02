@@ -6,6 +6,9 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_activation_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#endif
 
 #include <optional>
 #include <stdexcept>
@@ -47,10 +50,24 @@ Tensor full_attention(Tensor normalized, Project project, FusedPrepare fused_pre
 } // namespace
 
 std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        mfq_tensor_backend::Tensor x, const AttentionStep& step, AttentionKvView cache,
+        const RopeCache& rope, const mfq::ops::ProjectionOptions& projection, Trace* trace) const {
+    auto& executor = Executor::current();
+    Ffn::Mode mode;
+    mode.serial = projection.serial;
+    mode.projection_major = projection.projection_major;
+    const auto project = executor.projector(mode);
+    auto& profiler = executor.profiler();
+    const auto& options = executor.attention_options();
+    auto& scratch = executor.attention_scratch(x.device(),
+        {attention_heads, kv_heads, attention_head_dim, sliding ? attention_window : 0});
+#else
         const Projector& project, CudaProfiler& profiler, const Options& options,
         mfq_tensor_backend::Tensor x,
         const AttentionStep& step, AttentionKvView cache,
         AttentionScratch& scratch, const RopeCache& rope, Trace* trace) const {
+#endif
     const auto& pos = step.positions;
     const auto& seq_len = step.sequence_lengths;
     const auto& cache_positions = step.cache_positions;

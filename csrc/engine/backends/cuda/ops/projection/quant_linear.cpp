@@ -9,6 +9,12 @@
 #include <utility>
 #include <vector>
 
+const QuantLinear& as_quant_linear(const mfq::weights::Matrix& weight) {
+    const auto* result = dynamic_cast<const QuantLinear*>(&weight);
+    if (!result) throw std::invalid_argument("matrix was not prepared by the CUDA backend");
+    return *result;
+}
+
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "linear_dispatch.inc"
 

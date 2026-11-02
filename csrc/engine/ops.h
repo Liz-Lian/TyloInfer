@@ -1,11 +1,85 @@
 #pragma once
 
+#include "engine/tensor.h"
+#include "engine/weights/matrix.h"
+#include "engine/weights/moe/bank.h"
+
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace mfq::ops {
+
+using Trace = std::vector<std::pair<std::string, Tensor>>;
+
+struct FfnMode {
+    bool materialized = false;
+    bool unfused = false;
+    bool serial = false;
+    bool batch_serial = false;
+    int tile = 0;
+    int tiles = 1;
+    bool reuse_input = true;
+    bool projection_major = false;
+};
+
+struct ProjectionOptions {
+    bool serial = false;
+    bool projection_major = false;
+};
+
+// Normalize over the last dimension, preserving shape; F32 output is the default.
+Tensor rms_norm(Tensor input, const Tensor& weight, double eps, double offset,
+                ScalarType output_type = ScalarType::float32);
+Tensor add(Tensor left, Tensor right);
+Tensor multiply(Tensor left, Tensor right);
+Tensor matmul(Tensor left, Tensor right);
+Tensor transpose(Tensor input, std::int64_t first, std::int64_t second);
+Tensor add_residual(Tensor residual, Tensor value);
+
+struct ResidualNorms {
+    Tensor residual, dense, router, experts;
+};
+ResidualNorms residual_norms(Tensor residual, Tensor attention, const Tensor& attention_weight,
+                             const Tensor& dense_weight, const Tensor& router_weight,
+                             const Tensor& expert_weight, double eps);
+Tensor merge_norms(Tensor dense, Tensor experts, Tensor residual, const Tensor& dense_weight,
+                   const Tensor& expert_weight, const Tensor& output_weight,
+                   const Tensor& scale, double eps);
+
+class ProfileRange {
+public:
+    explicit ProfileRange(const char* name);
+    ~ProfileRange();
+    void finish();
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+template <class Fn>
+auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
+    ProfileRange range(name);
+    auto result = operation();
+    range.finish();
+    return result;
+}
+// Preserve dtype; a cap that is not positive returns the input handle.
+Tensor softcap(Tensor input, double cap);
+Tensor scale(Tensor input, double factor);
+Tensor embedding(Tensor ids, const weights::Matrix& weight);
+Tensor project(Tensor input, const weights::Matrix& weight, const ProjectionOptions& options = {});
+Tensor copy(Tensor input, Device target);
+Tensor cast(Tensor input, ScalarType type);
+Tensor contiguous(Tensor input);
+Tensor clone(Tensor input);
+Tensor reshape(Tensor input, std::span<const std::int64_t> shape);
+// Position tensors are I64.
+Tensor arange(std::int64_t first, std::int64_t last, Device device);
+Tensor full(std::span<const std::int64_t> shape, std::int64_t value, Device device);
+Tensor add(Tensor input, std::int64_t offset);
 
 enum class GatedActivation { silu, gelu };
 
@@ -61,6 +135,17 @@ struct MoeRouting {
     bool delayed_softmax = false;
     double scale = 1.0;
 };
+
+struct SelectedExperts { Tensor ids, weights; };
+SelectedExperts topk(Tensor logits, std::int64_t count, const MoeRouting& routing);
+// Scale the selected weights in place and return the same storage.
+Tensor expert_scale(Tensor weights, Tensor ids, const Tensor& scales);
+Tensor weighted_reduce(Tensor pairs, Tensor weights);
+// Traced intermediates are F32 snapshots taken before subsequent projections.
+struct RoutedGeglu { Tensor pairs, gate_up, hidden; };
+RoutedGeglu routed_geglu(Tensor input, Tensor ids, const weights::ExpertBank& gate_up,
+                         const weights::ExpertBank& down, const ProjectionOptions& options,
+                         bool trace);
 
 // Both branches consume the same input. Native routing may prepare an expert
 // cache before shared computation, but never changes the selected experts.

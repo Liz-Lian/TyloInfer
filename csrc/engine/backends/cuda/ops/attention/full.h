@@ -3,6 +3,9 @@
 #include "attention.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/ops.h"
+#endif
 
 #include <array>
 
@@ -61,6 +64,11 @@ struct FullAttention {
     static constexpr int64_t kDecodeAttentionMaxParts = 16;
 
     std::array<mfq_tensor_backend::Tensor, 2> forward(
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        mfq_tensor_backend::Tensor input, const AttentionStep& step,
+        AttentionKvView cache, const RopeCache& rope,
+        const mfq::ops::ProjectionOptions& projection = {}, Trace* trace = nullptr) const;
+#else
         const Projector& project, CudaProfiler& profiler, const Options& options,
         mfq_tensor_backend::Tensor input,
         const AttentionStep& step,
@@ -68,6 +76,7 @@ struct FullAttention {
         AttentionScratch& scratch,
         const RopeCache& rope,
         Trace* trace = nullptr) const;
+#endif
 };
 
 } // namespace mfq::cuda

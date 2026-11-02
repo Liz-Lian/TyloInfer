@@ -16,6 +16,7 @@
 #include "engine/requests/output.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/models/common/mtp_ops.h"
+#include "engine/models/common/generation_ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/models/input.h"
@@ -63,7 +64,14 @@ using mfq::cuda::mtp_predictor_prefill;
 using Tensor = mfq_tensor_backend::Tensor;
 
 template <typename Model, typename State>
-constexpr bool has_forward = requires(
+constexpr bool has_forward =
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+  requires(Model& model, State& state, mfq::cuda::Input input,
+           const mfq::models::ForwardOptions& options) {
+    model.forward(std::move(input), state, options);
+  } ||
+#endif
+  requires(
     Model& model, State& state, mfq::cuda::Executor& executor,
     mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
     mfq::cuda::Input input) {
@@ -81,9 +89,16 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
               mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
               mfq::cuda::Input input) {
   static_assert(has_forward<Model, State>);
-  TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                          "CUDA model forward requires an executor");
-  return forward(model, state, *executor, collectives, mode, std::move(input));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+  if constexpr (requires { model.forward(std::move(input), state, mfq::cuda::forward_options(mode)); }) {
+    return model.forward(std::move(input), state, mfq::cuda::forward_options(mode));
+  } else
+#endif
+  {
+    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                            "CUDA model forward requires an executor");
+    return forward(model, state, *executor, collectives, mode, std::move(input));
+  }
 }
 template <typename Model, typename State>
 void replay_target(Model& model, State& state, mfq::cuda::Executor* executor,
@@ -625,6 +640,17 @@ template <class Model, class State> struct CudaMtpOps {
     };
     if(matches(projected_predictor_hidden)) return projected_predictor_logits;
     if(matches(projected_target_hidden)) return projected_target_logits;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if constexpr (requires(Model& value, Tensor value_hidden) {
+                    value.logits(std::move(value_hidden), true);
+                  }) {
+      auto input = (mtp.preserve_output_dtype()
+                        ? normalized
+                        : normalized.to(mfq_tensor_backend::kFloat16))
+                       .contiguous();
+      return model.logits(std::move(input), true);
+    } else
+#endif
     if constexpr (requires(Model& value, mfq::cuda::Executor& value_executor, Tensor value_hidden) {
                     logits(value, value_executor, std::move(value_hidden), true);
                   }) {

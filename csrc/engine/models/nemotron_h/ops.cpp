@@ -245,7 +245,11 @@ static Tensor moe_forward(const Moe& weights, Executor& executor, Tensor x,
         },
         [&](Tensor xn) {
             return executor.profiler().measure("moe.ffn", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                return ffn.forward(xn.reshape({B * T, H}), mode.ffn).reshape({B, T, H});
+#else
                 return ffn.forward(xn.reshape({B * T, H}), executor, mode.ffn).reshape({B, T, H});
+#endif
             });
         },
         [&](Tensor residual, Tensor mixed) {
@@ -363,11 +367,28 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
                                                  mfq_tensor_backend::kFloat16,
                         attention.kv_quantization);
     cache.quantization = attention.kv_quantization;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    (void)scratch_index;
+    Tensor residual;
+    const Task task{task::Attention{0, 1, 2, attention, 0, &residual}, 0};
+    const auto view = cache.view();
+    Inputs inputs;
+    inputs.values = {std::move(input), {}, {}};
+    inputs.output = 2;
+    inputs.kv = std::span<const AttentionKvView>{&view, 1};
+    inputs.attention = step;
+    inputs.rope = &attention.attention_rope;
+    inputs.trace = attention.layer == mode.trace_layer ? mode.trace : nullptr;
+    inputs.trace_scope = 0;
+    auto output = executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
+    return attention_residual(executor, std::move(residual), std::move(output), B, T, H);
+#else
     auto mixed = attention.forward(executor.projector(mode.ffn), executor.profiler(),
         executor.attention_options(), std::move(input), step, cache.view(),
         executor.attention_scratch(scratch_index), attention.attention_rope,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
     return attention_residual(executor, std::move(mixed[0]), std::move(mixed[1]), B, T, H);
+#endif
 }
 
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,

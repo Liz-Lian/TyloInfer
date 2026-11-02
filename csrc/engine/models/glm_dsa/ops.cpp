@@ -728,7 +728,11 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                             return std::optional<mfq_tensor_backend::Tensor>{};
                         },
                         [&](mfq_tensor_backend::Tensor ffn_input) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                            return ffn.forward(ffn_input, mode.ffn).reshape({B * T, H});
+#else
                             return ffn.forward(ffn_input, executor, mode.ffn).reshape({B * T, H});
+#endif
                         },
                         [&](mfq_tensor_backend::Tensor hidden,
                             mfq_tensor_backend::Tensor ffn_out) {

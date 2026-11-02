@@ -72,10 +72,17 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
             kv_quantization);
     }
     cache.quantization = kv_quantization;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const auto mode = execution.forward_mode().ffn;
+    auto attention = mfq::cuda::FullAttention::forward(
+        std::move(x), step, cache.view(), rope, {mode.serial, mode.projection_major},
+        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+#else
     auto attention = mfq::cuda::FullAttention::forward(
         execution.projector(), execution.profiler, execution.config.tasks.attention,
         std::move(x), step, cache.view(), execution.attention_scratch[this], rope,
         layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+#endif
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
 }
 

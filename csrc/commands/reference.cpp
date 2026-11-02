@@ -11,6 +11,7 @@
 #include "engine/models/qwen35/forward.h"
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/forward.h"
+#include "engine/models/common/generation_ops.h"
 
 #include <algorithm>
 #include <cstring>
@@ -139,6 +140,9 @@ template <typename Model> struct ReferenceLayers {
     }
 
     tb::Tensor forward(int index, tb::Tensor input, const tb::Tensor& positions) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto scope = executor->enter();
+#endif
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
             const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
                                          : *streamed;
@@ -160,8 +164,14 @@ template <typename Model> struct ReferenceLayers {
             const mfq::cuda::AttentionStep step{
                 execution.collectives.copy(positions, layer.device), mfq_nullopt, mfq_nullopt,
                 mfq_nullopt, 0, 0, 0};
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            auto hidden = mfq::cuda::gemma4::forward_layer(layer, state,
+                execution.collectives.copy(std::move(input), layer.device), step,
+                mfq::cuda::forward_options(execution.forward_mode()));
+#else
             auto hidden = mfq::cuda::gemma4::forward_layer(layer, state, *executor, 0,
                 execution.collectives.copy(std::move(input), layer.device), step, execution.forward_mode());
+#endif
             return execution.collectives.copy(std::move(hidden), execution.layer_placement.primary_device());
         }
     }
@@ -176,18 +186,32 @@ template <typename Model> struct ReferenceLayers {
     }
 
     tb::Tensor finalize(tb::Tensor hidden, std::int64_t batch, std::int64_t tokens) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto scope = executor->enter();
+#endif
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
             return mfq::cuda::qwen35::normalize(model, *executor,
                                                 std::move(hidden), batch, tokens);
         else
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return model.normalize(std::move(hidden), batch, tokens);
+#else
             return mfq::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
+#endif
     }
 
     tb::Tensor softcap(tb::Tensor logits) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto scope = executor->enter();
+#endif
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
             return mfq::cuda::qwen35::softcap(model, *executor, std::move(logits));
         else
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return model.softcap(std::move(logits));
+#else
             return mfq::cuda::gemma4::softcap(model, *executor, std::move(logits));
+#endif
     }
 };
 

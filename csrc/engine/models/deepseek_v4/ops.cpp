@@ -1265,8 +1265,13 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
             return std::make_pair(normalized, pre);
         },
         [&](const auto &mix) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            auto feed_forward = ffn.forward(
+                mix.first.reshape({batch * tokens, hidden_size}), mode.ffn, current_ids);
+#else
             auto feed_forward = ffn.forward(
                 mix.first.reshape({batch * tokens, hidden_size}), executor, mode.ffn, current_ids);
+#endif
             feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
             return feed_forward;
         },

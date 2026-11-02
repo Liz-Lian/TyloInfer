@@ -3,14 +3,19 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <initializer_list>
 #include <limits>
+#include <memory>
 #include <numeric>
+#include <ostream>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace mfq {
 
 enum class ScalarType : std::uint8_t {
     boolean,
@@ -239,4 +244,197 @@ inline TensorView transpose_view(
     return result;
 }
 
-}  // namespace mfq::cuda
+class TensorOptions {
+public:
+    TensorOptions& dtype(ScalarType value) & noexcept {
+        scalar_type_ = value;
+        has_scalar_type_ = true;
+        return *this;
+    }
+    TensorOptions dtype(ScalarType value) const & noexcept {
+        auto result = *this;
+        result.scalar_type_ = value;
+        result.has_scalar_type_ = true;
+        return result;
+    }
+    TensorOptions&& dtype(ScalarType value) && noexcept {
+        scalar_type_ = value;
+        has_scalar_type_ = true;
+        return std::move(*this);
+    }
+
+    TensorOptions& device(Device value) & noexcept {
+        device_ = value;
+        has_device_ = true;
+        return *this;
+    }
+    TensorOptions device(Device value) const & noexcept {
+        auto result = *this;
+        result.device_ = value;
+        result.has_device_ = true;
+        return result;
+    }
+    TensorOptions&& device(Device value) && noexcept {
+        device_ = value;
+        has_device_ = true;
+        return std::move(*this);
+    }
+
+    TensorOptions& device(DeviceType value) & noexcept {
+        device_ = Device{value, 0};
+        has_device_ = true;
+        return *this;
+    }
+    TensorOptions device(DeviceType value) const & noexcept {
+        return device(Device{value, 0});
+    }
+    TensorOptions&& device(DeviceType value) && noexcept {
+        device_ = Device{value, 0};
+        has_device_ = true;
+        return std::move(*this);
+    }
+
+    TensorOptions& pinned_memory(bool value) & noexcept {
+        pinned_ = value;
+        has_pinned_ = true;
+        return *this;
+    }
+    TensorOptions pinned_memory(bool value) const & noexcept {
+        auto result = *this;
+        result.pinned_ = value;
+        result.has_pinned_ = true;
+        return result;
+    }
+    TensorOptions&& pinned_memory(bool value) && noexcept {
+        pinned_ = value;
+        has_pinned_ = true;
+        return std::move(*this);
+    }
+
+    ScalarType scalar_type() const noexcept { return scalar_type_; }
+    const Device& target_device() const noexcept { return device_; }
+    bool pinned() const noexcept { return pinned_; }
+    bool has_dtype() const noexcept { return has_scalar_type_; }
+    bool has_device() const noexcept { return has_device_; }
+    bool has_pinned_memory() const noexcept { return has_pinned_; }
+
+private:
+    ScalarType scalar_type_ = ScalarType::float32;
+    Device device_{};
+    bool pinned_ = false;
+    bool has_scalar_type_ = false;
+    bool has_device_ = false;
+    bool has_pinned_ = false;
+};
+
+struct TensorStorage {
+    std::shared_ptr<void> owner;
+    void* base = nullptr;
+    std::size_t bytes = 0;
+    Device device{};
+    bool pinned = false;
+    std::function<void(std::uintptr_t)> record_stream;
+};
+
+class IntArrayRef {
+public:
+    IntArrayRef() = default;
+    IntArrayRef(std::span<const std::int64_t> values) : values_(values.begin(), values.end()) {}
+    IntArrayRef(std::initializer_list<std::int64_t> values) : values_(values) {}
+    explicit IntArrayRef(std::vector<std::int64_t> values) : values_(std::move(values)) {}
+
+    std::size_t size() const noexcept { return values_.size(); }
+    bool empty() const noexcept { return values_.empty(); }
+    const std::int64_t* data() const noexcept { return values_.data(); }
+    const std::int64_t& operator[](std::size_t index) const { return values_.at(index); }
+    auto begin() const noexcept { return values_.begin(); }
+    auto end() const noexcept { return values_.end(); }
+    std::vector<std::int64_t> vec() const { return values_; }
+    operator std::span<const std::int64_t>() const noexcept { return values_; }
+
+    IntArrayRef slice(std::size_t start, std::size_t length) const {
+        if (start > values_.size() || length > values_.size() - start) {
+            throw std::out_of_range("shape slice is out of range");
+        }
+        return IntArrayRef(std::span<const std::int64_t>(values_).subspan(start, length));
+    }
+
+    bool operator==(const IntArrayRef&) const noexcept = default;
+
+private:
+    std::vector<std::int64_t> values_;
+};
+
+inline std::ostream& operator<<(std::ostream& stream, const Device& device) {
+    stream << (device.is_cuda() ? "cuda" : "cpu");
+    if (device.is_cuda() || device.index != 0) stream << ':' << device.index;
+    return stream;
+}
+
+inline std::ostream& operator<<(std::ostream& stream, const IntArrayRef& values) {
+    stream << '[';
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) stream << ", ";
+        stream << values[index];
+    }
+    return stream << ']';
+}
+
+class Tensor {
+public:
+    Tensor() = default;
+
+    Tensor(
+        std::shared_ptr<TensorStorage> storage,
+        TensorView view,
+        std::size_t byte_offset = 0)
+        : storage_(std::move(storage)), view_(view), byte_offset_(byte_offset) {
+        if (storage_ && storage_->base != nullptr) {
+            view_.data = static_cast<std::byte*>(storage_->base) + byte_offset_;
+        }
+    }
+
+    bool defined() const noexcept { return storage_ != nullptr; }
+    std::int64_t dim() const noexcept { return defined() ? view_.rank : 0; }
+    std::int64_t numel() const { return defined() ? view_.numel() : 0; }
+    std::size_t nbytes() const { return defined() ? view_.nbytes() : 0; }
+    std::int64_t size(std::int64_t dimension) const { return view_.size(dimension); }
+    std::int64_t stride(std::int64_t dimension) const { return view_.stride(dimension); }
+    ScalarType scalar_type() const noexcept { return view_.scalar_type; }
+    ScalarType dtype() const noexcept { return scalar_type(); }
+    const Device& device() const noexcept { return view_.device; }
+    int get_device() const noexcept { return device().index; }
+    bool is_cpu() const noexcept { return defined() && device().is_cpu(); }
+    bool is_cuda() const noexcept { return defined() && device().is_cuda(); }
+    bool is_contiguous() const noexcept { return defined() && view_.is_contiguous(); }
+    std::size_t element_size() const noexcept { return scalar_size(scalar_type()); }
+
+    IntArrayRef sizes() const {
+        return IntArrayRef(std::span<const std::int64_t>(view_.sizes).first(view_.rank));
+    }
+
+    const TensorView& view_descriptor() const noexcept { return view_; }
+    std::size_t byte_offset() const noexcept { return byte_offset_; }
+    void record_stream(std::uintptr_t stream) const {
+        if (storage_ && storage_->record_stream) storage_->record_stream(stream);
+    }
+
+    template <typename T>
+    T* data_ptr() const noexcept {
+        return static_cast<T*>(view_.data);
+    }
+
+    void* data_ptr() const noexcept { return view_.data; }
+
+    TensorOptions options() const noexcept {
+        return TensorOptions{}.dtype(scalar_type()).device(device()).pinned_memory(
+            storage_ && storage_->pinned);
+    }
+
+protected:
+    std::shared_ptr<TensorStorage> storage_;
+    TensorView view_{};
+    std::size_t byte_offset_ = 0;
+};
+
+}  // namespace mfq

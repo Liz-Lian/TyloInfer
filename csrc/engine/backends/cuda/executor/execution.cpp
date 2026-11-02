@@ -33,13 +33,13 @@ mfq::cuda::Projector CudaExecutionContext::projector() {
 }
 
 mfq::cuda::Executor CudaExecutionContext::executor() {
-    return {profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
+    return {contexts, profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
             model_parallel_primary_device(*this)};
 }
 
 std::unique_ptr<mfq::cuda::Executor> CudaExecutionContext::make_executor() {
     return std::make_unique<mfq::cuda::Executor>(
-        profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
+        contexts, profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
         model_parallel_primary_device(*this));
 }
 
@@ -67,7 +67,9 @@ CudaExecutionContext::~CudaExecutionContext() {
     }
     // Release pipelines while their borrowed branch streams still exist.
     pipelines.clear();
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     attention_scratch.clear();
+#endif
 }
 
 void CudaExecutionContext::drain() {
@@ -75,7 +77,7 @@ void CudaExecutionContext::drain() {
     if (contexts.empty() && !weights.moe &&
         !weights.tq && !offload &&
         (!tq || tq->empty()) && pipelines.empty() && branches.empty() &&
-        attention_scratch.empty() && collectives.streams().empty()) return;
+        collectives.streams().empty()) return;
 #endif
     CudaScope scope(layer_placement.primary_device(), contexts);
     std::exception_ptr failure;
@@ -109,7 +111,9 @@ void CudaExecutionContext::drain() {
 void CudaExecutionContext::reset() {
     drain();
     pipelines.clear();
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     attention_scratch.clear();
+#endif
     branches.clear();
     profiler.reset();
     collectives.reset();

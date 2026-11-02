@@ -270,7 +270,11 @@ private:
     decltype(auto) with_cuda(F&& function) {
         if (!ready_ || !execution_ || !loaded_)
             throw std::runtime_error("CUDA engine is unloaded");
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto scope = loaded_->executor->enter();
+#else
         CudaScope scope(execution_->layer_placement.primary_device(), contexts_);
+#endif
         mfq_tensor_backend::NoGradGuard no_grad;
         return std::forward<F>(function)();
     }

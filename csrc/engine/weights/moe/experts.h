@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/weights/moe/bank.h"
 #include "engine/weights/moe/pool.h"
 #include "engine/backends/cuda/ops/ffn/activation.h"
 
@@ -14,7 +15,7 @@ struct MoeRoutePlan;
 
 namespace mfq::cuda {
 
-struct Experts {
+struct Experts : weights::ExpertBank {
     struct Shard {
         int device = 0;
         int64_t expert_begin = 0;
@@ -35,6 +36,10 @@ struct Experts {
     std::vector<MoeActivationGeometry> activation_geometries;
     int activation_workspace_domain = 0;
     std::shared_ptr<MfeScratch> scratch = std::make_shared<MfeScratch>();
+
+    std::int64_t count() const override { return n_experts; }
+    std::int64_t rows() const override { return out_per_expert; }
+    std::int64_t cols() const override { return neuron_len; }
 
     bool expert_parallel() const { return !expert_parallel_shards.empty(); }
     bool supports_projection_glu_epilogue() const {

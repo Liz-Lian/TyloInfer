@@ -7,6 +7,7 @@
 #include "engine/backends/cuda/ops/projection/vq.h"
 #include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/encoding/format_features.h"
+#include "engine/weights/matrix.h"
 
 #include "mmq.h"
 #include "parallel.h"
@@ -89,7 +90,7 @@ struct QuantLinearShard {
     TqWeight tq;
 };
 
-struct QuantLinear {
+struct QuantLinear : mfq::weights::Matrix {
     QuantLinearKind kind = QuantLinearKind::Nint;
     NintWeight nint;
     NvqWeight nvq;
@@ -120,7 +121,11 @@ struct QuantLinear {
 
     int64_t out() const;
     int64_t neuron_len() const;
+    std::int64_t rows() const override { return out(); }
+    std::int64_t cols() const override { return neuron_len(); }
 };
+
+const QuantLinear& as_quant_linear(const mfq::weights::Matrix& weight);
 
 using QuantLinearProjectionRefs =
     std::vector<const QuantLinear*>;

@@ -3,6 +3,15 @@
 #include "quant_linear.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+namespace mfq::ops { struct ProjectionOptions; }
+namespace mfq::cuda::ops {
+mfq::Tensor embedding(mfq::Tensor ids, const weights::Matrix& weight);
+mfq::Tensor project(mfq::Tensor input, const weights::Matrix& weight,
+                    const mfq::ops::ProjectionOptions& options);
+}
+#endif
+
 struct TqMoeBanks;
 
 namespace mfq::cuda {

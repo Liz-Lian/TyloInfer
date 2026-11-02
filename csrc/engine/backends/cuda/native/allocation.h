@@ -3,8 +3,10 @@
 #include <memory>
 #include <vector>
 
+namespace mfq { struct TensorStorage; }
+
 namespace mfq::cuda {
-struct TensorStorage;
+using mfq::TensorStorage;
 
 class AllocationScope {
 public:

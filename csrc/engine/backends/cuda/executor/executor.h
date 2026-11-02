@@ -1,10 +1,16 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/task.h"
+#include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/executor.h"
+#endif
 
 #include <memory>
 #include <map>
+#include <mutex>
+#include <tuple>
 
 namespace mfq::cuda {
 
@@ -12,8 +18,18 @@ class Branches;
 class Collectives;
 class RouteStats;
 
-class Executor {
+class Executor
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    : public mfq::Executor
+#endif
+{
 public:
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::unique_ptr<mfq::Executor::Scope> enter() override;
+    static Executor& current();
+
+    Collectives& collectives() noexcept { return collectives_; }
+#endif
     struct Mode {
         Ffn::Mode ffn;
         LinearAttention::Options linear;
@@ -37,11 +53,11 @@ public:
 
     static void prepare(std::int64_t vocabulary);
 
-    Executor(CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
+    Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
              Branches& branches, Collectives& collectives, RouteStats& routes,
              const Options& options, const Ffn::Options& ffn_options,
              int primary)
-        : profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches), collectives_(collectives),
+        : contexts_(contexts), profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches), collectives_(collectives),
           routes_(routes), options_(options), primary_(primary), ffn_options_(ffn_options) {}
     Executor(const Executor&) = delete;
     Executor& operator=(const Executor&) = delete;
@@ -63,10 +79,18 @@ public:
     const FullAttention::Options& attention_options() const noexcept { return options_.attention; }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    using AttentionGeometry = std::tuple<std::int64_t, std::int64_t, std::int64_t, std::int64_t>;
+    AttentionScratch& attention_scratch(mfq::Device device, AttentionGeometry geometry);
+#endif
     MlaScratch& mla_scratch(int device) { return mla_scratch_[device]; }
 
 private:
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::unique_ptr<mfq::Executor::Scope> enter(int device);
+#endif
     friend class Ffn;
+    ContextSet& contexts_;
     CudaProfiler& profiler_;
     KlMmqState& mmq_;
     TqExec& tq_;
@@ -77,6 +101,10 @@ private:
     int primary_;
     const Ffn::Options& ffn_options_;
     std::vector<AttentionScratch> scratch_;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mutable std::mutex attention_scratch_mutex_;
+    std::map<std::pair<int, std::uintptr_t>, std::map<AttentionGeometry, AttentionScratch>> attention_scratch_;
+#endif
     std::map<int, MlaScratch> mla_scratch_;
 };
 

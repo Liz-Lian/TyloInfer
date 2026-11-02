@@ -48,6 +48,7 @@ struct Attention {
     Slot input, residual, output;
     const FullAttention& weights;
     size_t state;
+    mfq_tensor_backend::Tensor* residual_out = nullptr;
 };
 
 struct Linear {

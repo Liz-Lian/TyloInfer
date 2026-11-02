@@ -13,6 +13,7 @@ struct MoeRoutePlan;
 namespace mfq::cuda {
 
 class Executor;
+struct Mlp;
 class Projector;
 
 class Ffn {
@@ -25,16 +26,7 @@ public:
         bool reduce_fusion = true;
     };
 
-    struct Mode {
-        bool materialized = false;
-        bool unfused = false;
-        bool serial = false;
-        bool batch_serial = false;
-        int tile = 0;
-        int tiles = 1;
-        bool reuse_input = true;
-        bool projection_major = false;
-    };
+    using Mode = mfq::ops::FfnMode;
 
     QuantLinearGroup gate_up;
     QuantLinear down;
@@ -80,6 +72,15 @@ public:
     int moe_layer = -1;
     std::weak_ptr<MoeFfnPipeline> moe_pipeline;
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq_tensor_backend::Tensor forward(
+        mfq_tensor_backend::Tensor input, const Mode& mode,
+        MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt,
+        MfqOptional<mfq_tensor_backend::Tensor> router_bias = mfq_nullopt) const;
+    void prefetch(
+        const mfq_tensor_backend::Tensor& input, const Mode& mode,
+        bool enabled, MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt) const;
+#else
     mfq_tensor_backend::Tensor forward(
         mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
         MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt,
@@ -87,6 +88,7 @@ public:
     void prefetch(
         const mfq_tensor_backend::Tensor& input, Executor& executor, const Mode& mode,
         bool enabled, MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt) const;
+#endif
 
 private:
     mfq_tensor_backend::Tensor forward_impl(
@@ -100,7 +102,19 @@ private:
         mfq_tensor_backend::Tensor route_weights) const;
 };
 
+Mlp dense(const Ffn& ffn);
 bool uses_expert_cache(const Ffn& ffn);
 bool expert_parallel(const Ffn& ffn);
 
 } // namespace mfq::cuda
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+namespace mfq::cuda::ops {
+mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count, const mfq::ops::MoeRouting& routing);
+mfq::Tensor expert_scale(mfq::Tensor weights, mfq::Tensor ids, const mfq::Tensor& scales);
+mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights);
+mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
+    const mfq::weights::ExpertBank& gate_up, const mfq::weights::ExpertBank& down,
+    const mfq::ops::ProjectionOptions& options, bool trace);
+}
+#endif

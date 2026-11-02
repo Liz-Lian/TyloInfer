@@ -217,6 +217,13 @@ class CudaGridVisionPromptComponent {
                                                            .dtype(mfq_tensor_backend::kInt64)
                                                            .device(mfq_tensor_backend::kCUDA))
                         .reshape({1, -1});
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                if constexpr (requires(const Model &value, Tensor value_ids, int device) {
+                                  value.embedding(std::move(value_ids), device);
+                              }) {
+                    return language.embedding(std::move(ids), primary).contiguous();
+                } else
+#endif
                 if constexpr (requires(const Model &value, mfq::cuda::Executor &value_executor,
                                        mfq::cuda::Collectives &collectives, int primary,
                                        Tensor value_ids) {

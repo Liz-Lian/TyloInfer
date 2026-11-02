@@ -1,8 +1,16 @@
 #pragma once
 
-#include "view.h"
+#include "engine/tensor.h"
 
 #include <cuda_runtime_api.h>
+
+namespace mfq::cuda {
+using mfq::Device;
+using mfq::DeviceType;
+using mfq::ScalarType;
+using mfq::TensorView;
+using mfq::make_contiguous_view;
+}
 
 namespace mfq::cuda::kernels {
 

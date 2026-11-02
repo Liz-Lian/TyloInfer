@@ -83,7 +83,7 @@ inline constexpr auto with_model = []<typename F>(
             execution.weights, execution.tq};
         auto runtime_components =
             load_runtime_components(model, weights, load_optional_components);
-        Loaded<Model> loaded{std::move(owner), {}, {}, std::move(runtime_components)};
+        Loaded<Model> loaded{std::move(owner), {}, execution.make_executor(), std::move(runtime_components)};
         return finish(loaded, started);
     };
     auto load_tts = [&] {

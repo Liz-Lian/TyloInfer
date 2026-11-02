@@ -32,7 +32,14 @@ using Tensor = mfq_tensor_backend::Tensor;
 using mfq_tensor_backend::indexing::Slice;
 
 template <typename Model, typename State>
-constexpr bool has_forward = requires(
+constexpr bool has_forward =
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    requires(Model& model, State& state, mfq::cuda::Input input,
+             const mfq::models::ForwardOptions& options) {
+        model.forward(std::move(input), state, options);
+    } ||
+#endif
+    requires(
     Model& model, State& state, mfq::cuda::Executor& executor,
     mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
     mfq::cuda::Input input) {
@@ -40,7 +47,13 @@ constexpr bool has_forward = requires(
 };
 
 template <typename Model>
-constexpr bool has_logits = requires(
+constexpr bool has_logits =
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    requires(Model& model, Tensor hidden, const mfq::models::ForwardOptions& options) {
+        model.logits(std::move(hidden), true, options);
+    } ||
+#endif
+    requires(
     Model& model, mfq::cuda::Executor& executor, Tensor hidden) {
     logits(model, executor, std::move(hidden), true);
 };
@@ -49,19 +62,33 @@ template <typename Model, typename State>
 Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
               Collectives& collectives, const Executor::Mode& mode, mfq::cuda::Input input) {
     static_assert(has_forward<Model, State>);
-    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                            "CUDA model forward requires an executor");
-    return forward(model, state, *executor, collectives,
-                   mode, std::move(input));
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if constexpr (requires { model.forward(std::move(input), state, forward_options(mode)); }) {
+        return model.forward(std::move(input), state, forward_options(mode));
+    } else
+#endif
+    {
+        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                                "CUDA model forward requires an executor");
+        return forward(model, state, *executor, collectives,
+                       mode, std::move(input));
+    }
 }
 
 template <typename Model>
 Tensor project(Model& model, mfq::cuda::Executor* executor,
                const Executor::Mode& mode, Tensor value, bool capped) {
     static_assert(has_logits<Model>);
-    TYLOINFER_RUNTIME_CHECK(executor != nullptr,
-                            "CUDA model logits requires an executor");
-    return logits(model, *executor, std::move(value), capped, mode);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if constexpr (requires { model.logits(std::move(value), capped, forward_options(mode)); }) {
+        return model.logits(std::move(value), capped, forward_options(mode));
+    } else
+#endif
+    {
+        TYLOINFER_RUNTIME_CHECK(executor != nullptr,
+                                "CUDA model logits requires an executor");
+        return logits(model, *executor, std::move(value), capped, mode);
+    }
 }
 
 template <typename Model, typename State>

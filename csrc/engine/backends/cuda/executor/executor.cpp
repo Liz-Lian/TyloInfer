@@ -3,11 +3,13 @@
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/kernels/gr_prefill_blas.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 
 #include <iostream>
+#include <stdexcept>
 #include <type_traits>
 
 namespace mfq::cuda {
@@ -80,6 +82,17 @@ std::vector<Tensor> Executor::storage() const {
         append(value.partial_o); append(value.partial_m); append(value.partial_l);
         append(value.mask); append(value.kv_max); append(value.meta);
     }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::lock_guard lock(attention_scratch_mutex_);
+    for (const auto& [key, geometries] : attention_scratch_) {
+        (void)key;
+        for (const auto& [geometry, value] : geometries) {
+            (void)geometry;
+            append(value.partial_o); append(value.partial_m); append(value.partial_l);
+            append(value.mask); append(value.kv_max); append(value.meta);
+        }
+    }
+#endif
     for (const auto& [device, value] : mla_scratch_) {
         (void)device;
         append(value.dense_mask); append(value.decode_mask); append(value.kv_max);
@@ -178,7 +191,7 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 } // namespace
 
 std::unique_ptr<Executor> Executor::fork() const {
-    return std::make_unique<Executor>(profiler_, mmq_, tq_, branches_, collectives_, routes_,
+    return std::make_unique<Executor>(contexts_, profiler_, mmq_, tq_, branches_, collectives_, routes_,
                                       options_, ffn_options_, primary_);
 }
 
@@ -192,7 +205,50 @@ AttentionScratch& Executor::attention_scratch(std::size_t index) {
     return scratch_[index];
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+AttentionScratch& Executor::attention_scratch(mfq::Device device, AttentionGeometry geometry) {
+    const auto stream = device.is_cuda()
+        ? reinterpret_cast<std::uintptr_t>(current_stream(device.index).stream()) : 0;
+    std::lock_guard lock(attention_scratch_mutex_);
+    return attention_scratch_[{device.is_cuda() ? device.index : -1, stream}][geometry];
+}
+
+namespace {
+thread_local Executor* active_executor = nullptr;
+
+class ExecutorScope final : public mfq::Executor::Scope {
+public:
+    ExecutorScope(Executor& executor, int primary, ContextSet& contexts)
+        : native_(primary, contexts), previous_(active_executor) {
+        active_executor = &executor;
+    }
+    ~ExecutorScope() override { active_executor = previous_; }
+
+private:
+    CudaScope native_;
+    Executor* previous_;
+};
+} // namespace
+
+std::unique_ptr<mfq::Executor::Scope> Executor::enter() {
+    return enter(primary_);
+}
+
+std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device) {
+    return std::make_unique<ExecutorScope>(*this, device, contexts_);
+}
+
+Executor& Executor::current() {
+    if (!active_executor) throw std::runtime_error("no active CUDA executor scope");
+    return *active_executor;
+}
+
+#endif
+
 Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    auto scope = enter(mfq_current_cuda_device());
+#endif
     const auto release = releases(tasks, inputs);
     auto options = options_;
     options.dense.mlp.nvq_fusion = options.projection.nvq_fusion;
@@ -234,10 +290,17 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                     } else if constexpr (std::is_same_v<Op, task::Project>) {
                         return project.run(op.weight, std::move(input));
                     } else if constexpr (std::is_same_v<Op, task::Attention>) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                        auto output = op.weights.forward(std::move(input), inputs.attention,
+                            inputs.kv[op.state], *inputs.rope,
+                            {mode.ffn.serial, mode.ffn.projection_major}, trace);
+#else
                         auto output = op.weights.forward(project, profiler_, options.attention,
                             std::move(input), inputs.attention, inputs.kv[op.state],
                             scratch_[inputs.scratch_offset + index],
                             *inputs.rope, trace);
+#endif
+                        if (op.residual_out) *op.residual_out = output[0];
                         values[op.residual] = std::move(output[0]);
                         return std::move(output[1]);
                     } else if constexpr (std::is_same_v<Op, task::Linear>) {

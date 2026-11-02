@@ -70,8 +70,10 @@ struct CudaExecutionContext {
     std::shared_ptr<mfq::cuda::KvOffloadStore>& offload;
     const std::shared_ptr<TqExec>& tq;
     mfq::cuda::Branches branches;
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     // Layer addresses identify reusable workspace; only execution retires it after drain.
     std::unordered_map<const void*, mfq::cuda::AttentionScratch> attention_scratch;
+#endif
     mfq::cuda::RouteStats routes;
     mfq::cuda::Pipelines pipelines;
 

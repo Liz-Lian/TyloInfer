@@ -4,6 +4,10 @@
 #include "engine/requests/policy.h"
 #include "engine/requests/request.h"
 #include "engine/weights/workspace.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/models/options.h"
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +17,13 @@
 struct DecodeGraphCache;
 
 namespace mfq::cuda {
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+inline mfq::models::ForwardOptions forward_options(const Executor::Mode& mode) {
+    return {mode.ffn, mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary,
+            mode.gemma4_fused_norms};
+}
+#endif
 
 template<class Model, class Ops, class Finish>
 std::tuple<mfq_tensor_backend::Tensor, bool, bool> generation_prefill(
