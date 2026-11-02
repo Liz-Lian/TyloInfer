@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_graph.h"

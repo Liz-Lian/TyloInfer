@@ -3,7 +3,7 @@
 #include "engine/weights/source/assets.h"
 #include "engine/weights/source/json.h"
 #include "engine/weights/source/safetensors.h"
-#include "source/read.h"
+#include "engine/weights/source/read.h"
 
 #include "engine/models/common/hf.h"
 #include "engine/models/common/mlx_names.h"

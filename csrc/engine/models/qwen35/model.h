@@ -10,7 +10,7 @@
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
-#include "source/model_source.h"
+#include "engine/models/source.h"
 
 #include <array>
 #include <cstdint>

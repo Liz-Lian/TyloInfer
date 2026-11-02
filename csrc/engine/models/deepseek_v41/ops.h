@@ -899,7 +899,7 @@ mfq::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& we
 std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
                                     std::int64_t layer, const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);
-std::shared_ptr<SharedState> load_shared_state(const mfq::ModelSource &source,
+std::shared_ptr<SharedState> load_shared_state(const mfq::source::Source &source,
                                                const CommonConfig &config);
 Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &hidden,
                        CudaProfiler &profiler);

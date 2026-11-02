@@ -44,12 +44,12 @@ struct RowStage {
 }
 
 struct EngramTable::Impl {
-    const mfq::ModelSource& source;
+    const mfq::source::Source& source;
     std::string name;
     std::uint64_t rows, value_bytes;
     int width;
     std::size_t capacity, row_bytes;
-    mfq::ModelSource::TensorBatchReader read_batch;
+    mfq::source::Source::TensorBatchReader read_batch;
     struct CacheEntry {
         std::vector<std::uint8_t> packed;
         std::list<std::int64_t>::iterator recency;
@@ -73,7 +73,7 @@ struct EngramTable::Impl {
     std::size_t nint_stage_rows=0;
     std::shared_ptr<mfq::TqTable> tq_table;
 
-    Impl(const mfq::ModelSource& data, std::string tensor, std::uint64_t count,
+    Impl(const mfq::source::Source& data, std::string tensor, std::uint64_t count,
          int columns, std::uint64_t values, std::size_t cache_rows,std::shared_ptr<mfq::NintRows> nint)
         : source(data), name(std::move(tensor)), rows(count), value_bytes(values),
           width(columns), capacity(cache_rows), row_bytes(columns + columns / 32) {
@@ -203,7 +203,7 @@ struct EngramTable::Impl {
     }
 };
 
-EngramTable::EngramTable(const mfq::ModelSource& source, std::string name, std::uint64_t,
+EngramTable::EngramTable(const mfq::source::Source& source, std::string name, std::uint64_t,
     std::int64_t rows, int width, std::uint64_t values, std::size_t capacity,std::shared_ptr<mfq::NintRows> nint)
     : impl_(std::make_unique<Impl>(source, std::move(name), rows, width, values, capacity,std::move(nint))) {}
 EngramTable::~EngramTable() = default;
@@ -278,7 +278,7 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
     return output;
 }
 
-std::shared_ptr<EngramTable> EngramTable::load(const mfq::ModelSource &model, const std::string &name,
+std::shared_ptr<EngramTable> EngramTable::load(const mfq::source::Source &model, const std::string &name,
                                              std::int64_t expected_rows, int expected_width,
                                              std::size_t cache_capacity_rows) {
         if(mfq::is_tq_table(model,name))return std::shared_ptr<EngramTable>(new EngramTable(model,name,0,

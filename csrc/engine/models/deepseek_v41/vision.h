@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/models/source.h"
 #include "engine/models/common/prompt.h"
 #include "ops.h"
 #include "engine/requests/media.h"

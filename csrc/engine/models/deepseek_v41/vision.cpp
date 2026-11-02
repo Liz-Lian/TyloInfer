@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "vision.h"
 #include "engine/models/common/vision/axial_patch_ops.h"

@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "engine/models/qwen35/load.h"
 
 #include "backend.h"
@@ -9,7 +10,7 @@
 #include "engine/models/common/model_graph.h"
 #include "engine/weights/loader.h"
 #include "engine/weights/group.h"
-#include "source/read.h"
+#include "engine/weights/source/read.h"
 
 #include <algorithm>
 #include <iostream>

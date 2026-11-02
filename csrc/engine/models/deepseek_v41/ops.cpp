@@ -168,7 +168,7 @@ void validate_load_options(const CudaExecutionContext &execution) {
     }
 }
 
-std::shared_ptr<SharedState> load_shared_state(const mfq::ModelSource &source,
+std::shared_ptr<SharedState> load_shared_state(const mfq::source::Source &source,
                                                const CommonConfig &config) {
     auto state = std::make_shared<SharedState>();
     state->config = config;

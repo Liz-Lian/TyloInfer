@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/ops/projection/quant_linear.h"
 #include "engine/weights/moe/experts.h"
-#include "source/read.h"
+#include "engine/weights/source/read.h"
 #include "engine/weights/placement.h"
 #include "engine/weights/moe/load.h"
 #include "engine/weights/routed_cache.h"
@@ -31,15 +31,15 @@ struct MfqDropFileCacheGuard {
 
 bool is_quant_dtype(const std::string& dtype);
 std::shared_ptr<mfq::NintRows> load_nint_row_table(
-    const mfq::ModelSource& source, const std::string& name, bool prefer_mapping=false);
+    const mfq::source::Source& source, const std::string& name, bool prefer_mapping=false);
 std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
-    const mfq::ModelSource& source, const std::string& name);
+    const mfq::source::Source& source, const std::string& name);
 mfq_tensor_backend::Tensor mfe_dense_reference(
-    const mfq::ModelSource& source, const std::string& name,
+    const mfq::source::Source& source, const std::string& name,
     mfq_tensor_backend::Tensor input, const std::vector<std::int32_t>& expert_ids,
     int tokens, int routes, bool routed_input);
 mfq_tensor_backend::Tensor materialize_mfe_dense(
-    const mfq::ModelSource& source, const std::string& name);
+    const mfq::source::Source& source, const std::string& name);
 
 namespace mfq::cuda::weight_loader {
 using Tensor = mfq_tensor_backend::Tensor;
@@ -78,7 +78,7 @@ struct Loader {
         ParallelConfig experts;
     };
 
-    const mfq::ModelSource& source;
+    const mfq::source::Source& source;
     Options options;
     Placement placement;
     RoutedCache& cache;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "source/model_source.h"
+#include "engine/models/source.h"
 
 namespace mfq::models {
 

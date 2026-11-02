@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/models/source.h"
 
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/predictor.h"

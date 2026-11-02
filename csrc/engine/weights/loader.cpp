@@ -48,7 +48,7 @@ int LayerPlacementConfig::device_for_layer(int64_t layer) const {
 
 static std::vector<std::uint8_t> read_weight(
         bool drop_file_cache,
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view name) {
     auto result = read_tensor(source, name);
     if (drop_file_cache) source.drop_file_cache();
@@ -686,7 +686,7 @@ QuantLinearGroup mfq::cuda::weight_loader::Loader::gate_up(const std::vector<std
 }
 
 std::shared_ptr<mfq::NintRows> load_nint_row_table(
-        const mfq::ModelSource& source, const std::string& name, bool prefer_mapping) {
+        const mfq::source::Source& source, const std::string& name, bool prefer_mapping) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     const auto& metadata = require_tensor(source, name);
@@ -696,7 +696,7 @@ std::shared_ptr<mfq::NintRows> load_nint_row_table(
     auto read = source.tensor_reader(name);
     bool parallel=source.supports_parallel_tensor_reads();
     const auto* batched=mfq::cuda::env_lookup("TYLOINFER_PLE_BATCH_READ");
-    auto batch=(!batched || batched[0]!='0') ? source.tensor_batch_reader(name) : mfq::ModelSource::TensorBatchReader{};
+    auto batch=(!batched || batched[0]!='0') ? source.tensor_batch_reader(name) : mfq::source::Source::TensorBatchReader{};
     bool mapped_file=false;
     const auto* mapped=mfq::cuda::env_lookup("TYLOINFER_PLE_FILE_MAP");
     if(mapped ? mapped[0]=='1' : prefer_mapping && source.file_read_stats().mode!=mfq::FileReadMode::Direct) {
@@ -737,8 +737,8 @@ mfq::cuda::Experts mfq::cuda::weight_loader::Loader::experts(const std::string &
             !placement.experts.enabled() &&
             options.ranges) {
         const auto & record = require_tensor(mfq, name);
-        mfq::ModelSource::TensorReader reader;
-        mfq::ModelSource::TensorBatchReader batch_reader;
+        mfq::source::Source::TensorReader reader;
+        mfq::source::Source::TensorBatchReader batch_reader;
         try {
             // Streaming workers read independent experts concurrently. A
             // shared buffered FILE serializes their seeks across all fields.
@@ -851,7 +851,7 @@ mfq::cuda::Experts mfq::cuda::weight_loader::Loader::experts(const std::string &
 }
 
 std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
-        const mfq::ModelSource & mfq, const std::string & name) {
+        const mfq::source::Source & mfq, const std::string & name) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     return make_mixed_moe_runtime(load_mfe_cpu(mfq, name), false);

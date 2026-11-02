@@ -5,7 +5,7 @@
 #include "engine/weights/routed_cache.h"
 #include "env.h"
 #include "resident_allocations.h"
-#include "source/model_source.h"
+#include "engine/weights/source/source.h"
 
 #include <cuda_runtime_api.h>
 
@@ -107,7 +107,7 @@ std::size_t ExpertSpace::lend_decode(std::size_t maximum_minus_active) {
     return bytes;
 }
 
-void ExpertSpace::restore(std::size_t reserve_bytes, const ModelSource* source) {
+void ExpertSpace::restore(std::size_t reserve_bytes, const mfq::source::Source* source) {
     if (!loan_) return;
 
     bool ssd = false;

@@ -76,7 +76,7 @@ add_subdirectory(engine/weights/encoding)
 add_subdirectory(engine/models/common)
 add_subdirectory(backends/cpu)
 add_subdirectory(components/io)
-add_subdirectory(source)
+add_subdirectory(engine/weights/source)
 # Engine request/text headers include the tokenizer chat API even for
 # communication-free CUDA/CPU consumers. Keep that real dependency available
 # independently of the transport modules.

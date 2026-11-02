@@ -1,7 +1,5 @@
 #pragma once
 
-#include "engine/models/common/legacy_names.h"
-#include "engine/models/common/model_graph.h"
 #include "engine/weights/source/tensor.h"
 #include "components/io/file_range_reader.h"
 #include "components/io/read_span.h"
@@ -26,25 +24,23 @@ inline constexpr const char* kTokenizerGgufAsset = "__mfq_asset__/tokenizer.gguf
 inline constexpr std::string_view kModelConfigAsset =
     "__mfq_asset__/model_config.json";
 
-// Backend-neutral, read-only model input. Implementations normalize storage
-// names before tensors cross this boundary; CUDA and Metal only consume the
-// canonical names exposed here.
-class ModelSource {
+namespace source {
+
+// Read-only tensors, assets and retained byte readers; names belong to the caller.
+class Source {
 public:
     using TensorBatchReader=std::function<void(const std::vector<ReadSpan>&)>;
     using TensorReader = std::function<void(
         std::uint64_t, std::byte*, std::size_t)>;
-    virtual ~ModelSource() = default;
+    virtual ~Source() = default;
 
     virtual const std::vector<std::filesystem::path>& source_paths()
         const noexcept = 0;
-    virtual std::string_view architecture() const noexcept = 0;
     virtual const std::unordered_map<std::string, std::string>& metadata()
         const noexcept = 0;
     virtual const std::vector<TensorMetadata>& tensors() const noexcept = 0;
     virtual const TensorMetadata* find_tensor(
         std::string_view name) const noexcept = 0;
-    virtual TensorLayout tensor_layout() const noexcept { return {}; }
     virtual void read_range_into(
         std::string_view name,
         std::uint64_t relative_offset,
@@ -83,10 +79,6 @@ public:
     virtual const std::vector<std::string>& assets() const noexcept = 0;
     virtual bool has_asset(std::string_view name) const noexcept = 0;
     virtual std::vector<std::byte> read_asset(std::string_view name) const = 0;
-    // The stored graph may be absent in legacy artifacts. Model modules apply
-    // compatibility when they need a graph.
-    virtual std::optional<ModelGraph> model_graph() const = 0;
-
     std::vector<std::byte> read(
         std::string_view name,
         std::uint64_t relative_offset = 0,
@@ -115,7 +107,6 @@ public:
     }
 };
 
-std::shared_ptr<const ModelSource> open_model_source(
-    const std::filesystem::path& path);
+} // namespace source
 
 } // namespace mfq

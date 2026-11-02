@@ -10,7 +10,7 @@
 #include <vector>
 
 namespace mfq {
-class ModelSource;
+namespace source { class Source; }
 
 namespace cuda {
 class KvExpertLoan;
@@ -41,7 +41,7 @@ public:
     bool empty() const noexcept;
     bool has_decode() const noexcept { return decode_region_.has_value(); }
     std::size_t lend_decode(std::size_t maximum_minus_active);
-    void restore(std::size_t reserve_bytes, const ModelSource* source);
+    void restore(std::size_t reserve_bytes, const mfq::source::Source* source);
     Metrics metrics() const;
 
 private:

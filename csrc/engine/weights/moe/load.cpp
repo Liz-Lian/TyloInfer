@@ -545,7 +545,7 @@ mfq::cuda::Experts cpu_mixed_moe_metadata(
 }
 
 mfq::mfe::Data load_mfe_cpu(
-        const mfq::ModelSource & mfq, const std::string & name) {
+        const mfq::source::Source & mfq, const std::string & name) {
     const auto& dtype = require_tensor(mfq, name).dtype;
     if (dtype == "NINT") {
         mfq::mfe::Pool pool;
@@ -575,7 +575,7 @@ mfq::mfe::Data load_mfe_cpu(
 }
 
 mfq_tensor_backend::Tensor mfe_dense_reference(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         const std::string& name,
         mfq_tensor_backend::Tensor input,
         const std::vector<std::int32_t>& expert_ids,
@@ -677,7 +677,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
 }
 
 mfq_tensor_backend::Tensor materialize_mfe_dense(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         const std::string& name) {
     auto cpu = mfq::mfe::unpack(read_tensor(source, name));
     auto dense = mfq_tensor_backend::empty(

@@ -1,6 +1,6 @@
 #include "model_config.h"
 
-#include "source/model_source.h"
+#include "engine/models/source.h"
 #include "nlohmann/json.hpp"
 
 #include <cmath>

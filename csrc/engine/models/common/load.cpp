@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "engine/models/common/load.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/backends/cuda/native/env.h"

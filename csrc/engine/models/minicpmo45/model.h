@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/executor/task.h"
 #include "engine/models/common/model_graph.h"
 #include "cuda_model_plan.h"
-#include "source/model_source.h"
+#include "engine/models/source.h"
 
 #include <array>
 #include <memory>

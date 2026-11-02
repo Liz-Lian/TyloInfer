@@ -3,7 +3,7 @@
 #include "engine/models/common/legacy_graph.h"
 #include "engine/models/common/model_config.h"
 #include "nlohmann/json.hpp"
-#include "source/model_source.h"
+#include "engine/models/source.h"
 
 #include <algorithm>
 #include <limits>

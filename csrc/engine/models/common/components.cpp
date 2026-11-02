@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "backends/cuda/engine/executor/execution.h"
 #include "engine/executor/scope.h"
 #include "engine/models/common/load.h"

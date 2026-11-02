@@ -7,7 +7,7 @@
 #include <memory>
 #include <string>
 
-namespace mfq { class ModelSource; }
+namespace mfq { namespace source { class Source; } }
 
 struct MoeLoadOptions {
     bool nvq2 = false;
@@ -16,7 +16,7 @@ struct MoeLoadOptions {
 };
 
 mfq::mfe::Data load_mfe_cpu(
-    const mfq::ModelSource& source, const std::string& name);
+    const mfq::source::Source& source, const std::string& name);
 mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data& source);
 std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
     const mfq::mfe::Data& source,

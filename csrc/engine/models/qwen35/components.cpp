@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "engine/models/qwen35/components.h"
 
 #include "engine/models/common/load.h"

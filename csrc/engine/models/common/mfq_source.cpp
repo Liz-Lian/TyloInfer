@@ -1,3 +1,4 @@
+#include "engine/models/source.h"
 #include "mfq_source.h"
 #include "mfq.h"
 #include "engine/weights/source/files.h"

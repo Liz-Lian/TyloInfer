@@ -15,7 +15,7 @@
 #include "engine/weights/workspace.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/weights/memory.h"
-#include "source/model_source.h"
+#include "engine/models/source.h"
 
 #include <algorithm>
 #include <cstddef>

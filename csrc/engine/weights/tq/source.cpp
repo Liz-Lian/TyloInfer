@@ -12,7 +12,7 @@ namespace mfq {
 namespace {
 
 std::vector<std::string> row_parts(
-        const ModelSource& source, std::string_view name) {
+        const mfq::source::Source& source, std::string_view name) {
     const auto tensor_name = std::string(name);
     for (const auto* key : {"tq_row_shards", "tq.segments"}) {
         const auto entry = source.metadata().find(key);
@@ -51,7 +51,7 @@ std::uint64_t expected_rows(const std::vector<std::int64_t>& shape,
 } // namespace
 
 std::vector<std::int64_t> tq_shape(
-        const ModelSource& source, std::string_view name) {
+        const mfq::source::Source& source, std::string_view name) {
     const auto* record = source.find_tensor(name);
     const auto tensor_name = std::string(name);
     if (record && record->dtype != "TQ") {
@@ -93,7 +93,7 @@ std::vector<std::int64_t> tq_shape(
 }
 
 std::shared_ptr<TqTable> tq_table(
-        const ModelSource& source, std::string_view name) {
+        const mfq::source::Source& source, std::string_view name) {
     const auto shape = tq_shape(source, name);
     const auto columns = shape.back();
     const auto names = row_parts(source, name);
@@ -118,7 +118,7 @@ std::shared_ptr<TqTable> tq_table(
 }
 
 bool is_tq_table(
-        const ModelSource& source, std::string_view name) {
+        const mfq::source::Source& source, std::string_view name) {
     const auto* record = source.find_tensor(name);
     const auto tensor_name = std::string(name);
     for (const auto* key : {"tq_row_shards", "tq.segments"}) {
@@ -140,7 +140,7 @@ bool is_tq_table(
 }
 
 std::array<std::int64_t, 2> tq_projection_shape(
-        const ModelSource& source, std::string_view name) {
+        const mfq::source::Source& source, std::string_view name) {
     const auto shape = tq_shape(source, name);
     if (shape.size() != 2) {
         throw std::invalid_argument(

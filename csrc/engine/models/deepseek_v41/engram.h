@@ -149,7 +149,7 @@ class EngramHashState : public mfq::models::deepseek_v41::EngramHashState {
 
   public:
     using HashState::HashState;
-    static std::unique_ptr<EngramHashState> load(const mfq::ModelSource &model,
+    static std::unique_ptr<EngramHashState> load(const mfq::source::Source &model,
                                                  const EngramConfig &config) {
         constexpr const char *asset_name = "__mfq_asset__/deepseek-v41-engram-v1.bin";
         if (!model.has_asset(asset_name)) {
@@ -292,14 +292,14 @@ class EngramHashState : public mfq::models::deepseek_v41::EngramHashState {
 
 class EngramTable {
   public:
-    static std::shared_ptr<EngramTable> load(const mfq::ModelSource&, const std::string&,
+    static std::shared_ptr<EngramTable> load(const mfq::source::Source&, const std::string&,
         std::int64_t expected_rows, int expected_width, std::size_t cache_capacity_rows);
     ~EngramTable();
     void prefetch(const std::int64_t* rows, std::size_t count) const;
     EngramTensor gather(const std::int64_t* rows, int batch, int tokens, int hash_columns,
                         const mfq_tensor_backend::Device& device) const;
   private:
-    EngramTable(const mfq::ModelSource&, std::string, std::uint64_t nbytes,
+    EngramTable(const mfq::source::Source&, std::string, std::uint64_t nbytes,
                 std::int64_t rows, int width, std::uint64_t value_bytes, std::size_t capacity,
                 std::shared_ptr<mfq::NintRows> nint={});
     struct Impl;

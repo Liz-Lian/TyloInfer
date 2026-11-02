@@ -1,5 +1,5 @@
 #include "tq_fixture_source.h"
-#include "mfq_model_source.h"
+#include "mfq_source.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <array>
@@ -148,7 +148,7 @@ public:
         std::ifstream input(path);json spec;input>>spec;
         if(spec.at("format")!="mfq-tq-fixture-v1" || spec.at("synthetic")!=true)
             throw std::invalid_argument("expected an explicit synthetic TQ fixture");
-        base_=std::make_shared<MfqModelSource>(std::filesystem::u8path(spec.at("reference").get<std::string>()));
+        base_=std::make_shared<models::MfqSource>(std::filesystem::u8path(spec.at("reference").get<std::string>()));
         tensors_=base_->tensors();metadata_=base_->metadata();metadata_["tq.synthetic"]="true";
         // Synthetic conversion can replace a legacy combined Gate/Up bank
         // with two ordinary tensors, while retaining all unchanged assets.

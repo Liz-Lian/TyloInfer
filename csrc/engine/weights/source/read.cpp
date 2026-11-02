@@ -1,44 +1,11 @@
-#include "model_source.h"
 #include "read.h"
 
-#include "engine/weights/source/gguf.h"
-#include "engine/models/common/hf_source.h"
-#include "engine/models/common/gguf_source.h"
-#include "engine/models/common/mfq_source.h"
-#include "tq_fixture_source.h"
-
-#include <cstdlib>
 #include <cstring>
 
 namespace mfq {
 
-std::shared_ptr<const ModelSource> open_model_source(
-        const std::filesystem::path& path) {
-    for (const char* environment :
-         {"TYLOINFER_TENSOR_OVERLAY", "TYLOINFER_EXPERT_OVERLAY"}) {
-        const char* overlay = std::getenv(environment);
-        if (overlay != nullptr && overlay[0] != '\0') {
-            throw std::runtime_error(
-                std::string(environment) +
-                " is unsupported by the canonical ModelSource path");
-        }
-    }
-
-    const auto filename=path.filename().u8string();
-    const std::string fixture_suffix=".tq-fixture.json";
-    if(filename.size()>=fixture_suffix.size() &&
-       filename.compare(filename.size()-fixture_suffix.size(),fixture_suffix.size(),fixture_suffix)==0)
-        return open_tq_fixture_source(path);
-    std::error_code error;
-    if (std::filesystem::is_directory(path, error) && !error) {
-        return std::make_shared<models::HfSource>(path);
-    }
-    if (is_gguf_file(path)) return std::make_shared<models::GgufSource>(path);
-    return std::make_shared<models::MfqSource>(path);
-}
-
 const mfq::TensorMetadata& require_tensor(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view name) {
     const auto* tensor = source.find_tensor(name);
     if (tensor == nullptr) {
@@ -48,13 +15,13 @@ const mfq::TensorMetadata& require_tensor(
 }
 
 bool has_tensor(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view name) noexcept {
     return source.find_tensor(name) != nullptr;
 }
 
 bool has_tensor_prefix(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view prefix) {
     for (const auto& tensor : source.tensors()) {
         if (tensor.name == prefix ||
@@ -68,7 +35,7 @@ bool has_tensor_prefix(
 }
 
 std::vector<std::uint8_t> read_tensor(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view name) {
     const auto& tensor = require_tensor(source, name);
     if (tensor.nbytes > std::numeric_limits<std::size_t>::max()) {
@@ -82,7 +49,7 @@ std::vector<std::uint8_t> read_tensor(
 }
 
 std::vector<std::uint8_t> read_asset(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view name) {
     const auto bytes = source.read_asset(name);
     std::vector<std::uint8_t> result(bytes.size());
@@ -93,7 +60,7 @@ std::vector<std::uint8_t> read_asset(
 }
 
 std::string read_asset_text(
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         std::string_view name) {
     const auto bytes = source.read_asset(name);
     return {

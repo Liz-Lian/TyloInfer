@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <utility>
 
-TqWeight load_tq_weight(const mfq::ModelSource& source,
+TqWeight load_tq_weight(const mfq::source::Source& source,
                          const std::string& name, int device, bool cuda) {
     const auto shape = mfq::tq_projection_shape(source, name);
     const auto bytes = source.read(name);
@@ -25,7 +25,7 @@ TqWeight load_tq_weight(const mfq::ModelSource& source,
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
         mfq::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         const std::string& name) {
     const auto shape = mfq::tq_shape(source, name);
     if (shape.size() != 3) {
@@ -37,7 +37,7 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
         mfq::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
-        const mfq::ModelSource& source,
+        const mfq::source::Source& source,
         const std::string& name, std::int64_t experts, std::int64_t output,
         std::int64_t input) {
     auto table = mfq::tq_table(source, name);
