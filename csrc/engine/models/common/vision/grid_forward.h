@@ -1,10 +1,10 @@
 #pragma once
 
-#include "causal_forward.h"
-#include "../../generation/sequence.h"
+#include "../causal_forward.h"
+#include "engine/generation/sequence.h"
 #include "engine/ops.h"
-#include "vision/grid_vision.h"
-#include "transformer_layer.h"
+#include "grid_vision.h"
+#include "../transformer_layer.h"
 #include <cmath>
 #include <utility>
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "backend.h"
-#include "engine/models/common/axial_patch_vision.h"
+#include "engine/models/common/vision/axial_patch_vision.h"
 #include "engine/generation/sequence.h"
 
 #include <cstdint>

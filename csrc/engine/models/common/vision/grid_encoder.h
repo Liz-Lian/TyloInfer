@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/ops.h"
 #include "engine/models/common/transformer_layer.h"
-#include "engine/models/common/grid_vision_model.h"
+#include "engine/models/common/vision/grid_forward.h"
 #include "engine/models/common/vision/grid_vision.h"
 #include "engine/requests/media.h"
 #include "engine/state/session/prefix_cache.h"
