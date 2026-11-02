@@ -10,6 +10,7 @@
 #include <future>
 #include <iostream>
 #include <sstream>
+#include <regex>
 
 using namespace mfq::server;
 using namespace std::chrono_literals;
@@ -310,6 +311,16 @@ void routes(const fs::path& executable) {
         CHECK(server.complete(retry["id"])["status"] == "succeeded");
         CHECK(origin.ranges > ms_ranges);
         CHECK(server.get("/api/v1/models?refresh=true")["data"].size() == 3);
+        for (const auto* provider : {"huggingface", "modelscope"}) {
+            const auto info = server.get(std::string("/api/v1/hub/models/") + provider + "/owner/model");
+            const auto label = info["variants"][0]["label"].get<std::string>();
+            auto download = payload;
+            download["destination"] = std::string("models/") + provider + "/owner/model/" +
+                std::regex_replace(label, std::regex("[^A-Za-z0-9_.-]+"), "-");
+            const auto job = server.post("/api/v1/jobs", {{"kind", std::string("download.") + provider}, {"payload", download}});
+            CHECK(server.complete(job["id"])["status"] == "succeeded");
+        }
+        CHECK(server.get("/api/v1/models?refresh=true")["data"].size() == 5);
         server.client->set_default_headers({}); const auto denied = server.client->Post("/api/v1/jobs", payload.dump(), "application/json"); CHECK(denied && denied->status == 401);
     }
 }

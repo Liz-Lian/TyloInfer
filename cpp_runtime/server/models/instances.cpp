@@ -23,8 +23,10 @@ ModelInstance::ModelInstance(const ModelCatalog::Artifact& artifact, std::string
     : id(normalize_uuid({})), model(artifact.name), artifact_id(artifact.id),
       backend(std::move(selected_backend)), engine_(std::move(loaded)), scheduler_(*engine_) {
     auto source = mfq::open_model_source(artifact.path);
+    const auto embedded = source->metadata().find("runtime.sampling.v1");
     const auto profile = resolve_mfq_runtime_profile(path_utf8(artifact.path), std::string(source->architecture()),
-        scheduler_.info().model_type, model, {}, source->model_config_json());
+        scheduler_.info().model_type, model,
+        embedded == source->metadata().end() ? std::string() : embedded->second, source->model_config_json());
     sampling_ = default_sampling_params(profile);
 }
 

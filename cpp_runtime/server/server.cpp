@@ -289,7 +289,7 @@ int run(const Config& config, const std::atomic<bool>& stop_requested, EngineFac
         response.set_header("X-Content-Type-Options", "nosniff");
         response.set_header("X-Frame-Options", "DENY");
         response.set_header("Referrer-Policy", "no-referrer");
-        response.set_header("Content-Security-Policy", "default-src 'self'; connect-src 'self' ws: wss:; "
+        response.set_header("Content-Security-Policy", "default-src 'self'; connect-src 'self' https://api.github.com ws: wss:; "
             "img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self'; font-src 'self' data:");
     });

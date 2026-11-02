@@ -10,6 +10,7 @@ import { ModelPressureBars } from './ModelMemoryPressure';
 import { availableResidentMemory, hasSeparateVram } from '../runtime/memoryArchitecture';
 import { ModelDeleteDialog } from './ModelDeleteDialog';
 import { availableLoadMemory } from './loadMemoryEstimate';
+import { serverCapabilities } from '../../app/serverCapabilities';
 import { groupCheckpoints } from './checkpointGroups';
 
 /** Render catalog artifacts and connect lifecycle actions to their human-readable names. */
@@ -17,6 +18,7 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
   const { tr } = useSettings();
   const { runtime, artifacts, busy, instances, modelFilter,
     setModelFilter, filteredArtifacts, unloadInstance, loadArtifact, chooseModelDirectory, openModelFiles, prepareModelDeletion } = catalog;
+  const capabilities = serverCapabilities(runtime);
   const [status, setStatus] = useState('all');
   const [architecture, setArchitecture] = useState('all');
   const [format, setFormat] = useState('all');
@@ -156,7 +158,7 @@ export function LocalCheckpoints({ catalog }: { catalog: ReturnType<typeof useMo
                       {tr('加载', 'Load')}
                     </button>
                   )}<button className="model-delete-action" aria-label={tr(`删除模型：${item.name}`, `Delete model: ${item.name}`)}
-                    disabled={busy || loaded} title={loaded ? tr('请先卸载模型再删除', 'Unload the model before deleting it') : tr('删除模型', 'Delete model')}
+                    disabled={!capabilities.modelDeletion || busy || loaded} title={!capabilities.modelDeletion ? tr('当前原生服务暂不支持删除模型文件。', 'Deleting model files is unavailable on the native server.') : loaded ? tr('请先卸载模型再删除', 'Unload the model before deleting it') : tr('删除模型', 'Delete model')}
                     onClick={() => void prepareModelDeletion(item.id)} type="button"><Icon name="trash" size={14} /></button></>}
                     </div>
                   </div>

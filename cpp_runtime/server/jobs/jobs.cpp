@@ -4,6 +4,7 @@
 #include <limits>
 #include <regex>
 #include <cmath>
+#include <iostream>
 
 namespace mfq::server {
 namespace {
@@ -189,7 +190,15 @@ void Jobs::loop() noexcept {
                 Control control{*task->cancelled, [this, id = task->id](const std::string& phase, double value, Json data) { progress(id, phase, value, std::move(data)); }};
                 control.checkpoint(); result = task->work(control);
             } catch (const Cancelled&) { cancelled = true; }
-            catch (...) { failure = failure_(std::current_exception()); }
+            catch (const std::exception& error) {
+                failure = failure_(std::current_exception());
+                if (failure.value("code", "") == "internal_error")
+                    std::cerr << Json{{"event", "operation_failed"}, {"operation_id", task->id}, {"detail", error.what()}}.dump() << '\n';
+            }
+            catch (...) {
+                failure = failure_(std::current_exception());
+                std::cerr << Json{{"event", "operation_failed"}, {"operation_id", task->id}, {"detail", "unknown exception"}}.dump() << '\n';
+            }
             {
                 std::lock_guard lock(mutex_);
                 update(task->id, cancelled ? "cancelled" : failure.is_null() ? "succeeded" : "failed", result, failure);

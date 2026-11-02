@@ -10,6 +10,7 @@ import { AgentQuestionCard } from './AgentQuestionCard';
 import { AgentComposer, type AgentPromptPart, type AgentSelection } from './AgentComposer';
 import { agentEvent, emptyJournal, type AgentFrame, type AgentMessage } from './agentEvents';
 import { STUDIO_PATHS } from '../../navigation';
+import { serverCapabilities } from '../../app/serverCapabilities';
 import './agent.css';
 
 function Message({ message }: { message: AgentMessage }) {
@@ -25,7 +26,7 @@ export function AgentPage() {
   const { runtime } = useRuntime();
   const { tr } = useSettings();
   const navigate = useNavigate();
-  if (runtime?.source === 'native-instances') return <section className="agent-page">
+  if (!serverCapabilities(runtime).agent) return <section className="agent-page">
     <header className="agent-page-header"><h1>Agent</h1></header>
     <div className="agent-conversation"><div className="agent-welcome">
       <RobotIcon size={36} />

@@ -269,6 +269,7 @@ function New-BuildContext {
         StudioDirectory = Join-Path $projectDirectory 'TyloInferStudio'
         NativeBuildDirectory = Join-Path $ScriptDirectory "build/native-server/$buildId"
         ServerStageDirectory = Join-Path $ScriptDirectory "build/stage/$buildId/tyloinfer-server"
+        TemporaryDirectory = Join-Path $ScriptDirectory "build/tmp/$buildId"
         ServerDirectory = Join-Path $resourceDirectory 'tyloinfer-server'
         ResourceDirectory = $resourceDirectory
         TargetTriple = 'x86_64-pc-windows-msvc'
@@ -420,8 +421,10 @@ function Initialize-ReleaseDirectories {
 
     New-Item -ItemType Directory -Force -Path @(
         $Context.NativeBuildDirectory, $Context.ServerStageDirectory,
-        $Context.ResourceDirectory, $Context.OutputDirectory
+        $Context.ResourceDirectory, $Context.OutputDirectory, $Context.TemporaryDirectory
     ) | Out-Null
+    $env:TEMP = $Context.TemporaryDirectory
+    $env:TMP = $Context.TemporaryDirectory
     # 全局 npm 缓存可能属于其他安装或不可写，发行过程默认使用本 worktree 的缓存。
     if ([string]::IsNullOrWhiteSpace($env:npm_config_cache)) {
         $env:npm_config_cache = Join-Path $Context.ScriptDirectory 'build/npm-cache'

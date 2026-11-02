@@ -22,17 +22,19 @@ import { InferencePolicyPanel } from './InferencePolicyPanel';
 import { ApiAuthenticationPanel } from './ApiAuthenticationPanel';
 import { toast } from '../../stores/toastStore';
 import { ServerConnectionPage } from '../../app/ServerConnectionPage';
+import { serverCapabilities } from '../../app/serverCapabilities';
 import '../../shared/styles/configuration-layout.css';
 
 function browserConfig(): StudioConfig {
-  const address = getApiBaseUrl() || 'http://127.0.0.1:8090';
+  const address = getApiBaseUrl() || window.location.origin;
   const url = new URL(address);
   return {
     mode: ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ? 'local' : 'remote',
-    remote_url: address, local_service_port: Number(url.port) || 8090,
+    remote_url: address, local_service_port: Number(url.port) || (url.protocol === 'https:' ? 443 : 80),
   };
 }
 
+/** Configure supported authentication and connections without probing unavailable native settings. */
 export function ConnectionsPage() {
   const { tr } = useSettings();
   const {
@@ -43,6 +45,8 @@ export function ConnectionsPage() {
     studio,
     reloadService,
   } = useRuntime();
+  const capabilities = serverCapabilities(runtime);
+  const managedLocal = isStudio() && studio?.connection === 'managed' && studio.config.mode === 'local';
   const [draft, setDraft] = useState<StudioConfig>(() => studio?.config ?? browserConfig());
   const [listeningPort, setListeningPort] = useState<number | null>(null);
   const [anthropicPort, setAnthropicPort] = useState<number | null>(null);
@@ -63,6 +67,11 @@ export function ConnectionsPage() {
   }, []);
   useEffect(() => {
     if (studio) { setDraft(studio.config); applied.current = studio.config; }
+    if (!capabilities.runtimeConfiguration) {
+      setListeningPort(browserConfig().local_service_port);
+      setConfigurable(managedLocal);
+      return;
+    }
     let disposed = false;
     void runtimeApi.runtimeListener().then((listener) => {
       if (!disposed) {
@@ -77,7 +86,7 @@ export function ConnectionsPage() {
       }
     }).catch(() => {});
     return () => { disposed = true; };
-  }, [studio]);
+  }, [studio, capabilities.runtimeConfiguration, managedLocal]);
   useEffect(() => {
     let disposed = false;
     void studioCredential()
@@ -97,10 +106,13 @@ export function ConnectionsPage() {
   const modelNames = runtimeModelNames(models, instances);
 
 
+  /** Save a connection or navigate to its web UI; never reconfigure a native listener in place. */
   async function apply(draft: StudioConfig) {
     if (applying.current) return;
     if (JSON.stringify(draft) === JSON.stringify(applied.current) && !credentialWritable && !applyState?.error) return;
     const endpoint = getApiBaseUrl();
+    const restartsManagedService = !capabilities.runtimeConfiguration && managedLocal && draft.mode === 'local'
+      && studio.config.local_service_port !== draft.local_service_port;
     let credential = getApiToken();
     let boundPort = listeningPort;
     const current = () => getApiBaseUrl() === endpoint && getApiToken() === credential;
@@ -115,7 +127,7 @@ export function ConnectionsPage() {
         throw new Error(tr('OpenAI 和 Anthropic 不能使用同一个端口，请为它们设置不同的端口。', 'OpenAI and Anthropic cannot share a port. Choose a different port for each API.'));
       }
       if (isStudio()) {
-        if (studio?.connection === 'managed' && studio.config.mode === 'local' && draft.mode === 'local'
+        if (capabilities.runtimeConfiguration && studio?.connection === 'managed' && studio.config.mode === 'local' && draft.mode === 'local'
             && studio.config.local_service_port !== draft.local_service_port) {
           boundPort = (await runtimeApi.configureRuntimeListener(draft.local_service_port)).port;
           if (!current()) return;
@@ -129,7 +141,7 @@ export function ConnectionsPage() {
       } else {
         let address = draft.remote_url.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
         if (draft.mode === 'local') {
-          if (browserConfig().mode === 'local') boundPort = (await runtimeApi.configureRuntimeListener(draft.local_service_port)).port;
+          if (capabilities.runtimeConfiguration && browserConfig().mode === 'local') boundPort = (await runtimeApi.configureRuntimeListener(draft.local_service_port)).port;
           if (!current()) return;
           address = `http://127.0.0.1:${draft.local_service_port}`;
         } else {
@@ -139,6 +151,20 @@ export function ConnectionsPage() {
           if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
             throw new Error(tr('请输入不含凭据的 HTTP 或 HTTPS 服务地址', 'Enter an HTTP or HTTPS service URL without credentials'));
           }
+        }
+        if (!capabilities.runtimeConfiguration) {
+          const page = new URL(address);
+          if (page.pathname !== '/') {
+            throw new Error(tr('网页连接仅支持服务根地址（可带 /v1），当前不支持路径前缀。', 'Web connections require a server root URL (optionally ending in /v1). Path prefixes are not supported.'));
+          }
+          if (page.origin !== window.location.origin) {
+            page.pathname = window.location.pathname;
+            window.location.assign(page.toString());
+          } else {
+            applied.current = draft;
+            setApplyState(null);
+          }
+          return;
         }
         setBrowserServiceUrl(address);
         if (credentialWritable) { setApiToken(token); credential = token.trim(); }
@@ -155,7 +181,9 @@ export function ConnectionsPage() {
       applied.current = draft;
       if (mounted.current && reconnected) {
         setCredentialWritable(false);
-        setApplyState({ error: false, text: tr('已应用，无需重载模型', 'Applied without reloading models') });
+        setApplyState({ error: false, text: restartsManagedService
+          ? tr('服务已按新端口重启，请在模型页面确认加载状态。', 'The service restarted on the new port. Check model loading status in Models.')
+          : tr('已应用，无需重载模型', 'Applied without reloading models') });
       } else if (mounted.current) {
         setApplyState({ error: true, text: tr('设置已应用，但连接失败，请检查地址和凭据', 'Settings applied, but reconnection failed. Check the address and credentials.') });
       }
@@ -242,8 +270,8 @@ export function ConnectionsPage() {
             <Icon name="info" size={15} />
             <span>
               {tr(
-                '服务器正在运行；网络设置失焦或按回车自动应用，无需重载模型。',
-                'The server is active. Network settings apply on blur or Enter without reloading models.',
+                capabilities.runtimeConfiguration ? '服务器正在运行；网络设置失焦或按回车自动应用，无需重载模型。' : managedLocal ? '端口变更由桌面启动器应用，会重启此 App 管理的服务。模型别名与鉴权可直接修改。' : '原生服务的监听端口由启动参数决定。当前可修改模型别名与 API 鉴权。',
+                capabilities.runtimeConfiguration ? 'The server is active. Network settings apply on blur or Enter without reloading models.' : managedLocal ? 'Changing the port restarts the service managed by this app. Model aliases and authentication can be changed directly.' : 'Native listener ports are set at startup. Model aliases and API authentication can be changed here.',
               )}
             </span>
           </div>
@@ -297,8 +325,8 @@ export function ConnectionsPage() {
                 <SettingRow
                   title={tr('远程端点', 'Remote endpoint')}
                   detail={tr(
-                    '远程 TyloInfer Server 的 OpenAI 兼容基础 URL。',
-                    'OpenAI-compatible base URL for the remote TyloInfer Server.',
+                    !isStudio() && !capabilities.runtimeConfiguration ? '打开远程服务根地址，不支持路径前缀；如需鉴权，请在新页面登录。' : '远程 TyloInfer Server 的 OpenAI 兼容基础 URL。',
+                    !isStudio() && !capabilities.runtimeConfiguration ? 'Open the remote server root URL; path prefixes are unsupported. Sign in on the destination page if required.' : 'OpenAI-compatible base URL for the remote TyloInfer Server.',
                   )}
                   trailing={
                     <input
@@ -318,7 +346,7 @@ export function ConnectionsPage() {
                     />
                   }
                 />
-                <SettingRow
+                {(isStudio() || capabilities.runtimeConfiguration) && <SettingRow
                   title={tr('API 密钥', 'API key')}
                   detail={tr(
                     isStudio() ? '凭据只保存在系统凭据库中。' : '凭据仅保留在当前页面内存中。',
@@ -341,7 +369,7 @@ export function ConnectionsPage() {
                       value={token}
                     />
                   }
-                />
+                />}
               </>
             ) : (
               <>
@@ -372,7 +400,7 @@ export function ConnectionsPage() {
               <SettingRow
                 title={tr('Anthropic 端口', 'Anthropic port')}
                 detail={anthropicPort == null
-                  ? tr('当前服务尚未启用 Anthropic API。', 'The current service has not enabled the Anthropic API.')
+                  ? capabilities.runtimeConfiguration ? tr('当前服务尚未启用 Anthropic API。', 'The current service has not enabled the Anthropic API.') : tr('与 OpenAI 共用服务端口 /v1/messages；不能单独配置。', 'Uses the same server port at /v1/messages; a separate port cannot be configured.')
                   : `http://127.0.0.1:${anthropicPort}/v1/messages`}
                 trailing={<input
                   aria-label={tr('Anthropic 端口', 'Anthropic port')}
@@ -390,15 +418,14 @@ export function ConnectionsPage() {
           </div>
           {applyState && <p className="server-apply-state" role={applyState.error ? 'alert' : 'status'}>{applyState.text}</p>}
         </TMPanel>
-        <MemorySettingsPanel />
-        <InferencePolicyPanel />
-        <ContextManagementPanel />
+        {capabilities.runtimeConfiguration ? <><MemorySettingsPanel /><InferencePolicyPanel /><ContextManagementPanel /></> :
+          <p role="status">{tr('内存、推理和全局上下文设置暂不可用。可在模型设置中配置下次加载的上下文大小与驻留策略。', 'Memory, inference and global context settings are unavailable. Configure context size and residency for the next load in Models.')}</p>}
       </div>
       <div className="server-page" role="tabpanel" id="service-section-cache" aria-labelledby="service-tab-cache" hidden={section !== 'cache'}>
-        {visited.includes('cache') && <PrefixCacheSettingsPanel />}
+        {capabilities.runtimeConfiguration ? visited.includes('cache') && <PrefixCacheSettingsPanel /> : <p role="status">{tr('当前原生服务暂不支持缓存设置。', 'Cache settings are unavailable on the native server.')}</p>}
       </div>
       <div className="server-page" role="tabpanel" id="service-section-advanced" aria-labelledby="service-tab-advanced" hidden={section !== 'advanced'}>
-        {visited.includes('advanced') && <RemoteRoutingPanel />}
+        {capabilities.runtimeConfiguration ? visited.includes('advanced') && <RemoteRoutingPanel /> : <p role="status">{tr('当前原生服务暂不支持集群节点与远程路由。', 'Cluster nodes and remote routing are unavailable on the native server.')}</p>}
       </div>
     </section>
   );

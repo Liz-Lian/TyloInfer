@@ -6,6 +6,7 @@
 #include "models/instances.h"
 #include "protocol.h"
 #include <charconv>
+#include <map>
 
 namespace mfq::server {
 namespace {
@@ -117,10 +118,25 @@ void register_inference(httplib::Server& http, ModelInstances& models, std::shar
             [generation, id, created, model, include_usage, disconnected](std::size_t, httplib::DataSink& sink) {
                 const auto& completion = generation->completion;
                 try {
+                    std::map<std::size_t, common_chat_tool_call> identities;
+                    /** Convert complete native identities to append-only OpenAI field fragments. */
+                    const auto identity_delta = [](std::string& previous, std::string& value) {
+                        if (value.empty()) return;
+                        if (value.compare(0, previous.size(), previous) != 0)
+                            throw ApiError(502, "invalid_tool_output", "native tool identity changed after it was streamed");
+                        auto complete = value;
+                        value.erase(0, previous.size());
+                        previous = std::move(complete);
+                    };
                     if (!sse(sink, chunk(id, created, model, {{"role", "assistant"}}))) return false;
                     while (auto diffs = completion->next()) {
                         if (disconnected()) { completion->cancel(); return false; }
-                        for (const auto& diff : *diffs) {
+                        for (auto& diff : *diffs) {
+                            if (diff.tool_call_index != std::string::npos) {
+                                auto& identity = identities[diff.tool_call_index];
+                                identity_delta(identity.id, diff.tool_call_delta.id);
+                                identity_delta(identity.name, diff.tool_call_delta.name);
+                            }
                             auto delta = mfq::protocol::chat_diff_json(diff);
                             if (!delta.empty() && !sse(sink, chunk(id, created, model, std::move(delta)))) {
                                 completion->cancel(); return false;

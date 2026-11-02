@@ -81,6 +81,10 @@ beforeEach(() => {
     const method = init?.method ?? 'GET';
     requests.push({ path, method });
     const json = (value: unknown) => new Response(JSON.stringify(value));
+    if (path === '/api/v1/auth/policy') return json({ enabled: false, has_key: false });
+    if (path === '/api/v1/runtime/model-aliases') return json({ aliases: {} });
+    if (path === '/api/v1/jobs/kinds') return json({ data: [] });
+    if (path === '/api/v1/hub/download-directory') return json({ actual_directory: 'D:/isolated/models', default_directory: 'D:/isolated/models', evict_prefix_cache: false });
     if (runtime.runtime.source !== 'native-instances' && ['/api/v1/agent/state', '/api/v1/agent/start'].includes(path)) {
       return json({ running: path.endsWith('/start'), workspaces: [], sessions: [], models: [], approvals: [] });
     }
@@ -101,7 +105,50 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => { cleanup(); setApiBaseUrl(''); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); setApiBaseUrl(''); vi.unstubAllGlobals(); });
+
+it.each([
+  ['/resources', 'resource monitoring or cache management'],
+  ['/analysis', 'architecture or tensor analysis'],
+  ['/evaluations', 'datasets, quality evaluations or benchmark jobs'],
+])('keeps %s as an unavailable entry without mounting requests or polling', async (path, detail) => {
+  renderApp(path);
+  expect(await screen.findByText(new RegExp(detail))).toBeInTheDocument();
+  vi.useFakeTimers();
+  await act(async () => { await vi.advanceTimersByTimeAsync(12000); });
+  expect(requests.filter(request => !request.path.startsWith('/api/v1/sessions'))).toEqual([]);
+});
+
+it('retains native authentication and aliases while all runtime settings tabs avoid unsupported APIs', async () => {
+  setApiBaseUrl('http://127.0.0.1:59421');
+  renderApp('/runtime');
+  expect(await screen.findByRole('spinbutton', { name: 'OpenAI port' })).toBeDisabled();
+  expect(screen.getByRole('spinbutton', { name: 'OpenAI port' })).toHaveValue(59421);
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Authentication' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('tab', { name: 'Cache' }));
+  expect(screen.getByRole('tabpanel')).toHaveTextContent('Cache settings are unavailable');
+  fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }));
+  expect(screen.getByRole('tabpanel')).toHaveTextContent('Cluster nodes and remote routing are unavailable');
+  vi.useFakeTimers();
+  await act(async () => { await vi.advanceTimersByTimeAsync(12000); });
+  expect(requests.filter(request => !['/api/v1/sessions', '/api/v1/runtime/model-aliases', '/api/v1/auth/policy'].includes(request.path))).toEqual([]);
+});
+
+it('keeps native downloads and future recommendations visible without automatic keyword or catalog requests', async () => {
+  renderApp('/model-hub');
+  const search = await screen.findByRole('textbox', { name: 'Search models' });
+  expect(search).toHaveAttribute('placeholder', 'owner/repo or repository URL');
+  expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+  const reclaim = screen.getByRole('checkbox', { name: 'Reclaim SSD prefix budget' });
+  expect(reclaim).toBeDisabled();
+  fireEvent.change(search, { target: { value: 'keyword' } });
+  expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('tab', { name: 'Recommended models' }));
+  expect(screen.getByText(/does not provide recommendations/)).toBeInTheDocument();
+  vi.useFakeTimers();
+  await act(async () => { await vi.advanceTimersByTimeAsync(12000); });
+  expect(requests.filter(request => !['/api/v1/sessions', '/api/v1/jobs/kinds', '/api/v1/hub/download-directory'].includes(request.path))).toEqual([]);
+});
 
 it.each(['/chat', '/chat/'])('renders the real native chat page at %s without redirecting or calling Agent APIs', async path => {
   renderApp(path);

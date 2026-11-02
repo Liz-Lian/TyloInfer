@@ -15,7 +15,7 @@ type Translate = (zh: string, en: string) => string;
 type Format = 'tq' | 'gguf' | 'mlx';
 type Sort = 'relevance' | 'downloads' | 'likes' | 'updated';
 const allFormats: Format[] = ['tq', 'gguf', 'mlx'];
-const count = (value: number) => new Intl.NumberFormat(undefined, { notation: 'compact' }).format(value);
+const count = (value: number | null | undefined) => value == null ? '—' : new Intl.NumberFormat(undefined, { notation: 'compact' }).format(value);
 
 function ModelCard({ model, tr }: { model: HubModelInfo; tr: Translate }) {
   const [content, setContent] = useState<string | null>(null);
@@ -72,7 +72,8 @@ function ModelCard({ model, tr }: { model: HubModelInfo; tr: Translate }) {
   }} dangerouslySetInnerHTML={markup} />;
 }
 
-export function CommunityModelBrowser({ model, onSelect, variants, details, files, renderDownload, tr, backend }: {
+/** Resolve explicit repositories and expose search or model cards only when supported. */
+export function CommunityModelBrowser({ model, onSelect, variants, details, files, renderDownload, tr, backend, searchAvailable = true, readmeAvailable = true }: {
   model: HubModelInfo | null;
   onSelect(model: HubModelInfo | null): void;
   variants: HubModelVariant[];
@@ -81,6 +82,10 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
   renderDownload(variant: HubModelVariant): ReactNode;
   tr: Translate;
   backend?: string;
+  /** Enables keyword browsing and automatic search; explicit repository resolution remains available. */
+  searchAvailable?: boolean;
+  /** Enables the server-provided model card resource. External repository links remain available. */
+  readmeAvailable?: boolean;
 }) {
   const [provider, setProvider] = useState<HubModelSummary['provider']>('huggingface');
   const [query, setQuery] = useState('');
@@ -130,6 +135,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
   }
 
   async function search(append = false) {
+    if (!searchAvailable && !parseHubReference(query.trim(), provider)) return;
     if (append && (!nextCursor || loadingMore)) return;
     if (timer.current) clearTimeout(timer.current);
     searchController.current?.abort();
@@ -150,8 +156,11 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
     }
     try {
       const reference = query.trim();
-      if (parseHubReference(reference, provider) || /^https?:\/\//i.test(reference)) {
-        const info = await modelsApi.resolveHubModel(reference, provider, controller.signal);
+      const parsed = parseHubReference(reference, provider);
+      if (parsed || /^https?:\/\//i.test(reference)) {
+        const info = !searchAvailable && parsed
+          ? await modelsApi.hubModelInfo(parsed.provider, parsed.repoId, parsed.revision, controller.signal)
+          : await modelsApi.resolveHubModel(reference, provider, controller.signal);
         if (controller.signal.aborted) return;
         setResults([info]);
         setSelected(`${info.provider}:${info.repo_id}`);
@@ -181,13 +190,14 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
   useEffect(() => {
     searchController.current?.abort();
     detailController.current?.abort();
-    timer.current = setTimeout(() => void search(), query.trim() ? 350 : 0);
+    if (!searchAvailable) { setSearching(false); setInspecting(false); }
+    if (searchAvailable) timer.current = setTimeout(() => void search(), query.trim() ? 350 : 0);
     return () => {
       if (timer.current) clearTimeout(timer.current);
       searchController.current?.abort();
       detailController.current?.abort();
     };
-  }, [provider, query, formats.join(','), sort, direction]);
+  }, [provider, query, formats.join(','), sort, direction, searchAvailable]);
 
   function submit(event: FormEvent) { event.preventDefault(); void search(); }
   const variant = variants.find(item => item.id === variantId) ?? variants[0];
@@ -196,7 +206,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
   return <div className="community-browser">
     <form className="community-search-toolbar" onSubmit={submit}>
       <label className="community-search-field"><MagnifyingGlassIcon size={18} />
-        <input aria-label={tr('搜索模型', 'Search models')} placeholder={tr('模型名称、owner/repo 或仓库链接', 'Model name, owner/repo, or repository URL')}
+        <input aria-label={tr('搜索模型', 'Search models')} placeholder={searchAvailable ? tr('模型名称、owner/repo 或仓库链接', 'Model name, owner/repo, or repository URL') : tr('owner/repo 或仓库链接', 'owner/repo or repository URL')}
           value={query} onChange={event => setQuery(event.target.value)} />
         {query && <button type="button" aria-label={tr('清空搜索', 'Clear search')} onClick={() => setQuery('')}><XIcon size={15} /></button>}
       </label>
@@ -204,11 +214,12 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
         setProvider(event.target.value as typeof provider);
         if (event.target.value === 'modelscope') setDirection('desc');
       }}><option value="huggingface">Hugging Face</option><option value="modelscope">ModelScope</option></select>
-      <button className="community-search-submit" type="submit">{tr('查找', 'Search')}</button>
+      <button className="community-search-submit" type="submit" disabled={!searchAvailable && !parseHubReference(query.trim(), provider)}>{tr('查找', 'Search')}</button>
     </form>
+    {!searchAvailable && <p role="status">{tr('当前服务暂不支持关键词搜索和热门推荐。输入 owner/repo 或完整仓库链接后点击查找。', 'Keyword search and recommendations are unavailable. Enter owner/repo or a full repository URL, then select Search.')}</p>}
     <div className="community-browser-body">
       <section className="community-library" aria-label={tr('模型搜索结果', 'Model search results')}>
-        <div className="community-library-toolbar">
+        {searchAvailable && <div className="community-library-toolbar">
           <div className="community-format-filters" role="group" aria-label={tr('权重格式', 'Weight format')}>
             <button type="button" aria-pressed={formats.length === allFormats.length} onClick={() => { formatChosen.current = true; setFormats(allFormats); }}>{tr('全部', 'All')}</button>
             {allFormats.map(item => <label key={item}><input type="checkbox" aria-label={item.toUpperCase()} checked={formats.includes(item)}
@@ -223,7 +234,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
               title={provider === 'modelscope' ? tr('ModelScope 仅提供降序搜索。', 'ModelScope only provides descending search.') : direction === 'desc' ? tr('切换为升序', 'Switch to ascending') : tr('切换为降序', 'Switch to descending')}
               onClick={() => setDirection(current => current === 'desc' ? 'asc' : 'desc')}>{direction === 'desc' ? <ArrowDownIcon size={15} /> : <ArrowUpIcon size={15} />}</button>
           </div>
-        </div>
+        </div>}
         <div className="community-result-list" aria-busy={searching}>
           {results.map(item => <button key={`${item.provider}:${item.repo_id}`} type="button" className="community-result" aria-pressed={selected === `${item.provider}:${item.repo_id}`}
             onClick={() => void inspect(item)}>
@@ -235,7 +246,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
             </div>
           </button>)}
           {searchError ? <div className="community-placeholder" role="alert"><p>{searchError === 'expired' ? tr('搜索已过期，请重新搜索。', 'This search expired. Start a new search.') : tr('暂时无法连接模型来源，请稍后重试或切换来源。', 'Cannot reach the model source. Retry or choose another source.')}</p><button type="button" onClick={() => void search()}>{searchError === 'expired' ? tr('重新搜索', 'Search again') : tr('重试', 'Retry')}</button></div>
-            : !results.length && <div className="community-placeholder"><MagnifyingGlassIcon size={28} /><p>{!formats.length ? tr('请至少选择一种权重格式。', 'Select at least one weight format.') : searching ? tr('正在读取模型列表…', 'Loading models…') : tr('没有找到模型，试试其它关键词或格式。', 'No models found. Try another keyword or format.')}</p></div>}
+            : !results.length && <div className="community-placeholder"><MagnifyingGlassIcon size={28} /><p>{!searchAvailable ? tr('解析仓库后在此显示结果。', 'Repository results appear here after resolving.') : !formats.length ? tr('请至少选择一种权重格式。', 'Select at least one weight format.') : searching ? tr('正在读取模型列表…', 'Loading models…') : tr('没有找到模型，试试其它关键词或格式。', 'No models found. Try another keyword or format.')}</p></div>}
           {!searching && nextCursor && !searchError && <button className="community-load-more" type="button" disabled={loadingMore} onClick={() => void search(true)}>{loadingMore ? tr('加载中…', 'Loading…') : tr('显示更多', 'Show more')}</button>}
         </div>
       </section>
@@ -246,7 +257,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
             <button type="button" className="community-external" aria-label={tr('打开模型卡', 'Open model card')} onClick={() => void openStudioExternal(model.source_url || `${model.provider === 'huggingface' ? 'https://huggingface.co/' : 'https://modelscope.cn/models/'}${model.repo_id}`).catch(() => {})}><ArrowSquareOutIcon size={17} /></button>
           </header>
           <div className="community-inspector-tabs" role="tablist" aria-label={tr('模型详情栏目', 'Model detail sections')}>
-            {(['overview', 'card', 'files'] as const).map(item => <button type="button" role="tab" key={item} aria-selected={view === item} onClick={() => {
+            {(['overview', 'card', 'files'] as const).map(item => <button type="button" role="tab" key={item} disabled={item === 'card' && !readmeAvailable} title={item === 'card' && !readmeAvailable ? tr('当前服务暂不提供模型卡，请使用外部仓库链接。', 'Model cards are unavailable; use the external repository link.') : undefined} aria-selected={view === item} onClick={() => {
               setView(item);
               if (item === 'card') setOpenedCard(modelKey);
             }}>{item === 'overview' ? tr('概览', 'Overview') : item === 'card' ? tr('模型卡', 'Model card') : tr('文件', 'Files')}</button>)}
@@ -264,7 +275,7 @@ export function CommunityModelBrowser({ model, onSelect, variants, details, file
                 </label>)}</div> : <p className="community-description">{tr('暂无可识别的精度版本，可在“文件”中选择下载。', 'No recognized variants. Browse Files to choose downloads.')}</p>}
               </section>
             </> : view === 'files' ? files : null}
-            {openedCard === modelKey && <div className="community-model-card-panel" hidden={view !== 'card'}><ModelCard key={modelKey} model={model} tr={tr} /></div>}
+            {readmeAvailable && openedCard === modelKey && <div className="community-model-card-panel" hidden={view !== 'card'}><ModelCard key={modelKey} model={model} tr={tr} /></div>}
           </div>
           {view === 'overview' && variant && <footer className="community-download-footer">{renderDownload(variant)}</footer>}
         </> : <div className="community-placeholder community-inspector-empty" role={detailError ? 'alert' : 'status'}><CubeIcon size={36} />

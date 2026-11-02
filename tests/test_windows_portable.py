@@ -163,7 +163,8 @@ def test_compiler_failure_preserves_previous_outputs(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "win32" or not os.environ.get("TYLOINFER_TEST_NSIS"), reason="Windows NSIS execution")
-def test_single_executable_extracts_reuses_and_repairs_its_cache(tmp_path):
+@pytest.mark.parametrize("cache_option", [False, True])
+def test_single_executable_extracts_reuses_and_repairs_its_cache(tmp_path, cache_option):
     root = project(tmp_path)
     executable = module.build_executable(root, root / "build/tyloinfer.exe", tmp_path / "output", Path(os.environ["TYLOINFER_TEST_NSIS"]))
     for artifact in (executable, executable.parent / "TyloInfer_0.4.0_x64-portable.zip"):
@@ -173,9 +174,14 @@ def test_single_executable_extracts_reuses_and_repairs_its_cache(tmp_path):
         assert package.namelist() == ["TyloInfer.exe"]
         assert package.read("TyloInfer.exe") == executable.read_bytes()
     cache = tmp_path / "runtime cache"
-    environment = dict(os.environ, TYLOINFER_STUDIO_RUNTIME_CACHE=str(cache))
+    environment_cache = tmp_path / "unused environment cache" if cache_option else cache
+    environment = dict(os.environ, TYLOINFER_STUDIO_RUNTIME_CACHE=str(environment_cache))
     arguments = [str(executable), "/EXTRACT_ONLY"]
+    if cache_option:
+        arguments = subprocess.list2cmdline(arguments) + f' /CACHE_DIR="{cache}"'
     subprocess.run(arguments, check=True, timeout=30, env=environment)
+    if cache_option:
+        assert not environment_cache.exists()
     directory, = cache.glob("0.4.0-*")
     native = directory / "tyloinfer-server/tyloinfer-server.exe"
     assert native.read_bytes() == b"tyloinfer-server.exe"
@@ -189,6 +195,8 @@ def test_single_executable_extracts_reuses_and_repairs_its_cache(tmp_path):
     subprocess.run(arguments, check=True, timeout=30, env=environment)
     assert (directory / "tyloinfer-server/libcurl.dll").is_file()
     assert not sentinel.exists()
+    preserved, = cache.glob("*/previous/cache-hit-check")
+    assert preserved.is_file()
     children = [subprocess.Popen(arguments, env=environment) for _ in range(3)]
     assert [child.wait(timeout=30) for child in children] == [0, 0, 0]
 

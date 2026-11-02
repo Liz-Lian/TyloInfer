@@ -177,6 +177,8 @@ void module_checks() {
     Directory directory;
     Storage storage(directory.root / "models.sqlite3");
     fixture_model(directory.root / "model");
+    write_file(directory.root / "model" / "generation_config.json",
+        R"({"eos_token_id":[3,4],"temperature":0.23,"top_k":7,"max_new_tokens":73})");
     ModelCatalog catalog({directory.root});
     const auto artifact = catalog.list(true).at(0);
     CHECK(artifact.complete && artifact.error.empty() && artifact.context_capacity == 8192);
@@ -255,6 +257,8 @@ void module_checks() {
     CHECK(received.context_size == 0 && phases.size() == 3);
     CHECK(loaded.state == InstanceInfo::State::loaded);
     auto instance = models.get(loaded.id);
+    CHECK(std::abs(instance->sampling().temperature - 0.23) < 1e-12);
+    CHECK(instance->sampling().top_k == 7 && instance->sampling().max_tokens == 73);
     auto input = [] { InferenceInput value; value.chat = false; value.prompt = "slow"; return value; };
     auto request = instance->submit({"direct-cancel", input()});
     model_error("model_busy", [&] { models.unload(loaded.id); });
@@ -832,6 +836,16 @@ void session_checks() {
         auto tool_result = reply_input("hello", 2); tool_result["input_role"] = "tool";
         tool_result["input"] = Json::array({{{"type", "tool_result"}, {"call_id", "call-1"}, {"result", "hello"}}});
         CHECK(sessions.start(tool_session, tool_result)->finish()["status"] == "completed");
+        const auto fragmented_id = sessions.create({{"model", loaded.id}})["id"].get<std::string>();
+        auto fragmented_input = tool_input;
+        fragmented_input["request_id"] = normalize_uuid({});
+        fragmented_input["input"] = Json::array({{{"type", "text"}, {"text", "fragmented-tool"}}});
+        const auto fragmented_reply = sessions.start(fragmented_id, fragmented_input)->finish();
+        CHECK(fragmented_reply["status"] == "completed");
+        const auto& fragmented_call = fragmented_reply["output"][2];
+        CHECK(fragmented_call["call_id"] == "call-1" && fragmented_call["name"] == "lookup");
+        CHECK(fragmented_call["arguments"] == Json({{"x", 1}}));
+        CHECK(sessions.messages(fragmented_id)["data"][1]["parts"][2] == fragmented_call);
         {
             auto access = storage.access();
             sqlite::Statement large(access.database, "UPDATE responses SET output_json=? WHERE session_id=?");
@@ -1871,6 +1885,7 @@ void run_checks(const fs::path& executable, const fs::path& real_model) {
     if (fixture) {
         response = server.post("/api/v1/models/load", {{"artifact_id", artifact_id}, {"requirements", {{"context_size", 13}}}});
         CHECK(server.complete(response)["status"] == "failed");
+        CHECK(server.process->output().find("fixture load failure after allocation") != std::string::npos);
         CHECK(server.get("/api/v1/runtime/instances")["data"].empty());
         response = server.post("/api/v1/models/load", {{"artifact_id", artifact_id}, {"requirements", {{"context_size", 14}}}});
         CHECK(response && response->status == 202);
@@ -1910,6 +1925,40 @@ void run_checks(const fs::path& executable, const fs::path& real_model) {
     const auto result = Json::parse(response->body);
     CHECK(!result["choices"][0]["message"]["content"].get<std::string>().empty());
     CHECK(result["usage"]["completion_tokens"] > 0);
+    if (fixture) {
+        auto fragmented = body;
+        fragmented["messages"][0]["content"] = "fragmented-tool";
+        response = server.post("/v1/chat/completions", fragmented);
+        CHECK(response && response->status == 200);
+        const auto calls = Json::parse(response->body)["choices"][0]["message"]["tool_calls"];
+        CHECK(calls[0]["id"] == "call-1" && calls[0]["function"]["name"] == "lookup");
+        CHECK(Json::parse(calls[0]["function"]["arguments"].get<std::string>()) == Json({{"x", 1}}));
+        fragmented["stream"] = true;
+        response = server.post("/v1/chat/completions", fragmented);
+        CHECK(response && response->status == 200);
+        std::map<std::size_t, common_chat_tool_call> streamed;
+        std::istringstream lines(response->body); std::string line;
+        while (std::getline(lines, line)) if (line.rfind("data: ", 0) == 0 && line != "data: [DONE]") {
+            const auto event = Json::parse(line.substr(6));
+            CHECK(!event.contains("error"));
+            const auto& delta = event["choices"][0]["delta"];
+            if (!delta.contains("tool_calls")) continue;
+            for (const auto& part : delta["tool_calls"]) {
+                auto& call = streamed[part["index"].get<std::size_t>()];
+                call.id += part.value("id", "");
+                if (part.contains("function")) {
+                    call.name += part["function"].value("name", "");
+                    call.arguments += part["function"].value("arguments", "");
+                }
+            }
+        }
+        CHECK(streamed.size() == calls.size());
+        for (std::size_t index = 0; index < calls.size(); ++index) {
+            CHECK(streamed[index].id == calls[index]["id"].get<std::string>());
+            CHECK(streamed[index].name == calls[index]["function"]["name"].get<std::string>());
+            CHECK(streamed[index].arguments == calls[index]["function"]["arguments"].get<std::string>());
+        }
+    }
     std::cout << "completion: " << result["choices"][0]["message"]["content"] << '\n';
     body["stream"] = true; body["stream_options"] = {{"include_usage", true}};
     response = server.post("/v1/chat/completions", body);

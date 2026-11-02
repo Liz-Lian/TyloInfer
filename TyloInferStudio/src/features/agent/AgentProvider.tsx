@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { request } from '../../shared/api/client';
 import { useRuntime } from '../../app/RuntimeProvider';
+import { serverCapabilities } from '../../app/serverCapabilities';
 
 export interface AgentWorkspace { workspaceId: string; title: string; path: string; sessionIds: string[] }
 export interface AgentSession { sessionId: string; running: boolean; blank: boolean; updatedAt?: number; cwd?: string; origin?: string; projections?: { values?: { title?: string | null } } }
@@ -35,7 +36,7 @@ const AgentContext = createContext<AgentContextValue | null>(null);
 /** Preserve Agent state across routes and poll only services that support Agent workspaces. */
 export function AgentProvider({ children }: { children: ReactNode }) {
   const { ready, connectionRevision, instances, runtime } = useRuntime();
-  const available = runtime?.source !== 'native-instances';
+  const available = serverCapabilities(runtime).agent;
   const [state, setState] = useState(empty);
   const [error, setError] = useState('');
   const [startError, setStartError] = useState('');

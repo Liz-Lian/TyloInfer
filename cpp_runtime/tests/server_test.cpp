@@ -438,6 +438,10 @@ void static_files() {
         CHECK(response.status == 200);
         CHECK(response.body == index);
         CHECK(response.header("Content-Type").find("text/html") != std::string::npos);
+        const auto csp = response.header("Content-Security-Policy");
+        CHECK(csp.find("connect-src 'self' https://api.github.com ws: wss:;") != std::string::npos);
+        CHECK(csp.find("connect-src *") == std::string::npos);
+        CHECK(csp.find("script-src 'self';") != std::string::npos);
         const auto head = server.raw("HEAD", path, {{"Accept", "text/html"}});
         CHECK(head.status == 200);
         CHECK(head.body.empty());

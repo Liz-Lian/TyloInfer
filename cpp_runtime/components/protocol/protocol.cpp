@@ -2334,8 +2334,8 @@ std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {
                     if (result.tool_calls.size() <= diff.tool_call_index)
                         result.tool_calls.resize(diff.tool_call_index + 1);
                     auto& call = result.tool_calls[diff.tool_call_index];
-                    call.id += diff.tool_call_delta.id;
-                    call.name += diff.tool_call_delta.name;
+                    if (!diff.tool_call_delta.id.empty()) call.id = diff.tool_call_delta.id;
+                    if (!diff.tool_call_delta.name.empty()) call.name = diff.tool_call_delta.name;
                     call.arguments += diff.tool_call_delta.arguments;
                 }
                 diffs.insert(diffs.end(), std::make_move_iterator(data.diffs.begin()),

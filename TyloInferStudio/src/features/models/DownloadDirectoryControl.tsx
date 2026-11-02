@@ -9,10 +9,13 @@ import { toast } from '../../stores/toastStore';
 import { useSettings } from '../settings/SettingsProvider';
 import { ModelDirectoryDialog } from './ModelDirectoryDialog';
 import { ModelMemoryPressure } from './ModelMemoryPressure';
+import { serverCapabilities } from '../../app/serverCapabilities';
 
+/** Browse the server's download folder and expose cache reclamation only when supported. */
 export function DownloadDirectoryControl({ onDirectoryChange }: { onDirectoryChange(path: string | undefined): void }) {
   const { tr } = useSettings();
-  const { connectionRevision } = useRuntime();
+  const { connectionRevision, runtime } = useRuntime();
+  const capabilities = serverCapabilities(runtime);
   const connectionScope = useConnectionScope();
   const [directory, setDirectory] = useState<string | null>(null);
   const [storage, setStorage] = useState<DownloadDirectoryStatus | null>(null);
@@ -118,10 +121,11 @@ export function DownloadDirectoryControl({ onDirectoryChange }: { onDirectoryCha
       <ModelMemoryPressure required={known ? free : null} available={known ? total : null}
         label={tr('SSD 剩余空间', 'SSD free space')} emptyLabel="--" />
       <label className="download-prefix-reclaim" title={tr('将同盘可回收的 SSD Prefix Cache 计入可下载空间；下载时缩减其预算并按 LRU 驱逐缓存。', 'Include reclaimable SSD prefix cache on this drive in available download space. Downloads reduce its budget and evict least recently used blocks.')}>
-        <input type="checkbox" checked={storage?.evict_prefix_cache ?? false} disabled={!storage || saving || savingReclaim}
+        <input type="checkbox" checked={storage?.evict_prefix_cache ?? false} disabled={!capabilities.cacheReclaim || !storage || saving || savingReclaim}
           onChange={event => void configureReclaim(event.target.checked)} />
         {tr('驱逐 SSD Prefix 预算', 'Reclaim SSD prefix budget')}
       </label>
+      {!capabilities.cacheReclaim && <small>{tr('当前服务暂不支持回收前缀缓存预算。', 'Prefix cache reclamation is unavailable on this server.')}</small>}
     </div>
     </div>
     <ModelDirectoryDialog title={tr('选择下载文件夹', 'Choose download folder')} catalog={{

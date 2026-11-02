@@ -10,12 +10,12 @@ vi.mock('../../app/RuntimeProvider', () => ({ useRuntime: () => runtime }));
 
 const idle: AgentState = { running: false, workspaces: [], sessions: [], models: [], approvals: [] };
 const wrapper = ({ children }: { children: ReactNode }) => <AgentProvider>{children}</AgentProvider>;
-beforeEach(() => { runtime.runtime = null; runtime.ready = true; runtime.connectionRevision = 1; });
+beforeEach(() => { runtime.runtime = {}; runtime.ready = true; runtime.connectionRevision = 1; });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-it('does not poll or start native Agent APIs and rejects workspace operations explicitly', async () => {
+it.each([null, { source: 'native-instances' } as RuntimeStatus])('does not poll or start Agent APIs on a native or uninitialized connection: %j', async status => {
   vi.useFakeTimers();
-  runtime.runtime = { source: 'native-instances' };
+  runtime.runtime = status;
   const fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   const { result } = renderHook(useAgent, { wrapper });

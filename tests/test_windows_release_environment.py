@@ -55,7 +55,10 @@ def test_resource_publication_preserves_old_resources_and_isolates_build_caches(
 $context = New-BuildContext -Output (Join-Path $FixtureRoot 'output') -ScriptDirectory $FixtureRoot
 $other = New-BuildContext -Output $context.OutputDirectory -ScriptDirectory $FixtureRoot
 if ($context.NativeBuildDirectory -eq $other.NativeBuildDirectory) { throw 'Build caches collide' }
+if ($context.TemporaryDirectory -eq $other.TemporaryDirectory) { throw 'Temporary directories collide' }
 Initialize-ReleaseDirectories $context
+if ($env:TEMP -ne $context.TemporaryDirectory -or $env:TMP -ne $context.TemporaryDirectory) { throw 'Temporary tools escaped the build directory' }
+if (-not (Test-Path -LiteralPath $context.TemporaryDirectory -PathType Container)) { throw 'Missing temporary directory' }
 New-Item -ItemType Directory -Path $context.ServerDirectory | Out-Null
 [IO.File]::WriteAllText((Join-Path $context.ServerDirectory 'previous.exe'), 'previous')
 [IO.File]::WriteAllText((Join-Path $context.ServerStageDirectory 'tyloinfer-server.exe'), 'native')
@@ -81,6 +84,17 @@ def test_clean_rejects_without_deleting_existing_files(tmp_path):
     assert result.returncode != 0
     assert '-Clean no longer deletes release trees' in result.stdout + result.stderr
     assert sentinel.read_text() == 'keep'
+
+
+def test_explicit_npm_cache_is_preserved(tmp_path):
+    output = run_helpers(tmp_path, r'''
+$context = New-BuildContext -Output (Join-Path $FixtureRoot 'output') -ScriptDirectory $FixtureRoot
+$env:npm_config_cache = Join-Path $FixtureRoot 'existing cache'
+Initialize-ReleaseDirectories $context
+if ($env:npm_config_cache -ne (Join-Path $FixtureRoot 'existing cache')) { throw 'Explicit npm cache changed' }
+Write-Output 'PASS explicit npm cache'
+''')
+    assert 'PASS explicit npm cache' in output
 
 
 @pytest.mark.skipif(not os.environ.get('TYLOINFER_TEST_NATIVE_SERVER'), reason='Real native service opt-in')
