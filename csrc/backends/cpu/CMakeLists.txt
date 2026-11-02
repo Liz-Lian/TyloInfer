@@ -72,22 +72,22 @@ endif()
 add_library(mfq::cpu-ops ALIAS mfq-cpu-ops)
 
 add_library(mfq-qsa-kv-store STATIC
-    storage/qsa_blocks.cpp
-    storage/qsa_blocks.h
+    ${PROJECT_SOURCE_DIR}/engine/state/qsa_blocks.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/qsa_blocks.h
 )
 target_include_directories(mfq-qsa-kv-store PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/storage
+    ${PROJECT_SOURCE_DIR}/engine/state
 )
 target_link_libraries(mfq-qsa-kv-store PRIVATE Threads::Threads)
 target_compile_features(mfq-qsa-kv-store PUBLIC cxx_std_17)
 set_target_properties(mfq-qsa-kv-store PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(mfq-prefix-blocks STATIC
-    storage/prefix_blocks.cpp
-    storage/prefix_blocks.h
+    ${PROJECT_SOURCE_DIR}/engine/state/session/prefix_blocks.cpp
+    ${PROJECT_SOURCE_DIR}/engine/state/session/prefix_blocks.h
 )
 target_include_directories(mfq-prefix-blocks PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/storage
+    ${PROJECT_SOURCE_DIR}/engine/state/session
 )
 target_link_libraries(mfq-prefix-blocks PRIVATE Threads::Threads)
 target_compile_features(mfq-prefix-blocks PUBLIC cxx_std_17)

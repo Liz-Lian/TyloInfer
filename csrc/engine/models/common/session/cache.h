@@ -2,7 +2,7 @@
 
 #include "backend.h"
 #include "engine/models/common/session/state.h"
-#include "engine/state/sessions.h"
+#include "engine/state/session/cache.h"
 
 #include <cstddef>
 #include <cstdint>

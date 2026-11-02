@@ -6,7 +6,7 @@
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"
 #include "engine/requests/media.h"
-#include "engine/state/prefix_cache.h"
+#include "engine/state/session/prefix_cache.h"
 
 #include <cstddef>
 #include <cstdint>

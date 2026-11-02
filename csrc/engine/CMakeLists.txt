@@ -19,8 +19,8 @@ add_library(mfq-engine STATIC
     requests/processor.cpp
     requests/tokenizer.cpp
     scheduler/table.cpp
-    state/paged.cpp
-    state/prefix_cache.cpp
+    state/session/paged.cpp
+    state/session/prefix_cache.cpp
     state/qsa_sequence.cpp
 )
 add_library(mfq::engine ALIAS mfq-engine)

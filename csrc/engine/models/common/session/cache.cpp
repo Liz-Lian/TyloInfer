@@ -8,9 +8,9 @@
 #include "engine/models/deepseek_v41/session_codec.h"
 #include "engine/models/qwen4_exp/session_codec.h"
 #include "engine/models/common/session/state.h"
-#include "engine/state/prefix_cache.h"
-#include "engine/state/paged.h"
-#include "engine/state/sessions.h"
+#include "engine/state/session/prefix_cache.h"
+#include "engine/state/session/paged.h"
+#include "engine/state/session/cache.h"
 #include "source/model_source.h"
 
 #include <algorithm>

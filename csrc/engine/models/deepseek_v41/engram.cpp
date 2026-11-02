@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/native/stream.h"
 #include "backends/cpu/native/host_parallel.h"
 #include "engine/weights/source/mapped.h"
-#include "backends/cpu/storage/nint_row_cache.h"
+#include "engine/weights/nint_row_cache.h"
 #include "engine/weights/nint_row_pipeline.h"
 #include "engine/weights/tq/source.h"
 #include "engine/weights/tq/rows.h"

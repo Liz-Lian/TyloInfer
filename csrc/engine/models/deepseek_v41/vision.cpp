@@ -1,7 +1,7 @@
 #include "backends/cuda/engine/executor/execution.h"
 #include "vision.h"
 #include "engine/models/common/vision/axial_patch_ops.h"
-#include "engine/state/prefix_cache.h"
+#include "engine/state/session/prefix_cache.h"
 
 namespace mfq::cuda::deepseek_v41_runtime {
 namespace {

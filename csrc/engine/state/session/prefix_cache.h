@@ -1,6 +1,6 @@
 #pragma once
 
-#include "backends/cpu/storage/prefix_blocks.h"
+#include "engine/state/session/prefix_blocks.h"
 
 #include <atomic>
 #include <cstddef>
@@ -21,8 +21,7 @@ struct PagedPrefixCacheMetrics : PrefixBlockStoreMetrics {
     std::uint64_t hit_tokens = 0;
 };
 
-// Prefix identity and matching are logical state; byte ownership belongs to
-// the CPU storage module.
+// Prefix identity and matching use the session block store for byte ownership.
 class PagedPrefixCache {
 public:
     explicit PagedPrefixCache(PrefixBlockStoreConfig config);
