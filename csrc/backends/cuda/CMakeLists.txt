@@ -151,7 +151,7 @@ add_library(mfq-cuda-native-kernels STATIC
     ${TYLOINFER_CUDA_KERNEL_ROOT}/kv_hot_cache.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/shared_gate_fused.cu
     ${TYLOINFER_CUDA_KERNEL_ROOT}/moe/pipeline.cu
-    ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu
+    ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/ggml.cu
 )
 add_library(mfq::cuda-native-kernels ALIAS mfq-cuda-native-kernels)
 if(TYLOINFER_ENABLE_MFQ_COMPAT)
@@ -420,7 +420,6 @@ endfunction()
 function(mfq_configure_cuda_runtime_target target)
     mfq_configure_cuda_backend_target(${target})
     target_include_directories(${target} PRIVATE
-        ${TYLOINFER_CUDA_ROOT}/commands
         ${TYLOINFER_CUDA_ROOT}/engine
     )
     target_link_libraries(${target} PRIVATE
@@ -580,9 +579,9 @@ set(TYLOINFER_CUDA_INSTANTIATION_SOURCES
     ${PROJECT_SOURCE_DIR}/engine/models/qwen4_exp/session_codec.cpp
     ${TYLOINFER_CUDA_ROOT}/engine/executor/mtp.cpp
     ${PROJECT_SOURCE_DIR}/engine/models/minicpmo45/components.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/cli.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/reference.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/minicpmo45.cpp
+    ${PROJECT_SOURCE_DIR}/commands/cli.cpp
+    ${PROJECT_SOURCE_DIR}/commands/reference.cpp
+    ${PROJECT_SOURCE_DIR}/commands/minicpmo45.cpp
     ${TYLOINFER_CUDA_MODEL_SOURCES}
 )
 add_library(mfq-cuda-runtime STATIC
@@ -999,19 +998,19 @@ if(BUILD_TESTING)
     endif()
 endif()
 
-add_library(mfq-cuda-eval STATIC ${TYLOINFER_CUDA_ROOT}/eval/kl.cpp)
+add_library(mfq-cuda-eval STATIC ${PROJECT_SOURCE_DIR}/eval/kl.cpp)
 mfq_configure_cuda_runtime_target(mfq-cuda-eval)
 target_include_directories(mfq-cuda-eval PRIVATE ${TYLOINFER_CUDA_ROOT}/storage)
 target_compile_definitions(mfq-cuda-eval PRIVATE TYLOINFER_NATIVE_CUDA_RUNTIME=1 NOMINMAX)
 target_link_libraries(mfq-cuda-eval PUBLIC mfq-cuda-runtime)
 
 add_library(mfq-cuda-diagnostics STATIC
-    ${TYLOINFER_CUDA_ROOT}/diagnostics/attention_checks.cpp
-    ${TYLOINFER_CUDA_ROOT}/diagnostics/backend_checks.cpp
-    ${TYLOINFER_CUDA_ROOT}/diagnostics/linear_checks.cpp
-    ${TYLOINFER_CUDA_ROOT}/diagnostics/moe_checks.cpp
-    ${TYLOINFER_CUDA_ROOT}/diagnostics/runtime_checks.cpp
-    ${TYLOINFER_CUDA_ROOT}/diagnostics/session_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/attention_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/backend_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/linear_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/moe_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/runtime_checks.cpp
+    ${PROJECT_SOURCE_DIR}/diagnostics/session_checks.cpp
 )
 mfq_configure_cuda_runtime_target(mfq-cuda-diagnostics)
 target_include_directories(mfq-cuda-diagnostics PRIVATE ${TYLOINFER_CUDA_ROOT}/storage)
@@ -1025,8 +1024,8 @@ endif()
 
 if(TARGET mfq-runtime-communication)
     add_executable(mfq-runtime
-        ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
-        ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
+        ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
+        ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
     )
     target_link_libraries(mfq-runtime PRIVATE
         mfq-cuda-runtime mfq-runtime-communication)
@@ -1043,8 +1042,8 @@ if(TARGET mfq-runtime-communication)
 endif()
 
 add_executable(mfq-diagnostics
-    ${TYLOINFER_CUDA_ROOT}/apps/diagnostics_main.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/diagnostics.cpp
+    ${PROJECT_SOURCE_DIR}/apps/diagnostics_main.cpp
+    ${PROJECT_SOURCE_DIR}/commands/diagnostics.cpp
 )
 mfq_configure_cuda_runtime_target(mfq-diagnostics)
 target_include_directories(mfq-diagnostics PRIVATE ${TYLOINFER_CUDA_ROOT}/storage)
@@ -1059,8 +1058,8 @@ set_target_properties(mfq-diagnostics PROPERTIES
 )
 
 add_executable(mfq-eval
-    ${TYLOINFER_CUDA_ROOT}/apps/eval_main.cpp
-    ${TYLOINFER_CUDA_ROOT}/commands/eval.cpp
+    ${PROJECT_SOURCE_DIR}/apps/eval_main.cpp
+    ${PROJECT_SOURCE_DIR}/commands/eval.cpp
 )
 mfq_configure_cuda_runtime_target(mfq-eval)
 target_include_directories(mfq-eval PRIVATE ${TYLOINFER_CUDA_ROOT}/storage)
@@ -1138,14 +1137,14 @@ if(TYLOINFER_BUILD_TORCH_REFERENCE_RUNTIME)
     endif()
     find_package(Torch REQUIRED)
     add_executable(mfq-runtime-torch
-        ${TYLOINFER_CUDA_ROOT}/apps/runtime_main.cpp
-        ${TYLOINFER_CUDA_ROOT}/commands/runtime.cpp
+        ${PROJECT_SOURCE_DIR}/apps/runtime_main.cpp
+        ${PROJECT_SOURCE_DIR}/commands/runtime.cpp
         ${TYLOINFER_CUDA_RUNTIME_OP_SOURCES}
         ${TYLOINFER_CUDA_EXECUTION_SOURCES}
         ${TYLOINFER_CUDA_LOADING_SOURCES}
         ${TYLOINFER_CUDA_INSTANTIATION_SOURCES}
         ${TYLOINFER_MODELS_CUDA_SOURCES}
-        ${TYLOINFER_CUDA_ROOT}/apps/ggml_cuda_compat.cu
+        ${PROJECT_SOURCE_DIR}/engine/backends/cuda/native/ggml.cu
         ${TYLOINFER_CUDA_KERNEL_SOURCES}
     )
     mfq_configure_cuda_runtime_target(mfq-runtime-torch)
