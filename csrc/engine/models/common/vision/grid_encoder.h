@@ -2,7 +2,9 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/models/common/vision/weights.h"
-#include "ops/vision/vision.h"
+#include "engine/backends/cuda/ops/vision/attention.h"
+#include "engine/models/common/gated_mlp.h"
+#include "engine/models/common/transformer_layer.h"
 #include "engine/models/common/grid_vision_model.h"
 #include "engine/models/common/vision/grid_vision.h"
 #include "engine/requests/media.h"
@@ -38,14 +40,71 @@ class CudaGridVisionEncoder {
     bool host_weights() const noexcept { return !patch_weight_.is_cuda(); }
 
   private:
+    struct Attention {
+        vision::Affine qkv;
+        vision::Affine output;
+        std::int64_t hidden = 0;
+        std::int64_t heads = 0;
+        std::int64_t head_dim = 0;
+        double theta = 10'000.0;
+
+        Tensor operator()(
+            const Projector& projector,
+            const Tensor& input,
+            const std::vector<std::int32_t>& positions,
+            const std::vector<std::int32_t>& segment_lengths) const {
+            const std::int64_t tokens = input.size(0);
+            auto projected = qkv(projector, input).reshape({tokens, 3, heads, head_dim});
+            auto query = vision::apply_axial_rope(projected.select(1, 0), positions, theta);
+            auto key = vision::apply_axial_rope(projected.select(1, 1), positions, theta);
+            auto value = projected.select(1, 2);
+            auto attended = vision::segmented_attention(query, key, value, segment_lengths);
+            return output(projector, attended.reshape({tokens, hidden}));
+        }
+    };
+
+    struct Layer {
+        vision::LayerNorm norm1;
+        Attention attention;
+        vision::LayerNorm norm2;
+        vision::Affine mlp_up, mlp_down;
+
+        template <class Visitor>
+        void visit_tensors(Visitor visit) {
+            vision::visit_tensors(norm1, visit);
+            vision::visit_tensors(norm2, visit);
+            vision::visit_tensors(attention.qkv, visit);
+            vision::visit_tensors(attention.output, visit);
+            vision::visit_tensors(mlp_up, visit);
+            vision::visit_tensors(mlp_down, visit);
+        }
+
+        Tensor operator()(const Projector& projector, const Tensor& input,
+                          const std::vector<std::int32_t>& positions,
+                          const std::vector<std::int32_t>& segment_lengths) const {
+            return mfq::models::pre_norm_layer(
+                input, [&](const Tensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
+                [&](Tensor x) { return attention(projector, x, positions, segment_lengths); },
+                [&](Tensor x) {
+                    return mfq::models::mlp(
+                        std::move(x), [&](Tensor value) { return mlp_up(projector, std::move(value)); },
+                        [](Tensor value) { return mfq_tensor_backend::gelu(value, "tanh"); },
+                        [&](Tensor value) { return mlp_down(projector, std::move(value)); });
+                },
+                [](Tensor residual, Tensor branch) {
+                    return residual + branch.to(residual.scalar_type());
+                });
+        }
+    };
+
     CudaGridVisionEncoder(GridVisionConfig config, Tensor patch_weight, Tensor patch_bias,
-                          Tensor position_weight, std::vector<vision::Layer> blocks);
+                          Tensor position_weight, std::vector<Layer> blocks);
 
     GridVisionConfig config_;
     Tensor patch_weight_;
     Tensor patch_bias_;
     Tensor position_weight_;
-    std::vector<vision::Layer> blocks_;
+    std::vector<Layer> blocks_;
 };
 
 class CudaGridVisionPromptComponent {

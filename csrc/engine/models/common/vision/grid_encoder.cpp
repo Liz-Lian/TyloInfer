@@ -1,4 +1,4 @@
-#include "engine/models/common/vision/grid_ops.h"
+#include "engine/models/common/vision/grid_encoder.h"
 
 #include "engine/models/common/vision/load.h"
 #include "engine/backends/cuda/executor/options.h"
@@ -51,10 +51,10 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
         position_weight.size(1) != hidden) {
         throw std::runtime_error("grid-ViT learned position table shape mismatch");
     }
-    std::vector<vision::Layer> blocks;
+    std::vector<Layer> blocks;
     blocks.reserve(static_cast<size_t>(config.depth));
     for (size_t index = 0; index < static_cast<size_t>(config.depth); ++index) {
-        vision::Layer block{
+        Layer block{
             load_norm(weights, GridVisionTensorRole::block_norm1_weight,
                                     GridVisionTensorRole::block_norm1_bias, hidden,
                                     config.layer_norm_eps, index),
@@ -187,7 +187,7 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
 
 CudaGridVisionEncoder::CudaGridVisionEncoder(
     GridVisionConfig config, Tensor patch_weight, Tensor patch_bias, Tensor position_weight,
-    std::vector<vision::Layer> blocks)
+    std::vector<Layer> blocks)
     : config_(std::move(config)),
       patch_weight_(std::move(patch_weight)),
       patch_bias_(std::move(patch_bias)),

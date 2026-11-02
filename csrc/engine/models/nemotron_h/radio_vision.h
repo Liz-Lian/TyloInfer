@@ -3,7 +3,7 @@
 #include "engine/models/common/prompt.h"
 
 #include "engine/backends/cuda/ops/norm/rms.h"
-#include "ops/vision/block.h"
+#include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/models/common/vision/load.h"
 #include "engine/models/nemotron_h/vision.h"
 #include "engine/weights/loader.h"
@@ -13,6 +13,8 @@
 #include "engine/models/common/model_graph.h"
 #include "engine/state/session/prefix_cache.h"
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -107,12 +109,62 @@ class RadioEncoder {
     const RadioVisionConfig &config() const noexcept { return config_; }
 
   private:
-    static VisionBlock load_layer(const mfq::cuda::weight_loader::Loader& weights,
-                                  const RadioVisionConfig &config, std::int64_t index) {
+    struct Layer {
+        BiasLinear query;
+        BiasLinear key;
+        BiasLinear value;
+        BiasLinear output;
+        mfq_tensor_backend::Tensor norm1_weight;
+        mfq_tensor_backend::Tensor norm1_bias;
+        mfq_tensor_backend::Tensor norm2_weight;
+        mfq_tensor_backend::Tensor norm2_bias;
+        BiasLinear fc1;
+        BiasLinear fc2;
+        int64_t heads = 0;
+        int64_t head_dim = 0;
+        double layer_norm_eps = 1e-6;
+
+        mfq_tensor_backend::Tensor forward(
+                const Projector& projector, mfq_tensor_backend::Tensor input,
+                MfqOptional<mfq_tensor_backend::Tensor> mask = mfq_nullopt) const {
+            using Tensor = mfq_tensor_backend::Tensor;
+            if (heads <= 0 || head_dim <= 0) {
+                throw std::runtime_error("vision block head geometry is invalid");
+            }
+            const int64_t batch = input.size(0);
+            const int64_t tokens = input.size(1);
+            auto split_heads = [&](Tensor value) {
+                return value.reshape({batch, tokens, heads, head_dim}).transpose(1, 2).contiguous();
+            };
+            const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
+            auto normalized = vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
+            auto q = split_heads(query.forward(projector, normalized));
+            auto k = split_heads(key.forward(projector, normalized));
+            auto v = split_heads(value.forward(projector, normalized));
+            auto attended = vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
+            auto branch = output.forward(projector, attended.transpose(1, 2).reshape(
+                {batch, tokens, heads * head_dim}));
+            input = (input + branch.to(input.scalar_type())).contiguous();
+            normalized = vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
+            branch = fc2.forward(projector,
+                mfq_tensor_backend::gelu(fc1.forward(projector, normalized), "none"));
+            return (input + branch.to(input.scalar_type())).contiguous();
+        }
+    };
+
+    static std::array<BiasLinear, 3> split_fused_qkv(const BiasLinear &fused, int64_t width) {
+        if (width <= 0 || fused.weight.out() != 3 * width) {
+            throw std::runtime_error("fused vision qkv projection is not [3*w, hidden]");
+        }
+        return {fused.rows(0, width), fused.rows(width, width), fused.rows(2 * width, width)};
+    }
+
+    static Layer load_layer(const mfq::cuda::weight_loader::Loader& weights,
+                            const RadioVisionConfig &config, std::int64_t index) {
         const std::string prefix = "vision.block." + std::to_string(index);
         const auto fused = mfq::cuda::vision::load_biased(weights, prefix + ".attention.qkv");
         const auto split = split_fused_qkv(fused, config.hidden_size);
-        VisionBlock block;
+        Layer block;
         block.query = split[0];
         block.key = split[1];
         block.value = split[2];
@@ -126,8 +178,6 @@ class RadioEncoder {
         block.heads = config.num_heads;
         block.head_dim = config.head_dim();
         block.layer_norm_eps = config.layer_norm_eps;
-        // RADIO's `hidden_act: "gelu"` is the exact erf form, not SigLIP's tanh.
-        block.activation = VisionActivation::gelu_erf;
         const bool geometry_ok =
             block.output.weight.out() == config.hidden_size &&
             block.output.weight.neuron_len() == config.hidden_size &&
@@ -180,7 +230,7 @@ class RadioEncoder {
     QuantLinear patch_projection;
     Tensor position_embedding;
     Tensor cls_register_token;
-    std::vector<VisionBlock> layers;
+    std::vector<Layer> layers;
     RadioVisionConfig config_;
 };
 

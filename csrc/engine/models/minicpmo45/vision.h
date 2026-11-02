@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/vision/block.h"
+#include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/models/common/vision/load.h"
 #include "engine/weights/format.h"
 #include "engine/weights/loader.h"
@@ -17,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 inline constexpr const char *MINICPMO45_RESAMPLER_POS_EMBED_ASSET =
@@ -40,36 +41,76 @@ inline mfq_tensor_backend::Tensor minicpmo45_layer_norm(
     return mfq::cuda::vision_layer_norm(std::move(input), weight, bias, eps);
 }
 
-// Load one SigLIP block into the shared pre-LayerNorm vision block.  SigLIP
-// keeps q/k/v separate and approximates GELU with tanh.
-inline mfq::cuda::VisionBlock load_minicpmo45_vision_block(
-        const mfq::cuda::weight_loader::Loader& weights, int index,
-        int64_t heads, int64_t head_dim) {
-    const std::string prefix = "vision.block." + std::to_string(index);
-    mfq::cuda::VisionBlock result;
-    result.query = mfq::cuda::vision::load_biased(weights, prefix + ".attention.query");
-    result.key = mfq::cuda::vision::load_biased(weights, prefix + ".attention.key");
-    result.value = mfq::cuda::vision::load_biased(weights, prefix + ".attention.value");
-    result.output = mfq::cuda::vision::load_biased(weights, prefix + ".attention.output");
-    result.norm1_weight = weights.native(prefix + ".norm1.weight");
-    result.norm1_bias = weights.native(prefix + ".norm1.bias");
-    result.norm2_weight = weights.native(prefix + ".norm2.weight");
-    result.norm2_bias = weights.native(prefix + ".norm2.bias");
-    result.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
-    result.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
-    result.heads = heads;
-    result.head_dim = head_dim;
-    result.layer_norm_eps = 1e-6;
-    result.activation = mfq::cuda::VisionActivation::gelu_tanh;
-    return result;
-}
-
 struct MiniCPMO45VisionEncoder {
+    struct Layer {
+        mfq::cuda::BiasLinear query;
+        mfq::cuda::BiasLinear key;
+        mfq::cuda::BiasLinear value;
+        mfq::cuda::BiasLinear output;
+        mfq_tensor_backend::Tensor norm1_weight;
+        mfq_tensor_backend::Tensor norm1_bias;
+        mfq_tensor_backend::Tensor norm2_weight;
+        mfq_tensor_backend::Tensor norm2_bias;
+        mfq::cuda::BiasLinear fc1;
+        mfq::cuda::BiasLinear fc2;
+        int64_t heads = 0;
+        int64_t head_dim = 0;
+        double layer_norm_eps = 1e-6;
+
+        mfq_tensor_backend::Tensor forward(
+                const mfq::cuda::Projector& projector, mfq_tensor_backend::Tensor input,
+                MfqOptional<mfq_tensor_backend::Tensor> mask = mfq_nullopt) const {
+            using Tensor = mfq_tensor_backend::Tensor;
+            if (heads <= 0 || head_dim <= 0) {
+                throw std::runtime_error("vision block head geometry is invalid");
+            }
+            const int64_t batch = input.size(0);
+            const int64_t tokens = input.size(1);
+            auto split_heads = [&](Tensor value) {
+                return value.reshape({batch, tokens, heads, head_dim}).transpose(1, 2).contiguous();
+            };
+            const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
+            auto normalized = mfq::cuda::vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
+            auto q = split_heads(query.forward(projector, normalized));
+            auto k = split_heads(key.forward(projector, normalized));
+            auto v = split_heads(value.forward(projector, normalized));
+            auto attended = mfq::cuda::vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
+            auto branch = output.forward(projector, attended.transpose(1, 2).reshape(
+                {batch, tokens, heads * head_dim}));
+            input = (input + branch.to(input.scalar_type())).contiguous();
+            normalized = mfq::cuda::vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
+            branch = fc2.forward(projector,
+                mfq_tensor_backend::gelu(fc1.forward(projector, normalized), "tanh"));
+            return (input + branch.to(input.scalar_type())).contiguous();
+        }
+    };
+
+    static Layer load_layer(
+            const mfq::cuda::weight_loader::Loader& weights, int index,
+            int64_t heads, int64_t head_dim) {
+        const std::string prefix = "vision.block." + std::to_string(index);
+        Layer result;
+        result.query = mfq::cuda::vision::load_biased(weights, prefix + ".attention.query");
+        result.key = mfq::cuda::vision::load_biased(weights, prefix + ".attention.key");
+        result.value = mfq::cuda::vision::load_biased(weights, prefix + ".attention.value");
+        result.output = mfq::cuda::vision::load_biased(weights, prefix + ".attention.output");
+        result.norm1_weight = weights.native(prefix + ".norm1.weight");
+        result.norm1_bias = weights.native(prefix + ".norm1.bias");
+        result.norm2_weight = weights.native(prefix + ".norm2.weight");
+        result.norm2_bias = weights.native(prefix + ".norm2.bias");
+        result.fc1 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.up");
+        result.fc2 = mfq::cuda::vision::load_biased(weights, prefix + ".mlp.down");
+        result.heads = heads;
+        result.head_dim = head_dim;
+        result.layer_norm_eps = 1e-6;
+        return result;
+    }
+
     mfq_tensor_backend::Tensor patch_weight;
     mfq_tensor_backend::Tensor patch_bias;
     mfq_tensor_backend::Tensor position_embedding;
     // SigLIP blocks: 16 heads of 1152/16 = 72 features each.
-    std::vector<mfq::cuda::VisionBlock> layers;
+    std::vector<Layer> layers;
     mfq_tensor_backend::Tensor post_norm_weight;
     mfq_tensor_backend::Tensor post_norm_bias;
     int64_t patch_size = 14;
@@ -87,7 +128,7 @@ struct MiniCPMO45VisionEncoder {
         result.post_norm_bias = weights.native("vision.output_norm.bias");
         result.layers.reserve(27);
         for (int index = 0; index < 27; ++index) {
-            result.layers.push_back(load_minicpmo45_vision_block(weights, index, 16, 72));
+            result.layers.push_back(load_layer(weights, index, 16, 72));
         }
         if (result.patch_weight.sizes().vec() != std::vector<int64_t>({1152, 3, 14, 14}) ||
             result.position_embedding.sizes().vec() != std::vector<int64_t>({4900, 1152})) {

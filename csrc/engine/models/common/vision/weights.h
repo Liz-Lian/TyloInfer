@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ops/vision/vision.h"
+#include "engine/backends/cuda/ops/projection/bias.h"
+#include "engine/backends/cuda/ops/norm/layer.h"
 #include "engine/weights/moe/expert_cache.h"
 
 #include <cstddef>
@@ -74,16 +75,6 @@ template <class Visitor>
 void visit_tensors(LayerNorm& norm, Visitor visit) {
     visit(norm.weight);
     visit(norm.bias);
-}
-
-template <class Visitor>
-void visit_tensors(Layer& layer, Visitor visit) {
-    visit_tensors(layer.norm1, visit);
-    visit_tensors(layer.norm2, visit);
-    visit_tensors(layer.attention.qkv, visit);
-    visit_tensors(layer.attention.output, visit);
-    visit_tensors(layer.mlp_up, visit);
-    visit_tensors(layer.mlp_down, visit);
 }
 
 template <class Weights, class Visitor>

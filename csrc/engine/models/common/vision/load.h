@@ -1,8 +1,8 @@
 #pragma once
 
 #include "engine/weights/loader.h"
-#include "ops/vision/vision.h"
-#include "ops/vision/block.h"
+#include "engine/backends/cuda/ops/projection/bias.h"
+#include "engine/backends/cuda/ops/norm/layer.h"
 
 #include <cstdint>
 #include <stdexcept>

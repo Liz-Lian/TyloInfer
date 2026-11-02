@@ -1,10 +1,7 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/projection/projection.h"
+#include "backend.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
-#include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
-#include "engine/models/common/gated_mlp.h"
-#include "engine/models/common/transformer_layer.h"
 
 #include <cmath>
 #include <cstdint>
@@ -12,45 +9,26 @@
 #include <utility>
 #include <vector>
 
+namespace mfq::cuda {
+
+inline mfq_tensor_backend::Tensor vision_non_causal_attention(
+        mfq_tensor_backend::Tensor query, mfq_tensor_backend::Tensor key,
+        mfq_tensor_backend::Tensor value,
+        MfqOptional<mfq_tensor_backend::Tensor> additive_mask, double scale) {
+    auto scores = mfq_tensor_backend::matmul(query, key.transpose(-2, -1)) * scale;
+    if (additive_mask.has_value()) {
+        scores = scores + additive_mask.value().to(scores.scalar_type());
+    }
+    auto probabilities = mfq_tensor_backend::softmax(scores, -1, mfq_tensor_backend::kFloat32)
+                             .to(value.scalar_type());
+    return mfq_tensor_backend::matmul(probabilities, value).contiguous();
+}
+
+} // namespace mfq::cuda
+
 namespace mfq::cuda::vision {
 
 using Tensor = mfq_tensor_backend::Tensor;
-
-struct Affine {
-    QuantLinear linear;
-    Tensor bias;
-
-    Tensor operator()(const Projector& projector, Tensor input) const {
-        auto output = projector.run(linear, std::move(input));
-        return bias.defined()
-            ? output + bias.to(output.scalar_type())
-            : output;
-    }
-};
-
-struct RmsNorm {
-    Tensor weight;
-    double epsilon = 1e-6;
-
-    template <class Visitor>
-    void visit_tensors(Visitor visit) {
-        visit(weight);
-    }
-
-    Tensor operator()(const Tensor& input) const {
-        if (input.dim() == 0 || input.size(-1) != weight.size(0)) {
-            throw std::runtime_error("vision RMSNorm input width mismatch");
-        }
-        const auto shape = input.sizes().vec();
-        auto normalized = rms_norm_cuda(
-            input.reshape({-1, shape.back()}).to(mfq_tensor_backend::kFloat32),
-            weight,
-            epsilon);
-        return normalized.reshape(shape)
-            .to(input.scalar_type())
-            .contiguous();
-    }
-};
 
 inline Tensor apply_axial_rope(
     const Tensor& input,
@@ -141,66 +119,5 @@ inline Tensor segmented_attention(
         ? outputs.front()
         : mfq_tensor_backend::cat(outputs, 0);
 }
-
-struct Attention {
-    Affine qkv;
-    Affine output;
-    std::int64_t hidden = 0;
-    std::int64_t heads = 0;
-    std::int64_t head_dim = 0;
-    double theta = 10'000.0;
-
-    Tensor operator()(
-        const Projector& projector,
-        const Tensor& input,
-        const std::vector<std::int32_t>& positions,
-        const std::vector<std::int32_t>& segment_lengths) const {
-        const std::int64_t tokens = input.size(0);
-        auto projected = qkv(projector, input).reshape({tokens, 3, heads, head_dim});
-        auto query = apply_axial_rope(projected.select(1, 0), positions, theta);
-        auto key = apply_axial_rope(projected.select(1, 1), positions, theta);
-        auto value = projected.select(1, 2);
-        auto attended = segmented_attention(query, key, value, segment_lengths);
-        return output(projector, attended.reshape({tokens, hidden}));
-    }
-};
-
-inline Tensor gelu_tanh(const Tensor& input) {
-    return mfq_tensor_backend::gelu(input, "tanh");
-}
-
-struct LayerNorm {
-    Tensor weight, bias;
-    double epsilon = 1e-6;
-
-    Tensor operator()(const Tensor& input) const {
-        if (input.dim() == 0 || input.size(-1) != weight.size(0))
-            throw std::runtime_error("grid-ViT LayerNorm input width mismatch");
-        return mfq_tensor_backend::layer_norm(input, {weight.size(0)}, weight, bias, epsilon);
-    }
-};
-
-struct Layer {
-    LayerNorm norm1;
-    Attention attention;
-    LayerNorm norm2;
-    Affine mlp_up, mlp_down;
-
-    Tensor operator()(const Projector& projector, const Tensor& input,
-                      const std::vector<std::int32_t>& positions,
-                      const std::vector<std::int32_t>& segment_lengths) const {
-        return mfq::models::pre_norm_layer(
-            input, [&](const Tensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
-            [&](Tensor x) { return attention(projector, x, positions, segment_lengths); },
-            [&](Tensor x) {
-                return mfq::models::mlp(
-                    std::move(x), [&](Tensor value) { return mlp_up(projector, std::move(value)); },
-                    gelu_tanh, [&](Tensor value) { return mlp_down(projector, std::move(value)); });
-            },
-            [](Tensor residual, Tensor branch) {
-                return residual + branch.to(residual.scalar_type());
-            });
-    }
-};
 
 } // namespace mfq::cuda::vision

@@ -3,7 +3,7 @@
 
 #include "engine/executor/loaded.h"
 #include "engine/engine.h"
-#include "engine/models/common/vision/grid_ops.h"
+#include "engine/models/common/vision/grid_encoder.h"
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/mtp.h"
 #include "engine/backends/cuda/native/profile.h"

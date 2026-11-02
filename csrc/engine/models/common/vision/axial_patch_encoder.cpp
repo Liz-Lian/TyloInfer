@@ -1,5 +1,6 @@
-#include "engine/models/common/vision/axial_patch_ops.h"
+#include "engine/models/common/vision/axial_patch_encoder.h"
 #include "engine/models/common/vision/load.h"
+#include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/models/common/vision/weights.h"
 #include "engine/generation/sequence.h"
 
