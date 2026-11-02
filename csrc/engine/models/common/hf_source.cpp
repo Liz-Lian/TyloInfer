@@ -5,26 +5,20 @@
 #include "engine/weights/source/safetensors.h"
 #include "source/read.h"
 
-#include "engine/weights/encoding/dense_blob.h"
-#include "engine/weights/encoding/fp8_sq_blob.h"
-#include "engine/weights/encoding/mx_blob.h"
-#include "engine/weights/encoding/quant/mfe_blob.h"
 #include "engine/models/common/hf.h"
-#include "engine/weights/source/hf.h"
-#include "engine/weights/mlx.h"
 #include "engine/models/common/mlx_names.h"
+#include "engine/weights/hf.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cstdlib>
 #include <charconv>
-#include <limits>
+#include <cstdlib>
 #include <map>
-#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <stdexcept>
 
 namespace mfq::models {
 namespace {
@@ -38,39 +32,6 @@ constexpr std::uint32_t kMaxRecords = std::uint32_t{1} << 20;
 bool ends_with(std::string_view value, std::string_view suffix) {
     return value.size() >= suffix.size() &&
         value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-std::uint64_t checked_add(
-    std::uint64_t left,
-    std::uint64_t right,
-    std::string_view what) {
-    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
-        throw std::overflow_error(std::string(what) + " byte size overflow");
-    }
-    return left + right;
-}
-
-std::uint64_t checked_product(
-    const std::vector<std::int64_t>& shape,
-    std::uint64_t item_size,
-    const std::string& name) {
-    auto result = item_size;
-    for (const auto dimension : shape) {
-        if (dimension <= 0 ||
-            static_cast<std::uint64_t>(dimension) >
-                std::numeric_limits<std::uint64_t>::max() / result) {
-            throw std::runtime_error("invalid Safetensors tensor shape: " + name);
-        }
-        result *= static_cast<std::uint64_t>(dimension);
-    }
-    return result;
-}
-
-std::uint64_t dense_item_size(std::string_view dtype) {
-    if (dtype == "BF16" || dtype == "F16") return 2;
-    if (dtype == "F32" || dtype == "I32") return 4;
-    if (dtype == "I64") return 8;
-    return 0;
 }
 
 } // namespace
@@ -258,19 +219,6 @@ HfSource::HfSource(std::filesystem::path root, std::string source_prefix)
         }
         return candidates;
     };
-    const auto find_scale = [&](const std::string& source_name,
-                                const std::string& canonical_name,
-                                const auto& accepted) {
-        for (const auto& candidate :
-             scale_candidates(source_name, canonical_name)) {
-            const auto* tensor = impl_->files.find(candidate);
-            if (tensor != nullptr && accepted(tensor->dtype)) {
-                return candidate;
-            }
-        }
-        return std::string{};
-    };
-
     std::unordered_set<std::string> consumed_scales;
     json mlx_quantization;
     if (has_asset(kModelConfigAsset)) {
@@ -285,118 +233,17 @@ HfSource::HfSource(std::filesystem::path root, std::string source_prefix)
     for (const auto& [canonical, source_name] : aliases) {
         const auto* values = impl_->files.find(source_name);
         if (values == nullptr || values->dtype == "F8_E8M0") continue;
-        if (!values->shape) {
-            throw std::runtime_error("HF tensor shape is missing: " + source_name);
-        }
-
-        hf::Record record;
-        record.metadata.name = canonical;
-        record.metadata.stored_dtype = values->dtype;
-        record.metadata.shape = values->shape;
-        const auto item_size = dense_item_size(values->dtype);
-        if (values->dtype == "U32") {
-            const auto binding = mlx_affine_binding(
-                impl_->files, mlx_quantization, *values);
-            const auto& layout = binding.layout;
-            record.metadata.dtype = "MLX-AFFINE";
-            record.metadata.shape = layout.shape;
-            record.segments.push_back({0, binding.prefix, {}, 0, 0});
-            record.segments.push_back({layout.prefix_bytes, {}, source_name, 0, layout.values_bytes});
-            record.segments.push_back({layout.scales_offset(), {}, binding.scales, 0, layout.scales_bytes});
-            record.segments.push_back({layout.biases_offset(), {}, binding.biases, 0, layout.scales_bytes});
-            record.metadata.nbytes = layout.total_bytes();
-            consumed_scales.insert(binding.scales); consumed_scales.insert(binding.biases);
-        } else if (item_size != 0) {
-            if (checked_product(*values->shape, item_size, source_name) !=
-                values->nbytes) {
-                throw std::runtime_error(
-                    "dense Safetensors byte size mismatch: " + source_name);
+        const auto dense_shape = values->shape
+            ? mlx_hf_tensor_shape(canonical, *values->shape)
+            : std::vector<std::int64_t>{};
+        auto record = hf::prepare(
+            impl_->files, *values, canonical, dense_shape,
+            scale_candidates(source_name, canonical), mlx_quantization);
+        for (const auto& segment : record.segments) {
+            if (!segment.source_name.empty() &&
+                segment.source_name != source_name) {
+                consumed_scales.insert(segment.source_name);
             }
-            record.metadata.dtype = values->dtype;
-            record.metadata.shape = mlx_hf_tensor_shape(canonical, *values->shape);
-            auto prefix = dense::prefix(*record.metadata.shape);
-            record.segments.push_back({0, std::move(prefix), {}, 0, 0});
-            const auto values_offset = record.segments.front().inline_bytes.size();
-            record.segments.push_back({
-                values_offset, {}, source_name, 0, values->nbytes});
-            record.metadata.nbytes = checked_add(
-                values_offset, values->nbytes, "dense tensor");
-        } else if (values->dtype == "I8" || values->dtype == "F8_E4M3" ||
-                   values->dtype == "F8_E4M3FN") {
-            if (checked_product(*values->shape, 1, source_name) !=
-                values->nbytes) {
-                throw std::runtime_error(
-                    "native FP8/MX values byte size mismatch: " + source_name);
-            }
-            auto logical_shape = *values->shape;
-            std::string scale_name;
-            if (values->dtype != "I8") {
-                scale_name = find_scale(
-                    source_name, canonical, [](std::string_view dtype) {
-                        return dtype == "BF16" || dtype == "F16" ||
-                            dtype == "F32";
-                    });
-            }
-            if (!scale_name.empty()) {
-                record.metadata.dtype = "FP8-128SQ";
-            } else {
-                scale_name = find_scale(
-                    source_name, canonical, [](std::string_view dtype) {
-                        return dtype == "F8_E8M0";
-                    });
-                if (scale_name.empty()) {
-                    throw std::runtime_error(
-                        "native FP8/MX tensor has no supported scale binding: " +
-                        source_name);
-                }
-                if (values->dtype == "I8") {
-                    if (logical_shape.size() != 2 || logical_shape[1] >
-                            std::numeric_limits<std::int64_t>::max() / 2) {
-                        throw std::runtime_error(
-                            "invalid native MXFP4 tensor shape: " + source_name);
-                    }
-                    logical_shape[1] *= 2;
-                    record.metadata.dtype = "MXFP4";
-                } else {
-                    record.metadata.dtype = "MXFP8";
-                }
-            }
-            record.metadata.stored_dtype = record.metadata.dtype;
-            record.metadata.shape = logical_shape;
-            const auto* scales = impl_->files.find(scale_name);
-            if (scales == nullptr || !scales->shape) {
-                throw std::runtime_error("native FP8/MX scale shape is missing: " +
-                                         scale_name);
-            }
-            const auto scale_item_size = dense_item_size(scales->dtype);
-            const bool block_fp8 = record.metadata.dtype == "FP8-128SQ";
-            const auto expected_scale_bytes = block_fp8
-                ? checked_product(*scales->shape, scale_item_size, scale_name)
-                : checked_product(*scales->shape, 1, scale_name);
-            if ((block_fp8 && scale_item_size == 0) ||
-                expected_scale_bytes != scales->nbytes) {
-                throw std::runtime_error(
-                    "native FP8/MX scale byte size mismatch: " + scale_name);
-            }
-            auto prefix = record.metadata.dtype == "FP8-128SQ"
-                ? fp8sq::block128_prefix(
-                    logical_shape, scales->dtype, *scales->shape, source_name)
-                : mx::prefix(record.metadata.dtype, logical_shape,
-                             *values->shape, *scales->shape, source_name);
-            const auto values_offset = prefix.size();
-            const auto scales_offset = checked_add(
-                values_offset, values->nbytes, "native FP8/MX tensor");
-            record.segments.push_back({0, std::move(prefix), {}, 0, 0});
-            record.segments.push_back({
-                values_offset, {}, source_name, 0, values->nbytes});
-            record.segments.push_back({
-                scales_offset, {}, scale_name, 0, scales->nbytes});
-            record.metadata.nbytes = checked_add(
-                scales_offset, scales->nbytes, "native FP8/MX tensor");
-            consumed_scales.insert(scale_name);
-        } else {
-            throw std::runtime_error("unsupported full-precision HF dtype " +
-                                     values->dtype + ": " + source_name);
         }
         if (!impl_->records.emplace(canonical, std::move(record)).second) {
             throw std::runtime_error("duplicate canonical HF tensor: " + canonical);
@@ -418,10 +265,11 @@ HfSource::HfSource(std::filesystem::path root, std::string source_prefix)
     }
 
     struct Projection {
-        std::map<std::size_t, std::string> experts;
+        std::map<std::size_t, const hf::Record*> experts;
     };
     std::map<std::string, Projection> projections;
-    const auto collect = [&](std::string_view canonical) {
+    const auto collect = [&](const hf::Record& record) {
+        const std::string_view canonical = record.metadata.name;
         constexpr std::string_view marker = ".mlp.experts.";
         const auto marker_offset = canonical.find(marker);
         if (marker_offset == std::string_view::npos) return;
@@ -443,85 +291,17 @@ HfSource::HfSource(std::filesystem::path root, std::string source_prefix)
         }
         const auto aggregate = std::string(canonical.substr(0, marker_offset)) +
             std::string(marker) + std::string(projection) + ".weight";
-        projections[aggregate].experts.emplace(expert, std::string(canonical));
+        projections[aggregate].experts.emplace(expert, &record);
     };
-    for (const auto& [name, unused] : impl_->records) {
+    for (const auto& [unused, record] : impl_->records) {
         static_cast<void>(unused);
-        collect(name);
+        collect(record);
     }
 
     for (const auto& [name, projection] : projections) {
         if (impl_->records.find(name) != impl_->records.end() ||
             projection.experts.empty()) continue;
-        const auto expert_count = projection.experts.rbegin()->first + 1;
-        if (projection.experts.size() != expert_count) {
-            throw std::runtime_error(
-                "native HF expert projection has missing expert IDs: " + name);
-        }
-        hf::Record aggregate;
-        aggregate.metadata.name = name;
-        aggregate.metadata.dtype = "MFE";
-        aggregate.metadata.stored_dtype = "MFE";
-        std::string dtype;
-        std::vector<std::int64_t> shape;
-        std::uint64_t logical_offset = 0;
-        const auto append_inline = [&](std::vector<std::byte> bytes) {
-            const auto count = bytes.size();
-            aggregate.segments.push_back({
-                logical_offset, std::move(bytes), {}, 0, count});
-            logical_offset = checked_add(
-                logical_offset, count, "virtual MFE metadata");
-        };
-        const auto append_source_segment = [&](const hf::Segment& segment) {
-            if (!segment.inline_bytes.empty()) {
-                append_inline(segment.inline_bytes);
-            } else {
-                aggregate.segments.push_back({
-                    logical_offset, {}, segment.source_name,
-                    segment.source_offset, segment.nbytes});
-                logical_offset = checked_add(
-                    logical_offset, segment.nbytes, "virtual MFE tensor");
-            }
-        };
-
-        for (const auto& [expert, tensor_name] : projection.experts) {
-            const auto& record = impl_->records.at(tensor_name);
-            if (!record.metadata.shape || record.metadata.shape->size() != 2 ||
-                record.segments.empty()) {
-                throw std::runtime_error(
-                    "native HF expert must be rank two: " + tensor_name);
-            }
-            if (dtype.empty()) {
-                dtype = record.metadata.dtype;
-                shape = *record.metadata.shape;
-                if (shape[0] <= 0 || shape[1] <= 0 ||
-                    shape[0] > std::numeric_limits<std::uint32_t>::max() ||
-                    shape[1] > std::numeric_limits<std::uint32_t>::max()) {
-                    throw std::runtime_error(
-                        "native HF expert geometry exceeds MFE: " + tensor_name);
-                }
-                const auto output = static_cast<std::uint32_t>(shape[0]);
-                const auto input = static_cast<std::uint32_t>(shape[1]);
-                append_inline(mfe::header(
-                    static_cast<std::uint32_t>(expert_count), output, input,
-                    static_cast<std::uint32_t>(expert_count)));
-            } else if (dtype != record.metadata.dtype ||
-                       shape != *record.metadata.shape) {
-                throw std::runtime_error(
-                    "native HF expert projection has mixed geometry: " + name);
-            }
-
-            auto pool = mfe::expert_prefix(
-                static_cast<std::int32_t>(expert), dtype, record.metadata.nbytes);
-            pool.insert(pool.end(), record.segments.front().inline_bytes.begin(),
-                        record.segments.front().inline_bytes.end());
-            append_inline(std::move(pool));
-            for (std::size_t index = 1; index < record.segments.size(); ++index) {
-                append_source_segment(record.segments[index]);
-            }
-        }
-        aggregate.metadata.nbytes = logical_offset;
-        impl_->records.emplace(name, std::move(aggregate));
+        impl_->records.emplace(name, hf::experts(name, projection.experts));
     }
 
     if (impl_->records.size() > kMaxRecords) {

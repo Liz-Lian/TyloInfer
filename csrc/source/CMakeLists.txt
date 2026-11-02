@@ -8,6 +8,8 @@ add_library(mfq-model-source STATIC
     ${PROJECT_SOURCE_DIR}/engine/weights/source/files.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/json.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/safetensors.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/hf.cpp
+    ${PROJECT_SOURCE_DIR}/engine/weights/hf.h
     ${PROJECT_SOURCE_DIR}/engine/weights/source/tensor.h
     ${PROJECT_SOURCE_DIR}/engine/models/common/hf_source.cpp
     ${PROJECT_SOURCE_DIR}/engine/weights/source/assets.cpp
