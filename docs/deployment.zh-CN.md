@@ -1,5 +1,9 @@
 # 服务部署与性能设置
 
+Studio 桌面发行版已改用原生 `tyloinfer-server`，构建与资源布局见[发行打包](packaging.md)。
+下文 `uv run mfq ...` 属于保留的源码开发/旧服务工作流，不是 Studio 发行版的运行依赖。
+原生服务参数以 `tyloinfer-server --help` 为准，不能直接沿用下文 Python CLI 的全部参数。
+
 以下以 **Windows / Linux、单张 NVIDIA GPU、MFQ 权重**为例，推荐配置针对
 Qwen3.8-Flash-Next 等需要 RAM 流式专家的模型。完整参数见 [`mfq serve`](cli/serve.md)。
 

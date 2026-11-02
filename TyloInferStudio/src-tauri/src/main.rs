@@ -420,7 +420,10 @@ fn configure_detached(command: &mut Command) {
 /// Resolves the native server from the release resource layout or a development build.
 fn server_program(app: &AppHandle) -> Result<PathBuf, String> {
     let resource_dir = app.path().resource_dir().ok();
+    #[cfg(debug_assertions)]
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    #[cfg(not(debug_assertions))]
+    let repository = PathBuf::new();
     let explicit = std::env::var_os(native_server::EXECUTABLE_OVERRIDE);
     native_server::discover(resource_dir.as_deref(), &repository, cfg!(debug_assertions), explicit.as_deref())
 }
@@ -431,8 +434,15 @@ fn server_web_root(app: &AppHandle) -> Option<PathBuf> {
         let web_root = resource_dir.join("web-ui");
         if web_root.is_dir() { return Some(web_root); }
     }
-    let web_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist");
-    (cfg!(debug_assertions) && web_root.join("index.html").is_file()).then_some(web_root)
+    #[cfg(debug_assertions)]
+    {
+        let web_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist");
+        web_root.join("index.html").is_file().then_some(web_root)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
 }
 
 fn packaged_resource(app: &AppHandle, name: &str) -> Option<PathBuf> {

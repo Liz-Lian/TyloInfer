@@ -1,275 +1,82 @@
 #!/usr/bin/env bash
-# Build the self-contained Apple Silicon TyloInfer DMG.
-
+# 仅准备原生 macOS 资源；服务接入 Metal 引擎前禁止生成推理发行包。
 set -euo pipefail
 
 mfq_script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 mfq_project_dir="$(cd -- "${mfq_script_dir}/.." && pwd)"
-mfq_python_version="${TYLOINFER_RELEASE_PYTHON:-3.12}"
+tyloinfer_dir="${mfq_project_dir}/TyloInferStudio"
 mfq_venv_dir="${TYLOINFER_RELEASE_VENV:-${mfq_script_dir}/.venv}"
-mfq_build_root="${mfq_script_dir}/build"
-mfq_native_build_dir="${mfq_build_root}/runtime"
-mfq_pyinstaller_build_dir="${mfq_build_root}/pyinstaller"
-mfq_spec_dir="${mfq_build_root}/spec"
-mfq_sidecar_dir="${mfq_script_dir}/sidecars"
 mfq_framework_dir="${mfq_script_dir}/Frameworks"
 mfq_resource_dir="${mfq_script_dir}/Resources"
-tyloinfer_dir="${mfq_project_dir}/TyloInferStudio"
-mfq_tauri_target="aarch64-apple-darwin"
-mfq_output_dir="${TYLOINFER_RELEASE_OUTPUT_DIR:-${mfq_script_dir}/dist}"
-mfq_cli_name="tyloinfer-cli"
-mfq_runtime_name="mfq-decode-metal-aarch64-apple-darwin"
-mfq_perplexity_name="mfq-perplexity-aarch64-apple-darwin"
+mfq_server_dir="${mfq_resource_dir}/tyloinfer-server"
 mfq_macos_deployment_target="${TYLOINFER_RELEASE_MACOS_DEPLOYMENT_TARGET:-26.2}"
 
+# /** Stops preparation with an actionable build error. */
 fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
 
-[[ "$(uname -s)" == "Darwin" ]] || fail "this release target requires macOS"
-[[ "$(uname -m)" == "arm64" ]] || fail "this release target requires native Apple Silicon"
-for mfq_command in uv cmake codesign hdiutil install_name_tool lipo npm cargo; do
+[[ "$(uname -s)" == Darwin ]] || fail "this release target requires macOS"
+[[ "$(uname -m)" == arm64 ]] || fail "this release target requires native Apple Silicon"
+if [[ "${1:-}" != --prepare-only || $# != 1 ]]; then
+  fail "macOS inference release blocked: tyloinfer-server has no Metal engine factory. --prepare-only stages diagnostic resources; it does not produce a DMG or an inference release."
+fi
+for mfq_command in cmake ninja codesign install_name_tool lipo; do
   command -v "${mfq_command}" >/dev/null 2>&1 || fail "${mfq_command} is required"
 done
-xcrun --find metal >/dev/null 2>&1 || fail "Xcode Metal Toolchain is required to build release shaders"
-xcrun --find metallib >/dev/null 2>&1 || fail "Xcode Metal Toolchain is required to build release shaders"
-
-rm -rf \
-  "${mfq_script_dir}/build" \
-  "${mfq_script_dir}/sidecars" \
-  "${mfq_script_dir}/Frameworks" \
-  "${mfq_script_dir}/Resources" \
-  "${mfq_script_dir}/windows-runtime" \
-  "${mfq_script_dir}/dist"
-mkdir -p \
-  "${mfq_native_build_dir}" \
-  "${mfq_pyinstaller_build_dir}" \
-  "${mfq_spec_dir}" \
-  "${mfq_sidecar_dir}" \
-  "${mfq_framework_dir}" \
-  "${mfq_resource_dir}" \
-  "${mfq_output_dir}"
-
-cd "${mfq_project_dir}"
-if [[ "${TYLOINFER_RELEASE_REUSE_VENV:-0}" == "1" ]]; then
-  [[ -x "${mfq_venv_dir}/bin/python" ]] || fail "reused release environment has no Python"
-  [[ -x "${mfq_venv_dir}/bin/pyinstaller" ]] || fail "reused release environment has no PyInstaller"
-else
-  uv venv --clear --python "${mfq_python_version}" "${mfq_venv_dir}"
-fi
-source "${mfq_venv_dir}/bin/activate"
-if [[ "${TYLOINFER_RELEASE_REUSE_VENV:-0}" != "1" ]]; then
-  uv sync \
-    --locked \
-    --active \
-    --no-default-groups \
-    --no-editable \
-    --group release \
-    --extra metal \
-    --extra benchmark \
-    --extra reference
-fi
-
+[[ -x "${mfq_venv_dir}/bin/python" ]] || fail "set TYLOINFER_RELEASE_VENV to an existing build-only Python environment with MLX"
+xcrun --find metal >/dev/null 2>&1 || fail "Xcode Metal Toolchain is required"
+xcrun --find metallib >/dev/null 2>&1 || fail "Xcode Metal Toolchain is required"
+# 固定映射目录有旧资源时不覆盖，避免混入之前的 Python 或不同架构产物。
+for mfq_destination in "${mfq_server_dir}" "${mfq_framework_dir}" "${mfq_resource_dir}/mfq-metal"; do
+  [[ ! -e "${mfq_destination}" ]] || fail "preserve or manually remove existing resources before preparation: ${mfq_destination}"
+done
+mkdir -p "${mfq_script_dir}/build" "${mfq_resource_dir}"
+mfq_native_build_dir="$(mktemp -d "${mfq_script_dir}/build/native-macos.XXXXXX")"
 source "${mfq_script_dir}/macos_release_paths.sh"
 mfq_configure_release_paths
-mfq_cargo_target_dir="${CARGO_TARGET_DIR:-${tyloinfer_dir}/src-tauri/target}"
-[[ "${mfq_cargo_target_dir}" == /* ]] || mfq_cargo_target_dir="${tyloinfer_dir}/${mfq_cargo_target_dir}"
-mfq_dmg_dir="${mfq_cargo_target_dir}/${mfq_tauri_target}/release/bundle/dmg"
-
-command -v ninja >/dev/null 2>&1 || fail "ninja is required"
 mfq_mlx_root="$("${mfq_venv_dir}/bin/python" -c 'import mlx; print(next(iter(mlx.__path__)))')"
-for mfq_mlx_file in \
-  "${mfq_mlx_root}/lib/libmlx.dylib" \
-  "${mfq_mlx_root}/lib/libjaccl.dylib" \
-  "${mfq_mlx_root}/lib/mlx.metallib"; do
-  [[ -f "${mfq_mlx_file}" ]] || fail "missing MLX runtime file: ${mfq_mlx_file}"
+for mfq_file in libmlx.dylib libjaccl.dylib mlx.metallib; do
+  [[ -f "${mfq_mlx_root}/lib/${mfq_file}" ]] || fail "missing MLX build resource: ${mfq_file}"
 done
 
 cmake -S "${mfq_project_dir}/cpp_runtime" -B "${mfq_native_build_dir}" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_FLAGS="${CFLAGS}" \
-  -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
-  -DCMAKE_OBJCXX_FLAGS="${OBJCXXFLAGS}" \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET="${mfq_macos_deployment_target}" \
-  -DTYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+  -DCMAKE_C_FLAGS="${CFLAGS}" -DCMAKE_CXX_FLAGS="${CXXFLAGS}" -DCMAKE_OBJCXX_FLAGS="${OBJCXXFLAGS}" \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET="${mfq_macos_deployment_target}" \
+  -DTYLOINFER_BUILD_SERVER=ON -DTYLOINFER_BUILD_RUNTIME_COMMUNICATION=ON \
+  -DTYLOINFER_BUILD_CUDA_RUNTIME=OFF -DTYLOINFER_BUILD_HIP_RUNTIME=OFF \
+  -DTYLOINFER_BUILD_METAL_RUNTIME=ON -DTYLOINFER_BUILD_PRECOMPILED_METAL=ON \
   -DTYLOINFER_ENABLE_MFQ_COMPAT="${TYLOINFER_ENABLE_MFQ_COMPAT:-OFF}" \
-  -DTYLOINFER_BUILD_METAL_RUNTIME=ON \
-  -DTYLOINFER_BUILD_PRECOMPILED_METAL=ON \
-  -DTYLOINFER_MLX_ROOT="${mfq_mlx_root}" \
-  -DTYLOINFER_MLX_METALLIB_DEFAULT:STRING=
-cmake --build "${mfq_native_build_dir}" \
-  --target mfq-decode-metal mfq-perplexity \
+  -DTYLOINFER_MLX_ROOT="${mfq_mlx_root}" -DTYLOINFER_MLX_METALLIB_DEFAULT:STRING=
+cmake --build "${mfq_native_build_dir}" --target tyloinfer-server mfq-decode-metal \
   --parallel "${TYLOINFER_RELEASE_JOBS:-$(sysctl -n hw.ncpu)}"
 
-mfq_runtime_source="${mfq_native_build_dir}/metal/mfq-decode-metal"
-mfq_perplexity_source="${mfq_native_build_dir}/metal/mfq-perplexity"
-mfq_video_source="${mfq_native_build_dir}/metal/libmfq_avfoundation_video.dylib"
-[[ -x "${mfq_runtime_source}" ]] || fail "native build did not create mfq-decode-metal"
-[[ -x "${mfq_perplexity_source}" ]] || fail "native build did not create mfq-perplexity"
-[[ -f "${mfq_video_source}" ]] || fail "native build did not create the AVFoundation video library"
-
-install -m 755 "${mfq_runtime_source}" "${mfq_sidecar_dir}/${mfq_runtime_name}"
-install -m 755 "${mfq_perplexity_source}" "${mfq_sidecar_dir}/${mfq_perplexity_name}"
-install -m 644 "${mfq_mlx_root}/lib/libmlx.dylib" "${mfq_framework_dir}/libmlx.dylib"
-install -m 644 "${mfq_mlx_root}/lib/libjaccl.dylib" "${mfq_framework_dir}/libjaccl.dylib"
-install -m 755 "${mfq_video_source}" "${mfq_framework_dir}/libmfq_avfoundation_video.dylib"
+mfq_server_source="${mfq_native_build_dir}/server/tyloinfer-server"
+[[ -x "${mfq_server_source}" ]] || fail "native build did not create tyloinfer-server"
+[[ -s "${mfq_native_build_dir}/metal/lib/mfq-metal/manifest.json" ]] || fail "missing precompiled Metal libraries"
+mkdir -p "${mfq_server_dir}" "${mfq_framework_dir}" "${mfq_resource_dir}/licenses"
+install -m 755 "${mfq_server_source}" "${mfq_server_dir}/tyloinfer-server"
+for mfq_file in libmlx.dylib libjaccl.dylib; do
+  install -m 644 "${mfq_mlx_root}/lib/${mfq_file}" "${mfq_framework_dir}/${mfq_file}"
+done
+install -m 755 "${mfq_native_build_dir}/metal/libmfq_avfoundation_video.dylib" "${mfq_framework_dir}/libmfq_avfoundation_video.dylib"
 install -m 644 "${mfq_mlx_root}/lib/mlx.metallib" "${mfq_resource_dir}/mlx.metallib"
-[[ -s "${mfq_native_build_dir}/metal/lib/mfq-metal/manifest.json" ]] \
-  || fail "native build did not create the precompiled MFQ Metal libraries"
 cp -R "${mfq_native_build_dir}/metal/lib/mfq-metal" "${mfq_resource_dir}/mfq-metal"
-
-mfq_license_dir="${mfq_resource_dir}/licenses"
-rm -rf "${mfq_license_dir}"
-mkdir -p "${mfq_license_dir}"
-install -m 644 "${mfq_project_dir}/LICENSE" \
-  "${mfq_license_dir}/MFQ-Apache-2.0.txt"
-install -m 644 "${mfq_project_dir}/NOTICE" \
-  "${mfq_license_dir}/NOTICE.txt"
-install -m 644 "${mfq_project_dir}"/LICENSES/*.txt "${mfq_license_dir}/"
-
-install_name_tool -add_rpath "@executable_path/../Frameworks" \
-  "${mfq_sidecar_dir}/${mfq_runtime_name}"
-install_name_tool -add_rpath "@executable_path/../Frameworks" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}"
-
+install -m 644 "${mfq_project_dir}/LICENSE" "${mfq_resource_dir}/licenses/MFQ-Apache-2.0.txt"
+install -m 644 "${mfq_project_dir}/NOTICE" "${mfq_resource_dir}/licenses/NOTICE.txt"
+install -m 644 "${mfq_project_dir}"/LICENSES/*.txt "${mfq_resource_dir}/licenses/"
+install_name_tool -add_rpath "@executable_path/../../Frameworks" "${mfq_server_dir}/tyloinfer-server"
 mfq_signing_identity="${TYLOINFER_RELEASE_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:--}}"
-for mfq_signed_file in \
-  "${mfq_framework_dir}/libjaccl.dylib" \
-  "${mfq_framework_dir}/libmlx.dylib" \
-  "${mfq_framework_dir}/libmfq_avfoundation_video.dylib" \
-  "${mfq_sidecar_dir}/${mfq_runtime_name}" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}"; do
-  codesign --force --sign "${mfq_signing_identity}" "${mfq_signed_file}"
-  codesign --verify --strict --verbose=2 "${mfq_signed_file}"
+for mfq_file in "${mfq_server_dir}/tyloinfer-server" "${mfq_framework_dir}"/*.dylib; do
+  lipo -archs "${mfq_file}" | tr ' ' '\n' | grep -qx arm64 || fail "not arm64: ${mfq_file}"
+  codesign --force --sign "${mfq_signing_identity}" "${mfq_file}"
+  codesign --verify --strict --verbose=2 "${mfq_file}"
 done
-
-TYLOINFER_MLX_METALLIB="${mfq_resource_dir}/mlx.metallib" \
-DYLD_LIBRARY_PATH="${mfq_framework_dir}" \
-  "${mfq_sidecar_dir}/${mfq_runtime_name}" --self-test-metal
-
-mfq_pyinstaller_args=(
-  --noconfirm
-  --clean
-  --onedir
-  --name "${mfq_cli_name}"
-  --target-architecture arm64
-  --paths "${mfq_project_dir}"
-  --additional-hooks-dir "${mfq_script_dir}/hooks"
-  --collect-data tyloinfer
-  --collect-all av
-  --collect-all fastapi
-  --collect-all httpx
-  --collect-all socksio
-  --collect-all PIL
-  --collect-all pydantic
-  --collect-all pypdf
-  --collect-all pyarrow
-  --collect-all pandas
-  --collect-all sympy
-  --collect-all regex
-  --collect-all loguru
-  --collect-all antlr4
-  --collect-all yaml
-  --collect-all mlx
-  --collect-all mlx_lm
-  --collect-all transformers
-  --collect-all huggingface_hub
-  --collect-all modelscope_hub
-  --collect-all uvicorn
-  --collect-all websockets
-  --copy-metadata requests
-  --copy-metadata huggingface-hub
-  --copy-metadata modelscope-hub
-  --exclude-module torch
-  --exclude-module scipy
-  --exclude-module tiktoken
-  --exclude-module tyloinfer.runtime
-  --exclude-module minicpmo_utils
-  --exclude-module stepaudio2_minicpmo
-  --exclude-module torchaudio
-  --exclude-module onnxruntime
-  --exclude-module s3tokenizer
-  --exclude-module hyperpyyaml
-  --exclude-module librosa
-  --distpath "${mfq_resource_dir}"
-  --workpath "${mfq_pyinstaller_build_dir}"
-  --specpath "${mfq_spec_dir}"
-)
-if [[ "${mfq_signing_identity}" != "-" ]]; then
-  mfq_pyinstaller_args+=(--codesign-identity "${mfq_signing_identity}")
-fi
-mfq_pyinstaller_args+=("${mfq_project_dir}/tyloinfer/cli.py")
-"${mfq_venv_dir}/bin/pyinstaller" "${mfq_pyinstaller_args[@]}"
-
-mfq_cli_path="${mfq_resource_dir}/${mfq_cli_name}/${mfq_cli_name}"
-[[ -x "${mfq_cli_path}" ]] || fail "PyInstaller did not create the unified mfq CLI"
-for mfq_arm64_file in \
-  "${mfq_cli_path}" \
-  "${mfq_sidecar_dir}/${mfq_runtime_name}" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}"; do
-  lipo -archs "${mfq_arm64_file}" | tr ' ' '\n' | grep -qx arm64 \
-    || fail "${mfq_arm64_file} is not arm64"
-done
-codesign --verify --strict --verbose=2 "${mfq_cli_path}"
-
-"${mfq_cli_path}" --version
-"${mfq_cli_path}" serve --help >/dev/null
-TYLOINFER_MLX_METALLIB="${mfq_resource_dir}/mlx.metallib" \
-DYLD_LIBRARY_PATH="${mfq_framework_dir}" \
-  "${mfq_sidecar_dir}/${mfq_perplexity_name}" --help >/dev/null
-
-cd "${tyloinfer_dir}"
-"${mfq_venv_dir}/bin/python" "${mfq_script_dir}/stage_agent_runtime.py" "${mfq_resource_dir}/agent-runtime"
-npm ci
-npm run check
-if [[ "${mfq_signing_identity}" != "-" ]]; then
-  CI=true \
-  APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-${mfq_signing_identity}}" \
-    npm run tauri -- build \
-      --config src-tauri/tauri.release-macos.conf.json \
-      --config '{"bundle":{"macOS":{"hardenedRuntime":true}}}' \
-      --target "${mfq_tauri_target}"
-else
-  CI=true \
-  APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-${mfq_signing_identity}}" \
-    npm run tauri -- build \
-      --config src-tauri/tauri.release-macos.conf.json \
-      --target "${mfq_tauri_target}"
-fi
-
-[[ -d "${mfq_dmg_dir}" ]] || fail "Tauri did not create a DMG directory"
-mfq_dmg_path="$(find "${mfq_dmg_dir}" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
-[[ -n "${mfq_dmg_path}" ]] || fail "Tauri did not create a DMG"
-mfq_release_dmg="${mfq_output_dir}/$(basename "${mfq_dmg_path}")"
-install -m 644 "${mfq_dmg_path}" "${mfq_release_dmg}"
-hdiutil verify "${mfq_release_dmg}"
-mfq_mount_dir="$(mktemp -d "${TMPDIR:-/tmp}/mfq-release-verify.XXXXXX")"
-mfq_mounted=false
-cleanup_release_mount() {
-  if [[ "${mfq_mounted}" == true ]]; then
-    hdiutil detach "${mfq_mount_dir}" >/dev/null
-  fi
-  rmdir "${mfq_mount_dir}" 2>/dev/null || true
-}
-trap cleanup_release_mount EXIT
-hdiutil attach -readonly -nobrowse -mountpoint "${mfq_mount_dir}" "${mfq_release_dmg}" >/dev/null
-mfq_mounted=true
-mfq_packaged_app="${mfq_mount_dir}/TyloInfer.app"
-codesign --verify --deep --strict --verbose=2 "${mfq_packaged_app}"
+"${mfq_server_dir}/tyloinfer-server" --version
+"${mfq_server_dir}/tyloinfer-server" --help
 "${mfq_venv_dir}/bin/python" "${mfq_script_dir}/check_release_paths.py" \
-  "${mfq_packaged_app}" "${mfq_release_dmg}" \
-  "${mfq_private_prefix_args[@]}" \
-  --python-cli "${mfq_packaged_app}/Contents/Resources/tyloinfer-cli/tyloinfer-cli" \
-  || fail "packaged Studio contains a private build path"
-TYLOINFER_MLX_METALLIB="${mfq_packaged_app}/Contents/Resources/mlx.metallib" \
-  "${mfq_packaged_app}/Contents/MacOS/mfq-decode-metal" --self-test-metal
-"${mfq_packaged_app}/Contents/Resources/tyloinfer-cli/tyloinfer-cli" --version >/dev/null
-TYLOINFER_MLX_METALLIB="${mfq_packaged_app}/Contents/Resources/mlx.metallib" \
-  "${mfq_packaged_app}/Contents/MacOS/mfq-perplexity" --help >/dev/null
-hdiutil detach "${mfq_mount_dir}" >/dev/null
-mfq_mounted=false
-rmdir "${mfq_mount_dir}"
-trap - EXIT
-printf 'built %s\n' "${mfq_release_dmg}"
+  "${mfq_server_dir}" "${mfq_framework_dir}" "${mfq_resource_dir}/mlx.metallib" \
+  "${mfq_resource_dir}/mfq-metal" "${mfq_private_prefix_args[@]}"
+printf '%s\n' 'Prepared diagnostic resources only. Metal server inference, transitive dylib closure, Studio signing and DMG verification remain blocked; no release was generated.'

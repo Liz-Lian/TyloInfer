@@ -42,17 +42,16 @@ def project(tmp_path):
     (tauri / "tauri.conf.json").write_text(json.dumps({"version": "0.4.0"}))
     (tauri / "tauri.release-windows.conf.json").write_text(json.dumps({"bundle": {
         "resources": {
-            "../dist": "web-ui", "../../packaging/Resources/tyloinfer-cli": "tyloinfer-cli",
-            "../../packaging/windows-runtime": "", "../../packaging/Resources/licenses": "licenses",
+            "../dist": "web-ui", "../../packaging/Resources/tyloinfer-server": "tyloinfer-server",
+            "../../packaging/Resources/licenses": "licenses",
         },
-        "externalBin": ["../../packaging/sidecars/mfq-runtime", "../../packaging/sidecars/mfq-diagnostics"],
     }}))
     for path in (
         "build/tyloinfer.exe", "TyloInferStudio/dist/index.html",
-        "packaging/Resources/tyloinfer-cli/tyloinfer-cli.exe", "packaging/Resources/tyloinfer-cli/_internal/python.dll",
-        "packaging/windows-runtime/cudart64_12.dll", "packaging/Resources/licenses/NOTICE",
-        "packaging/sidecars/mfq-runtime-x86_64-pc-windows-msvc.exe",
-        "packaging/sidecars/mfq-diagnostics-x86_64-pc-windows-msvc.exe",
+        "packaging/Resources/tyloinfer-server/tyloinfer-server.exe",
+        "packaging/Resources/tyloinfer-server/cudart64_12.dll",
+        "packaging/Resources/tyloinfer-server/libcurl.dll", "packaging/Resources/licenses/NOTICE",
+        "packaging/sidecars/old-sidecar.exe", "packaging/Resources/tyloinfer-cli/python.dll",
         "build/private-server.log", "packaging/.venv/private.txt",
     ):
         file = root / path
@@ -67,11 +66,11 @@ def test_zip_contains_the_installer_resources_without_build_files(tmp_path):
     with zipfile.ZipFile(archive) as package:
         assert package.testzip() is None
         assert set(package.namelist()) == {
-            "TyloInfer/tyloinfer.exe", "TyloInfer/mfq-runtime.exe", "TyloInfer/mfq-diagnostics.exe",
-            "TyloInfer/tyloinfer-cli/tyloinfer-cli.exe", "TyloInfer/tyloinfer-cli/_internal/python.dll",
-            "TyloInfer/cudart64_12.dll", "TyloInfer/web-ui/index.html", "TyloInfer/licenses/NOTICE",
+            "TyloInfer/tyloinfer.exe", "TyloInfer/tyloinfer-server/tyloinfer-server.exe",
+            "TyloInfer/tyloinfer-server/cudart64_12.dll", "TyloInfer/tyloinfer-server/libcurl.dll",
+            "TyloInfer/web-ui/index.html", "TyloInfer/licenses/NOTICE",
         }
-        assert package.read("TyloInfer/mfq-runtime.exe") == b"mfq-runtime-x86_64-pc-windows-msvc.exe"
+        assert package.read("TyloInfer/tyloinfer-server/tyloinfer-server.exe") == b"tyloinfer-server.exe"
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     assert archive.with_suffix(".zip.sha256").read_text() == f"{digest}  {archive.name}\n"
 
@@ -100,10 +99,76 @@ def test_unsafe_or_conflicting_resource_destination_is_rejected(tmp_path, destin
         module.payload(root, root / "build/tyloinfer.exe")
 
 
+def test_missing_native_server_preserves_the_previous_release(tmp_path):
+    root = project(tmp_path)
+    (root / "packaging/Resources/tyloinfer-server/tyloinfer-server.exe").unlink()
+    output = tmp_path / "output"
+    output.mkdir()
+    archive = output / "TyloInfer_0.4.0_x64-portable.zip"
+    archive.write_bytes(b"previous package")
+    with pytest.raises(FileNotFoundError, match="tyloinfer-server/tyloinfer-server.exe"):
+        module.build_archive(root, root / "build/tyloinfer.exe", output)
+    assert archive.read_bytes() == b"previous package"
+
+
+@pytest.mark.parametrize("legacy", ["python312.dll", "old.py", "_internal/data.bin"])
+def test_python_runtime_cannot_be_added_to_native_resources(tmp_path, legacy):
+    root = project(tmp_path)
+    file = root / "packaging/Resources/tyloinfer-server" / legacy
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.touch()
+    with pytest.raises(ValueError, match="Forbidden legacy product runtime"):
+        module.payload(root, root / "build/tyloinfer.exe")
+
+
+def test_legacy_external_bin_is_rejected(tmp_path):
+    root = project(tmp_path)
+    config = root / "TyloInferStudio/src-tauri/tauri.release-windows.conf.json"
+    value = json.loads(config.read_text())
+    value["bundle"]["externalBin"] = ["old-cli"]
+    config.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="externalBin"):
+        module.payload(root, root / "build/tyloinfer.exe")
+
+
+def test_resource_source_outside_the_project_is_rejected(tmp_path):
+    root = project(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private")
+    config = root / "TyloInferStudio/src-tauri/tauri.release-windows.conf.json"
+    value = json.loads(config.read_text())
+    value["bundle"]["resources"][str(outside)] = "outside.txt"
+    config.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="Resource source escapes project"):
+        module.payload(root, root / "build/tyloinfer.exe")
+
+
+def test_compiler_failure_preserves_previous_outputs(tmp_path, monkeypatch):
+    root = project(tmp_path)
+    output = tmp_path / "output"
+    output.mkdir()
+    previous = [output / "TyloInfer_0.4.0_x64.exe", output / "TyloInfer_0.4.0_x64-portable.zip"]
+    for file in previous:
+        file.write_bytes(b"previous release")
+
+    def fail_compile(*args, **kwargs):
+        (output / "TyloInfer_0.4.0_x64.exe.partial").write_bytes(b"incomplete")
+        raise subprocess.CalledProcessError(1, "makensis")
+
+    monkeypatch.setattr(module.subprocess, "run", fail_compile)
+    with pytest.raises(subprocess.CalledProcessError):
+        module.build_executable(root, root / "build/tyloinfer.exe", output, Path("makensis"))
+    assert all(file.read_bytes() == b"previous release" for file in previous)
+    assert not list(output.glob("*.partial"))
+
+
 @pytest.mark.skipif(sys.platform != "win32" or not os.environ.get("TYLOINFER_TEST_NSIS"), reason="Windows NSIS execution")
 def test_single_executable_extracts_reuses_and_repairs_its_cache(tmp_path):
     root = project(tmp_path)
     executable = module.build_executable(root, root / "build/tyloinfer.exe", tmp_path / "output", Path(os.environ["TYLOINFER_TEST_NSIS"]))
+    for artifact in (executable, executable.parent / "TyloInfer_0.4.0_x64-portable.zip"):
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        assert artifact.with_suffix(artifact.suffix + ".sha256").read_text() == f"{digest}  {artifact.name}\n"
     with zipfile.ZipFile(executable.parent / "TyloInfer_0.4.0_x64-portable.zip") as package:
         assert package.namelist() == ["TyloInfer.exe"]
         assert package.read("TyloInfer.exe") == executable.read_bytes()
@@ -112,17 +177,17 @@ def test_single_executable_extracts_reuses_and_repairs_its_cache(tmp_path):
     arguments = [str(executable), "/EXTRACT_ONLY"]
     subprocess.run(arguments, check=True, timeout=30, env=environment)
     directory, = cache.glob("0.4.0-*")
-    native = directory / "mfq-runtime.exe"
-    assert native.read_bytes() == b"mfq-runtime-x86_64-pc-windows-msvc.exe"
-    assert (directory / "tyloinfer-cli/_internal/python.dll").is_file()
+    native = directory / "tyloinfer-server/tyloinfer-server.exe"
+    assert native.read_bytes() == b"tyloinfer-server.exe"
+    assert (directory / "tyloinfer-server/cudart64_12.dll").is_file()
     sentinel = directory / "cache-hit-check"
     sentinel.touch()
     timestamp = native.stat().st_mtime_ns
     subprocess.run(arguments, check=True, timeout=30, env=environment)
     assert sentinel.exists() and native.stat().st_mtime_ns == timestamp
-    (directory / "tyloinfer-cli/tyloinfer-cli.exe").unlink()
+    (directory / "tyloinfer-server/libcurl.dll").unlink()
     subprocess.run(arguments, check=True, timeout=30, env=environment)
-    assert (directory / "tyloinfer-cli/tyloinfer-cli.exe").is_file()
+    assert (directory / "tyloinfer-server/libcurl.dll").is_file()
     assert not sentinel.exists()
     children = [subprocess.Popen(arguments, env=environment) for _ in range(3)]
     assert [child.wait(timeout=30) for child in children] == [0, 0, 0]
