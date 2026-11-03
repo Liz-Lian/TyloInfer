@@ -6,6 +6,7 @@
 #include "engine/generation/generation.h"
 #include "engine/generation/prefill_budget.h"
 #include "engine/models/common/session/cache.h"
+#include "engine/models/source.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/weights/workspace.h"
 #include "engine/weights/moe/expert_cache.h"
@@ -42,7 +43,8 @@ template <class Model, class State, class Predictor> struct RequestOps {
     bool report_memory;
     bool graph_allowed;
     std::function<void()> drain;
-    const mfq::models::CausalLmMetadata &metadata;
+    const mfq::models::Info &info;
+    const mfq::ModelSource* source;
     DecodeGraphCache &graph;
     TextSessionCache &cache;
     const CudaRuntimeConfig &config;
@@ -76,7 +78,6 @@ template <class Model, class State, class Predictor> struct RequestOps {
                name=="expert_logical_transfer_bytes")std::cerr << ' ' << name << '=' << value;
         }
         std::cerr << '\n';
-        const auto* source = model.source.get();
         if(source) {
             const auto io=source->file_read_stats();
             std::cerr<<"runtime_model_io_stats boundary="<<boundary<<" calls="<<io.calls
@@ -112,7 +113,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
     bool short_streamed_prefill(std::size_t tokens) const {
         // A short continuation can reuse the bounded MFE path without
         // returning its expert images and captured graphs for a large PP arena.
-        return state.cache_pos>0 && tokens<=128 &&
+        return state.position()>0 && tokens<=128 &&
             moe_expert_cache_ssd_experts(weights.moe);
     }
     int64_t prefill_chunk(std::size_t tokens) {
@@ -128,7 +129,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         auto available=mfq::engine::prefill_budget_add(
             mfq::engine::prefill_budget_add(context->available_memory(),context->workspace_available()),
             budget.lendable_bytes);
-        const auto row_bytes=std::size_t(metadata.hidden_size)*metadata.hc_mult*sizeof(float)*8;
+        const auto row_bytes=info.prefill_row_bytes;
         const auto sequence_bytes=allow_borrow
             ? std::size_t(tokens<=16384?tokens:std::min<std::size_t>(tokens,limit))*row_bytes*3/8 : 0;
         const auto reserve=moe_expert_cache_ssd_experts(weights.moe)
@@ -234,7 +235,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         graph_options.enabled &= graph_allowed;
         return mfq::engine::generate_sequence(
             CudaGenerationOps<Model, State>(model, state, executor, collectives,
-                mode, profiler, weights, serial_branches, report_memory, metadata, graph, input,
+                mode, profiler, weights, serial_branches, report_memory, info, graph, input,
                 prepared ? &*prepared : nullptr,
                 graph_options,compute_chunk,&output,restore),
             output, input.prompt.size(), reused, stable,logical_chunk);
@@ -248,7 +249,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         } else {
             prepare_prefill_workspace(input.prompt.size()-reused);
             return ::run_mtp_generation(model, state, executor, collectives,
-                mode, weights, metadata,
+                mode, weights, info, source,
                 *mtp, mtp_state,
                 input,
                 output,
@@ -269,7 +270,7 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     CudaProfiler& profiler, mfq::cuda::RoutedCache& weights,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
-    const mfq::models::CausalLmMetadata &metadata,
+    const mfq::models::Info &info, const mfq::ModelSource* source,
     DecodeGraphCache &graph, TextSessionCache &cache,
     const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
     mfq::engine::InferenceOutput &output, mfq::engine::mtp::State &mtp_state,
@@ -280,7 +281,7 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
     return mfq::engine::generate_request(
         generation_detail::RequestOps<Model, State, Predictor>{model, state, executor, collectives, mode,
                                      profiler, weights, serial_branches, report_memory, graph_allowed,
-                                     std::move(drain), metadata, graph, cache, config, mtp_state,
+                                     std::move(drain), info, source, graph, cache, config, mtp_state,
                                      mtp,
                                      std::move(prepared), batching,
                                      std::move(request_id), std::move(restore)},

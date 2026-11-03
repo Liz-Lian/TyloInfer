@@ -9,7 +9,7 @@
   template Generation run_mtp_generation<MODEL, STATE>(                         \
       MODEL &, STATE &, mfq::cuda::Executor*, mfq::cuda::Collectives&,           \
       mfq::cuda::Executor::Mode, mfq::cuda::RoutedCache&,                        \
-      const mfq::models::CausalLmMetadata &, MtpModule &,                       \
+      const mfq::models::Info &, const mfq::ModelSource*, MtpModule &,           \
       mfq::engine::mtp::State &,                                                \
       InferenceRequest &, InferenceOutput &, int64_t,                            \
       const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,     \

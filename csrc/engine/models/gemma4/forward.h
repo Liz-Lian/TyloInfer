@@ -1,9 +1,12 @@
 #pragma once
 
-#include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/input.h"
 #include "engine/models/gemma4/model.h"
 #include "engine/models/gemma4/state.h"
+
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#include "engine/models/common/input.h"
+#endif
 
 #include <cstddef>
 #include <cstdint>

@@ -45,7 +45,11 @@ namespace mfq::cuda::engine_detail {
 using State = std::variant<
     std::unique_ptr<Text<Loaded<minicpmo45::text::Model, minicpmo45::text::State>>>,
     std::unique_ptr<Text<Loaded<minicpmo45::Model, minicpmo45::State>>>,
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::unique_ptr<Text<Loaded<mfq::models::CausalModel, mfq::models::State, RuntimeComponents<gemma4::Model>>>>,
+#else
     std::unique_ptr<Text<Loaded<gemma4::Model, gemma4::State>>>,
+#endif
     std::unique_ptr<Text<Loaded<glm_dsa::Model, glm_dsa::State>>>,
     std::unique_ptr<Text<Loaded<glm5_next::Model, glm5_next::State>>>,
     std::unique_ptr<Text<Loaded<Qwen4CausalLm>>>,

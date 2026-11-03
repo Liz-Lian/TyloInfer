@@ -118,6 +118,15 @@ template <typename Model> struct CudaCausalOps : Model {
     std::vector<std::unique_ptr<Block>> blocks;
     mfq_tensor_backend::Tensor output_norm;
     QuantLinear lm_head;
+    std::vector<Tensor*> graph_state() {
+        std::vector<Tensor*> warmup_states;
+        for (const auto& block : blocks) {
+            for (auto* state : block->graph_warmup_state()) {
+                warmup_states.push_back(state);
+            }
+        }
+        return warmup_states;
+    }
     std::optional<Tensor> graph_logits(CausalModel& model,Tensor ids,int kind) {
         return static_cast<Model&>(model).adapter_graph_logits(model,std::move(ids),kind);
     }

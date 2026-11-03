@@ -1,17 +1,12 @@
 #pragma once
 #include "causal_metadata.h"
+#include "check.h"
 #include <cstdint>
 #include <optional>
-#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
 namespace mfq::models {
-
-inline void require_model(bool condition, const char *message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
 
 template <class Model, class Guard> void reset_model(Model &model, int64_t batch, Guard guard) {
     model.cache_pos = model.decode_position_delta = 0;

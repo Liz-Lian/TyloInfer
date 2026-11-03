@@ -28,6 +28,9 @@ public:
     State& operator=(State&&) noexcept = default;
 
     void reset(std::int64_t batch);
+    std::int64_t position() const noexcept { return cache_pos; }
+    void advance(std::int64_t tokens) noexcept { cache_pos += tokens; }
+    void set_position_delta(std::int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate();
     void commit_speculative();
     std::vector<mfq_tensor_backend::Tensor> storage() const;

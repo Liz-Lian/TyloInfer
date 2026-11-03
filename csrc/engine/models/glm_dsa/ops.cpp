@@ -319,8 +319,8 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
                const Executor::Mode& mode, Input input) {
     namespace tb = mfq_tensor_backend;
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(collectives, mode.primary, std::move(input.ids));
-    auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
+    auto ids = normalize_ids(collectives, mode.primary, Tensor(std::move(input.ids)));
+    auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
@@ -334,10 +334,10 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary))
                              .dtype(tb::kInt64);
     auto physical = input.cache_positions.has_value()
-        ? collectives.copy(input.cache_positions->to(tb::kInt64), mode.primary).contiguous()
+        ? collectives.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
         : tb::arange(state.cache_pos, state.cache_pos + T, options);
     auto semantic = input.positions.has_value()
-        ? collectives.copy(input.positions->to(tb::kInt64), mode.primary).contiguous()
+        ? collectives.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
     mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
                                    (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
@@ -353,7 +353,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
         input.lengths = tb::full({B}, state.cache_pos + 1, options);
-    AttentionStep step{semantic, input.lengths,
+    AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
                        input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();

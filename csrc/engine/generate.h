@@ -5,7 +5,7 @@
 #include "engine/generation/mtp/state.h"
 #include "engine/generation/step.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/info.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/models/common/mtp.h"
 #include "engine/load.h"
@@ -23,6 +23,8 @@ class Collectives;
 struct RoutedCache;
 }
 
+namespace mfq { class ModelSource; }
+
 struct CudaProfiler;
 
 namespace mfq::cuda::internal {
@@ -35,7 +37,7 @@ mfq::engine::Generation generate(
     CudaProfiler& profiler, mfq::cuda::RoutedCache& weights,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
-    const mfq::models::CausalLmMetadata& metadata,
+    const mfq::models::Info& info, const mfq::ModelSource* source,
     DecodeGraphCache& graph, TextSessionCache& cache,
     const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, mfq::engine::mtp::State& mtp_state,
@@ -51,7 +53,7 @@ mfq::engine::Generation run_mtp_generation(
     Model& model, State& state, mfq::cuda::Executor* executor,
     mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
     mfq::cuda::RoutedCache& weights,
-    const mfq::models::CausalLmMetadata& metadata,
+    const mfq::models::Info& info, const mfq::ModelSource* source,
     MtpModule& mtp, mfq::engine::mtp::State& mtp_state,
     mfq::engine::InferenceRequest& request,
     mfq::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,

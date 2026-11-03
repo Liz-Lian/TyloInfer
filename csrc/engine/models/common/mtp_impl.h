@@ -7,7 +7,8 @@
 #include "engine/backends/cuda/executor/decode_graph.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/generation/mtp/state.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/info.h"
+#include "engine/models/source.h"
 #include "engine/models/common/prefetch.h"
 #include "engine/models/common/mtp.h"
 #include "engine/models/common/prompt.h"
@@ -19,7 +20,8 @@
 #include "engine/models/common/generation_ops.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/backends/cuda/native/profile.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
+#include "engine/models/causal_model.h"
 
 #include <cuda_runtime_api.h>
 
@@ -68,7 +70,7 @@ constexpr bool has_forward =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
   requires(Model& model, State& state, mfq::cuda::Input input,
            const mfq::models::ForwardOptions& options) {
-    model.forward(std::move(input), state, options);
+    static_cast<const mfq::models::CausalModel&>(model).forward(std::move(input), state, options);
   } ||
 #endif
   requires(
@@ -90,8 +92,10 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
               mfq::cuda::Input input) {
   static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-  if constexpr (requires { model.forward(std::move(input), state, mfq::cuda::forward_options(mode)); }) {
-    return model.forward(std::move(input), state, mfq::cuda::forward_options(mode));
+  if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).forward(
+                             std::move(input), state, mfq::cuda::forward_options(mode)); }) {
+    const mfq::models::CausalModel& causal = model;
+    return Tensor(causal.forward(std::move(input), state, mfq::cuda::forward_options(mode)));
   } else
 #endif
   {
@@ -117,7 +121,8 @@ template <class Model, class State> struct CudaMtpOps {
   mfq::cuda::Collectives& collectives;
   const mfq::cuda::Executor::Mode mode;
   mfq::cuda::RoutedCache& weights;
-  const mfq::models::CausalLmMetadata &metadata;
+  const mfq::models::Info &info;
+  const mfq::ModelSource* source;
   MtpModule &mtp;
   mfq::engine::mtp::State &mtp_state;
   const mfq::cuda::PreparedPrompt *prepared;
@@ -163,7 +168,6 @@ template <class Model, class State> struct CudaMtpOps {
       else if(name=="expert_host_copy_ms")result[2]=value;
       else if(name=="ssd_expert_read_wait_ms")result[3]=value;
     }
-    const auto* source = model.source.get();
     if(source) {
       const auto io=source->file_read_stats();
       result[4]=double(io.read_nanoseconds)/1e6;
@@ -283,13 +287,13 @@ template <class Model, class State> struct CudaMtpOps {
   CudaMtpOps(Model &model, State &state, mfq::cuda::Executor* executor,
              mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
              mfq::cuda::RoutedCache& weights,
-             const mfq::models::CausalLmMetadata &metadata,
+             const mfq::models::Info &info, const mfq::ModelSource* source,
              MtpModule &mtp, mfq::engine::mtp::State &mtp_state,
              const mfq::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              std::function<void()> restore = {})
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
-        weights(weights), metadata(metadata), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
+        weights(weights), info(info), source(source), mtp(mtp), mtp_state(mtp_state), prepared(prepared),
         transformed_prompt(prepared && prepared->transformed()),
         position_axes(transformed_prompt && prepared->positions.defined() && prepared->positions.dim() == 2 &&
                               prepared->positions.size(0) == 3
@@ -311,7 +315,7 @@ template <class Model, class State> struct CudaMtpOps {
     penalties = sampler().has_penalties();
     mtp_initialize(model,*this);
     if (penalties) {
-      counts = mfq::cuda::SamplingOps::token_counts(input_ids, metadata.vocab_size);
+      counts = mfq::cuda::SamplingOps::token_counts(input_ids, info.vocab_size);
     }
   }
   auto &sampler() { return *sampler_; }
@@ -433,10 +437,10 @@ template <class Model, class State> struct CudaMtpOps {
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     Tensor hidden;
     if (transformed_prompt) {
-      auto embeddings = prepared->embeddings.narrow(1, chunk.offset, chunk.count)
+      auto embeddings = Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                             .contiguous();
       auto positions = prepared->positions.defined()
-                           ? MfqOptional<Tensor>(prepared->positions.narrow(
+                           ? MfqOptional<Tensor>(Tensor(prepared->positions).narrow(
                                  -1, chunk.offset, chunk.count).contiguous())
                            : mfq_nullopt;
       if constexpr (has_forward<Model, State>) {
@@ -477,7 +481,7 @@ template <class Model, class State> struct CudaMtpOps {
         cache_start +
         (transformed_prompt ? prepared->decode_position_delta : 0);
     TYLOINFER_RUNTIME_CHECK(logical_start >= 0 && logical_start + tokens <=
-                                                metadata.max_position_embeddings,
+                                                info.max_context,
                       "CUDA MTP position span exceeds context capacity");
     auto result = mfq_tensor_backend::arange(logical_start,
                                              logical_start + tokens, options);
@@ -642,13 +646,14 @@ template <class Model, class State> struct CudaMtpOps {
     if(matches(projected_target_hidden)) return projected_target_logits;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if constexpr (requires(Model& value, Tensor value_hidden) {
-                    value.logits(std::move(value_hidden), true);
+                    static_cast<const mfq::models::CausalModel&>(value).logits(std::move(value_hidden), true);
                   }) {
       auto input = (mtp.preserve_output_dtype()
                         ? normalized
                         : normalized.to(mfq_tensor_backend::kFloat16))
                        .contiguous();
-      return model.logits(std::move(input), true);
+      const mfq::models::CausalModel& causal = model;
+      return Tensor(causal.logits(std::move(input), true));
     } else
 #endif
     if constexpr (requires(Model& value, mfq::cuda::Executor& value_executor, Tensor value_hidden) {

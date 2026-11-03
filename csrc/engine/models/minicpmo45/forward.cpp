@@ -44,7 +44,7 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
 
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
-    auto ids = token_ids(copies, mode.primary, std::move(input.ids));
+    auto ids = token_ids(copies, mode.primary, Tensor(std::move(input.ids)));
     const auto batch = ids.size(0), tokens = ids.size(1);
     TYLOINFER_RUNTIME_CHECK(input.confirmed == 0, "MiniCPM TTS has no speculative predictor");
     TYLOINFER_RUNTIME_CHECK(state.layers.size() == model.layers.size(), "MiniCPM TTS layer state mismatch");
@@ -52,19 +52,19 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         "MiniCPM TTS history exceeds context capacity");
     if (state.cache_pos == 0) state.reset(batch);
     TYLOINFER_RUNTIME_CHECK(state.batch == batch, "MiniCPM TTS cache batch does not match inputs");
-    auto hidden = input.embeddings ? std::move(*input.embeddings)
+    auto hidden = input.embeddings ? Tensor(std::move(*input.embeddings))
                                   : embed(model, executor, copies, mode.primary, ids, mode);
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(0) == batch && hidden.size(1) == tokens &&
         hidden.size(2) == model.metadata.hidden_size, "inputs_embeds must match [batch,tokens,hidden_size]");
     auto physical = input.cache_positions
-        ? copies.copy(input.cache_positions->to(tb::kInt64), mode.primary).contiguous()
+        ? copies.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
         : tb::arange(state.cache_pos, state.cache_pos + tokens,
             tb::TensorOptions().dtype(tb::kInt64).device(tb::Device(tb::kCUDA, mode.primary)));
     TYLOINFER_RUNTIME_CHECK((physical.dim() == 1 && physical.numel() == tokens) ||
         (physical.dim() == 2 && physical.size(0) == batch && physical.size(1) == tokens),
         "cache_positions must have shape [tokens] or [batch,tokens]");
     auto positions = input.positions
-        ? copies.copy(input.positions->to(tb::kInt64), mode.primary).contiguous()
+        ? copies.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     TYLOINFER_RUNTIME_CHECK((positions.dim() == 1 && positions.numel() == tokens) ||
         (positions.dim() == 2 && positions.size(0) == batch && positions.size(1) == tokens),
@@ -72,7 +72,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (input.lengths) {
         TYLOINFER_RUNTIME_CHECK(input.lengths->dim() == 1 && input.lengths->size(0) == batch,
             "sequence lengths must have shape [batch]");
-        input.lengths = copies.copy(input.lengths->to(tb::kInt64), mode.primary).contiguous();
+        input.lengths = copies.copy(Tensor(*input.lengths).to(tb::kInt64), mode.primary).contiguous();
     } else if (state.cache_pos > 0 && tokens == 1) {
         input.lengths = tb::full({batch}, state.cache_pos + 1, physical.options());
     }
@@ -94,7 +94,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         };
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, {}, {}, state.cache_pos, input.kv_length, input.attention_parts};
-        if (input.lengths) step.sequence_lengths = local(*input.lengths);
+        if (input.lengths) step.sequence_lengths = local(Tensor(*input.lengths));
         if (input.cache_positions) step.cache_positions = local(physical);
         auto& cache = state.layers[index];
         if (!cache.defined()) {

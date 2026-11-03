@@ -64,7 +64,7 @@ inline constexpr auto with_model = []<typename F>(
         const auto loaded_at = mfq::cuda::finish_load(
             execution.kv.get(), execution.weights,
             graph_reserve, execution.config.report_cuda_memory);
-        return run(loaded, started, loaded_at);
+        return run(loaded, started, loaded_at, source);
     };
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();
@@ -191,11 +191,20 @@ inline constexpr auto with_model = []<typename F>(
             execution.dense_cpu_layer_count = 0;
             gemma4::load(*owner, weights, execution.layer_placement, execution.n_gpu_layers,
                          execution.expert_parallel.enabled());
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            const mfq::models::CausalModel& causal = *owner;
+            auto state = causal.make_state();
+#else
             auto state = std::make_unique<gemma4::State>(*owner);
+#endif
             state->preallocate();
             auto executor = execution.make_executor();
             auto components = load_runtime_components(*owner, weights, load_optional_components);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            Loaded<mfq::models::CausalModel, mfq::models::State, RuntimeComponents<gemma4::Model>> loaded{
+#else
             Loaded<gemma4::Model, gemma4::State> loaded{
+#endif
                 std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
         }

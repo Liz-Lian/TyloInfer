@@ -256,8 +256,8 @@ bool supports_speculation(const Model& model) noexcept { return !model.layers.em
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
     MfqCudaGuard guard(mode.primary);
-    auto ids = normalize_ids(copies, mode.primary, std::move(input.ids));
-    auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
+    auto ids = normalize_ids(copies, mode.primary, Tensor(std::move(input.ids)));
+    auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, copies, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&

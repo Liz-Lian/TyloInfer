@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
 #include "engine/models/glm5_next/model.h"
 
 namespace mfq::cuda::glm5_next {

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <stdexcept>
 
 namespace mfq::engine {
 
@@ -53,7 +54,7 @@ template <class Ops>
 Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput &output) {
     using Hidden = typename Ops::Hidden;
     auto &state = ops.state;
-    const auto &metadata = ops.metadata;
+    const auto &info = ops.info;
     auto &session_cache = ops.cache;
     auto *mtp = ops.mtp;
     const auto &prepared = ops.prepared;
@@ -69,8 +70,8 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
         static_cast<int64_t>(prompt.size()) +
         (prepared && prepared->transformed() ? prepared->decode_position_delta : 0);
     const auto plan = plan_generation(prompt,
-        metadata.vocab_size,
-        metadata.max_position_embeddings,
+        info.vocab_size,
+        info.max_context,
         sampling.max_tokens,
         cache_plan.stable_prefix_tokens,
         std::max<int64_t>(prompt.size(), occupied));
@@ -109,7 +110,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     std::size_t last_snapshot = 0;
     bool initial_snapshot_attempted = false;
     const auto snapshot = [&] {
-        const auto position = state.cache_pos;
+        const auto position = state.position();
         if (!caching || output.result.cancelled || position <= 0 ||
             static_cast<std::size_t>(position) > history.size() ||
             static_cast<std::size_t>(position) == last_snapshot)
@@ -118,16 +119,20 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
             if constexpr(requires { ops.prepare_snapshot(); })
                 if(!ops.prepare_snapshot())return;
             std::vector<int64_t> tokens(history.begin(), history.begin() + position);
-            auto saved = state.capture_text_session_state(tokens);
-            saved.input_key = input_key;
-            if (use_mtp) {
-                if (!ops.has_hidden(last_target_hidden) || position <= 1)
-                    return;
-                saved.mtp = mtp->capture_session_state(position, last_target_hidden);
-                saved.bytes += saved.mtp->bytes;
+            if constexpr (requires { state.capture_text_session_state(tokens); }) {
+                auto saved = state.capture_text_session_state(tokens);
+                saved.input_key = input_key;
+                if (use_mtp) {
+                    if (!ops.has_hidden(last_target_hidden) || position <= 1)
+                        return;
+                    saved.mtp = mtp->capture_session_state(position, last_target_hidden);
+                    saved.bytes += saved.mtp->bytes;
+                }
+                session_cache.store(cache_plan.session_id, std::move(saved));
+                last_snapshot = static_cast<std::size_t>(position);
+            } else {
+                throw std::runtime_error("text session state is unsupported by this model");
             }
-            session_cache.store(cache_plan.session_id, std::move(saved));
-            last_snapshot = static_cast<std::size_t>(position);
         } catch (const std::exception &error) {
             std::cerr << "runtime_session_cache action=skip error=" << error.what() << '\n';
         }

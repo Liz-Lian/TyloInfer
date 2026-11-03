@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/models/deepseek_v4/model.h"
 #include "engine/models/deepseek_v4/state.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
 
 extern bool g_dsv4_fused_hc;
 extern bool g_dsv4_compare_hc_ops;

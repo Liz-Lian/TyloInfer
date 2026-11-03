@@ -76,7 +76,7 @@ std::optional<int64_t> generation_decode(Qwen4CausalLm& model, Ops& ops) {
 template<class Ops>
 void generation_request(Qwen4CausalLm& model, Ops& ops, const mfq::engine::InferenceRequest& input) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    model.decode_reserve_until=std::min<int64_t>(ops.metadata.max_position_embeddings,
+    model.decode_reserve_until=std::min<int64_t>(ops.info.max_context,
         int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
     if(!ops.batching && input.prompt.size()>1024) {
         finish_moe_expert_exchanges(ops.weights.moe);

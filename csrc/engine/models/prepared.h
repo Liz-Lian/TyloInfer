@@ -1,0 +1,25 @@
+#pragma once
+
+#include "engine/tensor.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace mfq::models {
+
+struct Prepared {
+    std::vector<std::int64_t> token_ids;
+    Tensor embeddings;
+    Tensor positions;
+    int decode_position_delta = 0;
+    std::string cache_key;
+    Tensor image_mask;
+
+    bool transformed() const noexcept {
+        return embeddings.defined() || positions.defined() ||
+            decode_position_delta != 0;
+    }
+};
+
+} // namespace mfq::models

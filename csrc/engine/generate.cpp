@@ -15,7 +15,7 @@ namespace mfq::cuda::internal {
     template Generation generate(MODEL &, STATE &, mfq::cuda::Executor*, mfq::cuda::Collectives&, \
         mfq::cuda::Executor::Mode, CudaProfiler&, mfq::cuda::RoutedCache&, bool&, bool, bool,       \
         std::function<void()>,                                                                      \
-        const mfq::models::CausalLmMetadata &,                                                       \
+        const mfq::models::Info &, const mfq::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \
         TextSessionCache &,                                                                        \
         const CudaRuntimeConfig &,                                                                 \
@@ -28,7 +28,11 @@ namespace mfq::cuda::internal {
         std::function<void()>);
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::text::Model, mfq::cuda::minicpmo45::text::State)
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+TYLOINFER_INSTANTIATE_FLOW(mfq::models::CausalModel, mfq::models::State)
+#else
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::gemma4::Model, mfq::cuda::gemma4::State)
+#endif
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm_dsa::Model, mfq::cuda::glm_dsa::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm5_next::Model, mfq::cuda::glm5_next::State)
 TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm)

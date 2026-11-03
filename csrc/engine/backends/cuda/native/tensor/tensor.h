@@ -93,6 +93,7 @@ public:
     using mfq::Tensor::Tensor;
     Tensor() = default;
     explicit Tensor(const mfq::Tensor& tensor) : mfq::Tensor(tensor) {}
+    explicit Tensor(mfq::Tensor&& tensor) : mfq::Tensor(std::move(tensor)) {}
 
     Tensor reshape(std::span<const std::int64_t> shape) const;
     Tensor reshape(std::initializer_list<std::int64_t> shape) const {

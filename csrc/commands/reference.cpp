@@ -77,15 +77,12 @@ Model load_reference_model(CudaExecutionContext& execution,
 
 template <typename Model>
 int reference_num_layers(const Model& model) {
-    return static_cast<int>(model.metadata.num_hidden_layers);
+    return static_cast<int>(model.config.num_hidden_layers);
 }
 
 template <typename Model>
 std::string_view reference_layer_type(const Model& model, int index) {
-    if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-        return model.config.layer_types.at(static_cast<std::size_t>(index));
-    else
-        return model.metadata.layer_types.at(static_cast<std::size_t>(index));
+    return model.config.layer_types.at(static_cast<std::size_t>(index));
 }
 
 template <typename Model> struct ReferenceLayers {
@@ -194,7 +191,7 @@ template <typename Model> struct ReferenceLayers {
                                                 std::move(hidden), batch, tokens);
         else
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return model.normalize(std::move(hidden), batch, tokens);
+            return tb::Tensor(model.normalize(std::move(hidden), batch, tokens));
 #else
             return mfq::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
 #endif
@@ -208,7 +205,7 @@ template <typename Model> struct ReferenceLayers {
             return mfq::cuda::qwen35::softcap(model, *executor, std::move(logits));
         else
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return model.softcap(std::move(logits));
+            return tb::Tensor(model.softcap(std::move(logits)));
 #else
             return mfq::cuda::gemma4::softcap(model, *executor, std::move(logits));
 #endif
@@ -254,8 +251,8 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     auto source = mfq::open_model_source(options.model_path);
     auto model = load_reference_model<Model>(execution, options, source);
     const auto& source_data = *source;
-    const auto width = model.metadata.hidden_size;
-    const auto vocab = model.metadata.vocab_size;
+    const auto width = model.config.hidden_size;
+    const auto vocab = model.config.vocab_size;
     for (auto token : tokens) if (token < 0 || token >= vocab)
         throw std::runtime_error("reference token is outside the source vocabulary");
     const auto hidden_path = output.string() + ".hidden";
@@ -325,7 +322,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     }
     layers.release();
     mfq_cuda_empty_cache();
-    const auto head = !model.metadata.tie_word_embeddings && source_data.find_tensor("model.output.weight")
+    const auto head = !model.config.tie_word_embeddings && source_data.find_tensor("model.output.weight")
         ? "model.output.weight" : "model.token_embedding.weight";
     std::ofstream logits(output, std::ios::binary);
     if (!logits) throw std::runtime_error("cannot create reference logits scratch");

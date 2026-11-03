@@ -1,39 +1,11 @@
 #pragma once
 
 #include "config.h"
-#include "../common/causal_forward.h"
+#include "../common/check.h"
 #include <array>
-#include <bit>
 #include <cmath>
 
 namespace mfq::models::gemma4 {
-
-inline void load_config(std::string_view payload, Config &config,
-                        models::CausalLmMetadata &metadata, double &embed_scale) {
-    config = Config::from_json(payload);
-    auto bits = std::bit_cast<std::uint32_t>(
-        static_cast<float>(std::sqrt(static_cast<double>(config.hidden_size))));
-    bits += 0x7fffU + ((bits >> 16U) & 1U);
-    embed_scale = std::bit_cast<float>(bits & 0xffff0000U);
-    metadata.vocab_size = config.vocab_size;
-    metadata.hidden_size = config.hidden_size;
-    metadata.num_hidden_layers = config.num_hidden_layers;
-    metadata.num_attention_heads = config.num_attention_heads;
-    metadata.num_key_value_heads = config.num_key_value_heads;
-    metadata.head_dim = config.head_dim;
-    metadata.max_position_embeddings = config.max_position_embeddings;
-    metadata.rotary_dim = config.rotary_dim;
-    metadata.num_experts = config.num_experts;
-    metadata.rope_base = config.rope_base;
-    metadata.rms_norm_eps = config.rms_norm_eps;
-    metadata.final_logit_softcapping = config.final_logit_softcapping;
-    metadata.embedding_scale = embed_scale;
-    metadata.tie_word_embeddings = config.tie_word_embeddings;
-    metadata.gemma4 = true;
-    metadata.decode_graph_double_warmup = true;
-    metadata.model_type = config.model_type;
-    metadata.layer_types = config.layer_types;
-}
 
 struct LayerSpec {
     bool moe, sliding, value_equals_key;

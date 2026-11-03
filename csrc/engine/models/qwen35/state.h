@@ -64,6 +64,9 @@ public:
 
     void preallocate();
     void reset(std::int64_t new_batch);
+    std::int64_t position() const noexcept { return cache_pos; }
+    void advance(std::int64_t tokens) noexcept { cache_pos += tokens; }
+    void set_position_delta(std::int64_t delta) noexcept { decode_position_delta = delta; }
     void commit_speculative();
     std::int64_t rewind(std::int64_t accepted_suffix);
     void abort_speculative() noexcept;

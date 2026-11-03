@@ -81,8 +81,10 @@ struct CudaSessionOps {
                     }
                     std::rethrow_exception(error);
                 }
-            } else {
+            } else if constexpr (requires { state.restore_text_session_state(snapshot); }) {
                 state.restore_text_session_state(snapshot);
+            } else {
+                throw CudaSessionStateError("text session state is unsupported by this model");
             }
             if (mtp) mtp->restore_session_state(*snapshot.mtp);
         }

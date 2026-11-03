@@ -3,7 +3,7 @@
 #include "engine/models/minicpmo45/text/model.h"
 #include "engine/models/minicpmo45/text/state.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
 
 namespace mfq::cuda::minicpmo45::text {
 Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids, const Executor::Mode& = {});

@@ -25,6 +25,9 @@ public:
     State(State&&) noexcept = default;
     State& operator=(State&&) noexcept = default;
     void reset(int64_t batch);
+    int64_t position() const noexcept { return cache_pos; }
+    void advance(int64_t tokens) noexcept { cache_pos += tokens; }
+    void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate() {}
     std::vector<Tensor> storage() const;
     std::vector<Tensor*> graph_state() { return {}; }

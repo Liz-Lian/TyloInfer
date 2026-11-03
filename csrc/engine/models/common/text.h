@@ -3,6 +3,8 @@
 #include "env.h"
 #include "engine/load.h"
 #include "engine/models/common/components.h"
+#include "engine/models/common/causal_metadata.h"
+#include "engine/models/causal_model.h"
 #include "engine/weights/routed_cache.h"
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/budget.h"
@@ -68,7 +70,7 @@ struct Text {
     std::unique_ptr<Executor>& executor;
     Model& language;
     State& state;
-    const mfq::models::CausalLmMetadata& metadata;
+    const mfq::models::Info info;
     std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     TextSessionCache cache;
@@ -162,10 +164,10 @@ struct Text {
           source(std::move(model_source)),
           loaded(std::move(loaded_model)), components(loaded.components), executor(loaded.executor),
           language(loaded.language()), state(loaded.state()),
-          metadata(language.metadata),
-          graph(language.metadata.max_position_embeddings),
+          info(mfq::models::model_info(language)),
+          graph(info.max_context),
           cache(config.session_cache, config.prefix_cache,
-              make_cuda_paged_prefix_cache(*source, language.metadata.max_position_embeddings,
+              make_cuda_paged_prefix_cache(*source, info.max_context,
                   state.supports_paged_text_session_state(), config.prefix_cache),
                 state.supports_text_session_state(), state.supports_text_session_state() ? 0 : 1,
                 cuda_has_separate_memory()) {
@@ -277,7 +279,7 @@ struct Text {
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->collectives,
-                                                   execution->forward_mode(),weights,metadata,predictor,mtp_state,request,output,16,
+                                                   execution->forward_mode(),weights,info,source.get(),predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(weights.moe);
@@ -346,6 +348,13 @@ struct Text {
     }
     using Prepared = PreparedPrompt;
     mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language).prepare(
+                                   input.prompt, *input.vision, state); }) {
+            const mfq::models::CausalModel& causal = language;
+            return causal.prepare(input.prompt, *input.vision, state);
+        } else
+#endif
         return components.prepare(language, execution->projector(), weights.moe,
             execution->collectives, execution->layer_placement.primary_device(), executor.get(),
             input.prompt, *input.vision);
@@ -366,7 +375,7 @@ struct Text {
             execution->dsv4_cpu_offload_layers.empty() && execution->dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(*execution),
             [owner = execution] { owner->drain(); },
-            metadata, graph, cache, config, input, output,
+            info, source.get(), graph, cache, config, input, output,
             mtp_state,
             batched ? nullptr : components.mtp.get(), std::move(prepared),
             batched ? batching.get() : nullptr, id, restore_decode_workspace);

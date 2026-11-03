@@ -3,7 +3,7 @@
 #include "engine/models/minicpmo45/model.h"
 #include "engine/models/minicpmo45/state.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
 
 namespace mfq::cuda::minicpmo45 {
 

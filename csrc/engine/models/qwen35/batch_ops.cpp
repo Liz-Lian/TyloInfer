@@ -1,6 +1,6 @@
 #include "engine/models/qwen35/batch_ops.h"
 #include "engine/models/batch.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
@@ -305,7 +305,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                     decode_graph->graph = std::make_unique<MfqCudaGraph>();
                     auto graph_warmup_states = state_.state().graph_state();
                     prepare_decode_graph_memory(
-                        graph_warmup_states, state_.state().cache_pos,
+                        graph_warmup_states, state_.state(),
                         model_->metadata.decode_graph_double_warmup, *decode_graph->graph,
                         [&]() { (void)invoke(); },
                         decode_graph->participant_streams(collectives_));

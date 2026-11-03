@@ -116,10 +116,10 @@ namespace {
 
 Tensor forward_impl(const Model& model, State& state, Executor& executor,
                     Collectives& collectives, const Executor::Mode& options, Tensor ids,
-                    Tensor embeddings, std::optional<Tensor> positions,
-                    std::optional<Tensor> lengths, std::vector<Tensor>* trace,
-                    std::optional<Tensor> attention_mask, bool advance,
-                    std::optional<Tensor> cache_positions, Tensor* raw_hidden,
+                    Tensor embeddings, std::optional<Input::Tensor> positions,
+                    std::optional<Input::Tensor> lengths, Input::Trace* trace,
+                    std::optional<Input::Tensor> attention_mask, bool advance,
+                    std::optional<Input::Tensor> cache_positions, Input::Tensor* raw_hidden,
                     std::int64_t confirmed, std::int64_t kv_length,
                     std::int64_t attention_parts) {
     ids = normalize_ids(collectives, options.primary, std::move(ids));
@@ -154,7 +154,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                         "attention_mask must cover [batch,cached_plus_current_tokens]");
 
     auto physical = cache_positions.has_value()
-                        ? collectives.copy(cache_positions->to(mfq_tensor_backend::kInt64),
+                        ? collectives.copy(Tensor(*cache_positions).to(mfq_tensor_backend::kInt64),
                                            options.primary)
                         : mfq_tensor_backend::arange(
                               state.cache_pos, state.cache_pos + T,
@@ -168,7 +168,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                          physical.size(1) == T),
                     "cache_positions must have shape [tokens] or [batch,tokens]");
     auto semantic = positions.has_value()
-                        ? collectives.copy(positions->to(mfq_tensor_backend::kInt64),
+                        ? collectives.copy(Tensor(*positions).to(mfq_tensor_backend::kInt64),
                                            options.primary)
                         : (state.decode_position_delta == 0
                                ? physical
@@ -181,7 +181,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                                 model.rope.sections.numel() > 0),
         "position_ids must have shape [tokens], [batch,tokens], or configured grid-MRoPE [3,tokens]");
     if (lengths.has_value()) {
-        lengths = collectives.copy(lengths->to(mfq_tensor_backend::kInt64), options.primary)
+        lengths = collectives.copy(Tensor(*lengths).to(mfq_tensor_backend::kInt64), options.primary)
                        .contiguous();
     } else {
         lengths = decode_lengths(state, ids, options.primary);
@@ -190,7 +190,8 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
     std::optional<Tensor> physical_for_layers;
     if (model.rope.sections.numel() > 0 || positions.has_value() || cache_positions.has_value())
         physical_for_layers = physical;
-    AttentionStep step{semantic, lengths, physical_for_layers, {}, state.cache_pos, kv_length,
+    AttentionStep step{semantic, lengths ? MfqOptional<Tensor>(Tensor(*lengths)) : mfq_nullopt,
+                       physical_for_layers, {}, state.cache_pos, kv_length,
                        attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), options.primary).contiguous();
     if (trace)
@@ -235,9 +236,9 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
 
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& options, Input input) {
-    auto ids = normalize_ids(collectives, options.primary, std::move(input.ids));
+    auto ids = normalize_ids(collectives, options.primary, Tensor(std::move(input.ids)));
     auto embeddings = input.embeddings.has_value()
-                          ? std::move(*input.embeddings)
+                          ? Tensor(std::move(*input.embeddings))
                           : embed(model, executor, collectives, options.primary, ids, options);
     return forward_impl(model, state, executor, collectives, options, std::move(ids),
                         std::move(embeddings), std::move(input.positions),

@@ -239,8 +239,8 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
     MfqCudaGuard guard(mode.primary);
-    auto ids = token_ids(copies, mode.primary, std::move(input.ids));
-    auto hidden = input.embeddings ? std::move(*input.embeddings)
+    auto ids = token_ids(copies, mode.primary, Tensor(std::move(input.ids)));
+    auto hidden = input.embeddings ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, copies, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
     mfq::models::require_model(hidden.dim() == 3 && hidden.size(0) == B && hidden.size(1) == T &&
@@ -250,10 +250,10 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (state.cache_pos == 0) state.reset(B);
     const auto options = tb::TensorOptions().dtype(tb::kInt64).device(tb::Device(tb::kCUDA, mode.primary));
     auto physical = input.cache_positions
-        ? copies.copy(input.cache_positions->to(tb::kInt64), mode.primary).contiguous()
+        ? copies.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
         : tb::arange(state.cache_pos, state.cache_pos + T, options);
     auto positions = input.positions
-        ? copies.copy(input.positions->to(tb::kInt64), mode.primary).contiguous()
+        ? copies.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
         (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
@@ -262,7 +262,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         (positions.dim() == 2 && positions.size(0) == B && positions.size(1) == T),
         "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.attention_mask) {
-        const auto& mask = *input.attention_mask;
+        const auto mask = Tensor(*input.attention_mask);
         mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
             "attention_mask must cover [batch,cached_plus_current_tokens]");
         if ((T == 1 || state.cache_pos == 0) && mask.eq(1).all().item<bool>())
@@ -283,8 +283,8 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, local(physical), {}, state.cache_pos,
                            input.kv_length, input.attention_parts};
-        if (input.lengths) step.sequence_lengths = local(*input.lengths);
-        if (input.attention_mask) step.attention_mask = local(*input.attention_mask);
+        if (input.lengths) step.sequence_lengths = local(Tensor(*input.lengths));
+        if (input.attention_mask) step.attention_mask = local(Tensor(*input.attention_mask));
         auto& cache = state.layers[i];
         const auto capacity = attention.sliding ? attention.attention_window :
             (mode.kv_capacity > 0 ? std::max(state.cache_pos + T, mode.kv_capacity)

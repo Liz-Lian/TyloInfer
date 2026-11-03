@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <span>
 #include <vector>
 
 namespace mfq::cuda { class Collectives; }
@@ -76,17 +75,17 @@ struct DecodeGraphCache {
                  const std::vector<mfq_tensor_backend::Tensor>& candidate_storage);
 };
 
-template <typename Warmup>
+template <typename StateTensor, typename PositionState, typename Warmup>
 void prepare_decode_graph_memory(
-        std::span<mfq_tensor_backend::Tensor* const> states,
-        const int64_t& position,
+        const std::vector<StateTensor*>& states,
+        const PositionState& position_state,
         bool double_warmup,
         MfqCudaGraph& graph,
         Warmup&& warmup,
         const std::vector<MfqCudaStream>& participant_streams = {}) {
     using Tensor = mfq_tensor_backend::Tensor;
     struct SavedRecurrentState {
-        Tensor* target;
+        StateTensor* target;
         Tensor value;
         const void* address;
     };
@@ -95,16 +94,16 @@ void prepare_decode_graph_memory(
     std::vector<SavedRecurrentState> saved;
     saved.reserve(states.size());
     for (auto* state : states) {
-        saved.push_back({state, state->clone(), state->data_ptr()});
+        saved.push_back({state, Tensor(*state).clone(), state->data_ptr()});
     }
-    const int64_t saved_position = position;
+    const int64_t saved_position = position_state.position();
     auto restore = [&]() {
         for (const auto& state : saved) {
             TYLOINFER_RUNTIME_CHECK(state.target->data_ptr() == state.address,
                 "decode warmup changed recurrent storage addresses");
-            state.target->copy_(state.value);
+            Tensor(*state.target).copy_(state.value);
         }
-        TYLOINFER_RUNTIME_CHECK(position == saved_position,
+        TYLOINFER_RUNTIME_CHECK(position_state.position() == saved_position,
             "static decode warmup changed cache position");
         if (participant_streams.empty()) {
             TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(

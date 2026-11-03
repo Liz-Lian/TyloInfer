@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/native/tensor/backend.h"
+#include "engine/models/prepared.h"
 
 #include <cstdint>
 #include <string>
@@ -9,6 +10,9 @@
 
 namespace mfq::cuda {
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+using PreparedPrompt = mfq::models::Prepared;
+#else
 struct PreparedPrompt {
     std::vector<std::int64_t> token_ids;
     mfq_tensor_backend::Tensor embeddings;
@@ -22,6 +26,7 @@ struct PreparedPrompt {
             decode_position_delta != 0;
     }
 };
+#endif
 
 // Image participation is scoped to one prepared prefill chunk. It must not
 // survive cancellation, a failed forward, ordinary decode or graph capture.
@@ -32,8 +37,8 @@ public:
     ImageMaskScope(Model& model,const PreparedPrompt* prepared,
                    int64_t offset,int64_t count):model_(model) {
         if(!prepared || !prepared->image_mask.defined())return;
-        if constexpr(requires {model_.adapter_set_image_mask(prepared->image_mask);}) {
-            model_.adapter_set_image_mask(prepared->image_mask.narrow(1,offset,count).contiguous());
+        if constexpr(requires {model_.adapter_set_image_mask(mfq_tensor_backend::Tensor(prepared->image_mask));}) {
+            model_.adapter_set_image_mask(mfq_tensor_backend::Tensor(prepared->image_mask).narrow(1,offset,count).contiguous());
             active_=true;
         } else throw std::invalid_argument("model cannot apply an image participation mask");
     }

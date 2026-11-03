@@ -11,6 +11,8 @@
 #include "engine/requests/processor.h"
 #include "engine/requests/output.h"
 #include "engine/models/prepare.h"
+#include "engine/models/causal_model.h"
+#include "engine/models/common/causal_metadata.h"
 #include "engine/scheduler/table.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
@@ -201,6 +203,13 @@ public:
     }
 
     mfq::StepSequence<Prepared> prepare(engine::InferenceRequest& input) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language()).prepare(
+                                   input.prompt, *input.vision, state()); }) {
+            const mfq::models::CausalModel& causal = language();
+            return causal.prepare(input.prompt, *input.vision, state());
+        } else
+#endif
         return components().prepare(
             language(), execution_->projector(), weights_.moe,
             execution_->collectives, execution_->layer_placement.primary_device(),
@@ -226,7 +235,7 @@ public:
             execution_->dsv4_cpu_offload_layers.empty() &&
                 execution_->dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(*execution_),
-            [owner = execution_.get()] { owner->drain(); }, metadata(), *graph_,
+            [owner = execution_.get()] { owner->drain(); }, model_info_, source_.get(), *graph_,
             *cache_, config_, input, output,
             mtp_state_,
             batched ? nullptr : components().mtp.get(), std::move(prepared),
@@ -252,6 +261,7 @@ private:
     std::shared_ptr<const mfq::ModelSource> source_;
     CudaRuntimeConfig config_;
     std::optional<LoadedModel> loaded_;
+    mfq::models::Info model_info_{};
     mfq::engine::mtp::State mtp_state_;
     std::optional<DecodeGraphCache> graph_;
     std::optional<internal::TextSessionCache> cache_;
@@ -283,7 +293,6 @@ private:
     State& state() { return loaded_->state(); }
     Parts& components() { return loaded_->components; }
     const Parts& components() const { return loaded_->components; }
-    decltype(auto) metadata() { return (language().metadata); }
 
     bool online_budget_supported() const {
         return execution_->layer_placement.devices.size() <= 1 &&
@@ -376,7 +385,7 @@ private:
                 execution_->gemma_stage_trace, execution_->gemma_trace_layer,
                 !execution_->dsv4_cpu_offload_layers.empty(),
                 runtime_options::kv_vram_preallocated()));
-            source_ = language().source;
+            model_info_ = mfq::models::model_info(language());
             finalize_kv(kv_.get(), weights_, offload_);
             finish_load(kv_.get(), weights_, 0,
                 execution_->config.report_cuda_memory);
@@ -396,12 +405,11 @@ private:
     }
 
     void initialize_runtime() {
-        const auto& model_metadata = metadata();
-        graph_.emplace(model_metadata.max_position_embeddings);
+        graph_.emplace(model_info_.max_context);
         cache_.emplace(
             config_.session_cache, config_.prefix_cache,
             internal::make_cuda_paged_prefix_cache(
-                *source_, model_metadata.max_position_embeddings,
+                *source_, model_info_.max_context,
                 state().supports_paged_text_session_state(), config_.prefix_cache),
             state().supports_text_session_state(),
             state().supports_text_session_state() ? 0 : 1,
@@ -467,9 +475,9 @@ private:
         info_ = {};
         info_.max_requests = std::max<std::size_t>(
             1, config_.continuous_batch.max_sequences);
-        info_.max_context = model_metadata.max_position_embeddings;
-        info_.vocab_size = static_cast<std::int32_t>(model_metadata.vocab_size);
-        info_.model_type = model_metadata.model_type;
+        info_.max_context = model_info_.max_context;
+        info_.vocab_size = static_cast<std::int32_t>(model_info_.vocab_size);
+        info_.model_type = model_info_.model_type;
         components().describe(info_);
         info_.reload = true;
         text_ = engine::TextProcessor::load(

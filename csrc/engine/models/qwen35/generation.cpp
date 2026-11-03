@@ -9,7 +9,7 @@ template Generation generate( \
     mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &, mfq::cuda::Executor*, \
     mfq::cuda::Collectives&, mfq::cuda::Executor::Mode, CudaProfiler&, \
     mfq::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>, \
-    const mfq::models::CausalLmMetadata &, \
+    const mfq::models::Info &, const mfq::ModelSource*, \
     DecodeGraphCache &, TextSessionCache &, const CudaRuntimeConfig &, \
     mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &, \
     mfq::engine::mtp::State &, PREDICTOR *, \
@@ -26,7 +26,7 @@ using namespace mfq::engine;
 template Generation run_mtp_generation<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>(
     mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &,
     mfq::cuda::Executor*, mfq::cuda::Collectives&, mfq::cuda::Executor::Mode,
-    mfq::cuda::RoutedCache&, const mfq::models::CausalLmMetadata &,
+    mfq::cuda::RoutedCache&, const mfq::models::Info &, const mfq::ModelSource*,
     MtpModule &, mfq::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
     const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,
     mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>);

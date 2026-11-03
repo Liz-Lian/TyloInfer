@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/models/common/prompt.h"
+#include "engine/models/causal_model.h"
 
 #include "engine/weights/fields.h"
 #include "engine/weights/workspace.h"
@@ -219,9 +220,11 @@ class CudaGridVisionPromptComponent {
                         .reshape({1, -1});
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 if constexpr (requires(const Model &value, Tensor value_ids, int device) {
-                                  value.embedding(std::move(value_ids), device);
+                                  static_cast<const mfq::models::CausalModel&>(value).embedding(
+                                      std::move(value_ids), device);
                               }) {
-                    return language.embedding(std::move(ids), primary).contiguous();
+                    const mfq::models::CausalModel& causal = language;
+                    return Tensor(mfq::ops::contiguous(causal.embedding(std::move(ids), primary)));
                 } else
 #endif
                 if constexpr (requires(const Model &value, mfq::cuda::Executor &value_executor,

@@ -1,4 +1,5 @@
 #pragma once
+#include "engine/models/info.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -34,7 +35,23 @@ struct CausalLmMetadata {
     std::vector<std::string> layer_types;
 };
 
+inline Info model_info(const CausalLmMetadata& metadata) {
+    return {metadata.vocab_size, metadata.max_position_embeddings, metadata.model_type,
+        std::size_t(metadata.hidden_size) * metadata.hc_mult * sizeof(float) * 8,
+        !metadata.flash_next, metadata.decode_graph_double_warmup};
+}
+
+template <class Model>
+Info model_info(const Model& model) {
+    if constexpr (requires { model.info(); }) return model.info();
+    else return model_info(model.metadata);
+}
+
 struct CausalState {
+    int64_t position() const noexcept { return cache_pos; }
+    void advance(int64_t tokens) noexcept { cache_pos += tokens; }
+    void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
+
     int64_t cache_pos = 0;
     int64_t decode_position_delta = 0;
     int64_t speculative_start = -1;

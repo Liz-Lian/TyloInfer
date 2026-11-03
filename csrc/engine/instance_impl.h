@@ -88,11 +88,10 @@ struct Backend {
             offload = std::make_shared<KvOffloadStore>(std::move(kv));
         }
         state = Load(*execution, options, true,
-            [&](auto& loaded, auto, auto) -> State {
+            [&](auto& loaded, auto, auto, auto source) -> State {
                 using LoadedModel = std::remove_cvref_t<decltype(loaded)>;
                 if (offload && !loaded.components.streamed_kv())
                     throw std::invalid_argument("CUDA streamed KV requires a QSA model");
-                auto source = loaded.language().source;
                 return std::make_unique<Text<LoadedModel>>(
                     *execution, weights, kv, offload, std::move(loaded), config,
                     std::move(source), weight_memory);
@@ -100,9 +99,9 @@ struct Backend {
         return visit([&](auto& state) {
             EngineInfo info;
             info.max_requests = std::max<std::size_t>(1, config.continuous_batch.max_sequences);
-            info.max_context = state.metadata.max_position_embeddings;
-            info.vocab_size = static_cast<int32_t>(state.metadata.vocab_size);
-            info.model_type = state.metadata.model_type;
+            info.max_context = state.info.max_context;
+            info.vocab_size = static_cast<int32_t>(state.info.vocab_size);
+            info.model_type = state.info.model_type;
             state.components.describe(info);
             info.reload = true;
             auto text = TextProcessor::load(*state.source, options.tokenizer_model,

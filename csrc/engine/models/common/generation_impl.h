@@ -5,7 +5,7 @@
 #include "engine/weights/routed_cache.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
-#include "engine/models/common/causal_metadata.h"
+#include "engine/models/info.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/requests/output.h"
 #include "engine/requests/policy.h"
@@ -17,7 +17,8 @@
 #include "engine/backends/cuda/executor/sampling.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/weights/moe/expert_cache.h"
-#include "engine/models/input.h"
+#include "engine/models/common/input.h"
+#include "engine/models/causal_model.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -36,7 +37,7 @@ constexpr bool has_forward =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     requires(Model& model, State& state, mfq::cuda::Input input,
              const mfq::models::ForwardOptions& options) {
-        model.forward(std::move(input), state, options);
+        static_cast<const mfq::models::CausalModel&>(model).forward(std::move(input), state, options);
     } ||
 #endif
     requires(
@@ -50,7 +51,7 @@ template <typename Model>
 constexpr bool has_logits =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     requires(Model& model, Tensor hidden, const mfq::models::ForwardOptions& options) {
-        model.logits(std::move(hidden), true, options);
+        static_cast<const mfq::models::CausalModel&>(model).logits(std::move(hidden), true, options);
     } ||
 #endif
     requires(
@@ -63,8 +64,10 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
               Collectives& collectives, const Executor::Mode& mode, mfq::cuda::Input input) {
     static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires { model.forward(std::move(input), state, forward_options(mode)); }) {
-        return model.forward(std::move(input), state, forward_options(mode));
+    if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).forward(
+                               std::move(input), state, forward_options(mode)); }) {
+        const mfq::models::CausalModel& causal = model;
+        return Tensor(causal.forward(std::move(input), state, forward_options(mode)));
     } else
 #endif
     {
@@ -80,8 +83,10 @@ Tensor project(Model& model, mfq::cuda::Executor* executor,
                const Executor::Mode& mode, Tensor value, bool capped) {
     static_assert(has_logits<Model>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires { model.logits(std::move(value), capped, forward_options(mode)); }) {
-        return model.logits(std::move(value), capped, forward_options(mode));
+    if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).logits(
+                               std::move(value), capped, forward_options(mode)); }) {
+        const mfq::models::CausalModel& causal = model;
+        return Tensor(causal.logits(std::move(value), capped, forward_options(mode)));
     } else
 #endif
     {
@@ -156,7 +161,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
     RoutedCache& weights;
     bool& serial_branches;
     bool report_memory;
-    const mfq::models::CausalLmMetadata &metadata;
+    const mfq::models::Info &info;
     DecodeGraphCache &graph;
     const MfqTokenConstraintPtr &constraint;
     mfq_tensor_backend::Tensor pending, counts;
@@ -176,14 +181,14 @@ template <typename Model, typename State> struct CudaGenerationOps {
     CudaGenerationOps(Model &model, State &state, mfq::cuda::Executor* executor,
         Collectives& collectives, Executor::Mode mode, CudaProfiler& profiler,
         RoutedCache& weights, bool& serial_branches, bool report_memory,
-        const mfq::models::CausalLmMetadata &metadata, DecodeGraphCache &graph,
+        const mfq::models::Info &info, DecodeGraphCache &graph,
         const mfq::engine::InferenceRequest &request, const PreparedPrompt *prepared,
         const CudaDecodeGraphConfig &graph_config,int64_t compute_chunk=1024,
         mfq::engine::InferenceOutput* inference_output=nullptr,
         std::function<void()> restore = {})
         : model(model), state(state), executor(executor), collectives(collectives), mode(mode), profiler(profiler),
           weights(weights), serial_branches(serial_branches), report_memory(report_memory),
-          metadata(metadata), graph(graph), constraint(request.token_constraint),
+          info(info), graph(graph), constraint(request.token_constraint),
           sampler(request.sampling),
           has_penalties(sampler.has_penalties()), prepared(prepared), graph_config(graph_config),
           prefill_compute_chunk(compute_chunk),output(inference_output),restore(std::move(restore)) {
@@ -193,9 +198,9 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 .device(mfq_tensor_backend::kCUDA))
                        .reshape({1, -1})
                        .contiguous();
-        graph.ensure_storage(metadata.vocab_size);
+        graph.ensure_storage(info.vocab_size);
         if (has_penalties) {
-            counts = mfq::cuda::SamplingOps::token_counts(full_ids, metadata.vocab_size, graph.counts);
+            counts = mfq::cuda::SamplingOps::token_counts(full_ids, info.vocab_size, graph.counts);
         }
         generation_limit = request.sampling.max_tokens;
         graph_active = graph_eligible();
@@ -225,19 +230,19 @@ template <typename Model, typename State> struct CudaGenerationOps {
             if constexpr (has_forward<Model, State>) {
                 mfq::cuda::Input input;
                 input.ids = ids;
-                input.embeddings = prepared->embeddings.narrow(1, chunk.offset, chunk.count)
+                input.embeddings = Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                                         .contiguous();
                 if (prepared->positions.defined())
-                    input.positions = prepared->positions.narrow(-1, chunk.offset, chunk.count)
+                    input.positions = Tensor(prepared->positions).narrow(-1, chunk.offset, chunk.count)
                                            .contiguous();
                 input.advance = true;
                 hidden = ::mfq::cuda::internal::generation_detail::hidden(
                     model, state, executor, collectives, mode, std::move(input));
             } else {
                 hidden = model.hidden_forward_inputs(ids,
-                    prepared->embeddings.narrow(1, chunk.offset, chunk.count).contiguous(),
+                    Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count).contiguous(),
                     prepared->positions.defined()?MfqOptional<Tensor>(
-                        prepared->positions.narrow(-1,chunk.offset,chunk.count).contiguous()):mfq_nullopt,
+                        Tensor(prepared->positions).narrow(-1,chunk.offset,chunk.count).contiguous()):mfq_nullopt,
                     mfq_nullopt,
                     nullptr,
                     mfq_nullopt,
@@ -249,7 +254,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                 hidden=hidden.narrow(1,hidden.size(1)-1,1).clone();
                 workspace.finish();
             }
-            state.decode_position_delta = prepared->decode_position_delta;
+            state.set_position_delta(prepared->decode_position_delta);
         } else {
             if constexpr (has_forward<Model, State>) {
                 hidden = ::mfq::cuda::internal::generation_detail::hidden(
@@ -295,7 +300,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
 
     bool graph_eligible() const {
         return graph_config.enabled && (!prepared || !prepared->transformed()) && !constraint &&
-               !metadata.flash_next && mfq_cuda_graph_capture_supported() &&
+               info.decode_graph && mfq_cuda_graph_capture_supported() &&
                !weights.moe &&
                generation_limit >= graph_config.minimum_generation_tokens &&
                generation_limit <= graph.generated_capacity;
@@ -309,11 +314,11 @@ template <typename Model, typename State> struct CudaGenerationOps {
             sample_token_counts_add_cuda(counts, pending.contiguous());
         }
 
-        graph.initialize_inputs(pending, state.cache_pos, sampler.ops().random_host());
+        graph.initialize_inputs(pending, state.position(), sampler.ops().random_host());
 
-        const std::int64_t requested = state.cache_pos + generation_limit;
+        const std::int64_t requested = state.position() + generation_limit;
         const std::int64_t planned =
-            decode_graph_bucket(requested, metadata.max_position_embeddings);
+            decode_graph_bucket(requested, info.max_context);
         const std::int64_t parts =
             decode_graph_attention_parts(planned, FullAttention::kDecodeAttentionMaxParts);
         const bool greedy = sampler.greedy();
@@ -365,8 +370,8 @@ template <typename Model, typename State> struct CudaGenerationOps {
         };
         const auto current_graph_storage = [&]() {
             std::vector<Tensor> result;
-            const auto append = [&result](const Tensor& tensor) {
-                if (tensor.defined()) result.push_back(tensor);
+            const auto append = [&result](const auto& tensor) {
+                if (tensor.defined()) result.emplace_back(tensor);
             };
             if constexpr (requires(const State& value) { value.storage(); }) {
                 for (const auto& tensor : state.storage()) append(tensor);
@@ -386,18 +391,9 @@ template <typename Model, typename State> struct CudaGenerationOps {
             if constexpr (!has_forward<Model, State>) branch_scope.emplace(serial_branches);
             graph.graph = std::make_unique<MfqCudaGraph>();
             try {
-                const bool double_warmup = metadata.decode_graph_double_warmup;
-                std::vector<Tensor*> warmup_states;
-                if constexpr (requires(State& value) { value.graph_state(); }) {
-                    warmup_states = state.graph_state();
-                } else {
-                    for (const auto& block : state.blocks) {
-                        for (auto* state : block->graph_warmup_state()) {
-                            warmup_states.push_back(state);
-                        }
-                    }
-                }
-                prepare_decode_graph_memory(warmup_states, state.cache_pos,
+                const bool double_warmup = info.double_warmup;
+                auto warmup_states = state.graph_state();
+                prepare_decode_graph_memory(warmup_states, state,
                     double_warmup, *graph.graph, sample_static,
                     graph.graph_participant_streams(collectives));
                 graph.graph->capture_begin();
@@ -448,7 +444,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         }
         graph.graph->replay();
         const auto token = graph.static_next.template item<int64_t>();
-        ++state.cache_pos;
+        state.advance(1);
         return token;
     }
     void accept(std::int64_t token) {
