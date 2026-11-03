@@ -27,7 +27,9 @@ struct FfnStep {
     Trace* trace;
 #endif
     int trace_layer;
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     bool fused_norms;
+#endif
 };
 
 static void trace_stage(const FfnStep& mode, int layer, const char* name,
@@ -100,31 +102,34 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
     };
 #endif
     trace_stage(mode, layer, "attention_output", oo);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    bool fused_norms = false;
+#else
     const bool fused_norms = gemma4_moe && mode.fused_norms &&
                              mode.trace == nullptr && layer_scale.defined();
+#endif
     using Inputs = mfq::models::gemma4::FfnInputs<Tensor>;
     struct Selection { Tensor ids, weights; };
     auto inputs = mfq::models::gemma4::prepare_ffn(
         residual, oo, gemma4_moe,
         [&](Tensor residual, Tensor oo) -> std::optional<Inputs> {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            if (!gemma4_moe || mode.trace != nullptr || !layer_scale.defined()) return {};
+            auto prepared = mfq::ops::residual_norms(
+                residual, oo, attn_post_norm, ffn_norm,
+                gemma_router_norm_scale, ffn_pre_norm_2, rms_norm_eps);
+            if (!prepared) return {};
+            fused_norms = true;
+            return Inputs{mfq::ops::reshape(prepared->residual, layer_shape),
+                          prepared->dense, prepared->router, prepared->experts};
+#else
             if (!fused_norms)
                 return {};
             auto prepared = measure("gemma.attn_residual_pre_norms", [&]() {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto values = mfq::ops::residual_norms(
-                    mfq::ops::reshape(residual, flat_shape), mfq::ops::reshape(oo, flat_shape),
-                    attn_post_norm, ffn_norm,
-                    gemma_router_norm_scale, ffn_pre_norm_2, rms_norm_eps);
-                return std::array<Tensor, 4>{values.residual, values.dense, values.router, values.experts};
-#else
                 return gemma4_attn_residual_pre_norms_f16_cuda(
                     residual.reshape({B * T, H}), oo.reshape({B * T, H}), attn_post_norm, ffn_norm,
                     gemma_router_norm_scale, ffn_pre_norm_2, rms_norm_eps);
-#endif
             });
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return Inputs{mfq::ops::reshape(prepared[0], layer_shape), prepared[1], prepared[2], prepared[3]};
-#else
             return Inputs{prepared[0].reshape({B, T, H}), prepared[1], prepared[2], prepared[3]};
 #endif
         },
@@ -537,7 +542,7 @@ Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return forward_ffn(layer, {mode.ffn, mode.trace, mode.trace_layer, mode.fused_norms},
+    return forward_ffn(layer, {mode.ffn, mode.trace, mode.trace_layer},
                        std::move(result[0]), std::move(result[1]), B, T, H);
 #else
     return forward_ffn(layer, executor, {mode.ffn, mode.trace, mode.trace_layer, mode.gemma4_fused_norms},

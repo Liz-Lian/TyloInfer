@@ -1,6 +1,7 @@
 #include "rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
+#include <initializer_list>
 #include <stdexcept>
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -66,16 +67,31 @@ std::array<mfq::Tensor, 3> mfq::cuda::ops::qkv_norm(std::array<mfq::Tensor, 3> v
     });
     return {q, k, v};
 }
-mfq::ops::ResidualNorms mfq::cuda::ops::residual_norms(
+std::optional<mfq::ops::ResidualNorms> mfq::cuda::ops::residual_norms(
     mfq::Tensor residual, mfq::Tensor attention, const mfq::Tensor& attention_weight,
     const mfq::Tensor& dense_weight, const mfq::Tensor& router_weight,
     const mfq::Tensor& expert_weight, double eps) {
+    if (!Executor::current().mode().gemma4_fused_norms) return std::nullopt;
+    for (const mfq::Tensor* value : std::initializer_list<const mfq::Tensor*>{
+             &attention, &attention_weight, &dense_weight, &router_weight, &expert_weight}) {
+        if (!residual.defined()) throw std::invalid_argument("undefined tensor");
+        if (!residual.device().is_cpu() && !residual.device().is_cuda())
+            throw std::invalid_argument("unsupported tensor device");
+        if (!value->defined()) throw std::invalid_argument("undefined tensor");
+        if (!value->device().is_cpu() && !value->device().is_cuda())
+            throw std::invalid_argument("unsupported tensor device");
+        if (residual.device() != value->device()) throw std::invalid_argument("tensor devices do not match");
+    }
     MfqCudaGuard guard(residual.device().index);
     using T = mfq_tensor_backend::Tensor;
-    auto values = gemma4_attn_residual_pre_norms_f16_cuda(
-        T(residual), T(attention), T(attention_weight), T(dense_weight),
-        T(router_weight), T(expert_weight), eps);
-    return {values.at(0), values.at(1), values.at(2), values.at(3)};
+    auto values = mfq::ops::measure("gemma.attn_residual_pre_norms", residual.device(), [&] {
+        auto flat_residual = T(residual).reshape({-1, residual.size(-1)});
+        auto flat_attention = T(attention).reshape(flat_residual.sizes());
+        return gemma4_attn_residual_pre_norms_f16_cuda(
+            flat_residual, flat_attention, T(attention_weight), T(dense_weight),
+            T(router_weight), T(expert_weight), eps);
+    });
+    return mfq::ops::ResidualNorms{values.at(0), values.at(1), values.at(2), values.at(3)};
 }
 mfq::Tensor mfq::cuda::ops::merge_norms(
     mfq::Tensor dense, mfq::Tensor experts, mfq::Tensor residual,

@@ -121,13 +121,10 @@ Tensor add_residual(Tensor residual, Tensor value) {
     require_cuda(residual);
     return cuda::ops::add_residual(std::move(residual), std::move(value));
 }
-ResidualNorms residual_norms(Tensor residual, Tensor attention, const Tensor& attention_weight,
-                             const Tensor& dense_weight, const Tensor& router_weight,
-                             const Tensor& expert_weight, double eps) {
-    for (const Tensor* value : std::initializer_list<const Tensor*>{
-             &attention, &attention_weight, &dense_weight, &router_weight, &expert_weight})
-        compatible(residual, *value);
-    require_cuda(residual);
+std::optional<ResidualNorms> residual_norms(Tensor residual, Tensor attention, const Tensor& attention_weight,
+                                            const Tensor& dense_weight, const Tensor& router_weight,
+                                            const Tensor& expert_weight, double eps) {
+    if (!residual.is_cuda()) return std::nullopt;
     return cuda::ops::residual_norms(std::move(residual), std::move(attention), attention_weight,
                                      dense_weight, router_weight, expert_weight, eps);
 }

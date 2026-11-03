@@ -86,9 +86,11 @@ Tensor add_residual(Tensor residual, Tensor value);
 struct ResidualNorms {
     Tensor residual, dense, router, experts;
 };
-ResidualNorms residual_norms(Tensor residual, Tensor attention, const Tensor& attention_weight,
-                             const Tensor& dense_weight, const Tensor& router_weight,
-                             const Tensor& expert_weight, double eps);
+// A declined fusion returns nullopt without computing or writing.
+// Inputs are flattened to two dimensions, preserving the last; results have the flattened shape.
+std::optional<ResidualNorms> residual_norms(Tensor residual, Tensor attention, const Tensor& attention_weight,
+                                            const Tensor& dense_weight, const Tensor& router_weight,
+                                            const Tensor& expert_weight, double eps);
 Tensor merge_norms(Tensor dense, Tensor experts, Tensor residual, const Tensor& dense_weight,
                    const Tensor& expert_weight, const Tensor& output_weight,
                    const Tensor& scale, double eps);

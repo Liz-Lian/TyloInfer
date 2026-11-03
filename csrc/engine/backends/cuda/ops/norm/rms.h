@@ -10,7 +10,7 @@ mfq::Tensor rms_norm(mfq::Tensor input, const mfq::Tensor& weight, double eps, d
                      mfq::ScalarType output_type);
 std::array<mfq::Tensor, 3> qkv_norm(std::array<mfq::Tensor, 3> values,
     std::array<mfq::Tensor, 3> weights, double eps, double offset, mfq::ScalarType output_type);
-mfq::ops::ResidualNorms residual_norms(mfq::Tensor residual, mfq::Tensor attention,
+std::optional<mfq::ops::ResidualNorms> residual_norms(mfq::Tensor residual, mfq::Tensor attention,
     const mfq::Tensor& attention_weight, const mfq::Tensor& dense_weight,
     const mfq::Tensor& router_weight, const mfq::Tensor& expert_weight, double eps);
 mfq::Tensor merge_norms(mfq::Tensor dense, mfq::Tensor experts, mfq::Tensor residual,
