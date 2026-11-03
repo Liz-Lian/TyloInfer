@@ -39,7 +39,8 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     const mlx::core::array& norm_weight,
     int key_heads, int value_heads, int dimension,
     float convolution_eps, float norm_eps, bool output_gate_silu = false,
-    bool tiled_heads = false, mlx::core::Dtype output_dtype = mlx::core::float32);
+    bool tiled_heads = false, mlx::core::Dtype output_dtype = mlx::core::float32,
+    bool transposed_state = true, bool round_fp16 = false);
 
 // Projected inputs are [B,T,H]; outputs are FP32 [B,H,T]. The caller
 // precomputes decay_scale = -exp(a_log), preserving the model's storage
@@ -59,7 +60,7 @@ mlx::core::array gated_delta_output_norm(
     mlx::core::Dtype output_dtype);
 
 // Single-row decode fast path for scalar-gated DeltaNet layers. The recurrent
-// state uses the transposed [value,key] layout accepted by gated_delta_net.
+// state layout matches the transposed_state contract of gated_delta_net.
 MlxGatedDeltaDecodeResult gated_delta_decode_step(
     const mlx::core::array& qk,
     const mlx::core::array& value,
@@ -79,7 +80,8 @@ MlxGatedDeltaDecodeResult gated_delta_decode_step(
     float norm_eps,
     bool output_gate_silu = false,
     bool tiled_heads = false,
-    mlx::core::Dtype output_dtype = mlx::core::float32);
+    mlx::core::Dtype output_dtype = mlx::core::float32,
+    bool transposed_state = true, bool round_fp16 = false);
 
 struct MlxLinearConvQkvResult {
     mlx::core::array query;

@@ -176,13 +176,15 @@ static inline void gguf_repack_group(device const uchar *row, uint fmt, uint G, 
     case GGUF_FMT_IQ3S:
     default: {  // IQ3_S: grid entry t covers elements 4t..4t+3 (qs[t], ninth bit t of qh); sign bit e negates element e
       device const uchar *qs = blk + 2 + 8 * j, *signs = blk + 74 + 4 * j;
-      const uint qh = blk[66 + j], scale = (blk[106 + j / 2] >> (4 * (j % 2))) & 15;
+      const uint qh = blk[66 + j];
       for (uint e = 0; e < 32; ++e) hi[quant_slot(e)] = (signs[e / 8] >> (e % 8)) & 1;
       const uint sign = gguf_bit_word(hi, 1, 0);
-      for (uint c = 0; c < 4; ++c)
-        ((device uint *)out0)[c] = uint(qs[c]) | uint(qs[4 + c]) << 8 | ((sign >> (8 * c)) & 0xFF) << 16 |
-                                   ((qh >> c) & 1) << 24 | ((qh >> (4 + c)) & 1) << 25 | scale << 26;
-      if (j == 0) { meta[0] = blk[0]; meta[1] = blk[1]; }
+      for (uint i = 0; i < 8; ++i) out0[i] = qs[i];
+      *((device packed_uchar4 *)out1) = packed_uchar4(as_type<uchar4>(sign));
+      uint high = 0;
+      for (uint c = 0; c < 4; ++c) high |= ((qh >> c) & 1) << (2 * c) | ((qh >> (4 + c)) & 1) << (2 * c + 1);
+      out1[4] = uchar(high);
+      if (j == 0) { meta[0] = blk[0]; meta[1] = blk[1]; for (uint i = 0; i < 4; ++i) meta[2 + i] = blk[106 + i]; }
       break;
     }
   }

@@ -3,6 +3,7 @@
 #include "qwen4_ops.h"
 #include "mlx_linear_attention.h"
 #include "mlx_dflash2_serving.h"
+#include "mlx_qwen35_causal_lm.h"
 #include <mlx/io.h>
 #include <nlohmann/json.hpp>
 #include <cmath>
@@ -55,6 +56,9 @@ int main() {
         }
         for (const auto* name : {"self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
                 "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"}) dense(p + name + ".weight", {64, 64});
+        weights.at("fc.weight") = eye(64, bfloat16);
+        weights.at(p + "self_attn.k_proj.weight") = eye(64, bfloat16);
+        weights.at(p + "self_attn.v_proj.weight") = eye(64, bfloat16);
         save_safetensors((directory / "model.safetensors").string(), weights);
         std::vector<float> head(8 * 1024, -1000.f);
         for (int row = 0; row < 8; ++row) {
@@ -72,9 +76,18 @@ int main() {
         draft.reset(context);
         draft.append_context(context, ones({1, 17, 64}, bfloat16), 0);
         const auto original = context;
+        auto original_keys = view(*original.layers[0].keys, uint16);
+        original_keys.eval();
+        const std::vector<std::uint16_t> saved_keys(original_keys.data<std::uint16_t>(),
+            original_keys.data<std::uint16_t>() + original_keys.size());
         draft.append_context(context, ones({1, 3, 64}, bfloat16), 17);
         if (context.position != 20 || original.position != 17 || context.bytes() != 6144)
             throw std::runtime_error("draft context accounting or snapshot changed");
+        auto updated_keys = view(*context.layers[0].keys, uint16);
+        updated_keys.eval();
+        if (!std::equal(saved_keys.begin(), saved_keys.end(), original_keys.data<std::uint16_t>()) ||
+            all(original_keys == updated_keys).item<bool>())
+            throw std::runtime_error("asynchronous draft ring update changed a snapshot or failed to wrap");
         auto selected_hidden = zeros({1}, float32);
         auto proposal = draft.propose(context, 7, ones({1, 8, 64}, bfloat16), [&](const array&) { return logits; },
             [&](std::string_view name, const array& value) { if (name == "selector_hidden") selected_hidden = value; });
@@ -97,6 +110,76 @@ int main() {
         try { draft.append_context(context, ones({1, 1, 64}, bfloat16), 19); }
         catch (const std::invalid_argument&) { rejected = true; }
         if (!rejected || context.position != 20) throw std::runtime_error("draft accepted a discontinuous append");
+        {
+            Qwen35Config geometry;
+            geometry.model_type = "qwen3_5"; geometry.text_model_type = "qwen3_5_text";
+            geometry.vocab_size = 1024; geometry.hidden_size = 64; geometry.intermediate_size = 64;
+            geometry.num_hidden_layers = 1; geometry.num_attention_heads = 1; geometry.num_key_value_heads = 1;
+            geometry.max_position_embeddings = 128; geometry.head_dim = 64; geometry.rotary_dim = 64;
+            geometry.norm_weight_offset = 0; geometry.layer_types = {"full_attention"};
+            const MlxRmsNorm norm(ones({64}, float32), 1e-6f);
+            const auto linear = [&] { return MlxLinear(zeros({64, 64}, float32)); };
+            const auto make_target = [&](bool reject = false) {
+                std::vector<MlxQwen35Layer> blocks;
+                blocks.emplace_back(MlxQwen35FullAttentionBlock(geometry, norm, linear(), linear(), linear(), linear(),
+                    std::nullopt, std::nullopt, norm, MlxQwen35DenseSwiGlu(linear(), linear(), linear())));
+                auto output = zeros({1024, 64}, float32);
+                output = slice_update(output, ones({1, 64}, float32), {777, 0}, {778, 64});
+                if (reject) output = slice_update(output, full({1, 64}, 1.0625f, float32), {88, 0}, {89, 64});
+                return MlxQwen35CausalLm(geometry, Qwen35Embedding(MlxEmbedding(ones({1024, 64}, float32))),
+                    std::move(blocks), norm, Qwen35Linear(MlxLinear(output)), float16);
+            };
+            auto target = make_target();
+            MlxSamplingParams greedy;
+            greedy.temperature = 0;
+            const std::vector<std::int64_t> prompt{1, 2, 3};
+            for (int depth = 1; depth <= 7; ++depth) {
+                std::vector<std::int64_t> tokens;
+                MlxDFlash2GenerationStats stats;
+                const auto count = draft.generate(target, prompt, greedy, 16,
+                    [&](auto token) { tokens.push_back(token); return true; }, {}, 32, std::nullopt, &stats, depth);
+                if (count != 16 || tokens != std::vector<std::int64_t>(16, 777) || !stats.cycles ||
+                    !stats.accepted || stats.accepted != stats.verified)
+                    throw std::runtime_error("Qwen3.5 DFlash2 full generation or depth differs");
+                if (target.take_hidden_capture()) throw std::runtime_error("DFlash2 left hidden capture active");
+            }
+            std::vector<std::int64_t> cancelled;
+            if (draft.generate(target, prompt, greedy, 16, [&](auto token) {
+                    cancelled.push_back(token); return cancelled.size() < 3;
+                }) != 3 || cancelled != std::vector<std::int64_t>(3, 777) || target.cache_position() != 6)
+                throw std::runtime_error("Qwen3.5 DFlash2 ignored callback cancellation");
+            const int position = target.cache_position();
+            if (draft.generate(target, prompt, greedy, 0) != 0 || target.cache_position() != position)
+                throw std::runtime_error("zero-token DFlash2 changed target state");
+            bool invalid = false;
+            try { draft.generate(target, {1024}, greedy, 1); } catch (const std::invalid_argument&) { invalid = true; }
+            if (!invalid || target.cache_position() != position)
+                throw std::runtime_error("invalid DFlash2 prompt changed target state");
+            invalid = false;
+            int emitted = 0;
+            try { draft.generate(target, prompt, greedy, 16, [&](auto) {
+                if (++emitted == 3) throw std::runtime_error("cancel");
+                return true;
+            }); }
+            catch (const std::runtime_error&) { invalid = true; }
+            if (!invalid || emitted != 3 || target.cache_position() != 6 || target.take_hidden_capture())
+                throw std::runtime_error("DFlash2 callback exception leaked capture or unaccepted state");
+            if (draft.generate(target, prompt, greedy, 2) != 2)
+                throw std::runtime_error("DFlash2 target failed to recover after callback exception");
+            if (draft.generate(target, prompt, greedy, 16, {}, {}, 32, 777) != 0)
+                throw std::runtime_error("DFlash2 emitted the requested stop token");
+            if (draft.generate(target, prompt, greedy, 200) != 126 || target.cache_position() != 128)
+                throw std::runtime_error("DFlash2 generation crossed the target context limit");
+            auto rejecting_target = make_target(true);
+            std::vector<std::int64_t> rejected_tokens;
+            MlxDFlash2GenerationStats rejected_stats;
+            if (draft.generate(rejecting_target, prompt, greedy, 16, [&](auto token) {
+                    rejected_tokens.push_back(token); return true;
+                }, {}, 32, std::nullopt, &rejected_stats) != 16 ||
+                rejected_tokens != std::vector<std::int64_t>(16, 88) || !rejected_stats.cycles ||
+                rejected_stats.accepted != 0 || rejecting_target.cache_position() != 18)
+                throw std::runtime_error("DFlash2 rejection changed teacher tokens or retained invalid state");
+        }
         for (auto dtype : {float16, bfloat16, float32}) {
             auto q = astype(reshape(sin(arange(8 * 512, float32) * .01f), {1, 8, 512}), dtype);
             auto k = astype(reshape(cos(arange(8 * 128, float32) * .02f), {1, 8, 128}), dtype);

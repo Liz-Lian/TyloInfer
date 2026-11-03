@@ -230,18 +230,26 @@ struct FmtQ80 {
   static uint2 values(Chunk q) { return q; }
   static QuantCoef coef(Meta mt, ushort) { return {float2(float(as_type<half>(mt)))}; }
 };
-// IQ3_S: plane0 word c = the 8-bit grid indices of pairs 0, 1 and 2, 3, chunk c's sign bits, the two ninth index
-// bits and the group's 4-bit scale; meta half d per super-block. value = d * (1 + 2 * scale) * signed grid value.
+// IQ3_S: eight low index bytes, four slot-order sign bytes and one high-index byte per group; d and scales per block.
 struct FmtIQ3S {
-  QUANT_FORMAT(GGUF_FMT_IQ3S, QuantGrid, 0, 32, true);
-  struct Payload { uint4 a; }; typedef uint Chunk; typedef ushort Meta;
-  static Payload load(device uchar *p0, device uchar *) { return {*((device uint4 *)p0)}; }
-  static Meta loadMeta(device uchar *m) { return *((device ushort *)m); }
-  static Chunk chunk(Payload w, ushort c) { return w.a[c]; }
-  static Chunk loadChunk(device uchar *p0, device uchar *, ushort c) { return *((device uint *)(p0 + 4 * c)); }
+  QUANT_FORMAT(GGUF_FMT_IQ3S, QuantGrid, 0, 32, false);
+  struct Payload { uint2 a; uint signs; uchar high; }; typedef uint Chunk;
+  struct Meta { ushort d; uint scales; };
+  static Payload load(device uchar *p0, device uchar *p1) {
+    return {*((device uint2 *)p0), as_type<uint>(uchar4(*((device packed_uchar4 *)p1))), p1[4]};
+  }
+  static Meta loadMeta(device uchar *m) {
+    device ushort *p = (device ushort *)m;
+    return {p[0], uint(p[1]) | uint(p[2]) << 16};
+  }
+  static Chunk chunk(Payload w, ushort c) {
+    return ((w.a.x >> (8 * c)) & 0xFF) | ((w.a.y >> (8 * c)) & 0xFF) << 8 |
+           ((w.signs >> (8 * c)) & 0xFF) << 16 | ((uint(w.high) >> (2 * c)) & 3) << 24;
+  }
+  static Chunk loadChunk(device uchar *p0, device uchar *p1, ushort c) { return chunk(load(p0, p1), c); }
   static uint2 grid(Chunk q) { return uint2(kIQ3SGrid[(q & 0xFF) | ((q >> 16) & 0x100)], kIQ3SGrid[((q >> 8) & 0xFF) | ((q >> 17) & 0x100)]); }
   static uint signs(Chunk q) { return (q >> 16) & 0xFF; }
-  static QuantCoef coef(Meta mt, Chunk q) { return {float2(float(as_type<half>(mt)) * float(1 + 2 * ((q >> 26) & 0xF)))}; }
+  static QuantCoef coef(Meta mt, ushort j) { return {float2(float(as_type<half>(mt.d)) * float(1 + 2 * ((mt.scales >> (4 * j)) & 0xF)))}; }
 };
 // Q2_K: plane0 2-bit codes (halfword c = chunk c); meta half d, half dmin, the 16 scale bytes. value = d * sc * q -
 // dmin * mn with the low (sc) and high (mn) nibble of one scale byte per 16-group.

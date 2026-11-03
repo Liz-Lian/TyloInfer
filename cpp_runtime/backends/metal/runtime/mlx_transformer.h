@@ -73,7 +73,8 @@ public:
         float weight_offset = 0.0f);
 
     mlx::core::array operator()(
-        const mlx::core::array& input) const;
+        const mlx::core::array& input,
+        std::optional<mlx::core::Dtype> output_dtype = std::nullopt) const;
 
     int width() const noexcept {
         return width_;

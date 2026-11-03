@@ -667,6 +667,76 @@ void compact_formats(const std::filesystem::path& directory) {
 }
 }
 
+namespace {
+void qwen35_nextn_source(const std::filesystem::path& directory) {
+    auto* tensors = ggml_init({1 << 20, nullptr, false});
+    auto* header = gguf_init_empty();
+    gguf_set_val_str(header, "general.architecture", "qwen35");
+    gguf_set_val_u32(header, "qwen35.embedding_length", 128);
+    gguf_set_val_u32(header, "qwen35.block_count", 3);
+    gguf_set_val_u32(header, "qwen35.attention.head_count", 1);
+    for (const auto* name : {"blk.0.attn_qkv.weight", "blk.1.attn_q.weight", "blk.2.attn_q.weight"}) {
+        auto* tensor = ggml_new_tensor_2d(tensors, GGML_TYPE_F16, 128, 128);
+        ggml_set_name(tensor, name);
+        std::memset(tensor->data, 0, ggml_nbytes(tensor));
+        gguf_add_tensor(header, tensor);
+    }
+    const auto path = directory / "qwen35-nextn.gguf";
+    for (const int predictors : {0, 1, 2}) {
+        gguf_set_val_u32(header, "qwen35.nextn_predict_layers", predictors);
+        require(gguf_write_to_file(header, path.string().c_str(), false), "NextN fixture write failed");
+        mfq::GgufModelSource source(path);
+        const auto config = nlohmann::json::parse(source.model_config_json());
+        require(config.at("num_hidden_layers") == 3 - predictors && config.at("layer_types").size() == 3 - predictors,
+            "GGUF NextN blocks leaked into the ordinary backbone");
+        require(config.at("layer_types").at(0) == "linear_attention", "NextN changed the backbone attention types");
+        require(source.find_tensor(predictors == 1 ? "predictor.block.0.attention.query.weight" :
+            "model.block.2.attention.query.weight"), "NextN tensor record was discarded");
+        require(config.at("mtp_num_hidden_layers") == 0, "partial NextN fixture advertised a complete MTP head");
+    }
+    for (int invalid = 0; invalid < 4; ++invalid) {
+        if (invalid == 0) gguf_set_val_u32(header, "qwen35.nextn_predict_layers", 3);
+        else if (invalid == 1) gguf_set_val_u32(header, "qwen35.nextn_predict_layers", 4);
+        else if (invalid == 2) gguf_set_val_i32(header, "qwen35.nextn_predict_layers", -1);
+        else gguf_set_val_f32(header, "qwen35.nextn_predict_layers", .5f);
+        require(gguf_write_to_file(header, path.string().c_str(), false), "invalid NextN fixture write failed");
+        bool rejected = false;
+        try { mfq::GgufModelSource source(path); }
+        catch (const std::runtime_error& error) { rejected = std::string(error.what()).find("NextN layer count") != std::string::npos; }
+        require(rejected, "invalid GGUF NextN layer count accepted");
+    }
+    gguf_set_val_u32(header, "qwen35.nextn_predict_layers", 1);
+    for (const auto* suffix : {"enorm", "hnorm", "shared_head_norm"}) {
+        auto* tensor = ggml_new_tensor_1d(tensors, GGML_TYPE_F32, 128);
+        ggml_set_name(tensor, (std::string("blk.2.nextn.") + suffix + ".weight").c_str());
+        std::fill_n(static_cast<float*>(tensor->data), 128, .5f);
+        gguf_add_tensor(header, tensor);
+    }
+    auto* fusion = ggml_new_tensor_2d(tensors, GGML_TYPE_F16, 256, 128);
+    ggml_set_name(fusion, "blk.2.nextn.eh_proj.weight");
+    std::memset(fusion->data, 0, ggml_nbytes(fusion));
+    gguf_add_tensor(header, fusion);
+    require(gguf_write_to_file(header, path.string().c_str(), false), "MTP fixture write failed");
+    {
+        mfq::GgufModelSource source(path);
+        const auto config = nlohmann::json::parse(source.model_config_json());
+        require(config.at("num_hidden_layers") == 2 && config.at("mtp_num_hidden_layers") == 1,
+            "GGUF NextN MTP geometry lost");
+        require(config.at("mtp_use_dedicated_embeddings") == false, "shared MTP embeddings became dedicated");
+        const auto* record = source.find_tensor("predictor.fusion.weight");
+        require(record && record->shape == std::vector<int64_t>{128, 256}, "GGUF NextN fusion layout differs");
+        for (const auto* name : {"predictor.embedding_norm.weight", "predictor.hidden_norm.weight", "predictor.output_norm.weight"})
+            require(source.find_tensor(name), "GGUF NextN normalization alias missing");
+        const auto norm = source.read("predictor.embedding_norm.weight");
+        float norm_value = 0;
+        std::memcpy(&norm_value, norm.data() + 12, sizeof(norm_value));
+        require(norm_value == .5f, "GGUF NextN changed the absolute normalization weights");
+        require(!source.find_tensor("model.block.2.attention.query.weight"), "MTP block remained in the backbone namespace");
+    }
+    gguf_free(header); ggml_free(tensors);
+}
+}
+
 int main() {
     const auto directory = std::filesystem::temp_directory_path() /
         ("tinfer-gguf-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -766,6 +836,7 @@ int main() {
         bool truncated = false;
         try { mfq::GgufModelSource invalid(path); } catch (const std::runtime_error&) { truncated = true; }
         require(truncated, "truncated GGUF accepted");
+        qwen35_nextn_source(directory);
         qwen4_source(directory);
         compact_formats(directory);
         deepseek_source(directory);

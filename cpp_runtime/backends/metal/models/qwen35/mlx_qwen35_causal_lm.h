@@ -206,6 +206,14 @@ public:
 
     mlx::core::array embed_tokens(
         const mlx::core::array& token_ids) const;
+    void set_hidden_capture_layers(std::vector<int> layers);
+    std::optional<mlx::core::array> take_hidden_capture();
+    mlx::core::array project_hidden_logits(const mlx::core::array& hidden) const;
+    mlx::core::array prefill_logits(const mlx::core::array& token_ids);
+    mlx::core::array verify_tokens(const mlx::core::array& token_ids);
+    void resolve_verified_tokens(int accepted_drafts, int draft_count);
+    int context_capacity() const noexcept { return static_cast<int>(config_.max_position_embeddings); }
+    void record_mtp_stats(MlxMtpGenerationStats stats) noexcept { last_mtp_stats_ = std::move(stats); }
 
     MlxPreparedPrompt prepare_multimodal_prompt(
         const std::vector<std::int64_t>& prompt,
@@ -301,6 +309,8 @@ private:
     std::vector<std::int64_t> stable_cache_tokens_;
     std::optional<mlx::core::array> last_cache_hidden_;
     bool stable_mtp_ready_ = false;
+    std::vector<int> hidden_capture_layers_;
+    std::optional<mlx::core::array> hidden_capture_;
 };
 
 } // namespace mfq::metal

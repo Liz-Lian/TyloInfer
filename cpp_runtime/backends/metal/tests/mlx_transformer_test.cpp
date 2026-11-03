@@ -1,11 +1,14 @@
 #include "mlx_transformer.h"
 #include "mlx_resident_budget.h"
+#include "mlx_staged_attention.h"
+#include "mlx_kernel_prepare.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -42,7 +45,8 @@ void require_array_close(
     const auto* actual_values = actual_f32.data<float>();
     const auto* expected_values = expected_f32.data<float>();
     for (std::size_t index = 0; index < actual.size(); ++index) {
-        if (std::fabs(actual_values[index] - expected_values[index]) > tolerance)
+        if (!std::isfinite(actual_values[index]) || !std::isfinite(expected_values[index]) ||
+            std::fabs(actual_values[index] - expected_values[index]) > tolerance)
             throw std::runtime_error("transformer array mismatch at " + std::to_string(index) +
                 ": actual=" + std::to_string(actual_values[index]) + " expected=" + std::to_string(expected_values[index]));
         require_close(
@@ -319,6 +323,67 @@ int main() {
                 throw std::runtime_error(
                     "fused FP16 RMSNorm changed element " +
                     std::to_string(index));
+            }
+        }
+
+        for (const int width : {1024, 1536, 3072, 5120, 6144, 7168, 8192})
+        for (const float epsilon : {1e-6f, 1e-5f})
+        for (const float amplitude : {0.f, .001f, 3.f}) {
+            const auto values = astype(reshape(sin(arange(width, float32) * .017f) * amplitude,
+                Shape{1, width}), float16);
+            const auto weights = cos(arange(width, float32) * .013f) * .1f + .9f;
+            const mfq::metal::MlxRmsNorm norm(weights, epsilon);
+            const auto actual = norm(values);
+            const auto reference = astype(fast::rms_norm(values, std::optional<array>(norm.weight()), epsilon), float16);
+            if (actual.dtype() != float16 || std::string(actual.primitive().name()) != "CustomKernel")
+                throw std::runtime_error("single-row FP16 RMSNorm missed the fused dispatch");
+            const auto converted = norm(values, bfloat16);
+            if (!all(view(converted, uint16) == view(astype(actual, bfloat16), uint16)).item<bool>())
+                throw std::runtime_error("fused RMSNorm BF16 output skipped FP16 rounding");
+            const float error = sqrt(mean(square(astype(actual, float32) - astype(reference, float32)))).item<float>();
+            const float scale = sqrt(mean(square(astype(reference, float32)))).item<float>();
+            if (!std::isfinite(error) || error > 1e-4f * scale + 1e-7f)
+                throw std::runtime_error("generic fused FP16 RMSNorm differs from MLX");
+        }
+        {
+            constexpr int width = 5120;
+            const mfq::metal::MlxRmsNorm norm(ones(Shape{width}, float32), 1e-6f);
+            std::optional<std::pair<std::string, std::string>> previous;
+            for (const int rows : {1, 2, 3, 4, 6, 8}) {
+                const auto input = astype(reshape(sin(arange(rows * width, float32) * .017f),
+                    Shape{1, rows, width}), float16);
+                const auto actual = norm(input);
+                const auto& primitive = static_cast<const fast::CustomKernel&>(actual.primitive());
+                const auto state = primitive.state();
+                const auto signature = std::pair{std::get<0>(state), std::get<1>(state)};
+                if (previous && signature != *previous)
+                    throw std::runtime_error("fused FP16 RMSNorm recompiles for row count");
+                previous = signature;
+                if (!all(view(norm(input, bfloat16), uint16) == view(astype(actual, bfloat16), uint16)).item<bool>())
+                    throw std::runtime_error("fused RMSNorm BF16 rows changed bits");
+                const auto reference = astype(fast::rms_norm(input, std::optional<array>(norm.weight()), 1e-6f), float16);
+                const float error = sqrt(mean(square(astype(actual, float32) - astype(reference, float32)))).item<float>();
+                if (!std::isfinite(error) || error > 1e-4f)
+                    throw std::runtime_error("fused FP16 RMSNorm row dispatch differs");
+                std::vector<array> separate;
+                for (int row = 0; row < rows; ++row)
+                    separate.push_back(norm(slice(input, Shape{0, row, 0}, Shape{1, row + 1, width})));
+                if (!all(view(actual, uint16) == view(concatenate(separate, 1), uint16)).item<bool>())
+                    throw std::runtime_error("fused FP16 RMSNorm changed independent row bits");
+            }
+        }
+
+        for (const auto dtype : {float16, bfloat16, float32})
+        for (const int width : {64, 513})
+        for (const int rows : {1, 16}) {
+            const mfq::metal::MlxRmsNorm norm(ones(Shape{width}, float32), 1e-5f);
+            const auto input = astype(reshape(sin(arange(rows * width, float32) * .017f), Shape{rows, width}), dtype);
+            const auto reference = norm(input);
+            for (const auto output_dtype : {float16, bfloat16, float32}) {
+                const auto actual = norm(input, output_dtype);
+                const auto bits = output_dtype == float32 ? uint32 : uint16;
+                if (!all(view(actual, bits) == view(astype(reference, output_dtype), bits)).item<bool>())
+                    throw std::runtime_error("RMSNorm fallback output cast changed bits");
             }
         }
 
@@ -669,6 +734,86 @@ int main() {
         require_close(attention_values[1], 4.0f);
         require_close(attention_values[2], 4.0f);
         require_close(attention_values[3], 6.0f);
+
+        int staged_attention_fixtures = 0;
+        for (const auto dtype : {float16, bfloat16}) for (const int kv_heads : {2, 4})
+        for (const int group : {6, 8}) for (const int tokens : {5, 6, 7, 8}) for (const bool dense_values : {false, true}) {
+            constexpr int history = 121, capacity = 160, dimension = 256;
+            const int length = history + tokens, query_heads = kv_heads * group;
+            auto q = zeros({1, query_heads, tokens, dimension}, dtype);
+            auto k = zeros({1, kv_heads, capacity, dimension}, dtype);
+            auto positions = reshape(arange(capacity, float32), {1, 1, capacity, 1});
+            auto head_values = reshape(arange(kv_heads, float32) / 32.f, {1, kv_heads, 1, 1});
+            auto v = astype(broadcast_to(where(positions < array(float(length)), positions / 128.f + head_values,
+                array(std::numeric_limits<float>::quiet_NaN())), {1, kv_heads, capacity, dimension}), dtype);
+            if (dense_values) v = contiguous(v);
+            auto live_k = slice(k, {0, 0, 0, 0}, {1, kv_heads, length, dimension});
+            auto live_v = slice(v, {0, 0, 0, 0}, {1, kv_heads, length, dimension});
+            auto staged = mfq::metal::mlx_staged_attention(q, live_k, live_v, true, 1.f / 16.f, std::nullopt);
+            if (!staged) continue;
+            ++staged_attention_fixtures;
+            auto query_head_values = reshape(floor(arange(query_heads, float32) / float(group)) / 32.f,
+                {1, query_heads, 1, 1});
+            auto expected = astype(broadcast_to(reshape(arange(history, history + tokens, float32) / 256.f,
+                {1, 1, tokens, 1}) + query_head_values, q.shape()), dtype);
+            const float tolerance = dtype == bfloat16 ? .002f : .0005f;
+            require_array_close(*staged, expected, tolerance);
+            require_array_close(mfq::metal::scaled_dot_product_attention(q, live_k, live_v, true), expected, tolerance);
+            if (mfq::metal::mlx_staged_attention(q, live_k, live_v, false, 1.f / 16.f, std::nullopt) ||
+                mfq::metal::mlx_staged_attention(q, live_k, live_v, true, 1.f / 8.f, std::nullopt) ||
+                mfq::metal::mlx_staged_attention(q, live_k, live_v, true, 1.f / 16.f, ones({tokens, length}, bool_)))
+                throw std::runtime_error("staged attention accepted unsupported mask or scale");
+        }
+        std::cout << "staged_attention_fixtures=" << staged_attention_fixtures << std::endl;
+        if (staged_attention_fixtures) {
+            mfq::metal::MlxKernelPreparation preparation(128, 128);
+            preparation.collect([&] {
+                const auto q = zeros({1, 24, 8, 256}, float16);
+                const auto kv = zeros({1, 4, 32, 256}, float16);
+                auto staged = mfq::metal::mlx_staged_attention(q, kv, kv, true, 1.f / 16.f, std::nullopt);
+                if (!staged) throw std::runtime_error("staged attention preparation did not dispatch");
+                preparation.add(*staged);
+            });
+            if (preparation.size() != 3) throw std::runtime_error("staged attention must prepare three kernels");
+            preparation.finish();
+        }
+
+        for (const auto dtype : {float16, bfloat16, float32}) {
+            for (const int tokens : {1, 2, 6}) {
+                for (const int dimension : {64, 96, 128, 192, 256}) for (const int stride : {1, 2}) {
+                    constexpr int batch = 2, query_heads = 24, kv_heads = 4;
+                    constexpr int capacity = 64, length = 33;
+                    auto query_storage = astype(reshape(
+                        sin(arange(batch * tokens * query_heads * dimension * 2, float32) * .013f),
+                        Shape{batch, tokens, query_heads, dimension * 2}), dtype);
+                    auto key_storage = astype(reshape(
+                        sin(arange(batch * kv_heads * capacity * dimension * stride, float32) * .021f),
+                        Shape{batch, kv_heads, capacity, dimension * stride}), dtype);
+                    auto value_storage = astype(reshape(
+                        cos(arange(batch * kv_heads * capacity * dimension * stride, float32) * .017f),
+                        Shape{batch, kv_heads, capacity, dimension * stride}), dtype);
+                    eval(query_storage, key_storage, value_storage);
+                    auto q = transpose(slice(query_storage, Shape{0, 0, 0, 0},
+                        Shape{batch, tokens, query_heads, dimension}), {0, 2, 1, 3});
+                    auto k = slice(key_storage, Shape{0, 0, 0, 0}, Shape{batch, kv_heads, length, dimension * stride},
+                        Shape{1, 1, 1, stride});
+                    auto v = slice(value_storage, Shape{0, 0, 0, 0}, Shape{batch, kv_heads, length, dimension * stride},
+                        Shape{1, 1, 1, stride});
+                    eval(q, k, v);
+                    if (k.flags().row_contiguous || v.flags().row_contiguous)
+                        throw std::runtime_error("GQA cache fixture lost its capacity strides");
+                    for (const bool causal : {false, true}) {
+                        const auto expected = mlx::core::fast::scaled_dot_product_attention(
+                            contiguous(q), contiguous(k), contiguous(v),
+                            1.f / std::sqrt(float(dimension)), causal ? "causal" : "");
+                        const auto actual = mfq::metal::scaled_dot_product_attention(q, k, v, causal);
+                        const float tolerance = stride == 1 ? 0.f :
+                            dtype == bfloat16 ? .004f : dtype == float16 ? .0005f : 1e-5f;
+                        require_array_close(actual, expected, tolerance);
+                    }
+                }
+            }
+        }
 
         for (const double bits : {2.0, 2.5, 3.0, 3.5, 4.0, 6.0, 8.0}) {
             const auto setting = std::to_string(bits);

@@ -39,6 +39,8 @@ array row_major_view(const array& input) {
 }
 
 const char* source_for(const std::string& name) {
+    if (name.starts_with("dense_gguf_gate_up_pair")) return native_gguf::dense_pair_source;
+    if (name.starts_with("dense_gguf_gate_up")) return native_gguf::dense_source;
     if (name.starts_with("hyper_connection")) return native_gguf::hyper_source;
     if (name == "gguf_repack" || name == "moe_expert_load") return native_gguf::repack_source;
     if (name.starts_with("gguf_decode_sg_") || name == "decode_linear_gguf_prepare" || name.starts_with("moe_expert_gguf_sg"))
@@ -585,22 +587,26 @@ MlxNativeGgufWeight mlx_native_affine_pack(const array& values, const array& sca
     return result;
 }
 
-std::vector<array> mlx_native_gguf_project(std::span<const MlxNativeGgufWeight> weights, const array& input) {
+std::vector<array> mlx_native_gguf_project(std::span<const MlxNativeGgufWeight> weights, const array& input,
+    std::optional<Dtype> output_dtype) {
     if (weights.empty() || input.ndim() < 1) throw std::invalid_argument("native GGUF projection requires matrices");
+    const auto result_dtype = output_dtype.value_or(input.dtype());
+    if (result_dtype != float16 && result_dtype != bfloat16 && result_dtype != float32)
+        throw std::invalid_argument("native GGUF output dtype must be floating point");
     if (weights.size() > 3) {
-        auto first = mlx_native_gguf_project(weights.first(3), input);
-        auto rest = mlx_native_gguf_project(weights.subspan(3), input);
+        auto first = mlx_native_gguf_project(weights.first(3), input, result_dtype);
+        auto rest = mlx_native_gguf_project(weights.subspan(3), input, result_dtype);
         first.insert(first.end(), rest.begin(), rest.end());
         return first;
     }
     const int width = weights.front().width, count = int(input.size() / width);
     if (input.shape(-1) != width || count < 1)
         throw std::invalid_argument("native GGUF projection input shape differs");
-    if (count > SPLASH_PREFILL_TOKEN_BUDGET && input.dtype() == float32) {
+    if (count > SPLASH_PREFILL_TOKEN_BUDGET && result_dtype == float32) {
         const auto flat = reshape(input, {count, width});
         std::vector<std::vector<array>> chunks(weights.size());
         for (int begin = 0; begin < count; begin += SPLASH_PREFILL_TOKEN_BUDGET) {
-            auto part = mlx_native_gguf_project(weights, slice(flat, {begin, 0}, {std::min(count, begin + int(SPLASH_PREFILL_TOKEN_BUDGET)), width}));
+            auto part = mlx_native_gguf_project(weights, slice(flat, {begin, 0}, {std::min(count, begin + int(SPLASH_PREFILL_TOKEN_BUDGET)), width}), result_dtype);
             for (std::size_t i = 0; i < part.size(); ++i) chunks[i].push_back(std::move(part[i]));
         }
         std::vector<array> result;
@@ -618,15 +624,18 @@ std::vector<array> mlx_native_gguf_project(std::span<const MlxNativeGgufWeight> 
         if (weight.width != width) throw std::invalid_argument("native GGUF projections have different inputs");
         inputs.insert(inputs.end(), weight.planes.begin(), weight.planes.end()); total += weight.storage_outputs();
     }
-    const auto output_type = input.dtype() == float32 && count <= 32 && weights.size() == 1 ? float32 : bfloat16;
+    const auto output_type = result_dtype == float32 && count <= 32 && weights.size() == 1 ? float32 : bfloat16;
     const int gpu_cores = count <= 4 ? std::max(1, metal_apple_gpu_core_count()) : 1;
     const bool vector_decode = count == 1 && total / 64 <= gpu_cores * 8 &&
-        std::none_of(weights.begin(), weights.end(), [gpu_cores](const auto& weight) {
+        std::none_of(weights.begin(), weights.end(), [gpu_cores, total](const auto& weight) {
             return weight.format == GGUF_FMT_IQ4XS && weight.width >= 4096 && weight.width > weight.outputs &&
-                weight.storage_outputs() / 64 * 8 < gpu_cores * 6;
+                total / 64 * 8 < gpu_cores * 6;
         });
     const bool small_decode = count >= 2 && count <= 4 && total / 64 <= gpu_cores * 8 &&
-        std::none_of(weights.begin(), weights.end(), [](const auto& weight) { return quant_affine_format(weight.format); });
+        std::none_of(weights.begin(), weights.end(), [](const auto& weight) { return quant_affine_format(weight.format); }) &&
+        !(count > 2 && (width > total || total / 64 >= gpu_cores) &&
+            std::all_of(weights.begin(), weights.end(), [](const auto& weight) { return weight.format >= 0; }) &&
+            capabilities().appleGpuFamily >= 10);
     auto key = graph_key(1, requested, weights); key.push_back(output_type == float32);
     key.push_back(vector_decode); key.push_back(small_decode ? count : 0);
     auto graph = cached_graph(std::move(key), count <= 32, [&] {
@@ -636,7 +645,7 @@ std::vector<array> mlx_native_gguf_project(std::span<const MlxNativeGgufWeight> 
             result->rows = count;
             GgufDecodeFusedParams params{};
             params.input_size = width; params.out_stride = total; params.splits = 1;
-            const auto target = gpu_cores * 6;
+            const auto target = gpu_cores * (width >= 4096 && width < total ? 48 : 6);
             while (params.splits < 8 && total / 64 * params.splits < target &&
                 width / 32 % (params.splits * 2) == 0 && width / 32 / (params.splits * 2) >= 8)
                 params.splits *= 2;
@@ -696,16 +705,18 @@ std::vector<array> mlx_native_gguf_project(std::span<const MlxNativeGgufWeight> 
     if (rows > count) inputs[0] = concatenate({inputs[0], zeros({rows - count, width}, bfloat16)}, 0);
     std::vector<array> result;
     auto all = execute(graph, std::move(inputs), {rows, total}, output_type);
+    if (rows == 1 && weights.size() > 1) all = astype(all, result_dtype);
     int begin = 0;
     for (const auto& weight : weights) {
         auto block = slice(all, {0, begin}, {count, begin + weight.outputs});
         auto shape = input.shape(); shape.back() = weight.outputs;
-        result.push_back(reshape(astype(block, input.dtype()), shape)); begin += weight.storage_outputs();
+        result.push_back(reshape(astype(block, result_dtype), shape)); begin += weight.storage_outputs();
     }
     return result;
 }
 
-array mlx_native_gguf_swiglu(const MlxNativeGgufWeight& gate, const MlxNativeGgufWeight& up, const array& input) {
+static array native_gguf_swiglu_impl(const MlxNativeGgufWeight& gate, const MlxNativeGgufWeight& up,
+    const array& input, bool bfloat_intermediate, std::optional<Dtype> activation_dtype = std::nullopt) {
     if (gate.width != up.width || gate.outputs != up.outputs || input.ndim() < 2 || input.shape(-1) != gate.width)
         throw std::invalid_argument("native GGUF Gate/Up shapes differ");
     const int width = gate.width, count = int(input.size() / width), output = gate.storage_outputs();
@@ -726,7 +737,37 @@ array mlx_native_gguf_swiglu(const MlxNativeGgufWeight& gate, const MlxNativeGgu
     const bool decode = count <= 32;
     const int requested = decode ? (count + 7) / 8 * 8 : count;
     const std::array weights{gate, up};
-    auto graph = cached_graph(graph_key(2, requested, weights), decode, [&] {
+    const bool column_decode = count <= 2 && output >= width && gate.format >= 0 && up.format >= 0 &&
+        gate.format < GGUF_FMT_COUNT && up.format < GGUF_FMT_COUNT &&
+        !quant_affine_format(gate.format) && !quant_affine_format(up.format);
+    const auto dtype = activation_dtype.value_or(input.dtype());
+    const bool round_fp16 = bfloat_intermediate && column_decode && dtype == float16;
+    auto key = graph_key(2, requested, weights); key.push_back(column_decode ? count : 0); key.push_back(round_fp16);
+    auto graph = cached_graph(std::move(key), decode, [&] {
+        if (column_decode) {
+            auto result = std::make_shared<Graph>(); result->inputs = inputs.size(); result->pooled = true; result->rows = count;
+            std::vector<MetalBuffer> buffers{{0, uint64_t(count) * width * 2}};
+            for (const auto offset : {1, 4})
+                for (int plane = 0; plane < 3; ++plane)
+                    buffers.push_back({std::size_t(offset + plane), weights[offset == 1 ? 0 : 1].planes[plane].nbytes()});
+            buffers.push_back({result->inputs, uint64_t(count) * output * 2});
+            const int target = width >= 4096 ? 4 : 1;
+            int splits = 1;
+            while (splits < target && width / 32 % (2 * splits) == 0 && width / 32 / (2 * splits) >= 8)
+                splits *= 2;
+            const auto compact_format = [](int format) {
+                return format == GGUF_FMT_IQ2XXS || format == GGUF_FMT_IQ2XS || format == GGUF_FMT_IQ2S ||
+                    format == GGUF_FMT_IQ3XXS || format == GGUF_FMT_IQ3S;
+            };
+            const auto kernel = std::string(count == 2 ? "dense_gguf_gate_up_pair" : "dense_gguf_gate_up") +
+                (compact_format(gate.format) && compact_format(up.format) ? "_grid" : "") +
+                (splits == 4 ? "_split4" : splits == 2 ? "_split" : "");
+            struct DenseGateUpParams { uint32_t input_size, output_size, gate_format, up_format, round_fp16; };
+            result->commands.add(kernel, std::move(buffers),
+                DenseGateUpParams{uint32_t(width), uint32_t(output), uint32_t(gate.format), uint32_t(up.format), uint32_t(round_fp16)},
+                {uint32_t(output / (32 / splits)), 1, 1}, {64, 1, 1});
+            return result;
+        }
         Linear linear(capabilities());
         auto result = std::make_shared<Graph>(); result->inputs = 7; result->pooled = decode;
         std::vector<Projection> projections;
@@ -754,7 +795,18 @@ array mlx_native_gguf_swiglu(const MlxNativeGgufWeight& gate, const MlxNativeGgu
     if (rows > count) inputs[0] = concatenate({inputs[0], zeros({rows - count, width}, bfloat16)}, 0);
     auto all = execute(graph, std::move(inputs), {rows, output}, bfloat16);
     auto shape = input.shape(); shape.back() = gate.outputs;
-    return reshape(astype(slice(all, {0, 0}, {count, gate.outputs}), input.dtype()), shape);
+    return reshape(astype(slice(all, {0, 0}, {count, gate.outputs}), round_fp16 ? bfloat16 : dtype), shape);
+}
+
+array mlx_native_gguf_swiglu(const MlxNativeGgufWeight& gate, const MlxNativeGgufWeight& up, const array& input) {
+    return native_gguf_swiglu_impl(gate, up, input, false);
+}
+
+array mlx_native_gguf_ffn(const MlxNativeGgufWeight& gate, const MlxNativeGgufWeight& up,
+    const MlxNativeGgufWeight& down, const array& input, std::optional<Dtype> activation_dtype) {
+    if (down.width != gate.outputs) throw std::invalid_argument("native GGUF FFN intermediate width differs");
+    const auto middle = native_gguf_swiglu_impl(gate, up, input, true, activation_dtype);
+    return astype(mlx_native_gguf_project(std::span(&down, 1), middle)[0], activation_dtype.value_or(input.dtype()));
 }
 
 array mlx_native_gguf_moe(const MlxNativeGgufMoe& weights, const array& input) {

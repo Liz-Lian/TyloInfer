@@ -1,7 +1,9 @@
 #include "mlx_qwen35_linear_attention.h"
 
 #include "mlx_detached_copy.h"
+#include "mlx_gguf.h"
 #include "mlx_eval_timing.h"
+#include "mlx_kernel_prepare.h"
 
 #include <cmath>
 #include <limits>
@@ -274,6 +276,37 @@ MlxQwen35LinearAttentionBlock::MlxQwen35LinearAttentionBlock(
     input_projections_.emplace(std::move(projections));
     alpha_beta_grouped_ = alpha_beta_.has_value() ||
         input_projections_->projections_share_group(alpha_offset, 2);
+    if (auto* preparation = MlxKernelPreparation::current(); preparation &&
+        config_.linear_key_head_dim == 128 && config_.linear_value_head_dim == 128 &&
+        config_.linear_conv_kernel_dim == 4 && !convolution_bias_) {
+        for (const int tokens : {1, 2}) preparation->collect([&] {
+            const int keys = static_cast<int>(config_.linear_key_heads());
+            const int values = static_cast<int>(config_.linear_value_heads());
+            const auto dtype = preparation->activation_dtype();
+            const auto* quantized_output = output_.gguf_weight_ref();
+            const bool bf16_projection = tokens == 1 && dtype == mlx::core::float16 && quantized_output &&
+                !quantized_output->has_hadamard() && quantized_output->native_weight_ref();
+            const auto qk = mlx::core::zeros(Shape{1, tokens, keys * 256}, dtype);
+            const auto value = mlx::core::zeros(Shape{1, tokens, values * 128}, dtype);
+            const auto gate = mlx::core::zeros(Shape{1, tokens, values}, mlx::core::float32);
+            const auto convolution = mlx::core::zeros(Shape{1, 3, (keys * 2 + values) * 128}, mlx::core::float32);
+            const auto recurrent = mlx::core::zeros(Shape{1, values, 128, 128}, mlx::core::float32);
+            const auto decoded = gated_delta_decode_step(qk, value, value, gate, gate,
+                convolution, recurrent, convolution_weight_, dt_bias_, a_, linear_norm_.weight(),
+                keys, values, 128, static_cast<float>(config_.rms_norm_eps), linear_norm_.eps(),
+                true, gguf_layout_, bf16_projection ? mlx::core::bfloat16 : dtype, false, bf16_projection);
+            preparation->add(decoded.output);
+            if (tokens == 2) {
+                const auto scalar = mlx::core::zeros(Shape{1, values, tokens}, mlx::core::float32);
+                MlxGatedDeltaSpeculativeState transaction{
+                    convolution, recurrent, qk, value, scalar, scalar, 0, 1, 1, tokens};
+                auto restored = replay_gated_delta_speculative_prefix(transaction, 0, convolution_weight_,
+                    keys, values, 128, 128, std::nullopt, static_cast<float>(config_.rms_norm_eps), false, gguf_layout_);
+                preparation->add(restored.convolution_state);
+                preparation->add(restored.recurrent_state);
+            }
+        });
+    }
 }
 
 void MlxQwen35LinearAttentionBlock::
@@ -459,15 +492,15 @@ void MlxQwen35LinearAttentionBlock::clear_cache() noexcept {
 }
 
 MlxQwen35LinearAttentionCacheSnapshot
-MlxQwen35LinearAttentionBlock::snapshot_cache() const {
+MlxQwen35LinearAttentionBlock::snapshot_cache(bool detached) const {
     if (!convolution_state_ || !recurrent_state_ ||
         cache_position_ <= 0 || cache_batch_ <= 0) {
         throw std::runtime_error(
             "Qwen3.5 linear-attention cache is unavailable");
     }
-    auto convolution = detached_copy(*convolution_state_);
-    auto recurrent = detached_copy(*recurrent_state_);
-    mlx::core::eval(convolution, recurrent);
+    auto convolution = detached ? detached_copy(*convolution_state_) : *convolution_state_;
+    auto recurrent = detached ? detached_copy(*recurrent_state_) : *recurrent_state_;
+    if (detached) mlx::core::eval(convolution, recurrent);
     return {
         std::move(convolution),
         std::move(recurrent),
@@ -477,7 +510,7 @@ MlxQwen35LinearAttentionBlock::snapshot_cache() const {
 }
 
 void MlxQwen35LinearAttentionBlock::restore_cache(
-    const MlxQwen35LinearAttentionCacheSnapshot& snapshot) {
+    const MlxQwen35LinearAttentionCacheSnapshot& snapshot, bool detached) {
     const int channels = static_cast<int>(config_.linear_qkv_size());
     const int kernel = static_cast<int>(config_.linear_conv_kernel_dim);
     const int value_heads = static_cast<int>(config_.linear_value_heads());
@@ -493,9 +526,9 @@ void MlxQwen35LinearAttentionBlock::restore_cache(
         throw std::runtime_error(
             "Qwen3.5 linear-attention cache snapshot topology mismatch");
     }
-    auto convolution = detached_copy(snapshot.convolution_state);
-    auto recurrent = detached_copy(snapshot.recurrent_state);
-    mlx::core::eval(convolution, recurrent);
+    auto convolution = detached ? detached_copy(snapshot.convolution_state) : snapshot.convolution_state;
+    auto recurrent = detached ? detached_copy(snapshot.recurrent_state) : snapshot.recurrent_state;
+    if (detached) mlx::core::eval(convolution, recurrent);
     convolution_state_ = std::move(convolution);
     recurrent_state_ = std::move(recurrent);
     cache_position_ = snapshot.position;
@@ -581,11 +614,10 @@ array MlxQwen35LinearAttentionBlock::forward(
         static_cast<int>(config_.linear_conv_kernel_dim);
     const auto activation_dtype = input.dtype();
 
-    const auto normalized = attention_norm_(input);
-    auto input_projections = (*input_projections_)(normalized);
+    auto input_projections = input_projections_->forward_normalized(input, attention_norm_);
     std::size_t projection_offset = 0;
-    array qk = normalized;
-    array value_input = normalized;
+    array qk = input;
+    array value_input = input;
     if (split_input_) {
         qk = std::move(input_projections.at(projection_offset++));
         value_input = std::move(
@@ -601,8 +633,8 @@ array MlxQwen35LinearAttentionBlock::forward(
         value_input = std::move(pieces.at(1));
     }
     auto z = std::move(input_projections.at(projection_offset++));
-    array alpha = normalized;
-    array beta = normalized;
+    array alpha = input;
+    array beta_logits = input;
     if (alpha_beta_) {
         auto pieces = mlx::core::split(
             std::move(input_projections.at(projection_offset++)),
@@ -612,9 +644,9 @@ array MlxQwen35LinearAttentionBlock::forward(
             mlx::core::astype(
                 std::move(pieces.at(0)), mlx::core::float32),
             Shape{batch, tokens, value_heads});
-        beta = mlx::core::reshape(
-            mlx::core::sigmoid(mlx::core::astype(
-                std::move(pieces.at(1)), mlx::core::float32)),
+        beta_logits = mlx::core::reshape(
+            mlx::core::astype(
+                std::move(pieces.at(1)), mlx::core::float32),
             Shape{batch, tokens, value_heads});
     } else {
         alpha = mlx::core::reshape(
@@ -622,12 +654,45 @@ array MlxQwen35LinearAttentionBlock::forward(
                 std::move(input_projections.at(projection_offset++)),
                 mlx::core::float32),
             Shape{batch, tokens, value_heads});
-        beta = mlx::core::reshape(
-            mlx::core::sigmoid(mlx::core::astype(
+        beta_logits = mlx::core::reshape(
+            mlx::core::astype(
                 std::move(input_projections.at(projection_offset++)),
-                mlx::core::float32)),
+                mlx::core::float32),
             Shape{batch, tokens, value_heads});
     }
+    if (use_cache && batch == 1 && tokens <= 8 && dimension == 128 &&
+        config_.linear_key_head_dim == 128 && kernel == 4 && !convolution_bias_ &&
+        (!speculative_rollback_ || tokens > 1)) {
+        const auto* quantized_output = output_.gguf_weight_ref();
+        const bool bf16_projection = tokens == 1 && activation_dtype == mlx::core::float16 && quantized_output &&
+            !quantized_output->has_hadamard() && quantized_output->native_weight_ref();
+        auto decoded = gated_delta_decode_step(qk, value_input, z, alpha, beta_logits,
+            *convolution_state_, *recurrent_state_, convolution_weight_, dt_bias_, a_,
+            linear_norm_.weight(), key_heads, value_heads, dimension,
+            static_cast<float>(config_.rms_norm_eps), linear_norm_.eps(), true,
+            gguf_layout_, bf16_projection ? mlx::core::bfloat16 : activation_dtype, false, bf16_projection);
+        if (speculative_rollback_ && speculative_rollback_->position == position_offset &&
+            speculative_rollback_->total_tokens == tokens) {
+            speculative_rollback_->qk = qk;
+            speculative_rollback_->value = value_input;
+            speculative_rollback_->gate = std::move(decoded.gate);
+            speculative_rollback_->beta = std::move(decoded.beta);
+        }
+        convolution_state_ = std::move(decoded.convolution_state);
+        recurrent_state_ = std::move(decoded.recurrent_state);
+        cache_position_ += tokens;
+        report_cache_resources();
+        detail::profile_eval("qwen35.linear_attention.fused_decode", decoded.output);
+        auto projected = output_(decoded.output);
+        if (projected.dtype() != activation_dtype)
+            projected = mlx::core::astype(projected, activation_dtype);
+        auto residual = input + projected;
+        detail::profile_eval("qwen35.linear_attention.output", residual);
+        residual = residual + ffn_.forward_normalized(residual, ffn_norm_);
+        detail::profile_eval("qwen35.ffn", residual);
+        return residual;
+    }
+    const auto beta = mlx::core::sigmoid(beta_logits);
     if (detail::component_profile_active()) {
         detail::profile_eval(
             "qwen35.linear_attention.projections",
@@ -728,7 +793,7 @@ array MlxQwen35LinearAttentionBlock::forward(
             gated_value,
             activation_dtype));
     detail::profile_eval("qwen35.linear_attention.output", residual);
-    residual = residual + ffn_(ffn_norm_(residual));
+    residual = residual + ffn_.forward_normalized(residual, ffn_norm_);
     detail::profile_eval("qwen35.ffn", residual);
     return residual;
 }

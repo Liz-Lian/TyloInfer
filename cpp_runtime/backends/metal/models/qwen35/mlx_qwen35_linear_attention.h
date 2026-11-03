@@ -100,9 +100,9 @@ public:
     void reset_cache(int batch);
     void materialize_cache();
     void clear_cache() noexcept;
-    MlxQwen35LinearAttentionCacheSnapshot snapshot_cache() const;
+    MlxQwen35LinearAttentionCacheSnapshot snapshot_cache(bool detached = true) const;
     void restore_cache(
-        const MlxQwen35LinearAttentionCacheSnapshot& snapshot);
+        const MlxQwen35LinearAttentionCacheSnapshot& snapshot, bool detached = true);
 
     int cache_position() const noexcept {
         return cache_position_;

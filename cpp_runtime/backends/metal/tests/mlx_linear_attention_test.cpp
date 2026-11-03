@@ -1,4 +1,6 @@
 #include "mlx_linear_attention.h"
+#include "mlx_kernel_prepare.h"
+#include "metal_device_info.h"
 
 #include <algorithm>
 #include <cmath>
@@ -383,6 +385,7 @@ void test_gdn_decode_step(
     const auto gates = mfq::metal::gated_delta_gates(
         alpha, beta, bias, decay);
 
+    for (const bool transposed_state : {false, true})
     for (const bool tiled_heads : {false, true}) for (const bool silu_gate : {false, true}) {
         auto reference_conv_state = convolution_state;
         auto reference_recurrent_state = recurrent_state;
@@ -397,7 +400,7 @@ void test_gdn_decode_step(
                 std::nullopt, convolution_eps);
             const auto recurrent = mfq::metal::gated_delta_net(
                 convolved.query, convolved.key, convolved.value,
-                gates.gate, gates.beta, reference_recurrent_state, true, tiled_heads);
+                gates.gate, gates.beta, reference_recurrent_state, transposed_state, tiled_heads);
             auto normalized = fast::rms_norm(
                 recurrent.output,
                 std::optional<array>(norm),
@@ -430,7 +433,10 @@ void test_gdn_decode_step(
                 dimension,
                 convolution_eps,
                 norm_eps,
-                silu_gate, tiled_heads);
+                silu_gate, tiled_heads, float32, transposed_state);
+            const auto* prepared = dynamic_cast<const mfq::metal::MlxPreparableKernel*>(&actual.output.primitive());
+            if (!prepared || prepared->preparation_key().find("_split4") != std::string::npos)
+                throw std::runtime_error("GDN decode head partition dispatch mismatch");
             eval(
                 reference_output,
                 convolved.state,
@@ -441,10 +447,19 @@ void test_gdn_decode_step(
             if (!step) for (const auto output_dtype : {float16, bfloat16}) {
                 auto rounded = mfq::metal::gated_delta_decode_step(qk, value, output_gate, alpha, beta,
                     actual_conv_state, actual_recurrent_state, convolution_weight, bias, decay, norm,
-                    key_heads, value_heads, dimension, convolution_eps, norm_eps, silu_gate, tiled_heads, output_dtype);
+                    key_heads, value_heads, dimension, convolution_eps, norm_eps, silu_gate, tiled_heads, output_dtype,
+                    transposed_state);
                 require_bit_exact(rounded.output, astype(actual.output, output_dtype), "GDN fused output cast");
                 require_bit_exact(rounded.convolution_state, actual.convolution_state, "GDN typed output convolution state");
                 require_bit_exact(rounded.recurrent_state, actual.recurrent_state, "GDN typed output recurrent state");
+                if (output_dtype == float16) {
+                    auto projected = mfq::metal::gated_delta_decode_step(qk, value, output_gate, alpha, beta,
+                        actual_conv_state, actual_recurrent_state, convolution_weight, bias, decay, norm,
+                        key_heads, value_heads, dimension, convolution_eps, norm_eps, silu_gate, tiled_heads,
+                        bfloat16, transposed_state, true);
+                    require_bit_exact(projected.output, astype(rounded.output, bfloat16), "GDN projection-input cast");
+                    require_bit_exact(projected.recurrent_state, actual.recurrent_state, "GDN projection-input recurrence");
+                }
             }
             require_vector_close(
                 actual.output.data<float>(),
@@ -515,6 +530,7 @@ void test_gdn_decode_step(
         }
     }
 
+    for (const bool transposed_state : {false, true})
     for (const bool tiled_heads : {false, true}) for (const bool silu_gate : {false, true}) {
         for (int tokens = 2; tokens <= 8; ++tokens) {
             std::vector<array> qs, vs, zs, as, bs;
@@ -535,16 +551,30 @@ void test_gdn_decode_step(
                     concatenate(as, 1), concatenate(bs, 1), convolution_state * array(.3f),
                     recurrent_state * array(.5f)}};
             auto actual = mfq::metal::gated_delta_decode_steps(requests, convolution_weight,
-                bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads);
+                bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads, float32, transposed_state);
+            const auto* prepared = dynamic_cast<const mfq::metal::MlxPreparableKernel*>(&actual[0].output.primitive());
+            const int cores = mfq::metal::metal_apple_gpu_core_count();
+            const bool split_heads = !transposed_state && cores > 0 && value_heads < cores * 2;
+            if (!prepared || (prepared->preparation_key().find("_split4") != std::string::npos) != split_heads)
+                throw std::runtime_error("GDN sequence head partition dispatch mismatch");
             for (const auto output_dtype : {float16, bfloat16}) {
                 auto rounded = mfq::metal::gated_delta_decode_steps(requests, convolution_weight,
-                    bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads, output_dtype);
+                    bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads, output_dtype, transposed_state);
                 for (std::size_t row = 0; row < requests.size(); ++row) {
                     require_bit_exact(rounded[row].output, astype(actual[row].output, output_dtype), "GDN sequence fused cast");
                     require_bit_exact(rounded[row].convolution_state, actual[row].convolution_state, "GDN sequence typed convolution");
                     require_bit_exact(rounded[row].recurrent_state, actual[row].recurrent_state, "GDN sequence typed recurrence");
                     require_bit_exact(*rounded[row].gate, *actual[row].gate, "GDN sequence typed gate replay");
                     require_bit_exact(*rounded[row].beta, *actual[row].beta, "GDN sequence typed beta replay");
+                }
+                if (output_dtype == float16) {
+                    auto projected = mfq::metal::gated_delta_decode_steps(requests, convolution_weight,
+                        bias, decay, norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f,
+                        silu_gate, tiled_heads, bfloat16, transposed_state, true);
+                    for (std::size_t row = 0; row < requests.size(); ++row) {
+                        require_bit_exact(projected[row].output, astype(rounded[row].output, bfloat16), "GDN sequence projection-input cast");
+                        require_bit_exact(projected[row].recurrent_state, actual[row].recurrent_state, "GDN sequence projection-input recurrence");
+                    }
                 }
             }
             for (std::size_t row = 0; row < requests.size(); ++row) {
@@ -554,7 +584,7 @@ void test_gdn_decode_step(
                 for (int token = 0; token < tokens; ++token) {
                     auto step = mfq::metal::gated_delta_decode_step(qs[token], vs[token], zs[token],
                         as[token], bs[token], conv, state, convolution_weight, bias, decay,
-                        norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads);
+                        norm, key_heads, value_heads, dimension, 1e-6f, 1e-6f, silu_gate, tiled_heads, float32, transposed_state);
                     output.push_back(std::move(step.output));
                     conv = std::move(step.convolution_state);
                     state = std::move(step.recurrent_state);
@@ -1162,6 +1192,46 @@ int main(int argc, char** argv) {
         catch (const std::runtime_error&) { rejected_replay = true; }
         if (!rejected_replay) throw std::runtime_error("compiled replay accepted an invalid prefix");
 
+        {
+            const auto make = [](Shape shape, float scale) {
+                std::int64_t count = 1;
+                for (const auto n : shape) count *= n;
+                return reshape(sin(arange(count, float32) * scale), shape);
+            };
+            int replay_cases = 0;
+            for (const auto dtype : {float16, bfloat16, float32})
+            for (const auto value_dtype : {float16, bfloat16, float32})
+            for (const bool tiled : {false, true}) for (const bool transposed : {false, true})
+            for (int keep = 1; keep <= 8; ++keep) {
+                constexpr int hk = 2, hv = 6, channels = (2 * hk + hv) * 128;
+                auto qk = astype(make({1, 8, 2 * hk * 128}, .0013f), dtype);
+                auto value = astype(make({1, 8, hv * 128}, .0017f), value_dtype);
+                auto conv = make({1, 3, channels}, .0021f), state = make({1, hv, 128, 128}, .00003f) * .01f;
+                auto weight = make({channels, 4}, .0007f) * .1f;
+                auto gate = make({1, hv, 8}, .007f) * -.3f - .1f;
+                auto beta = make({1, hv, 8}, .03f) * .2f + .5f;
+                mfq::metal::MlxGatedDeltaSpeculativeState transaction{
+                    conv, state, qk, value, gate, beta, 7, 1, 1, 8};
+                auto reference_conv = mfq::metal::linear_conv_qkv(conv,
+                    slice(qk, {0, 0, 0}, {1, keep, 2 * hk * 128}),
+                    slice(value, {0, 0, 0}, {1, keep, hv * 128}), weight, hk, hv, 128, 128);
+                auto reference_state = mfq::metal::gated_delta_net_state(
+                    reference_conv.key, reference_conv.value,
+                    slice(gate, {0, 0, 0}, {1, hv, keep}), slice(beta, {0, 0, 0}, {1, hv, keep}),
+                    state, transposed, tiled);
+                auto actual = mfq::metal::replay_gated_delta_speculative_prefix(transaction, keep - 1,
+                    weight, hk, hv, 128, 128, std::nullopt, 1e-6f, transposed, tiled);
+                if (mfq::metal::mlx_kernel_preparation_key(actual.recurrent_state.primitive()).find(
+                        "mfq_cpp_gdn_cache_replay_fused_v1") == std::string::npos)
+                    throw std::runtime_error("eligible speculative replay did not select the fused kernel");
+                if (actual.position != 7 + keep ||
+                    !all(actual.convolution_state == reference_conv.state).item<bool>() ||
+                    !all(actual.recurrent_state == reference_state).item<bool>())
+                    throw std::runtime_error("fused speculative cache replay differs from separate operators");
+                ++replay_cases;
+            }
+            std::cout << "fused_replay_fixtures=" << replay_cases << std::endl;
+        }
         std::cout
             << "MFQ C++ Gated DeltaNet Metal tests passed\n";
         return 0;

@@ -6,6 +6,7 @@
 #include "mlx_kernel_prepare.h"
 #include "mtp_policy.h"
 #include "../flash_next/mlx_qwen4_causal_lm.h"
+#include "../qwen35/mlx_qwen35_causal_lm.h"
 
 #include <algorithm>
 #include <cmath>
@@ -318,7 +319,7 @@ void MlxDFlash2::append_context(MlxDFlash2Context& context, const array& target_
     auto window = put_along_axis(*context.window,
         broadcast_to(reshape(slots, {1, retained, 1}), {1, retained, c.hidden}), hidden, 1);
     outputs.push_back(window);
-    if (!MlxKernelPreparation::collecting()) eval(outputs);
+    if (!MlxKernelPreparation::collecting()) async_eval(outputs);
     context.layers = std::move(layers); context.window = std::move(window); context.position += count;
 }
 
@@ -394,12 +395,65 @@ std::int32_t MlxDFlash2::generate_greedy(MlxQwen4CausalLm& target,
         prefill_chunk_size, stop_token, stats, maximum_drafts);
 }
 
-std::int32_t MlxDFlash2::generate(MlxQwen4CausalLm& target,
+namespace {
+
+struct Qwen4DFlashTarget {
+    MlxQwen4CausalLm& model;
+    std::shared_ptr<MlxQwen4RequestCache> cache;
+    explicit Qwen4DFlashTarget(MlxQwen4CausalLm& target) : model(target) {}
+    void begin() { cache = model.make_request_cache(); }
+    const auto& config() const { return model.config(); }
+    auto layer_count() const { return model.layer_count(); }
+    int context_capacity() const { return model.context_capacity(); }
+    void set_hidden_capture_layers(std::vector<int> layers) { model.set_hidden_capture_layers(std::move(layers)); }
+    auto take_hidden_capture() { return model.take_hidden_capture(); }
+    auto embed_token_ids(const array& ids) { return model.embed_token_ids(ids); }
+    auto project_hidden_logits(const array& hidden) { return model.project_hidden_logits(hidden); }
+    auto prefill(const std::vector<std::int64_t>& tokens) { return model.prefill_request(*cache, tokens, false); }
+    auto decode(int token) { return model.decode_requests({cache}, {token}); }
+    auto verify(const std::vector<std::int64_t>& tokens) { return model.verify_requests({cache}, {tokens}).first; }
+    void resolve(int accepted) { model.resolve_request(*cache, accepted); }
+    int position() const { return model.request_cache_position(*cache); }
+};
+
+struct Qwen35DFlashTarget {
+    MlxQwen35CausalLm& model;
+    int drafts = 0;
+    explicit Qwen35DFlashTarget(MlxQwen35CausalLm& target) : model(target) {}
+    void begin() { model.reset_cache(1); }
+    const auto& config() const { return model.config(); }
+    auto layer_count() const { return model.layer_count(); }
+    int context_capacity() const { return model.context_capacity(); }
+    void set_hidden_capture_layers(std::vector<int> layers) { model.set_hidden_capture_layers(std::move(layers)); }
+    auto take_hidden_capture() { return model.take_hidden_capture(); }
+    auto embed_token_ids(const array& ids) { return model.embed_tokens(ids); }
+    auto project_hidden_logits(const array& hidden) { return model.project_hidden_logits(hidden); }
+    array ids(const std::vector<std::int64_t>& tokens) const {
+        return array(tokens.begin(), {1, int(tokens.size())}, int32);
+    }
+    array prefill(const std::vector<std::int64_t>& tokens) {
+        return reshape(model.prefill_logits(ids(tokens)), {-1, int(config().vocab_size)});
+    }
+    array decode(int token) { return reshape(model.forward(ids({token}), true), {-1, int(config().vocab_size)}); }
+    array verify(const std::vector<std::int64_t>& tokens) {
+        drafts = int(tokens.size()) - 1;
+        return reshape(model.verify_tokens(ids(tokens)), {-1, int(config().vocab_size)});
+    }
+    array verify(const array& tokens) {
+        drafts = tokens.shape(1) - 1;
+        return reshape(model.verify_tokens(tokens), {-1, int(config().vocab_size)});
+    }
+    void resolve(int accepted) { model.resolve_verified_tokens(accepted, drafts); }
+    int position() const { return model.cache_position(); }
+};
+
+template<class Target>
+std::int32_t generate_target(const MlxDFlash2& draft, Target& target,
     const std::vector<std::int64_t>& prompt, const MlxSamplingParams& sampling, std::int32_t max_tokens,
     const std::function<bool(std::int64_t)>& callback,
     const std::function<void(std::size_t, double)>& prefill_callback,
-    int prefill_chunk_size, std::optional<int> stop_token, MlxDFlash2GenerationStats* stats, int maximum_drafts) const {
-    const auto& c = config();
+    int prefill_chunk_size, std::optional<int> stop_token, MlxDFlash2GenerationStats* stats, int maximum_drafts) {
+    const auto& c = draft.config();
     if (prompt.empty() || prompt.size() > std::size_t(target.context_capacity()) || max_tokens < 0 ||
         prefill_chunk_size < 1 || maximum_drafts < 1 || maximum_drafts >= c.block_size ||
         target.config().hidden_size != c.hidden || target.config().vocab_size != c.vocabulary ||
@@ -415,21 +469,21 @@ std::int32_t MlxDFlash2::generate(MlxQwen4CausalLm& target,
     if (!max_tokens) return 0;
     target.set_hidden_capture_layers(c.target_layers);
     struct CaptureReset {
-        MlxQwen4CausalLm& target;
+        Target& target;
         ~CaptureReset() { target.set_hidden_capture_layers({}); }
     } reset_capture{target};
-    auto cache = target.make_request_cache();
     MlxDFlash2Context context;
-    reset(context);
+    draft.reset(context);
     std::optional<array> logits;
     using Clock = std::chrono::steady_clock;
     for (std::size_t start = 0; start < prompt.size();) {
         const auto count = std::min<std::size_t>(prefill_chunk_size, prompt.size() - start);
         const auto began = Clock::now();
-        logits = target.prefill_request(*cache, {prompt.begin() + start, prompt.begin() + start + count}, false);
+        if (!start) target.begin();
+        logits = target.prefill({prompt.begin() + start, prompt.begin() + start + count});
         auto features = target.take_hidden_capture();
         if (!features) throw std::runtime_error("DFlash2 target omitted prefill features");
-        append_context(context, *features, int(start));
+        draft.append_context(context, *features, int(start));
         logits->eval();
         const double elapsed = std::chrono::duration<double, std::milli>(Clock::now() - began).count();
         if (stats) stats->prefill_ms += elapsed;
@@ -437,7 +491,7 @@ std::int32_t MlxDFlash2::generate(MlxQwen4CausalLm& target,
         start += count;
     }
     const int limit = std::min(max_tokens, target.context_capacity() - int(prompt.size()) + 1);
-    int pending = select(*logits).item<std::int32_t>();
+    int pending = select(*logits).template item<std::int32_t>();
     int generated = 0;
     bool running = true;
     const auto emit = [&](int token) {
@@ -451,41 +505,60 @@ std::int32_t MlxDFlash2::generate(MlxQwen4CausalLm& target,
     while (running && generated < limit) {
         const int remaining = limit - generated;
         if (remaining == 1) {
-            auto value = target.decode_requests({cache}, {pending});
-            emit(select(value).item<std::int32_t>());
+            const auto started = Clock::now();
+            auto value = target.decode(pending);
+            const auto token = select(value).template item<std::int32_t>();
+            if (stats) stats->target_ms += std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+            emit(token);
             if (stats) ++stats->standard_tokens;
             break;
         }
-        const int position = target.request_cache_position(*cache);
+        const int position = target.position();
         if (position != context.position) throw std::logic_error("DFlash2 target and draft positions diverged");
         std::vector<std::int32_t> input(c.block_size, c.mask_token);
         input[0] = pending;
-        auto proposal = propose(context, pending, target.embed_token_ids(array(input.begin(), {1, c.block_size}, int32)),
+        const auto cycle_started = Clock::now();
+        auto proposal = draft.propose(context, pending, target.embed_token_ids(array(input.begin(), {1, c.block_size}, int32)),
             [&](const array& hidden) { return target.project_hidden_logits(hidden); });
-        proposal.tokens.eval();
+        constexpr bool device_verification = requires(const array& tokens) { target.verify(tokens); };
+        if constexpr (device_verification) async_eval({proposal.tokens});
+        else proposal.tokens.eval();
+        if (stats) stats->head_ms += std::chrono::duration<double, std::milli>(Clock::now() - cycle_started).count();
         const int depth = std::min(maximum_drafts, remaining - 1);
         std::vector<std::int64_t> teachers{pending};
-        for (int i = 0; i < depth; ++i) {
-            const int id = proposal.tokens.data<std::int32_t>()[i];
-            if (id < 0 || id >= c.vocabulary) throw std::runtime_error("DFlash2 proposed an invalid token");
-            teachers.push_back(id);
-        }
-        auto verified = target.verify_requests({cache}, {teachers});
+        const auto read_teachers = [&] {
+            for (int i = 0; i < depth; ++i) {
+                const int id = proposal.tokens.template data<std::int32_t>()[i];
+                if (id < 0 || id >= c.vocabulary) throw std::runtime_error("DFlash2 proposed an invalid token");
+                teachers.push_back(id);
+            }
+        };
+        if constexpr (!device_verification) read_teachers();
+        const auto verify_started = Clock::now();
+        auto verified = [&] {
+            if constexpr (device_verification) {
+                auto selected = slice(proposal.tokens, {0}, {depth});
+                auto ids = concatenate({full({1}, pending, int32), selected});
+                return target.verify(reshape(ids, {1, depth + 1}));
+            } else return target.verify(teachers);
+        }();
         int retained = 0;
         struct Resolve {
-            MlxQwen4CausalLm& target;
-            MlxQwen4RequestCache& cache;
+            Target& target;
             int& retained;
             bool active = true;
-            ~Resolve() { if (active) try { target.resolve_request(cache, retained); } catch (...) {} }
-        } transaction{target, *cache, retained};
-        auto predictions = select(verified.first);
-        predictions.eval();
+            ~Resolve() { if (active) try { target.resolve(retained); } catch (...) {} }
+        } transaction{target, retained};
+        auto predictions = select(verified);
+        if constexpr (device_verification) eval({predictions, proposal.tokens});
+        else predictions.eval();
+        if constexpr (device_verification) read_teachers();
+        if (stats) stats->target_ms += std::chrono::duration<double, std::milli>(Clock::now() - verify_started).count();
         auto features = target.take_hidden_capture();
         if (!features) throw std::runtime_error("DFlash2 target omitted verification features");
         const auto decision = mfq::engine::mtp::verify_greedy(
-            std::span<const std::int32_t>(proposal.tokens.data<std::int32_t>(), depth),
-            std::span<const std::int32_t>(predictions.data<std::int32_t>(), depth + 1));
+            std::span<const std::int32_t>(proposal.tokens.template data<std::int32_t>(), depth),
+            std::span<const std::int32_t>(predictions.template data<std::int32_t>(), depth + 1));
         const int matched = int(decision.accepted_drafts);
         if (stats) {
             ++stats->cycles; stats->proposed += c.block_size - 1;
@@ -503,12 +576,40 @@ std::int32_t MlxDFlash2::generate(MlxQwen4CausalLm& target,
             pending = decision.next_token;
             emit(pending);
         }
-        target.resolve_request(*cache, retained);
+        const auto resolve_started = Clock::now();
+        target.resolve(retained);
+        if (stats) stats->rollback_ms += std::chrono::duration<double, std::milli>(Clock::now() - resolve_started).count();
         transaction.active = false;
-        if (running && generated < limit)
-            append_context(context, slice(*features, {0, 0, 0}, {1, retained + 1, features->shape(2)}), position);
+        if (running && generated < limit) {
+            const auto context_started = Clock::now();
+            draft.append_context(context, slice(*features, {0, 0, 0}, {1, retained + 1, features->shape(2)}), position);
+            if (stats) stats->head_ms += std::chrono::duration<double, std::milli>(Clock::now() - context_started).count();
+        }
+        if (stats) stats->measured_depth_ms[depth] += std::chrono::duration<double, std::milli>(Clock::now() - cycle_started).count();
     }
     return generated;
+}
+
+}
+
+std::int32_t MlxDFlash2::generate(MlxQwen4CausalLm& target,
+    const std::vector<std::int64_t>& prompt, const MlxSamplingParams& sampling, std::int32_t max_tokens,
+    const std::function<bool(std::int64_t)>& callback,
+    const std::function<void(std::size_t, double)>& prefill_callback,
+    int prefill_chunk_size, std::optional<int> stop_token, MlxDFlash2GenerationStats* stats, int maximum_drafts) const {
+    Qwen4DFlashTarget adapter(target);
+    return generate_target(*this, adapter, prompt, sampling, max_tokens, callback, prefill_callback,
+        prefill_chunk_size, stop_token, stats, maximum_drafts);
+}
+
+std::int32_t MlxDFlash2::generate(MlxQwen35CausalLm& target,
+    const std::vector<std::int64_t>& prompt, const MlxSamplingParams& sampling, std::int32_t max_tokens,
+    const std::function<bool(std::int64_t)>& callback,
+    const std::function<void(std::size_t, double)>& prefill_callback,
+    int prefill_chunk_size, std::optional<int> stop_token, MlxDFlash2GenerationStats* stats, int maximum_drafts) const {
+    Qwen35DFlashTarget adapter(target);
+    return generate_target(*this, adapter, prompt, sampling, max_tokens, callback, prefill_callback,
+        prefill_chunk_size, stop_token, stats, maximum_drafts);
 }
 
 }

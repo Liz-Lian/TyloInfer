@@ -37,6 +37,7 @@ constexpr Format formats[]{
     {"GGUF_Q5_K", 13, 256, 176}, {"GGUF_Q6_K", 14, 256, 210},
     {"GGUF_Q8_K", 15, 256, 292}, {"GGUF_IQ2_XXS", 16, 256, 66},
     {"GGUF_IQ2_XS", 17, 256, 74}, {"GGUF_IQ3_XXS", 18, 256, 98},
+    {"GGUF_IQ1_S", 19, 256, 50}, {"GGUF_IQ1_M", 29, 256, 56},
     {"GGUF_IQ4_NL", 20, 32, 18}, {"GGUF_IQ3_S", 21, 256, 110},
     {"GGUF_IQ2_S", 22, 256, 82}, {"GGUF_IQ4_XS", 23, 256, 136},
     {"GGUF_MXFP4", 39, 32, 17}, {"GGUF_Q2_0", 42, 64, 18},

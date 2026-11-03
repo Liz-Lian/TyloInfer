@@ -233,6 +233,27 @@ template<int F> METAL_FUNC float gguf_value(device const uchar* row, uint k) {
         uint value = uint((iq2xs_grid[code & 511u] >> (8u * c)) & 255ul);
         uint scale = (b->scales[group] >> (4u * (sub / 2u))) & 15u;
         return float(b->d) * (.5f + scale) * .25f * value * ((signs & (1u << c)) ? -1.f : 1.f);
+    } else if constexpr (F == 19 || F == 29) {
+        uint code;
+        float scale, delta;
+        if constexpr (F == 19) {
+            auto b = reinterpret_cast<device const block_iq1_s*>(row) + k / 256u;
+            const uint high = b->qh[p / 32u];
+            code = b->qs[p / 8u] | (((high >> (3u * (p % 32u / 8u))) & 7u) << 8u);
+            scale = float(b->d) * (2u * ((high >> 12u) & 7u) + 1u);
+            delta = high & 0x8000u ? -0.125f : 0.125f;
+        } else {
+            auto b = reinterpret_cast<device const block_iq1_m*>(row) + k / 256u;
+            auto sc = reinterpret_cast<device const ushort*>(b->scales);
+            const ushort d = (sc[0] >> 12u) | ((sc[1] >> 8u) & 0xf0u) |
+                ((sc[2] >> 4u) & 0xf00u) | (sc[3] & 0xf000u);
+            const uint high = b->qh[p / 16u] >> (4u * (p % 16u / 8u));
+            code = b->qs[p / 8u] | ((high & 7u) << 8u);
+            scale = float(as_type<half>(d)) * (2u * ((sc[p / 64u] >> (3u * (p % 64u / 16u))) & 7u) + 1u);
+            delta = high & 8u ? -0.125f : 0.125f;
+        }
+        const uint value = (iq1s_grid_gpu[code] >> (8u * (p % 4u) + 4u * (p % 8u / 4u))) & 15u;
+        return scale * (float(value) - 1.f + delta);
     } else if constexpr (F == 22) {
         auto b = reinterpret_cast<device const block_iq2_s*>(row) + k / 256u;
         uint group = p / 32u, sub = (p % 32u) / 8u, c = p % 8u;

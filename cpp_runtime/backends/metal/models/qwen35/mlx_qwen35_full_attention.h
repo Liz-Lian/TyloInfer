@@ -28,6 +28,10 @@ public:
     mlx::core::array operator()(
         const mlx::core::array& input) const;
 
+    mlx::core::array forward_normalized(
+        const mlx::core::array& input,
+        const MlxRmsNorm& norm) const;
+
     int input_size() const noexcept {
         return input_size_;
     }

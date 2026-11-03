@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <mlx/mlx.h>
+#include <mlx/primitives.h>
 
 namespace {
 
@@ -81,7 +82,7 @@ array constant_vector(int size, float value) {
     return array(values.begin(), Shape{size});
 }
 
-Qwen35Config test_config() {
+Qwen35Config test_config(int dimension = 32) {
     Qwen35Config config;
     config.model_type = "qwen3_5";
     config.vocab_size = 32;
@@ -97,8 +98,8 @@ Qwen35Config test_config() {
     config.norm_weight_offset = 1.0;
     config.layer_types = {"linear_attention"};
     config.linear_conv_kernel_dim = 4;
-    config.linear_key_head_dim = 32;
-    config.linear_value_head_dim = 32;
+    config.linear_key_head_dim = dimension;
+    config.linear_value_head_dim = dimension;
     config.linear_num_key_heads = 1;
     config.linear_num_value_heads = 2;
     config.linear_a_is_log = true;
@@ -128,13 +129,15 @@ MlxQwen35DenseSwiGlu make_ffn(
 MlxQwen35LinearAttentionBlock make_block(
     bool split,
     bool gguf_layout,
-    mlx::core::Dtype projection_dtype = mlx::core::float32) {
-    auto config = test_config();
+    mlx::core::Dtype projection_dtype = mlx::core::float32,
+    int dimension = 32,
+    bool force_generic = false) {
+    auto config = test_config(dimension);
     constexpr int hidden = 4;
-    constexpr int key_size = 32;
-    constexpr int value_size = 64;
-    constexpr int qk_size = 2 * key_size;
-    constexpr int channels = qk_size + value_size;
+    const int key_size = dimension;
+    const int value_size = 2 * dimension;
+    const int qk_size = 2 * key_size;
+    const int channels = qk_size + value_size;
     constexpr int value_heads = 2;
     constexpr int kernel = 4;
 
@@ -158,8 +161,8 @@ MlxQwen35LinearAttentionBlock make_block(
     const array hidden_norm(
         {0.0f, 0.03f, -0.02f, 0.01f},
         Shape{hidden});
-    std::vector<float> linear_norm_values(32);
-    for (int index = 0; index < 32; ++index) {
+    std::vector<float> linear_norm_values(dimension);
+    for (int index = 0; index < dimension; ++index) {
         linear_norm_values[index] =
             0.95f + 0.002f * static_cast<float>(index % 11);
     }
@@ -215,7 +218,7 @@ MlxQwen35LinearAttentionBlock make_block(
                 0.04f, -0.02f, 0.06f, 0.01f,
             })),
         matrix(channels, kernel, convolution),
-        std::nullopt,
+        force_generic ? std::optional<array>(mlx::core::zeros(Shape{channels}, mlx::core::float32)) : std::nullopt,
         array({-0.3f, 0.2f}, Shape{value_heads}),
         array(
             {std::log(0.65f), std::log(0.9f)},
@@ -223,7 +226,7 @@ MlxQwen35LinearAttentionBlock make_block(
         MlxRmsNorm(
             array(
                 linear_norm_values.begin(),
-                Shape{32}),
+                Shape{dimension}),
             static_cast<float>(config.rms_norm_eps)),
         MlxLinear(matrix_with_dtype(
             hidden,
@@ -408,6 +411,108 @@ void test_half_activation_dtype_preservation() {
         "linear-attention cache/state did not remain FP32");
 }
 
+void test_fused_decode_cache_equivalence() {
+    using namespace mlx::core;
+    for (const auto dtype : {float32, float16}) for (const bool tiled : {false, true})
+    for (const bool split : {false, true}) {
+        const auto input = astype(reshape(sin(arange(28, float32) * .17f) * .5f, {1, 7, 4}), dtype);
+        auto full = make_block(split, tiled, dtype, 128);
+        auto decoded = make_block(split, tiled, dtype, 128);
+        auto restored = make_block(split, tiled, dtype, 128);
+        const auto expected = astype(full.forward(input, 0, true), float32);
+        auto prefix = decoded.forward(slice(input, {0, 0, 0}, {1, 2, 4}), 0, true);
+        prefix.eval();
+        restored.restore_cache(decoded.snapshot_cache());
+        std::vector<array> steps;
+        for (int token = 2; token < 7; ++token) {
+            auto result = restored.forward(slice(input, {0, token, 0}, {1, token + 1, 4}), token, true);
+            require(restored.recurrent_state()->has_primitive() &&
+                std::string(restored.recurrent_state()->primitive().name()) == "GatedDeltaDecodeStep",
+                "128-dimensional GDN decode did not use the fused kernel");
+            steps.push_back(astype(result, float32));
+        }
+        const auto actual = concatenate(steps, 1);
+        const auto tail = slice(expected, {0, 2, 0}, {1, 7, 4});
+        eval(actual, tail, *full.convolution_state(), *restored.convolution_state(),
+            *full.recurrent_state(), *restored.recurrent_state());
+        require_array_close(actual, tail, dtype == float16 ? .003f : 1e-4f);
+        require_array_close(*full.convolution_state(), *restored.convolution_state());
+        require_array_close(*full.recurrent_state(), *restored.recurrent_state(), 1e-4f);
+        require(restored.cache_position() == 7, "fused decode cache position mismatch");
+    }
+}
+
+void test_fused_speculative_cache_equivalence() {
+    using namespace mlx::core;
+    const auto close = [](const array& actual, const array& expected, float tolerance) {
+        const auto a = astype(actual, float32), b = astype(expected, float32);
+        eval(a, b);
+        require_array_close(a, b, tolerance);
+    };
+    for (const auto dtype : {float32, float16}) for (const bool tiled : {false, true})
+    for (const bool split : {false, true}) for (const int tokens : {2, 3, 4, 5, 6, 8}) {
+        const auto input = astype(reshape(sin(arange(48, float32) * .17f) * .5f, {1, 12, 4}), dtype);
+        auto reference = make_block(split, tiled, dtype, 128, true);
+        auto actual = make_block(split, tiled, dtype, 128);
+        reference.forward(slice(input, {0, 0, 0}, {1, 2, 4}), 0, true).eval();
+        const auto checkpoint = reference.snapshot_cache();
+        const auto window = slice(input, {0, 2, 0}, {1, 2 + tokens, 4});
+        const auto tolerance = dtype == float16 ? .003f : 1e-4f;
+        for (const int accepted : {0, tokens / 2, tokens - 1}) {
+            reference.restore_cache(checkpoint);
+            actual.restore_cache(checkpoint);
+            const auto expected = reference.forward(window, 2, true);
+            const auto verified = actual.forward_speculative(window, 2, 1);
+            require(actual.recurrent_state()->has_primitive() &&
+                std::string(actual.recurrent_state()->primitive().name()) == "GatedDeltaDecodeStep",
+                "GDN speculative window did not use the fused kernel");
+            close(verified, expected, tolerance);
+            if (accepted == tokens - 1) actual.commit_speculative();
+            else actual.rollback_speculative(accepted);
+            const int position = 3 + accepted;
+            reference.restore_cache(checkpoint);
+            reference.forward(slice(input, {0, 2, 0}, {1, position, 4}), 2, true).eval();
+            require(actual.cache_position() == position, "fused GDN speculative cache position mismatch");
+            close(*actual.convolution_state(), *reference.convolution_state(), 8e-4f);
+            close(*actual.recurrent_state(), *reference.recurrent_state(), 1e-4f);
+            const auto next = slice(input, {0, position, 0}, {1, position + 1, 4});
+            close(actual.forward(next, position, true), reference.forward(next, position, true), tolerance);
+            close(*actual.recurrent_state(), *reference.recurrent_state(), 1e-4f);
+        }
+    }
+}
+
+void test_borrowed_cache_snapshot() {
+    using namespace mlx::core;
+    for (const int dimension : {32, 128}) for (const bool split : {false, true})
+        for (const bool tiled : {false, true}) for (const auto dtype : {float16, float32}) {
+        auto block = make_block(split, tiled, dtype, dimension);
+        const auto input = astype(array({.2f, -.4f, .1f, .3f}, Shape{1, 1, 4}), dtype);
+        auto first = block.forward(input, true);
+        const auto status = block.recurrent_state()->status();
+        const auto borrowed = block.snapshot_cache(false);
+        require(borrowed.convolution_state.id() == block.convolution_state()->id() &&
+            borrowed.recurrent_state.id() == block.recurrent_state()->id() &&
+            borrowed.recurrent_state.status() == status,
+            "borrowed GDN snapshot copied or evaluated its cache");
+        first.eval();
+        const auto owned = block.snapshot_cache();
+        auto discarded = block.forward(input, true);
+        discarded.eval();
+        require_array_close(borrowed.convolution_state, owned.convolution_state, 0.f);
+        require_array_close(borrowed.recurrent_state, owned.recurrent_state, 0.f);
+        block.restore_cache(borrowed, false);
+        require(block.cache_position() == 1 && block.recurrent_state()->id() == borrowed.recurrent_state.id(),
+            "borrowed GDN restore changed cache ownership or position");
+        auto reference = make_block(split, tiled, dtype, dimension);
+        reference.restore_cache(owned);
+        const auto actual = astype(block.forward(input, true), float32);
+        const auto expected = astype(reference.forward(input, true), float32);
+        eval(actual, expected);
+        require_array_close(actual, expected, 0.f);
+    }
+}
+
 void test_shape_validation() {
     bool rejected = false;
     try {
@@ -450,6 +555,9 @@ int main() {
         test_combined_and_split_equivalence();
         test_prefill_decode_cache_equivalence();
         test_half_activation_dtype_preservation();
+        test_fused_decode_cache_equivalence();
+        test_fused_speculative_cache_equivalence();
+        test_borrowed_cache_snapshot();
         test_shape_validation();
         std::cout
             << "MFQ C++ Qwen3.5 Gated DeltaNet block tests passed\n";
