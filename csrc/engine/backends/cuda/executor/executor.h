@@ -13,6 +13,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 class TqExec;
 
@@ -23,13 +24,25 @@ class Collectives;
 class Pipelines;
 class RouteStats;
 
-class Executor : public mfq::Executor {
-public:
-    std::unique_ptr<mfq::Executor::Scope> enter() override;
-    std::unique_ptr<mfq::Executor::Scope> enter(int device);
+class Executor
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    : public mfq::Executor
+#endif
+{
+public:
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::unique_ptr<mfq::Executor::Scope> enter() override;
+    void drain() override;
+#else
+    std::unique_ptr<mfq::Executor::Scope> enter();
+#endif
+    std::unique_ptr<mfq::Executor::Scope> enter(int device);
+    void join();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    void wait();
     static Executor& current();
-
+#else
+    void wait(const std::unordered_set<int>& devices);
 #endif
     Collectives& collectives() noexcept { return collectives_; }
     const Collectives& collectives() const noexcept { return collectives_; }

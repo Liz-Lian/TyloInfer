@@ -4,7 +4,6 @@
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
-#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/state/kv_offload.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/placement.h"
@@ -32,26 +31,23 @@ inline void drain_cuda(
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
     finish([&] { drain_moe_expert_cache(weights.moe); });
-    finish([&] { executor.pipelines().drain(); });
-    finish([&] { executor.collectives().drain(); });
-    if (offload) finish([&] { offload->flush(); });
-    // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    for (const auto& [device, context] : executor.contexts()) finish([&] {
-        MfqCudaGuard guard(device);
-        TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
-    });
-#else
-    std::unordered_set<int> devices{layer_placement.primary_device()};
-    for (const auto* group : {&tensor_parallel.devices, &expert_parallel.devices, &layer_placement.devices})
-        devices.insert(group->begin(), group->end());
-    for (int device : devices) finish([&] {
-        MfqCudaGuard guard(device);
-        TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
-    });
+    if (!offload) {
+        finish([&] { static_cast<mfq::Executor&>(executor).drain(); });
+    } else
 #endif
-    finish([&] { executor.tq()->drain(); });
-    finish([&] { executor.branches().drain(); });
+    {
+        finish([&] { executor.join(); });
+        if (offload) finish([&] { offload->flush(); });
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        finish([&] { executor.wait(); });
+#else
+        std::unordered_set<int> devices{layer_placement.primary_device()};
+        for (const auto* group : {&tensor_parallel.devices, &expert_parallel.devices, &layer_placement.devices})
+            devices.insert(group->begin(), group->end());
+        finish([&] { executor.wait(devices); });
+#endif
+    }
     if (failure) std::rethrow_exception(failure);
 }
 

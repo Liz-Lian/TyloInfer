@@ -8,12 +8,14 @@
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/scope.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/kernels/gr_prefill_blas.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
 #include "engine/backends/cuda/ops/projection/mmq.h"
 #include "diagnostics/route_stats.h"
 
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <type_traits>
@@ -265,6 +267,48 @@ Executor::Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq
       collectives_(collectives), routes_(routes), pipelines_(pipelines), primary_(primary) {}
 
 Executor::~Executor() = default;
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+void Executor::drain() {
+    std::exception_ptr failure;
+    try { join(); } catch (...) { failure = std::current_exception(); }
+    try { wait(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    if (failure) std::rethrow_exception(failure);
+}
+#endif
+
+void Executor::join() {
+    std::exception_ptr failure;
+    const auto finish = [&](auto&& work) {
+        try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    };
+    finish([&] { pipelines_.drain(); });
+    finish([&] { collectives_.drain(); });
+    if (failure) std::rethrow_exception(failure);
+}
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+void Executor::wait() {
+#else
+void Executor::wait(const std::unordered_set<int>& devices) {
+#endif
+    std::exception_ptr failure;
+    const auto finish = [&](auto&& work) {
+        try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
+    };
+    // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    for (const auto& [device, context] : contexts_) finish([&] {
+#else
+    for (int device : devices) finish([&] {
+#endif
+        MfqCudaGuard guard(device);
+        TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
+    });
+    finish([&] { tq_->drain(); });
+    finish([&] { branches_.drain(); });
+    if (failure) std::rethrow_exception(failure);
+}
 
 std::unique_ptr<Executor> Executor::fork() const {
     return fork(primary_);
