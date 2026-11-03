@@ -41,6 +41,10 @@ public:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     void wait();
     static Executor& current();
+    static const Ffn::Mode& current_ffn();
+    std::unique_ptr<mfq::Executor::Scope> enter(int device, const Ffn::Mode& mode);
+    // Override only the policy on this active executor; retain its device and stream.
+    std::unique_ptr<mfq::Executor::Scope> enter(const Ffn::Mode& mode);
 #else
     void wait(const std::unordered_set<int>& devices);
 #endif

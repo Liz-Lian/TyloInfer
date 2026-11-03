@@ -30,7 +30,7 @@ public:
     virtual Tensor embedding(Tensor ids, int primary = 0) const = 0;
     virtual Tensor normalize(Tensor hidden, std::int64_t batch, std::int64_t tokens) const = 0;
     virtual Tensor softcap(Tensor logits) const = 0;
-    virtual Tensor logits(Tensor hidden, bool capped = true, const ForwardOptions& options = {}) const = 0;
+    virtual Tensor logits(Tensor hidden, bool capped = true) const = 0;
     virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
 };
 

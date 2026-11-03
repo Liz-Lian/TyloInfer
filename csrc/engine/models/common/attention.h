@@ -75,7 +75,7 @@ struct FullAttention {
     std::array<mfq::Tensor, 2> forward(
         mfq::Tensor input, const AttentionStep& step,
         mfq::state::KvView cache, const mfq::ops::RopeTable& rope,
-        const mfq::ops::ProjectionOptions& projection = {}, mfq::ops::Trace* trace = nullptr) const;
+        mfq::ops::Trace* trace = nullptr) const;
 #else
     mfq::cuda::KvQuantization kv_quantization;
     std::array<mfq_tensor_backend::Tensor, 2> forward(

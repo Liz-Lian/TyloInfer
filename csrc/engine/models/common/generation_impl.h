@@ -51,8 +51,8 @@ constexpr bool has_forward =
 template <typename Model>
 constexpr bool has_logits =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    requires(Model& model, Tensor hidden, const mfq::models::ForwardOptions& options) {
-        static_cast<const mfq::models::CausalModel&>(model).logits(std::move(hidden), true, options);
+    requires(Model& model, Tensor hidden) {
+        static_cast<const mfq::models::CausalModel&>(model).logits(std::move(hidden), true);
     } ||
 #endif
     requires(
@@ -68,6 +68,7 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
     if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).forward(
                                std::move(input), state, forward_options(mode)); }) {
         const mfq::models::CausalModel& causal = model;
+        auto scope = Executor::current().enter(mode.ffn);
         return Tensor(causal.forward(std::move(input), state, forward_options(mode)));
     } else
 #endif
@@ -85,9 +86,10 @@ Tensor project(Model& model, mfq::cuda::Executor* executor,
     static_assert(has_logits<Model>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).logits(
-                               std::move(value), capped, forward_options(mode)); }) {
+                               std::move(value), capped); }) {
         const mfq::models::CausalModel& causal = model;
-        return Tensor(causal.logits(std::move(value), capped, forward_options(mode)));
+        auto scope = Executor::current().enter(mode.ffn);
+        return Tensor(causal.logits(std::move(value), capped));
     } else
 #endif
     {

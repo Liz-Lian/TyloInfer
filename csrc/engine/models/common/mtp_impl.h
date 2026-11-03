@@ -95,6 +95,7 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
   if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).forward(
                              std::move(input), state, mfq::cuda::forward_options(mode)); }) {
     const mfq::models::CausalModel& causal = model;
+    auto scope = mfq::cuda::Executor::current().enter(mode.ffn);
     return Tensor(causal.forward(std::move(input), state, mfq::cuda::forward_options(mode)));
   } else
 #endif
@@ -653,6 +654,7 @@ template <class Model, class State> struct CudaMtpOps {
                         : normalized.to(mfq_tensor_backend::kFloat16))
                        .contiguous();
       const mfq::models::CausalModel& causal = model;
+      auto scope = mfq::cuda::Executor::current().enter(mfq::cuda::Ffn::Mode{});
       return Tensor(causal.logits(std::move(input), true));
     } else
 #endif

@@ -19,20 +19,20 @@
 
 namespace mfq::cuda::gemma4 {
 
-struct FfnStep {
-    mfq::ops::FfnMode ffn;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::ops::Trace* trace;
-#else
-    Trace* trace;
-#endif
-    int trace_layer;
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+struct FfnStep {
+    Ffn::Mode ffn;
+    Trace* trace;
+    int trace_layer;
     bool fused_norms;
-#endif
 };
+#endif
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+static void trace_stage(const Model::Options& mode, int layer, const char* name,
+#else
 static void trace_stage(const FfnStep& mode, int layer, const char* name,
+#endif
                         const Tensor& value) {
     if (mode.trace != nullptr && layer == mode.trace_layer) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -66,7 +66,7 @@ static Tensor gemma_rms_norm_f16(Tensor x,
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-static Tensor forward_ffn(const Layer& weights, const FfnStep& mode,
+static Tensor forward_ffn(const Layer& weights, const Model::Options& mode,
 #else
 static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnStep& mode,
 #endif
@@ -194,7 +194,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         [&] {
             return measure("gemma.ffn_dense", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return mfq::ops::reshape(ffn.forward(dense_input, mode.ffn), flat_shape);
+                return mfq::ops::reshape(ffn.forward(dense_input), flat_shape);
 #else
                 return ffn.forward(dense_input, executor, mode.ffn).reshape({B * T, H});
 #endif
@@ -243,8 +243,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                     const bool tracing = mode.trace != nullptr && layer == mode.trace_layer;
                     auto result = mfq::ops::routed_geglu(moe_input, selected.ids,
-                        *gemma_moe_gate_up, *gemma_moe_down,
-                        {mode.ffn.serial, mode.ffn.projection_major}, tracing);
+                        *gemma_moe_gate_up, *gemma_moe_down, tracing);
                     if (tracing) {
                         mode.trace->emplace_back("moe_gate_up", result.gate_up);
                         mode.trace->emplace_back("moe_hidden", result.hidden);
@@ -478,11 +477,10 @@ Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-mfq::Tensor Model::logits(mfq::Tensor hidden, bool capped, const Options& mode) const {
+mfq::Tensor Model::logits(mfq::Tensor hidden, bool capped) const {
     const auto& model = *this;
     auto result = mfq::ops::measure("model.lm_head", hidden.device(), [&] {
-        return mfq::ops::project(std::move(hidden), *model.lm_head,
-                                 {mode.ffn.serial, mode.ffn.projection_major});
+        return mfq::ops::project(std::move(hidden), *model.lm_head);
     });
     return capped ? mfq::ops::softcap(std::move(result), model.config.final_logit_softcapping)
                   : std::move(result);
@@ -533,7 +531,6 @@ Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto result = attention.forward(std::move(input), step,
         cache, attention.attention_rope,
-        {mode.ffn.serial, mode.ffn.projection_major},
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
 #else
     auto result = attention.forward(executor.projector(mode.ffn), executor.profiler(),
@@ -542,7 +539,7 @@ Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return forward_ffn(layer, {mode.ffn, mode.trace, mode.trace_layer},
+    return forward_ffn(layer, mode,
                        std::move(result[0]), std::move(result[1]), B, T, H);
 #else
     return forward_ffn(layer, executor, {mode.ffn, mode.trace, mode.trace_layer, mode.gemma4_fused_norms},

@@ -26,7 +26,16 @@ public:
         bool reduce_fusion = true;
     };
 
-    using Mode = mfq::ops::FfnMode;
+    struct Mode {
+        bool materialized = false;
+        bool unfused = false;
+        bool serial = false;
+        bool batch_serial = false;
+        int tile = 0;
+        int tiles = 1;
+        bool reuse_input = true;
+        bool projection_major = false;
+    };
 
     QuantLinearGroup gate_up;
     QuantLinear down;
@@ -112,12 +121,11 @@ bool expert_parallel(const Ffn& ffn);
 namespace mfq::cuda::ops {
 mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
                 const mfq::weights::Matrix& down, mfq::ops::MlpActivation activation,
-                double swiglu_limit, const mfq::ops::FfnMode& mode);
+                double swiglu_limit);
 mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count, const mfq::ops::MoeRouting& routing);
 mfq::Tensor expert_scale(mfq::Tensor weights, mfq::Tensor ids, const mfq::Tensor& scales);
 mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights);
 mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
-    const mfq::weights::ExpertBank& gate_up, const mfq::weights::ExpertBank& down,
-    const mfq::ops::ProjectionOptions& options, bool trace);
+    const mfq::weights::ExpertBank& gate_up, const mfq::weights::ExpertBank& down, bool trace);
 }
 #endif

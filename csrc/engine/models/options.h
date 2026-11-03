@@ -5,7 +5,6 @@
 namespace mfq::models {
 
 struct ForwardOptions {
-    ops::FfnMode ffn;
     std::int64_t kv_capacity = 0;
     ops::Trace* trace = nullptr;
     int trace_layer = -1;

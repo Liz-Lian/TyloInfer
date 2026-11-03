@@ -21,7 +21,7 @@ namespace mfq::cuda {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 std::array<mfq::Tensor, 2> FullAttention::forward(
         mfq::Tensor x, const AttentionStep& step, mfq::state::KvView cache,
-        const mfq::ops::RopeTable& rope, const mfq::ops::ProjectionOptions& projection, mfq::ops::Trace* trace) const {
+        const mfq::ops::RopeTable& rope, mfq::ops::Trace* trace) const {
     using Tensor = mfq::Tensor;
     const auto profile_device = x.device();
     auto measure = [&](const char* name, auto&& operation) {
@@ -139,11 +139,11 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             std::vector<mfq::Tensor> result;
             if (!split_q_kv_projections) {
-                return mfq::ops::project(xn, *qkv, projection);
+                return mfq::ops::project(xn, *qkv);
             } else {
-                result.emplace_back(mfq::ops::project(xn, *q_projection, projection));
-                result.emplace_back(mfq::ops::project(xn, *k_projection, projection));
-                result.emplace_back(mfq::ops::project(xn, *v_projection, projection));
+                result.emplace_back(mfq::ops::project(xn, *q_projection));
+                result.emplace_back(mfq::ops::project(xn, *k_projection));
+                result.emplace_back(mfq::ops::project(xn, *v_projection));
             }
             return result;
 #else
@@ -445,7 +445,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         });
         oo = measure("full.o_proj_gate", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return mfq::ops::sigmoid_project(af, gf, *o, projection);
+            return mfq::ops::sigmoid_project(af, gf, *o);
 #else
             return project.gated(o, af, gf, InputGateMode::Sigmoid);
 #endif
@@ -463,7 +463,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         });
         oo = measure("full.o_proj", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto output = mfq::ops::project(af, *o, projection);
+            auto output = mfq::ops::project(af, *o);
             return official_bf16
                 ? mfq::ops::contiguous(mfq::ops::cast(output, mfq::ScalarType::bfloat16)) : output;
 #else

@@ -17,6 +17,7 @@
 
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -351,34 +352,48 @@ AttentionScratch& Executor::attention_scratch(mfq::Device device, AttentionGeome
 
 namespace {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-thread_local Executor* active_executor = nullptr;
+class ExecutorScope;
+thread_local ExecutorScope* active_scope = nullptr;
 #endif
 
 class ExecutorScope final : public mfq::Executor::Scope {
 public:
-    ExecutorScope(Executor& executor, int primary, ContextSet& contexts)
-        : native_(primary, contexts)
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        , previous_(active_executor)
-#endif
-    {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        active_executor = &executor;
-#else
-        (void)executor;
-#endif
+    ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const Ffn::Mode& mode)
+        : owner(executor), ffn(mode), native_(std::in_place, primary, contexts),
+          no_grad_(std::in_place), previous_(active_scope) {
+        active_scope = this;
     }
+    ExecutorScope(Executor& executor, const Ffn::Mode& mode)
+        : owner(executor), ffn(mode), previous_(active_scope) {
+        if (!previous_ || &previous_->owner != &executor)
+            throw std::logic_error("CUDA executor is not active");
+        active_scope = this;
+    }
+    Executor& owner;
+    Ffn::Mode ffn;
+#else
+    ExecutorScope(Executor& executor, int primary, ContextSet& contexts)
+        : native_(primary, contexts) {
+        (void)executor;
+    }
+#endif
     ~ExecutorScope() override {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        active_executor = previous_;
+        active_scope = previous_;
 #endif
     }
 
 private:
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::optional<CudaScope> native_;
+    std::optional<mfq_tensor_backend::NoGradGuard> no_grad_;
+#else
     CudaScope native_;
     mfq_tensor_backend::NoGradGuard no_grad_;
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    Executor* previous_;
+    ExecutorScope* previous_;
 #endif
 };
 } // namespace
@@ -388,20 +403,36 @@ std::unique_ptr<mfq::Executor::Scope> Executor::enter() {
 }
 
 std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    return enter(device, active_scope && &active_scope->owner == this ? active_scope->ffn : mode_.ffn);
+#else
     return std::make_unique<ExecutorScope>(*this, device, contexts_);
+#endif
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Executor& Executor::current() {
-    if (!active_executor) throw std::runtime_error("no active CUDA executor scope");
-    return *active_executor;
+std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device, const Ffn::Mode& mode) {
+    return std::make_unique<ExecutorScope>(*this, device, contexts_, mode);
 }
 
+std::unique_ptr<mfq::Executor::Scope> Executor::enter(const Ffn::Mode& mode) {
+    return std::make_unique<ExecutorScope>(*this, mode);
+}
+
+Executor& Executor::current() {
+    if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
+    return active_scope->owner;
+}
+
+const Ffn::Mode& Executor::current_ffn() {
+    if (!active_scope) throw std::runtime_error("no active CUDA executor scope");
+    return active_scope->ffn;
+}
 #endif
 
 Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mode) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto scope = enter(mfq_current_cuda_device());
+    auto scope = enter(mfq_current_cuda_device(), mode.ffn);
 #endif
     const auto release = releases(tasks, inputs);
     auto options = options_;
@@ -446,8 +477,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                     } else if constexpr (std::is_same_v<Op, task::Attention>) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         auto output = op.weights.forward(std::move(input), inputs.attention,
-                            inputs.kv[op.state], *inputs.rope,
-                            {mode.ffn.serial, mode.ffn.projection_major}, trace);
+                            inputs.kv[op.state], *inputs.rope, trace);
 #else
                         auto output = op.weights.forward(project, profiler_, options.attention,
                             std::move(input), inputs.attention, inputs.kv[op.state],

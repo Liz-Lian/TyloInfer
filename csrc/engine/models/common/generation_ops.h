@@ -20,7 +20,7 @@ namespace mfq::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 inline mfq::models::ForwardOptions forward_options(const Executor::Mode& mode) {
-    return {mode.ffn, mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
+    return {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
 }
 #endif
 

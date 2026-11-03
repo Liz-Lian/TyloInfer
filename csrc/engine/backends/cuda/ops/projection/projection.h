@@ -4,15 +4,11 @@
 #include "engine/backends/cuda/ops/ffn/moe.h"
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::ops { struct ProjectionOptions; }
 namespace mfq::cuda::ops {
 mfq::Tensor embedding(mfq::Tensor ids, const weights::Matrix& weight);
-mfq::Tensor project(mfq::Tensor input, const weights::Matrix& weight,
-                    const mfq::ops::ProjectionOptions& options);
-std::vector<mfq::Tensor> project(mfq::Tensor input, const weights::MatrixGroup& group,
-                                 const mfq::ops::ProjectionOptions& options);
-mfq::Tensor sigmoid_project(mfq::Tensor input, mfq::Tensor gate, const weights::Matrix& weight,
-                            const mfq::ops::ProjectionOptions& options);
+mfq::Tensor project(mfq::Tensor input, const weights::Matrix& weight);
+std::vector<mfq::Tensor> project(mfq::Tensor input, const weights::MatrixGroup& group);
+mfq::Tensor sigmoid_project(mfq::Tensor input, mfq::Tensor gate, const weights::Matrix& weight);
 }
 #endif
 

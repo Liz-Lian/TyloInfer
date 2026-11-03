@@ -4,6 +4,7 @@
 #include "engine/backends/cuda/executor/options.h"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 mfq_tensor_backend::Tensor Block::forward_context(CudaExecutionContext &execution,
@@ -74,9 +75,13 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
     cache.quantization = kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     const auto mode = execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn;
-    auto attention = mfq::cuda::FullAttention::forward(
-        std::move(x), step, cache.view(), rope.view(), {mode.serial, mode.projection_major},
-        layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
+    std::array<mfq::Tensor, 2> attention;
+    {
+        auto scope = mfq::cuda::Executor::current().enter(mode);
+        attention = mfq::cuda::FullAttention::forward(
+            std::move(x), step, cache.view(), rope.view(),
+            layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
+    }
 #else
     auto attention = mfq::cuda::FullAttention::forward(
         execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(), execution.executor().options().attention,

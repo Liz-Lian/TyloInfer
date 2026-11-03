@@ -75,7 +75,7 @@ struct Model
     mfq::Tensor embedding(mfq::Tensor ids, int primary = 0) const override;
     mfq::Tensor normalize(mfq::Tensor hidden, std::int64_t batch, std::int64_t tokens) const override;
     mfq::Tensor softcap(mfq::Tensor logits) const override;
-    mfq::Tensor logits(mfq::Tensor hidden, bool capped = true, const Options& options = {}) const override;
+    mfq::Tensor logits(mfq::Tensor hidden, bool capped = true) const override;
     mfq::Tensor forward(mfq::models::Input input, mfq::models::State& state,
                         const Options& options = {}) const override;
 #endif

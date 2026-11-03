@@ -839,11 +839,11 @@ namespace mfq::cuda::ops {
 
 mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
                 const mfq::weights::Matrix& down, mfq::ops::MlpActivation activation,
-                double swiglu_limit, const mfq::ops::FfnMode& mode) {
+                double swiglu_limit) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     auto& executor = Executor::current();
-    const auto project = executor.projector(mode);
+    const auto project = executor.projector(Executor::current_ffn());
     const Mlp weights{as_quant_linear_group(gate_up), as_quant_linear(down), activation,
                       activation == mfq::ops::MlpActivation::gelu_gated, swiglu_limit};
     auto x = half(Tensor(input), executor.profiler());
@@ -869,18 +869,14 @@ mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights) {
     return moe_weighted_reduce_cuda(Tensor(pairs), Tensor(weights));
 }
 mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
-    const mfq::weights::ExpertBank& gate_bank, const mfq::weights::ExpertBank& down_bank,
-    const mfq::ops::ProjectionOptions& options, bool trace) {
+    const mfq::weights::ExpertBank& gate_bank, const mfq::weights::ExpertBank& down_bank, bool trace) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto* gate = dynamic_cast<const Experts*>(&gate_bank);
     const auto* down = dynamic_cast<const Experts*>(&down_bank);
     if (!gate || !down) throw std::invalid_argument("unsupported expert weight representation");
     MfqCudaGuard guard(input.device().index);
     auto& executor = Executor::current();
-    Ffn::Mode mode;
-    mode.serial = options.serial;
-    mode.projection_major = options.projection_major;
-    const auto project = executor.projector(mode);
+    const auto project = executor.projector(Executor::current_ffn());
     auto& profiler = executor.profiler();
     auto route = profiler.measure("gemma.route_map", [&] {
         return build_moe_route_plan(Tensor(ids), gate->n_experts);

@@ -42,22 +42,6 @@ std::pair<Tensor, Tensor> append_kv(state::KvView kv, Tensor key, Tensor value,
                                     Tensor positions, std::int64_t start,
                                     bool contiguous_prefill_prefix = false);
 
-struct FfnMode {
-    bool materialized = false;
-    bool unfused = false;
-    bool serial = false;
-    bool batch_serial = false;
-    int tile = 0;
-    int tiles = 1;
-    bool reuse_input = true;
-    bool projection_major = false;
-};
-
-struct ProjectionOptions {
-    bool serial = false;
-    bool projection_major = false;
-};
-
 struct RopeTable {
     Tensor cos, sin, sections, empty_sections, interleaved_order, interleaved_inverse;
     std::int64_t rotary_dim = 0;
@@ -121,12 +105,10 @@ Tensor softcap(Tensor input, double cap);
 Tensor scale(Tensor input, double factor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
 Tensor embedding(Tensor ids, const weights::Matrix& weight);
-Tensor project(Tensor input, const weights::Matrix& weight, const ProjectionOptions& options = {});
-std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group,
-                            const ProjectionOptions& options = {});
+Tensor project(Tensor input, const weights::Matrix& weight);
+std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group);
 // Computes project(input * sigmoid(gate)).
-Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight,
-                       const ProjectionOptions& options = {});
+Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight);
 // Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.
 Tensor copy(Tensor input, Device target);
 Tensor cast(Tensor input, ScalarType type);
@@ -150,7 +132,7 @@ enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
 
 // Prepared weights determine supported host and sharded MLP paths.
 Tensor mlp(Tensor input, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
-           MlpActivation activation, double swiglu_limit, const FfnMode& mode);
+           MlpActivation activation, double swiglu_limit);
 
 // Canonical gate/up -> activation product -> down graph. Native operations may
 // replace a contiguous part of this graph with an equivalent fused operation.
@@ -209,8 +191,7 @@ Tensor weighted_reduce(Tensor pairs, Tensor weights);
 // Traced intermediates are F32 snapshots taken before subsequent projections.
 struct RoutedGeglu { Tensor pairs, gate_up, hidden; };
 RoutedGeglu routed_geglu(Tensor input, Tensor ids, const weights::ExpertBank& gate_up,
-                         const weights::ExpertBank& down, const ProjectionOptions& options,
-                         bool trace);
+                         const weights::ExpertBank& down, bool trace);
 
 // Both branches consume the same input. Native routing may prepare an expert
 // cache before shared computation, but never changes the selected experts.

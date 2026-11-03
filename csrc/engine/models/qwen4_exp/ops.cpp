@@ -588,7 +588,7 @@ struct Qwen4Block final : Block {
         const int previous_profile_tile=window ? window->set_profile_tile(-1) : -1;
         auto& mode = execution.executor().mode().ffn;
         struct TileScope {
-            mfq::ops::FfnMode& mode;
+            mfq::cuda::Ffn::Mode& mode;
             int tile,tiles;
             DecodeWindow* window;
             int profile_tile;
