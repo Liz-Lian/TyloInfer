@@ -10,7 +10,8 @@ namespace mfq::engine {
 inline bool batch_compatible(const EngineRequest &request, bool persistent_prefix, bool has_mtp) {
     const auto &input = request.input;
     return !input.media && input.cache_plan.session_id.empty() &&
-           !((request.token_ids.empty() || input.cache_plan.stable_prefix_tokens) &&
+           !(input.prefix_cache_enabled &&
+               (request.token_ids.empty() || input.cache_plan.stable_prefix_tokens) &&
                persistent_prefix) &&
            !(input.sampling.enable_mtp && has_mtp);
 }

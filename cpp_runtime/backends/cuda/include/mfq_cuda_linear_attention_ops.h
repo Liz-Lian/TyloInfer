@@ -24,6 +24,20 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
     mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
     mfq_tensor_backend::Tensor beta,mfq_tensor_backend::Tensor dt_bias,
     mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps);
+// Preserve the model's softplus arithmetic when fusing gate preparation.
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
+    mfq_tensor_backend::Tensor beta,mfq_tensor_backend::Tensor dt_bias,
+    mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps,
+    bool stable_softplus);
+// Restore the exact separable GEMM scales while reading each convolution tap.
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_scaled_prefill_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor product,
+    mfq_tensor_backend::Tensor row_exponents,mfq_tensor_backend::Tensor column_exponents,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,mfq_tensor_backend::Tensor beta,
+    mfq_tensor_backend::Tensor dt_bias,mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,
+    double eps,bool stable_softplus);
 std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_short_cuda(
     mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
     mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
@@ -42,6 +56,10 @@ std::vector<mfq_tensor_backend::Tensor> gdn_inplace_transposed_tiled_cuda(
     mfq_tensor_backend::Tensor g, mfq_tensor_backend::Tensor beta, mfq_tensor_backend::Tensor state);
 mfq_tensor_backend::Tensor ssm_conv_silu_cuda(mfq_tensor_backend::Tensor conv_input, mfq_tensor_backend::Tensor weight, mfq_tensor_backend::Tensor bias, int64_t n_tokens);
 mfq_tensor_backend::Tensor ssm_conv_silu_decode_cuda(mfq_tensor_backend::Tensor state, mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, mfq_tensor_backend::Tensor bias);
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_decode_f32_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor input,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor bias,
+    int64_t nk,int64_t nv,int64_t dk,int64_t dv,double eps);
 std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_decode_cuda(
     mfq_tensor_backend::Tensor state, mfq_tensor_backend::Tensor qk, mfq_tensor_backend::Tensor v, mfq_tensor_backend::Tensor weight, mfq_tensor_backend::Tensor bias,
     int64_t nk, int64_t nv, int64_t dk, int64_t dv, double eps);

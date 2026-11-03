@@ -95,6 +95,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tyloinfer", description="TQ inference and serving.")
     parser.add_argument("-V", "--version", action="version", version=f"tyloinfer {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
+    from tyloinfer.commands.fit_residual import add_parser as add_residual_parser
+    add_residual_parser(sub)
     add_build_parser(sub)
     add_serve_parser(sub)
     reference = sub.add_parser('wt2-reference', help='generate official WT2 reference logits from original HF weights')

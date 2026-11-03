@@ -47,19 +47,21 @@ __device__ float2 normalized_rotary_angles(const void* positions,bool wide_posit
 #endif
     position=max(0,min(maximum-1,position));
     const float angle=__fmul_rn(float(position),frequencies[column]);
-    return make_float2(float(::cos(double(angle))),float(::sin(double(angle))));
+    double sine,cosine;
+    ::sincos(double(angle),&sine,&cosine);
+    return make_float2(float(cosine),float(sine));
 }
 
-template<class Value>
+template<bool Compact,class Value>
 __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* weight,const void* positions,
         bool wide_positions,const int64_t* cache,const float* frequencies,const int32_t* selected_axes,Value* output,
         int tokens,int width,int pool,int maximum,int rotary_maximum,int pairs,int axes,float eps,
         int64_t row_stride,int64_t column_stride) {
     const int token=blockIdx.x,column=threadIdx.x;
-    const int64_t block=cache[token]/pool,start=block*pool;
+    const int64_t block=Compact?int64_t(token):cache[token]/pool,start=block*pool;
     // A verify batch can touch one block repeatedly. Only its last query writes
     // the pooled entry; all queries observe the same completed raw cache.
-    if(token+1<tokens && cache[token+1]/pool==block)return;
+    if constexpr(!Compact)if(token+1<tokens && cache[token+1]/pool==block)return;
     __shared__ float means[256],partial[256];
     float mean=0;
     if(column<width) {
@@ -83,7 +85,8 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
     if(column>=width-pairs)return;
     if(column>=pairs){output[block*width+column+pairs]=normalized(column+pairs);return;}
     int axis=selected_axes[column];if(axis>=axes)axis=0;
-    const int64_t raw=rotary_position(positions,wide_positions,int64_t(axis)*tokens+token)-cache[token]+start;
+    int64_t raw=rotary_position(positions,wide_positions,int64_t(axis)*tokens+token);
+    if constexpr(!Compact)raw+=start-cache[token];
     int position;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     position=wide_positions?__double2int_rz(double(raw)):int(raw);
@@ -92,7 +95,9 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
 #endif
     position=max(0,min(rotary_maximum-1,position));
     const float angle=__fmul_rn(float(position),frequencies[column]);
-    const float cosine=float(::cos(double(angle))),sine=float(::sin(double(angle)));
+    double wide_sine,wide_cosine;
+    ::sincos(double(angle),&wide_sine,&wide_cosine);
+    const float cosine=float(wide_cosine),sine=float(wide_sine);
     const float first=float(normalized(column)),second=float(normalized(column+pairs));
     output[block*width+column]=Value(__fsub_rn(__fmul_rn(first,cosine),__fmul_rn(second,sine)));
     output[block*width+column+pairs]=Value(__fadd_rn(__fmul_rn(second,cosine),__fmul_rn(first,sine)));
@@ -122,10 +127,48 @@ void qsa_pool_rotary_cache_cuda(const mfq_tensor_backend::Tensor& index,const mf
     MfqCudaGuard guard(index.device());const int width=int(index.size(2));
     const int threads=width<=32?32:width<=64?64:width<=128?128:256;
     const auto launch=[&](auto* source,auto* target) {
-        qsa_pool_rotary_cache_kernel<<<unsigned(cache.numel()),threads,0,mfq_current_cuda_stream()>>>(source,
+        qsa_pool_rotary_cache_kernel<false><<<unsigned(cache.numel()),threads,0,mfq_current_cuda_stream()>>>(source,
             weight.data_ptr<float>(),positions.data_ptr(),positions.scalar_type()==tb::kInt64,cache.data_ptr<int64_t>(),
             frequencies.data_ptr<float>(),axes.data_ptr<int32_t>(),target,int(cache.numel()),width,int(pool),int(maximum),
             int(rotary_maximum),int(frequencies.numel()),positions.dim()==1?1:int(positions.size(0)),float(eps),index.stride(1),index.stride(2));
+    };
+    if(index.scalar_type()==tb::kFloat16)launch(reinterpret_cast<const __half*>(index.data_ptr()),reinterpret_cast<__half*>(output.data_ptr()));
+    else launch(index.data_ptr<float>(),output.data_ptr<float>());
+    TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void qsa_pool_rotary_cuda(const mfq_tensor_backend::Tensor& index,const mfq_tensor_backend::Tensor& weight,
+        const mfq_tensor_backend::Tensor& positions,const mfq_tensor_backend::Tensor& frequencies,
+        const mfq_tensor_backend::Tensor& axes,const mfq_tensor_backend::Tensor& output,
+        int64_t pool,int64_t rotary_maximum,double eps) {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 && index.size(1)>0 &&
+        index.size(1)<=INT_MAX && index.size(2)>0 && index.size(2)<=256 && pool>0 && pool<=INT_MAX &&
+        index.size(1)%pool==0 && (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32) &&
+        rotary_maximum>0 && rotary_maximum<=INT_MAX && std::isfinite(eps) && eps>=0,
+        "invalid compact pooled rotary geometry");
+    const int64_t tokens=index.size(1)/pool;
+    TYLOINFER_RUNTIME_CHECK(positions.device()==index.device() && positions.is_contiguous() &&
+        positions.dim()>=1 && positions.dim()<=3 && positions.size(-1)==tokens &&
+        (positions.dim()<3 || positions.size(1)==1) &&
+        (positions.scalar_type()==tb::kInt32 || positions.scalar_type()==tb::kInt64) &&
+        output.device()==index.device() && output.is_contiguous() && output.dim()==3 &&
+        output.size(0)==1 && output.size(1)==tokens && output.size(2)==index.size(2) &&
+        output.scalar_type()==index.scalar_type() && weight.device()==index.device() &&
+        weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==index.size(2) &&
+        frequencies.device()==index.device() && frequencies.is_contiguous() &&
+        frequencies.scalar_type()==tb::kFloat32 && frequencies.dim()==1 && frequencies.numel()>0 &&
+        frequencies.numel()<=index.size(2)/2 && axes.device()==index.device() && axes.is_contiguous() &&
+        axes.scalar_type()==tb::kInt32 && axes.sizes()==frequencies.sizes(),
+        "invalid compact pooled rotary storage");
+    MfqCudaGuard guard(index.device());const int width=int(index.size(2));
+    const int threads=width<=32?32:width<=64?64:width<=128?128:256;
+    const auto launch=[&](auto* source,auto* target) {
+        qsa_pool_rotary_cache_kernel<true><<<unsigned(tokens),threads,0,mfq_current_cuda_stream()>>>(source,
+            weight.data_ptr<float>(),positions.data_ptr(),positions.scalar_type()==tb::kInt64,nullptr,
+            frequencies.data_ptr<float>(),axes.data_ptr<int32_t>(),target,int(tokens),width,int(pool),int(index.size(1)),
+            int(rotary_maximum),int(frequencies.numel()),positions.dim()==1?1:int(positions.size(0)),
+            float(eps),index.stride(1),index.stride(2));
     };
     if(index.scalar_type()==tb::kFloat16)launch(reinterpret_cast<const __half*>(index.data_ptr()),reinterpret_cast<__half*>(output.data_ptr()));
     else launch(index.data_ptr<float>(),output.data_ptr<float>());
@@ -553,7 +596,9 @@ __global__ void rotary_embedding_cached_kernel(
         position=max(0,min(maximum-1,position));
         const float angle=__fmul_rn(float(position),frequencies[column]);
         // Match native tensor sin/cos promotion and every stored FP32 product.
-        const float cosine=float(::cos(double(angle))),sine=float(::sin(double(angle)));
+        double wide_sine,wide_cosine;
+        ::sincos(double(angle),&wide_sine,&wide_cosine);
+        const float cosine=float(wide_cosine),sine=float(wide_sine);
         const float first=float(input[offset+column]),second=float(input[offset+column+pairs]);
         const float a=__fsub_rn(__fmul_rn(first,cosine),__fmul_rn(second,sine));
         const float b=__fadd_rn(__fmul_rn(second,cosine),__fmul_rn(first,sine));

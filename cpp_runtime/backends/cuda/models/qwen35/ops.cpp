@@ -129,9 +129,11 @@ mfq_tensor_backend::Tensor LinearAttentionBlock::forward_context(CudaExecutionCo
         // Match Metal: evaluate the complete [confirmed, drafts...] window
         // once so projections and FFN stay batched. Rollback replays only the
         // recurrent state prefix from this layer's retained projections.
-        auto attention =
-            forward_attention_cuda(execution, std::move(input), &speculative_inputs);
-        auto result = forward_ffn_cuda(execution, std::move(attention[0]), std::move(attention[1]));
+        GgufProjectionInput normalized_ffn_input;
+        auto attention = forward_attention_cuda(execution, std::move(input),
+            &speculative_inputs, &normalized_ffn_input);
+        auto result = forward_ffn_cuda(execution, std::move(attention[0]),
+            std::move(attention[1]), &normalized_ffn_input);
         ++speculative_projection_batches;
         ++speculative_ffn_batches;
         return result;

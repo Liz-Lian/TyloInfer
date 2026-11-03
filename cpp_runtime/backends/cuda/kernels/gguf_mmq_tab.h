@@ -18,6 +18,8 @@ template <ggml_type T>
 bool mul_mat_q_tab_case(ggml_backend_cuda_context& ctx, const mmq_args& a, const mmq_x_tab& tab, cudaStream_t s);
 
 extern template bool mul_mat_q_tab_case<GGML_TYPE_Q2_0>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+extern template bool mul_mat_q_tab_case<GGML_TYPE_Q2_K>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ1_S>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ2_XXS>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ2_XS>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ2_S>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);

@@ -33,10 +33,10 @@ inline void gdn_core_q8_case() {
         auto gate=data({batch,1,nv*width+13},492,2.f).to(half?tb::kFloat32:tb::kFloat16).narrow(2,0,nv*width);
         auto alpha=data({batch,1,nv+3},493,.3f).to(gate.scalar_type()).narrow(2,0,nv);
         auto beta=data({batch,1,nv+3},494,.3f).to(gate.scalar_type()).narrow(2,0,nv);
-        auto initial_conv=data({batch,3,channels},495,.3f),initial_state=data({batch,nv,width,width},496,.1f);
+        auto initial_conv=data({batch,3,channels},495,.3f).to(tb::kFloat32),initial_state=data({batch,nv,width,width},496,.1f).to(tb::kFloat32);
         auto conv=initial_conv.clone(),state=initial_state.clone();
         auto reference_conv=initial_conv.clone(),reference_state=initial_state.clone();
-        auto weight=data({channels,1,4},497,.2f),bias=data({nv},498,.1f),a=data({nv},499,.2f),norm=data({width},500,1.3f);
+        auto weight=data({channels,1,4},497,.2f).to(tb::kFloat32),bias=data({nv},498,.1f).to(tb::kFloat32),a=data({nv},499,.2f).to(tb::kFloat32),norm=data({width},500,1.3f).to(tb::kFloat32);
         auto workspace=tb::zeros({batch,nv,width+1},state.options()),reference_workspace=tb::zeros_like(workspace);
         auto saved_conv=tb::empty_like(conv),saved_state=tb::empty_like(state);
         auto reference_saved_conv=tb::empty_like(conv),reference_saved_state=tb::empty_like(state);
@@ -84,8 +84,8 @@ inline void gdn_core_q8_benchmark(int layers) {
         const auto dtype=half?tb::kFloat16:tb::kFloat32;
         auto qkv=data({1,1,channels},521,.3f).to(dtype),gate=data({1,1,nv*width},522,.3f).to(dtype);
         auto alpha=data({1,1,nv},523,.3f).to(dtype),beta=data({1,1,nv},524,.3f).to(dtype);
-        auto weight=data({channels,1,4},525,.2f),bias=data({nv},526,.1f),a=data({nv},527,.2f),norm=data({width},528,1.1f);
-        auto initial_state=data({1,nv,width,width},529,.1f),initial_conv=data({1,3,channels},530,.2f);
+        auto weight=data({channels,1,4},525,.2f).to(tb::kFloat32),bias=data({nv},526,.1f).to(tb::kFloat32),a=data({nv},527,.2f).to(tb::kFloat32),norm=data({width},528,1.1f).to(tb::kFloat32);
+        auto initial_state=data({1,nv,width,width},529,.1f).to(tb::kFloat32),initial_conv=data({1,3,channels},530,.2f).to(tb::kFloat32);
         struct Layer {Tensor state,conv,workspace;std::vector<Tensor> decoded;Tensor prepared;};
         std::vector<Layer> work[2];
         for(auto& group:work)for(int i=0;i<layers;++i)group.push_back({initial_state.clone(),initial_conv.clone(),

@@ -263,8 +263,7 @@ Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
     DeviceGuard guard(left.get_device());
     auto context = default_context(left.get_device());
     const auto stream = current_stream(left.get_device()).stream();
-    if(!row_pipeline_handle)context->blas().set_stream(stream);
-    const auto handle = row_pipeline_handle?row_pipeline_handle:context->blas().get();
+    const auto handle = row_pipeline_handle?row_pipeline_handle:context->blas(stream).get();
     const auto data_type = cuda_data_type(left.scalar_type());
 
     const bool left_row_major = left.stride(-1) == 1;

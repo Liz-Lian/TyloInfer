@@ -42,6 +42,7 @@ private:
     CapturedGraph(void* stream, const std::function<void()>& body);
     explicit CapturedGraph(void* stream);
     void finish();
+    void finish(bool allow_empty);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -58,6 +59,8 @@ public:
     void clear() { graphs_.clear(); }
     void begin(std::uint64_t identity, int tokens);
     void end(std::uint64_t identity, int tokens);
+    // Host barriers may delimit an empty device segment.
+    void end_segment(std::uint64_t identity, int tokens);
 private:
     void* stream_;
     std::map<std::pair<std::uint64_t, int>, CapturedGraph> graphs_;

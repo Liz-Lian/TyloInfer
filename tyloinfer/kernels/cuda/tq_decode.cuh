@@ -17,7 +17,7 @@ __device__ __forceinline__ uint32_t select_word(const uint32_t* chunks,int count
     return value;
 }
 
-template<int V,bool Lookup,bool Columns,int Bits,class Consumer,bool RawBook=false>
+template<int V,bool Lookup,bool Columns,int Bits,class Consumer,bool RawBook=false,bool CachedWords=true>
 __device__ __forceinline__ void visit_values(const uint32_t* words,uint64_t descriptor,
         const void* selectors,const half* relative,const half* lut,const half* coefficients,
         int row,int col,int width,int gslog,Consumer& consumer) {
@@ -33,7 +33,7 @@ __device__ __forceinline__ void visit_values(const uint32_t* words,uint64_t desc
     constexpr int MAX_SHIFT=Bits?(ALIGN<32?32-ALIGN:0):31;
     constexpr int NW=(MAX_SHIFT+(V-1)*(Bits?Bits:8)+16+31)/32;
     uint32_t chunks[NW]={};
-    tq_ring_window<NW,Bits>(words,descriptor,width,col,bits,first,chunks);
+    tq_ring_window<NW,Bits,CachedWords>(words,descriptor,width,col,bits,first,chunks);
     #ifdef TRELLIS_NORMALIZED_WINDOW
     constexpr int NORM=((V-1)*(Bits?Bits:8)+16+31)/32;
     uint32_t normalized[NORM];
@@ -105,11 +105,11 @@ template<int V> struct StoreValues {
     }
 };
 
-template<int V,bool Lookup,bool Columns,int Bits=0>
+template<int V,bool Lookup,bool Columns,int Bits=0,bool CachedWords=true>
 __device__ __forceinline__ void decode_vector(const uint32_t* words,uint64_t descriptor,
         const void* selectors,const half* relative,const half* lut,const half* coefficients,
         int row,int col,int width,int gslog,half (&values)[V]) {
     StoreValues<V> consumer{values};
-    visit_values<V,Lookup,Columns,Bits>(words,descriptor,selectors,relative,lut,coefficients,
+    visit_values<V,Lookup,Columns,Bits,StoreValues<V>,false,CachedWords>(words,descriptor,selectors,relative,lut,coefficients,
                                       row,col,width,gslog,consumer);
 }

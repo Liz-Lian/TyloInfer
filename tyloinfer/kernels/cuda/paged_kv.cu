@@ -4,6 +4,7 @@
 // [pages_per_chunk, kv_heads, page_size, head_dim].
 
 #include <cuda_runtime.h>
+#include <math_constants.h>
 
 #include "mfq_cuda_paged_kv.h"
 
@@ -166,7 +167,9 @@ __device__ __forceinline__ float paged_block_sum(float value) {
     __shared__ float total;
     if (threadIdx.x == 0) total = value;
     __syncthreads();
-    return total;
+    const float result=total;
+    __syncthreads();
+    return result;
 }
 
 __device__ __forceinline__ float paged_warp_sum(float value) {
@@ -376,8 +379,8 @@ __global__ void paged_attention_decode_gqa4_d256_kernel(
     }
 }
 
-template <int Block, typename scalar_t>
-__global__ void paged_attention_decode_split_kernel(
+template <int MaxD, typename scalar_t>
+__global__ void paged_attention_decode_split_vector_kernel(
     const scalar_t * __restrict__ q,
     const int64_t * __restrict__ k_chunk_ptrs,
     const int64_t * __restrict__ v_chunk_ptrs,
@@ -389,81 +392,86 @@ __global__ void paged_attention_decode_split_kernel(
     int Hq, int Hk, int D, int logical_pages,
     int page_size, int pages_per_chunk, int chunks, int rep,
     int parts, int workspace_parts, float scale, int dynamic_parts) {
-    constexpr int Warps = Block / 32;
-    const int part = blockIdx.x % parts;
-    const int query = blockIdx.x / parts;
-    const int query_head = query % Hq;
-    const int batch = query / Hq;
-    const int kv_head = query_head / rep;
-    const int tid = threadIdx.x;
-    const int maximum_tokens = logical_pages * page_size;
-    int tokens = static_cast<int>(seq_len[batch]);
-    tokens = tokens < 0 ? 0 : (tokens > maximum_tokens ? maximum_tokens : tokens);
-    const int active_parts = paged_active_parts(
-        tokens, parts, dynamic_parts);
-    if (part >= active_parts) return;
-    const size_t statistic =
-        static_cast<size_t>(query) * workspace_parts + part;
-    const int start = static_cast<int>(
-        static_cast<int64_t>(tokens) * part / active_parts);
-    const int end = static_cast<int>(
-        static_cast<int64_t>(tokens) * (part + 1) / active_parts);
-    const float query_value = tid < D
-        ? static_cast<float>(q[static_cast<size_t>(query) * D + tid]) : 0.0f;
-    float maximum = -1e30f;
-    float denominator = 0.0f;
-    float value_sum = 0.0f;
-    const size_t page_elements =
-        static_cast<size_t>(Hk) * page_size * D;
-    __shared__ uintptr_t key_page_address;
-    __shared__ uintptr_t value_page_address;
-    for (int token = start; token < end; ++token) {
-        const int offset = token % page_size;
-        if (token == start || offset == 0) {
-            if (tid == 0) {
-                const int physical = page_table[
-                    static_cast<size_t>(batch) * logical_pages +
-                    token / page_size];
-                const int chunk = physical >= 0
-                    ? physical / pages_per_chunk : -1;
-                key_page_address = chunk >= 0 && chunk < chunks &&
-                        k_chunk_ptrs[chunk] != 0
-                    ? reinterpret_cast<uintptr_t>(page_address<scalar_t>(
-                        k_chunk_ptrs, physical, pages_per_chunk,
-                        page_elements)) : 0;
-                value_page_address = chunk >= 0 && chunk < chunks &&
-                        v_chunk_ptrs[chunk] != 0
-                    ? reinterpret_cast<uintptr_t>(page_address<scalar_t>(
-                        v_chunk_ptrs, physical, pages_per_chunk,
-                        page_elements)) : 0;
-            }
-            __syncthreads();
+    // Each independent warp owns a token subsequence. Vectorize the head
+    // dimension within a warp, then combine four online-softmax states once;
+    // there are no block-wide reductions or barriers in the token loop.
+    constexpr int Workers=4,Values=MaxD/32;
+    const int part=blockIdx.x%parts,query=blockIdx.x/parts;
+    const int query_head=query%Hq,batch=query/Hq,kv_head=query_head/rep;
+    const int tid=threadIdx.x,lane=tid&31,worker=tid>>5,first_dimension=lane*Values;
+    const int tokens=int(max(int64_t(0),min(seq_len[batch],int64_t(logical_pages)*page_size)));
+    const int active_parts=paged_active_parts(tokens,parts,dynamic_parts);
+    if(part>=active_parts)return;
+    const size_t statistic=size_t(query)*workspace_parts+part;
+    const int start=int(int64_t(tokens)*part/active_parts),end=int(int64_t(tokens)*(part+1)/active_parts);
+    float query_value[Values],sum[Values]{};
+    const auto* query_source=q+size_t(query)*D;
+    if(D==MaxD)paged_load_values(query_source+first_dimension,query_value);
+    else {
+#pragma unroll
+        for(int d=0;d<Values;++d)query_value[d]=first_dimension+d<D?float(query_source[first_dimension+d]):0;
+    }
+    float maximum=-1e30f,denominator=0;
+    const size_t page_elements=size_t(Hk)*page_size*D;
+    int previous_page=-1;
+    const scalar_t *key_page=nullptr,*value_page=nullptr;
+    for(int token=start+worker;token<end;token+=Workers) {
+        const int logical_page=token/page_size,offset=token%page_size;
+        if(logical_page!=previous_page) {
+            const int physical=page_table[size_t(batch)*logical_pages+logical_page];
+            const int chunk=physical>=0?physical/pages_per_chunk:-1;
+            key_page=chunk>=0 && chunk<chunks && k_chunk_ptrs[chunk]
+                ? page_address<scalar_t>(k_chunk_ptrs,physical,pages_per_chunk,page_elements):nullptr;
+            value_page=chunk>=0 && chunk<chunks && v_chunk_ptrs[chunk]
+                ? page_address<scalar_t>(v_chunk_ptrs,physical,pages_per_chunk,page_elements):nullptr;
+            previous_page=logical_page;
         }
-        const auto * key_page = reinterpret_cast<const scalar_t *>(
-            key_page_address);
-        const auto * value_page = reinterpret_cast<const scalar_t *>(
-            value_page_address);
-        const size_t element =
-            (static_cast<size_t>(kv_head) * page_size + offset) * D + tid;
-        const float key = tid < D && key_page != nullptr
-            ? static_cast<float>(key_page[element]) : 0.0f;
-        const float dot = paged_block_sum<Warps>(query_value * key);
-        const float score = dot * scale;
-        const float new_maximum = fmaxf(maximum, score);
-        const float previous_factor = expf(maximum - new_maximum);
-        const float probability = expf(score - new_maximum);
-        const float value = tid < D && value_page != nullptr
-            ? static_cast<float>(value_page[element]) : 0.0f;
-        value_sum = value_sum * previous_factor + probability * value;
-        denominator = denominator * previous_factor + probability;
-        maximum = new_maximum;
+        const size_t element=(size_t(kv_head)*page_size+offset)*D;
+        float key[Values]{},value[Values]{};
+        if(D==MaxD) {
+            if(key_page)paged_load_values(key_page+element+first_dimension,key);
+            if(value_page)paged_load_values(value_page+element+first_dimension,value);
+        }else {
+#pragma unroll
+            for(int d=0;d<Values;++d)if(first_dimension+d<D) {
+                if(key_page)key[d]=float(key_page[element+first_dimension+d]);
+                if(value_page)value[d]=float(value_page[element+first_dimension+d]);
+            }
+        }
+        float dot=0;
+#pragma unroll
+        for(int d=0;d<Values;++d)dot+=query_value[d]*key[d];
+        dot=__shfl_sync(0xffffffffu,paged_warp_sum(dot),0);
+        const float score=dot*scale,new_maximum=fmaxf(maximum,score);
+        const float previous_factor=expf(maximum-new_maximum),probability=expf(score-new_maximum);
+#pragma unroll
+        for(int d=0;d<Values;++d)sum[d]=sum[d]*previous_factor+probability*value[d];
+        denominator=denominator*previous_factor+probability;maximum=new_maximum;
     }
-    if (tid < D) partial_o[statistic * D + tid] = value_sum;
-    if (tid == 0) {
-        partial_m[statistic] = start < end ? maximum : -1e30f;
-        partial_l[statistic] = start < end ? denominator : 0.0f;
+    __shared__ float worker_sum[Workers][MaxD],worker_max[Workers],worker_mass[Workers];
+#pragma unroll
+    for(int d=0;d<Values;++d)worker_sum[worker][first_dimension+d]=sum[d];
+    if(!lane){worker_max[worker]=maximum;worker_mass[worker]=denominator;}
+    __syncthreads();
+    float combined_max=-1e30f;
+#pragma unroll
+    for(int w=0;w<Workers;++w)combined_max=fmaxf(combined_max,worker_max[w]);
+    float factors[Workers],combined_mass=0;
+#pragma unroll
+    for(int w=0;w<Workers;++w) {
+        factors[w]=worker_mass[w]>0?expf(worker_max[w]-combined_max):0;
+        combined_mass+=factors[w]*worker_mass[w];
     }
+    for(int d=tid;d<D;d+=Workers*32) {
+        float value=0;
+#pragma unroll
+        for(int w=0;w<Workers;++w)value+=factors[w]*worker_sum[w][d];
+        partial_o[statistic*D+d]=value;
+    }
+    if(!tid){partial_m[statistic]=combined_max;partial_l[statistic]=combined_mass;}
 }
+
+#include "paged_kv_mma.cuh"
 
 template <int FixedPageSize, int FixedPagesPerChunk,
           int ValuesPerThread, int IndependentWarps, typename scalar_t>
@@ -955,6 +963,25 @@ void paged_kv_cache_gather_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+template<int W> bool paged_mma_available() {
+    static thread_local int previous=-1;
+    static thread_local bool available=false;
+    int device=0;cudaGetDevice(&device);
+    if(previous!=device) {
+        constexpr int shared=(W+8)*48+768;
+        cudaFuncAttributes attributes{};int major=0,limit=0,blocks=0;
+        cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,device);
+        cudaDeviceGetAttribute(&limit,cudaDevAttrMaxSharedMemoryPerBlockOptin,device);
+        const auto function=paged_attention_decode_mma8<W>;
+        available=major>=8 && cudaFuncGetAttributes(&attributes,function)==cudaSuccess &&
+            attributes.ptxVersion>=80 && shared+attributes.sharedSizeBytes<=size_t(limit);
+        if(available)available=cudaFuncSetAttribute(function,cudaFuncAttributeMaxDynamicSharedMemorySize,shared)==cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,function,128,shared)==cudaSuccess && blocks>0;
+        previous=device;
+    }
+    return available;
+}
+
 mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
     mfq_tensor_backend::Tensor q,
     mfq_tensor_backend::Tensor k_chunk_ptrs,
@@ -1070,8 +1097,24 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
                 TYLOINFER_RUNTIME_CHECK(false, "paged attention head_dim exceeds 512");
             }
         } else {
-            const int shmem = D * static_cast<int>(sizeof(float));
-            if (D == 256 && gqa_ratio == 4) {
+            const auto mma=[&]<int W>() {
+                if constexpr(std::is_same_v<scalar_t,mfq_half>) {
+                    if(!paged_mma_available<W>())return false;
+                    constexpr int shared=(W+8)*48+768;
+                    paged_attention_decode_mma8<W><<<dim3(split_parts,Hk*((gqa_ratio+7)/8),B),128,shared,stream>>>(
+                        q.data_ptr<scalar_t>(),k_chunk_ptrs.data_ptr<int64_t>(),v_chunk_ptrs.data_ptr<int64_t>(),
+                        page_table.data_ptr<int32_t>(),seq_len.data_ptr<int64_t>(),partial_o.data_ptr<float>(),
+                        partial_m.data_ptr<float>(),partial_l.data_ptr<float>(),Hq,Hk,D,logical_pages,page,
+                        chunk_pages,chunks,split_parts,workspace_parts,float(scale),dynamic_parts?1:0);
+                    return true;
+                }
+                return false;
+            };
+            const bool tensor_core=D<=64?mma.template operator()<64>():D<=128?mma.template operator()<128>():
+                D<=256?mma.template operator()<256>():D<=512?mma.template operator()<512>():false;
+            if(tensor_core) {
+                // Partial buffers use the same layout as the vector kernel.
+            } else if (D == 256 && gqa_ratio == 4) {
                 if (page == 16 && chunk_pages == 64) {
                     paged_attention_decode_split_gqa4_d256_kernel<
                         16, 64, 8, 4, scalar_t><<<
@@ -1096,8 +1139,8 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
                         static_cast<float>(scale), dynamic_parts ? 1 : 0);
                 }
             } else if (D <= 64) {
-                paged_attention_decode_split_kernel<64, scalar_t><<<
-                    total * split_parts, 64, shmem, stream>>>(q.data_ptr<scalar_t>(),
+                paged_attention_decode_split_vector_kernel<64, scalar_t><<<
+                    total * split_parts, 128, 0, stream>>>(q.data_ptr<scalar_t>(),
                     k_chunk_ptrs.data_ptr<int64_t>(), v_chunk_ptrs.data_ptr<int64_t>(),
                     page_table.data_ptr<int32_t>(), seq_len.data_ptr<int64_t>(),
                     partial_o.data_ptr<float>(), partial_m.data_ptr<float>(),
@@ -1105,8 +1148,8 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
                     chunk_pages, chunks, gqa_ratio, split_parts, workspace_parts,
                     static_cast<float>(scale), dynamic_parts ? 1 : 0);
             } else if (D <= 128) {
-                paged_attention_decode_split_kernel<128, scalar_t><<<
-                    total * split_parts, 128, shmem, stream>>>(q.data_ptr<scalar_t>(),
+                paged_attention_decode_split_vector_kernel<128, scalar_t><<<
+                    total * split_parts, 128, 0, stream>>>(q.data_ptr<scalar_t>(),
                     k_chunk_ptrs.data_ptr<int64_t>(), v_chunk_ptrs.data_ptr<int64_t>(),
                     page_table.data_ptr<int32_t>(), seq_len.data_ptr<int64_t>(),
                     partial_o.data_ptr<float>(), partial_m.data_ptr<float>(),
@@ -1114,8 +1157,8 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
                     chunk_pages, chunks, gqa_ratio, split_parts, workspace_parts,
                     static_cast<float>(scale), dynamic_parts ? 1 : 0);
             } else if (D <= 256) {
-                paged_attention_decode_split_kernel<256, scalar_t><<<
-                    total * split_parts, 256, shmem, stream>>>(q.data_ptr<scalar_t>(),
+                paged_attention_decode_split_vector_kernel<256, scalar_t><<<
+                    total * split_parts, 128, 0, stream>>>(q.data_ptr<scalar_t>(),
                     k_chunk_ptrs.data_ptr<int64_t>(), v_chunk_ptrs.data_ptr<int64_t>(),
                     page_table.data_ptr<int32_t>(), seq_len.data_ptr<int64_t>(),
                     partial_o.data_ptr<float>(), partial_m.data_ptr<float>(),
@@ -1123,8 +1166,8 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
                     chunk_pages, chunks, gqa_ratio, split_parts, workspace_parts,
                     static_cast<float>(scale), dynamic_parts ? 1 : 0);
             } else if (D <= 512) {
-                paged_attention_decode_split_kernel<512, scalar_t><<<
-                    total * split_parts, 512, shmem, stream>>>(q.data_ptr<scalar_t>(),
+                paged_attention_decode_split_vector_kernel<512, scalar_t><<<
+                    total * split_parts, 128, 0, stream>>>(q.data_ptr<scalar_t>(),
                     k_chunk_ptrs.data_ptr<int64_t>(), v_chunk_ptrs.data_ptr<int64_t>(),
                     page_table.data_ptr<int32_t>(), seq_len.data_ptr<int64_t>(),
                     partial_o.data_ptr<float>(), partial_m.data_ptr<float>(),

@@ -1,13 +1,9 @@
 // src/prefill/moe_mmq_tab.cuh - STRATA_MMQ_DIRECT: llama.cpp's MMQ outer scheduler (ggml-cuda mmq.cuh, MIT) with a
 // per-expert pointer table, so the prompt path's MMQ reads resident experts in their expert-cache slots instead of
-// a gathered copy.  Included only by the per-type instance TUs (CMake: mmq_tab_instance.cu.in); moe_mmq.cu sees
-// the declarations in moe_mmq_tab.hpp.
+// a gathered copy. Included only by per-format instance translation units; gguf_mmq.cu uses
+// the declarations in gguf_mmq_tab.h.
 //
-// Mirrored from llama.cpp 3cf03257f219afbe7334045ff7c6a06ac68c627d (the fetched pin; the vendored third_party tree's
-// mmq.cuh is byte-identical to it), ggml/src/ggml-cuda/mmq.cuh:
-//   mul_mat_q          lines  953-1238  -> mul_mat_q_tab
-//   launch_mul_mat_q   lines 1395-1475  -> launch_mul_mat_q_tab
-//   mul_mat_q_switch_J lines 1477-1558  -> mul_mat_q_tab_switch_J
+// Mirrored from llama.cpp 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c.
 // fallback = false only (mul_mat_q_tab_case refuses rows % 128 != 0).  Everything else is the upstream text, and
 // mul_mat_q_process_tile, the tile loaders, vec_dot, write_back and mul_mat_q_stream_k_fixup are upstream's own
 // templates from the same mmq.cuh, compiled in the same target with the same flags.  Deliberate deviations:
@@ -16,10 +12,10 @@
 //      fastdiv(zt, channel_ratio), and the fastdiv(zt, channel_ratio)*stride_channel_x term leaves offset_x
 //      (stride_channel_x is still passed, unused);
 //   2. the launcher raises the shared-memory limit of mul_mat_q_tab<type, J> only - upstream's line for
-//      mul_mat_q<type, J, true> is dropped, so no fallback=true kernel is instantiated.
+//      fallback=true is omitted, so incomplete row tiles use the contiguous kernel.
 // The launch geometry (J, tiles, the stream-k grid and k split, the fixup) is computed from the same mmq_args as
 // upstream's, so every output tile is summed in the same order: the results are bitwise the same as gathering the
-// experts `stride_channel_x` apart (tests/cuda/prefill_mmq_tab_test.cu checks it per type and J).
+// experts `stride_channel_x` apart (gguf_runtime_test --mmq-scatter-check verifies both paths).
 // The matching mmq.cuh is vendored with this backend. Keep the scheduler synchronized
 // when updating it; the normalized source fingerprint in CMake and bitwise
 // parity tests verify the integration.
@@ -75,9 +71,8 @@ namespace mfq::cuda::gguf::mmq {
     (t).p[0], (t).p[1], (t).p[2], (t).p[3], (t).p[4], (t).p[5], (t).p[6], (t).p[7], (t).p[8], (t).p[9],        \
     (t).p[10], (t).p[11], (t).p[12], (t).p[13], (t).p[14], (t).p[15]
 
-// ---- mirrored: mul_mat_q (fallback = false, per-expert base from `tab`) ----
 template <ggml_type type, int J>
-__launch_bounds__(ggml_cuda_mmq_get_nthreads(type, J, false), ggml_cuda_mmq_get_occupancy(type, J, false))
+__launch_bounds__(ggml_cuda_mmq_get_nthreads(type, J, false, GGML_PREC_Q8), ggml_cuda_mmq_get_occupancy(type, J, false, GGML_PREC_Q8))
 static __global__ void mul_mat_q_tab(
         STRATA_MMQ_TAB_PARAMS, const int * __restrict__ y, const int32_t * __restrict__ ids_dst,
         const int32_t * __restrict__ expert_bounds, float * __restrict__ dst, float * __restrict__ tmp_fixup,
@@ -86,18 +81,23 @@ static __global__ void mul_mat_q_tab(
         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
         const uint3 ntx) {
-    constexpr bool fallback = false;  // STRATA: the tab copy has no fallback (rows % 128 == 0) instantiation
+
+#ifdef TURING_MMA_AVAILABLE
+    constexpr bool fusion_available = true;
+#else
+    constexpr bool fusion_available = false;
+#endif // TURING_MMA_AVAILABLE
 
     // Skip unused template specializations for faster compilation:
-    if (ggml_cuda_mmq_get_config(type, J, fallback).type == GGML_TYPE_COUNT) {
+    if (ggml_cuda_mmq_get_config(type, J, false, GGML_PREC_Q8).type == GGML_TYPE_COUNT || (false && !fusion_available)) {
         NO_DEVICE_CODE;
         return;
     }
 
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
-    constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+    constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, false, GGML_PREC_Q8) / warp_size;
     constexpr int qk        = ggml_cuda_type_traits<type>::qk;
-    constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback);
+    constexpr int I         = ggml_cuda_mmq_get_I(type, J, false, GGML_PREC_Q8);
 
     const uint32_t nty = (nrows_x + I - 1) / I; // Number of tiles y
 
@@ -117,12 +117,16 @@ static __global__ void mul_mat_q_tab(
     }
     __syncthreads();
 
-    if constexpr (!ggml_cuda_mmq_get_stream_k(type, J, fallback)) {
+    // The fused kernel needs the whole K range of a tile in one block, so it always uses tiling.
+    if constexpr (false || !ggml_cuda_mmq_get_stream_k(type, J, false, GGML_PREC_Q8)) {
+        // The fused kernel writes the GLU of I/2 up rows and I/2 gate rows per tile.
+        constexpr int I_dst = false ? I/2 : I;
+
         const uint2 tmp2 = fast_div_modulo(blockIdx.z, nchannels_y);
         const int wt = tmp2.x;
         const int zt = tmp2.y;
-        const int jt = blockIdx.y;
-        const int it = blockIdx.x;
+        const int jt = blockIdx.x;
+        const int it = blockIdx.y;
 
         // Defaults for regular matrix multiplication:
         int col_low    = 0;
@@ -167,28 +171,28 @@ static __global__ void mul_mat_q_tab(
         }
 
         offset_y   += (col_low + jt*J)*(sizeof(block_q8_1_mmq)/sizeof(int));
-        offset_dst += it*I;
+        offset_dst += it*I_dst;
         const float * y_scale_tile = nullptr;
         if constexpr (type == GGML_TYPE_NVFP4) {
             offset_y_scale += col_low + jt*J;
             y_scale_tile = y_scale ? y_scale + offset_y_scale : nullptr;
         }
 
-        const int tile_x_max_i = nrows_x  - it*I - 1;
+        const int tile_x_max_i = nrows_x  - it*I_dst - 1;
         const int tile_y_max_j = col_diff - jt*J - 1;
 
-        const char * xz = STRATA_MMQ_TAB_PICK(fastdiv(zt, channel_ratio));  // STRATA: per-expert base
-        const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + it*I*stride_row_x;
+        const char* xz = STRATA_MMQ_TAB_PICK(fastdiv(zt, channel_ratio));
+    const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + it*I_dst*stride_row_x;
 
         constexpr bool fixup = false;
-        mul_mat_q_process_tile<type, J, fallback, fixup>
-            (xz, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
-             stride_row_x, ncols_y, stride_col_dst,
+        mul_mat_q_process_tile<type, J, false, fixup, GGML_PREC_Q8, false>
+            (xz, nullptr, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+             GGML_GLU_OP_SWIGLU, 0.0f, stride_row_x, ncols_y, stride_col_dst,
              tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z);
         return;
     }
 
-    constexpr int ITER_K          = ggml_cuda_mmq_get_K_vram(type, J, fallback);
+    constexpr int ITER_K          = ggml_cuda_mmq_get_K_vram(type, J, false, GGML_PREC_Q8);
     constexpr int blocks_per_iter = ITER_K / qk;
 
     // kbc == k block continuous, current index in continuous ijk space.
@@ -272,13 +276,13 @@ static __global__ void mul_mat_q_tab(
         const int tile_x_max_i = nrows_x  - it*I - 1;
         const int tile_y_max_j = col_diff - jt*J - 1;
 
-        const char * xz = STRATA_MMQ_TAB_PICK(fastdiv(zt, channel_ratio));  // STRATA: per-expert base
-        const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + it*I*stride_row_x;
+        const char* xz = STRATA_MMQ_TAB_PICK(fastdiv(zt, channel_ratio));
+    const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + it*I*stride_row_x;
 
         constexpr bool fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
-        mul_mat_q_process_tile<type, J, fallback, fixup>
-            (xz, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
-             stride_row_x, ncols_y, stride_col_dst,
+        mul_mat_q_process_tile<type, J, false, fixup, GGML_PREC_Q8, false>
+            (xz, nullptr, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+             GGML_GLU_OP_SWIGLU, 0.0f, stride_row_x, ncols_y, stride_col_dst,
              tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
 
         kbc += blocks_per_ne00.z;
@@ -357,38 +361,38 @@ static __global__ void mul_mat_q_tab(
     const int tile_x_max_i = nrows_x  - it*I - 1;
     const int tile_y_max_j = col_diff - jt*J - 1;
 
-    const char * xz = STRATA_MMQ_TAB_PICK(fastdiv(zt, channel_ratio));  // STRATA: per-expert base
+    const char* xz = STRATA_MMQ_TAB_PICK(fastdiv(zt, channel_ratio));
     const int offset_x = fastdiv(wt, sample_ratio)*stride_sample_x + it*I*stride_row_x;
 
     constexpr bool fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
-    mul_mat_q_process_tile<type, J, fallback, fixup>
-        (xz, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
-         stride_row_x, ncols_y, stride_col_dst,
+    mul_mat_q_process_tile<type, J, false, fixup, GGML_PREC_Q8, false>
+        (xz, nullptr, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+         GGML_GLU_OP_SWIGLU, 0.0f, stride_row_x, ncols_y, stride_col_dst,
          tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
 }
 
-// ---- mirrored: launch_mul_mat_q (fallback = false) ----
 template <ggml_type type, int J>
 static void launch_mul_mat_q_tab(ggml_backend_cuda_context & ctx, const mmq_args & args, const mmq_x_tab & tab, cudaStream_t stream) {
-    constexpr bool fallback = false;
     const int id = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
     const int warp_size = ggml_cuda_info().devices[id].warp_size;
 
-    const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
+    const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, false, cc, GGML_PREC_Q8);
     GGML_ASSERT(config.nthreads % warp_size == 0);
     const int nwarps = config.nthreads / warp_size;
     const int nbytes_shared = mmq_get_nbytes_shared(config, cc);
 
     const dim3 block_dims(warp_size, nwarps, 1);
 
-    CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q_tab<type, J>), nbytes_shared);  // STRATA: no fallback=true line
+    CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q_tab<type, J>), nbytes_shared);
 
-    const int nty  = (args.nrows_x   + config.I - 1) / config.I;
+    const int I_dst = false ? config.I/2 : config.I; // Rows of dst per tile, see mul_mat_q.
+    const int nty  = (args.nrows_x   + I_dst - 1) / I_dst;
     const int ntx  = (args.ncols_max + config.J - 1) / config.J;
     const int ntzw = args.nchannels_y * args.nsamples_y;
-    const dim3 block_nums_xy_tiling(nty, ntx, ntzw);
+    // Column tiles innermost so that the concurrently running blocks share the same tile of x and read it from L2.
+    const dim3 block_nums_xy_tiling(ntx, nty, ntzw);
 
     GGML_ASSERT(args.nchannels_y % args.nchannels_x == 0);
     GGML_ASSERT(args.nsamples_y  % args.nsamples_x  == 0);
@@ -402,7 +406,8 @@ static void launch_mul_mat_q_tab(ggml_backend_cuda_context & ctx, const mmq_args
     const uint3 channel_ratio_fd   = init_fastdiv_values(channel_ratio);
     const uint3 sample_ratio_fd    = init_fastdiv_values(sample_ratio);
 
-    if (!ggml_cuda_mmq_get_stream_k(type, J, fallback, cc)) {
+    if (false || !config.stream_k) {
+        GGML_ASSERT(nty <= 65535); // gridDim.y limit
         mul_mat_q_tab<type, J><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
             (STRATA_MMQ_TAB_ARGS(tab), args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr, args.y_scale,
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
@@ -417,9 +422,11 @@ static void launch_mul_mat_q_tab(ggml_backend_cuda_context & ctx, const mmq_args
     const int ntiles_dst = ntx * nty * ntzw;
     const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
     const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
-    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nsm, 1, 1);
 
     GGML_ASSERT(ntiles_dst * blocks_per_ne00_fd.z < (1 << 30)); // Assert that variable kbc will not overflow.
+
+    const int nwork = ntiles_dst * ((args.ncols_x + config.K_vram - 1) / config.K_vram); // Maximum number of CUDA blocks that can do useful work.
+    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : std::min(nsm, nwork), 1, 1);
 
     const bool fixup_needed = ntiles_dst % block_nums_stream_k.x != 0;
 
@@ -444,7 +451,7 @@ static void launch_mul_mat_q_tab(ggml_backend_cuda_context & ctx, const mmq_args
     }
 
     CUDA_CHECK(cudaGetLastError());
-    mul_mat_q_stream_k_fixup<type, J, fallback><<<block_nums_fixup, block_dims_fixup, 0, stream>>>
+    mul_mat_q_stream_k_fixup<type, J, false, GGML_PREC_Q8><<<block_nums_fixup, block_dims_fixup, 0, stream>>>
         (args.ids_dst, args.expert_bounds, args.dst, tmp_fixup.ptr, blocks_per_ne00_fd, args.nrows_x, args.ncols_dst,
          args.nrows_dst, nchannels_y_fd, args.stride_channel_dst, nsamples_y_fd, args.stride_sample_dst,
          ntx_fd);
@@ -453,31 +460,7 @@ static void launch_mul_mat_q_tab(ggml_backend_cuda_context & ctx, const mmq_args
 // ---- mirrored: mul_mat_q_switch_J (fallback = false) ----
 template <ggml_type type>
 static void mul_mat_q_tab_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, const mmq_x_tab & tab, cudaStream_t stream) {
-    constexpr bool fallback = false;
-    const int    id    = ggml_cuda_get_device();
-    const int    cc    = ggml_cuda_info().devices[id].cc;
-    const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
-
-    int J_best        = 0;
-    int ntiles_J_best = INT_MAX;
-
-    for (int J = 8; J <= 128 && ntiles_J_best > 1; J += 8) {
-        const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
-        if (config.type == GGML_TYPE_COUNT) {
-            continue;
-        }
-
-        if (mmq_get_nbytes_shared(config, cc) > smpbo) {
-            continue;
-        }
-
-        const int ntiles_x = (args.ncols_opt + config.J - 1) / config.J;
-
-        if (ntiles_x < ntiles_J_best) {
-            J_best = J;
-            ntiles_J_best = ntiles_x;
-        }
-    }
+    const int J_best=args.J_best;
 
     switch (J_best) {
         case   8:

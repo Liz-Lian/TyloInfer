@@ -118,6 +118,8 @@ DecodeWindow::DecodeWindow(cudaStream_t stream,bool layer_profile,bool independe
 void DecodeWindow::mark(int layer,const char* phase) {
     profile_layer_=layer;
     if(!layer_profile_)return;
+    if(const auto* scope=std::getenv("TYLOINFER_TRACE_LAYER_TIMINGS");scope && std::strcmp(scope,"4")==0 &&
+        std::strncmp(phase,"qsa_cache_",10)!=0 && std::strcmp(phase,"window_begin")!=0 && std::strcmp(phase,"window_end")!=0)return;
     // Scope 2 keeps the MFE phase boundaries. Timing every small operation
     // measurably perturbs Windows graph replay; ordinary execution adds none.
     if(const auto* scope=std::getenv("TYLOINFER_TRACE_LAYER_TIMINGS");scope &&
@@ -257,7 +259,7 @@ void DecodeWindow::set_kernel_rows(std::size_t segment,cudaGraphNode_t node,unsi
 }
 void DecodeWindow::host_barrier(std::function<void()> serve) {
     if(active!=this)throw std::logic_error("host I/O barrier outside window capture");
-    if(recording_segments_)graphs_.end(barriers_.size(),1);
+    if(recording_segments_)graphs_.end_segment(barriers_.size(),1);
     barriers_.push_back({tasks_.size(),std::move(serve)});
     if(recording_segments_)graphs_.begin(barriers_.size(),1);
 }
@@ -323,8 +325,9 @@ void DecodeWindow::capture(const std::function<void()>& body,const std::function
                 }
                 ~BranchCapture(){finish();}
             } branch_capture(branch_pools_);
-            recording_segments_=true;graphs_.begin(0,1);body();graphs_.end(barriers_.size(),1);
+            recording_segments_=true;graphs_.begin(0,1);body();graphs_.end_segment(barriers_.size(),1);
             recording_segments_=false;
+            if(!nodes())throw Error("CUDA decode window body produced no work");
         } catch(const std::exception& failure) {
             recording_segments_=false;graphs_.clear();
             const std::string error=failure.what();

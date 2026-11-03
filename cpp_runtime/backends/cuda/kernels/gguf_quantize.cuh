@@ -22,6 +22,22 @@ __device__ __forceinline__ void store_q8(float value,std::int64_t i,block_q8_1* 
     output[i / 32].qs[i % 32] = std::int8_t(fminf(127.f, fmaxf(-127.f, q)));
     if (i % 32 == 0) output[i / 32].ds = __floats2half2_rn(scale, finite_half(sum));
 }
+// Internal M=1 packet: aligned int8 coordinates, then the original half2
+// scale/sum words. Quantization and total packet size match Q8_1 exactly.
+__device__ __forceinline__ void store_q8_m1_aligned(float value,std::int64_t i,
+        std::int64_t columns,void* output) {
+    float maximum=fabsf(value),sum=value;
+    for(int offset=16;offset;offset>>=1) {
+        maximum=fmaxf(maximum,__shfl_xor_sync(0xffffffffu,maximum,offset));
+        sum+=__shfl_xor_sync(0xffffffffu,sum,offset);
+    }
+    const float scale=finite_half(maximum/127.f);
+    const float q=maximum==0?0:roundf(value/scale);
+    static_cast<std::int8_t*>(output)[i]=std::int8_t(fminf(127.f,fmaxf(-127.f,q)));
+    if(i%32==0)reinterpret_cast<half2*>(static_cast<std::uint8_t*>(output)+columns)[i/32]
+        =__floats2half2_rn(scale,finite_half(sum));
+}
+
 template<bool Half>
 __device__ __forceinline__ float swiglu_q8_value(float g,float u,float limit) {
     if constexpr(Half) {g=__half2float(__float2half_rn(g));u=__half2float(__float2half_rn(u));}

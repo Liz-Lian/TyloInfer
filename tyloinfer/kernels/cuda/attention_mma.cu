@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <climits>
+#include <unordered_set>
+#include "attention_mma_verify.h"
 
 #define TYLOINFER_FATTN_KERNEL_ONLY
 #include "mfq_fattn_mma_f16.cuh"
@@ -696,7 +698,7 @@ mfq_tensor_backend::Tensor mfq_attention_mma256_swa_cuda(
 }
 
 template<int DKQ_EXPECTED, int DV_EXPECTED, int NCOLS1, int NCOLS2,
-         bool V_IS_K_VIEW = false>
+         bool V_IS_K_VIEW = false,bool OwnedWorkspace=false>
 static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
     mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
     mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
@@ -713,6 +715,7 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
     TYLOINFER_RUNTIME_CHECK(seq_len.is_cuda() && seq_len.is_contiguous() &&
                 seq_len.scalar_type() == mfq_tensor_backend::kInt64,
                 "mfq_attention_mma_decode: seq_len must be contiguous CUDA int64[B]");
+    if constexpr(!OwnedWorkspace) {
     TYLOINFER_RUNTIME_CHECK(mask.is_cuda() && mask.is_contiguous() && mask.scalar_type() == mfq_tensor_backend::kFloat16 &&
                 mask.dim() == 2,
                 "mfq_attention_mma_decode: mask must be contiguous CUDA f16[B, stride]");
@@ -721,11 +724,13 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
                 "mfq_attention_mma_decode: kv_max must be contiguous CUDA int32[B]");
     TYLOINFER_RUNTIME_CHECK(meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == mfq_tensor_backend::kFloat32,
                 "mfq_attention_mma_decode: meta must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(2) == 1 && k_cache.dim() == 4 && v_cache.dim() == 4,
+    }
+    TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && (OwnedWorkspace?(q.size(2)>=1 && q.size(2)<=NCOLS1):q.size(2)==1) && k_cache.dim() == 4 && v_cache.dim() == 4,
                 "mfq_attention_mma_decode: expected q[B,Hq,1,D], cache[B,Hk,max_seq,D]");
 
     const int B = (int)q.size(0);
     const int Hq = (int)q.size(1);
+    const int T = (int)q.size(2);
     const int D = (int)q.size(3);
     const int Hk = (int)k_cache.size(1);
     const int max_seq = (int)k_cache.size(2);
@@ -735,16 +740,19 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
                 v_cache.size(3) ==
                     (V_IS_K_VIEW ? DKQ_EXPECTED : DV_EXPECTED),
                  "mfq_attention_mma_decode: unexpected head_dim");
-    TYLOINFER_RUNTIME_CHECK(Hq % Hk == 0 && Hq / Hk >= NCOLS2 &&
-                (Hq / Hk) % NCOLS2 == 0 &&
+    // The MMA query loader, output writer and stream-K fixup all mask
+    // the final GQA tile. A group need not fill or divide NCOLS2.
+    TYLOINFER_RUNTIME_CHECK(Hk > 0 && Hq > 0 && Hq % Hk == 0 &&
                 k_cache.size(0) == B && v_cache.size(0) == B &&
                  v_cache.size(1) == Hk && v_cache.size(2) == max_seq,
                  "mfq_attention_mma_decode: unsupported GQA ratio");
     TYLOINFER_RUNTIME_CHECK(planned_len >= 1 && planned_len <= max_seq,
                 "mfq_attention_mma_decode: planned_len is outside cache capacity");
-    const int mask_stride = (int)mask.size(1);
+    const int mask_stride = OwnedWorkspace?0:(int)mask.size(1);
+    if constexpr(!OwnedWorkspace) {
     TYLOINFER_RUNTIME_CHECK(mask.size(0) == B && mask_stride >= planned_len && kv_max.numel() >= B,
                 "mfq_attention_mma_decode: workspace shape mismatch");
+    }
 
     constexpr int ncols1 = NCOLS1;
     constexpr int ncols2 = NCOLS2;
@@ -785,19 +793,24 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
         q_in_reg ? std::max(shared_q, shared_kv + shared_mask)
                  : shared_q + shared_kv + shared_mask);
 
+    constexpr bool logical_prefix = OwnedWorkspace || ncols1==1;
     using Kernel = decltype(&flash_attn_ext_f16<
-        DKQ_EXPECTED, DV_EXPECTED, ncols1, ncols2, false, V_IS_K_VIEW>);
+        DKQ_EXPECTED, DV_EXPECTED, ncols1, ncols2, false, V_IS_K_VIEW, false, logical_prefix>);
     Kernel kernel = flash_attn_ext_f16<
-        DKQ_EXPECTED, DV_EXPECTED, ncols1, ncols2, false, V_IS_K_VIEW>;
-    static bool shmem_set[32] = {};
-    TYLOINFER_RUNTIME_CHECK(device >= 0 && device < 32, "mfq_attention_mma_decode: unsupported CUDA device index");
-    if (!shmem_set[device]) {
-        status = cudaFuncSetAttribute(
-            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem);
-        TYLOINFER_RUNTIME_CHECK(status == cudaSuccess,
-                    "mfq_attention_mma_decode: cudaFuncSetAttribute failed: ",
-                    cudaGetErrorString(status));
-        shmem_set[device] = true;
+        DKQ_EXPECTED, DV_EXPECTED, ncols1, ncols2, false, V_IS_K_VIEW, false, logical_prefix>;
+    if constexpr(OwnedWorkspace) {
+        int limit=0;cudaDeviceGetAttribute(&limit,cudaDevAttrMaxSharedMemoryPerBlockOptin,device);
+        cudaFuncAttributes attributes{};
+        if(cudaFuncGetAttributes(&attributes,kernel)!=cudaSuccess ||
+                shmem+attributes.sharedSizeBytes>std::size_t(limit) ||
+                (attributes.ptxVersion<70 && !(attributes.ptxVersion==0 && attributes.binaryVersion>=70)))return {};
+    }
+    static thread_local std::unordered_set<int> shmem_set;
+    if(!shmem_set.contains(device)) {
+        status=cudaFuncSetAttribute(kernel,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shmem);
+        if constexpr(OwnedWorkspace)if(status!=cudaSuccess)return {};
+        TYLOINFER_RUNTIME_CHECK(status==cudaSuccess,"mfq_attention_mma_decode: cudaFuncSetAttribute failed: ",cudaGetErrorString(status));
+        shmem_set.insert(device);
     }
 
     const int gqa_ratio = Hq / Hk;
@@ -807,19 +820,20 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
     int max_blocks_per_sm = 0;
     status = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &max_blocks_per_sm, kernel, 32 * nwarps, shmem);
+    if constexpr(OwnedWorkspace)if(status!=cudaSuccess || max_blocks_per_sm<=0)return {};
     TYLOINFER_RUNTIME_CHECK(status == cudaSuccess && max_blocks_per_sm > 0,
                 "mfq_attention_mma_decode: occupancy query failed: ", cudaGetErrorString(status));
     const int resident_blocks = max_blocks_per_sm * properties.multiProcessorCount;
     const int tile_waves = (ntiles_dst + resident_blocks - 1) / resident_blocks;
     const int tile_efficiency = 100 * ntiles_dst / (resident_blocks * tile_waves);
-    bool stream_k = cc >= 890 || tile_efficiency < 75;
+    bool stream_k = tile_efficiency < 75;
     const char * stream_k_env = std::getenv("TYLOINFER_MMA_ATTENTION_DECODE_STREAMK");
     if (stream_k_env != nullptr) stream_k = stream_k_env[0] != '0';
     int raw_blocks = stream_k
         ? std::min(resident_blocks, ntiles_dst * ntiles_kv)
         : ntiles_dst;
-    if (stream_k && cc >= 800 && cc < 890) {
-        // On Ampere, filling every resident block slot makes the serial fixup
+    if (stream_k) {
+        // Filling every resident block slot makes the serial fixup
         // unnecessarily expensive for decode. One block per active SM is
         // sufficient until each block owns a long run of KV tiles.
         constexpr int max_kv_tiles_per_reduced_block = 32;
@@ -840,33 +854,51 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
                 : resident_blocks_per_tile);
         raw_blocks = ntiles_dst * target_blocks_per_tile;
     }
+    // Callers can retain a workspace planned with a larger KV tile. Split-K
+    // changes only the partitioning: bound its grid by the actual supplied
+    // storage, then distribute every KV tile over the remaining blocks.
+    if constexpr(!OwnedWorkspace) {
+    const int64_t workspace_blocks = meta.numel() /
+        (int64_t(2) * ncols * (2 + DV_EXPECTED / 2));
+    TYLOINFER_RUNTIME_CHECK(workspace_blocks >= ntiles_dst,
+                "mfq_attention_mma_decode: meta workspace too small");
+    raw_blocks = int(std::min<int64_t>(raw_blocks, workspace_blocks));
+    }
     const int rounded_blocks = std::max(
         ntiles_dst, (raw_blocks / ntiles_dst) * ntiles_dst);
     const int blocks_per_tile = rounded_blocks / ntiles_dst;
     const size_t meta_float2 = (size_t)rounded_blocks * ncols * (2 + DV_EXPECTED / 2);
+    if constexpr(OwnedWorkspace)meta=mfq_tensor_backend::empty({int64_t(2*meta_float2)},q.options());
+    else {
     TYLOINFER_RUNTIME_CHECK((size_t)meta.numel() >= 2 * meta_float2,
                 "mfq_attention_mma_decode: meta workspace too small");
+    }
 
     auto stream = mfq_current_cuda_stream();
-    const int prep_blocks = std::min(
-        65535, std::max(1, (B * mask_stride + 255) / 256));
-    mfq_decode_mask_kernel<<<prep_blocks, 256, 0, stream>>>(
-        reinterpret_cast<half*>(mask.data_ptr<mfq_half>()), kv_max.data_ptr<int>(),
-        seq_len.data_ptr<int64_t>(), B, mask_stride, nbatch_fa);
+    if constexpr(!logical_prefix) {
+        const int prep_blocks = std::min(
+            65535, std::max(1, (B * mask_stride + 255) / 256));
+        mfq_decode_mask_kernel<<<prep_blocks, 256, 0, stream>>>(
+            reinterpret_cast<half*>(mask.data_ptr<mfq_half>()), kv_max.data_ptr<int>(),
+            seq_len.data_ptr<int64_t>(), B, mask_stride, nbatch_fa);
+    }
 
-    auto out = mfq_tensor_backend::empty({B, 1, Hq, DV_EXPECTED}, q.options());
-    const uint3 ne01 = init_fastdiv_values(1);
+    auto out = mfq_tensor_backend::empty({B, T, Hq, DV_EXPECTED}, q.options());
+    const uint3 ne01 = init_fastdiv_values(T);
     const uint32_t n_head_log2 = 1u << (uint32_t)floorf(log2f((float)Hq));
     kernel<<<rounded_blocks, dim3(32, nwarps, 1), shmem, stream>>>(
         reinterpret_cast<const char*>(q.data_ptr<float>()),
         reinterpret_cast<const char*>(k_cache.data_ptr<mfq_half>()),
         reinterpret_cast<const char*>(v_cache.data_ptr<mfq_half>()),
-        reinterpret_cast<const char*>(mask.data_ptr<mfq_half>()),
-        nullptr, kv_max.data_ptr<int>(), static_cast<float*>(out.data_ptr()),
+        logical_prefix ? nullptr : reinterpret_cast<const char*>(mask.data_ptr<mfq_half>()),
+        nullptr, [&] {
+            if constexpr(logical_prefix)return seq_len.data_ptr<int64_t>();
+            else return kv_max.data_ptr<int>();
+        }(), static_cast<float*>(out.data_ptr()),
         reinterpret_cast<float2*>(meta.data_ptr<float>()),
         (float)scale, 0.0f, 1.0f, 1.0f, n_head_log2, 0.0f,
         DKQ_EXPECTED, ne01, Hq, B,
-        DKQ_EXPECTED * (int)sizeof(float), DKQ_EXPECTED * (int)sizeof(float), Hq * DKQ_EXPECTED * (int)sizeof(float),
+        DKQ_EXPECTED * (int)sizeof(float), T * DKQ_EXPECTED * (int)sizeof(float), Hq * T * DKQ_EXPECTED * (int)sizeof(float),
         DKQ_EXPECTED, (int)planned_len, Hk, B,
         DKQ_EXPECTED * (int)sizeof(half), max_seq * DKQ_EXPECTED * (int)sizeof(half),
         (int64_t)Hk * max_seq * DKQ_EXPECTED * (int)sizeof(half),
@@ -887,7 +919,7 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
             <<<dim3(ntiles_dst, ncols1, ncols2), DV_EXPECTED, 0, stream>>>(
                 static_cast<float*>(out.data_ptr()),
                 reinterpret_cast<const float2*>(meta.data_ptr<float>()),
-                1, Hq, Hk, rounded_blocks, gqa_ratio, blocks_per_tile, fd0, fd1, fd2);
+                T, Hq, Hk, rounded_blocks, gqa_ratio, blocks_per_tile, fd0, fd1, fd2);
         status = cudaGetLastError();
         TYLOINFER_RUNTIME_CHECK(status == cudaSuccess, "mfq_attention_mma_decode fixup launch failed: ",
                     cudaGetErrorString(status));
@@ -929,4 +961,34 @@ mfq_tensor_backend::Tensor mfq_attention_mma256_swa_decode_cuda(
 {
     return mfq_attention_mma_decode_impl<256, 256, 4, 2>(
         q, k_cache, v_cache, seq_len, scale, planned_len, mask, kv_max, meta);
+}
+
+
+mfq_tensor_backend::Tensor try_attention_mma_verify_cuda(
+        mfq_tensor_backend::Tensor q,mfq_tensor_backend::Tensor k,mfq_tensor_backend::Tensor v,
+        mfq_tensor_backend::Tensor lengths,double scale,int64_t planned_length) {
+    namespace tb=mfq_tensor_backend;
+    if(!q.is_cuda() || !k.is_cuda() || !v.is_cuda() || q.dim()!=4 || k.dim()!=4 || v.dim()!=4 ||
+            q.size(2)<2 || q.size(2)>8 || k.scalar_type()!=tb::kFloat16 || v.scalar_type()!=tb::kFloat16 ||
+            (q.scalar_type()!=tb::kFloat16 && q.scalar_type()!=tb::kFloat32))return {};
+    int major=0;cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,q.get_device());
+    if(major<7)return {}; // FP16 MMA instructions require Volta or newer.
+    q=q.to(tb::kFloat32).contiguous();
+    const auto width=[&]<int D>() {
+        const auto launch=[&]<int Count>() {
+            return mfq_attention_mma_decode_impl<D,D,Count,8,false,true>(q,k,v,lengths,scale,planned_length,{},{},{});
+        };
+        if(q.size(2)<=2)return launch.template operator()<2>();
+        if(q.size(2)<=4)return launch.template operator()<4>();
+        return launch.template operator()<8>();
+    };
+    tb::Tensor result;
+    switch(q.size(3)) {
+        case 64:result=width.template operator()<64>();break;
+        case 128:result=width.template operator()<128>();break;
+        case 256:result=width.template operator()<256>();break;
+        case 512:result=width.template operator()<512>();break;
+        default:return {};
+    }
+    return result;
 }

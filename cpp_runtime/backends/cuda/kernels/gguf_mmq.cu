@@ -37,7 +37,7 @@ namespace {
 void check() {const auto e=cudaGetLastError();if(e!=cudaSuccess)throw std::runtime_error(cudaGetErrorString(e));}
 bool supported(int type) {
     switch(type) {
-        case GGML_TYPE_Q2_0:case GGML_TYPE_IQ2_XXS:case GGML_TYPE_IQ2_XS:case GGML_TYPE_IQ2_S:
+        case GGML_TYPE_Q2_0:case GGML_TYPE_Q2_K:case GGML_TYPE_IQ1_S:case GGML_TYPE_IQ2_XXS:case GGML_TYPE_IQ2_XS:case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS:case GGML_TYPE_IQ3_S:case GGML_TYPE_IQ4_NL:case GGML_TYPE_IQ4_XS:case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q4_K:case GGML_TYPE_Q5_K:case GGML_TYPE_Q6_K:case GGML_TYPE_Q5_1:return true;
         default:return false;
@@ -108,7 +108,7 @@ bool fits(int type,std::int64_t rows,int device) {
     if(!supported(type) || rows<=0 || rows>INT_MAX || device<0 || device>=ggml_cuda_info().device_count)return false;
     const auto& gpu=ggml_cuda_info().devices[device];
     for(int j=8;j<=128;j+=8) {
-        const auto config=ggml_cuda_mmq_get_config(ggml_type(type),j,rows%128!=0,gpu.cc);
+        const auto config=ggml_cuda_mmq_get_config(ggml_type(type),j,rows%128!=0,gpu.cc,GGML_PREC_Q8);
         if(config.type!=GGML_TYPE_COUNT && mmq_get_nbytes_shared(config,gpu.cc)<=gpu.smpbo)return true;
     }
     return false;
@@ -123,7 +123,7 @@ bool direct_fits(int type,std::int64_t rows,std::int64_t columns,int device) {
     if(!no_overread(MMQ_ITER_K))return false;
     const auto& gpu=ggml_cuda_info().devices[device];
     for(int j=8;j<=128;j+=8) {
-        const auto config=ggml_cuda_mmq_get_config(ggml_type(type),j,false,gpu.cc);
+        const auto config=ggml_cuda_mmq_get_config(ggml_type(type),j,false,gpu.cc,GGML_PREC_Q8);
         if(config.type!=GGML_TYPE_COUNT && mmq_get_nbytes_shared(config,gpu.cc)<=gpu.smpbo && !no_overread(config.K_vram))return false;
     }
     return true;
@@ -179,10 +179,31 @@ void Context::run(const Product& p,cudaStream_t stream) {
     if(activation_rows<p.tokens || p.activation_offset<0 || p.activation_offset>activation_rows-p.tokens)
         throw std::invalid_argument("GGUF MMQ activation view exceeds its rows");
     const auto* activation=reinterpret_cast<const int*>(static_cast<const block_q8_1_mmq*>(p.activation)+p.activation_offset);
-    const mmq_args args={static_cast<const char*>(p.weights),type,activation,p.ids,p.bounds,p.output,nullptr,
-        p.columns,p.rows,p.tokens,p.columns/ggml_blck_size(type),activation_rows,p.output_stride,
-        p.experts,p.experts,std::int64_t(p.expert_bytes/ggml_type_size(type)),0,0,
-        1,1,0,0,0,p.max_tokens,p.max_tokens};
+    // An expert cannot own more rows than the complete routed group.
+    // Bound overestimated scheduling hints before selecting MMQ/fixup tiles.
+    const auto maximum_tokens=std::min(p.max_tokens,p.tokens);
+    const auto& gpu=ggml_cuda_info().devices[ggml_cuda_get_device()];
+    int best=0,tiles=INT_MAX;
+    for(int J=8;J<=128 && tiles>1;J+=8) {
+        const auto config=ggml_cuda_mmq_get_config(type,J,ggml_cuda_mmq_needs_fallback(p.rows),gpu.cc,GGML_PREC_Q8);
+        if(config.type==GGML_TYPE_COUNT || mmq_get_nbytes_shared(config,gpu.cc)>gpu.smpbo)continue;
+        const auto count=(maximum_tokens+config.J-1)/config.J;
+        if(count<tiles){best=J;tiles=int(count);}
+    }
+    if(!best)throw std::invalid_argument("GGUF MMQ has no compatible tile");
+    mmq_args args{};
+    args.x=static_cast<const char*>(p.weights);args.type_x=type;args.y=activation;
+    args.ids_dst=p.ids;args.expert_bounds=p.bounds;args.dst=p.output;
+    args.ncols_x=p.columns;args.nrows_x=p.rows;args.ncols_dst=p.tokens;
+    args.stride_row_x=p.columns/ggml_blck_size(type);args.ncols_y=activation_rows;args.nrows_dst=p.output_stride;
+    args.nchannels_x=args.nchannels_y=p.experts;args.stride_channel_x=p.expert_bytes/ggml_type_size(type);
+    args.nsamples_x=args.nsamples_y=1;args.ncols_max=maximum_tokens;args.J_best=best;
+    if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+        static std::atomic<std::uint64_t> reported[2]{};
+        const auto bit=std::uint64_t(1)<<unsigned(type);
+        if(!(reported[p.weight_addresses?1:0].fetch_or(bit,std::memory_order_relaxed)&bit))
+            std::fprintf(stderr,"native_gguf_mmq_upstream actual_match=1 commit=51fe42c5 format=%d pointer_table=%d J=%d precision=Q8\n",int(type),p.weight_addresses!=nullptr,best);
+    }
     if(p.weight_addresses) {
         if(p.experts>group_capacity || !direct_fits(p.type,p.rows,p.columns,ggml_cuda_get_device()))
             throw std::invalid_argument("GGUF direct MMQ requires complete tiles without a K over-read");
@@ -193,7 +214,7 @@ void Context::run(const Product& p,cudaStream_t stream) {
         }
         switch(type) {
 #define TYLOINFER_MMQ_TAB(Type) case GGML_TYPE_##Type:mul_mat_q_tab_case<GGML_TYPE_##Type>(impl_->context,args,table,stream);break
-            TYLOINFER_MMQ_TAB(Q2_0);TYLOINFER_MMQ_TAB(IQ2_XXS);TYLOINFER_MMQ_TAB(IQ2_XS);TYLOINFER_MMQ_TAB(IQ2_S);
+            TYLOINFER_MMQ_TAB(Q2_0);TYLOINFER_MMQ_TAB(Q2_K);TYLOINFER_MMQ_TAB(IQ1_S);TYLOINFER_MMQ_TAB(IQ2_XXS);TYLOINFER_MMQ_TAB(IQ2_XS);TYLOINFER_MMQ_TAB(IQ2_S);
             TYLOINFER_MMQ_TAB(IQ3_XXS);TYLOINFER_MMQ_TAB(IQ3_S);TYLOINFER_MMQ_TAB(IQ4_NL);TYLOINFER_MMQ_TAB(IQ4_XS);TYLOINFER_MMQ_TAB(Q8_0);
             TYLOINFER_MMQ_TAB(Q4_K);TYLOINFER_MMQ_TAB(Q5_K);TYLOINFER_MMQ_TAB(Q6_K);TYLOINFER_MMQ_TAB(Q5_1);
 #undef TYLOINFER_MMQ_TAB
@@ -209,8 +230,8 @@ void Context::run(const Product& p,cudaStream_t stream) {
         check();return;
     }
     switch(type) {
-#define TYLOINFER_MMQ_CASE(Type) case GGML_TYPE_##Type:mul_mat_q_case<GGML_TYPE_##Type>(impl_->context,args,stream);break
-        TYLOINFER_MMQ_CASE(Q2_0);TYLOINFER_MMQ_CASE(IQ2_XXS);TYLOINFER_MMQ_CASE(IQ2_XS);TYLOINFER_MMQ_CASE(IQ2_S);
+#define TYLOINFER_MMQ_CASE(Type) case GGML_TYPE_##Type:mul_mat_q_case<GGML_TYPE_##Type,GGML_PREC_Q8>(impl_->context,args,stream);break
+        TYLOINFER_MMQ_CASE(Q2_0);TYLOINFER_MMQ_CASE(Q2_K);TYLOINFER_MMQ_CASE(IQ1_S);TYLOINFER_MMQ_CASE(IQ2_XXS);TYLOINFER_MMQ_CASE(IQ2_XS);TYLOINFER_MMQ_CASE(IQ2_S);
         TYLOINFER_MMQ_CASE(IQ3_XXS);TYLOINFER_MMQ_CASE(IQ3_S);TYLOINFER_MMQ_CASE(IQ4_NL);TYLOINFER_MMQ_CASE(IQ4_XS);TYLOINFER_MMQ_CASE(Q8_0);
         TYLOINFER_MMQ_CASE(Q4_K);TYLOINFER_MMQ_CASE(Q5_K);TYLOINFER_MMQ_CASE(Q6_K);TYLOINFER_MMQ_CASE(Q5_1);
 #undef TYLOINFER_MMQ_CASE

@@ -4,6 +4,10 @@
 #include "mfq_cuda_nint_route_hint.h"
 #include "storage/weight_loader.h"
 #include "quant_linear.h"
+#include "gguf_prefill_fusion.h"
+#include "../../kernels/gguf_head_gate.h"
+#include "mfq_cuda_norm_ops.h"
+#include "../../kernels/gguf.h"
 #include "float_projection.h"
 #include "tyloinfer/format_features.h"
 #include "mfq_weight_memory.h"
@@ -887,9 +891,13 @@ QuantLinear load_quant_linear(
                 shard.input_end = axis == TensorParallelAxis::Input ? slice.end * block : shape[1];
                 shard.gguf = load_gguf_weight(mfq, name, slice.device, !cpu_layer,
                     shard.output_begin, shard.output_end, shard.input_begin, shard.input_end);
+                shard.gguf.repack_inplace();
                 result.tensor_parallel_shards.push_back(std::move(shard));
             }
-        } else result.gguf = load_gguf_weight(mfq, name, active_weight_load_device(execution), !cpu_layer);
+        } else {
+            result.gguf = load_gguf_weight(mfq, name, active_weight_load_device(execution), !cpu_layer);
+            result.gguf.repack_inplace();
+        }
         return result;
     }
     if(dtype=="TQ") {
@@ -1776,6 +1784,7 @@ mfq_tensor_backend::Tensor dense_projection(
             value.to(activation_dtype == mfq_tensor_backend::kFloat32 ?
                 mfq_tensor_backend::kFloat32 : mfq_tensor_backend::kFloat16) : value;
     };
+    if(auto projected=try_dense_f32_projection_cuda(input,weight);projected.defined())return projected;
     if(auto projected=try_dense_bf16_projection_cuda(input,weight);projected.defined())return projected;
     input = input.to(weight.scalar_type());
     const int64_t rows = input.numel() / input.size(-1);
@@ -1789,7 +1798,7 @@ mfq_tensor_backend::Tensor dense_projection(
         // Keep short target/predictor windows on the decode projection path.
         // ponytail: at most six launches; fuse only with decode-equivalent accumulation.
         for (int64_t row = 0; row < rows; ++row)
-            outputs.push_back(mfq_tensor_backend::matmul(flat.narrow(0, row, 1), weight.transpose(0, 1)));
+            outputs.push_back(dense_projection(flat.narrow(0, row, 1),weight));
         return native_output(mfq_tensor_backend::cat(outputs, 0).reshape(shape));
     }
     return native_output(mfq_tensor_backend::matmul(input, weight.transpose(0, 1)));
@@ -1875,11 +1884,84 @@ mfq_tensor_backend::Tensor QuantLinear::forward_mxfp8_groupwise(
         .to(grouped.scalar_type()).contiguous();
 }
 
+mfq_tensor_backend::Tensor QuantLinear::forward_input_head_mul(
+        CudaExecutionContext& execution,mfq_tensor_backend::Tensor x,
+        mfq_tensor_backend::Tensor gate,int mode) const {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK((mode==1 || mode==2) && x.dim()==3 && gate.dim()==4 &&
+        gate.size(0)==x.size(0) && gate.size(1)==x.size(1) &&
+        gate.size(2)>0 && gate.size(3)>0 && gate.size(2)*gate.size(3)==x.size(2),
+        "head-gated projection requires [B,T,H*D] input and [B,T,H,D] gates");
+    const auto batch=x.size(0),tokens=x.size(1),heads=gate.size(2),width=gate.size(3);
+    if(is_gguf() && !tensor_parallel() && !gguf.prefers_original_input() &&
+        x.is_cuda() && x.device()==gguf.packed.device() && gate.device()==x.device() &&
+        x.is_contiguous() && gate.stride(3)==1 && gate.scalar_type()==x.scalar_type() &&
+        (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32) &&
+        x.size(2)==gguf.neuron_len && batch*tokens>=1 && batch*tokens<=32) {
+        const auto stream=mfq_get_current_cuda_stream(x.get_device());
+        const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(gguf.type,batch*tokens);
+        const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(batch*tokens,gguf.neuron_len):
+            batch*tokens*mfq::cuda::gguf::q8_row_bytes(gguf.neuron_len);
+        auto activation=tb::empty({int64_t(bytes)},
+            x.options().dtype(tb::kUInt8));
+        for(const auto& tensor:{x,gate,activation})mfq_cuda_record_stream(tensor,stream);
+        const bool aligned=batch*tokens==1 && mfq::cuda::gguf::prefers_m1_aligned(gguf.type);
+        if(position_major)mfq::cuda::gguf::quantize_gated_head_input_interleaved(x.data_ptr(),gate.data_ptr(),
+            x.scalar_type()==tb::kFloat16,batch,tokens,heads,width,gate.stride(0),gate.stride(1),gate.stride(2),
+            mode==2,activation.data_ptr(),stream.stream());
+        else mfq::cuda::gguf::quantize_gated_head_input(x.data_ptr(),gate.data_ptr(),x.scalar_type()==tb::kFloat16,
+            batch,tokens,heads,width,gate.stride(0),gate.stride(1),gate.stride(2),mode==2,
+            aligned,activation.data_ptr(),stream.stream());
+        auto output=aligned?gguf.forward_m1_aligned_base(activation,x.scalar_type()):
+            gguf.forward_q8(activation,batch*tokens,x.scalar_type(),position_major);
+        return output.reshape({batch,tokens,gguf.out});
+    }
+    return forward_input_mul(execution,x,gate.contiguous().reshape_as(x),mode);
+}
+
 mfq_tensor_backend::Tensor QuantLinear::forward_input_mul(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor gate,
         int mode) const {
+    const auto tokens=x.dim()>0 && x.size(-1)>0?x.numel()/x.size(-1):0;
+    if((mode==1 || mode==2) && is_gguf() && !tensor_parallel() && !gguf.prefers_original_input() &&
+            x.is_cuda() && x.device()==gguf.packed.device() && x.device()==gate.device() &&
+            x.is_contiguous() && gate.is_contiguous() && x.sizes()==gate.sizes() &&
+            x.scalar_type()==gate.scalar_type() &&
+            (x.scalar_type()==mfq_tensor_backend::kFloat16 || x.scalar_type()==mfq_tensor_backend::kFloat32) &&
+            x.size(-1)==gguf.neuron_len && tokens>=1 && tokens<=32) {
+        const auto stream=mfq_get_current_cuda_stream(x.get_device());
+        const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(gguf.type,tokens);
+        const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(tokens,gguf.neuron_len):
+            tokens*mfq::cuda::gguf::q8_row_bytes(gguf.neuron_len);
+        auto activation=mfq_tensor_backend::empty(
+            {int64_t(bytes)},
+            x.options().dtype(mfq_tensor_backend::kUInt8));
+        for(const auto& tensor:{x,gate,activation})mfq_cuda_record_stream(tensor,stream);
+        const bool aligned_m1=tokens==1 && mfq::cuda::gguf::prefers_m1_aligned(gguf.type);
+        const auto quantize=position_major?mfq::cuda::gguf::quantize_gated_input_interleaved:
+            aligned_m1?mfq::cuda::gguf::quantize_gated_input_m1_aligned:mfq::cuda::gguf::quantize_gated_input;
+        quantize(x.data_ptr(),gate.data_ptr(),
+            x.scalar_type()==mfq_tensor_backend::kFloat16,tokens,gguf.neuron_len,mode==2,
+            activation.data_ptr(),stream.stream());
+        auto shape=x.sizes().vec();shape.back()=gguf.out;
+        return (aligned_m1?gguf.forward_m1_aligned_base(activation,x.scalar_type()):
+            gguf.forward_q8(activation,tokens,x.scalar_type(),position_major)).reshape(shape);
+    }
+    if(is_gguf() && !tensor_parallel() && tokens>32 && x.is_cuda() &&
+            x.device()==gguf.packed.device() && gate.device()==x.device() &&
+            x.is_contiguous() && gate.is_contiguous() && x.sizes()==gate.sizes() &&
+            x.scalar_type()==gate.scalar_type() &&
+            (x.scalar_type()==mfq_tensor_backend::kFloat16 || x.scalar_type()==mfq_tensor_backend::kFloat32)) {
+        TYLOINFER_RUNTIME_CHECK(mode==1 || mode==2,"input gate mode must be sigmoid or SiLU");
+        auto gated=mfq_tensor_backend::empty_like(x);
+        const auto stream=mfq_get_current_cuda_stream(x.get_device());
+        for(const auto& tensor:{x,gate,gated})mfq_cuda_record_stream(tensor,stream);
+        mfq::cuda::gguf::materialize_gated_input(x.data_ptr(),gate.data_ptr(),
+            x.scalar_type()==mfq_tensor_backend::kFloat16,x.numel(),mode==2,gated.data_ptr(),stream.stream());
+        return forward(execution,gated);
+    }
     if (tensor_parallel() || (mfq::mfq_compat_enabled && is_nint()) || (mfq::mfq_compat_enabled && is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -1917,6 +1999,171 @@ mfq_tensor_backend::Tensor QuantLinear::forward_input_mul(
         ? x * mfq_tensor_backend::sigmoid(local_gate)
         : x * mfq_tensor_backend::silu(local_gate);
     return forward(execution, gated);
+}
+
+std::unique_ptr<GgufPrefillInputScope> QuantLinearGroup::prepare_prefill_rms_norm_input(
+        CudaExecutionContext& execution,const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight,double eps,double offset,
+        mfq_tensor_backend::Tensor& normalized) const {
+    normalized={};
+    if(execution.kl_mmq.mode!=KlMmqMode::Default || layers.empty() || !input.is_cuda() ||
+            input.dim()<1 || input.size(-1)<1 || input.numel()/input.size(-1)<512)return {};
+    for(const auto& layer:layers)if(!layer.is_gguf() || layer.tensor_parallel() ||
+            !layer.gguf.packed.is_cuda() || layer.gguf.packed.device()!=input.device() ||
+            layer.gguf.neuron_len!=input.size(-1) || layer.gguf.prefers_original_input())return {};
+    return GgufPrefillInputScope::prepare_rms(input,weight,eps,offset,normalized);
+}
+
+GgufProjectionInput QuantLinearGroup::prepare_rms_norm_input(
+        CudaExecutionContext& execution,mfq_tensor_backend::Tensor input,mfq_tensor_backend::Tensor weight,
+        double eps,double offset,mfq_tensor_backend::Tensor& normalized) const {
+    namespace tb=mfq_tensor_backend;
+    normalized=tb::Tensor();
+    if(execution.kl_mmq.mode!=KlMmqMode::Default || layers.empty() || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
+            (input.scalar_type()!=tb::kFloat16 && input.scalar_type()!=tb::kFloat32))return {};
+    const auto width=input.size(-1);
+    if(width<1)return {};
+    const auto rows=input.numel()/width;
+    if(width%32 || rows<1 || rows>32 || !weight.is_contiguous() ||
+            weight.device()!=input.device() || weight.scalar_type()!=tb::kFloat32 || weight.numel()!=width)return {};
+    bool supports_aligned=rows==1,prefer_aligned=false,keep_original=false,need_native=false,need_interleaved=false;
+    for(const auto& layer:layers) {
+        if(!layer.is_gguf() || layer.tensor_parallel())return {};
+        const auto& w=layer.gguf;
+        supports_aligned&=mfq::cuda::gguf::supports_m1_aligned(w.type);
+        prefer_aligned|=mfq::cuda::gguf::prefers_m1_aligned(w.type);
+        keep_original|=bool(w.projection_correction);
+        if(w.neuron_len!=width || w.packed.device()!=input.device() || w.base_prefers_original_input())return {};
+        const bool interleaved=mfq::cuda::gguf::supports_interleaved_activation(w.type,rows);
+        need_interleaved|=interleaved;need_native|=!interleaved;
+    }
+    const bool aligned_m1=supports_aligned && prefer_aligned;
+    const auto stream=mfq_get_current_cuda_stream(input.get_device());
+    normalized=tb::empty(input.sizes(),input.options().dtype(tb::kFloat32));
+    auto native=need_native?tb::empty({int64_t(rows*mfq::cuda::gguf::q8_row_bytes(width))},input.options().dtype(tb::kUInt8)):tb::Tensor{};
+    auto interleaved=need_interleaved?tb::empty({int64_t(mfq::cuda::gguf::interleaved_activation_bytes(rows,width))},
+        input.options().dtype(tb::kUInt8)):tb::Tensor{};
+    for(const auto& tensor:{input,weight,normalized,native,interleaved})if(tensor.defined())mfq_cuda_record_stream(tensor,stream);
+    if(need_interleaved)mfq::cuda::gguf::quantize_rms_input_interleaved(input.data_ptr(),input.scalar_type()==tb::kFloat16,
+        weight.data_ptr<float>(),rows,width,float(eps),float(offset),normalized.data_ptr<float>(),interleaved.data_ptr(),
+        native.defined()?native.data_ptr():nullptr,stream.stream());
+    else {
+        const auto quantize=aligned_m1?mfq::cuda::gguf::quantize_rms_input_m1_aligned:mfq::cuda::gguf::quantize_rms_input;
+        quantize(input.data_ptr(),input.scalar_type()==tb::kFloat16,
+            weight.data_ptr<float>(),rows,width,float(eps),float(offset),normalized.data_ptr<float>(),native.data_ptr(),stream.stream());
+    }
+    // Neuron corrections consume the normalized activation alongside the
+    // shared Q8 base. The fused producer already materializes that tensor.
+    for(const auto& layer:layers)if(layer.gguf.projection_correction)
+        layer.gguf.projection_correction->prepare(normalized);
+    return {std::move(native),std::move(interleaved),keep_original?normalized.reshape({rows,width}):tb::Tensor{},input.sizes().vec(),rows,tb::kFloat32,aligned_m1};
+}
+
+GgufProjectionInput QuantLinearGroup::prepare_acc_rms_norm_input(
+        CudaExecutionContext& execution,mfq_tensor_backend::Tensor residual,
+        mfq_tensor_backend::Tensor projection,mfq_tensor_backend::Tensor weight,
+        double eps,double offset,mfq_tensor_backend::Tensor& sum,mfq_tensor_backend::Tensor& normalized) const {
+    namespace tb=mfq_tensor_backend;
+    sum=tb::Tensor();normalized=tb::Tensor();
+    if(execution.kl_mmq.mode!=KlMmqMode::Default || layers.empty() || !residual.is_cuda() ||
+            !residual.is_contiguous() || residual.dim()<1 || residual.scalar_type()!=tb::kFloat16 ||
+            projection.device()!=residual.device() || projection.sizes()!=residual.sizes() || !projection.is_contiguous() ||
+            (projection.scalar_type()!=tb::kFloat16 && projection.scalar_type()!=tb::kFloat32))return {};
+    const auto width=residual.size(-1);if(width<1 || width%32)return {};
+    const auto rows=residual.numel()/width;
+    if(rows<1 || rows>32 || !weight.is_contiguous() || weight.device()!=residual.device() ||
+            weight.scalar_type()!=tb::kFloat32 || weight.numel()!=width)return {};
+    if((reinterpret_cast<std::uintptr_t>(residual.data_ptr())&3) ||
+            (reinterpret_cast<std::uintptr_t>(projection.data_ptr())&(projection.scalar_type()==tb::kFloat32?7:3)))return {};
+    bool supports_aligned=rows==1,prefer_aligned=false,keep_original=false,need_native=false,need_interleaved=false;
+    for(const auto& layer:layers) {
+        if(!layer.is_gguf() || layer.tensor_parallel())return {};
+        const auto& w=layer.gguf;
+        supports_aligned&=mfq::cuda::gguf::supports_m1_aligned(w.type);
+        prefer_aligned|=mfq::cuda::gguf::prefers_m1_aligned(w.type);
+        keep_original|=bool(w.projection_correction);
+        if(w.neuron_len!=width || w.packed.device()!=residual.device() || w.base_prefers_original_input())return {};
+        const bool interleaved=mfq::cuda::gguf::supports_interleaved_activation(w.type,rows);
+        need_interleaved|=interleaved;need_native|=!interleaved;
+    }
+    const bool aligned_m1=supports_aligned && prefer_aligned;
+    const auto stream=mfq_get_current_cuda_stream(residual.get_device());
+    sum=tb::empty_like(residual);normalized=tb::empty_like(residual);
+    auto native=need_native?tb::empty({int64_t(rows*mfq::cuda::gguf::q8_row_bytes(width))},residual.options().dtype(tb::kUInt8)):tb::Tensor{};
+    auto interleaved=need_interleaved?tb::empty({int64_t(mfq::cuda::gguf::interleaved_activation_bytes(rows,width))},
+        residual.options().dtype(tb::kUInt8)):tb::Tensor{};
+    for(const auto& tensor:{residual,projection,weight,sum,normalized,native,interleaved})if(tensor.defined())mfq_cuda_record_stream(tensor,stream);
+    if(need_interleaved)mfq::cuda::gguf::quantize_acc_rms_input_interleaved(residual.data_ptr(),projection.data_ptr(),
+        projection.scalar_type()==tb::kFloat32,weight.data_ptr<float>(),rows,width,float(eps),float(offset),
+        sum.data_ptr(),normalized.data_ptr(),interleaved.data_ptr(),native.defined()?native.data_ptr():nullptr,stream.stream());
+    else {
+        const auto quantize=aligned_m1?mfq::cuda::gguf::quantize_acc_rms_input_m1_aligned:mfq::cuda::gguf::quantize_acc_rms_input;
+        quantize(residual.data_ptr(),projection.data_ptr(),projection.scalar_type()==tb::kFloat32,
+            weight.data_ptr<float>(),rows,width,float(eps),float(offset),sum.data_ptr(),normalized.data_ptr(),native.data_ptr(),stream.stream());
+    }
+    for(const auto& layer:layers)if(layer.gguf.projection_correction)
+        layer.gguf.projection_correction->prepare(normalized);
+    return {std::move(native),std::move(interleaved),keep_original?normalized.reshape({rows,width}):tb::Tensor{},residual.sizes().vec(),rows,tb::kFloat16,aligned_m1};
+}
+
+std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward_prepared_rms(
+        const GgufProjectionInput& input) const {
+    std::vector<GgufWeight> weights;weights.reserve(layers.size());
+    for(const auto& layer:layers) {
+        TYLOINFER_RUNTIME_CHECK(layer.is_gguf() && !layer.tensor_parallel(),"prepared RMS projection requires a GGUF group");
+        weights.push_back(layer.gguf);
+    }
+    return input.project_all(weights);
+}
+
+mfq_tensor_backend::Tensor QuantLinear::forward_input_rms_silu(
+        CudaExecutionContext& execution,mfq_tensor_backend::Tensor attended,
+        mfq_tensor_backend::Tensor gate,mfq_tensor_backend::Tensor norm_weight,double eps) const {
+    return forward_input_rms_gate(execution,std::move(attended),std::move(gate),std::move(norm_weight),eps,true);
+}
+
+mfq_tensor_backend::Tensor QuantLinear::forward_input_rms_gate(
+        CudaExecutionContext& execution,
+        mfq_tensor_backend::Tensor attended,
+        mfq_tensor_backend::Tensor gate,
+        mfq_tensor_backend::Tensor norm_weight,
+        double eps,bool silu) const {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(attended.dim()==4,"grouped projection normalization expects [B,H,T,D]");
+    const auto batch=attended.size(0),heads=attended.size(1),tokens=attended.size(2),width=attended.size(3);
+    if(is_gguf() && !tensor_parallel() && !gguf.prefers_original_input() &&
+            attended.is_cuda() && attended.device()==gguf.packed.device() &&
+            attended.is_contiguous() && attended.scalar_type()==tb::kFloat32 &&
+            norm_weight.device()==attended.device() && norm_weight.is_contiguous() &&
+            norm_weight.scalar_type()==tb::kFloat32 && norm_weight.numel()==width &&
+            gate.device()==attended.device() && gate.scalar_type()==tb::kFloat32 &&
+            gate.dim()==3 && gate.size(0)==batch && gate.size(1)==tokens && gate.size(2)==heads*width &&
+            gate.stride(2)==1 && gate.stride(1)>=heads*width &&
+            gate.stride(0)>=tokens*gate.stride(1) && width>0 && width%32==0 &&
+            heads*width==gguf.neuron_len && batch*tokens>=1 && batch*tokens<=32) {
+        const auto stream=mfq_get_current_cuda_stream(attended.get_device());
+        const bool position_major=mfq::cuda::gguf::supports_interleaved_activation(gguf.type,batch*tokens);
+        const auto bytes=position_major?mfq::cuda::gguf::interleaved_activation_bytes(batch*tokens,heads*width):
+            batch*tokens*mfq::cuda::gguf::q8_row_bytes(heads*width);
+        auto activation=tb::empty({int64_t(bytes)},
+            attended.options().dtype(tb::kUInt8));
+        for(const auto& tensor:{attended,gate,norm_weight,activation})mfq_cuda_record_stream(tensor,stream);
+        using Quantize=void(*)(const float*,const float*,const float*,int64_t,int64_t,int64_t,int64_t,
+            int64_t,int64_t,float,bool,void*,cudaStream_t);
+        const Quantize quantize=position_major?mfq::cuda::gguf::quantize_rms_gated_input_interleaved:
+            static_cast<Quantize>(mfq::cuda::gguf::quantize_rms_gated_input);
+        quantize(attended.data_ptr<float>(),gate.data_ptr<float>(),
+            norm_weight.data_ptr<float>(),batch,heads,tokens,width,gate.stride(0),gate.stride(1),
+            float(eps),silu,activation.data_ptr(),stream.stream());
+        return gguf.forward_q8(activation,batch*tokens,tb::kFloat32,position_major).reshape({batch,tokens,gguf.out});
+    }
+    if(is_gguf() && !tensor_parallel()) {
+        auto fused=gguf_rms_gated_prefill(gguf,attended,gate,norm_weight,eps,silu);
+        if(fused.defined())return fused;
+    }
+    auto normalized=rms_norm_cuda(attended.contiguous().reshape({-1,width}),norm_weight,eps)
+        .reshape_as(attended).transpose(1,2).contiguous().reshape({batch,tokens,heads*width});
+    return forward_input_mul(execution,normalized,gate.contiguous().reshape_as(normalized),silu?2:1);
 }
 
 mfq_tensor_backend::Tensor QuantLinear::forward_input_mul_f32_kld(
@@ -2057,6 +2304,26 @@ std::vector<mfq_tensor_backend::Tensor> QuantLinearGroup::forward(
         return result;
     }
 #endif
+    // Native GGUF groups share the activation packet just like their loaded
+    // function counterparts. Keep dependent corrections after all base dots.
+    const auto tokens=x.numel()/x.size(-1);
+    if(default_mmq && tokens>=1 && tokens<=32 && !layers.empty() &&
+            std::all_of(layers.begin(),layers.end(),[&](const QuantLinear& layer) {
+                return layer.is_gguf() && !layer.tensor_parallel() && layer.gguf.packed.is_cuda() &&
+                    layer.gguf.packed.device()==x.device() && layer.gguf.neuron_len==x.size(-1) &&
+                    same_gguf_input_basis(layers.front().gguf,layer.gguf);
+            })) {
+        std::vector<GgufWeight> weights;weights.reserve(layers.size());
+        for(const auto& layer:layers)weights.push_back(layer.gguf);
+        return project_gguf_group(weights,std::move(x));
+    }
+    std::unique_ptr<GgufPrefillInputScope> prefill_input;
+    if(default_mmq && tokens>=512 && layers.size()>1 &&
+            std::all_of(layers.begin(),layers.end(),[&](const QuantLinear& layer) {
+                return layer.is_gguf() && !layer.tensor_parallel() && layer.gguf.packed.is_cuda() &&
+                    layer.gguf.packed.device()==x.device() && layer.gguf.neuron_len==x.size(-1) &&
+                    !layer.gguf.prefers_original_input();
+            }))prefill_input=std::make_unique<GgufPrefillInputScope>(x);
     std::vector<mfq_tensor_backend::Tensor> result;
     if (default_mmq && decode_branch_parallel &&
             decode_branch_parallel_enabled(
@@ -2131,6 +2398,55 @@ std::vector<mfq_tensor_backend::Tensor> DenseLinearGroup::forward(mfq_tensor_bac
         p = p.reshape(s);
     }
     return parts;
+}
+
+std::vector<mfq_tensor_backend::Tensor> DenseLinearGroup::forward_parallel(
+        mfq_tensor_backend::Tensor x,const std::function<void()>& independent,
+        CudaIndependentBranchExecutor& executor) const {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    namespace tb=mfq_tensor_backend;
+    if(x.defined() && w.defined() && x.is_cuda() && w.device()==x.device() &&
+            x.is_contiguous() && w.is_contiguous() && x.scalar_type()==tb::kFloat32 &&
+            w.scalar_type()==tb::kFloat32 && x.dim()>0 && w.dim()==2 &&
+            x.numel()==x.size(-1) && x.size(-1)==w.size(1)) {
+        const MfqCudaGuard guard(x.get_device());
+        const auto parent=mfq_get_current_cuda_stream(x.get_device());
+        if(executor.ensure(1,parent)) {
+            const auto branch=executor.streams[0];
+            // Enroll the branch in the existing decoder warmup/capture pools.
+            // Unregistered side-stream allocations add malloc/free graph nodes
+            // on every layer, which cost more than these small projections.
+            if(auto* window=mfq::cuda::DecodeWindow::recording())
+                window->prepare_branch_stream(branch,executor.graph_pools[0]);
+            TYLOINFER_CUDA_CHECK(cudaEventRecord(executor.ready,parent.stream()));
+            TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(branch.stream(),executor.ready,0));
+            std::vector<tb::Tensor> result;
+            try {
+                {const MfqCudaStreamGuard selected(branch);
+                    TYLOINFER_RUNTIME_CHECK(mfq_current_cuda_stream()==branch.stream(),
+                        "Independent projection did not select its worker stream");
+                    result=forward(x);
+                    TYLOINFER_RUNTIME_CHECK(mfq_current_cuda_stream()==branch.stream(),
+                        "Independent projection changed its worker stream");
+                }
+                TYLOINFER_RUNTIME_CHECK(mfq_current_cuda_stream()==parent.stream(),
+                    "Independent projection did not restore its parent stream");
+                TYLOINFER_CUDA_CHECK(cudaEventRecord(executor.completed[0],branch.stream()));
+                independent();
+            }catch(...) {
+                // Join even when a projection fails, before its temporary
+                // tensors or caller-owned activation can be released.
+                (void)cudaEventRecord(executor.completed[0],branch.stream());
+                (void)cudaStreamWaitEvent(parent.stream(),executor.completed[0],0);
+                throw;
+            }
+            TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(parent.stream(),executor.completed[0],0));
+            for(const auto& value:result)mfq_cuda_record_stream(value,parent);
+            return result;
+        }
+    }
+#endif
+    independent();return forward(std::move(x));
 }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT

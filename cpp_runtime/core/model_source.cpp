@@ -4,6 +4,7 @@
 #include "tyloinfer/gguf_model_source.h"
 #include "tyloinfer/mfq_model_source.h"
 #include "tyloinfer/tq_fixture_source.h"
+#include "tyloinfer/row_residual.h"
 #include "mfq_legacy_model_graph.h"
 
 #include <cstdlib>
@@ -23,6 +24,10 @@ std::shared_ptr<const ModelSource> open_model_source(
     }
 
     const auto filename=path.filename().u8string();
+    const std::string residual_suffix=".row-residual.json";
+    if(filename.size()>=residual_suffix.size() &&
+       filename.compare(filename.size()-residual_suffix.size(),residual_suffix.size(),residual_suffix)==0)
+        return open_residual_model_source(path);
     const std::string fixture_suffix=".tq-fixture.json";
     if(filename.size()>=fixture_suffix.size() &&
        filename.compare(filename.size()-fixture_suffix.size(),fixture_suffix.size(),fixture_suffix)==0)

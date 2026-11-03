@@ -202,9 +202,13 @@ public:
     Stream& stream() noexcept { return stream_; }
     const Stream& stream() const noexcept { return stream_; }
     BlasHandle& blas() noexcept { return blas_; }
+    BlasHandle& blas(cudaStream_t stream);
     bool supports_async_allocations() const noexcept { return async_allocations_; }
     DeviceMemoryStats memory_stats() const noexcept;
     std::pair<std::uint64_t,std::uint64_t> pool_memory_stats() const;
+    // Idle pages in the ordinary temporary pool can be reused without growing
+    // physical residency. Captured graph pools remain reserved for their owner.
+    std::size_t reusable_workspace_bytes() const;
     std::size_t local_memory_usage() const;
     // Process-owned pages, including idle allocator pages and CUDA libraries.
     std::size_t resident_memory_usage() const;
@@ -265,6 +269,8 @@ private:
     };
     std::unique_ptr<WorkspaceLoan> workspace_loan_;
     std::unordered_map<cudaStream_t, GraphPool> graph_pools_;
+    std::mutex stream_blas_mutex_;
+    std::unordered_map<cudaStream_t,std::unique_ptr<BlasHandle>> stream_blas_;
 };
 
 std::shared_ptr<Context> default_context(int device = 0);

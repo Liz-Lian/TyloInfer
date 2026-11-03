@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+// FP32 output; f16/bf16 inputs are converted inside the normalization kernel.
 mfq_tensor_backend::Tensor rms_norm_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps);
 mfq_tensor_backend::Tensor rms_norm_offset_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps, double weight_offset);
 mfq_tensor_backend::Tensor rms_norm_f16_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps,
@@ -37,6 +38,7 @@ mfq_tensor_backend::Tensor acc_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_bac
 std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b,
                                              mfq_tensor_backend::Tensor weight, double eps,
                                              double weight_offset);
+// f16 sum/norm outputs. An f32 b is rounded to f16 before the residual add.
 std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b,
                                                  mfq_tensor_backend::Tensor weight, double eps,
                                                  double weight_offset);

@@ -42,7 +42,11 @@ __device__ __forceinline__ float block_sum(float v)
         }
     }
     __syncthreads();
-    return sm[0];
+    const float result=sm[0];
+    // A loop can invoke this reduction again immediately. Every warp must
+    // consume the published result before any warp overwrites its scratch.
+    __syncthreads();
+    return result;
 }
 
 template <int NW>
@@ -64,5 +68,7 @@ __device__ __forceinline__ float block_max(float v)
         }
     }
     __syncthreads();
-    return sm[0];
+    const float result=sm[0];
+    __syncthreads();
+    return result;
 }

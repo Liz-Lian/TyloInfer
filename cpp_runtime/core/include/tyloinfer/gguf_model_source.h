@@ -15,8 +15,10 @@ public:
     std::string_view architecture() const noexcept override;
     const std::unordered_map<std::string, std::string>& metadata() const noexcept override;
     const HadamardTransforms* hadamard_transforms() const noexcept override;
+    const MfqLegacyTensorAliases& legacy_tensor_compatibility() const noexcept override;
     const std::vector<TensorMetadata>& tensors() const noexcept override;
     const TensorMetadata* find_tensor(std::string_view name) const noexcept override;
+    std::string canonical_tensor_name(std::string_view stored) const;
     void read_range_into(std::string_view name, std::uint64_t offset,
                          std::byte* destination, std::size_t size) const override;
     TensorReader tensor_reader(std::string_view name) const override;

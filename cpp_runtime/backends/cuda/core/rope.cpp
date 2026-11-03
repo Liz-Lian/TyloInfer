@@ -332,6 +332,22 @@ bool RotaryEmbedding::pool_normalized_into(const Tensor& index,const Tensor& wei
     return true;
 }
 
+Tensor RotaryEmbedding::pool_normalized(const Tensor& index,const Tensor& weight,
+        const Tensor& positions,int64_t pool,double eps) const {
+    // The shared pooling workspace holds at most 256 coordinates. Wider or
+    // unsupported inputs keep the existing composition at the caller.
+    if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)>256 || index.size(2)<dimension_ ||
+        (index.scalar_type()!=tb::kFloat16 && index.scalar_type()!=tb::kFloat32) ||
+        (positions.scalar_type()!=tb::kInt32 && positions.scalar_type()!=tb::kInt64))return {};
+    TYLOINFER_RUNTIME_CHECK(pool>0 && index.size(1)>0 && index.size(1)%pool==0,
+        "compact rotary pooling requires complete pools");
+    const auto prepared=prepare_parameters(index);
+    auto output=tb::empty({1,index.size(1)/pool,index.size(2)},index.options());
+    qsa_pool_rotary_cuda(index,weight.to(tb::kFloat32).contiguous(),positions.contiguous(),
+        prepared.frequencies,prepared.axes,output,pool,maximum_,eps);
+    return output;
+}
+
 Tensor RotaryEmbedding::forward_normalized(const Tensor& value, const Tensor& weight,
         const Tensor& positions, double eps, const Tensor& key_cache,
         const Tensor& cache_positions, const Tensor& projected_value, const Tensor& value_cache) const {

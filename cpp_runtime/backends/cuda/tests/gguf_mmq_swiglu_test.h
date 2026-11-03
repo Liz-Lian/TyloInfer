@@ -15,7 +15,7 @@ void run_mmq_swiglu_quantize(bool benchmark=false) {
         return tb::tensor(values).reshape({rows,2*width}).to(tb::kCUDA);
     };
     int cases=0;
-    for(auto type:{GGML_TYPE_Q2_0,GGML_TYPE_IQ2_XXS,GGML_TYPE_IQ2_XS,GGML_TYPE_IQ2_S,
+    for(auto type:{GGML_TYPE_Q2_0,GGML_TYPE_Q2_K,GGML_TYPE_IQ1_S,GGML_TYPE_IQ2_XXS,GGML_TYPE_IQ2_XS,GGML_TYPE_IQ2_S,
             GGML_TYPE_IQ3_XXS,GGML_TYPE_IQ3_S,GGML_TYPE_IQ4_NL,GGML_TYPE_IQ4_XS,GGML_TYPE_Q8_0,
             GGML_TYPE_Q4_K,GGML_TYPE_Q5_K,GGML_TYPE_Q6_K,GGML_TYPE_Q5_1})
     for(int width:{256,640,768,1024})for(int rows:{1,3,17,129})for(float limit:{0.f,1.5f}) {

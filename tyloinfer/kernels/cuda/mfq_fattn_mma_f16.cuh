@@ -15,6 +15,8 @@ struct mfq_fattn_runtime_input {
     int causal_query_offset = 0;
     int causal_row_count = 0;
     bool half_query = false;
+    // A dense single query sees every key before this exclusive bound.
+    int logical_prefix_length = 0;
     const half2* hot_keys = nullptr;
     const half2* hot_values = nullptr;
     const int32_t* hot_mapping = nullptr;
@@ -82,7 +84,9 @@ static constexpr __host__ __device__ fattn_mma_config ggml_cuda_fattn_mma_get_co
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(192, 128, 32, 128, 2,  32,  96,  64,  64, 2, true);
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(192, 128, 64, 128, 2,  32,  96,  64,  64, 2, true);
 
-    GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256,  8,  64, 4,  64, 128, 128, 128, 2, true);
+    // A 32-row softmax tile halves staged KV storage for this narrow MMA
+    // output tile and reduces live accumulators without changing its layout.
+    GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256,  8,  64, 4,  32, 128, 128, 128, 2, true);
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 16,  64, 4,  32, 128, 128, 128, 2, true);
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 32, 128, 2,  32, 128, 128, 128, 2, true);
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 64, 128, 2,  32, 128, 128, 128, 2, true);
@@ -472,7 +476,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
 
                 const int implicit_row = implicit_row_start + i;
                 const int row = use_indirect ? (row_indices ? row_indices[i]
-                    : (implicit_row < implicit_row_count ? implicit_row : 0)) : i;
+                    : (implicit_row < implicit_row_count ? implicit_row : 0)) :
+                    (implicit_row_count>0 && implicit_row>=implicit_row_count ? -implicit_row_start : i);
                 const half2* source_row=mfq_fattn_row_source<use_hot,resolved_hot>(KV,hot,mapping,cold_mapping,row,stride_KV);
 
 #pragma unroll
@@ -517,7 +522,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
                 const bool valid = !oob_check || i < i_sup;
                 const int implicit_row = implicit_row_start + i;
                 const int row = use_indirect && valid ? (row_indices ? row_indices[i]
-                    : (implicit_row < implicit_row_count ? implicit_row : 0)) : i;
+                    : (implicit_row < implicit_row_count ? implicit_row : 0)) :
+                    (implicit_row_count>0 && implicit_row>=implicit_row_count ? -implicit_row_start : i);
                 const half2* source_row=valid?mfq_fattn_row_source<use_hot,resolved_hot>(KV,hot,mapping,cold_mapping,row,stride_KV):KV;
 
 #pragma unroll
@@ -746,7 +752,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
         if (mask_h) {
             flash_attn_ext_f16_load_mask<ncols1, nwarps, nbatch_fa, use_cp_async, oob_check>
                 (mask_h + k_VKQ_0, tile_mask, stride_mask, k_VKQ_sup, jt*ncols1, ne01);
-        } else if (implicit_causal) {
+        } else if (implicit_causal && (!input.logical_prefix_length || k_VKQ_0 + nbatch_fa > input.logical_prefix_length)) {
             flash_attn_ext_f16_make_causal_mask<ncols1, nwarps, nbatch_fa>(
                 tile_mask, k_VKQ_0, jt*ncols1, query_key_min, input);
         }
@@ -857,7 +863,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
     float KQ_rowsum_add[cols_per_thread] = {0.0f};
 
     if constexpr (cols_per_warp == 8) {
-        if (mask_h || implicit_causal) {
+        if (mask_h || (implicit_causal && (!input.logical_prefix_length || k_VKQ_0 + nbatch_fa > input.logical_prefix_length))) {
 #pragma unroll
             for (int i00 = 0; i00 < nbatch_fa; i00 += np*T_C_KQ::I) {
                 const int i0 = i00 + (threadIdx.y % np)*T_C_KQ::I;
@@ -919,7 +925,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
             }
         }
     } else { // not Turing mma or T_B_KQ::I > 8
-        if (mask_h || implicit_causal) {
+        if (mask_h || (implicit_causal && (!input.logical_prefix_length || k_VKQ_0 + nbatch_fa > input.logical_prefix_length))) {
 #pragma unroll
             for (int i00 = 0; i00 < nbatch_fa; i00 += np*T_C_KQ::J) {
                 const int i0 = i00 + (threadIdx.y % np)*T_C_KQ::J;
@@ -1107,7 +1113,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
             if (mask_h) {
                 flash_attn_ext_f16_load_mask<ncols1, nwarps, nbatch_fa, use_cp_async, oob_check>
                     (mask_h + k_VKQ_0 + nbatch_fa, tile_mask, stride_mask, k_VKQ_sup, jt*ncols1, ne01);
-            } else if (implicit_causal) {
+            } else if (implicit_causal && (!input.logical_prefix_length || k_VKQ_0 + 2*nbatch_fa > input.logical_prefix_length)) {
                 flash_attn_ext_f16_make_causal_mask<ncols1, nwarps, nbatch_fa>(
                     tile_mask, k_VKQ_0 + nbatch_fa, jt*ncols1,
                     query_key_min, input);
@@ -1487,7 +1493,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
         if (mask_h) {
             flash_attn_ext_f16_load_mask<ncols1, nwarps, nbatch_fa, use_cp_async, oob_check>
                 (mask_h + kb0*nbatch_fa, tile_mask, stride_mask, k_VKQ_sup, jt*ncols1, ne01);
-        } else if (implicit_causal) {
+        } else if (implicit_causal && (!input.logical_prefix_length || (kb0+1)*nbatch_fa > input.logical_prefix_length)) {
             flash_attn_ext_f16_make_causal_mask<ncols1, nwarps, nbatch_fa>(
                 tile_mask, kb0*nbatch_fa, jt*ncols1, query_key_min, input);
         }
@@ -1557,9 +1563,9 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
               query_key_min, input);
     }
 
-    // With multi-stage loading there is no __syncthreads at the end of the iter,
-    //     there can be a race condition on shared memory access for combining/writing back results.
-    if constexpr (nstages > 1 && nwarps*cols_per_warp > nbatch_fa) {
+    // Combine metadata reuses the staged KV storage. Every warp must finish
+    // its final PV read, including tiles that exactly fill the warp group.
+    if constexpr (nstages > 1) {
         __syncthreads();
     }
 
@@ -1950,8 +1956,13 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
 #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
 }
 
+// The prefix path consumes logical int64 lengths directly; the ordinary
+// masked path retains the existing int32 tile bounds.
+template<bool Prefix>struct mfq_fattn_bound_type {using type=int;};
+template<>struct mfq_fattn_bound_type<true> {using type=int64_t;};
+
 template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap,
-         bool V_is_K_view, bool use_kv_range = false>
+         bool V_is_K_view, bool use_kv_range = false, bool logical_prefix = false>
 __launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2))
 static __global__ void flash_attn_ext_f16(
         const char * Q_ptr,
@@ -1959,7 +1970,7 @@ static __global__ void flash_attn_ext_f16(
         const char * V_ptr,
         const char * mask_ptr,
         const char * sinks_ptr,
-        const int  * KV_max_ptr,
+        const typename mfq_fattn_bound_type<logical_prefix>::type * KV_max_ptr,
         float      * dst_ptr,
         float2     * dst_meta_ptr,
         const float scale,
@@ -1980,12 +1991,16 @@ static __global__ void flash_attn_ext_f16(
     const char * GGML_CUDA_RESTRICT Q        = Q_ptr;
     const char * GGML_CUDA_RESTRICT K        = K_ptr;
     const char * GGML_CUDA_RESTRICT V        = V_ptr;
-    const char * GGML_CUDA_RESTRICT mask     = mask_ptr;
+    const char * GGML_CUDA_RESTRICT mask     = logical_prefix ? nullptr : mask_ptr;
     const char * GGML_CUDA_RESTRICT sinks    = sinks_ptr;
-    const int  * GGML_CUDA_RESTRICT KV_max   = KV_max_ptr;
+    const int * const KV_max = [&] {
+        if constexpr(logical_prefix)return static_cast<const int*>(nullptr);
+        else return KV_max_ptr;
+    }();
     float      * GGML_CUDA_RESTRICT dst      = dst_ptr;
     float2     * GGML_CUDA_RESTRICT dst_meta = dst_meta_ptr;
-    const bool implicit_causal = mask == nullptr && KV_max != nullptr;
+    // Device prefix bounds also cover a short causal verification window.
+    const bool implicit_causal = logical_prefix || (mask == nullptr && KV_max != nullptr);
 
     // Skip unused kernel variants for faster compilation:
     if (use_logit_softcap && !(DKQ == 128 || DKQ == 256 || DKQ == 512)) {
@@ -2077,6 +2092,22 @@ static __global__ void flash_attn_ext_f16(
 
         int query_key_min = -ne11;
         int tile_kb0_start = kb0_start;
+        mfq_fattn_runtime_input prefix_input{};
+        if constexpr(logical_prefix){
+            const int length=int(max(int64_t(0),min(int64_t(ne11),KV_max_ptr[sequence])));
+            if constexpr(ncols1==1) {
+                prefix_input.logical_prefix_length=length;
+                prefix_input.causal_query_offset=length-1;
+            }else {
+                prefix_input.logical_prefix_length=max(0,length-int(ne01.z)+1);
+                prefix_input.causal_query_offset=length-int(ne01.z);
+                // Tail rows can contain arbitrary allocator bytes. Map them
+                // to the first valid KV row before MMA: a zero softmax
+                // probability multiplied by an unreadable/NaN V is unsafe.
+                prefix_input.causal_row_count=length;
+            }
+            kb0_stop=min(kb0_stop,(length+nbatch_fa-1)/nbatch_fa);
+        }
         if (KV_max) {
             if (implicit_causal && use_kv_range) {
                 const int range_index = 2 * (sequence*iter_j + jt);
@@ -2098,7 +2129,7 @@ static __global__ void flash_attn_ext_f16(
                  scale, slope, logit_softcap, ne01, ne02, gqa_ratio, ne11,
                  stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt,
                  zt_gqa, tile_kb0_start, kb0_stop, nullptr, implicit_causal,
-                 query_key_min);
+                 query_key_min, prefix_input);
         } else {
             constexpr bool needs_fixup = true; // CUDA block is missing the beginning of a tile.
             flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, needs_fixup, is_fixup>
@@ -2106,7 +2137,7 @@ static __global__ void flash_attn_ext_f16(
                  scale, slope, logit_softcap, ne01, ne02, gqa_ratio, ne11,
                  stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt,
                  zt_gqa, tile_kb0_start, kb0_stop, nullptr, implicit_causal,
-                 query_key_min);
+                 query_key_min, prefix_input);
         }
 
         kbc += iter_k;
@@ -2141,6 +2172,19 @@ static __global__ void flash_attn_ext_f16(
 
     int query_key_min = -ne11;
     int tile_kb0_start = kb0_start;
+    mfq_fattn_runtime_input prefix_input{};
+    if constexpr(logical_prefix){
+        const int length=int(max(int64_t(0),min(int64_t(ne11),KV_max_ptr[sequence])));
+        if constexpr(ncols1==1) {
+            prefix_input.logical_prefix_length=length;
+            prefix_input.causal_query_offset=length-1;
+        }else {
+            prefix_input.logical_prefix_length=max(0,length-int(ne01.z)+1);
+            prefix_input.causal_query_offset=length-int(ne01.z);
+            prefix_input.causal_row_count=length;
+        }
+        kb0_stop=min(kb0_stop,(length+nbatch_fa-1)/nbatch_fa);
+    }
     if (KV_max) {
         if (implicit_causal && use_kv_range) {
             const int range_index = 2 * (sequence*iter_j + jt);
@@ -2162,7 +2206,7 @@ static __global__ void flash_attn_ext_f16(
          scale, slope, logit_softcap, ne01, ne02, gqa_ratio, ne11,
          stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt,
          zt_gqa, tile_kb0_start, kb0_stop, nullptr, implicit_causal,
-         query_key_min);
+         query_key_min, prefix_input);
 #else
     GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,

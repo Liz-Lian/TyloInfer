@@ -1074,7 +1074,7 @@ struct Qwen4MtpGraph {
         const int64_t tokens=ids.size(1),start=predictor.lengths[0],required=start+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=predictor.config.maximum,"MTP predictor exceeds context capacity");
         if(block.qsa->graph_capacity()) {
-            execution.kv_memory->ensure(required);
+            if(execution.kv_memory)execution.kv_memory->ensure(required);
             capacity=block.qsa->graph_capacity();
         }
         if(required>capacity) {
@@ -1790,7 +1790,7 @@ struct Qwen4DecodeGraph {
         }
     };
     MfqCudaStream stream,ple_stream;
-    std::map<std::tuple<int,int,int,bool>,std::unique_ptr<Cell>> cells;
+    std::map<std::tuple<int,int,int,bool,int>,std::unique_ptr<Cell>> cells;
     // Verification widths execute serially and commit/rollback before the next
     // window. Their snapshots can share stable allocations across graph shapes.
     std::vector<qwen4_exp::RecurrentGraphCheckpoint> shared_checkpoints;
@@ -1850,7 +1850,7 @@ struct Qwen4DecodeGraph {
         const auto required=model.cache_pos+tokens;
         TYLOINFER_RUNTIME_CHECK(required<=model.max_position_embeddings(),"Qwen4 graph exceeds context capacity");
         if(!qsa.empty() && qsa.front()->graph_capacity()) {
-            model.execution->kv_memory->ensure(required);
+            if(model.execution->kv_memory)model.execution->kv_memory->ensure(required);
             kv_capacity=qsa.front()->graph_capacity();
         }
         if(required>kv_capacity) {
@@ -1871,7 +1871,8 @@ struct Qwen4DecodeGraph {
         const bool prediction=tokens==1 && !model.execution->tq_expert_cache && model.router_lookahead.value_or(
             mfq::cuda::runtime_options::router_lookahead_override().value_or(
                 moe_expert_cache_ssd_router_prefetch(model.execution->moe_expert_cache)));
-        auto& owner=cells[{tokens,kind,confirmed,prediction}];
+        const int pending_qsa=!confirmed && !qsa.empty()?qsa.front()->pending_device_graph_kind(tokens):0;
+        auto& owner=cells[{tokens,kind,confirmed,prediction,pending_qsa}];
         bool returned_expert_workspace=false;
         // Prepared decode may lend its unused capture allowance to experts.
         // Return it before constructing a new width/output/checkpoint cell.
@@ -1910,7 +1911,7 @@ struct Qwen4DecodeGraph {
             finish_moe_expert_exchanges(model.execution->moe_expert_cache);
             // Prefix restoration and eager prefill update the same KV/index
             // storage; refresh pooled keys even when this graph is already valid.
-            for(auto* attention:qsa)attention->prepare_graph(model.positions,kv_capacity);
+            for(auto* attention:qsa)attention->prepare_graph(model.positions,kv_capacity,pending_qsa);
             if(!cell.window.valid()) {
                 cell.replay_storage.reset();
                 if(!prepare_moe_graph_pool(model.execution->moe_expert_cache) &&
@@ -2039,6 +2040,7 @@ struct Qwen4DecodeGraph {
                 ++model.decode_graph_captures;
                 std::cerr<<"runtime_qwen4_graph_capture role=target rows="<<tokens<<" kind="<<kind
                     <<" confirmed="<<confirmed<<" segments="<<cell.window.segments()<<" count="<<model.decode_graph_captures
+                    <<" qsa_pending_device="<<pending_qsa
                     <<" warmup_saved_bytes="<<warmup_saved_bytes<<" readonly_gdn_bytes="<<readonly_gdn_bytes
                     <<" ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-capture_started).count()<<'\n';
             }
@@ -2143,8 +2145,10 @@ std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(
             auto prefix=std::string("cuda_graph_profile_")+role+"_rows_"+
                 std::to_string(std::get<0>(key))+"_"+attribute+"_"+std::to_string(std::get<1>(key))+
                 "_"+state+"_"+std::to_string(std::get<2>(key))+"_";
-            if constexpr(std::tuple_size_v<std::remove_cvref_t<decltype(key)>> == 4)
+            if constexpr(std::tuple_size_v<std::remove_cvref_t<decltype(key)>> >= 4)
                 prefix+="prediction_"+std::to_string(std::get<3>(key))+"_";
+            if constexpr(std::tuple_size_v<std::remove_cvref_t<decltype(key)>> >= 5)
+                prefix+="qsa_pending_device_"+std::to_string(std::get<4>(key))+"_";
             struct Sample {int64_t total_ns=0,max_ns=0;uint64_t samples=0;};
             std::map<std::string,Sample> phases;
             uint64_t windows=0;
@@ -2691,6 +2695,17 @@ std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(
 }
 
 Qwen4Model::Qwen4Model() = default;
+void qwen4_wait_adaptive_qsa(Qwen4CausalLm& model) {
+    for(auto* block:model.loaded_blocks)if(block->qsa)block->qsa->wait_adaptive();
+}
+void qwen4_set_adaptive_qsa_budget(Qwen4CausalLm& model,std::size_t bytes) {
+    for(auto* block:model.loaded_blocks)if(block->qsa)block->qsa->set_adaptive_budget(bytes);
+}
+std::vector<tyloinfer::qsa::AdaptiveCacheStats> qwen4_adaptive_qsa_stats(const Qwen4CausalLm& model) {
+    std::vector<tyloinfer::qsa::AdaptiveCacheStats> result;
+    for(auto* block:model.loaded_blocks)if(block->qsa)if(auto stats=block->qsa->adaptive_stats())result.push_back(*stats);
+    return result;
+}
 void qwen4_set_hidden_capture_layers(Qwen4CausalLm& model, const std::vector<int64_t>& layers) {
     if (!std::is_sorted(layers.begin(), layers.end()) ||
         std::adjacent_find(layers.begin(), layers.end()) != layers.end() ||

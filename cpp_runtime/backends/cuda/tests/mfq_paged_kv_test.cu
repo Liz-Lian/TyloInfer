@@ -23,20 +23,17 @@ void require(bool condition, const char * message) {
 }
 
 std::vector<float> float_values(const Tensor & tensor) {
-    auto host = tensor.to(mfq::cuda::kCPU, mfq::cuda::kFloat32)
-        .contiguous();
+    auto host = tensor.contiguous().to(mfq::cuda::kFloat32)
+        .to(mfq::cuda::kCPU);
     return std::vector<float>(
         host.data_ptr<float>(), host.data_ptr<float>() + host.numel());
 }
 
-void check_kernels() {
+void check_kernels(int D,int ratio,int Page,int PagesPerChunk,mfq::cuda::ScalarType dtype) {
     constexpr int B = 2;
-    constexpr int Hq = 8;
+    const int Hq = 2*ratio;
     constexpr int Hk = 2;
-    constexpr int T = 7;
-    constexpr int D = 256;
-    constexpr int Page = 4;
-    constexpr int PagesPerChunk = 4;
+    const int T = 2*Page-1;
     constexpr int LogicalPages = 4;
     const Device gpu{DeviceType::cuda, 0};
 
@@ -54,14 +51,14 @@ void check_kernels() {
             static_cast<int>((index * 11 + 7) % 79) - 39) / 67.0f;
     }
     auto k = mfq::cuda::tensor<float>(k_host).reshape({B, Hk, T, D})
-        .to(gpu).to(mfq::cuda::kFloat16).contiguous();
+        .to(gpu).to(dtype).contiguous();
     auto v = mfq::cuda::tensor<float>(v_host).reshape({B, Hk, T, D})
-        .to(gpu).to(mfq::cuda::kFloat16).contiguous();
+        .to(gpu).to(dtype).contiguous();
     auto q = mfq::cuda::tensor<float>(q_host).reshape({B, Hq, 1, D})
-        .to(gpu).to(mfq::cuda::kFloat16).contiguous();
+        .to(gpu).to(dtype).contiguous();
     auto k_chunk_0 = mfq::cuda::empty(
         {PagesPerChunk, Hk, Page, D},
-        TensorOptions().device(gpu).dtype(mfq::cuda::kFloat16));
+        TensorOptions().device(gpu).dtype(dtype));
     auto v_chunk_0 = mfq::cuda::empty_like(k_chunk_0);
     auto k_chunk_1 = mfq::cuda::empty_like(k_chunk_0);
     auto v_chunk_1 = mfq::cuda::empty_like(k_chunk_0);
@@ -80,20 +77,18 @@ void check_kernels() {
     // Logical pages deliberately map to non-contiguous physical pages and
     // cross the chunk boundary at physical page 4.
     auto page_table = mfq::cuda::tensor<std::int32_t>({
-        2, 4, -1, -1,
-        5, 3, -1, -1,
-    }).reshape({B, LogicalPages}).to(gpu).contiguous();
-    auto positions = mfq::cuda::tensor<std::int64_t>({
-        0, 1, 2, 3, 4, 5, 6,
-        0, 1, 2, 3, 4, 5, 6,
-    }).reshape({B, T}).to(gpu).contiguous();
+        2,PagesPerChunk,-1,-1,PagesPerChunk+1,3,-1,-1,
+    }).reshape({B,LogicalPages}).to(gpu).contiguous();
+    std::vector<int64_t> position_values(B*T);
+    for(int b=0;b<B;++b)for(int t=0;t<T;++t)position_values[b*T+t]=t;
+    auto positions=mfq::cuda::tensor<int64_t>(position_values).reshape({B,T}).to(gpu).contiguous();
     paged_kv_cache_write_cuda(
         k_chunks, v_chunks, page_table,
         k.narrow(2, 0, 3).contiguous(), v.narrow(2, 0, 3).contiguous(),
         positions.narrow(1, 0, 3).contiguous(),
         Page, PagesPerChunk);
     auto first_k = mfq::cuda::empty({B, Hk, 3, D},
-        TensorOptions().device(gpu).dtype(mfq::cuda::kFloat16));
+        TensorOptions().device(gpu).dtype(dtype));
     auto first_v = mfq::cuda::empty_like(first_k);
     paged_kv_cache_gather_cuda(k_chunks, v_chunks, page_table,
         first_k, first_v, Page, PagesPerChunk);
@@ -102,8 +97,8 @@ void check_kernels() {
     require(float_values(first_v) == float_values(v.narrow(2, 0, 3)),
         "Paged first-chunk value gather differs from source");
     paged_kv_cache_write_cuda(k_chunks, v_chunks, page_table,
-        k.narrow(2, 3, 4).contiguous(), v.narrow(2, 3, 4).contiguous(),
-        positions.narrow(1, 3, 4).contiguous(), Page, PagesPerChunk);
+        k.narrow(2, 3, T-3).contiguous(), v.narrow(2, 3, T-3).contiguous(),
+        positions.narrow(1, 3, T-3).contiguous(), Page, PagesPerChunk);
     auto gathered_k = mfq::cuda::empty_like(k);
     auto gathered_v = mfq::cuda::empty_like(v);
     paged_kv_cache_gather_cuda(k_chunks, v_chunks, page_table,
@@ -113,7 +108,7 @@ void check_kernels() {
     require(float_values(gathered_v) == float_values(v),
         "Paged complete-prefix value gather differs from source");
 
-    auto lengths = mfq::cuda::tensor<std::int64_t>({7, 5}).to(gpu);
+    auto lengths = mfq::cuda::tensor<std::int64_t>({T,T-2}).to(gpu);
     auto partial_o = mfq::cuda::empty(
         {B * Hq, 4, D},
         TensorOptions().device(gpu).dtype(mfq::cuda::kFloat32));
@@ -143,7 +138,7 @@ void check_kernels() {
     const auto split_values = float_values(split);
     const auto dynamic_values = float_values(dynamic);
     for (int batch = 0; batch < B; ++batch) {
-        const int token_count = batch == 0 ? 7 : 5;
+        const int token_count = batch == 0 ? T : T-2;
         for (int query_head = 0; query_head < Hq; ++query_head) {
             const int kv_head = query_head / (Hq / Hk);
             std::vector<double> scores(token_count);
@@ -193,18 +188,43 @@ void check_kernels() {
             }
         }
     }
+    lengths.fill_(0);
+    auto empty=attention_paged_cache_decode_cuda(q,k_chunks,v_chunks,page_table,lengths,Scale,
+        Page,PagesPerChunk,Hk,partial_o,partial_m,partial_l,3,false);
+    for(float value:float_values(empty))require(value==0,"Empty paged attention must be zero");
+    lengths.fill_(1);
+    auto first=attention_paged_cache_decode_cuda(q,k_chunks,v_chunks,page_table,lengths,Scale,
+        Page,PagesPerChunk,Hk,partial_o,partial_m,partial_l,4,true);
+    auto first_values=float_values(first);
+    for(int b=0;b<B;++b)for(int h=0;h<Hq;++h)for(int d=0;d<D;++d)
+        require(std::abs(first_values[(b*Hq+h)*D+d]-rounded_v[((b*Hk+h/ratio)*T)*D+d])<1e-6,
+            "Single-token paged attention differs from its value");
+
 }
 
 } // namespace
 
-int main() {
+int main() try {
+    std::cout.setf(std::ios::unitbuf);
     int devices = 0;
     const auto status = cudaGetDeviceCount(&devices);
     if (status != cudaSuccess || devices == 0) {
+        std::cerr << "paged_kv_test SKIP: " << cudaGetErrorString(status)
+                  << " devices=" << devices << '\n';
         (void)cudaGetLastError();
         return 77;
     }
-    check_kernels();
-    std::cout << "paged_kv_test PASS page_size=4 chunks=2 gqa=4 split=1\n";
+    for(auto dtype:{mfq::cuda::kFloat16,mfq::cuda::kBFloat16,mfq::cuda::kFloat32}) {
+        for(int width:{63,64,65,128,256,512})for(int ratio:{1,3,6})
+            check_kernels(width,ratio,4,4,dtype);
+        check_kernels(256,4,4,4,dtype);
+        check_kernels(256,4,16,64,dtype);
+        check_kernels(256,6,16,64,dtype);
+        check_kernels(256,6,100,4,dtype);
+    }
+    std::cout << "paged_kv_test PASS 66 geometries, scalar/vector dimensions, arbitrary GQA, FP16/BF16/FP32, empty/single/split/dynamic\n";
     return 0;
+} catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return 1;
 }

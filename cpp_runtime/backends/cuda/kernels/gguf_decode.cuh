@@ -124,6 +124,30 @@ template<int F> __device__ __forceinline__ float gguf_value(const std::uint8_t* 
         std::uint32_t value = (iq3s_grid[code] >> (8u * (c % 4u))) & 255u;
         std::uint32_t scale = (b->scales[group / 2u] >> (4u * (group % 2u))) & 15u;
         return float(b->d) * (1u + 2u * scale) * value * ((signs & (1u << c)) ? -1.f : 1.f);
+    } else if constexpr (F == GGML_TYPE_IQ1_S || F == GGML_TYPE_IQ1_M) {
+        const int group = p / 32u, sub = (p % 32u) / 8u;
+        int index; float scale, delta;
+        if constexpr (F == GGML_TYPE_IQ1_S) {
+            const auto* b = reinterpret_cast<const block_iq1_s*>(row) + k / 256u;
+            const auto high = b->qh[group];
+            index = b->qs[group * 4 + sub] | (((high >> (3 * sub)) & 7) << 8);
+            scale = __half2float(b->d) * (((high >> 11) & 14) + 1);
+            delta = IQ1S_DELTA - ((high & 0x8000) ? 2.f * IQ1S_DELTA : 0.f);
+        } else {
+            const auto* b = reinterpret_cast<const block_iq1_m*>(row) + k / 256u;
+            const auto* sc = reinterpret_cast<const std::uint16_t*>(b->scales);
+            const auto bits = std::uint16_t((sc[0] >> 12) | ((sc[1] >> 8) & 0xf0) |
+                ((sc[2] >> 4) & 0xf00) | (sc[3] & 0xf000));
+            const int high = b->qh[2 * group + sub / 2] >> (4 * (sub % 2));
+            index = b->qs[group * 4 + sub] | ((high & 7) << 8);
+            const int packed = sc[group / 2] >> (6 * (group % 2));
+            scale = __half2float(__ushort_as_half(bits)) * (2 * ((packed >> (3 * (sub / 2))) & 7) + 1);
+            delta = IQ1M_DELTA - ((high & 8) ? 2.f * IQ1M_DELTA : 0.f);
+        }
+        const auto grid = iq1s_grid_gpu[index];
+        const auto position = p % 8u;
+        const auto value = int((grid >> (8u * (position % 4u) + (position >= 4u ? 4u : 0u))) & 15u) - 1;
+        return scale * (float(value) + delta);
     } else if constexpr (F == 20) {
         auto b = reinterpret_cast<const block_iq4_nl*>(row) + k / 32u;
         return float(b->d) * float(kvalues_iq4nl[(b->qs[j % 16u] >> (4u * (j / 16u))) & 15u]);
@@ -157,6 +181,31 @@ template<int F> __device__ __forceinline__ void gguf_values8(
         values[2]=__fmul_rn(a.z,scale);values[3]=__fmul_rn(a.w,scale);
         values[4]=__fmul_rn(b.x,scale);values[5]=__fmul_rn(b.y,scale);
         values[6]=__fmul_rn(b.z,scale);values[7]=__fmul_rn(b.w,scale);
+    } else if constexpr(F==GGML_TYPE_IQ1_S || F==GGML_TYPE_IQ1_M) {
+        const unsigned group=(k%256)/32,sub=(k%32)/8;
+        unsigned index;float scale,delta;
+        if constexpr(F==GGML_TYPE_IQ1_S) {
+            const auto* b=reinterpret_cast<const block_iq1_s*>(row)+k/256;
+            const auto high=b->qh[group];
+            index=b->qs[group*4+sub]|(((high>>(3*sub))&7)<<8);
+            scale=__half2float(b->d)*(((high>>11)&14)+1);
+            delta=IQ1S_DELTA-((high&0x8000)?2.f*IQ1S_DELTA:0.f);
+        } else {
+            const auto* b=reinterpret_cast<const block_iq1_m*>(row)+k/256;
+            const auto* sc=reinterpret_cast<const std::uint16_t*>(b->scales);
+            const auto bits=std::uint16_t((sc[0]>>12)|((sc[1]>>8)&0xf0)|((sc[2]>>4)&0xf00)|(sc[3]&0xf000));
+            const auto high=b->qh[2*group+sub/2]>>(4*(sub%2));
+            index=b->qs[group*4+sub]|((high&7)<<8);
+            const auto packed=sc[group/2]>>(6*(group%2));
+            scale=__half2float(__ushort_as_half(bits))*(2*((packed>>(3*(sub/2)))&7)+1);
+            delta=IQ1M_DELTA-((high&8)?2.f*IQ1M_DELTA:0.f);
+        }
+        const auto grid=iq1s_grid_gpu[index];
+        #pragma unroll
+        for(int j=0;j<8;++j) {
+            const auto value=int((grid>>(8*(j%4)+(j>=4?4:0)))&15)-1;
+            values[j]=scale*(float(value)+delta);
+        }
     } else if constexpr(F==16 || F==17 || F==22 || F==18 || F==21) {
         const auto p=std::uint32_t(k%256), group=p/32, sub=p%32/8;
         float scale;

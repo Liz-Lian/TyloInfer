@@ -29,19 +29,83 @@
 #include "gr_bf16_prefill_read.cuh"
 
 namespace {
+template<bool Vectorized,int Rows=1>
+__global__ void dense_f32_projection_kernel(const float* __restrict__ input,
+        const float* __restrict__ weight,float* __restrict__ output,int width,int outputs) {
+    const auto* row=weight+std::int64_t(blockIdx.x)*width;
+    float sums[Rows]{};
+    if constexpr(Vectorized) {
+        for(int i=threadIdx.x;i<width/4;i+=256) {
+            const auto w=reinterpret_cast<const float4*>(row)[i];
+            #pragma unroll
+            for(int m=0;m<Rows;++m) {
+                const auto x=reinterpret_cast<const float4*>(input+std::int64_t(m)*width)[i];
+                sums[m]=fmaf(w.x,x.x,sums[m]);sums[m]=fmaf(w.y,x.y,sums[m]);
+                sums[m]=fmaf(w.z,x.z,sums[m]);sums[m]=fmaf(w.w,x.w,sums[m]);
+            }
+        }
+    }else for(int i=threadIdx.x;i<width;i+=256) {
+        const float w=row[i];
+        #pragma unroll
+        for(int m=0;m<Rows;++m)sums[m]=fmaf(w,input[std::int64_t(m)*width+i],sums[m]);
+    }
+    __shared__ float partial[Rows][8];
+    const int lane=threadIdx.x&31,warp=threadIdx.x>>5;
+    #pragma unroll
+    for(int m=0;m<Rows;++m) {
+        #pragma unroll
+        for(int offset=16;offset;offset>>=1)sums[m]+=__shfl_xor_sync(0xffffffffu,sums[m],offset);
+        if(!lane)partial[m][warp]=sums[m];
+    }
+    __syncthreads();
+    if(!warp) {
+        #pragma unroll
+        for(int m=0;m<Rows;++m) {
+            float sum=lane<8?partial[m][lane]:0.f;
+            #pragma unroll
+            for(int offset=16;offset;offset>>=1)sum+=__shfl_xor_sync(0xffffffffu,sum,offset);
+            if(!lane)output[std::int64_t(m)*outputs+blockIdx.x]=sum;
+        }
+    }
+}
+
 template<class Input>
 __device__ __forceinline__ float dense_bf16_input(Input value) {
     if constexpr(std::is_same_v<Input,uint16_t>)return __uint_as_float(uint32_t(value)<<16);
     else return __bfloat162float(__float2bfloat16_rn(float(value)));
 }
+template<class Input>
+__device__ __forceinline__ float2 dense_bf16_input_pair(const Input* source) {
+    if constexpr(std::is_same_v<Input,uint16_t>) {
+        const auto packed=*reinterpret_cast<const uint32_t*>(source);
+        return make_float2(__uint_as_float(packed<<16),__uint_as_float(packed&0xffff0000u));
+    }else {
+        float2 values;
+        if constexpr(std::is_same_v<Input,float>)values=*reinterpret_cast<const float2*>(source);
+        else values=__half22float2(*reinterpret_cast<const half2*>(source));
+        return __bfloat1622float2(__floats2bfloat162_rn(values.x,values.y));
+    }
+}
 // Weight-pair traversal and token reuse follow Strata native_bf16.cu (MIT,
 // ../../../third_party/strata.LICENSE). Each token has the singleton's sum tree.
-template<int Rows,class Input,class Output>
+template<int Rows,class Input,class Output,bool Packed=false>
 __global__ void __launch_bounds__(128) dense_bf16_projection_kernel(
         const Input* input,const uint16_t* weight,Output* output,int width,int outputs,int rows) {
     const int row=blockIdx.x,tid=threadIdx.x,lane=tid&31,warp=tid>>5;
     float sums[Rows]{};
     const auto* weights=weight+size_t(row)*width;
+    if constexpr(Packed) {
+        for(int pair=tid;pair<width/2;pair+=128) {
+            const auto packed=reinterpret_cast<const uint32_t*>(weights)[pair];
+            const float w0=__uint_as_float(packed<<16),w1=__uint_as_float(packed&0xffff0000u);
+            #pragma unroll
+            for(int m=0;m<Rows;++m)if(m<rows) {
+                const auto values=dense_bf16_input_pair(input+size_t(m)*width+2*pair);
+                sums[m]=__fmaf_rn(w0,values.x,sums[m]);
+                sums[m]=__fmaf_rn(w1,values.y,sums[m]);
+            }
+        }
+    }else {
     for(int pair=tid;pair<(width+1)/2;pair+=128) {
         const int column=pair*2;
         const float w0=__uint_as_float(uint32_t(weights[column])<<16);
@@ -52,6 +116,7 @@ __global__ void __launch_bounds__(128) dense_bf16_projection_kernel(
             sums[m]=__fmaf_rn(w0,dense_bf16_input(source[0]),sums[m]);
             if(column+1<width)sums[m]=__fmaf_rn(w1,dense_bf16_input(source[1]),sums[m]);
         }
+    }
     }
     __shared__ float partial[Rows][4];
     #pragma unroll
@@ -529,6 +594,48 @@ mfq_tensor_backend::Tensor try_gr_bf16_prefill_projection_cuda(const mfq_tensor_
     return output;
 }
 
+mfq_tensor_backend::Tensor try_dense_f32_projection_cuda(const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight) {
+    namespace tb=mfq_tensor_backend;
+    if(!input.defined() || !weight.defined() || !input.is_cuda() || input.device()!=weight.device() ||
+            !input.is_contiguous() || !weight.is_contiguous() || input.scalar_type()!=tb::kFloat32 ||
+            weight.scalar_type()!=tb::kFloat32 || input.dim()<1 || weight.dim()!=2 ||
+            input.size(-1)<1 || input.size(-1)!=weight.size(1) ||
+            weight.size(0)<1 || weight.size(0)>INT_MAX || weight.size(1)>INT_MAX)return {};
+    const auto rows=input.numel()/input.size(-1);
+    // Fuse the existing short-window singleton calls with the same FMA and
+    // reduction order. Larger windows retain the GEMM path below the adapter.
+    if(rows<1 || rows>6)return {};
+    static thread_local int cached_device=-1,sms=0;
+    if(cached_device!=input.get_device()) {
+        TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,input.get_device()));
+        cached_device=input.get_device();
+    }
+    // A four-row CTA layout has fewer CTAs than SMs in this range. Give each
+    // output a complete CTA; larger matrices retain their cuBLAS schedule.
+    if(weight.size(0)>=int64_t(sms)*4)return {};
+    const MfqCudaGuard guard(input.get_device());
+    const auto stream=mfq_get_current_cuda_stream(input.get_device());
+    auto shape=input.sizes().vec();shape.back()=weight.size(0);
+    auto output=tb::empty(shape,input.options());
+    for(const auto& tensor:{input,weight,output})mfq_cuda_record_stream(tensor,stream);
+    const bool vectorized=weight.size(1)%4==0 &&
+        (reinterpret_cast<std::uintptr_t>(input.data_ptr())|reinterpret_cast<std::uintptr_t>(weight.data_ptr()))%16==0;
+    const auto launch=[&]<int M>() {
+        const auto kernel=vectorized?dense_f32_projection_kernel<true,M>:dense_f32_projection_kernel<false,M>;
+        kernel<<<unsigned(weight.size(0)),256,0,stream.stream()>>>(input.data_ptr<float>(),weight.data_ptr<float>(),
+            output.data_ptr<float>(),int(weight.size(1)),int(weight.size(0)));
+        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream.stream(),"dense_f32_projection",
+            reinterpret_cast<const void*>(kernel),"M="+std::to_string(M)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(weight.size(1)));
+    };
+    switch(rows) {
+        case 1:launch.template operator()<1>();break;case 2:launch.template operator()<2>();break;
+        case 3:launch.template operator()<3>();break;case 4:launch.template operator()<4>();break;
+        case 5:launch.template operator()<5>();break;default:launch.template operator()<6>();break;
+    }
+    TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
+}
+
 mfq_tensor_backend::Tensor try_dense_bf16_projection_cuda(const mfq_tensor_backend::Tensor& input,
         const mfq_tensor_backend::Tensor& weight) {
     namespace tb=mfq_tensor_backend;
@@ -549,12 +656,18 @@ mfq_tensor_backend::Tensor try_dense_bf16_projection_cuda(const mfq_tensor_backe
     for(const auto& tensor:{input,weight,output})mfq_cuda_record_stream(tensor,stream_handle);
     const auto launch=[&](auto capacity,auto input_tag,auto output_tag) {
         using Input=decltype(input_tag);using Output=decltype(output_tag);
-        dense_bf16_projection_kernel<decltype(capacity)::value,Input,Output><<<unsigned(weight.size(0)),128,0,stream>>>(
+        // Packed pairs require complete rows and naturally aligned pair
+        // loads. Odd widths and sliced/misaligned tensors keep scalar loads.
+        const bool packed=weight.size(1)%2==0 && reinterpret_cast<std::uintptr_t>(weight.data_ptr())%4==0 &&
+            reinterpret_cast<std::uintptr_t>(input.data_ptr())%(2*sizeof(Input))==0;
+        const auto kernel=packed?dense_bf16_projection_kernel<decltype(capacity)::value,Input,Output,true>:
+            dense_bf16_projection_kernel<decltype(capacity)::value,Input,Output,false>;
+        kernel<<<unsigned(weight.size(0)),128,0,stream>>>(
             static_cast<const Input*>(input.data_ptr()),static_cast<const uint16_t*>(weight.data_ptr()),
             static_cast<Output*>(output.data_ptr()),int(weight.size(1)),int(weight.size(0)),int(rows));
         if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(stream,"dense_bf16_projection",
-            reinterpret_cast<const void*>(dense_bf16_projection_kernel<decltype(capacity)::value,Input,Output>),
-            "M="+std::to_string(rows)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(weight.size(1)));
+            reinterpret_cast<const void*>(kernel),
+            "M="+std::to_string(rows)+" N="+std::to_string(weight.size(0))+" K="+std::to_string(weight.size(1))+" packed_pairs="+std::to_string(packed));
     };
     const auto dispatch=[&](auto input_tag,auto output_tag) {
         if(rows==1)launch(std::integral_constant<int,1>{},input_tag,output_tag);

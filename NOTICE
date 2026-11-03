@@ -63,6 +63,9 @@ modifications.
 Copyright (c) 2023-2026 The ggml authors
 License: MIT (`LICENSES/llama.cpp-MIT.txt`)
 Source: https://github.com/ggml-org/llama.cpp
+The CUDA MMQ and sparse prefill Flash Attention kernels also incorporate
+commit 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c. Native QSA additions retain
+four-token quantized blocks, H4 transforms, and precision-history statistics.
 
 cpp-httplib
 -----------
@@ -121,3 +124,6 @@ Reference: omlx/patches/mlx_lm_mtp/batch_policy.py
 
 The third-party license notices above must accompany source and binary
 distributions that contain these components or substantial portions of them.
+
+Gyro trellis reference search and codebook: Copyright 2026 AgentionAI
+(Laurent Zuijdwijk), Apache-2.0. See tyloinfer/_gyro/NOTICE.

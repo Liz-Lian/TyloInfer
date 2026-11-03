@@ -276,7 +276,7 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
             auto* weight=&loaded->weight->gguf;
             auto found=std::find_if(buckets.begin(),buckets.end(),[&](const Bucket& bucket) {
                 const auto& first=*bucket.weights.front();
-                return first.type==weight->type && first.neuron_len==weight->neuron_len &&
+                return !first.correction && !weight->correction && first.type==weight->type && first.neuron_len==weight->neuron_len &&
                     first.packed.device()==weight->packed.device() && same_gguf_input_basis(first,*weight);
             });
             if(found==buckets.end()){buckets.emplace_back();found=buckets.end()-1;}
@@ -326,7 +326,10 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
         // Compatible rows share an activation quantization and a GEMV. Mixed
         // formats and dense auxiliaries keep their own projections. Components
         // alias the joined allocation, so this never duplicates resident weights.
+        auto base_images=images;
+        for(auto& image:base_images)image.projection_correction.reset();
         return [separate=functions,joined_prefix,groups=std::move(groups),images=std::move(images),
+                base_images=std::move(base_images),
                 auxiliary_indices=std::move(auxiliary_indices),auxiliary_weights=std::move(auxiliary_weights),
                 executor=std::move(executor)](CudaExecutionContext& context,const Tensor& input) {
             std::vector<Tensor> output(separate.size());
@@ -342,7 +345,7 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
                     executor->run(auxiliary_indices.size()+1,[&](std::size_t branch) {
                         const auto stream=mfq_get_current_cuda_stream(input.get_device());
                         mfq_cuda_record_stream(input,stream);
-                        if(!branch){projected=prepared.project_all(images);return Tensor{};}
+                        if(!branch){projected=prepared.project_all(base_images);return Tensor{};}
                         const auto auxiliary=branch-1;
                         mfq_cuda_record_stream(auxiliary_weights[auxiliary],stream);
                         return separate[auxiliary_indices[auxiliary]](context,input);
@@ -350,6 +353,13 @@ LinearGroup grouped_linear(CudaExecutionContext& execution, std::vector<Linear>&
                 if(parallel) {
                     const auto parent=mfq_get_current_cuda_stream(input.get_device());
                     for(const auto& value:projected)mfq_cuda_record_stream(value,parent);
+                    // Activation-dependent corrections can retain or modify
+                    // sibling projections and launch transfers of their own.
+                    // Run them after the base branches join, in input order.
+                    for(std::size_t i=0;i<images.size();++i)if(images[i].projection_correction) {
+                        TYLOINFER_RUNTIME_CHECK(prepared.original.defined(),"projection correction lost its original activation");
+                        projected[i]=images[i].projection_correction->apply(prepared.original,std::move(projected[i]));
+                    }
                     for(std::size_t i=0;i<auxiliary_indices.size();++i)
                         output[auxiliary_indices[i]]=std::move(branches[i+1]);
                     if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {

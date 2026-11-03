@@ -17,6 +17,8 @@
 #include "models/glm_dsa/ops.h"
 #include "models/minicpmo45/ops.h"
 #include "models/qwen35/ops.h"
+#include "models/qwen35/mtp_graph.h"
+#include "models/qwen35/mtp.h"
 #include "models/nemotron_h/ops.h"
 #include "models/qwen4_exp/ops.h"
 #include "models/qwen4_exp/mtp.h"
@@ -61,6 +63,7 @@ template <class Model> struct CudaMtpOps {
   InferenceOutput* output;
   // Destroy after local/result tensors, including cancellation of priming.
   std::unique_ptr<MoePrefillWorkspaceLoan> predictor_loan;
+  std::shared_ptr<mfq::cuda::qwen35::MtpTargetGraphs> dense_target_graphs;
   const mfq_tensor_backend::TensorOptions options =
       mfq_tensor_backend::TensorOptions()
           .device(mfq_tensor_backend::kCUDA)
@@ -120,6 +123,9 @@ template <class Model> struct CudaMtpOps {
   }
   CudaMtpOps(CudaMtpOps&&)=default;
   ~CudaMtpOps() {
+    if(dense_target_graphs)std::cerr<<"runtime_qwen35_mtp_graph captures="<<dense_target_graphs->captures()
+        <<" replays="<<dense_target_graphs->replays()<<" rollback_captures="<<dense_target_graphs->rollback_captures()
+        <<" rollback_replays="<<dense_target_graphs->rollback_replays()<<'\n';
     if(profile_resolve() && resolve_rounds)std::cerr<<"runtime_target_resolve rounds="<<resolve_rounds
         <<" rollback_rounds="<<rollback_rounds<<" rollback_model_ms="<<resolve_profile[0]
         <<" rollback_submit_ms="<<resolve_profile[1]<<" routes_ms="<<resolve_profile[2]<<'\n';
@@ -147,6 +153,12 @@ template <class Model> struct CudaMtpOps {
     }
   }
   void rollback_target(int64_t keep) {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>) {
+      bool initialized=false;
+      if(dense_target_graphs && dense_target_graphs->rollback(keep,&initialized)) {
+        target_maintenance=target_maintenance || initialized;return;
+      }
+    }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mfq::cuda::RecurrentCopyBatch copies;
     const auto started=profile_resolve()?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
@@ -173,7 +185,13 @@ template <class Model> struct CudaMtpOps {
     target_graph_captures=captures;
     return std::exchange(target_maintenance,false) || initialized;
   }
-  bool gradual_mtp_warmup() const {return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>;}
+  bool gradual_mtp_warmup() const {
+    // Both Qwen paths time complete draft/verification/rollback windows.
+    // Dense verification now reuses graphs too; retaining the generic 15%
+    // loop-tax prior would park a measured, profitable shallow draft.
+    return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm> ||
+        std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>;
+  }
   mfq::engine::mtp::DraftProbabilityOptions mtp_probability_options() const {
     return mfq::engine::mtp::DraftProbabilityOptions::from_environment();
   }
@@ -266,6 +284,8 @@ template <class Model> struct CudaMtpOps {
     return mtp.retains_partial_target_prefix();
   }
   std::size_t predictor_history_merge_limit() const {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>)
+      return 1+mfq::engine::mtp::kMaximumReportedDraftDepth;
     return std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>?128:0;
   }
   std::size_t predictor_history_flush_threshold() const {
@@ -364,6 +384,23 @@ template <class Model> struct CudaMtpOps {
       const auto costs_after=target_costs();
       for(std::size_t i=0;i<target_profile.size();++i)target_profile[i]=costs_after[i]-costs_before[i];
     };
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>) {
+      if(!transformed_prompt && ids.dim()==2 && ids.size(1)<=1+mfq::engine::mtp::kMaximumReportedDraftDepth &&
+          mfq::cuda::qwen35::MtpTargetGraphs::eligible(model,ids)) {
+        if(!dense_target_graphs || !dense_target_graphs->compatible(model)) {
+          if(auto* predictor=dynamic_cast<Qwen35Mtp*>(&mtp)) {
+            if(!predictor->target_graphs || !predictor->target_graphs->compatible(model))
+              predictor->target_graphs=std::make_shared<mfq::cuda::qwen35::MtpTargetGraphs>(model);
+            dense_target_graphs=predictor->target_graphs;
+          } else dense_target_graphs=std::make_shared<mfq::cuda::qwen35::MtpTargetGraphs>(model);
+        }
+        bool initialized=false;Tensor logits;
+        if(auto hidden=dense_target_graphs->run(ids,confirmed,raw,&logits,&initialized)) {
+          projected_target_hidden=*hidden;projected_target_logits=std::move(logits);
+          target_maintenance=target_maintenance || initialized;finish_profile();return std::move(*hidden);
+        }
+      }
+    }
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(!transformed_prompt) {
         bool initialized=false;
@@ -532,6 +569,10 @@ template <class Model> struct CudaMtpOps {
     return {};
   }
   MtpStep predictor_step(Tensor hidden, Tensor ids, Tensor positions) {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>)
+      if(auto* predictor=dynamic_cast<Qwen35Mtp*>(&mtp))
+        if(auto tail=predictor->history_tail_step(target,hidden,ids,positions))
+          return remember_predictor_step(std::move(*tail));
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
           predictor && predictor->layers.size()==1 && model.reuse_decode_graphs &&
@@ -637,6 +678,12 @@ template <class Model> struct CudaMtpOps {
     return result;
   }
   void predictor_history_step(Tensor hidden, Tensor ids, Tensor positions,bool scalar_chain=false) {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>)
+      if(auto* predictor=dynamic_cast<Qwen35Mtp*>(&mtp);predictor && predictor->cache_only_history_supported()) {
+        predictor->history_step(target,std::move(hidden),std::move(ids),std::move(positions));
+        target_maintenance=mtp.take_graph_initialization() || target_maintenance;
+        return;
+      }
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
           predictor && model.reuse_decode_graphs && model.graph_registry && ids.size(1)<=128) {
@@ -652,12 +699,17 @@ template <class Model> struct CudaMtpOps {
     (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
   }
   int64_t predictor_prefill_chunk_size(int64_t requested) const {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>)
+      if(const auto* predictor=dynamic_cast<const Qwen35Mtp*>(&mtp);predictor && predictor->cache_only_history_supported())
+        return requested;
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
       // The predictor retains its expert image across these compute tiles.
       return std::min<int64_t>(1024,requested);
     return std::min<int64_t>(512,requested);
   }
   bool cache_only_prompt_history() const {
+    if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>)
+      if(const auto* predictor=dynamic_cast<const Qwen35Mtp*>(&mtp))return predictor->cache_only_history_supported();
     if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>) {
       const auto* option=std::getenv("TYLOINFER_MTP_CACHE_ONLY_PRIME");
       const auto* predictor=dynamic_cast<const mfq::cuda::qwen4_exp::Qwen4ExpMtp*>(&mtp);
@@ -717,7 +769,14 @@ template <class Model> struct CudaMtpOps {
               positions.defined()?positions.narrow(-1,offset,rows):Tensor{});
         }
       } else (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
-    } else (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
+    } else {
+      if constexpr(std::is_same_v<Model,mfq::cuda::Qwen35CausalLm>) {
+        if(cache_only_prompt_history()) {
+          auto& predictor=static_cast<Qwen35Mtp&>(mtp);
+          predictor.history_step(target,hidden.to(mfq_tensor_backend::kCUDA),std::move(ids),std::move(positions));
+        } else (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
+      } else (void)predictor_step(std::move(hidden),std::move(ids),std::move(positions));
+    }
     if(!prefill_finished)
       TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
     return timer.elapsed_ms();
