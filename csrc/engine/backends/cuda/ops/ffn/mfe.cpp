@@ -1,5 +1,6 @@
 #include "mfe.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
+#include "engine/backends/cuda/ops/projection/quant_linear.h"
 
 #include <stdexcept>
 #include <unordered_set>
@@ -55,6 +56,7 @@ Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
         (x.dim() == 3 && x.size(1) != routes)) {
         throw std::runtime_error("MFE input and route shape mismatch");
     }
+    if (pools && !pools->empty()) check_device(route.ids, x);
     int input_rows = x.dim() == 3 ? tokens * routes : tokens;
     const int result_width = epilogue_mode == 0
         ? out_per_expert
@@ -70,6 +72,8 @@ Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
     int nint_pool_phase = 0;
     const bool stable = input_rows <= 2048;
     if (pools) for (const auto & pool : *pools) {
+        check_device(pool.expert_local, x);
+        check_nint(pool.weight, x);
         int groups = (int)pool.weight.ng;
         int gs = (int)pool.weight.gs;
         MoeActivationKey key{input_rows, groups, gs, x.get_device()};

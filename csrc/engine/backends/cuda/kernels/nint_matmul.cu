@@ -2083,8 +2083,8 @@ void nint_moe_grouped_matmul_hinted_cuda(
         ids,output,input_width,routed_input,group_hint,bits_hint);
 }
 
-bool nint_try_single_route_cuda(
-        NintSingleRouteWeight weight,mfq_tensor_backend::Tensor expert_local,
+bool mfq::cuda::try_nint_decode(
+        NintSingleRouteWeight weight,mfq_tensor_backend::Tensor row_metadata,mfq_tensor_backend::Tensor expert_local,
         mfq_tensor_backend::Tensor ids,mfq_tensor_backend::Tensor output,
         bool routed_input,int bits_hint,bool metadata_ready) {
     namespace tb=mfq_tensor_backend;
@@ -2115,9 +2115,14 @@ bool nint_try_single_route_cuda(
                 int(expert_local.numel()),int(output.size(2)),routed_input,weight,mfq::cuda::warp_multi_sum::enabled());
         };
         const char* metadata=mfq::cuda::env_lookup("TYLOINFER_NINT_ROUTE_METADATA");
-        if(weight.row_metadata && (metadata_ready || (metadata && metadata[0]!='0')))
+        const auto metadata_ptr=row_metadata.defined()?reinterpret_cast<int64_t>(row_metadata.data_ptr()):0;
+        weight.row_metadata=0;
+        if(metadata_ptr && (metadata_ready || (metadata && metadata[0]!='0'))) {
+            TYLOINFER_RUNTIME_CHECK(row_metadata.is_cuda() && row_metadata.device()==output.device(),
+                "NINT route metadata device disagrees with output");
+            weight.row_metadata=metadata_ptr;
             launch_metadata(std::true_type{});
-        else launch_metadata(std::false_type{});
+        } else launch_metadata(std::false_type{});
         };
         if(nint_late_scale_enabled(int64_t(weight.geometry[0])*weight.geometry[1],bits_hint,output.get_device()))
             launch_scale(std::true_type{});

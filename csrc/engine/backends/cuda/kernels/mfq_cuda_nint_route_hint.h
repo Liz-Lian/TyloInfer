@@ -45,10 +45,12 @@ mfq_tensor_backend::Tensor nint_matmul_input_mul_fixed_bits_ws_cuda(
     mfq_tensor_backend::Tensor gate,int64_t activation_mode,int64_t group_size,
     mfq_tensor_backend::Tensor quantized_input,mfq_tensor_backend::Tensor input_scale,int uniform_bits);
 
-bool nint_try_single_route_cuda(
-    NintSingleRouteWeight weight,mfq_tensor_backend::Tensor expert_local,
+namespace mfq::cuda {
+bool try_nint_decode(
+    NintSingleRouteWeight weight,mfq_tensor_backend::Tensor row_metadata,mfq_tensor_backend::Tensor expert_local,
     mfq_tensor_backend::Tensor ids,mfq_tensor_backend::Tensor output,
     bool routed_input,int bits_hint,bool metadata_ready=false);
+}
 
 // Hints select code generation only. Device row metadata is checked on every
 // replay, so mixed widths and mutable expert slots retain the general path.

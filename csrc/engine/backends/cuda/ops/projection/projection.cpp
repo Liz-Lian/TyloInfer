@@ -77,6 +77,12 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
             TYLOINFER_RUNTIME_CHECK(
                 gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu,
                 "SQ input gate mode must be sigmoid or SiLU");
+        }
+        if (shard.kind == QuantLinearKind::Mxfp4Sq)
+            check_device(shard.mxfp4_sq.weight, x);
+        else
+            check_device(shard.fp8_sq.weight, x);
+        if (gate.has_value()) {
             x = x * (gate_mode == InputGateMode::Sigmoid
                 ? mfq_tensor_backend::sigmoid(gate.value())
                 : mfq_tensor_backend::silu(gate.value()));
@@ -86,23 +92,31 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
             : shard.fp8_sq.forward(x);
     }
     if ((mfq::mfq_compat_enabled && shard.kind == QuantLinearKind::Nint)) {
+        if (!gate.has_value() || gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu)
+            check_device(shard.nint, x);
         return run_nint_linear(profiler, kl_mmq, shard.nint, x, gate, gate_mode);
     }
     if ((mfq::mfq_compat_enabled && shard.kind == QuantLinearKind::Nvq)) {
+        if (!gate.has_value() || gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu)
+            check_device(shard.nvq, x);
         return run_nvq_linear(profiler, kl_mmq, shard.nvq, x, gate, gate_mode);
     }
     if (shard.kind == QuantLinearKind::Mxfp4) {
         TYLOINFER_RUNTIME_CHECK(
             !gate.has_value(),
             "MXFP4 tensor-parallel linear does not support input gating");
+        check_device(shard.mxfp4, x);
         return mxfp4_matmul(shard.mxfp4, x);
     }
     if (shard.kind == QuantLinearKind::Dense) {
-        auto local = x.to(shard.dense.scalar_type());
         if (gate.has_value()) {
             TYLOINFER_RUNTIME_CHECK(
                 gate_mode == InputGateMode::Sigmoid || gate_mode == InputGateMode::Silu,
                 "dense input gate mode must be sigmoid or SiLU");
+        }
+        check_device(shard.dense, x);
+        auto local = x.to(shard.dense.scalar_type());
+        if (gate.has_value()) {
             auto local_gate = gate.value().to(local.scalar_type());
             local = gate_mode == InputGateMode::Sigmoid
                 ? local * mfq_tensor_backend::sigmoid(local_gate)
@@ -113,6 +127,7 @@ mfq_tensor_backend::Tensor run_quant_linear_shard(
     TYLOINFER_RUNTIME_CHECK(
         !gate.has_value(),
         "MXFP8 tensor-parallel linear does not support input gating");
+    check_device(shard.mxfp8, x);
     return mxfp8_matmul(profiler, shard.mxfp8, x);
 }
 
@@ -321,6 +336,7 @@ mfq_tensor_backend::Tensor Projector::sharded(
             TYLOINFER_RUNTIME_CHECK(
                 !gate.has_value(),
                 "MXFP8 input-axis tensor parallelism does not support gating");
+            check_device(shard.mxfp8, local_x);
             local_outputs[index] =
                 mxfp8_matmul_f32(
                     profiler_, shard.mxfp8, local_x);
@@ -363,6 +379,7 @@ mfq_tensor_backend::Tensor Projector::run(
         const auto resources=tq_.get(x.get_device());
         return weight.tq.forward(&resources->blas(),std::move(x));
     });
+    check_device(weight, x);
     if (weight.tensor_parallel() || (mfq::mfq_compat_enabled && weight.is_nint()) || (mfq::mfq_compat_enabled && weight.is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -477,6 +494,8 @@ mfq_tensor_backend::Tensor Projector::gated(
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor gate,
         InputGateMode mode) const {
+    if (mode == InputGateMode::Sigmoid || mode == InputGateMode::Silu)
+        check_device(weight, x);
     if (weight.tensor_parallel() || (mfq::mfq_compat_enabled && weight.is_nint()) || (mfq::mfq_compat_enabled && weight.is_nvq())) {
         auto shape = x.sizes().vec();
         auto flat = x.reshape({-1, x.size(-1)});
@@ -544,6 +563,10 @@ std::vector<mfq_tensor_backend::Tensor> Projector::run(
         return run(group.nint, x);
     }
     if (mfq::mfq_compat_enabled && default_mmq && group.nvq_prefix2 && options_.nvq_fusion) {
+        if (nvq_pair_compatible(group.layers[0].nvq, group.layers[1].nvq)) {
+            check_device(group.layers[0].nvq, x);
+            check_device(group.layers[1].nvq, x);
+        }
         auto shape = x.sizes().vec();
         const auto flat =
             x.reshape({-1, x.size(-1)});
@@ -660,12 +683,14 @@ std::vector<mfq_tensor_backend::Tensor> Projector::run(
     auto xf = x.reshape({-1, x.size(-1)});
     if (group.w.q8_zero && xf.size(0) > 64 &&
             group.projection_w.size() == group.outs.size()) {
+        for (const auto& weight : group.projection_w) check_device(weight, xf);
         parts.reserve(group.projection_w.size());
         for (const auto & projection : group.projection_w) {
             parts.push_back(run_nint_linear(
                 profiler_, mmq_, projection, xf));
         }
     } else if (!group.split_w.empty()) {
+        for (const auto& weight : group.split_w) check_device(weight, xf);
         parts.reserve(group.outs.size());
         std::vector<int> shared_groups;
         if(serial_ && runtime_options::nint_group_quantize().value_or(true) &&
@@ -702,6 +727,7 @@ std::vector<mfq_tensor_backend::Tensor> Projector::run(
             for (auto & p : ys) parts.push_back(p);
         }
     } else {
+        check_device(group.w, xf);
         auto y = run_nint_linear(
             profiler_, mmq_,
             group.w, x.reshape({-1, x.size(-1)}));

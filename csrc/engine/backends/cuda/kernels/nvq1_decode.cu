@@ -141,7 +141,8 @@ void select(const DecodeArgs& args,cudaStream_t stream) {
     else launch<Small,false,false>(args,stream);
 }
 }
-bool nvq1_try_decode_cuda(Nvq1DecodeView w,mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor ids,
+bool mfq::cuda::try_nvq_decode(Nvq1DecodeView w,mfq_tensor_backend::Tensor records,mfq_tensor_backend::Tensor integer_book,
+        mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor ids,
         mfq_tensor_backend::Tensor local,mfq_tensor_backend::Tensor qx,mfq_tensor_backend::Tensor scales,
         mfq_tensor_backend::Tensor output,int experts,int rows,bool quantized) {
     const auto* group_dot=mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
@@ -154,6 +155,14 @@ bool nvq1_try_decode_cuda(Nvq1DecodeView w,mfq_tensor_backend::Tensor x,mfq_tens
     const int automatic_warps=!quantized && w.groups<=32 && input_rows>=10?4:1;
     const int requested=quant_setting?std::atoi(quant_setting):automatic_warps;
     const int quant_warps=requested==2 || requested==4 || requested==8?requested:1;
+    const auto records_ptr=records.defined()?reinterpret_cast<int64_t>(records.data_ptr()):0;
+    const auto integer_book_ptr=integer_book.defined()?reinterpret_cast<int64_t>(integer_book.data_ptr()):0;
+    if(records_ptr)TYLOINFER_RUNTIME_CHECK(records.is_cuda() && records.device()==x.device(),
+        "NVQ decode records device disagrees with input");
+    if(integer_book_ptr)TYLOINFER_RUNTIME_CHECK(integer_book.is_cuda() && integer_book.device()==x.device(),
+        "NVQ integer codebook device disagrees with input");
+    w.pointers[5]=records_ptr;w.pointers[6]=integer_book_ptr;
+    w.sizes[3]=records.defined()?records.numel():0;
     if(!quantized)quantize_input<<<dim3(input_rows,(w.groups+quant_warps-1)/quant_warps),dim3(32,quant_warps),0,stream>>>(
         reinterpret_cast<const __half*>(x.data_ptr()),qx.data_ptr<int8_t>(),scales.data_ptr<float>(),int(x.size(-1)),w.groups);
     const DecodeArgs args{w,qx.data_ptr<int8_t>(),scales.data_ptr<float>(),ids.data_ptr<int32_t>(),local.data_ptr<int32_t>(),

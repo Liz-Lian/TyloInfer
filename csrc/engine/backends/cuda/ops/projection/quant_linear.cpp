@@ -21,6 +21,65 @@ const QuantLinearGroup& as_quant_linear_group(const mfq::weights::MatrixGroup& g
     return *result;
 }
 
+void check_device(const mfq_tensor_backend::Tensor& weight, const mfq_tensor_backend::Tensor& input) {
+    if (input.is_cuda() && weight.defined() && weight.numel() != 0 && weight.device() != input.device())
+        throw std::invalid_argument("projection weight and input devices do not match");
+}
+
+void check_device(const NintWeight& weight, const mfq_tensor_backend::Tensor& input) {
+    if (weight.q8_zero) {
+        check_device(weight.q_packed, input);
+        check_device(weight.q8_zero_scale, input);
+    } else {
+        check_nint(weight, input);
+    }
+}
+
+void check_nint(const NintWeight& weight, const mfq_tensor_backend::Tensor& input) {
+    for (const auto* field : {&weight.q_packed, &weight.row_q_bits, &weight.row_q_bit_offsets,
+            &weight.sub_scale, &weight.sub_min, &weight.neuron_scale, &weight.neuron_min})
+        check_device(*field, input);
+}
+
+void check_device(const NvqWeight& weight, const mfq_tensor_backend::Tensor& input) {
+    for (const auto* field : {&weight.indices_packed, &weight.aux_packed, &weight.sub_scale_packed,
+            &weight.neuron_scale, &weight.codebook})
+        check_device(*field, input);
+}
+
+void check_device(const Mxfp4Weight& weight, const mfq_tensor_backend::Tensor& input) {
+    check_device(weight.values, input);
+    check_device(weight.scales, input);
+}
+
+void check_device(const Mxfp8Weight& weight, const mfq_tensor_backend::Tensor& input) {
+    check_device(weight.values, input);
+    check_device(weight.scales, input);
+}
+
+void check_device(const Mxfp4SqWeight& weight, const mfq_tensor_backend::Tensor& input) {
+    if (!weight.blob.is_cuda()) return;
+    for (const auto* field : {&weight.blob, &weight.row_q, &weight.row_symbol_byte_offsets, &weight.row_auxiliary})
+        check_device(*field, input);
+}
+
+void check_device(const Fp8SqWeight& weight, const mfq_tensor_backend::Tensor& input) {
+    if (!weight.blob.is_cuda() || (weight.dtype != "MXFP8-SQ" && weight.dtype != "FP8-128SQ")) return;
+    for (const auto* field : {&weight.blob, &weight.row_q, &weight.row_symbol_byte_offsets})
+        check_device(*field, input);
+}
+
+void check_device(const QuantLinear& weight, const mfq_tensor_backend::Tensor& input) {
+    if (weight.tensor_parallel() || weight.is_tq()) return;
+    if (weight.is_nint()) check_device(weight.nint, input);
+    else if (weight.is_nvq()) check_device(weight.nvq, input);
+    else if (weight.is_mxfp4()) check_device(weight.mxfp4.weight, input);
+    else if (weight.is_mxfp4_sq()) check_device(weight.mxfp4_sq.weight, input);
+    else if (weight.is_fp8_sq()) check_device(weight.fp8_sq.weight, input);
+    else if (weight.is_dense()) check_device(weight.dense, input);
+    else check_device(weight.mxfp8.weight, input);
+}
+
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "linear_dispatch.inc"
 
@@ -50,9 +109,11 @@ mfq_tensor_backend::Tensor quant_embedding_lookup(
     }
     if (embedding.is_tq()) return embedding.tq.embedding(token_ids);
     if ((mfq::mfq_compat_enabled && embedding.is_nvq())) {
+        check_device(embedding.nvq, token_ids);
         return nvq_embedding(embedding.nvq, token_ids);
     }
     if ((mfq::mfq_compat_enabled && embedding.is_nint())) {
+        check_device(embedding.nint, token_ids);
         if (embedding.nint.q8_zero) {
             return nint8_zero_embedding_lookup_cuda(
                 embedding.nint.q_packed,
@@ -71,11 +132,13 @@ mfq_tensor_backend::Tensor quant_embedding_lookup(
             embedding.nint.gs);
     }
     if (embedding.is_mxfp4()) {
+        check_device(embedding.mxfp4.weight, token_ids);
         return mxfp4_embedding_lookup_cuda(
             embedding.mxfp4.weight.values,
             embedding.mxfp4.weight.scales, token_ids);
     }
     if (embedding.is_mxfp8()) {
+        check_device(embedding.mxfp8.weight, token_ids);
         return mxfp8_embedding_lookup_cuda(
             embedding.mxfp8.weight.values,
             embedding.mxfp8.weight.scales, token_ids);

@@ -127,6 +127,16 @@ struct QuantLinear : mfq::weights::Matrix {
 
 const QuantLinear& as_quant_linear(const mfq::weights::Matrix& weight);
 
+void check_device(const mfq_tensor_backend::Tensor& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const NintWeight& weight, const mfq_tensor_backend::Tensor& input);
+void check_nint(const NintWeight& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const NvqWeight& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const Mxfp4Weight& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const Mxfp8Weight& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const Mxfp4SqWeight& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const Fp8SqWeight& weight, const mfq_tensor_backend::Tensor& input);
+void check_device(const QuantLinear& weight, const mfq_tensor_backend::Tensor& input);
+
 using QuantLinearProjectionRefs =
     std::vector<const QuantLinear*>;
 
