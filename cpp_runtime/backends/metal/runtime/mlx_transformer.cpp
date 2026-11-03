@@ -1,9 +1,11 @@
 #include "mlx_transformer.h"
 #include "mlx_resident_budget.h"
+#include "mlx_staged_attention.h"
 
 #include "mlx_detached_copy.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -29,54 +31,55 @@ fused_fp16_rms_norm_kernel() {
         CompileOptions options;
         options.math_mode = MathMode::Fast;
         return mlx::core::fast::metal_kernel(
-            "mfq_rms_f16_f32_f16_4096_eps1e6_v1",
+            "mfq_rms_f16_f32_f16_v2",
             {"x", "w"},
             {"y"},
             R"METAL(
-    constexpr uint WIDTH = 4096u;
     constexpr uint N_READS = 4u;
+    constexpr uint PASSES = (WIDTH + THREADS * N_READS - 1u) / (THREADS * N_READS);
     constexpr uint SIMD_SIZE = 32u;
     uint lid = thread_index_in_threadgroup;
     uint lane = thread_index_in_simdgroup;
     uint simd_group = simdgroup_index_in_threadgroup;
-    uint base = lid * N_READS;
-
-    float values[N_READS];
-    half4 packed_input =
-        *reinterpret_cast<device const half4*>(x + base);
-    values[0] = float(packed_input.x);
-    values[1] = float(packed_input.y);
-    values[2] = float(packed_input.z);
-    values[3] = float(packed_input.w);
+    ulong row_offset = ulong(threadgroup_position_in_grid.x) * WIDTH;
+    float4 values[PASSES];
     float accumulator = 0.0f;
-    for (uint index = 0u; index < N_READS; ++index) {
-        accumulator += values[index] * values[index];
+#pragma unroll
+    for (uint pass = 0u; pass < PASSES; ++pass) {
+        uint base = (pass * THREADS + lid) * N_READS;
+        values[pass] = base < WIDTH
+            ? float4(*reinterpret_cast<device const half4*>(x + row_offset + base)) : float4(0.0f);
+#pragma unroll
+        for (uint index = 0u; index < N_READS; ++index)
+            accumulator += values[pass][index] * values[pass][index];
     }
     accumulator = simd_sum(accumulator);
 
     threadgroup float local_sums[SIMD_SIZE];
     threadgroup float inverse_rms[1];
-    if (simd_group == 0u) local_sums[lane] = 0.0f;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
     if (lane == 0u) local_sums[simd_group] = accumulator;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (simd_group == 0u) {
-        accumulator = simd_sum(local_sums[lane]);
+        accumulator = simd_sum(lane < THREADS / SIMD_SIZE ? local_sums[lane] : 0.0f);
         if (lane == 0u) {
             inverse_rms[0] = metal::precise::rsqrt(
-                accumulator / float(WIDTH) + 1e-6f);
+                accumulator / float(WIDTH) + as_type<float>(uint(EPS_BITS)));
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    float4 packed_weight =
-        *reinterpret_cast<device const float4*>(w + base);
-    half4 normalized = half4(
-        packed_weight.x * (values[0] * inverse_rms[0]),
-        packed_weight.y * (values[1] * inverse_rms[0]),
-        packed_weight.z * (values[2] * inverse_rms[0]),
-        packed_weight.w * (values[3] * inverse_rms[0]));
-    *reinterpret_cast<device half4*>(y + base) = normalized;
+#pragma unroll
+    for (uint pass = 0u; pass < PASSES; ++pass) {
+        uint base = (pass * THREADS + lid) * N_READS;
+        if (base < WIDTH) {
+            float4 packed_weight = *reinterpret_cast<device const float4*>(w + base);
+            half4 normalized = half4(packed_weight * (values[pass] * inverse_rms[0]));
+            if constexpr (OUTPUT_BF16)
+                *reinterpret_cast<device bfloat4*>(y + row_offset + base) = bfloat4(normalized);
+            else
+                *reinterpret_cast<device half4*>(y + row_offset + base) = normalized;
+        }
+    }
 )METAL",
             "",
             true,
@@ -435,7 +438,7 @@ MlxRmsNorm::MlxRmsNorm(
     weight_.eval();
 }
 
-array MlxRmsNorm::operator()(const array& input) const {
+array MlxRmsNorm::operator()(const array& input, std::optional<mlx::core::Dtype> output_dtype) const {
     if (input.ndim() == 0 || input.shape(-1) != width_) {
         throw std::runtime_error("RMSNorm input width mismatch");
     }
@@ -445,22 +448,28 @@ array MlxRmsNorm::operator()(const array& input) const {
         source.dtype() != mlx::core::float32) {
         source = mlx::core::astype(source, mlx::core::float16);
     }
+    const auto result_dtype = output_dtype.value_or(source.dtype());
+    if (result_dtype != mlx::core::float16 && result_dtype != mlx::core::bfloat16 && result_dtype != mlx::core::float32)
+        throw std::invalid_argument("RMSNorm output dtype must be floating point");
     static const bool fused_enabled = [] {
         const auto* setting =
             std::getenv("TYLOINFER_METAL_FUSED_RMS_CAST");
         return setting == nullptr || std::strcmp(setting, "0") != 0;
     }();
+    const auto rows = source.size() / std::size_t(width_);
     if (fused_enabled && source.dtype() == mlx::core::float16 &&
-        width_ == 4096 && source.size() == 4096 && eps_ == 1e-6f) {
+        result_dtype != mlx::core::float32 && width_ >= 1024 && width_ <= 8192 && width_ % 128 == 0 && rows >= 1 && rows <= 8) {
+        const int threads = std::min(width_ / 4, 1024);
         auto contiguous = mlx::core::contiguous(
-            mlx::core::reshape(source, Shape{4096}));
+            mlx::core::reshape(source, Shape{int(rows), width_}));
         return fused_fp16_rms_norm_kernel()(
             {contiguous, weight_},
             {source.shape()},
-            {mlx::core::float16},
-            {1024, 1, 1},
-            {1024, 1, 1},
-            {},
+            {result_dtype},
+            {threads * int(rows), 1, 1},
+            {threads, 1, 1},
+            {{"WIDTH", width_}, {"THREADS", threads}, {"EPS_BITS", std::bit_cast<std::int32_t>(eps_)},
+             {"OUTPUT_BF16", result_dtype == mlx::core::bfloat16}},
             std::nullopt,
             false,
             {}).front();
@@ -472,9 +481,10 @@ array MlxRmsNorm::operator()(const array& input) const {
     // MLX promotes an FP16 activation to FP32 when the RMSNorm weight is
     // FP32. Keep the stored/offset weight in FP32 for accuracy, but preserve
     // the model activation dtype at the operator boundary.
-    return normalized.dtype() == source.dtype()
+    auto rounded = normalized.dtype() == source.dtype()
         ? normalized
         : mlx::core::astype(normalized, source.dtype());
+    return rounded.dtype() == result_dtype ? rounded : mlx::core::astype(rounded, result_dtype);
 }
 
 array apply_rope(
@@ -666,14 +676,15 @@ array scaled_dot_product_attention(
         dtype = mlx::core::float16;
     }
     auto q = floating(query, dtype);
-    auto k = floating(key, dtype);
-    auto v = floating(value, dtype);
+    auto k = key.dtype() == dtype ? key : mlx::core::astype(key, dtype);
+    auto v = value.dtype() == dtype ? value : mlx::core::astype(value, dtype);
     if (scale == 0.0f) {
         scale = 1.0f / std::sqrt(static_cast<float>(q.shape(3)));
     }
     if (!std::isfinite(scale) || scale <= 0.0f) {
         throw std::runtime_error("attention scale must be positive");
     }
+    if (auto staged = mlx_staged_attention(q, k, v, causal, scale, mask)) return std::move(*staged);
     return mlx::core::fast::scaled_dot_product_attention(
         q,
         k,

@@ -4,9 +4,11 @@
 #include "mlx_gguf_staged.h"
 #include "mlx_platform.h"
 #include "native/mlx_native_gguf.h"
+#include "gguf_sources.h"
 #include "mlx_kernel_prepare.h"
 #include "metal_device_info.h"
 #include "mlx_tensor.h"
+#include "mlx_transformer.h"
 #include "mlx_affine.h"
 #include "mlx_moe_ops.h"
 #include "mfq_container.h"
@@ -25,6 +27,7 @@
 #include <random>
 #include <stdexcept>
 #include <sys/mman.h>
+#include <tuple>
 #include <unordered_set>
 
 namespace {
@@ -80,7 +83,14 @@ std::vector<std::uint8_t> packed(ggml_type type, int k, int rows) {
     for (std::size_t offset = 0; offset < bytes.size(); offset += block) {
         const auto scale = ggml_fp32_to_fp16(type == GGML_TYPE_PTQ1_0 ? .03125f : .00025f);
         std::size_t d = type == GGML_TYPE_PTQ1_0 ? 26 : type == GGML_TYPE_Q2_K ? 80 : type == GGML_TYPE_Q3_K ? 108 : type == GGML_TYPE_Q6_K ? 208 : 0;
-        if (type == GGML_TYPE_MXFP4) bytes[offset] = uint8_t(114 + offset / block % 5);
+        if (type == GGML_TYPE_IQ1_M) {
+            for (int i = 0; i < 4; ++i) {
+                std::uint16_t value;
+                std::memcpy(&value, bytes.data() + offset + 48 + 2 * i, 2);
+                value = (value & 0xfffu) | (((scale >> (4 * i)) & 15u) << 12u);
+                std::memcpy(bytes.data() + offset + 48 + 2 * i, &value, 2);
+            }
+        } else if (type == GGML_TYPE_MXFP4) bytes[offset] = uint8_t(114 + offset / block % 5);
         else if (type == GGML_TYPE_Q8_K) {
             float value = .002f;
             std::memcpy(bytes.data() + offset, &value, 4);
@@ -1418,12 +1428,229 @@ void check_native_grid_gate_up(int width = 1024, int inner = 256, bool single_on
     preparation.finish();
 }
 
-void check_native_stack() {
-    check_native_affine_pairs();
-    check_native_grid_gate_up();
-    check_native_grid_gate_up(2560, 640);
-    constexpr int K = 256, N = 256, E = 8, top_k = 2;
-    for (const auto [width, outputs] : std::array{std::pair{512, 768}, std::pair{4096, 64}, std::pair{6144, 2560}}) {
+void check_native_iq1() {
+    for (const auto [K, N] : std::array{std::pair{512, 64}, std::pair{512, 768}, std::pair{5120, 64}, std::pair{4096, 4096}}) {
+        std::vector<MlxNativeGgufWeight> weights;
+        std::vector<array> reference;
+        for (const auto type : {GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M}) {
+            const auto bytes = packed(type, K, N);
+            std::vector<float> values(K * N);
+            ggml_get_type_traits(type)->to_float(bytes.data(), values.data(), values.size());
+            reference.emplace_back(values.begin(), Shape{N, K});
+            weights.push_back(mlx_native_gguf_pack(array(bytes.begin(), {int(bytes.size())}, uint8),
+                type, N, K, int(ggml_row_size(type, K))));
+        }
+        const auto close = [](const array& actual, const array& expected, const std::string& label) {
+            const auto rms = sqrt(mean(square(astype(actual, float32) - expected))).item<float>();
+            const auto scale = sqrt(mean(square(expected))).item<float>();
+            if (!std::isfinite(rms) || rms > .02f * scale + 1e-8f)
+                throw std::runtime_error(label + " relative RMS=" + std::to_string(rms / scale));
+        };
+        for (const int count : {1, 2, 3, 4, 6, 65}) {
+            if (K >= 4096 && N >= 4096 && count > 6) continue;
+            const auto input = astype(reshape(sin(arange(count * K, float32) * .013f), {count, K}), bfloat16);
+            const auto gate = reference_mm(input, reference[0]), up = reference_mm(input, reference[1]);
+            const auto actual = mlx_native_gguf_project(weights, input);
+            close(actual[0], gate, "IQ1_S native projection");
+            close(actual[1], up, "IQ1_M native projection");
+            close(mlx_native_gguf_swiglu(weights[0], weights[1], input),
+                gate / (1.f + exp(-gate)) * up, "IQ1_S/IQ1_M native Gate/Up");
+        }
+    }
+    for (const auto [K, N, gate_type, up_type] : std::array{
+            std::tuple{4160, 4224, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0},
+            std::tuple{4096, 4160, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ3_S}}) {
+        std::vector<MlxNativeGgufWeight> weights;
+        std::vector<array> reference;
+        for (const auto type : {gate_type, up_type}) {
+            const auto bytes = packed(type, K, N);
+            std::vector<float> values(K * N);
+            ggml_get_type_traits(type)->to_float(bytes.data(), values.data(), values.size());
+            reference.emplace_back(values.begin(), Shape{N, K});
+            weights.push_back(mlx_native_gguf_pack(array(bytes.begin(), {int(bytes.size())}, uint8),
+                type, N, K, int(ggml_row_size(type, K))));
+        }
+        for (const int count : {1, 2}) {
+            const auto input = astype(reshape(sin(arange(count * K, float32) * .013f), {count, K}), bfloat16);
+            const auto gate = astype(reference_mm(input, reference[0]), bfloat16);
+            const auto up = astype(reference_mm(input, reference[1]), bfloat16);
+            const auto expected = astype(gate, float32) / (1.f + exp(-astype(gate, float32))) * astype(up, float32);
+            const auto actual = mlx_native_gguf_swiglu(weights[0], weights[1], input);
+            bool dense_vector = false;
+            std::unordered_set<const Primitive*> visited;
+            const auto visit = [&](const auto& self, const array& value) -> void {
+                if (!value.has_primitive() || !visited.insert(value.primitive_ptr().get()).second) return;
+                if (std::string_view(value.primitive().name()) == "MlxNativeGgufGraph")
+                    dense_vector |= mlx_kernel_preparation_key(value.primitive()).find("dense_gguf_gate_up") != std::string::npos;
+                for (const auto& parent : value.inputs()) self(self, parent);
+            };
+            visit(visit, actual);
+            if (!dense_vector)
+                throw std::runtime_error("native Dense Gate/Up selected the wrong row-count dispatch");
+            if (count == 2) {
+                const auto separate = concatenate({
+                    mlx_native_gguf_swiglu(weights[0], weights[1], slice(input, {0, 0}, {1, K})),
+                    mlx_native_gguf_swiglu(weights[0], weights[1], slice(input, {1, 0}, {2, K}))}, 0);
+                if (!all(view(actual, uint16) == view(separate, uint16)).item<bool>())
+                    throw std::runtime_error("native Dense split-K Gate/Up pair changed independent row bits");
+            }
+            const auto rms = sqrt(mean(square(astype(actual, float32) - expected))).item<float>();
+            const auto scale = sqrt(mean(square(expected))).item<float>();
+            if (!std::isfinite(rms) || rms > .01f * scale + 1e-8f)
+                throw std::runtime_error("native Dense Gate/Up partition RMS=" + std::to_string(rms / scale));
+        }
+    }
+    std::cout << "native IQ1_S/IQ1_M projections and mixed Gate/Up passed\n";
+}
+
+void check_native_dense_expansion() {
+    constexpr int K = 512;
+    const int N = std::max(24576, (std::max(1, metal_apple_gpu_core_count()) * 8 + 1) * 64);
+    for (const auto type : {GGML_TYPE_IQ4_XS, GGML_TYPE_IQ3_S, GGML_TYPE_Q4_0}) {
+        const auto bytes = packed(type, K, N);
+        std::vector<float> values(K * N);
+        ggml_get_type_traits(type)->to_float(bytes.data(), values.data(), values.size());
+        const auto weight = array(values.begin(), Shape{N, K});
+        const auto native = mlx_native_gguf_pack(array(bytes.begin(), {int(bytes.size())}, uint8),
+            type, N, K, int(ggml_row_size(type, K)));
+        for (const int rows : {1, 2, 6}) {
+            const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f), {rows, K}), bfloat16);
+            const auto output = mlx_native_gguf_project(std::array{native}, input).front();
+            compare(output, reference_mm(input, weight), .02f, "native Dense expansion GGML reference");
+        }
+    }
+    {
+        constexpr int K = 512, I = 768;
+        std::vector<MlxNativeGgufWeight> weights;
+        for (const auto [type, k, n] : std::array{
+                std::tuple{GGML_TYPE_IQ2_S, K, I}, std::tuple{GGML_TYPE_IQ3_XXS, K, I},
+                std::tuple{GGML_TYPE_IQ3_S, I, K}}) {
+            auto bytes = packed(type, k, n);
+            const auto scale = ggml_fp32_to_fp16(.03125f);
+            for (std::size_t block = 0; block < bytes.size(); block += ggml_type_size(type))
+                std::memcpy(bytes.data() + block, &scale, 2);
+            weights.push_back(mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
+                type, n, k, int(ggml_row_size(type, k))));
+        }
+        for (const auto dtype : {float16, bfloat16, float32})
+        for (const int rows : {1, 2, 3, 4, 6, 8})
+        for (const float amplitude : {0.f, .00001f, .001f, .01f}) {
+            const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f) * amplitude, {rows, K}), dtype);
+            const auto expected = mlx_native_gguf_project(std::span(&weights[2], 1),
+                mlx_native_gguf_swiglu(weights[0], weights[1], input))[0];
+            const auto actual = mlx_native_gguf_ffn(weights[0], weights[1], weights[2], input);
+            const auto bits = dtype == float32 ? uint32 : uint16;
+            if (!all(view(actual, bits) == view(expected, bits)).item<bool>())
+                throw std::runtime_error("native Dense FFN changed intermediate cast bits");
+            const auto converted_input = astype(input, bfloat16);
+            const auto converted = mlx_native_gguf_ffn(weights[0], weights[1], weights[2], converted_input, dtype);
+            if (!all(view(actual, bits) == view(converted, bits)).item<bool>())
+                throw std::runtime_error("native Dense FFN changed activation precision after input cast fusion");
+            if (rows == 2) {
+                const auto paired = mlx_native_gguf_swiglu(weights[0], weights[1], input);
+                const auto separate = concatenate({
+                    mlx_native_gguf_swiglu(weights[0], weights[1], slice(input, {0, 0}, {1, K})),
+                    mlx_native_gguf_swiglu(weights[0], weights[1], slice(input, {1, 0}, {2, K}))}, 0);
+                if (!all(view(paired, bits) == view(separate, bits)).item<bool>())
+                    throw std::runtime_error("native Dense Gate/Up pair changed independent row bits");
+            }
+        }
+        std::cout << "native Dense FFN intermediate casts match composition bit-for-bit\n";
+    }
+    std::cout << "native Dense expansion GGML reference checks passed\n";
+}
+
+void check_normalized_projections() {
+    constexpr int K = 1024, N = 128;
+    std::vector<MlxNativeGgufWeight> native;
+    for (const auto type : {GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_S}) {
+        const auto bytes = packed(type, K, N);
+        native.push_back(mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
+            type, N, K, int(ggml_row_size(type, K))));
+    }
+    native.push_back(native[0]); native.push_back(native[1]);
+    for (const auto dtype : {float16, bfloat16, float32}) for (const int rows : {1, 2, 3, 4, 6, 8, 65}) {
+        const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f) * .01f, {rows, K}), dtype);
+        for (const std::size_t count : {1u, 2u, 4u}) {
+            const auto weights = std::span(native).first(count);
+            const auto expected = mlx_native_gguf_project(weights, input);
+            const auto actual = mlx_native_gguf_project(weights, astype(input, bfloat16), dtype);
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto bits = dtype == float32 ? uint32 : uint16;
+                if (actual[i].dtype() != dtype ||
+                    !all(view(actual[i], bits) == view(expected[i], bits)).item<bool>())
+                    throw std::runtime_error("native projection output dtype changed input cast semantics");
+            }
+        }
+    }
+    const MlxRmsNorm norm(cos(arange(K, float32) * .007f) * .1f + 1.f, 1e-6f);
+    {
+        char pattern[] = "/tmp/tinfer-gguf-normalized.XXXXXX";
+        const auto* directory = mkdtemp(pattern);
+        if (!directory) throw std::runtime_error("cannot create normalized GGUF fixture directory");
+        struct Cleanup {
+            std::filesystem::path file, directory;
+            ~Cleanup() { std::error_code error; std::filesystem::remove(file, error); std::filesystem::remove(directory, error); }
+        } cleanup{std::filesystem::path(directory) / "projections.gguf", directory};
+        auto* context = ggml_init({2 << 20, nullptr, false});
+        auto* file = gguf_init_empty();
+        gguf_set_val_str(file, "general.architecture", "test");
+        for (int i = 0; i < 4; ++i) {
+            const auto type = i % 2 ? GGML_TYPE_IQ3_S : GGML_TYPE_IQ2_S;
+            auto* tensor = ggml_new_tensor_2d(context, type, K, N);
+            ggml_set_name(tensor, ("matrix." + std::to_string(i) + ".weight").c_str());
+            const auto bytes = packed(type, K, N);
+            std::memcpy(tensor->data, bytes.data(), bytes.size());
+            gguf_add_tensor(file, tensor);
+        }
+        const bool written = gguf_write_to_file(file, cleanup.file.string().c_str(), false);
+        gguf_free(file); ggml_free(context);
+        if (!written) throw std::runtime_error("cannot write normalized GGUF fixture");
+        const MfqContainer model(cleanup.file);
+        std::vector<MlxLinear> weights;
+        for (int i = 0; i < 4; ++i) {
+            weights.emplace_back(MlxGgufWeight::load(model, "matrix." + std::to_string(i) + ".weight", true));
+            if (!weights.back().gguf_weight_ref()->native_weight_ref())
+                throw std::runtime_error("normalized GGUF fixture missed native storage");
+        }
+        const MlxLinear small(astype(reshape(cos(arange(64 * K, float32) * .017f) * .01f, {64, K}), bfloat16));
+        for (const int count : {1, 2, 3, 4}) for (const bool mixed : {false, true}) {
+            std::vector<const MlxLinear*> refs;
+            for (int i = 0; i < count; ++i) refs.push_back(&weights[i]);
+            if (mixed) refs.push_back(&small);
+            const MlxProjectionBatch batch(std::move(refs));
+            for (const int rows : {1, 2, 4, 8, 16}) {
+                const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f), {1, rows, K}), float16);
+                const auto expected = batch(norm(input)), actual = batch.forward_normalized(input, norm);
+                for (std::size_t i = 0; i < expected.size(); ++i)
+                    if (actual[i].dtype() != expected[i].dtype() ||
+                        !all(view(actual[i], uint16) == view(expected[i], uint16)).item<bool>())
+                        throw std::runtime_error("normalized native single/grouped/mixed projection changed bits");
+            }
+        }
+    }
+    for (const auto weight_dtype : {bfloat16, float32}) {
+        const MlxLinear first(astype(reshape(sin(arange(N * K, float32) * .019f) * .01f, {N, K}), weight_dtype));
+        const MlxLinear second(astype(reshape(cos(arange(64 * K, float32) * .017f) * .01f, {64, K}), weight_dtype));
+        const MlxProjectionBatch batch({&first, &second});
+        for (const auto dtype : {float16, bfloat16, float32}) for (const int rows : {1, 2, 3, 4, 6, 8, 16}) {
+            const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f), {1, rows, K}), dtype);
+            const auto expected = batch(norm(input));
+            const auto actual = batch.forward_normalized(input, norm);
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                const auto bits = expected[i].dtype() == float32 ? uint32 : uint16;
+                if (actual[i].dtype() != expected[i].dtype() ||
+                    !all(view(actual[i], bits) == view(expected[i], bits)).item<bool>())
+                    throw std::runtime_error("normalized projection batch changed dense or fallback bits");
+            }
+        }
+    }
+    std::cout << "normalized projection dtype and fallback tests passed\n";
+}
+
+void check_native_iq4_vector() {
+    for (const auto [width, outputs] : std::array{std::pair{512, 768}, std::pair{4096, 64},
+            std::pair{6144, 2560}, std::pair{4096, 4160}}) {
         const auto bytes = packed(GGML_TYPE_IQ4_XS, width, outputs);
         const auto native = mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
             GGML_TYPE_IQ4_XS, outputs, width, int(ggml_row_size(GGML_TYPE_IQ4_XS, width)));
@@ -1431,10 +1658,244 @@ void check_native_stack() {
         for (const int count : {1, 2, 3, 4}) for (const auto dtype : {float16, bfloat16, float32}) {
             const auto backing = astype(reshape(sin(arange(5 * width, float32) * .013f), {5, width}), dtype);
             const auto input = slice(backing, {1, 0}, {1 + count, width});
-            compare(mlx_native_gguf_project(std::span(&native, 1), input)[0],
+            const auto actual = mlx_native_gguf_project(std::span(&native, 1), input)[0];
+            compare(actual,
                 reference_mm(astype(input, bfloat16), reference), .01f, "native IQ4_XS factored projection");
+            if (count == 2 && width <= outputs) {
+                const auto separate = concatenate({
+                    mlx_native_gguf_project(std::span(&native, 1), slice(input, {0, 0}, {1, width}))[0],
+                    mlx_native_gguf_project(std::span(&native, 1), slice(input, {1, 0}, {2, width}))[0]}, 0);
+                const auto bits = dtype == float32 ? uint32 : uint16;
+                if (!all(view(actual, bits) == view(separate, bits)).item<bool>())
+                    throw std::runtime_error("native IQ4 expansion pair changed independent row bits");
+            }
+            if (dtype == float16) {
+                const auto previous = astype(mlx_native_gguf_project(std::span(&native, 1), astype(input, bfloat16))[0], float16);
+                if (!all(actual == previous).item<bool>())
+                    throw std::runtime_error("native FP16 output fusion changed BF16-rounded values");
+            }
         }
     }
+    std::vector<MlxNativeGgufWeight> mixed;
+    for (const auto type : {GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ3_S}) {
+        const auto bytes = packed(type, 512, 128);
+        mixed.push_back(mlx_native_gguf_pack(array(bytes.begin(), {int(bytes.size())}, uint8),
+            type, 128, 512, int(ggml_row_size(type, 512))));
+    }
+    for (const int rows : {1, 2, 3, 4}) {
+        const auto input = astype(reshape(sin(arange(rows * 512, float32) * .013f), {rows, 512}), float16);
+        const auto actual = mlx_native_gguf_project(mixed, input);
+        const auto previous = mlx_native_gguf_project(mixed, astype(input, bfloat16));
+        for (std::size_t index = 0; index < actual.size(); ++index)
+            if (actual[index].dtype() != float16 || !all(actual[index] == astype(previous[index], float16)).item<bool>())
+                throw std::runtime_error("mixed GGUF FP16 output fusion changed BF16-rounded values");
+    }
+}
+
+void check_native_grid_vectors() {
+    for (const auto type : {GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S})
+    for (const auto [K, N] : std::array{std::pair{512, 768}, std::pair{4096, 128}, std::pair{4096, 4160}}) {
+        const auto bytes = packed(type, K, N);
+        std::vector<float> values(K * N);
+        ggml_get_type_traits(type)->to_float(bytes.data(), values.data(), values.size());
+        const auto reference = astype(array(values.begin(), Shape{N, K}), float16);
+        const auto weight = mlx_native_gguf_pack(array(bytes.begin(), {int(bytes.size())}, uint8),
+            type, N, K, int(ggml_row_size(type, K)));
+        for (const int rows : {1, 2, 3, 4, 6, 65}) {
+            const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f), {rows, K}), bfloat16);
+            const auto expected = reference_mm(input, reference);
+            const auto actual = mlx_native_gguf_project(std::span(&weight, 1), input)[0];
+            if (rows == 1) {
+                auto primitive = actual;
+                while (primitive.has_primitive() && primitive.inputs().size() == 1 &&
+                    std::string_view(primitive.primitive().name()) != "MlxNativeGgufGraph") primitive = primitive.inputs().front();
+                if (!primitive.has_primitive() || std::string_view(primitive.primitive().name()) != "MlxNativeGgufGraph" ||
+                    mlx_kernel_preparation_key(primitive.primitive()).find("moe_native_vector") == std::string::npos)
+                    throw std::runtime_error("native grid projection selected the wrong row-count dispatch");
+                for (const auto dtype : {float16, float32}) {
+                    const auto converted = mlx_native_gguf_project(std::span(&weight, 1), astype(input, dtype))[0];
+                    if (converted.dtype() != dtype) throw std::runtime_error("native grid projection lost its output dtype");
+                    compare(converted, dtype == float16 ? astype(actual, float16) : expected,
+                        dtype == float16 ? 0.f : 5e-5f, "native grid vector output precision");
+                }
+            }
+            const auto error = sqrt(mean(square(astype(actual, float32) - expected))).item<float>();
+            const auto scale = sqrt(mean(square(expected))).item<float>();
+            if (!std::isfinite(error) || error > .005f * scale + 1e-8f)
+                throw std::runtime_error("native grid vector relative RMS=" + std::to_string(error / scale));
+            if (K <= N) {
+                const auto fused = mlx_native_gguf_swiglu(weight, weight, input);
+                const auto product = moe_swiglu_pair(astype(expected, bfloat16), astype(expected, bfloat16));
+                const auto product_error = sqrt(mean(square(astype(fused, float32) - astype(product, float32)))).item<float>();
+                const auto product_scale = sqrt(mean(square(astype(product, float32)))).item<float>();
+                const auto label = "native grid Dense Gate/Up type=" + std::string(ggml_type_name(type)) +
+                    " K=" + std::to_string(K) + " N=" + std::to_string(N) + " M=" + std::to_string(rows);
+                if (!std::isfinite(product_error) || product_error > .005f * product_scale + 1e-8f)
+                    throw std::runtime_error(label + " relative RMS=" + std::to_string(product_error / product_scale));
+                compare(fused, product, .02f, label);
+            }
+        }
+    }
+    std::cout << "native grid vectors and Dense Gate/Up passed\n";
+}
+
+void check_native_grouped_occupancy() {
+    const int cores = std::max(1, metal_apple_gpu_core_count());
+    constexpr int K = 4096;
+    const int query = ((cores * 48 + 63) / 64) * 64;
+    std::vector<MlxNativeGgufWeight> weights;
+    std::vector<array> references;
+    for (const auto [type, outputs] : std::array{std::pair{GGML_TYPE_Q2_K, query},
+            std::pair{GGML_TYPE_IQ4_XS, 128}, std::pair{GGML_TYPE_Q4_K, 128}}) {
+        const auto bytes = packed(type, K, outputs);
+        std::vector<float> decoded(K * outputs);
+        ggml_get_type_traits(type)->to_float(bytes.data(), decoded.data(), decoded.size());
+        references.push_back(astype(array(decoded.begin(), Shape{outputs, K}), float16));
+        weights.push_back(mlx_native_gguf_pack(array(bytes.begin(), {int(bytes.size())}, uint8),
+            type, outputs, K, int(ggml_row_size(type, K))));
+    }
+    const auto vector_path = [](const array& output) {
+        bool vector = false;
+        std::unordered_set<const Primitive*> visited;
+        const auto visit = [&](const auto& self, const array& value) -> void {
+            if (!value.has_primitive() || !visited.insert(value.primitive_ptr().get()).second) return;
+            if (std::string_view(value.primitive().name()) == "MlxNativeGgufGraph")
+                vector |= mlx_kernel_preparation_key(value.primitive()).find("moe_native_vector") != std::string::npos;
+            for (const auto& input : value.inputs()) self(self, input);
+        };
+        visit(visit, output);
+        return vector;
+    };
+    for (const int rows : {1, 2}) {
+        const auto input = astype(reshape(sin(arange(rows * K, float32) * .013f), {rows, K}), bfloat16);
+        const auto outputs = mlx_native_gguf_project(weights, input);
+        if (!vector_path(outputs.front())) throw std::runtime_error("small IQ4 segment disabled the complete grouped vector projection");
+        for (std::size_t index = 0; index < outputs.size(); ++index) {
+            const auto reference = reference_mm(input, references[index]);
+            const auto error = sqrt(mean(square(astype(outputs[index], float32) - reference))).item<float>();
+            const auto scale = sqrt(mean(square(reference))).item<float>();
+            if (!std::isfinite(error) || error > .005f * scale + 1e-8f)
+                throw std::runtime_error("grouped occupancy projection relative RMS=" + std::to_string(error / scale));
+        }
+        if (rows == 1 && 128 / 64 * 8 < cores * 6 &&
+            vector_path(mlx_native_gguf_project(std::span(&weights[1], 1), input)[0]))
+            throw std::runtime_error("standalone underoccupied IQ4 projection lost its matrix fallback");
+    }
+    for (const auto dtype : {float16, float32}) {
+        const auto input = astype(reshape(sin(arange(K, float32) * .013f), {1, K}), dtype);
+        const auto outputs = mlx_native_gguf_project(weights, input);
+        eval(outputs);
+        for (std::size_t index = 0; index < outputs.size(); ++index) {
+            if (outputs[index].dtype() != dtype || outputs[index].buffer().ptr() != outputs.front().buffer().ptr())
+                throw std::runtime_error("one-row grouped projection did not share its output conversion");
+            compare(outputs[index], astype(reference_mm(astype(input, bfloat16), references[index]), dtype),
+                .005f, "grouped output conversion");
+        }
+    }
+    std::cout << "native heterogeneous grouped occupancy and standalone fallback passed\n";
+}
+
+void check_native_long_expansion() {
+    constexpr int K = 5120, N = 16384;
+    const auto input = astype(reshape(sin(arange(2 * K, float32) * .013f), {2, K}), bfloat16);
+    for (const auto type : {GGML_TYPE_IQ1_M, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S,
+            GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q4_K}) {
+        const auto bytes = packed(type, K, N);
+        std::vector<float> decoded(K * N);
+        ggml_get_type_traits(type)->to_float(bytes.data(), decoded.data(), decoded.size());
+        const auto reference = reference_mm(input, astype(array(decoded.begin(), Shape{N, K}), float16));
+        const auto native = mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
+            type, N, K, int(ggml_row_size(type, K)));
+        for (const int rows : {1, 2}) {
+            const auto x = slice(input, {0, 0}, {rows, K});
+            const auto expected = slice(reference, {0, 0}, {rows, N});
+            for (const auto dtype : {float16, bfloat16}) {
+                const auto actual = mlx_native_gguf_project(std::span(&native, 1), astype(x, dtype))[0];
+                const auto error = sqrt(mean(square(astype(actual, float32) - expected))).item<float>();
+                const auto scale = sqrt(mean(square(expected))).item<float>();
+                if (!std::isfinite(error) || error > .005f * scale + 1e-8f)
+                    throw std::runtime_error("native long expansion relative RMS=" + std::to_string(error / scale));
+            }
+        }
+    }
+    std::cout << "native long expansion GGML references passed\n";
+    {
+        constexpr int K = 5120, N = 4096;
+        const auto bytes = packed(GGML_TYPE_IQ2_S, K, N);
+        std::vector<float> decoded(K * N);
+        ggml_get_type_traits(GGML_TYPE_IQ2_S)->to_float(bytes.data(), decoded.data(), decoded.size());
+        const auto x = astype(reshape(sin(arange(K, float32) * .013f), {1, K}), bfloat16);
+        const auto reference = reference_mm(x, astype(array(decoded.begin(), Shape{N, K}), float16));
+        const auto native = mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
+            GGML_TYPE_IQ2_S, N, K, int(ggml_row_size(GGML_TYPE_IQ2_S, K)));
+        const auto actual = mlx_native_gguf_project(std::span(&native, 1), x)[0];
+        const auto error = sqrt(mean(square(astype(actual, float32) - reference))).item<float>();
+        const auto scale = sqrt(mean(square(reference))).item<float>();
+        if (!std::isfinite(error) || error > .005f * scale + 1e-8f)
+            throw std::runtime_error("native contraction relative RMS=" + std::to_string(error / scale));
+    }
+}
+
+void check_native_grid_decoder_exact() {
+    const auto kernel = fast::metal_kernel("native_grid_decoder_check", {"w0", "w1", "meta", "params"}, {"out"}, R"METAL(
+uint groups = params[1] / 32, index = thread_position_in_grid.x;
+if (index >= params[2] * groups) return;
+uint column = index / groups, group = index % groups;
+threadgroup half2 table[1];
+quant_format_switch(params[0], [&](auto f) {
+    typedef decltype(f) F;
+    if constexpr (F::Kind == QuantGrid) {
+        ulong at = (ulong(column / QUANT_TILE_ROWS) * groups + group) * QUANT_TILE_ROWS + column % QUANT_TILE_ROWS;
+        auto payload = F::load(const_cast<device uchar*>(w0) + at * F::P0,
+            const_cast<device uchar*>(w1) + at * F::P1);
+        ulong mi = (ulong(column / QUANT_TILE_ROWS) * (groups / F::MetaGroups) + group / F::MetaGroups) * QUANT_TILE_ROWS + column % QUANT_TILE_ROWS;
+        auto m = F::loadMeta(const_cast<device uchar*>(meta) + mi * F::MetaBytes);
+        dequant32_chunks<F>(payload, m, ushort(group % F::MetaGroups), table, [&](ushort c, half4 lo, half4 hi) {
+            *reinterpret_cast<device half4*>(out + ulong(index) * 32 + 4 * c) = lo;
+            *reinterpret_cast<device half4*>(out + ulong(index) * 32 + 16 + 4 * c) = hi;
+        });
+    }
+});
+)METAL", native_gguf::vector_source);
+    constexpr int K = 512, N = 256;
+    for (const auto type : {GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S}) {
+        auto bytes = packed(type, K, N);
+        const auto block = ggml_type_size(type);
+        for (std::size_t offset = 0; offset < bytes.size(); offset += block) {
+            const auto index = offset / block;
+            const std::uint16_t scale = ((index / 4) % 31) * 1024 +
+                std::array<std::uint16_t, 4>{0, 1, 512, 1023}[index % 4];
+            std::memcpy(bytes.data() + offset, &scale, 2);
+        }
+        std::vector<float> decoded(K * N);
+        ggml_get_type_traits(type)->to_float(bytes.data(), decoded.data(), decoded.size());
+        const auto expected = astype(array(decoded.begin(), Shape{N, K}), float16);
+        const auto native = mlx_native_gguf_pack(array(bytes.begin(), Shape{int(bytes.size())}, uint8),
+            type, N, K, int(ggml_row_size(type, K)));
+        if (type == GGML_TYPE_IQ3_S &&
+            (native.planes[0].nbytes() != std::size_t(N) * K / 32 * 8 ||
+             native.planes[1].nbytes() != std::size_t(N) * K / 32 * 5 ||
+             native.planes[2].nbytes() != std::size_t(N) * K / 256 * 6 ||
+             native.planes[0].nbytes() + native.planes[1].nbytes() + native.planes[2].nbytes() != bytes.size()))
+            throw std::runtime_error("native IQ3_S planes changed packed size");
+        const auto plane1 = native.planes[1].size() ? native.planes[1] : zeros({4096}, uint8);
+        const auto actual = kernel({native.planes[0], plane1, native.planes[2],
+            array({uint32_t(native.format), uint32_t(K), uint32_t(N)})}, {{N, K}}, {float16},
+            {N * K / 32, 1, 1}, {64, 1, 1}, {}, std::nullopt, false, {})[0];
+        const bool equal = all(view(actual, uint16) == view(expected, uint16)).item<bool>();
+        if (!equal)
+            throw std::runtime_error("native grid decoder changed FP16 bits for " + std::string(ggml_type_name(type)));
+    }
+    std::cout << "native grid decoder FP16 bits match GGML across scale exponents\n";
+}
+
+void check_native_stack() {
+    check_native_iq1();
+    check_native_affine_pairs();
+    check_native_grid_gate_up();
+    check_native_grid_gate_up(2560, 640);
+    check_native_iq4_vector();
+    constexpr int K = 256, N = 256, E = 8, top_k = 2;
     {
         const auto source = astype(reshape(cos(arange(160 * 2560, float32) * .017f), {160, 2560}) * .05f, bfloat16);
         const auto q = quantize(source, 64, 4, "affine");
@@ -1841,6 +2302,14 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if (std::string_view(argv[1]) == "native-stack") { check_native_stack(); return 0; }
+            if (std::string_view(argv[1]) == "native-iq1") { check_native_iq1(); return 0; }
+            if (std::string_view(argv[1]) == "native-iq4-vector") { check_native_iq4_vector(); return 0; }
+            if (std::string_view(argv[1]) == "native-grid-vector") { check_native_grid_vectors(); return 0; }
+            if (std::string_view(argv[1]) == "native-grouped-occupancy") { check_native_grouped_occupancy(); return 0; }
+            if (std::string_view(argv[1]) == "native-long-expansion") { check_native_long_expansion(); return 0; }
+            if (std::string_view(argv[1]) == "native-grid-decoder-exact") { check_native_grid_decoder_exact(); return 0; }
+            if (std::string_view(argv[1]) == "native-dense") { check_native_dense_expansion(); return 0; }
+            if (std::string_view(argv[1]) == "normalized-projections") { check_normalized_projections(); return 0; }
             if (std::string_view(argv[1]) == "native-single") {
                 check_native_grid_gate_up(1024, 256, true); check_native_grid_gate_up(2560, 640, true); return 0;
             }
@@ -1886,7 +2355,7 @@ int main(int argc, char** argv) {
         for (auto type : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
             GGML_TYPE_Q8_0, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
             GGML_TYPE_Q6_K, GGML_TYPE_Q8_K, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS,
-            GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS,
+            GGML_TYPE_IQ2_S, GGML_TYPE_IQ1_S, GGML_TYPE_IQ1_M, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS,
             GGML_TYPE_Q2_0, GGML_TYPE_PTQ1_0, GGML_TYPE_MXFP4, GGML_TYPE_TQ2_T, GGML_TYPE_TQK4, GGML_TYPE_TQK5,
             GGML_TYPE_TQK6, GGML_TYPE_TQK7, GGML_TYPE_TQP5, GGML_TYPE_TQP6, GGML_TYPE_TQP7}) check(type);
         bool rejected = false;

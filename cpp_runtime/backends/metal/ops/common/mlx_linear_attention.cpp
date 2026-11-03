@@ -118,14 +118,47 @@ const mlx::core::fast::CustomKernelFunction& gdn_gates_kernel() {
 // The one-token layout follows oMLX's Qwen4 decode-step scheduling (see
 // NOTICE), while retaining MFQ's FP32 convolution/recurrent state, its
 // [value,key] transposed cache contract, and the arithmetic order of the
-// existing generic operators. One threadgroup owns one value head; its 16
-// simdgroups keep q/k/v and the recurrent outputs in threadgroup memory.
+// existing generic operators. A head uses sixteen simdgroups, or four per
+// quarter with a separate output norm when there are too few heads.
+constexpr const char* kGatedDeltaOutputNormSource = R"METAL(
+template<class Input, class Gate, class Output>
+inline void gated_delta_output_norm(Input recurrent_output, Gate output_gate, device Output* output,
+    device const float* norm_weight, constant float* params, uint lane, uint value_head, uint token) {
+    float values[4];
+    float square_sum = 0.0f;
+    for (uint item = 0u; item < 4u; ++item) {
+        const uint dimension = lane + item * 32u;
+        values[item] = recurrent_output[dimension];
+        square_sum += values[item] * values[item];
+    }
+    square_sum = simd_sum(square_sum);
+    const float inverse = metal::precise::rsqrt(square_sum / float(D) + params[1]);
+    const uint output_base = token * uint(HV * D) + value_head * uint(D);
+    for (uint item = 0u; item < 4u; ++item) {
+        const uint dimension = lane + item * 32u;
+        const float normalized = values[item] * inverse * norm_weight[dimension];
+        const float z = float(output_gate[output_base + dimension]);
+        const float tail = 1.0f / (1.0f + metal::precise::exp(metal::abs(z)));
+        const float sigmoid = z < 0.0f ? tail : 1.0f - tail;
+        const float gate = OUTPUT_GATE_SILU != 0 ? z * sigmoid : sigmoid;
+        if constexpr (TYLOINFER_GDN_ROUND_FP16)
+            output[output_base + dimension] = Output(half(normalized * gate));
+        else output[output_base + dimension] = Output(normalized * gate);
+    }
+}
+)METAL";
+
 constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
     const uint lane = thread_index_in_simdgroup;
     const uint simd_group = simdgroup_index_in_threadgroup;
-    const uint value_head = threadgroup_position_in_grid.z;
+    const uint value_head = threadgroup_position_in_grid.z / uint(TYLOINFER_GDN_HEAD_SPLITS);
+    const uint head_part = threadgroup_position_in_grid.z % uint(TYLOINFER_GDN_HEAD_SPLITS);
+    const uint column_base = head_part * uint(D / TYLOINFER_GDN_HEAD_SPLITS);
     const uint key_head = TYLOINFER_GDN_TILED_HEADS
         ? value_head % uint(HK) : value_head / uint(HV / HK);
+    const auto state_offset = [](uint column, uint row) {
+        return TYLOINFER_GDN_TRANSPOSED_STATE ? column * uint(D) + row : row * uint(D) + column;
+    };
 
     threadgroup float query_values[D];
     threadgroup float key_values[D];
@@ -137,11 +170,19 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
 #if TYLOINFER_GDN_SEQUENCE
     constexpr uint COLUMNS_PER_SIMDGROUP = uint(D) / 16u;
     const uint state_head = value_head * uint(D * D);
+#if TYLOINFER_GDN_TRANSPOSED_STATE
     float saved_state[COLUMNS_PER_SIMDGROUP][4];
     for (uint item = 0u; item < COLUMNS_PER_SIMDGROUP; ++item)
         for (uint row = 0u; row < 4u; ++row)
             saved_state[item][row] = recurrent_state[state_head +
-                (simd_group * COLUMNS_PER_SIMDGROUP + item) * uint(D) + lane + row * 32u];
+                state_offset(column_base + simd_group * COLUMNS_PER_SIMDGROUP + item, lane + row * 32u)];
+#else
+    float4 saved_vectors[COLUMNS_PER_SIMDGROUP / 4u][4];
+    for (uint item = 0u; item < COLUMNS_PER_SIMDGROUP / 4u; ++item)
+        for (uint row = 0u; row < 4u; ++row)
+            saved_vectors[item][row] = *reinterpret_cast<device const float4*>(recurrent_state +
+                state_head + (lane + row * 32u) * uint(D) + column_base + simd_group * COLUMNS_PER_SIMDGROUP + item * 4u);
+#endif
     for (uint token = 0u; token < tokens; ++token) {
 #else
     const uint token = 0u;
@@ -188,7 +229,7 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
             activated[item] = activated_value;
             square_sum += activated_value * activated_value;
 
-            if (write_shared_state) {
+            if (write_shared_state && head_part == 0u) {
 #if TYLOINFER_GDN_SEQUENCE
                 if (token + 1u == tokens) {
                     for (uint tap = 0u; tap < 3u; ++tap) {
@@ -245,8 +286,10 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
             1.0f / (1.0f + metal::precise::exp(metal::abs(beta_input)));
         recurrent_beta[0] = beta_input < 0.0f ? tail : 1.0f - tail;
 #if TYLOINFER_GDN_SEQUENCE
-        gate_out[value_head * tokens + token] = gate_log;
-        beta_out[value_head * tokens + token] = recurrent_beta[0];
+        if (head_part == 0u) {
+            gate_out[value_head * tokens + token] = gate_log;
+            beta_out[value_head * tokens + token] = recurrent_beta[0];
+        }
 #endif
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -260,8 +303,43 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
 #endif
     const float decay = recurrent_decay[0];
     const float beta_value = recurrent_beta[0];
+#if !TYLOINFER_GDN_TRANSPOSED_STATE
+    for (uint item = 0u; item < COLUMNS_PER_SIMDGROUP; item += 4u) {
+        const uint column = column_base + simd_group * COLUMNS_PER_SIMDGROUP + item;
+#if TYLOINFER_GDN_SEQUENCE
+        thread float4* state_values = saved_vectors[item / 4u];
+#else
+        float4 state_values[4];
+#endif
+        float4 projected_key(0.0f);
+        for (uint row = 0u; row < 4u; ++row) {
+            const uint key_row = lane + row * 32u;
+#if !TYLOINFER_GDN_SEQUENCE
+            state_values[row] = *reinterpret_cast<device const float4*>(
+                recurrent_state + state_head + key_row * uint(D) + column);
+#endif
+            projected_key += state_values[row] * key_values[key_row];
+        }
+        projected_key = simd_sum(projected_key);
+        const float4 values(value_values[column], value_values[column + 1u],
+            value_values[column + 2u], value_values[column + 3u]);
+        const float4 delta = (values - decay * projected_key) * beta_value;
+        float4 result(0.0f);
+        for (uint row = 0u; row < 4u; ++row) {
+            const uint key_row = lane + row * 32u;
+            state_values[row] = decay * state_values[row] + key_values[key_row] * delta;
+            result += state_values[row] * query_values[key_row];
+#if !TYLOINFER_GDN_SEQUENCE
+            *reinterpret_cast<device float4*>(recurrent_out + state_head + key_row * uint(D) + column) = state_values[row];
+#endif
+        }
+        result = simd_sum(result);
+        if (lane == 0u) for (uint offset = 0u; offset < 4u; ++offset)
+            recurrent_output[column + offset] = result[offset] * rsqrt(float(D));
+    }
+#else
     for (uint item = 0u; item < COLUMNS_PER_SIMDGROUP; ++item) {
-        const uint column = simd_group * COLUMNS_PER_SIMDGROUP + item;
+        const uint column = column_base + simd_group * COLUMNS_PER_SIMDGROUP + item;
         float state_values[4];
         float projected_key = 0.0f;
         for (uint row = 0u; row < 4u; ++row) {
@@ -270,7 +348,7 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
 #if TYLOINFER_GDN_SEQUENCE
                 saved_state[item][row];
 #else
-                recurrent_state[state_head + column * uint(D) + key_row];
+                recurrent_state[state_head + state_offset(column, key_row)];
 #endif
             projected_key += state_values[row] * key_values[key_row];
         }
@@ -287,7 +365,7 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
 #if TYLOINFER_GDN_SEQUENCE
             saved_state[item][row] = state_values[row];
 #else
-            recurrent_out[state_head + column * uint(D) + key_row] = state_values[row];
+            recurrent_out[state_head + state_offset(column, key_row)] = state_values[row];
 #endif
         }
         result = simd_sum(result);
@@ -295,39 +373,30 @@ constexpr const char* kGatedDeltaDecodeStepSource = R"METAL(
             recurrent_output[column] = result * rsqrt(float(D));
         }
     }
+#endif
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (simd_group == 0u) {
-        float values[4];
-        float square_sum = 0.0f;
-        for (uint item = 0u; item < 4u; ++item) {
-            const uint dimension = lane + item * 32u;
-            values[item] = recurrent_output[dimension];
-            square_sum += values[item] * values[item];
-        }
-        square_sum = simd_sum(square_sum);
-        const float inverse = metal::precise::rsqrt(
-            square_sum / float(D) + params[1]);
-        const uint output_base = token * uint(HV * D) + value_head * uint(D);
-        for (uint item = 0u; item < 4u; ++item) {
-            const uint dimension = lane + item * 32u;
-            const float normalized =
-                values[item] * inverse * norm_weight[dimension];
-            const float z = float(output_gate[output_base + dimension]);
-            const float tail =
-                1.0f / (1.0f + metal::precise::exp(metal::abs(z)));
-            const float sigmoid = z < 0.0f ? tail : 1.0f - tail;
-            const float gate = OUTPUT_GATE_SILU != 0 ? z * sigmoid : sigmoid;
-            output[output_base + dimension] = OUTPUT_TYPE(normalized * gate);
-        }
+#if TYLOINFER_GDN_HEAD_SPLITS > 1
+        output[(token * uint(HV) + value_head) * uint(D) + column_base + lane] = recurrent_output[column_base + lane];
+#else
+        gated_delta_output_norm(recurrent_output, output_gate, output, norm_weight, params, lane, value_head, token);
+#endif
     }
 #if TYLOINFER_GDN_SEQUENCE
     threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+#if TYLOINFER_GDN_TRANSPOSED_STATE
     for (uint item = 0u; item < COLUMNS_PER_SIMDGROUP; ++item)
         for (uint row = 0u; row < 4u; ++row)
-            recurrent_out[state_head + (simd_group * COLUMNS_PER_SIMDGROUP + item) * uint(D) +
-                lane + row * 32u] = saved_state[item][row];
+            recurrent_out[state_head + state_offset(column_base + simd_group * COLUMNS_PER_SIMDGROUP + item,
+                lane + row * 32u)] = saved_state[item][row];
+#else
+    for (uint item = 0u; item < COLUMNS_PER_SIMDGROUP / 4u; ++item)
+        for (uint row = 0u; row < 4u; ++row)
+            *reinterpret_cast<device float4*>(recurrent_out + state_head +
+                (lane + row * 32u) * uint(D) + column_base + simd_group * COLUMNS_PER_SIMDGROUP + item * 4u) = saved_vectors[item][row];
+#endif
 #endif
 )METAL";
 
@@ -340,6 +409,9 @@ struct GdnStepConfig {
     bool sequence;
     bool tiled_heads;
     Dtype output_dtype;
+    bool transposed_state;
+    int head_splits = 1;
+    bool round_fp16 = false;
 };
 
 std::string gdn_step_source(
@@ -360,7 +432,11 @@ std::string gdn_step_source(
         std::to_string(static_cast<int>(config.silu)) + "\n";
     source += "#define TYLOINFER_GDN_SEQUENCE " + std::to_string(static_cast<int>(config.sequence)) + "\n";
     source += "#define TYLOINFER_GDN_TILED_HEADS " + std::to_string(static_cast<int>(config.tiled_heads)) + "\n";
+    source += "#define TYLOINFER_GDN_TRANSPOSED_STATE " + std::to_string(static_cast<int>(config.transposed_state)) + "\n";
+    source += "#define TYLOINFER_GDN_HEAD_SPLITS " + std::to_string(config.head_splits) + "\n";
     source += "#define OUTPUT_TYPE " + std::string(metal_type(config.output_dtype)) + "\n";
+    source += "#define TYLOINFER_GDN_ROUND_FP16 " + std::to_string(config.round_fp16) + "\n";
+    source += kGatedDeltaOutputNormSource;
     source += "kernel void " + kernel_name + "(";
     const std::array<const char*, 5> projection_names{
         "qk", "value", "output_gate", "alpha", "beta"};
@@ -379,7 +455,7 @@ std::string gdn_step_source(
     }
     source +=
         "constant float* params [[buffer(11)]], ";
-    source += "device " + std::string(metal_type(config.output_dtype)) + "* output [[buffer(12)]], ";
+    source += "device " + std::string(config.head_splits > 1 ? "float" : metal_type(config.output_dtype)) + "* output [[buffer(12)]], ";
     source +=
         "device float* convolution_out [[buffer(13)]], "
         "device float* recurrent_out [[buffer(14)]], ";
@@ -393,6 +469,14 @@ std::string gdn_step_source(
         "uint3 threadgroup_position_in_grid [[threadgroup_position_in_grid]]) {\n";
     source += kGatedDeltaDecodeStepSource;
     source += "}\n";
+    if (config.head_splits > 1) {
+        source += "kernel void " + kernel_name + "_norm(device const float* values [[buffer(0)]], device const " +
+            std::string(metal_type(config.projection_types[2])) + "* gate [[buffer(1)]], "
+            "device const float* weight [[buffer(2)]], constant float* params [[buffer(3)]], device " +
+            std::string(metal_type(config.output_dtype)) + "* output [[buffer(4)]], "
+            "uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]]) {\n"
+            "gated_delta_output_norm(values + (group.y * uint(HV) + group.z) * uint(D), gate, output, weight, params, lane, group.z, group.y);\n}\n";
+    }
     return source;
 }
 
@@ -409,21 +493,27 @@ public:
             "_" + std::to_string(static_cast<int>(config_.silu));
         if (config_.sequence) kernel_name_ += "_sequence";
         if (config_.tiled_heads) kernel_name_ += "_tiled";
+        if (!config_.transposed_state) kernel_name_ += "_key_value";
+        if (config_.head_splits > 1) kernel_name_ += "_split4";
         if (config_.output_dtype != mlx::core::float32)
             kernel_name_ += "_out_" + mlx::core::type_to_name(config_.output_dtype);
+        if (config_.round_fp16) kernel_name_ += "_round_f16";
     }
 
     std::string preparation_key() const override { return kernel_name_; }
-    void prepare_gpu() override { (void)prepared_kernel(); }
+    void prepare_gpu() override {
+        (void)prepared_kernel();
+        if (config_.head_splits > 1) (void)prepared_kernel(true);
+    }
 
-    MTL::ComputePipelineState* prepared_kernel() {
+    MTL::ComputePipelineState* prepared_kernel(bool normalize = false) {
         auto& device = kernel_device(stream().device);
         CompileOptions options;
         options.math_mode = MathMode::Fast;
         auto* library = device.get_library(
             kernel_name_, options,
             [this] { return gdn_step_source(config_, kernel_name_); });
-        return device.get_kernel(kernel_name_, library);
+        return device.get_kernel(normalize ? kernel_name_ + "_norm" : kernel_name_, library);
     }
 
     void eval_cpu(
@@ -439,17 +529,24 @@ public:
             output.set_data(mlx::core::allocator::malloc(output.nbytes()));
         }
         auto* kernel = prepared_kernel();
+        auto* norm_kernel = config_.head_splits > 1 ? prepared_kernel(true) : nullptr;
         auto& encoder = mlx::core::metal::get_command_encoder(stream());
-        encoder.set_compute_pipeline_state(
-            kernel);
+        encoder.set_compute_pipeline_state(kernel);
         for (int index = 0; index < 4; ++index)
             encoder.set_input_array(inputs[index], index + 7);
         encoder.set_bytes(config_.eps, 11);
         const int fields = config_.sequence ? 5 : 3;
+        std::vector<array> temporaries;
         for (int row = 0; row < static_cast<int>(outputs.size()) / fields; ++row) {
+            encoder.set_compute_pipeline_state(kernel);
             for (int index = 0; index < 7; ++index)
                 encoder.set_input_array(inputs[4 + row * 7 + index], index);
-            for (int index = 0; index < 3; ++index)
+            if (norm_kernel) {
+                temporaries.emplace_back(mlx::core::allocator::malloc(outputs[row * fields].size() * sizeof(float)),
+                    outputs[row * fields].shape(), mlx::core::float32);
+                encoder.set_output_array(temporaries.back(), 12);
+            } else encoder.set_output_array(outputs[row * fields], 12);
+            for (int index = 1; index < 3; ++index)
                 encoder.set_output_array(outputs[row * fields + index], index + 12);
             if (config_.sequence) {
                 encoder.set_bytes(inputs[4 + row * 7].shape(1), 15);
@@ -457,9 +554,19 @@ public:
                 encoder.set_output_array(outputs[row * fields + 4], 17);
             }
             encoder.dispatch_threadgroups(
-                MTL::Size(1, 1, config_.value_heads),
-                MTL::Size(32, 16, 1));
+                MTL::Size(1, 1, config_.value_heads * config_.head_splits),
+                MTL::Size(32, 16 / config_.head_splits, 1));
+            if (norm_kernel) {
+                encoder.set_compute_pipeline_state(norm_kernel);
+                encoder.set_input_array(temporaries.back(), 0);
+                encoder.set_input_array(inputs[4 + row * 7 + 2], 1);
+                encoder.set_input_array(inputs[3], 2);
+                encoder.set_bytes(config_.eps, 3);
+                encoder.set_output_array(outputs[row * fields], 4);
+                encoder.dispatch_threadgroups(MTL::Size(1, inputs[4 + row * 7].shape(1), config_.value_heads), MTL::Size(32, 1, 1));
+            }
         }
+        if (!temporaries.empty()) encoder.add_temporaries(std::move(temporaries));
     }
 
     const char* name() const override { return "GatedDeltaDecodeStep"; }
@@ -1351,11 +1458,11 @@ MlxGatedDeltaDecodeResult gated_delta_decode_step(
     int dimension,
     float convolution_eps,
     float norm_eps,
-    bool output_gate_silu, bool tiled_heads, Dtype output_dtype) {
+    bool output_gate_silu, bool tiled_heads, Dtype output_dtype, bool transposed_state, bool round_fp16) {
     return gated_delta_decode_steps({{qk, value, output_gate, alpha, beta,
         convolution_state, recurrent_state}}, convolution_weight, dt_bias,
         decay_scale, norm_weight, key_heads, value_heads, dimension,
-        convolution_eps, norm_eps, output_gate_silu, tiled_heads, output_dtype).front();
+        convolution_eps, norm_eps, output_gate_silu, tiled_heads, output_dtype, transposed_state, round_fp16).front();
 }
 
 std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
@@ -1363,7 +1470,8 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
     const array& convolution_weight, const array& dt_bias,
     const array& decay_scale, const array& norm_weight,
     int key_heads, int value_heads, int dimension,
-    float convolution_eps, float norm_eps, bool output_gate_silu, bool tiled_heads, Dtype output_dtype) {
+    float convolution_eps, float norm_eps, bool output_gate_silu, bool tiled_heads, Dtype output_dtype,
+    bool transposed_state, bool round_fp16) {
     auto bias_values = float32_contiguous(dt_bias);
     auto decay_values = float32_contiguous(decay_scale);
     auto norm_values = float32_contiguous(norm_weight);
@@ -1372,7 +1480,8 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
         value_heads % key_heads != 0 || dimension != 128 ||
         !std::isfinite(convolution_eps) || convolution_eps <= 0.0f ||
         !std::isfinite(norm_eps) || norm_eps <= 0.0f ||
-        (output_dtype != mlx::core::float16 && output_dtype != mlx::core::bfloat16 && output_dtype != mlx::core::float32)) {
+        (output_dtype != mlx::core::float16 && output_dtype != mlx::core::bfloat16 && output_dtype != mlx::core::float32) ||
+        (round_fp16 && output_dtype != mlx::core::bfloat16)) {
         throw std::invalid_argument(
             "Gated DeltaNet decode-step geometry is unsupported");
     }
@@ -1406,7 +1515,10 @@ std::vector<MlxGatedDeltaDecodeResult> gated_delta_decode_steps(
         Shape{1, 3, channels}, Shape{1, value_heads, dimension, dimension}};
     GdnStepConfig config{{mlx::core::float32, mlx::core::float32, mlx::core::float32,
         mlx::core::float32, mlx::core::float32}, key_heads, value_heads, output_gate_silu,
-        {convolution_eps, norm_eps}, sequence, tiled_heads, output_dtype};
+        {convolution_eps, norm_eps}, sequence, tiled_heads, output_dtype, transposed_state};
+    const int cores = metal_apple_gpu_core_count();
+    config.round_fp16 = round_fp16;
+    if (sequence && !transposed_state && cores > 0 && value_heads < cores * 2) config.head_splits = 4;
     for (std::size_t row = 0; row < requests.size(); ++row) {
         const auto& request = requests[row];
         std::array<array, 7> values{real_contiguous(request.qk), real_contiguous(request.value),
@@ -1944,6 +2056,75 @@ namespace {
 
 using GatedDeltaCacheStep = std::function<std::vector<array>(const std::vector<array>&)>;
 
+const mlx::core::fast::CustomKernelFunction& fused_gdn_cache_replay_kernel() {
+    static const auto kernel = cached_metal_kernel("mfq_cpp_gdn_cache_replay_fused_v1",
+        {"qk", "value", "convolution", "recurrent", "weight", "gate", "beta", "params"},
+        {"convolution_out", "recurrent_out"}, R"METAL(
+const uint lane = thread_index_in_simdgroup, sg = simdgroup_index_in_threadgroup;
+const uint head = threadgroup_position_in_grid.x;
+const uint kh = TILED ? head % HK : head / (HV / HK);
+const uint tokens = qk_shape[1];
+constexpr uint C = (2 * HK + HV) * 128;
+threadgroup float keys[8 * 128], vals[8 * 128], decays[8], betas[8];
+if (sg < tokens) {
+    float k[4], v[4], sum = 0.f;
+    for (uint i = 0; i < 4; ++i) {
+        const uint d = lane + i * 32, kc = (HK + kh) * 128 + d, vc = (2 * HK + head) * 128 + d;
+        float ks = 0.f, vs = 0.f;
+        for (uint tap = 0; tap < 4; ++tap) {
+            const uint p = sg + tap;
+            const float ki = p < 3 ? convolution[p * C + kc] : float(qk[(p - 3) * qk_strides[1] + kc * qk_strides[2]]);
+            const float vi = p < 3 ? convolution[p * C + vc] : float(value[(p - 3) * value_strides[1] + (head * 128 + d) * value_strides[2]]);
+            ks += ki * float(weight[kc * 4 + tap]);
+            vs += vi * float(weight[vc * 4 + tap]);
+        }
+        k[i] = ks / (1.f + exp(-ks)); v[i] = vs / (1.f + exp(-vs));
+        sum += k[i] * k[i];
+    }
+    const float inverse = 1.f / max(sqrt(simd_sum(sum)), params[0]);
+    for (uint i = 0; i < 4; ++i) {
+        keys[sg * 128 + lane + i * 32] = k[i] * inverse;
+        vals[sg * 128 + lane + i * 32] = v[i];
+    }
+    if (!lane) {
+        decays[sg] = exp(float(gate[head * gate_strides[1] + sg * gate_strides[2]]));
+        betas[sg] = float(beta[head * beta_strides[1] + sg * beta_strides[2]]);
+    }
+}
+if (sg < 3) {
+    const bool writer = TILED ? head < HK : head % (HV / HK) == 0;
+    const uint p = tokens + sg;
+    for (uint i = 0; i < 4; ++i) {
+        const uint d = lane + i * 32, qc = kh * 128 + d, kc = (HK + kh) * 128 + d, vc = (2 * HK + head) * 128 + d;
+        if (writer) {
+            convolution_out[sg * C + qc] = p < 3 ? convolution[p * C + qc] : float(qk[(p - 3) * qk_strides[1] + qc * qk_strides[2]]);
+            convolution_out[sg * C + kc] = p < 3 ? convolution[p * C + kc] : float(qk[(p - 3) * qk_strides[1] + kc * qk_strides[2]]);
+        }
+        convolution_out[sg * C + vc] = p < 3 ? convolution[p * C + vc] : float(value[(p - 3) * value_strides[1] + (head * 128 + d) * value_strides[2]]);
+    }
+}
+threadgroup_barrier(mem_flags::mem_threadgroup);
+const auto offset = [&](uint col, uint row) { return head * 128 * 128 + (TRANSPOSED ? col * 128 + row : row * 128 + col); };
+float state[8][4];
+for (uint j = 0; j < 8; ++j)
+    for (uint i = 0; i < 4; ++i) state[j][i] = recurrent[offset(sg * 8 + j, lane + i * 32)];
+for (uint token = 0; token < tokens; ++token) {
+    const float decay = decays[token], b = betas[token];
+    for (uint j = 0; j < 8; ++j) {
+        const uint col = sg * 8 + j;
+        float projected = 0.f;
+        for (uint i = 0; i < 4; ++i) projected += state[j][i] * keys[token * 128 + lane + i * 32];
+        projected = simd_sum(projected);
+        const float delta = (vals[token * 128 + col] - decay * projected) * b;
+        for (uint i = 0; i < 4; ++i) state[j][i] = decay * state[j][i] + keys[token * 128 + lane + i * 32] * delta;
+    }
+}
+for (uint j = 0; j < 8; ++j)
+    for (uint i = 0; i < 4; ++i) recurrent_out[offset(sg * 8 + j, lane + i * 32)] = state[j][i];
+)METAL", "", false, false, CompileOptions(static_cast<int>(MathMode::Fast)));
+    return kernel;
+}
+
 std::vector<array> gated_delta_cache_step(
     const std::vector<array>& inputs,
     const array& convolution_weight,
@@ -1955,6 +2136,27 @@ std::vector<array> gated_delta_cache_step(
     float eps,
     bool transposed_state,
     bool tiled_heads) {
+    const int tokens = inputs[2].shape(1);
+    const std::int64_t channels = (std::int64_t(key_heads) * 2 + value_heads) * 128;
+    if (!convolution_bias && key_head_dimension == 128 && value_head_dimension == 128 &&
+        key_heads > 0 && value_heads > 0 && value_heads % key_heads == 0 &&
+        channels <= std::numeric_limits<int>::max() && tokens >= 1 && tokens <= 8 &&
+        inputs[0].shape() == Shape{1, 3, int(channels)} &&
+        inputs[1].shape() == Shape{1, value_heads, 128, 128} &&
+        inputs[2].shape() == Shape{1, tokens, key_heads * 256} &&
+        inputs[3].shape() == Shape{1, tokens, value_heads * 128} &&
+        inputs[4].shape() == Shape{1, value_heads, tokens} && inputs[5].shape() == inputs[4].shape() &&
+        std::isfinite(eps) && eps > 0) {
+        const auto packed_weight = normalize_conv_weight(convolution_weight, int(channels));
+        if (packed_weight.kernel == 4)
+            return fused_gdn_cache_replay_kernel()(
+                {floating_strided(inputs[2]), floating_strided(inputs[3]), float32_contiguous(inputs[0]), float32_contiguous(inputs[1]),
+                 packed_weight.values, inputs[4], inputs[5], array({eps})},
+                {inputs[0].shape(), inputs[1].shape()}, {mlx::core::float32, mlx::core::float32},
+                {checked_int(std::int64_t(value_heads) * 512, "GDN replay grid"), 1, 1}, {512, 1, 1},
+                {{"HK", key_heads}, {"HV", value_heads}, {"TILED", int(tiled_heads)},
+                 {"TRANSPOSED", int(transposed_state)}}, std::nullopt, false, {});
+    }
     auto convolved = linear_conv_qkv(
         inputs[0], inputs[2], inputs[3], convolution_weight,
         key_heads, value_heads, key_head_dimension, value_head_dimension,

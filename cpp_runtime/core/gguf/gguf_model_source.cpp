@@ -199,7 +199,7 @@ json metadata_value(const gguf_context* ctx, int64_t id) {
     return result;
 }
 
-std::string canonical_name(const std::string& name) {
+std::string canonical_name(const std::string& name, const json* meta = nullptr) {
     if (name == "token_embd.weight") return "model.token_embedding.weight";
     if (name == "output.weight") return "model.output.weight";
     if (name == "output_norm.weight") return "model.output_norm.weight";
@@ -285,6 +285,24 @@ std::string canonical_name(const std::string& name) {
         {"engram_kv.weight", "associative_memory.projection.weight"},
     };
     const auto found = names.find(name.substr(dot + 1));
+    if (meta && meta->value("general.architecture", std::string{}) == "qwen35") {
+        const auto predictors = meta->value("qwen35.nextn_predict_layers", json(0));
+        const auto blocks = meta->value("qwen35.block_count", json(0));
+        if (predictors.is_number_integer() && blocks.is_number_integer() && predictors.get<int64_t>() == 1 &&
+            blocks.get<int64_t>() > 1 && name.compare(4, dot - 4, std::to_string(blocks.get<int64_t>() - 1)) == 0) {
+            static const std::map<std::string, std::string> predictor_names{
+                {"nextn.eh_proj.weight", "predictor.fusion.weight"},
+                {"nextn.enorm.weight", "predictor.embedding_norm.weight"},
+                {"nextn.hnorm.weight", "predictor.hidden_norm.weight"},
+                {"nextn.shared_head_norm.weight", "predictor.output_norm.weight"},
+                {"nextn.embed_tokens.weight", "predictor.token_embedding.weight"},
+                {"nextn.shared_head_head.weight", "predictor.output.weight"},
+            };
+            if (const auto nextn = predictor_names.find(name.substr(dot + 1)); nextn != predictor_names.end())
+                return nextn->second;
+            if (found != names.end()) return "predictor.block.0." + found->second;
+        }
+    }
     return found == names.end() ? name : "model.block." + name.substr(4, dot - 4) + "." + found->second;
 }
 
@@ -352,6 +370,17 @@ json model_config(const json& meta, const json& shapes, const std::string& arch)
         config["linear_value_head_dim"] = number("ssm.state_size", 128);
         config["linear_num_key_heads"] = number("ssm.group_count", 0);
         config["linear_num_value_heads"] = number("ssm.time_step_rank", 0);
+        if (arch == "qwen35") {
+            const auto nextn = number("nextn_predict_layers", 0);
+            if (!nextn.is_number_integer()) throw std::runtime_error("invalid GGUF NextN layer count");
+            const auto predictors = nextn.get<int64_t>();
+            const auto blocks = config.value("num_hidden_layers", int64_t{0});
+            if (predictors < 0 || (predictors > 0 && predictors >= blocks))
+                throw std::runtime_error("invalid GGUF NextN layer count");
+            if (predictors > 0) config["num_hidden_layers"] = blocks - predictors;
+            config["mtp_num_hidden_layers"] = predictors == 1 && shapes.contains("predictor.fusion.weight") ? 1 : 0;
+            config["mtp_use_dedicated_embeddings"] = shapes.contains("predictor.token_embedding.weight");
+        }
         json layers = json::array();
         const auto count = config.value("num_hidden_layers", int64_t{0});
         for (int64_t i = 0; i < count; ++i) {
@@ -639,7 +668,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
                 throw std::runtime_error("Gyro GGUF requires agention.trellis.state_bits=15");
             std::vector<int64_t> shape;
             for (int d = ggml_n_dims(tensor) - 1; d >= 0; --d) shape.push_back(tensor->ne[d]);
-            auto name = raw_predictor ? predictor_names.at(original) : canonical_name(original);
+            auto name = raw_predictor ? predictor_names.at(original) : canonical_name(original, &meta);
             if (impl_->arch == "qwen4exp") {
                 if (name == "per_layer_token_embd.weight") {
                     const auto layers = meta.at("qwen4exp.ple.layers").get<std::vector<int64_t>>();
@@ -742,7 +771,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         const auto dot = root.find('.', 4);
         if (dot == std::string::npos) throw std::runtime_error("invalid GGUF mixed expert layer name");
         for (const auto* role : {"gate", "up", "down"}) {
-            const auto name = canonical_name(root + "ffn_" + role + "_exps.weight");
+            const auto name = canonical_name(root + "ffn_" + role + "_exps.weight", &meta);
             if (impl_->records.count(name)) continue;
             const auto role_map = root + (std::string_view(role) == "down" ? "ffn_exps_down_type" : "ffn_exps_gu_type");
             const auto map_it = impl_->records.find(role_map);
@@ -841,7 +870,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         const auto weights = meta.at("prism.hadamard.weight_names").get<std::vector<std::string>>();
         if (weights.empty()) throw std::runtime_error("GGUF Hadamard weight list is empty");
         for (const auto& original : weights) {
-            const auto name = canonical_name(original);
+            const auto name = canonical_name(original, &meta);
             const auto record = impl_->records.find(name);
             if (record == impl_->records.end() || !record->second.tensor.shape || record->second.tensor.shape->size() < 2 ||
                 record->second.tensor.dtype.rfind("GGUF_", 0) != 0 || transforms.contains(name))
@@ -1022,7 +1051,7 @@ GgufModelSource::GgufModelSource(const std::filesystem::path& path,
         const auto weights = meta.at("prism.hadamard.weight_names").get<std::vector<std::string>>();
         if (weights.empty()) throw std::runtime_error("GGUF Hadamard weight list is empty");
         for (const auto& original : weights) {
-            const auto name = canonical_name(original);
+            const auto name = canonical_name(original, &meta);
             const auto record = impl_->records.find(name);
             if (record == impl_->records.end() || !record->second.tensor.shape || record->second.tensor.shape->size() < 2 ||
                 record->second.tensor.dtype.rfind("GGUF_", 0) != 0 || transforms.contains(name))

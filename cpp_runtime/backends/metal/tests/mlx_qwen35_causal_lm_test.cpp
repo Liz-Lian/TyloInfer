@@ -1611,6 +1611,52 @@ void test_callback_stop_count() {
         "callback=false performed an extra decode");
 }
 
+void test_decode_pipeline_rollback() {
+    using namespace mlx::core;
+    mfq::metal::MlxSamplingParams sampling;
+    sampling.temperature = 0.f;
+    const std::vector<std::int64_t> prompt{3, 4, 5};
+    for (const bool prefix : {false, true}) for (const bool throwing : {false, true})
+        for (const int stop : {1, 3}) {
+        auto model = make_model();
+        std::vector<std::int64_t> tokens = prompt;
+        bool caught = false;
+        mfq::metal::MlxPrefixCacheHooks hooks;
+        if (prefix) hooks = {4, prompt.size(), true, [&](std::size_t position) {
+            require(position <= tokens.size(), "decode lookahead checkpoint captured an uncommitted token");
+            (void)model.capture_text_session_state({tokens.begin(), tokens.begin() + position});
+        }};
+        try {
+            const auto count = model.generate(prompt, sampling, 8, [&](std::int64_t token) {
+                tokens.push_back(token);
+                if (tokens.size() - prompt.size() < std::size_t(stop)) return true;
+                if (throwing) throw std::runtime_error("decode-pipeline-test-stop");
+                return false;
+            }, {}, {}, std::nullopt, 2, hooks);
+            require(!throwing && count == stop, "decode lookahead changed the cancellation count");
+        } catch (const std::runtime_error& error) {
+            if (std::string(error.what()) != "decode-pipeline-test-stop") throw;
+            caught = true;
+        }
+        require(caught == throwing && model.cache_position() == int(tokens.size()) - 1,
+            "decode lookahead did not restore the committed cache position");
+        tokens.pop_back();
+        auto reference = make_model();
+        auto prefill = reference.forward(token_ids({3, 4}), true);
+        prefill.eval();
+        prefill = reference.forward(token_ids({5}), true);
+        prefill.eval();
+        for (std::size_t index = prompt.size(); index < tokens.size(); ++index) {
+            prefill = reference.forward(token_ids({int(tokens[index])}), true);
+            prefill.eval();
+        }
+        auto actual = model.forward(token_ids({6}), true);
+        auto expected = reference.forward(token_ids({6}), true);
+        eval(actual, expected);
+        require_array_close(actual, expected, 1e-5f, "decode lookahead cancellation changed recurrent/KV state");
+    }
+}
+
 void test_generation_context_boundary() {
     auto model = make_model(true);
     std::vector<std::int64_t> prompt(32);
@@ -1720,6 +1766,45 @@ void test_validation() {
         "out-of-range prompt token was accepted");
 }
 
+void test_auxiliary_capture_and_verification() {
+    using namespace mlx::core;
+    auto captured_model = make_model();
+    captured_model.set_hidden_capture_layers({0, 1});
+    const auto result = captured_model.forward_embeddings_with_hidden(captured_model.embed_tokens(token_ids({1, 2, 3})), true);
+    const auto features = captured_model.take_hidden_capture();
+    require(features && features->shape() == Shape{1, 3, 8}, "auxiliary hidden capture shape differs");
+    require(all(slice(*features, {0, 0, 4}, {1, 3, 8}) == result.second).item<bool>(), "auxiliary final layer changed hidden values");
+    require(!captured_model.take_hidden_capture(), "auxiliary hidden capture was not consumed");
+    for (const auto& layers : {std::vector<int>{-1}, std::vector<int>{2}, std::vector<int>{1, 0}, std::vector<int>{0, 0}}) {
+        bool rejected = false;
+        try { captured_model.set_hidden_capture_layers(layers); } catch (const std::invalid_argument&) { rejected = true; }
+        require(rejected, "invalid auxiliary hidden layer accepted");
+    }
+    for (int depth = 1; depth <= 7; ++depth) for (int accepted = 0; accepted <= depth; ++accepted) {
+        auto target = make_model(), reference = make_model();
+        target.set_hidden_capture_layers({0, 1});
+        reference.set_hidden_capture_layers({0, 1});
+        const auto first = target.prefill_logits(token_ids({1, 2}));
+        const auto expected = reference.forward(token_ids({1, 2}), true);
+        const auto target_features = target.take_hidden_capture(), reference_features = reference.take_hidden_capture();
+        const auto manual = reference.project_hidden_logits(hidden_norm(test_config())(slice(*reference_features, {0, 1, 4}, {1, 2, 8})));
+        require(all(*target_features == *reference_features).item<bool>(), "speculative prefill changed backbone hidden values");
+        require(all(first == manual).item<bool>(), "speculative prefill changed the independently projected final hidden state");
+        std::vector<int> ids;
+        for (int i = 0; i <= depth; ++i) ids.push_back((3 + i) % 8);
+        const auto verified = target.verify_tokens(array(ids.begin(), {1, depth + 1}, int32));
+        eval(verified);
+        require(verified.shape() == Shape{1, depth + 1, 8}, "verification logits shape differs");
+        const auto window = target.take_hidden_capture();
+        require(window && window->shape() == Shape{1, depth + 1, 8}, "verification hidden capture missing");
+        target.resolve_verified_tokens(accepted, depth);
+        reference.forward(array(ids.begin(), {1, accepted + 1}, int32), true).eval();
+        require(target.cache_position() == reference.cache_position(), "verification rollback cache position differs");
+        const auto actual_next = target.forward(token_ids({6}), true), expected_next = reference.forward(token_ids({6}), true);
+        require(max(abs(actual_next - expected_next)).item<float>() < 1e-4f, "verification rollback changed subsequent logits");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1764,6 +1849,8 @@ int main(int argc, char** argv) {
         test_tied_embedding_forward_cache_and_generate();
         test_generation_greedy_seed_and_penalties();
         test_callback_stop_count();
+        test_decode_pipeline_rollback();
+        test_auxiliary_capture_and_verification();
         test_generation_context_boundary();
         test_validation();
         std::cout

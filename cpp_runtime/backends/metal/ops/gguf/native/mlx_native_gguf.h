@@ -2,6 +2,7 @@
 
 #include <mlx/mlx.h>
 #include <array>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -33,8 +34,12 @@ MlxNativeGgufWeight mlx_native_affine_pack(const mlx::core::array& values,
     const mlx::core::array& scales, const mlx::core::array& biases, int bits, int group_size);
 bool mlx_native_affine_supported(int bits, int group_size, int outputs, int width) noexcept;
 std::vector<mlx::core::array> mlx_native_gguf_project(
-    std::span<const MlxNativeGgufWeight> weights, const mlx::core::array& input);
+    std::span<const MlxNativeGgufWeight> weights, const mlx::core::array& input,
+    std::optional<mlx::core::Dtype> output_dtype = std::nullopt);
 mlx::core::array mlx_native_gguf_swiglu(const MlxNativeGgufWeight& gate,
     const MlxNativeGgufWeight& up, const mlx::core::array& input);
+mlx::core::array mlx_native_gguf_ffn(const MlxNativeGgufWeight& gate,
+    const MlxNativeGgufWeight& up, const MlxNativeGgufWeight& down, const mlx::core::array& input,
+    std::optional<mlx::core::Dtype> activation_dtype = std::nullopt);
 
 }

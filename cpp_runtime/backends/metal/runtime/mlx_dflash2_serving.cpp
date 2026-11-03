@@ -14,8 +14,11 @@ bool mlx_dflash2_sampling_supported(const MfqSamplingParams& sampling,
         sampling.repetition_penalty == 1 && !constraint;
 }
 
-void configure_mlx_dflash2(MlxEngineComponents& components,
-    std::shared_ptr<std::optional<MlxQwen4CausalLm>> runtime,
+namespace {
+
+template<class Runtime>
+void configure_dflash2(MlxEngineComponents& components,
+    std::shared_ptr<std::optional<Runtime>> runtime,
     const std::filesystem::path& directory, const MlxSamplingParams& sampling) {
     auto draft = std::make_shared<MlxDFlash2>(MlxDFlash2::load(directory));
     components.prepare_speculative = [runtime, draft, sampling] {
@@ -60,14 +63,32 @@ void configure_mlx_dflash2(MlxEngineComponents& components,
         job.mtp.depth_cycles = stats.depth_cycles;
         job.mtp.position_drafted = stats.position_verified;
         job.mtp.position_accepted = stats.position_accepted;
+        job.mtp.measured_depth_ms = stats.measured_depth_ms;
+        job.mtp.target_ms = stats.target_ms;
+        job.mtp.head_ms = stats.head_ms;
+        job.mtp.rollback_ms = stats.rollback_ms;
         job.mtp.selected_depth = sampling.mtp_max_draft_tokens;
         job.mtp.standard_tokens = stats.standard_tokens;
         target.record_mtp_stats({true, job.mtp.used, stats.cycles, stats.verified, stats.accepted,
-            stats.depth_cycles, stats.position_verified, stats.position_accepted, {},
+            stats.depth_cycles, stats.position_verified, stats.position_accepted, stats.measured_depth_ms,
             job.mtp.selected_depth, stats.standard_tokens, 0, 0});
         return true;
     };
     components.mtp_available = true;
+}
+
+}
+
+void configure_mlx_dflash2(MlxEngineComponents& components,
+    std::shared_ptr<std::optional<MlxQwen4CausalLm>> runtime,
+    const std::filesystem::path& directory, const MlxSamplingParams& sampling) {
+    configure_dflash2(components, std::move(runtime), directory, sampling);
+}
+
+void configure_mlx_dflash2(MlxEngineComponents& components,
+    std::shared_ptr<std::optional<MlxQwen35CausalLm>> runtime,
+    const std::filesystem::path& directory, const MlxSamplingParams& sampling) {
+    configure_dflash2(components, std::move(runtime), directory, sampling);
 }
 
 }

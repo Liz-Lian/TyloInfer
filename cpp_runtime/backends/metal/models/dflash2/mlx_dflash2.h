@@ -14,6 +14,7 @@
 namespace mfq::metal {
 
 class MlxQwen4CausalLm;
+class MlxQwen35CausalLm;
 struct MlxSamplingParams;
 
 struct MlxDFlash2Config {
@@ -48,6 +49,8 @@ struct MlxDFlash2GenerationStats {
     std::array<std::uint64_t, 7> position_verified{}, position_accepted{};
     std::size_t standard_tokens = 0;
     double prefill_ms = 0;
+    double target_ms = 0, head_ms = 0, rollback_ms = 0;
+    std::array<double, 8> measured_depth_ms{};
 };
 
 class MlxDFlash2 {
@@ -72,6 +75,12 @@ public:
         MlxDFlash2GenerationStats* stats = nullptr, int maximum_drafts = 7) const;
     std::int32_t generate_greedy(MlxQwen4CausalLm& target,
         const std::vector<std::int64_t>& prompt, std::int32_t max_tokens,
+        const std::function<bool(std::int64_t)>& callback = {},
+        const std::function<void(std::size_t, double)>& prefill_callback = {},
+        int prefill_chunk_size = 4096, std::optional<int> stop_token = std::nullopt,
+        MlxDFlash2GenerationStats* stats = nullptr, int maximum_drafts = 7) const;
+    std::int32_t generate(MlxQwen35CausalLm& target,
+        const std::vector<std::int64_t>& prompt, const MlxSamplingParams& sampling, std::int32_t max_tokens,
         const std::function<bool(std::int64_t)>& callback = {},
         const std::function<void(std::size_t, double)>& prefill_callback = {},
         int prefill_chunk_size = 4096, std::optional<int> stop_token = std::nullopt,

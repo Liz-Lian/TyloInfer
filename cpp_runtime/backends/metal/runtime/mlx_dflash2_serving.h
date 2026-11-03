@@ -9,5 +9,8 @@ bool mlx_dflash2_sampling_supported(const MfqSamplingParams& sampling,
 void configure_mlx_dflash2(MlxEngineComponents& components,
     std::shared_ptr<std::optional<MlxQwen4CausalLm>> runtime,
     const std::filesystem::path& directory, const MlxSamplingParams& sampling);
+void configure_mlx_dflash2(MlxEngineComponents& components,
+    std::shared_ptr<std::optional<MlxQwen35CausalLm>> runtime,
+    const std::filesystem::path& directory, const MlxSamplingParams& sampling);
 
 }

@@ -1,8 +1,13 @@
 Splash 1.4.0, revision 3135ab45b3da525a8a2dbb8a1aa72ce095dda8a9.
 
+Attention tile and KV geometry headers: Splash 1.5.0,
+revision cabbad2732b027540f5a141511544e0bb62224b7.
+The attention tile accepts row-major KV buffers, a zero-padded tail page,
+and FP16/BF16 elements.
+
 GPU operators and their Linear/MoE/HyperConnection planning code only.
 No Splash server, application, model runner or backend process is included.
-Unmodified upstream sources are kept under runtime/; the MLX buffer and
+Upstream sources are kept under runtime/; the MLX buffer and
 command-stream adapter is maintained separately in backends/metal/ops/gguf/native/.
 
 Apache-2.0: LICENSE.

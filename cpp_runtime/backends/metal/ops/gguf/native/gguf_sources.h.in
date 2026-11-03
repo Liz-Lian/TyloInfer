@@ -1,6 +1,7 @@
 #pragma once
 
 namespace mfq::metal::native_gguf {
+inline constexpr char staged_attention_source[] = R"TIGGUF(@TYLOINFER_NATIVE_STAGED_ATTENTION_SOURCE@)TIGGUF";
 inline constexpr char linear_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_LINEAR_SOURCE@)TIGGUF";
 inline constexpr char register_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_REGISTER_SOURCE@)TIGGUF";
 inline constexpr char float_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_FLOAT_SOURCE@)TIGGUF";
@@ -10,6 +11,8 @@ inline constexpr char moe_projection_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_
     R"TIGGUF(@TYLOINFER_NATIVE_AFFINE_VECTOR_SOURCE@)TIGGUF"
     R"TIGGUF(@TYLOINFER_NATIVE_GGUF_SINGLE_MOE_SOURCE@)TIGGUF";
 inline constexpr char vector_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_VECTOR_SOURCE@)TIGGUF";
+inline constexpr char dense_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_DENSE_SOURCE@)TIGGUF";
+inline constexpr char dense_pair_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_DENSE_PAIR_SOURCE@)TIGGUF";
 inline constexpr char hyper_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_HYPER_SOURCE@)TIGGUF"
     R"TIGGUF(@TYLOINFER_NATIVE_HYPER_BFLOAT_SOURCE@)TIGGUF";
 inline constexpr char pair_moe_source[] = R"TIGGUF(@TYLOINFER_NATIVE_GGUF_PAIR_SOURCE@)TIGGUF";

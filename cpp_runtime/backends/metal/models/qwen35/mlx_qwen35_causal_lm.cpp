@@ -2,6 +2,7 @@
 #include "mlx_legacy_tensor_compat.h"
 #include "mlx_mtp.h"
 #include "mlx_eval_timing.h"
+#include "mlx_kernel_prepare.h"
 
 #include <algorithm>
 #include <array>
@@ -131,6 +132,8 @@ MlxQwen35MtpModule::load_if_present(
         throw std::runtime_error(
             "Qwen3.5 dedicated MTP embeddings are not supported");
     }
+    if (model.contains("predictor.output.weight"))
+        throw std::runtime_error("Qwen3.5 dedicated MTP output heads are not supported");
 
     Qwen35Config mtp_config = config;
     const auto mtp_names = Qwen35TensorNames::predictor();
@@ -687,6 +690,11 @@ MlxQwen35CausalLm::forward_embeddings_impl(
     auto hidden = embeddings.dtype() == activation_dtype_
         ? embeddings
         : mlx::core::astype(embeddings, activation_dtype_);
+    const bool dispatch_decode = use_cache && batch == 1 && tokens == 1 && position > 0 &&
+        !detail::component_profile_active() && MlxKernelPreparation::current() == nullptr;
+    std::size_t layer_index = 0;
+    std::vector<array> captured;
+    if (!hidden_capture_layers_.empty()) hidden_capture_.reset();
     for (auto& layer : layers_) {
         hidden = std::visit(
             [&](auto& block) {
@@ -714,7 +722,13 @@ MlxQwen35CausalLm::forward_embeddings_impl(
                     use_cache);
             },
             layer);
+        if (std::binary_search(hidden_capture_layers_.begin(), hidden_capture_layers_.end(), int(layer_index)))
+            captured.push_back(hidden);
+        if (dispatch_decode && (layer_index < 6 || layer_index % 3 == 0))
+            mlx::core::async_eval({hidden});
+        ++layer_index;
     }
+    if (!captured.empty()) hidden_capture_ = mlx::core::concatenate(captured, -1);
     auto head_input = full_logits
         ? hidden
         : mlx::core::slice(
@@ -747,6 +761,43 @@ MlxQwen35CausalLm::forward_with_hidden(
         nullptr,
         use_cache,
         speculative_confirmed);
+}
+
+void MlxQwen35CausalLm::set_hidden_capture_layers(std::vector<int> layers) {
+    if (!layers.empty() && (layers.front() < 0 || layers.back() >= int(layers_.size()) ||
+        std::adjacent_find(layers.begin(), layers.end(), std::greater_equal<int>()) != layers.end()))
+        throw std::invalid_argument("hidden capture layers must be ordered valid target layers");
+    hidden_capture_layers_ = std::move(layers);
+    hidden_capture_.reset();
+}
+
+std::optional<array> MlxQwen35CausalLm::take_hidden_capture() {
+    auto result = std::move(hidden_capture_);
+    hidden_capture_.reset();
+    return result;
+}
+
+array MlxQwen35CausalLm::project_hidden_logits(const array& hidden) const {
+    if (hidden.ndim() != 3 || hidden.shape(2) != config_.hidden_size)
+        throw std::invalid_argument("predictor output hidden size differs from target");
+    return project_normalized(hidden);
+}
+
+array MlxQwen35CausalLm::prefill_logits(const array& token_ids) {
+    return forward_embeddings_impl(embed_tokens(token_ids), nullptr, true, 0, false).first;
+}
+
+array MlxQwen35CausalLm::verify_tokens(const array& token_ids) {
+    if (token_ids.ndim() != 2 || token_ids.shape(0) != 1 || token_ids.shape(1) < 2 || token_ids.shape(1) > 8)
+        throw std::invalid_argument("speculative verification requires one window of two to eight tokens");
+    return forward_with_hidden(token_ids, true, 1).first;
+}
+
+void MlxQwen35CausalLm::resolve_verified_tokens(int accepted_drafts, int draft_count) {
+    if (draft_count < 1 || accepted_drafts < 0 || accepted_drafts > draft_count)
+        throw std::invalid_argument("invalid speculative verification resolution");
+    if (accepted_drafts == draft_count) commit_speculative();
+    else rollback_speculative(accepted_drafts, draft_count);
 }
 
 array MlxQwen35CausalLm::project_logits(
@@ -917,11 +968,7 @@ MlxQwen35CausalLm::capture_text_session_state(
     for (const auto& layer : layers_) {
         std::visit(
             [&](const auto& block) {
-                auto snapshot = [&] {
-                    if constexpr (std::is_same_v<std::decay_t<decltype(block)>,
-                        MlxQwen35FullAttentionBlock>) return block.snapshot_cache(detached);
-                    else return block.snapshot_cache();
-                }();
+                auto snapshot = block.snapshot_cache(detached);
                 state.bytes += snapshot.nbytes();
                 state.layers.emplace_back(std::move(snapshot));
             },
@@ -1707,73 +1754,96 @@ std::int32_t MlxQwen35CausalLm::generate_prepared_impl(
         return result;
     }
 
-    while (generated < generation_limit) {
-        auto sampled = counts.has_value()
-            ? sampler.sample(
-                  logits,
-                  *counts)
-            : sampler.sample(logits);
-        sampled.eval();
-        auto token =
-            sampled.data<std::int32_t>()[0];
-        if (token < 0 || token >= vocab) {
-            throw std::runtime_error(
-                "Qwen3.5 sampler returned an out-of-range token");
+    using DecodeCheckpoint = std::vector<std::optional<MlxQwen35LinearAttentionCacheSnapshot>>;
+    std::optional<DecodeCheckpoint> pending_cache;
+    int pending_position = 0;
+    const auto rollback_decode = [&] {
+        if (!pending_cache) return;
+        for (std::size_t index = 0; index < layers_.size(); ++index) {
+            std::visit([&](auto& block) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(block)>, MlxQwen35LinearAttentionBlock>)
+                    block.restore_cache(*pending_cache->at(index), false);
+                else if (block.cache_position() > pending_position)
+                    block.trim_cache(block.cache_position() - pending_position);
+            }, layers_[index]);
         }
-        if (token_constraint &&
-            !token_constraint->allows(token)) {
-            auto adjusted = counts.has_value()
-                ? sampler.apply_penalties(logits, *counts)
-                : logits;
-            adjusted = mlx::core::contiguous(
-                mlx::core::astype(
-                    adjusted, mlx::core::float32));
-            adjusted.eval();
-            std::vector<float> masked(
-                adjusted.data<float>(),
-                adjusted.data<float>() + vocab);
-            token_constraint->apply(masked.data(), masked.size());
-            const array constrained_logits(
-                masked.begin(), Shape{1, vocab}, mlx::core::float32);
-            sampled = sampler.sample(constrained_logits);
-            sampled.eval();
-            token = sampled.data<std::int32_t>()[0];
-            if (token < 0 || token >= vocab ||
-                !token_constraint->allows(token)) {
-                throw std::runtime_error(
-                    "Qwen3.5 constrained sampler returned an invalid token");
+        cache_position_ = pending_position;
+        pending_cache.reset();
+    };
+    try {
+        while (generated < generation_limit) {
+            auto sampled = counts.has_value()
+                ? sampler.sample(logits, *counts)
+                : sampler.sample(logits);
+            std::optional<array> next_logits, next_hidden;
+            if (!token_constraint && generated + 1 < generation_limit) {
+                mlx::core::async_eval({sampled});
+                DecodeCheckpoint checkpoint;
+                checkpoint.reserve(layers_.size());
+                for (const auto& layer : layers_) {
+                    checkpoint.push_back(std::visit([](const auto& block)
+                        -> std::optional<MlxQwen35LinearAttentionCacheSnapshot> {
+                        if constexpr (std::is_same_v<std::decay_t<decltype(block)>, MlxQwen35LinearAttentionBlock>)
+                            return block.snapshot_cache(false);
+                        else return std::nullopt;
+                    }, layer));
+                }
+                pending_cache = std::move(checkpoint);
+                pending_position = cache_position_;
+                const auto ids = mlx::core::reshape(sampled, Shape{1, 1});
+                if (prefix_cache) {
+                    auto result = forward_decode_with_hidden(ids);
+                    next_logits = mlx_last_token_logits(result.first, vocab);
+                    next_hidden = std::move(result.second);
+                } else {
+                    next_logits = mlx_last_token_logits(forward_decode(ids), vocab);
+                }
+                mlx::core::async_eval({*next_logits});
             }
-        }
-        if (token_constraint) {
-            token_constraint->accept(token);
-        }
-
-        const array token_ids(
-            {token},
-            Shape{1, 1},
-            mlx::core::int32);
-        if (counts.has_value()) {
-            *counts = sample_token_counts_add(
-                *counts,
-                token_ids);
-        }
-        ++generated;
-
-        if (callback &&
-            !callback(static_cast<std::int64_t>(token))) {
-            break;
-        }
-        if (generated == generation_limit) {
-            break;
-        }
-        if (prefix_cache) {
-            auto result = forward_decode_with_hidden(token_ids);
-            last_cache_hidden_ = result.second;
-            logits = mlx_last_token_logits(result.first, vocab);
+            sampled.eval();
+            auto token = sampled.data<std::int32_t>()[0];
+            if (token < 0 || token >= vocab) {
+                throw std::runtime_error("Qwen3.5 sampler returned an out-of-range token");
+            }
+            if (token_constraint && !token_constraint->allows(token)) {
+                auto adjusted = counts.has_value() ? sampler.apply_penalties(logits, *counts) : logits;
+                adjusted = mlx::core::contiguous(mlx::core::astype(adjusted, mlx::core::float32));
+                adjusted.eval();
+                std::vector<float> masked(adjusted.data<float>(), adjusted.data<float>() + vocab);
+                token_constraint->apply(masked.data(), masked.size());
+                const array constrained_logits(masked.begin(), Shape{1, vocab}, mlx::core::float32);
+                sampled = sampler.sample(constrained_logits);
+                sampled.eval();
+                token = sampled.data<std::int32_t>()[0];
+                if (token < 0 || token >= vocab || !token_constraint->allows(token)) {
+                    throw std::runtime_error("Qwen3.5 constrained sampler returned an invalid token");
+                }
+            }
+            if (token_constraint) token_constraint->accept(token);
+            const array token_ids({token}, Shape{1, 1}, mlx::core::int32);
+            if (counts.has_value()) *counts = sample_token_counts_add(*counts, token_ids);
+            ++generated;
+            if (callback && !callback(static_cast<std::int64_t>(token))) {
+                rollback_decode();
+                break;
+            }
+            if (generated == generation_limit) break;
+            if (next_logits) {
+                logits = std::move(*next_logits);
+                if (next_hidden) last_cache_hidden_ = std::move(*next_hidden);
+                pending_cache.reset();
+            } else if (prefix_cache) {
+                auto result = forward_decode_with_hidden(token_ids);
+                last_cache_hidden_ = result.second;
+                logits = mlx_last_token_logits(result.first, vocab);
+            } else {
+                logits = mlx_last_token_logits(forward_decode(token_ids), vocab);
+            }
             prefix_cache.checkpoint(cache_position_);
-        } else {
-            logits = mlx_last_token_logits(forward_decode(token_ids), vocab);
         }
+    } catch (...) {
+        rollback_decode();
+        throw;
     }
     prefix_cache.checkpoint(cache_position_, true);
     return generated;

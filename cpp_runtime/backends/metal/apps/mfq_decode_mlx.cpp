@@ -367,7 +367,7 @@ void print_help() {
         << "  --api-key KEY          optional bearer token\n"
         << "  --tokenizer PATH       external tokenizer GGUF when not embedded\n"
         << "  --sampling-profile P  explicit runtime sampling profile JSON\n"
-        << "  --dflash2-draft PATH  experimental DFlash2 checkpoint for Flash-Next text\n"
+        << "  --dflash2-draft PATH  experimental DFlash2 checkpoint for supported Qwen text models\n"
         << "  --no-generation-warmup  skip model-executing load warmup; retain kernel preparation\n";
 }
 
@@ -588,6 +588,9 @@ std::filesystem::path executable_path() {
 }
 
 void configure_mlx_metal() {
+    if (std::getenv("MLX_MAX_MB_PER_BUFFER") == nullptr) {
+        ::setenv("MLX_MAX_MB_PER_BUFFER", "512", 0);
+    }
     std::vector<std::filesystem::path> candidates;
     if (const char* configured = std::getenv("TYLOINFER_MLX_METALLIB")) {
         if (*configured != '\0') {
@@ -2952,12 +2955,13 @@ int run_loaded_runtime(
         runtime_holder,
         runtime_stream);
     if (!arguments.dflash2_draft.empty()) {
-        if constexpr (std::is_same_v<Runtime, mfq::metal::MlxQwen4CausalLm>) {
+        if constexpr (std::is_same_v<Runtime, mfq::metal::MlxQwen4CausalLm> ||
+            std::is_same_v<Runtime, mfq::metal::MlxQwen35CausalLm>) {
             mfq::metal::configure_mlx_dflash2(runtime_components, runtime_holder, arguments.dflash2_draft, preparation_sampling);
             runtime_components.prepare_speculative();
             std::cout << "DFlash2 experimental: unconstrained text without penalties; DFlash2 requests bypass prefix reuse and batching"
                       << std::endl;
-        } else throw std::invalid_argument("DFlash2 currently requires a Flash-Next target");
+        } else throw std::invalid_argument("DFlash2 currently requires a supported Qwen target");
     }
     if (auto* preparation = mfq::metal::MlxKernelPreparation::current()) preparation->finish();
     {

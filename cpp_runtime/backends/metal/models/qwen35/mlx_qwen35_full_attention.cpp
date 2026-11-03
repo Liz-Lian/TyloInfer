@@ -1,5 +1,7 @@
 #include "mlx_qwen35_full_attention.h"
 #include "mlx_eval_timing.h"
+#include "mlx_kernel_prepare.h"
+#include "native/mlx_native_gguf.h"
 
 #include <cmath>
 #include <limits>
@@ -13,6 +15,18 @@ namespace {
 
 using mlx::core::Shape;
 using mlx::core::array;
+
+std::array<const MlxNativeGgufWeight*, 3> native_ffn_weights(
+    const MlxLinear& gate, const MlxLinear& up, const MlxLinear& down) {
+    std::array<const MlxNativeGgufWeight*, 3> weights{};
+    const std::array projections{&gate, &up, &down};
+    for (std::size_t i = 0; i < projections.size(); ++i) {
+        const auto* gguf = projections[i]->gguf_weight_ref();
+        if (!gguf || gguf->has_hadamard() || !gguf->native_weight_ref()) return {};
+        weights[i] = gguf->native_weight_ref();
+    }
+    return weights;
+}
 
 int checked_int(std::int64_t value, const char* name) {
     if (value <= 0 ||
@@ -138,7 +152,19 @@ array MlxQwen35DenseSwiGlu::operator()(
 
 array MlxQwen35DenseSwiGlu::forward_branch(
     const array& input) const {
+    const auto weights = native_ffn_weights(gate_, up_, down_);
+    if (weights[0]) return mlx_native_gguf_ffn(*weights[0], *weights[1], *weights[2], input);
     return down_(gate_up_.swiglu(input));
+}
+
+array MlxQwen35DenseSwiGlu::forward_normalized(const array& input, const MlxRmsNorm& norm) const {
+    if (!important_neurons_ && input.dtype() == mlx::core::float16 &&
+        input.ndim() >= 2 && input.shape(-1) == input_size_ && input.size() / input_size_ <= 8) {
+        const auto weights = native_ffn_weights(gate_, up_, down_);
+        if (weights[0])
+            return mlx_native_gguf_ffn(*weights[0], *weights[1], *weights[2], norm(input, mlx::core::bfloat16), input.dtype());
+    }
+    return (*this)(norm(input));
 }
 
 MlxQwen35FullAttentionBlock
@@ -213,6 +239,16 @@ MlxQwen35FullAttentionBlock::MlxQwen35FullAttentionBlock(
         &key_,
         &value_,
     });
+    if (auto* preparation = MlxKernelPreparation::current(); preparation && config_.head_dim == 256 &&
+        (config_.num_attention_heads / config_.num_key_value_heads == 6 ||
+         config_.num_attention_heads / config_.num_key_value_heads == 8)) {
+        preparation->collect([&] {
+            const auto dtype = preparation->activation_dtype();
+            const auto q = mlx::core::zeros(Shape{1, int(config_.num_attention_heads), 8, 256}, dtype);
+            const auto kv = mlx::core::zeros(Shape{1, int(config_.num_key_value_heads), 32, 256}, dtype);
+            preparation->add(scaled_dot_product_attention(q, kv, kv, true));
+        });
+    }
 }
 
 void MlxQwen35FullAttentionBlock::validate_components() const {
@@ -485,8 +521,7 @@ array MlxQwen35FullAttentionBlock::forward_impl(
     const int attention_size =
         static_cast<int>(config_.attention_size());
 
-    const auto normalized = attention_norm_(input);
-    auto projected = (*qkv_)(normalized);
+    auto projected = qkv_->forward_normalized(input, attention_norm_);
     auto query_full = std::move(projected.at(0));
     auto key_full = std::move(projected.at(1));
     auto value_full = std::move(projected.at(2));
@@ -608,7 +643,7 @@ array MlxQwen35FullAttentionBlock::forward_impl(
 
     auto residual = input + output_(attended);
     detail::profile_eval("qwen35.full_attention.output", residual);
-    residual = residual + ffn_(ffn_norm_(residual));
+    residual = residual + ffn_.forward_normalized(residual, ffn_norm_);
     detail::profile_eval("qwen35.ffn", residual);
     return residual;
 }

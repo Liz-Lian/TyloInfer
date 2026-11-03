@@ -19,6 +19,8 @@
 
 namespace mfq::metal {
 
+class MlxRmsNorm;
+
 // Opt-in memory-for-bandwidth mode. When enabled before model loading,
 // ordinary packed linear and embedding tensors are materialized once as FP16
 // and their packed runtime objects are released. MFE expert containers keep
@@ -154,6 +156,8 @@ public:
 
     std::vector<mlx::core::array> operator()(
         const mlx::core::array& input) const;
+    std::vector<mlx::core::array> forward_normalized(
+        const mlx::core::array& input, const MlxRmsNorm& norm) const;
 
     // Execute a two-projection Gate/Up batch and apply SwiGLU. When the
     // registered formats expose a fused small-M implementation, projection
@@ -172,6 +176,9 @@ public:
         std::size_t count) const noexcept;
 
 private:
+    std::vector<mlx::core::array> project(
+        const mlx::core::array& input,
+        std::optional<mlx::core::Dtype> native_output_dtype) const;
     struct Impl;
     std::shared_ptr<const Impl> impl_;
 };
