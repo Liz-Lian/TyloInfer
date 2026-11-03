@@ -14,6 +14,10 @@
 #include "engine/engine_impl.h"
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/native_engine.h"
+#include "engine/models/gemma4/load.h"
+#endif
 
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -45,9 +49,7 @@ namespace mfq::cuda::engine_detail {
 using State = std::variant<
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State>>,
     std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State>>,
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::unique_ptr<Text<mfq::models::CausalModel, mfq::models::State, RuntimeComponents<gemma4::Model>>>,
-#else
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::unique_ptr<Text<gemma4::Model, gemma4::State>>,
 #endif
     std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State>>,
@@ -116,16 +118,118 @@ auto load_qwen(
 
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     auto source = mfq::open_model_source(options.model_path);
-    if (cuda_backbone(mfq::models::graph(*source).backbone) ==
-            CudaBackbone::generic_qwen) {
+    const auto backbone = cuda_backbone(mfq::models::graph(*source).backbone);
+    if (backbone == CudaBackbone::generic_qwen) {
         return std::make_unique<CudaEngine<
             qwen35::Model, qwen35::State, qwen35::Components,
             load_qwen>>(std::move(options), std::move(source));
     }
     source.reset();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if (backbone == CudaBackbone::gemma4) return load_native_engine(std::move(options));
+#endif
     return std::make_unique<engine_detail::EngineInstance<
         engine_detail::State, with_model<false>>>(std::move(options));
 }
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, NativeEngine* target) {
+    std::shared_ptr<const ModelSource> source;
+    std::shared_ptr<WeightMemoryLedger> ledger;
+    auto weights = std::make_unique<RoutedCache>();
+    std::shared_ptr<KvMemoryManager> kv;
+    std::shared_ptr<KvOffloadStore> offload;
+    CudaLoadConfig load;
+    CudaRuntimeConfig runtime;
+    std::unique_ptr<Executor> root;
+    std::shared_ptr<models::CausalModel> model;
+    std::unique_ptr<models::State> state;
+    std::unique_ptr<Executor> forward;
+    try {
+        const bool dump_env = env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
+        env_freeze();
+        if (dump_env) std::cerr << "cuda knobs at load:\n" << env_dump();
+        if (!options.context_size) options.context_size = 32768;
+        auto [execution_config, numeric_options] = load_cuda_execution_config();
+        load = std::move(execution_config);
+        root = std::make_unique<Executor>(std::move(numeric_options), 0);
+        {
+            CudaScope outer_scope(load.layer_placement.primary_device(), root->contexts());
+            internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
+            root->profiler().enabled = false;
+            ledger = std::make_shared<WeightMemoryLedger>();
+            WeightMemoryLoadScope memory_load(*ledger);
+            mfq_tensor_backend::NoGradGuard no_grad;
+            runtime = internal::resolve_cuda_runtime_config(options);
+            const auto kv_options = runtime_options::qsa_kv_offload();
+            kv = std::make_shared<KvMemoryManager>();
+            if (kv_options.gpu_budget_bytes) {
+                kv.reset();
+                KvOffloadConfig config;
+                config.gpu_budget_bytes = kv_options.gpu_budget_bytes;
+                config.ram_budget_bytes = internal::cuda_has_separate_memory() ? kv_options.ram_budget_bytes : 0;
+                config.buffer_bytes = std::min<std::size_t>(config.buffer_bytes, config.gpu_budget_bytes / 4);
+                config.directory = kv_options.directory;
+                offload = std::make_shared<KvOffloadStore>(std::move(config));
+            }
+            {
+                CudaScope scope(load.layer_placement.primary_device(), root->contexts());
+                source = mfq::open_model_source(options.model_path);
+                auto definition = models::config_json(*source, options.config_path);
+                definition = configure_yarn(load.yarn, load.yarn_context_extension,
+                    std::move(definition), models::graph(*source).backbone, options.context_size);
+                auto owner = std::make_shared<gemma4::Model>(gemma4::read(source, definition, options.context_size));
+                model = owner;
+                weight_loader::Loader loader{*source, load.weights,
+                    {load.layer_placement.primary_device(), false, load.drop_file_cache,
+                     load.tensor_parallel, moe_parallel_config(load)}, *weights, root->tq()};
+                load.dense_cpu_layer_count = 0;
+                gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
+                state = model->make_state();
+                state->preallocate();
+                forward = root->fork(model_parallel_primary_device(load));
+                if (owner->plan.vision != CudaVisionAdapter::none || owner->plan.predictor != CudaPredictorAdapter::none)
+                    throw std::runtime_error("CUDA component adapter is unsupported for this model");
+                finalize_kv(kv.get(), *weights, offload);
+                finish_load(kv.get(), *weights, 0, load.report_cuda_memory);
+                if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
+            }
+        }
+        if (target) {
+            target->install(std::move(options), std::move(load), std::move(runtime), std::move(source),
+                std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
+                std::move(root), std::move(model), std::move(state), std::move(forward));
+            return {};
+        }
+        return std::make_unique<NativeEngine>(std::move(options), std::move(load), std::move(runtime),
+            std::move(source), std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
+            std::move(root), std::move(model), std::move(state), std::move(forward));
+    } catch (...) {
+        const auto failure = std::current_exception();
+        if (root) {
+            try { drain_cuda(*root, *weights, offload.get(), load.layer_placement, load.tensor_parallel, load.expert_parallel); }
+            catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
+            catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
+            const auto release = [&] {
+                forward.reset(); state.reset(); model.reset(); root->pipelines().clear();
+                offload.reset(); kv.reset(); weights.reset();
+            };
+            try {
+                CudaScope scope(load.layer_placement.primary_device(), root->contexts());
+                release();
+            } catch (const std::exception& error) {
+                std::cerr << "runtime_load_cleanup error=" << error.what() << '\n';
+                release();
+            } catch (...) {
+                std::cerr << "runtime_load_cleanup error=unknown\n";
+                release();
+            }
+            root.reset();
+        }
+        std::rethrow_exception(failure);
+    }
+}
+#endif
 
 } // namespace mfq::cuda
 

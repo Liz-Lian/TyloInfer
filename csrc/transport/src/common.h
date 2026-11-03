@@ -180,7 +180,7 @@ std::vector<float> decode_audio_features(
 namespace mfq::transport_detail {
 class CompletionStream {
 public:
-    CompletionStream(const MfqScheduler& scheduler, const RequestWork& work, std::string id);
+    CompletionStream(const mfq::engine::Engine& engine, const RequestWork& work, std::string id);
     ~CompletionStream();
     std::optional<std::vector<common_chat_msg_diff>> next();
     void cancel();
@@ -189,9 +189,9 @@ public:
     RequestMetrics metrics;
     std::size_t prompt_tokens = 0;
 private:
-    const MfqScheduler& scheduler_;
+    const mfq::engine::Engine& engine_;
     std::string id_;
-    std::shared_ptr<MfqScheduledRequest> request_;
+    std::shared_ptr<mfq::engine::Output> request_;
     bool terminal_ = false;
     std::size_t generated_tokens_ = 0;
     std::size_t processed_tokens_ = 0;

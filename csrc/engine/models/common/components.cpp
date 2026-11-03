@@ -391,7 +391,9 @@ load_runtime_components(
 #define TYLOINFER_INSTANTIATE_COMPONENTS(TYPE)                                  \
     template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const mfq::cuda::weight_loader::Loader&, bool)
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::gemma4::Model);
+#endif
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::glm_dsa::Model);
 TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::deepseek_v4::Model);
 

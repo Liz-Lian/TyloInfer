@@ -5,9 +5,7 @@
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/executor.h"
-#endif
 
 #include <memory>
 #include <map>
@@ -25,14 +23,11 @@ class Collectives;
 class Pipelines;
 class RouteStats;
 
-class Executor
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    : public mfq::Executor
-#endif
-{
+class Executor : public mfq::Executor {
 public:
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::unique_ptr<mfq::Executor::Scope> enter() override;
+    std::unique_ptr<mfq::Executor::Scope> enter(int device);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     static Executor& current();
 
 #endif
@@ -122,9 +117,6 @@ private:
     Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
              Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
              const Options& options, Mode& mode, int primary);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::unique_ptr<mfq::Executor::Scope> enter(int device);
-#endif
     friend class Ffn;
     std::unique_ptr<ContextSet> owned_contexts_;
     ContextSet& contexts_;

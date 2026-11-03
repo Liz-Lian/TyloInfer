@@ -74,8 +74,8 @@ public:
     explicit MfqStdioTransport(MfqRuntimeTransportConfig config)
         : config_(std::move(config)) {}
 
-    int run(const MfqScheduler & scheduler) override {
-        const bool duplex = scheduler.info().duplex;
+    int run(const mfq::engine::Engine & engine) override {
+        const bool duplex = engine.info().duplex;
         if (stdio_protocol_fd < 0) {
             throw std::runtime_error(
                 "prepare_mfq_stdio_transport must be called before model loading");
@@ -88,7 +88,7 @@ public:
             tts_profile_json(config_.runtime_profile.tts);
         const json chat_template_capabilities =
             chat_template_capabilities_json(
-                scheduler.chat_template_capabilities());
+                engine.chat_template_capabilities());
         const auto capability_profile = config_.model_capabilities
             ? *config_.model_capabilities
             : architecture_capability_profile(config_.model_type);
@@ -97,10 +97,10 @@ public:
         const bool vision_supported = capability_profile.image_input ||
             capability_profile.video_input;
         const bool vision_available =
-            scheduler.supports_multimodal_generation() &&
+            engine.supports_multimodal_generation() &&
             capability_profile.image_input;
         const bool video_available =
-            scheduler.supports_multimodal_generation() &&
+            engine.supports_multimodal_generation() &&
             capability_profile.video_input;
 
         RuntimeRequestMetrics request_metrics_store;
@@ -164,7 +164,7 @@ public:
         };
         const auto add_runtime_metrics = [&](json & value) {
 
-            const auto snapshot = scheduler.snapshot();
+            const auto snapshot = engine.snapshot();
             const auto& metrics = snapshot.runtime;
             value["runtime_metrics_age_ms"] = std::chrono::duration<double, std::milli>(
                 mfq::engine::Clock::now() - snapshot.captured).count();
@@ -175,16 +175,16 @@ public:
         };
         const auto add_session_metrics = [&](json & value) {
 
-            for (const auto & item : scheduler.snapshot().session) {
+            for (const auto & item : engine.snapshot().session) {
                 value[item.first] = item.second;
             }
         };
         const auto health = [&] {
             json value = {
-                {"status", reloading.load() ? "loading" : (scheduler.snapshot().status.healthy ? "ok" : "unhealthy")},
+                {"status", reloading.load() ? "loading" : (engine.snapshot().status.healthy ? "ok" : "unhealthy")},
                 {"model", config_.model_name},
                 {"model_type", config_.model_type},
-                {"probability_available", scheduler.info().probability},
+                {"probability_available", engine.info().probability},
                 {"model_capabilities", model_capabilities},
                 {"vision_supported", vision_supported},
                 {"vision_available", vision_available},
@@ -253,7 +253,7 @@ public:
                 stop_backend = realtime.backend_started;
                 realtime = {};
             }
-            if (stop_backend) (void)scheduler.control(mfq::engine::StopDuplex{});
+            if (stop_backend) (void)engine.control(mfq::engine::StopDuplex{});
             return true;
         };
         const auto emit_realtime = [&](json event) {
@@ -319,7 +319,7 @@ public:
                         "target_id", std::string());
                     for(const auto& task:tasks) if(task.id==target)
                         task.submitted->wait(false,std::memory_order_acquire);
-                    const bool cancelled = scheduler.cancel_request(target);
+                    const bool cancelled = engine.cancel(target);
                     if (!id.empty()) {
                         send_result(id, {
                             {"status", "ok"},
@@ -362,7 +362,7 @@ public:
                     const std::string session_id = params.value(
                         "session_id", std::string());
                     const bool cancelled =
-                        scheduler.cancel_session(session_id);
+                        engine.cancel_session(session_id);
                     send_result(id, {
                         {"status", "ok"},
                         {"cancelled", cancelled},
@@ -383,7 +383,7 @@ public:
                     }
                     send_result(id, {
                         {"status", "ok"},
-                        {"copied_snapshots", scheduler.session({mfq::engine::SessionCommand::Kind::fork, source, target}).count},
+                        {"copied_snapshots", engine.session({mfq::engine::SessionCommand::Kind::fork, source, target}).count},
                     });
                     continue;
                 }
@@ -398,7 +398,7 @@ public:
                     }
                     send_result(id, {
                         {"status", "ok"},
-                        {"released_snapshots", scheduler.session({mfq::engine::SessionCommand::Kind::close, session_id}).count},
+                        {"released_snapshots", engine.session({mfq::engine::SessionCommand::Kind::close, session_id}).count},
                     });
                     continue;
                 }
@@ -408,7 +408,7 @@ public:
                     try {
                         json result = {
                             {"status", "ok"},
-                            {"released_snapshots", scheduler.session({mfq::engine::SessionCommand::Kind::clear}).count},
+                            {"released_snapshots", engine.session({mfq::engine::SessionCommand::Kind::clear}).count},
                         };
                         add_session_metrics(result);
                         reloading.store(false);
@@ -428,14 +428,14 @@ public:
                         if (weight < 0) throw ApiError(400, "invalid_request_error", "weight_target_bytes must be non-negative");
                         command.weight_bytes = static_cast<uint64_t>(weight);
                     }
-                    auto result = json{{"status", "ok"}, {"released_bytes", scheduler.session(command).count}};
+                    auto result = json{{"status", "ok"}, {"released_bytes", engine.session(command).count}};
                     add_session_metrics(result);
                     send_result(id, std::move(result));
                     continue;
                 }
                 if (op == "cache.refresh") {
                     json result = {{"status", "ok"},
-                        {"removed_blocks", scheduler.session({mfq::engine::SessionCommand::Kind::refresh}).count}};
+                        {"removed_blocks", engine.session({mfq::engine::SessionCommand::Kind::refresh}).count}};
                     add_session_metrics(result);
                     send_result(id, std::move(result));
                     continue;
@@ -462,7 +462,7 @@ public:
                     }
                     json result = {
                         {"status", "ok"},
-                        {"released_bytes", scheduler.session(command).count},
+                        {"released_bytes", engine.session(command).count},
                         {"target_bytes", target},
                     };
                     add_session_metrics(result);
@@ -470,7 +470,7 @@ public:
                     continue;
                 }
                 if (op == "reload") {
-                    if (!scheduler.supports_reload()) {
+                    if (!engine.supports_reload()) {
                         throw ApiError(
                             501, "unsupported_operation",
                             "this runtime does not support model reload");
@@ -489,7 +489,7 @@ public:
                                 "context_size exceeds model capacity");
                         }
                         reloading.store(true);
-                        const int64_t loaded = scheduler.reload(requested);
+                        const int64_t loaded = engine.reload(requested);
                         if (loaded < 1 ||
                             (capacity > 0 && loaded > capacity)) {
                             throw std::runtime_error(
@@ -601,7 +601,7 @@ public:
                             "system_prompt",
                             config_.runtime_profile.duplex.system_prompt.value_or(
                                 "Streaming Omni Conversation."));
-                        scheduler.prepare_duplex_session(
+                        engine.prepare_duplex_session(
                             system_prompt, parameters);
                         if (payload.contains("reference_audio_features")) {
                             if (!payload["reference_audio_features"].is_string()) {
@@ -678,7 +678,7 @@ public:
                                     parameters.special_ids.end());
                         }
                         try {
-                            (void)scheduler.control(parameters);
+                            (void)engine.control(parameters);
                             std::lock_guard<std::mutex> lock(realtime_gate);
                             realtime.backend_started = true;
                         } catch (...) {
@@ -753,7 +753,7 @@ public:
                                 400, "invalid_request_error",
                                 "input.text must be a non-empty string");
                         }
-                        scheduler.prepare_duplex_step(
+                        engine.prepare_duplex_step(
                             input["text"].get<std::string>(), step);
                     }
                     step.max_new_speak_tokens = static_cast<int32_t>(
@@ -768,7 +768,7 @@ public:
                             400, "invalid_request_error",
                             "force_listen and force_speak are mutually exclusive");
                     }
-                    const auto result = std::get<MfqDuplexStepResult>(scheduler.control(step));
+                    const auto result = std::get<MfqDuplexStepResult>(engine.control(step));
                     const std::string response_id = request_id("resp-");
                     json metrics = {
                         {"backend", "cuda"},
@@ -778,7 +778,7 @@ public:
                         {"tts_cache_length", result.tts_cache_position},
                         {"audio_chunk_index", result.audio_chunk_index},
                     };
-                    const std::string text_delta = scheduler.decode_tokens(
+                    const std::string text_delta = engine.decode_tokens(
                         result.generated_tokens, controls);
                     if (!text_delta.empty()) {
                         emit_realtime({
@@ -825,14 +825,14 @@ public:
                 }
                 if (op == "count_tokens") {
                     send_result(id, token_count_json(std::get<mfq::engine::TokenCount>(
-                        scheduler.control(parse_token_count_request(params)))));
+                        engine.control(parse_token_count_request(params)))));
                     continue;
                 }
                 if (op == "score") {
-                    if (!scheduler.info().probability)
+                    if (!engine.info().probability)
                         throw ApiError(501, "probability_unavailable", "probability scoring is unavailable for this model");
                     send_result(id, likelihood_result_json(std::get<mfq::engine::LikelihoodResult>(
-                        scheduler.control(parse_score_request(params)))));
+                        engine.control(parse_score_request(params)))));
                     continue;
                 }
                 if (op != "generate") {
@@ -849,7 +849,7 @@ public:
                             400, "invalid_request_error",
                             "vision is disabled for this request");
                     }
-                    if (!scheduler.supports_multimodal_generation()) {
+                    if (!engine.supports_multimodal_generation()) {
                         throw ApiError(
                             501, "unsupported_parameter",
                             "the loaded model has no native vision runtime");
@@ -867,7 +867,7 @@ public:
                         try {
                             // Admission can wait for a GPU quantum. Keep the
                             // protocol reader available for concurrent arrivals.
-                            auto completion = std::make_shared<CompletionStream>(scheduler, work, id);
+                            auto completion = std::make_shared<CompletionStream>(engine, work, id);
                             submitted->store(true,std::memory_order_release);
                             submitted->notify_all();
                             const std::string response_id =
@@ -968,7 +968,7 @@ public:
         }
 
         for(const auto& task:tasks)task.submitted->wait(false,std::memory_order_acquire);
-        scheduler.cancel_all();
+        engine.cancel_all();
         close_realtime("");
         reap_tasks(true);
         return 0;

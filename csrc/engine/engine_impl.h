@@ -58,6 +58,7 @@ public:
         : options_(std::move(options)), source_(std::move(source)) {
         if (!source_) throw std::invalid_argument("CUDA engine requires a model source");
         load();
+        start();
     }
 
     ~CudaEngine() override {
@@ -68,32 +69,23 @@ public:
         }
     }
 
-    engine::EngineInfo info() const override { return info_; }
+protected:
+    engine::EngineInfo describe() const override { return info_; }
 
-    engine::Admission admit(engine::EngineRequest request) override {
-        return with_cuda([&] {
-            return requests_.admit(
-                std::move(request), text_.get(), info_, *this);
-        });
+    bool ready() const override { return ready_; }
+    std::unique_ptr<mfq::Executor::Scope> enter() override {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return executor_->enter();
+#else
+        return executor_->enter(execution_->config.layer_placement.primary_device());
+#endif
+    }
+    std::unique_ptr<engine::ExecutionRequest> prepare_request(engine::EngineRequest request, bool batched) override {
+        return engine::prepare_request(std::move(request), text_.get(), info_, batched, mtp_available());
     }
 
-    void cancel(const engine::RequestId& id) override { requests_.cancel(id); }
-
-    engine::EngineStepResult step(
-        const std::vector<engine::RequestId>& eligible) override {
-        return with_cuda([&] { return requests_.step(eligible, *this); });
-    }
-
-    engine::EngineStatus status() const override {
-        if (!ready_) return {0, false};
-        return requests_.status(exclusive());
-    }
-
-    engine::SessionResult session(
+    engine::SessionResult session_command(
         const engine::SessionCommand& command) override {
-        if (command.kind == engine::SessionCommand::Kind::memory_budget &&
-            !requests_.empty())
-            throw std::runtime_error("memory budgeting requires a quiescent engine");
         return with_cuda([&] {
             if (command.kind != engine::SessionCommand::Kind::memory_budget)
                 return engine::control_session(*cache_, command);
@@ -101,17 +93,16 @@ public:
         });
     }
 
-    std::int64_t reload(std::int64_t context) override {
+    std::int64_t reload_model(std::int64_t context) override {
         if (context < 1) throw std::invalid_argument("reload context must be positive");
-        if (!requests_.empty()) throw std::runtime_error("reload requires a quiescent engine");
-        shutdown();
+        unload_model();
         options_.context_size = context;
         source_ = mfq::open_model_source(options_.model_path);
         load();
         return info_.max_context;
     }
 
-    void shutdown() override {
+    void unload_model() override {
         if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
             std::cerr << "cuda knobs in use:\n" << env_dump();
         ready_ = false;
@@ -120,12 +111,6 @@ public:
             if (!failure) failure = std::move(error);
         };
 
-        if (execution_) {
-            CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
-            remember(requests_.clear());
-        } else {
-            remember(requests_.clear());
-        }
         text_.reset();
 
         if (execution_) {
@@ -164,7 +149,7 @@ public:
         if (failure) std::rethrow_exception(failure);
     }
 
-    engine::ControlResult control(engine::ControlRequest request) override {
+    engine::ControlResult control_command(engine::ControlRequest request) override {
         if (!ready_) throw std::runtime_error("CUDA engine is unloaded");
         return with_cuda([&] {
             return std::visit([&](auto&& value) -> engine::ControlResult {
@@ -194,15 +179,16 @@ public:
         });
     }
 
-    bool can_batch(const engine::EngineRequest& request) const {
+public:
+    bool can_batch(const engine::EngineRequest& request) const override {
         return batching_ && engine::batch_compatible(
             request, cache_->persistent_prefix_enabled(), bool(components().mtp));
     }
 
-    bool exclusive() const { return duplex_active_; }
+    bool exclusive() const override { return duplex_active_; }
     bool mtp_available() const { return bool(components().mtp); }
 
-    void execute(const std::vector<engine::RequestId>& eligible) {
+    void execute(const std::vector<engine::RequestId>& eligible) override {
         if (batching_) batching_->step(eligible);
     }
 
@@ -251,7 +237,7 @@ public:
     }
 
     engine::Generation generate(
-        const engine::RequestId& id, engine::ExecutionRequest& request) {
+        const engine::RequestId& id, engine::ExecutionRequest& request) override {
         if (request.batched) graph_->invalidate();
         return engine::generate_prepared(
             *this, request.input, request.output, id, request.batched);
@@ -281,7 +267,6 @@ private:
     std::function<void()> restore_decode_workspace_;
     std::unique_ptr<engine::TextProcessor> text_;
     engine::EngineInfo info_;
-    engine::RequestExecutor requests_;
     bool ready_ = false;
     bool duplex_active_ = false;
     bool preparing_ = false;
@@ -411,7 +396,7 @@ private:
         } catch (...) {
             const auto failure = std::current_exception();
             try {
-                shutdown();
+                unload_model();
             } catch (const std::exception& error) {
                 std::cerr << "runtime_load_cleanup error=" << error.what() << '\n';
             }
@@ -500,7 +485,6 @@ private:
         info_.chat = text_->chat_template_capabilities();
         info_.stop_token_ids = mfq::models::stop_token_ids(
             mfq::models::config_json(*source_, options_.config_path), info_.vocab_size);
-        requests_ = engine::RequestExecutor(info_.max_requests);
     }
 
     template <class T>

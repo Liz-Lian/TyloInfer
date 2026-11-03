@@ -15,7 +15,7 @@ class Batch {
     virtual void release_idle_buffers() = 0;
 };
 
-// Physical row metadata only. Request lifecycle and output belong to the executor.
+// Physical row metadata only. Request lifecycle and output belong to the scheduler.
 struct BatchRequest {
     BatchRequest(std::string id, const InferenceRequest& input)
         : id(std::move(id)), prompt(input.prompt), sampling(input.sampling),

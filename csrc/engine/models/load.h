@@ -8,8 +8,10 @@
 #include "engine/models/common/model_config.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/qwen35/load.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/state.h"
+#endif
 #include "engine/models/glm_dsa/load.h"
 #include "engine/models/glm_dsa/state.h"
 #include "engine/models/deepseek_v4/load.h"
@@ -181,6 +183,9 @@ inline constexpr auto with_model = []<typename F>(
         case CudaBackbone::minicpmo_tts:
             return load_tts();
         case CudaBackbone::gemma4: {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            throw std::runtime_error("unsupported CUDA model backbone");
+#else
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
@@ -194,19 +199,10 @@ inline constexpr auto with_model = []<typename F>(
             execution.config.dense_cpu_layer_count = 0;
             gemma4::load(*owner, weights, execution.config.layer_placement, execution.config.n_gpu_layers,
                          execution.config.expert_parallel.enabled());
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            const mfq::models::CausalModel& causal = *owner;
-            auto state = causal.make_state();
-#else
             auto state = std::make_unique<gemma4::State>(*owner);
-#endif
             state->preallocate();
             auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, weights, load_optional_components);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            std::shared_ptr<mfq::models::CausalModel> causal_owner = owner;
-            return finish(causal_owner, state, executor, components, started);
-#else
             return finish(owner, state, executor, components, started);
 #endif
         }

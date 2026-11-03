@@ -1,10 +1,13 @@
 #include "scheduler.h"
+#include "table.h"
 
 #include <algorithm>
+#include <exception>
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 
-using namespace mfq::engine;
+namespace mfq::engine {
 
 namespace {
 constexpr std::size_t terminal_reserve = sizeof(EngineEvent) + 128 + 64 + 512;
@@ -28,7 +31,40 @@ std::size_t event_bytes(const EventData& data) {
 }
 }
 
-std::vector<EngineEvent> MfqScheduledRequest::wait() {
+Engine::Engine() = default;
+Engine::~Engine() = default;
+void Engine::start() {
+    try { scheduler_ = std::make_unique<Scheduler>(*this); }
+    catch (...) {
+        try { unload_model(); }
+        catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "runtime_unload_cleanup error=unknown\n"; }
+        throw;
+    }
+}
+std::shared_ptr<Output> Engine::submit(EngineRequest request) const { return scheduler_->submit(std::move(request)); }
+bool Engine::cancel(const std::string& id) const { return scheduler_->cancel_request(id); }
+bool Engine::cancel_session(const std::string& id) const { return scheduler_->cancel_session(id); }
+void Engine::cancel_all() const { scheduler_->cancel_all(); }
+EngineInfo Engine::info() const { return scheduler_->info(); }
+EngineStatus Engine::status() const { return scheduler_->status(); }
+Engine::Snapshot Engine::snapshot() const { return scheduler_->snapshot(); }
+ControlResult Engine::control(ControlRequest request) const { return scheduler_->control(std::move(request)); }
+SessionResult Engine::session(SessionCommand command) const { return scheduler_->session(std::move(command)); }
+std::int64_t Engine::reload(std::int64_t context) const { return scheduler_->reload(context); }
+void Engine::shutdown() { if (scheduler_) scheduler_->shutdown(); else unload_model(); }
+void Engine::prepare_duplex_session(const std::string& prompt, MfqDuplexSessionParams& params) const {
+    params = std::get<MfqDuplexSessionParams>(control(PrepareDuplex{prompt, params}));
+}
+void Engine::prepare_duplex_step(const std::string& text, MfqDuplexStepInput& input) const {
+    input = std::get<MfqDuplexStepInput>(control(PrepareDuplexStep{text, input}));
+}
+std::string Engine::decode_tokens(const std::vector<std::int64_t>& tokens,
+        const std::unordered_set<std::int64_t>& excluded) const {
+    return std::get<std::string>(control(DecodeTokens{tokens, excluded}));
+}
+
+std::vector<EngineEvent> Output::wait() {
     std::unique_lock lock(mutex_);
     ready_.wait(lock, [&] { return terminal_ || !events_.empty(); });
     std::vector<EngineEvent> result;
@@ -42,14 +78,14 @@ std::vector<EngineEvent> MfqScheduledRequest::wait() {
     return result;
 }
 
-bool MfqScheduledRequest::done() const {
+bool Output::done() const {
     std::lock_guard lock(mutex_);
     return terminal_ && events_.empty();
 }
 
-MfqScheduler::MfqScheduler(Engine& engine) : MfqScheduler(engine, Limits{}) {}
-MfqScheduler::MfqScheduler(Engine& engine, Limits limits)
-    : engine_(engine), limits_(limits), info_(engine.info()) {
+Scheduler::Scheduler(Engine& engine) : Scheduler(engine, Limits{}) {}
+Scheduler::Scheduler(Engine& engine, Limits limits)
+    : engine_(engine), limits_(limits), info_(engine.describe()) {
     if (limits.events < 4 || limits.bytes < 4096)
         throw std::invalid_argument("outbox requires at least 4 events and 4096 bytes");
     std::promise<void> ready;
@@ -61,27 +97,27 @@ MfqScheduler::MfqScheduler(Engine& engine, Limits limits)
     });
     initialized.get();
 }
-MfqScheduler::~MfqScheduler() { shutdown(); }
-void MfqScheduler::shutdown() {
+Scheduler::~Scheduler() { shutdown(); }
+void Scheduler::shutdown() {
     { std::lock_guard lock(mutex_); stopping_ = true; }
     wake_->notify_one();
     if (worker_.joinable()) worker_.join();
 }
-void MfqScheduler::enqueue(Command command) const {
+void Scheduler::enqueue(Command command) const {
     std::lock_guard lock(mutex_);
     if (stopping_) throw std::runtime_error("scheduler is stopping");
     mailbox_.push_back(std::move(command));
     wake_->notify_one();
 }
-EngineInfo MfqScheduler::info() const {
+EngineInfo Scheduler::info() const {
     std::lock_guard lock(mutex_);
     return info_;
 }
-EngineStatus MfqScheduler::status() const {
+EngineStatus Scheduler::status() const {
     Status command;
     auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
 }
-MfqScheduler::Snapshot MfqScheduler::snapshot() const {
+Engine::Snapshot Scheduler::snapshot() const {
     std::lock_guard lock(mutex_);
     if (!stopping_ && Clock::now() - snapshot_.captured >= std::chrono::milliseconds(250)) {
         snapshot_requested_ = true;
@@ -89,14 +125,14 @@ MfqScheduler::Snapshot MfqScheduler::snapshot() const {
     }
     return snapshot_;
 }
-void MfqScheduler::refresh_snapshot(bool healthy, bool blocked, bool metrics) {
-    auto status = engine_.status();
+void Scheduler::refresh_snapshot(bool healthy, bool blocked, bool metrics) {
+    auto status = execution_status();
     status.healthy &= healthy;
     if (blocked || !status.healthy) status.available = 0;
     std::optional<Metrics> runtime, session;
     if (metrics) {
-        try { runtime = std::get<Metrics>(engine_.control(RuntimeMetrics{})); } catch (...) {}
-        try { session = engine_.session({SessionCommand::Kind::metrics}).metrics; } catch (...) {}
+        try { runtime = std::get<Metrics>(engine_.control_command(RuntimeMetrics{})); } catch (...) {}
+        try { session = engine_.session_command({SessionCommand::Kind::metrics}).metrics; } catch (...) {}
     }
     std::lock_guard lock(mutex_);
     snapshot_.status = status;
@@ -113,10 +149,10 @@ void MfqScheduler::refresh_snapshot(bool healthy, bool blocked, bool metrics) {
     if (session) merge(snapshot_.session, *session);
     if (runtime && session) snapshot_.captured = Clock::now();
 }
-std::shared_ptr<MfqScheduledRequest> MfqScheduler::submit(EngineRequest input) const {
+std::shared_ptr<Output> Scheduler::submit(EngineRequest input) const {
     if (input.id.empty() || input.id.size() > 128)
         throw std::invalid_argument("request ID must contain 1-128 bytes");
-    auto outbox = std::make_shared<MfqScheduledRequest>();
+    auto outbox = std::make_shared<Output>();
     outbox->wake_ = wake_;
     Submit command{{std::move(input), outbox}, {}};
     auto result = command.reply.get_future();
@@ -124,42 +160,31 @@ std::shared_ptr<MfqScheduledRequest> MfqScheduler::submit(EngineRequest input) c
     result.get();
     return outbox;
 }
-bool MfqScheduler::cancel_request(const std::string& id) const {
+bool Scheduler::cancel_request(const std::string& id) const {
     Cancel command{id, false, false, {}};
     auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
 }
-bool MfqScheduler::cancel_session(const std::string& id) const {
+bool Scheduler::cancel_session(const std::string& id) const {
     Cancel command{id, true, false, {}};
     auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
 }
-void MfqScheduler::cancel_all() const {
+void Scheduler::cancel_all() const {
     Cancel command{{}, false, true, {}};
     auto result = command.reply.get_future(); enqueue(std::move(command)); result.get();
 }
-ControlResult MfqScheduler::control(ControlRequest request) const {
+ControlResult Scheduler::control(ControlRequest request) const {
     Control command{std::move(request), {}};
     auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
 }
-SessionResult MfqScheduler::session(SessionCommand request) const {
+SessionResult Scheduler::session(SessionCommand request) const {
     Session command{std::move(request), {}};
     auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
 }
-std::int64_t MfqScheduler::reload(std::int64_t context) const {
+std::int64_t Scheduler::reload(std::int64_t context) const {
     Reload command{context, {}};
     auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
 }
-void MfqScheduler::prepare_duplex_session(const std::string& prompt, MfqDuplexSessionParams& params) const {
-    params = std::get<MfqDuplexSessionParams>(control(PrepareDuplex{prompt, params}));
-}
-void MfqScheduler::prepare_duplex_step(const std::string& text, MfqDuplexStepInput& input) const {
-    input = std::get<MfqDuplexStepInput>(control(PrepareDuplexStep{text, input}));
-}
-std::string MfqScheduler::decode_tokens(const std::vector<std::int64_t>& tokens,
-        const std::unordered_set<std::int64_t>& excluded) const {
-    return std::get<std::string>(control(DecodeTokens{tokens, excluded}));
-}
-
-void MfqScheduler::publish(Request& request, EngineEvent event) {
+void Scheduler::publish(Request& request, EngineEvent event) {
     auto& box = *request.outbox;
     std::unique_lock lock(box.mutex_);
     if (box.terminal_) return;
@@ -192,7 +217,7 @@ void MfqScheduler::publish(Request& request, EngineEvent event) {
     box.events_.push_back(std::move(event));
     box.ready_.notify_all();
 }
-void MfqScheduler::flush(Request& request) {
+void Scheduler::flush(Request& request) {
     auto& box = *request.outbox;
     std::lock_guard lock(box.mutex_);
     while (!request.pending.empty()) {
@@ -208,7 +233,7 @@ void MfqScheduler::flush(Request& request) {
         box.ready_.notify_all();
     }
 }
-void MfqScheduler::cancel(Request& request) {
+void Scheduler::cancel(Request& request) {
     if (request.finished) {
         if (request.pending.empty()) return;
         auto terminal = std::move(request.pending.back());
@@ -219,15 +244,106 @@ void MfqScheduler::cancel(Request& request) {
     if (request.cancelling) return;
     request.cancelling = true;
     request.pending.clear();
-    if (request.admitted) engine_.cancel(request.input.id);
+    if (request.execution) request.execution->output.result.cancelled = true;
     else {
         publish(request, {request.input.id, Cancelled{}});
     }
 }
 
-void MfqScheduler::loop() noexcept {
+EngineStatus Scheduler::execution_status() const {
+    if (!healthy_ || !engine_.ready()) return {0, false};
+    if (engine_.exclusive()) return {0, true};
+    std::size_t active = 0;
+    for (const auto& [id, request] : requests_) {
+        if (!request.execution) continue;
+        if (!request.execution->batched) return {0, true};
+        ++active;
+    }
+    return {info_.max_requests - active, true};
+}
+
+EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
+    auto scope = engine_.enter();
+    try {
+        engine_.execute(eligible);
+    } catch (...) {
+        healthy_ = false;
+        for (auto& [id, request] : requests_)
+            if (request.execution) request.execution->complete(std::current_exception());
+    }
+    EngineStepResult result;
+    for (auto& [id, request] : requests_) {
+        if (!request.execution) continue;
+        auto& current = *request.execution;
+        if (!current.done && (current.output.result.cancelled ||
+            std::find(eligible.begin(), eligible.end(), id) != eligible.end())) {
+            try {
+                if (!current.started) {
+                    current.started = true;
+                    current.generation = engine_.generate(id, current);
+                }
+                auto step = current.generation.next();
+                if (step.state == StepState::advanced) result.advanced.push_back(id);
+                if (step.value) {
+                    if (auto* progress = std::get_if<PrefillProgress>(&*step.value))
+                        current.output.metrics.mark_prefill(progress->timing);
+                    result.events.push_back({id, std::move(*step.value)});
+                }
+                if (!step) current.complete();
+            } catch (...) { current.complete(std::current_exception()); }
+        }
+        if (!current.done) continue;
+        current.generation = {};
+        if (current.output.cleanup_failure) {
+            healthy_ = false;
+            current.failure = current.output.cleanup_failure;
+        }
+        finish_request(id, current, healthy_, result);
+        request.execution.reset();
+    }
+    result.status = execution_status();
+    result.has_work = std::any_of(requests_.begin(), requests_.end(),
+        [](const auto& entry) { return bool(entry.second.execution); });
+    return result;
+}
+
+void Scheduler::retire_failed() noexcept {
+    std::exception_ptr failure;
+    const auto remember = [&](std::exception_ptr error) { if (!failure) failure = std::move(error); };
+    for (auto& [id, request] : requests_)
+        if (request.execution) request.execution->output.result.cancelled = true;
+    const auto active = [&] {
+        return std::any_of(requests_.begin(), requests_.end(),
+            [](const auto& entry) { return bool(entry.second.execution); });
+    };
+    if (active() && engine_.ready())
+        try { (void)advance({}); } catch (...) { remember(std::current_exception()); }
+    const auto clear = [&] {
+        for (auto& [id, request] : requests_) {
+            if (!request.execution) continue;
+            request.execution->generation = {};
+            if (request.execution->output.cleanup_failure) {
+                healthy_ = false;
+                remember(request.execution->output.cleanup_failure);
+            }
+            request.execution.reset();
+        }
+    };
+    if (active()) {
+        if (engine_.ready()) {
+            try { auto scope = engine_.enter(); clear(); }
+            catch (...) { healthy_ = false; remember(std::current_exception()); clear(); }
+        } else clear();
+    }
+    if (failure) {
+        try { std::rethrow_exception(failure); }
+        catch (const std::exception& error) { std::cerr << "request_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "request_cleanup error=unknown\n"; }
+    }
+}
+
+void Scheduler::loop() noexcept {
     std::optional<Reload> reload;
-    bool healthy = true;
     bool duplex_active = false;
     for (;;) {
         std::deque<Command> commands;
@@ -239,7 +355,7 @@ void MfqScheduler::loop() noexcept {
                 if constexpr (std::is_same_v<T, Submit>) {
                     auto& request = value.request;
                     const auto id = request.input.id;
-                    if (stopping || !healthy || reload || duplex_active)
+                    if (stopping || !healthy_ || reload || duplex_active)
                         throw std::runtime_error("scheduler is not accepting requests");
                     if (requests_.contains(id)) throw std::invalid_argument("request ID is already active");
                     const auto& session = request.input.input.cache_plan.session_id;
@@ -267,10 +383,10 @@ void MfqScheduler::loop() noexcept {
                          std::holds_alternative<MfqDuplexStepInput>(value.request) ||
                          std::holds_alternative<StopDuplex>(value.request)) && !requests_.empty())
                         throw std::runtime_error("duplex conflicts with active generation");
-                    auto result = engine_.control(std::move(value.request));
+                    auto result = engine_.control_command(std::move(value.request));
                     if (start_duplex) duplex_active = true;
                     if (stop_duplex) duplex_active = false;
-                    refresh_snapshot(healthy, duplex_active || stopping, true);
+                    refresh_snapshot(healthy_, duplex_active || stopping, true);
                     value.reply.set_value(std::move(result));
                 } else if constexpr (std::is_same_v<T, Session>) {
                     if (value.request.kind != SessionCommand::Kind::metrics) {
@@ -286,18 +402,17 @@ void MfqScheduler::loop() noexcept {
                                 throw std::runtime_error("session operation conflicts with active generation");
                         }
                     }
-                    auto result = engine_.session(value.request);
-                    refresh_snapshot(healthy, reload.has_value() || duplex_active || stopping, true);
+                    auto result = engine_.session_command(value.request);
+                    refresh_snapshot(healthy_, reload.has_value() || duplex_active || stopping, true);
                     value.reply.set_value(std::move(result));
                 } else if constexpr (std::is_same_v<T, Status>) {
-                    auto status = engine_.status();
-                    status.healthy &= healthy;
+                    auto status = execution_status();
                     if (!status.healthy || reload || duplex_active || stopping) status.available = 0;
                     value.reply.set_value(status);
                 } else {
                     if (reload) throw std::runtime_error("reload already pending");
                     if (duplex_active) {
-                        (void)engine_.control(StopDuplex{});
+                        (void)engine_.control_command(StopDuplex{});
                         duplex_active = false;
                     }
                     for (auto& [id, request] : requests_) cancel(request);
@@ -320,11 +435,17 @@ void MfqScheduler::loop() noexcept {
                 if (stopping || (request.input.deadline && *request.input.deadline <= Clock::now())) cancel(request);
                 if (request.finished) continue;
                 if (request.input.deadline && !request.cancelling) wake_at = std::min(wake_at, *request.input.deadline);
-                if (request.cancelling) { executable |= request.admitted; continue; }
-                if (!request.admitted && !reload && !admission_blocked && engine_.status().available > 0) {
+                if (request.cancelling) { executable |= bool(request.execution); continue; }
+                if (!request.execution && !reload && !admission_blocked && execution_status().available > 0) {
                     try {
-                        request.admitted = engine_.admit(request.input) == Admission::accepted;
-                        admission_blocked = !request.admitted;
+                        auto scope = engine_.enter();
+                        const bool batched = engine_.can_batch(request.input);
+                        const bool active = std::any_of(requests_.begin(), requests_.end(),
+                            [](const auto& entry) { return bool(entry.second.execution); });
+                        if (!batched && active) admission_blocked = true;
+                        else {
+                            request.execution = engine_.prepare_request(request.input, batched);
+                        }
                     }
                     catch (const InferenceInputError& error) {
                         publish(request, {id, Failed{error.code == InferenceInputErrorCode::Unsupported
@@ -333,7 +454,7 @@ void MfqScheduler::loop() noexcept {
                         publish(request, {id, Failed{"invalid_request", error.what()}}); continue;
                     }
                 }
-                if (!request.admitted) continue;
+                if (!request.execution) continue;
                 if (!request.pending.empty()) continue;
                 auto& box = *request.outbox;
                 std::lock_guard lock(box.mutex_);
@@ -345,13 +466,13 @@ void MfqScheduler::loop() noexcept {
             }
             executable |= !eligible.empty();
             if (executable) {
-                auto result = engine_.step(eligible);
+                auto result = advance(eligible);
                 // Teardown has completed when the engine becomes idle. Publish
                 // its final resource snapshot before the terminal response;
                 // otherwise a short request can leave prefill usage visible.
                 if (!result.has_work && std::any_of(result.events.begin(), result.events.end(),
                         [](const auto& event) { return terminal(event.data); }))
-                    refresh_snapshot(healthy && result.status.healthy,
+                    refresh_snapshot(healthy_ && result.status.healthy,
                         reload.has_value() || duplex_active || stopping, true);
                 for (auto& event : result.events) {
                     auto found = requests_.find(event.id);
@@ -362,19 +483,14 @@ void MfqScheduler::loop() noexcept {
                 if (result.wake_at) wake_at = std::min(wake_at, *result.wake_at);
             }
         } catch (const std::exception& error) {
-            healthy = false;
-            for (auto& [id, request] : requests_) {
-                try { if (request.admitted) engine_.cancel(id); } catch (...) {}
-            }
-            try { (void)engine_.step({}); } catch (...) {}
+            healthy_ = false;
+            retire_failed();
             for (auto& [id, request] : requests_)
                 if (!request.finished)
                     try { publish(request, {id, Failed{"backend_failure", error.what()}}); } catch (...) {}
         } catch (...) {
-            healthy = false;
-            for (auto& [id, request] : requests_)
-                try { engine_.cancel(id); } catch (...) {}
-            try { (void)engine_.step({}); } catch (...) {}
+            healthy_ = false;
+            retire_failed();
             for (auto& [id, request] : requests_)
                 if (!request.finished)
                     try { publish(request, {id, Failed{"backend_failure", "unknown backend error"}}); } catch (...) {}
@@ -387,20 +503,20 @@ void MfqScheduler::loop() noexcept {
         }
         if (reload && requests_.empty()) {
             try {
-                const auto context = engine_.reload(reload->context);
-                { std::lock_guard lock(mutex_); info_ = engine_.info(); }
-                healthy = true; reload->reply.set_value(context);
-            } catch (...) { healthy = false; reload->reply.set_exception(std::current_exception()); }
+                const auto context = engine_.reload_model(reload->context);
+                { std::lock_guard lock(mutex_); info_ = engine_.describe(); }
+                healthy_ = true; reload->reply.set_value(context);
+            } catch (...) { healthy_ = false; reload->reply.set_exception(std::current_exception()); }
             reload.reset();
         }
         if (!order_.empty()) { order_.push_back(order_.front()); order_.pop_front(); }
         if (stopping && requests_.empty()) {
-            try { engine_.shutdown(); } catch (...) {}
+            try { engine_.unload_model(); } catch (...) {}
             return;
         }
         bool refresh;
         { std::lock_guard lock(mutex_); refresh = std::exchange(snapshot_requested_, false); }
-        refresh_snapshot(healthy, reload.has_value() || duplex_active || stopping, !commands.empty() || refresh);
+        refresh_snapshot(healthy_, reload.has_value() || duplex_active || stopping, !commands.empty() || refresh);
         if (!executable) {
             std::unique_lock lock(mutex_);
             if (mailbox_.empty() && !stopping_) {
@@ -410,3 +526,5 @@ void MfqScheduler::loop() noexcept {
         }
     }
 }
+
+} // namespace mfq::engine

@@ -2296,14 +2296,14 @@ MfqRuntimeProfile resolve_mfq_runtime_profile(
 }
 
 namespace mfq::transport_detail {
-CompletionStream::CompletionStream(const MfqScheduler& scheduler, const RequestWork& work, std::string id)
-    : scheduler_(scheduler), id_(std::move(id)),
-      request_(scheduler_.submit(mfq::engine::EngineRequest{id_, work})) {}
+CompletionStream::CompletionStream(const mfq::engine::Engine& engine, const RequestWork& work, std::string id)
+    : engine_(engine), id_(std::move(id)),
+      request_(engine_.submit(mfq::engine::EngineRequest{id_, work})) {}
 CompletionStream::~CompletionStream() {
     if (!terminal_) try { cancel(); } catch (...) {}
 }
 void CompletionStream::cancel() {
-    scheduler_.cancel_request(id_);
+    engine_.cancel(id_);
     result.client_connected = false;
 }
 std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {

@@ -171,7 +171,7 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
         co_yield std::move(step);
     }
     // Flush parser-held text before a final session snapshot can copy or evict
-    // a large cache. The executor's terminal finish remains idempotent and
+    // a large cache. The scheduler's terminal finish remains idempotent and
     // still reports cleanup/cache completion after this final text event.
     if(caching) {
         auto tail=output.finish();

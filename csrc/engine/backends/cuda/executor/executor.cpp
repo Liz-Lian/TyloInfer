@@ -265,21 +265,39 @@ AttentionScratch& Executor::attention_scratch(mfq::Device device, AttentionGeome
     std::lock_guard lock(attention_scratch_mutex_);
     return attention_scratch_[{device.is_cuda() ? device.index : -1, stream}][geometry];
 }
+#endif
 
 namespace {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 thread_local Executor* active_executor = nullptr;
+#endif
 
 class ExecutorScope final : public mfq::Executor::Scope {
 public:
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts)
-        : native_(primary, contexts), previous_(active_executor) {
+        : native_(primary, contexts)
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        , previous_(active_executor)
+#endif
+    {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         active_executor = &executor;
+#else
+        (void)executor;
+#endif
     }
-    ~ExecutorScope() override { active_executor = previous_; }
+    ~ExecutorScope() override {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        active_executor = previous_;
+#endif
+    }
 
 private:
     CudaScope native_;
+    mfq_tensor_backend::NoGradGuard no_grad_;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     Executor* previous_;
+#endif
 };
 } // namespace
 
@@ -291,6 +309,7 @@ std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device) {
     return std::make_unique<ExecutorScope>(*this, device, contexts_);
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 Executor& Executor::current() {
     if (!active_executor) throw std::runtime_error("no active CUDA executor scope");
     return *active_executor;

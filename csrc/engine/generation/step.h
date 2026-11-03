@@ -16,7 +16,7 @@ using mfq::StepState;
 using Generation = mfq::StepSequence<EventData>;
 
 // Resource owners release exactly once, including coroutine destruction. The
-// executor observes teardown failures before publishing a terminal event.
+// scheduler observes teardown failures before publishing a terminal event.
 template <class Release> struct ExecutionCleanup {
     std::exception_ptr& failure;
     Release release;

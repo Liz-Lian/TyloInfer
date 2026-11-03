@@ -7,6 +7,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <variant>
@@ -84,6 +88,22 @@ struct Failed { std::string code, message; bool retryable = false; };
 using EventData = std::variant<PrefillProgress, OutputDelta, UsageUpdate,
                                Completed, Cancelled, Failed>;
 struct EngineEvent { RequestId id; EventData data; };
+
+class Scheduler;
+class Output {
+public:
+    std::vector<EngineEvent> wait();
+    bool done() const;
+
+private:
+    friend class Scheduler;
+    mutable std::mutex mutex_;
+    std::condition_variable ready_;
+    std::deque<EngineEvent> events_;
+    std::size_t bytes_ = 0;
+    bool terminal_ = false;
+    std::shared_ptr<std::condition_variable> wake_;
+};
 
 inline bool terminal(const EventData& event) {
     return std::holds_alternative<Completed>(event) ||

@@ -74,8 +74,8 @@ static ApiError api_error(const mfq::engine::InferenceInputError & error) {
 
 int run_mfq_http_transport(
         const MfqHttpRuntimeTransportConfig & config,
-        const MfqScheduler & scheduler) {
-    const bool duplex = scheduler.info().duplex;
+        const mfq::engine::Engine & engine) {
+    const bool duplex = engine.info().duplex;
     if (config.port < 1 || config.port > 65535) {
         throw std::runtime_error("runtime transport port must be in [1, 65535]");
     }
@@ -90,7 +90,7 @@ int run_mfq_http_transport(
         "cuda";
     const json chat_template_capabilities =
         chat_template_capabilities_json(
-            scheduler.chat_template_capabilities());
+            engine.chat_template_capabilities());
     const auto model_capability_profile = config.model_capabilities
         ? *config.model_capabilities
         : architecture_capability_profile(config.model_type);
@@ -100,10 +100,10 @@ int run_mfq_http_transport(
         model_capability_profile.image_input ||
         model_capability_profile.video_input;
     const bool vision_available =
-        scheduler.supports_multimodal_generation() &&
+        engine.supports_multimodal_generation() &&
         model_capability_profile.image_input;
     const bool video_available =
-        scheduler.supports_multimodal_generation() &&
+        engine.supports_multimodal_generation() &&
         model_capability_profile.video_input;
 
     httplib::Server server;
@@ -135,7 +135,7 @@ int run_mfq_http_transport(
             duplex_socket = nullptr;
             duplex_backend_started = false;
         }
-        if (stop_backend) (void)scheduler.control(mfq::engine::StopDuplex{});
+        if (stop_backend) (void)engine.control(mfq::engine::StopDuplex{});
         if (close_socket && socket != nullptr && socket->is_open()) {
             socket->close(
                 httplib::ws::CloseStatus::Normal, "session closed");
@@ -143,7 +143,7 @@ int run_mfq_http_transport(
         return true;
     };
     server.set_payload_max_length(
-        (scheduler.supports_multimodal_generation() ? 512ULL : 16ULL) *
+        (engine.supports_multimodal_generation() ? 512ULL : 16ULL) *
         1024ULL * 1024ULL);
     server.set_read_timeout(300, 0);
     server.set_write_timeout(300, 0);
@@ -248,7 +248,7 @@ int run_mfq_http_transport(
                             "system_prompt",
                             config.runtime_profile.duplex.system_prompt.value_or(
                                 "Streaming Omni Conversation."));
-                        scheduler.prepare_duplex_session(
+                        engine.prepare_duplex_session(
                             system_prompt, parameters);
                         if (payload.contains("reference_audio_features")) {
                             if (!payload["reference_audio_features"].is_string()) {
@@ -313,7 +313,7 @@ int run_mfq_http_transport(
                         }
 
                         try {
-                            (void)scheduler.control(parameters);
+                            (void)engine.control(parameters);
                             std::lock_guard<std::mutex> lock(duplex_gate);
                             if (duplex_session_id == owned_session) {
                                 duplex_backend_started = true;
@@ -384,7 +384,7 @@ int run_mfq_http_transport(
                                 400, "invalid_request_error",
                                 "input.text must be a non-empty string", "text");
                         }
-                        scheduler.prepare_duplex_step(
+                        engine.prepare_duplex_step(
                             input["text"].get<std::string>(), step);
                     }
                     step.max_new_speak_tokens = static_cast<int32_t>(
@@ -414,7 +414,7 @@ int run_mfq_http_transport(
                             "force_listen and force_speak are mutually exclusive");
                     }
 
-                    const auto result = std::get<MfqDuplexStepResult>(scheduler.control(step));
+                    const auto result = std::get<MfqDuplexStepResult>(engine.control(step));
                     const std::string response_id = request_id("resp-");
                     json metrics = {
                         {"backend", duplex_backend_name},
@@ -425,7 +425,7 @@ int run_mfq_http_transport(
                         {"audio_chunk_index", result.audio_chunk_index},
                     };
 
-                    const std::string text_delta = scheduler.decode_tokens(
+                    const std::string text_delta = engine.decode_tokens(
                         result.generated_tokens, session_controls);
                     if (!text_delta.empty()) {
                         send_event({
@@ -533,7 +533,7 @@ int run_mfq_http_transport(
 
     const auto add_runtime_metrics = [&](json & value) {
 
-        const auto snapshot = scheduler.snapshot();
+        const auto snapshot = engine.snapshot();
         const auto& metrics = snapshot.runtime;
         value["runtime_metrics_age_ms"] = std::chrono::duration<double, std::milli>(
             mfq::engine::Clock::now() - snapshot.captured).count();
@@ -544,17 +544,17 @@ int run_mfq_http_transport(
     };
     const auto add_session_metrics = [&](json & value) {
 
-        for (const auto & item : scheduler.snapshot().session) {
+        for (const auto & item : engine.snapshot().session) {
             value[item.first] = item.second;
         }
     };
 
     server.Get("/runtime/health", [&](const httplib::Request &, httplib::Response & res) {
         json health = {
-            {"status", reloading.load() ? "loading" : (scheduler.snapshot().status.healthy ? "ok" : "unhealthy")},
+            {"status", reloading.load() ? "loading" : (engine.snapshot().status.healthy ? "ok" : "unhealthy")},
             {"model", config.model_name},
             {"model_type", config.model_type},
-            {"probability_available", scheduler.info().probability},
+            {"probability_available", engine.info().probability},
             {"model_capabilities", model_capabilities},
             {"vision_supported", vision_supported},
             {"vision_available", vision_available},
@@ -618,7 +618,7 @@ int run_mfq_http_transport(
 
 
         try {
-            const size_t released = scheduler.session({mfq::engine::SessionCommand::Kind::clear}).count;
+            const size_t released = engine.session({mfq::engine::SessionCommand::Kind::clear}).count;
             json result = {
                 {"status", "ok"},
                 {"released_snapshots", released},
@@ -635,7 +635,7 @@ int run_mfq_http_transport(
     server.Post("/runtime/cache/refresh", [&](const httplib::Request&, httplib::Response& res) {
         try {
             json result = {{"status", "ok"},
-                {"removed_blocks", scheduler.session({mfq::engine::SessionCommand::Kind::refresh}).count}};
+                {"removed_blocks", engine.session({mfq::engine::SessionCommand::Kind::refresh}).count}};
             add_session_metrics(result);
             set_json(res, result);
         } catch (const std::exception& error) {
@@ -654,7 +654,7 @@ int run_mfq_http_transport(
                 if (weight < 0) throw ApiError(400, "invalid_request_error", "weight_target_bytes must be non-negative");
                 command.weight_bytes = static_cast<uint64_t>(weight);
             }
-            json result = {{"status", "ok"}, {"released_bytes", scheduler.session(command).count}};
+            json result = {{"status", "ok"}, {"released_bytes", engine.session(command).count}};
             add_session_metrics(result);
             set_json(res, result);
         } catch (const ApiError& error) { handle_api_error(res, error); }
@@ -698,7 +698,7 @@ int run_mfq_http_transport(
                 if (ram < 0) throw ApiError(400, "invalid_request_error", "ram_target_bytes must be non-negative");
                 command.ram_bytes = static_cast<uint64_t>(ram);
             }
-            const auto released = scheduler.session(command).count;
+            const auto released = engine.session(command).count;
             json result = {
                 {"status", "ok"},
                 {"released_bytes", released},
@@ -720,7 +720,7 @@ int run_mfq_http_transport(
             const std::string session_id = req.matches[1].str();
             set_json(res, {
                 {"status", "ok"},
-                {"cancelled", scheduler.cancel_session(session_id)},
+                {"cancelled", engine.cancel_session(session_id)},
             });
         });
 
@@ -756,7 +756,7 @@ int run_mfq_http_transport(
                     "source and target sessions must differ",
                     "target_session_id");
             }
-            const size_t copied = scheduler.session({mfq::engine::SessionCommand::Kind::fork, source_session_id, target_session_id}).count;
+            const size_t copied = engine.session({mfq::engine::SessionCommand::Kind::fork, source_session_id, target_session_id}).count;
             set_json(res, {
                 {"status", "ok"},
                 {"copied_snapshots", copied},
@@ -775,7 +775,7 @@ int run_mfq_http_transport(
 
             try {
                 const std::string session_id = req.matches[1].str();
-                const size_t released = scheduler.session({mfq::engine::SessionCommand::Kind::close, session_id}).count;
+                const size_t released = engine.session({mfq::engine::SessionCommand::Kind::close, session_id}).count;
                 set_json(res, {
                     {"status", "ok"},
                     {"released_snapshots", released},
@@ -787,7 +787,7 @@ int run_mfq_http_transport(
 
     server.Post("/runtime/reload", [&](const httplib::Request & req, httplib::Response & res) {
         if (!authorized(req, res, config.api_key)) return;
-        if (!scheduler.supports_reload()) {
+        if (!engine.supports_reload()) {
             set_json(res, error_body(
                 "this runtime does not support model reload",
                 "unsupported_operation"), 501);
@@ -812,7 +812,7 @@ int run_mfq_http_transport(
                     "context_size");
             }
             reloading.store(true);
-            const int64_t loaded_context = scheduler.reload(context_size);
+            const int64_t loaded_context = engine.reload(context_size);
             if (loaded_context < 1 ||
                 (capacity > 0 && loaded_context > capacity)) {
                 throw std::runtime_error(
@@ -850,7 +850,7 @@ int run_mfq_http_transport(
         if (!authorized(req, res, config.api_key)) return;
         try {
             set_json(res, token_count_json(std::get<mfq::engine::TokenCount>(
-                scheduler.control(parse_token_count_request(parse_body(req))))));
+                engine.control(parse_token_count_request(parse_body(req))))));
         } catch (const ApiError& error) { handle_api_error(res, error); }
         catch (const std::invalid_argument& error) { set_json(res, error_body(error.what(), "invalid_request_error"), 400); }
         catch (const std::exception& error) { set_json(res, error_body(error.what(), "server_error"), 500); }
@@ -859,10 +859,10 @@ int run_mfq_http_transport(
     server.Post("/runtime/score", [&](const httplib::Request& req, httplib::Response& res) {
         if (!authorized(req, res, config.api_key)) return;
         try {
-            if (!scheduler.info().probability)
+            if (!engine.info().probability)
                 throw ApiError(501, "probability_unavailable", "probability scoring is unavailable for this model");
             set_json(res, likelihood_result_json(std::get<mfq::engine::LikelihoodResult>(
-                scheduler.control(parse_score_request(parse_body(req))))));
+                engine.control(parse_score_request(parse_body(req))))));
         } catch (const ApiError& error) { handle_api_error(res, error); }
         catch (const std::invalid_argument& error) { set_json(res, error_body(error.what(), "invalid_request_error"), 400); }
         catch (const std::exception& error) { set_json(res, error_body(error.what(), "server_error"), 500); }
@@ -880,7 +880,7 @@ int run_mfq_http_transport(
                         "vision is disabled for this request; set enable_vision=true",
                         "enable_vision");
                 }
-                if (!scheduler.supports_multimodal_generation()) {
+                if (!engine.supports_multimodal_generation()) {
                     throw ApiError(
                         501, "unsupported_parameter",
                         "the loaded model has no native vision runtime",
@@ -893,7 +893,7 @@ int run_mfq_http_transport(
             const int64_t created = unix_time_seconds();
             std::shared_ptr<ActiveRequest> active_request;
             active_request = std::make_shared<ActiveRequest>(request_metrics_store);
-            auto completion = std::make_shared<CompletionStream>(scheduler, work, id);
+            auto completion = std::make_shared<CompletionStream>(engine, work, id);
 
             if (!work.stream) {
                 auto next_progress = std::chrono::steady_clock::time_point{};
@@ -927,7 +927,7 @@ int run_mfq_http_transport(
             res.set_header("X-Accel-Buffering", "no");
             res.set_chunked_content_provider(
                 "text/event-stream; charset=utf-8",
-                [work = std::move(work), id, created, &scheduler,
+                [work = std::move(work), id, created, &engine,
                  &config, active_request, completion]
                 (size_t offset, httplib::DataSink & sink) mutable -> bool {
                     if (offset != 0) {
@@ -1015,7 +1015,7 @@ int run_mfq_http_transport(
     std::cout << "MFQ HTTP runtime transport ready: " << endpoint
               << " model=" << config.model_name
               << " context=" << config.max_context
-              << " vocab=" << scheduler.vocab_size() << std::endl;
+              << " vocab=" << engine.vocab_size() << std::endl;
     if (!server.listen_after_bind()) {
         throw std::runtime_error(
             "runtime transport stopped after binding " + config.host + ":" +
@@ -1029,8 +1029,8 @@ public:
     explicit MfqHttpTransport(MfqHttpRuntimeTransportConfig config)
         : config_(std::move(config)) {}
 
-    int run(const MfqScheduler & scheduler) override {
-        return run_mfq_http_transport(config_, scheduler);
+    int run(const mfq::engine::Engine & engine) override {
+        return run_mfq_http_transport(config_, engine);
     }
 
 private:

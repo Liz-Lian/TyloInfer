@@ -51,34 +51,47 @@ class EngineInstance final : public Engine {
     }
 
   public:
-    explicit EngineInstance(CudaEngineOptions options) : options{std::move(options)} { load(); }
+    explicit EngineInstance(CudaEngineOptions options) : options{std::move(options)} {
+        load();
+        start();
+    }
     ~EngineInstance() override {
         try { shutdown(); }
         catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
         catch (...) { std::cerr << "runtime_unload_cleanup error=unknown\n"; }
     }
-    EngineInfo info() const override { return info_; }
-    EngineStatus status() const override {
-        return loaded_ ? requests_.status(exclusive()) : EngineStatus{0, false};
+  protected:
+    EngineInfo describe() const override { return info_; }
+    bool ready() const override { return loaded_; }
+    bool can_batch(const EngineRequest& request) const override {
+        return std::visit([&](const auto& ops) { return ops->can_batch(request); }, *state);
     }
-    Admission admit(EngineRequest request) override {
-        return visit([&](auto& ops) {
-            return requests_.admit(std::move(request), text_.get(), info_, ops);
-        });
+    std::unique_ptr<mfq::Executor::Scope> enter() override {
+        return std::visit([](auto& ops) -> std::unique_ptr<mfq::Executor::Scope> {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return ops->executor->enter();
+#else
+            return ops->executor->enter(ops->execution->config.layer_placement.primary_device());
+#endif
+        }, *state);
     }
-    void cancel(const RequestId& id) override { requests_.cancel(id); }
-    EngineStepResult step(const std::vector<RequestId>& eligible) override {
-        return visit([&](auto& ops) { return requests_.step(eligible, ops); });
+    std::unique_ptr<ExecutionRequest> prepare_request(EngineRequest request, bool batched) override {
+        const bool mtp = std::visit([](const auto& ops) { return ops->mtp_available(); }, *state);
+        return engine::prepare_request(std::move(request), text_.get(), info_, batched, mtp);
     }
-    SessionResult session(const SessionCommand& command) override {
-        if(command.kind == SessionCommand::Kind::memory_budget && !requests_.empty())
-            throw std::runtime_error("memory budgeting requires a quiescent engine");
+    Generation generate(const RequestId& id, ExecutionRequest& request) override {
+        return std::visit([&](auto& ops) { return ops->generate(id, request); }, *state);
+    }
+    void execute(const std::vector<RequestId>& eligible) override {
+        std::visit([&](auto& ops) { ops->execute(eligible); }, *state);
+    }
+    SessionResult session_command(const SessionCommand& command) override {
         return visit([&](auto& ops) {
             if constexpr(requires { ops.session(command); })return ops.session(command);
             else return control_session(ops.cache, command);
         });
     }
-    ControlResult control(ControlRequest request) override {
+    ControlResult control_command(ControlRequest request) override {
         if (!loaded_) throw std::runtime_error("engine is unloaded");
         return std::visit([&](auto&& value) -> ControlResult {
             using T = std::decay_t<decltype(value)>;
@@ -100,20 +113,17 @@ class EngineInstance final : public Engine {
                 return visit([&](auto& ops) { return ops.control(std::move(value)); });
         }, std::move(request));
     }
-    std::int64_t reload(std::int64_t context) override {
+    std::int64_t reload_model(std::int64_t context) override {
         if (context < 1) throw std::invalid_argument("reload context must be positive");
-        if (!requests_.empty()) throw std::runtime_error("reload requires a quiescent engine");
-        shutdown();
+        unload_model();
         options.context_size = context;
         load();
         return info_.max_context;
     }
-    void shutdown() override {
+    void unload_model() override {
         loaded_ = false;
-        auto failure = requests_.clear();
         text_.reset();
         unload();
-        if (failure) std::rethrow_exception(failure);
     }
 
   private:
@@ -126,7 +136,6 @@ class EngineInstance final : public Engine {
     std::optional<State> state;
     std::unique_ptr<TextProcessor> text_;
     EngineInfo info_;
-    RequestExecutor requests_;
     bool loaded_ = false;
     void load() {
         try {
@@ -194,14 +203,13 @@ class EngineInstance final : public Engine {
             info_ = std::move(info);
             text_ = std::move(text);
             if (text_) info_.chat = text_->chat_template_capabilities();
-            requests_ = RequestExecutor(info_.max_requests);
             loaded_ = true;
         } catch (...) {
-            shutdown();
+            unload_model();
             throw;
         }
     }
-    bool exclusive() const {
+    bool exclusive() const override {
         if (!state) return false;
         return std::visit([](const auto& value) { return value && value->exclusive(); }, *state);
     }
