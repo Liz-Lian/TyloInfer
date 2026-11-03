@@ -4,6 +4,7 @@
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
 #include "engine/models/common/session/cache.h"
+#include "engine/models/common/mtp.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/placement.h"
 #include "engine/weights/routed_cache.h"
@@ -16,7 +17,6 @@
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/weights/memory.h"
 #include "engine/models/source.h"
-#include "engine/models/causal_model.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -27,9 +27,11 @@
 
 namespace mfq::cuda::engine_detail {
 
-template <class Model, class Parts>
-mfq::engine::Metrics runtime_metrics(
-        const Model& language, const Parts& components,
+inline mfq::engine::Metrics runtime_metrics(
+        const mfq::engine::Metrics& component_metrics,
+        const mfq::engine::Metrics& profile_metrics,
+        std::optional<mfq::engine::Metrics> memory, bool streamed_kv,
+        const MtpModule* mtp,
         const mfq::engine::mtp::State& mtp_state, int graph_depth,
         const ExpertSpace* space, mfq::engine::Batch* batching,
         const mfq::ModelSource* source, WeightMemoryLedger& ledger,
@@ -48,19 +50,10 @@ mfq::engine::Metrics runtime_metrics(
         {"prefill_workspace_expert_capacity_bytes", double(workspace_metrics.prefill_capacity)},
         {"prefill_workspace_expert_used_bytes", double(workspace_metrics.prefill_used)},
         {"prefill_workspace_expert_reclaimed_used_bytes", double(workspace_metrics.prefill_reclaimed_used)}};
-    const auto component_metrics = [&] {
-        if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language); })
-            return static_cast<const mfq::models::CausalModel&>(language).metrics();
-        else
-            return components.metrics();
-    }();
     metrics.insert(metrics.end(), component_metrics.begin(), component_metrics.end());
     auto experts = weights.metrics();
     metrics.insert(metrics.end(), experts.begin(), experts.end());
-    if constexpr (requires { components.profile_metrics(language); }) {
-        auto phases = components.profile_metrics(language);
-        metrics.insert(metrics.end(), phases.begin(), phases.end());
-    }
+    metrics.insert(metrics.end(), profile_metrics.begin(), profile_metrics.end());
     if (source) {
         const auto io = source->file_read_stats();
         metrics.insert(metrics.end(), {
@@ -86,9 +79,6 @@ mfq::engine::Metrics runtime_metrics(
         {"resident_weight_bytes", double(resident_weights)},
         {"ssd_ple_enabled", ple > 0 ? 1.0 : 0.0},
         {"ssd_ple_payload_bytes", double(ple)}});
-    std::optional<Metrics> memory;
-    if constexpr (requires { components.memory_metrics(language); })
-        memory = components.memory_metrics(language);
     if (memory) {
         for (auto& [name, value] : *memory)
             for (const auto& [batch_name, batch_value] : batch_metrics) {
@@ -165,7 +155,7 @@ mfq::engine::Metrics runtime_metrics(
         {"resident_weight_budget_bytes", double(budget.weights())},
         {"resident_memory_used_bytes", double(std::max(allocated, reserved))},
         {"resident_reclaimable_weight_bytes", double(expert_bytes > minimum ? expert_bytes - minimum : 0)}});
-    metrics.emplace_back("qsa_kv_offload_supported", components.streamed_kv() ? 1.0 : 0.0);
+    metrics.emplace_back("qsa_kv_offload_supported", streamed_kv ? 1.0 : 0.0);
     if (offload) {
         auto offload_metrics = offload->metrics();
         metrics.insert(metrics.end(), offload_metrics.begin(), offload_metrics.end());
@@ -174,10 +164,10 @@ mfq::engine::Metrics runtime_metrics(
             {"qsa_kv_ram_enabled", 0.0}, {"qsa_kv_ram_bytes", 0.0},
             {"qsa_kv_ssd_bytes", 0.0}});
     }
-    if (components.mtp) {
+    if (mtp) {
         mfq::engine::mtp::append_generation_metrics(metrics, mtp_state.stats);
         metrics.emplace_back("mtp_predictor_graph_replays",
-            double(components.mtp->graph_replay_count()));
+            double(mtp->graph_replay_count()));
     }
     if (batching)
         metrics.insert(metrics.end(), batch_metrics.begin(), batch_metrics.end());

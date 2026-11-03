@@ -409,7 +409,24 @@ struct Text {
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {
-            return runtime_metrics(language,components,mtp_state,graph_draft_depth,
+            const auto& model = std::as_const(language);
+            const auto& parts = std::as_const(components);
+            const auto component_metrics = [&] {
+                if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model); })
+                    return static_cast<const mfq::models::CausalModel&>(model).metrics();
+                else
+                    return parts.metrics();
+            }();
+            Metrics profile_metrics;
+            if constexpr (requires { parts.profile_metrics(model); })
+                profile_metrics = parts.profile_metrics(model);
+            std::optional<Metrics> memory;
+            if constexpr (requires { parts.memory_metrics(model); })
+                memory = parts.memory_metrics(model);
+            const bool streamed_kv = parts.streamed_kv();
+            const auto* mtp = parts.mtp.get();
+            return runtime_metrics(component_metrics,profile_metrics,std::move(memory),streamed_kv,mtp,
+                mtp_state,graph_draft_depth,
                 expert_space ? &*expert_space : nullptr,batching.get(),source.get(),
                 *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
                 execution->config.layer_placement,execution->config.tensor_parallel,execution->config.expert_parallel);

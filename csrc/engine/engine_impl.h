@@ -506,8 +506,25 @@ private:
     template <class T>
     engine::ControlResult control_model(T value) {
         if constexpr (std::is_same_v<T, engine::RuntimeMetrics>) {
+            const auto& model = std::as_const(language());
+            const auto& parts = std::as_const(components());
+            const auto component_metrics = [&] {
+                if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model); })
+                    return static_cast<const mfq::models::CausalModel&>(model).metrics();
+                else
+                    return parts.metrics();
+            }();
+            engine::Metrics profile_metrics;
+            if constexpr (requires { parts.profile_metrics(model); })
+                profile_metrics = parts.profile_metrics(model);
+            std::optional<engine::Metrics> memory;
+            if constexpr (requires { parts.memory_metrics(model); })
+                memory = parts.memory_metrics(model);
+            const bool streamed_kv = parts.streamed_kv();
+            const auto* mtp = parts.mtp.get();
             return engine_detail::runtime_metrics(
-                language(), components(), mtp_state_, 3,
+                component_metrics, profile_metrics, std::move(memory), streamed_kv, mtp,
+                mtp_state_, 3,
                 expert_space_ ? &*expert_space_ : nullptr, batching_.get(),
                 source_.get(), *weight_memory_, weights_, kv_.get(),
                 offload_.get(), *cache_, *budget_,
