@@ -1,6 +1,6 @@
 #pragma once
 
-#include "attention.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -22,15 +22,6 @@ struct AttentionStep {
 };
 
 struct FullAttention {
-    struct Options {
-        AttentionOptions kernels;
-        bool fused_norm = true;
-        bool fused_rope = true;
-        bool fused_qk_rope_kv = true;
-        bool fused_rope_kv = true;
-        bool write_aten = false;
-    };
-
     int layer = -1;
     bool sliding = false;
     bool value_equals_key = false;
@@ -44,7 +35,7 @@ struct FullAttention {
     double rms_norm_eps = 1e-6;
     double norm_weight_offset = 1.0;
     bool official_bf16 = false;
-    // NoPE GQA: skip every rotary callback while keeping the KV cache normal.
+    // NoPE GQA: skip rotary operations while keeping the KV cache normal.
     bool no_rope = false;
     RopeCache attention_rope;
 
@@ -61,7 +52,7 @@ struct FullAttention {
     QuantLinear o;
     mfq::cuda::KvQuantization kv_quantization;
 
-    static constexpr int64_t kDecodeAttentionMaxParts = 16;
+    static constexpr int64_t kDecodeAttentionMaxParts = AttentionScratch::kMaxParts;
 
     std::array<mfq_tensor_backend::Tensor, 2> forward(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -69,7 +60,7 @@ struct FullAttention {
         AttentionKvView cache, const RopeCache& rope,
         const mfq::ops::ProjectionOptions& projection = {}, Trace* trace = nullptr) const;
 #else
-        const Projector& project, CudaProfiler& profiler, const Options& options,
+        const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
         mfq_tensor_backend::Tensor input,
         const AttentionStep& step,
         AttentionKvView cache,

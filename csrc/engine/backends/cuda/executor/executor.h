@@ -44,7 +44,7 @@ public:
 
     struct Options {
         Projector::Options projection;
-        FullAttention::Options attention{
+        AttentionOptions attention{
             .kernels = {.bf16_flash128 = true, .flash128_casts = true,
                 .bf16_gqa_decode = true, .decode_aten = false,
                 .mma_prefill = true, .mma_decode = true, .split_k = true}};
@@ -76,7 +76,7 @@ public:
         const LinearAttention& attention, mfq_tensor_backend::Tensor residual,
         mfq_tensor_backend::Tensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }
-    const FullAttention::Options& attention_options() const noexcept { return options_.attention; }
+    const AttentionOptions& attention_options() const noexcept { return options_.attention; }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME

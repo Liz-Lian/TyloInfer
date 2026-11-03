@@ -2,10 +2,14 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
 mfq::Tensor mfq::cuda::ops::rms_norm(mfq::Tensor input, const mfq::Tensor& weight,
                                      double eps, double offset, mfq::ScalarType output_type) {
     mfq_tensor_backend::Tensor value(input);
     auto flat = value.reshape({-1, value.size(-1)});
+    if (output_type == mfq::ScalarType::bfloat16)
+        return qwen_rms_norm_bf16(value.is_cuda() && Executor::current().attention_options().fused_norm,
+            flat, mfq_tensor_backend::Tensor(weight), eps, offset).reshape(value.sizes());
     if (output_type == mfq::ScalarType::float16 && value.scalar_type() == mfq::ScalarType::float16)
         return rms_norm_f16_cuda(flat.contiguous(), mfq_tensor_backend::Tensor(weight), eps, offset)
             .reshape(value.sizes());
@@ -14,6 +18,41 @@ mfq::Tensor mfq::cuda::ops::rms_norm(mfq::Tensor input, const mfq::Tensor& weigh
     if (output_type == mfq::ScalarType::float16)
         normalized = normalized.to(mfq_tensor_backend::kFloat16).contiguous();
     return normalized.reshape(value.sizes());
+}
+std::array<mfq::Tensor, 3> mfq::cuda::ops::qkv_norm(std::array<mfq::Tensor, 3> values,
+    std::array<mfq::Tensor, 3> weights, double eps, double offset, mfq::ScalarType output_type) {
+    using T = mfq_tensor_backend::Tensor;
+    T q(values[0]), k(values[1]), v(values[2]);
+    T qw(weights[0]), kw(weights[1]), vw(weights[2]);
+    const bool bf16 = output_type == mfq::ScalarType::bfloat16;
+    const bool fused = Executor::current().attention_options().fused_norm;
+    if (bf16 && fused && qw.defined() && kw.defined() &&
+        q.scalar_type() == mfq_tensor_backend::kBFloat16 && k.scalar_type() == mfq_tensor_backend::kBFloat16) {
+        auto normalized = mfq::ops::measure("full.qk_norm", [&] {
+            return qwen_rms_norm_pair_bf16_cuda(q, k, qw, kw, eps, offset);
+        });
+        q = normalized[0].reshape_as(q); k = normalized[1].reshape_as(k);
+    } else if (!bf16 && qw.defined() && kw.defined() &&
+        q.scalar_type() == mfq_tensor_backend::kFloat16 && k.scalar_type() == mfq_tensor_backend::kFloat16) {
+        auto normalized = mfq::ops::measure("full.qk_norm", [&] {
+            return rms_norm_pair_f16_f32_offset_cuda(q, k, qw, kw, eps, offset);
+        });
+        q = normalized[0].reshape_as(q); k = normalized[1].reshape_as(k);
+    } else {
+        if (qw.defined()) q = mfq::ops::measure("full.q_norm", [&] {
+            return bf16 ? qwen_rms_norm_bf16(fused, q.reshape({-1, q.size(-1)}), qw, eps, offset).reshape_as(q)
+                        : qwen_rms_norm(q.reshape({-1, q.size(-1)}).to(mfq_tensor_backend::kFloat32), qw, eps, offset).reshape_as(q);
+        });
+        if (kw.defined()) k = mfq::ops::measure("full.k_norm", [&] {
+            return bf16 ? qwen_rms_norm_bf16(fused, k.reshape({-1, k.size(-1)}), kw, eps, offset).reshape_as(k)
+                        : qwen_rms_norm(k.reshape({-1, k.size(-1)}).to(mfq_tensor_backend::kFloat32), kw, eps, offset).reshape_as(k);
+        });
+    }
+    if (vw.defined()) v = mfq::ops::measure("full.v_norm", [&] {
+        return bf16 ? qwen_rms_norm_bf16(fused, v.reshape({-1, v.size(-1)}), vw, eps, offset).reshape_as(v)
+                    : qwen_rms_norm(v.reshape({-1, v.size(-1)}).to(mfq_tensor_backend::kFloat32), vw, eps, offset).reshape_as(v);
+    });
+    return {q, k, v};
 }
 mfq::ops::ResidualNorms mfq::cuda::ops::residual_norms(
     mfq::Tensor residual, mfq::Tensor attention, const mfq::Tensor& attention_weight,

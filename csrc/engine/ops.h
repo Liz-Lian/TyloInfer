@@ -1,11 +1,14 @@
 #pragma once
 
 #include "engine/tensor.h"
+#include "engine/state/kv_view.h"
 #include "engine/weights/matrix.h"
 #include "engine/weights/moe/bank.h"
 
 #include <cstdint>
+#include <array>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -14,6 +17,26 @@
 namespace mfq::ops {
 
 using Trace = std::vector<std::pair<std::string, Tensor>>;
+
+// Query, key and value are [B,H,T,D]; KV may use fewer heads.
+struct AttentionInput {
+    Tensor query, key, value, positions, write_positions;
+    std::optional<Tensor> sequence_lengths, attention_mask;
+    std::int64_t cache_position = 0, planned_kv_length = 0, decode_attention_parts = 0;
+};
+struct AttentionConfig {
+    bool bf16 = false, sliding = false;
+    std::int64_t window = 0;
+    double scale = 0.0;
+};
+// token_major selects [B,T,H,D]; otherwise value is [B,H,T,D].
+struct AttentionResult { Tensor value; bool token_major = false; };
+AttentionResult attention(const AttentionInput& input, const state::KvView& kv,
+                          const AttentionConfig& config);
+// Writes the supplied backing and returns visible KV; paged prefixes may be gathered.
+std::pair<Tensor, Tensor> append_kv(state::KvView kv, Tensor key, Tensor value,
+                                    Tensor positions, std::int64_t start,
+                                    bool contiguous_prefill_prefix = false);
 
 struct FfnMode {
     bool materialized = false;
@@ -31,9 +54,24 @@ struct ProjectionOptions {
     bool projection_major = false;
 };
 
+struct RopeTable {
+    Tensor cos, sin, sections, empty_sections, interleaved_order, interleaved_inverse;
+    std::int64_t rotary_dim = 0;
+};
+
+Tensor rope(Tensor input, Tensor positions, const RopeTable& table, bool bf16 = false,
+            bool grid_mrope_positions = false);
+// Unsupported fusions return nullopt without writing; success writes the original KV and returns query.
+std::optional<Tensor> norm_rope_kv(const AttentionInput&, const state::KvView&, const RopeTable&,
+                                   const Tensor& q_norm, const Tensor& k_norm, double eps, double offset);
+std::optional<Tensor> rope_kv(const AttentionInput&, const state::KvView&, const RopeTable&);
+
 // Normalize over the last dimension, preserving shape; F32 output is the default.
 Tensor rms_norm(Tensor input, const Tensor& weight, double eps, double offset,
                 ScalarType output_type = ScalarType::float32);
+// Undefined weights skip their value; other outputs use F32 or BF16 as requested.
+std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 3> weights,
+                               double eps, double offset, ScalarType output_type);
 Tensor add(Tensor left, Tensor right);
 Tensor multiply(Tensor left, Tensor right);
 Tensor matmul(Tensor left, Tensor right);
@@ -71,6 +109,11 @@ Tensor softcap(Tensor input, double cap);
 Tensor scale(Tensor input, double factor);
 Tensor embedding(Tensor ids, const weights::Matrix& weight);
 Tensor project(Tensor input, const weights::Matrix& weight, const ProjectionOptions& options = {});
+std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group,
+                            const ProjectionOptions& options = {});
+// Computes project(input * sigmoid(gate)).
+Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight,
+                       const ProjectionOptions& options = {});
 Tensor copy(Tensor input, Device target);
 Tensor cast(Tensor input, ScalarType type);
 Tensor contiguous(Tensor input);

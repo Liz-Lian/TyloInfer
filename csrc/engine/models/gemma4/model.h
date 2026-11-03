@@ -3,7 +3,7 @@
 #include "engine/models/gemma4/config.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/capabilities.h"
-#include "engine/backends/cuda/ops/attention/full.h"
+#include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/weights/moe/experts.h"
 #include "engine/weights/matrix.h"

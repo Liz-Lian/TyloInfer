@@ -26,6 +26,26 @@ mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Matri
     return mfq::cuda::Executor::current().projector(mode).run(
         as_quant_linear(weight), mfq_tensor_backend::Tensor(input));
 }
+
+std::vector<mfq::Tensor> mfq::cuda::ops::project(mfq::Tensor input,
+    const mfq::weights::MatrixGroup& group, const mfq::ops::ProjectionOptions& options) {
+    mfq::cuda::Ffn::Mode mode;
+    mode.serial = options.serial;
+    mode.projection_major = options.projection_major;
+    auto parts = mfq::cuda::Executor::current().projector(mode).run(
+        as_quant_linear_group(group), mfq_tensor_backend::Tensor(input));
+    return {parts.begin(), parts.end()};
+}
+
+mfq::Tensor mfq::cuda::ops::sigmoid_project(mfq::Tensor input, mfq::Tensor gate,
+    const mfq::weights::Matrix& weight, const mfq::ops::ProjectionOptions& options) {
+    mfq::cuda::Ffn::Mode mode;
+    mode.serial = options.serial;
+    mode.projection_major = options.projection_major;
+    return mfq::cuda::Executor::current().projector(mode).gated(
+        as_quant_linear(weight), mfq_tensor_backend::Tensor(input),
+        mfq_tensor_backend::Tensor(gate), InputGateMode::Sigmoid);
+}
 #endif
 
 mfq_tensor_backend::Tensor run_quant_linear_shard(

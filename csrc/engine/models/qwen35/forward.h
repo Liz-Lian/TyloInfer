@@ -4,7 +4,7 @@
 #include "engine/models/input.h"
 #include "engine/models/qwen35/model.h"
 #include "engine/models/qwen35/state.h"
-#include "engine/backends/cuda/ops/attention/full.h"
+#include "engine/models/common/attention.h"
 
 #include <cstddef>
 #include <cstdint>

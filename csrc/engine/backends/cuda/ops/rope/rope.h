@@ -8,6 +8,13 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+namespace mfq::cuda::ops {
+mfq::Tensor rope(mfq::Tensor input, mfq::Tensor positions, const mfq::ops::RopeTable& table,
+                 bool bf16, bool grid_mrope_positions);
+}
+#endif
+
 struct RopeCache {
     mfq_tensor_backend::Tensor cos;
     mfq_tensor_backend::Tensor sin;
@@ -34,6 +41,9 @@ struct RopeCache {
         bool interleaved,
         int64_t configured_rotary_dim,
         mfq_tensor_backend::Device device);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::ops::RopeTable view() const;
+#endif
     mfq_tensor_backend::Tensor apply(
         mfq_tensor_backend::Tensor x,
         mfq_tensor_backend::Tensor pos,

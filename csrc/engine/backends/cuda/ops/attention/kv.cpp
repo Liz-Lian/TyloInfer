@@ -2,6 +2,9 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_cache_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#endif
 
 #include <utility>
 
@@ -9,6 +12,18 @@ using mfq_tensor_backend::indexing::Slice;
 
 namespace mfq::cuda {
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+std::pair<mfq::Tensor, mfq::Tensor> ops::append_kv(
+        mfq::state::KvView cache, mfq::Tensor key, mfq::Tensor value,
+        mfq::Tensor positions, int64_t start_pos, bool contiguous_prefill_prefix) {
+    mfq_tensor_backend::Tensor kk(key), vv(value), pos(positions);
+    const auto end_pos = start_pos + kk.size(2);
+    const bool aten_write = Executor::current().attention_options().write_aten;
+    mfq_tensor_backend::Tensor k(cache.physical_key), v(cache.physical_value);
+    const mfq_tensor_backend::Tensor k_chunk_ptrs(cache.key_chunk_ptrs);
+    const mfq_tensor_backend::Tensor v_chunk_ptrs(cache.value_chunk_ptrs);
+    const mfq_tensor_backend::Tensor page_table(cache.page_table);
+#else
 std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
         AttentionKvView cache, bool aten_write,
         mfq_tensor_backend::Tensor kk, mfq_tensor_backend::Tensor vv,
@@ -19,6 +34,7 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
     const auto& k_chunk_ptrs = cache.key_chunk_ptrs;
     const auto& v_chunk_ptrs = cache.value_chunk_ptrs;
     const auto& page_table = cache.page_table;
+#endif
     const auto& quantization = cache.quantization;
     const auto ring = cache.ring;
     const auto paged_batch = cache.batch;
@@ -31,7 +47,7 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
     if(quantization.enabled()) {
         auto packed_k=mfq::cuda::cuda_kv_encode(kh,quantization.key_bits(),false);
         auto packed_v=mfq::cuda::cuda_kv_encode(vh,quantization.value_bits(),true);
-        if(cache.paged())mfq::cuda::cuda_kv_write_paged(cache.quantized_pages(),packed_k,packed_v,pos);
+        if(cache.paged())mfq::cuda::cuda_kv_write_paged(quantized_pages(cache),packed_k,packed_v,pos);
         else if(pos.dim()==1) {
             k.index_copy_(2,pos,packed_k);v.index_copy_(2,pos,packed_v);
         } else {

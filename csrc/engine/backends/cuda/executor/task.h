@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/backends/cuda/ops/attention/full.h"
+#include "engine/models/common/attention.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
 

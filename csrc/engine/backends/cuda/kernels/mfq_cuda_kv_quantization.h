@@ -1,17 +1,12 @@
 #pragma once
 
 #include "backend.h"
+#include "engine/state/kv_view.h"
 #include "mfq_cuda_kv_hot_cache.h"
-#include <cmath>
 #include <string>
 
 namespace mfq::cuda {
-struct KvQuantization {
-    double bits = 0;
-    bool enabled() const noexcept { return bits != 0; }
-    int key_bits() const noexcept { return int(std::floor(bits)); }
-    int value_bits() const noexcept { return int(std::ceil(bits)); }
-};
+using KvQuantization = mfq::state::KvQuantization;
 KvQuantization cuda_kv_quantization();
 int cuda_kv_packed_width(int dimension, int bits);
 std::string cuda_kv_quantization_tag();

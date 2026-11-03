@@ -15,6 +15,12 @@ const QuantLinear& as_quant_linear(const mfq::weights::Matrix& weight) {
     return *result;
 }
 
+const QuantLinearGroup& as_quant_linear_group(const mfq::weights::MatrixGroup& group) {
+    const auto* result = dynamic_cast<const QuantLinearGroup*>(&group);
+    if (!result) throw std::invalid_argument("matrix group was not prepared by the CUDA backend");
+    return *result;
+}
+
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 #include "linear_dispatch.inc"
 

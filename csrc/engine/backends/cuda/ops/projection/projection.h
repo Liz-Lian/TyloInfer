@@ -9,6 +9,10 @@ namespace mfq::cuda::ops {
 mfq::Tensor embedding(mfq::Tensor ids, const weights::Matrix& weight);
 mfq::Tensor project(mfq::Tensor input, const weights::Matrix& weight,
                     const mfq::ops::ProjectionOptions& options);
+std::vector<mfq::Tensor> project(mfq::Tensor input, const weights::MatrixGroup& group,
+                                 const mfq::ops::ProjectionOptions& options);
+mfq::Tensor sigmoid_project(mfq::Tensor input, mfq::Tensor gate, const weights::Matrix& weight,
+                            const mfq::ops::ProjectionOptions& options);
 }
 #endif
 

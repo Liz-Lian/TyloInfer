@@ -6,6 +6,9 @@
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/tensor.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
+#include "engine/backends/cuda/ops/attention/kv.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/native/profile.h"
 #endif
 
@@ -27,6 +30,60 @@ void compatible(const Tensor& left, const Tensor& right) {
     if (left.device() != right.device())
         throw std::invalid_argument("tensor devices do not match");
 }
+}
+
+AttentionResult attention(const AttentionInput& request, const state::KvView& kv,
+                          const AttentionConfig& config) {
+    compatible(request.query, request.key);
+    compatible(request.query, request.value);
+    input(request.positions);
+    input(request.write_positions);
+    if (request.sequence_lengths) input(*request.sequence_lengths);
+    if (request.attention_mask) input(*request.attention_mask);
+    if (request.query.dim() != 4 || request.key.dim() != 4 || request.value.dim() != 4 ||
+        request.key.sizes() != request.value.sizes() ||
+        request.query.size(0) != request.key.size(0) ||
+        request.query.size(2) != request.key.size(2) ||
+        request.query.size(3) != request.key.size(3) || request.key.size(1) <= 0 ||
+        request.query.size(1) <= 0 || request.query.size(3) <= 0)
+        throw std::invalid_argument("attention query, key and value geometry is incompatible");
+    for (const Tensor* tensor : {&kv.visible_key, &kv.visible_value, &kv.physical_key,
+                                  &kv.physical_value, &kv.key_chunk_ptrs,
+                                  &kv.value_chunk_ptrs, &kv.page_table})
+        if (tensor->defined()) compatible(request.query, *tensor);
+    return cuda::ops::attention(request, kv, config);
+}
+
+Tensor rope(Tensor value, Tensor positions, const RopeTable& table, bool bf16, bool grid) {
+    compatible(value, table.cos);
+    compatible(value, table.sin);
+    input(positions);
+    if (value.dim() == 0 || table.rotary_dim <= 0 || table.rotary_dim % 2 != 0 ||
+        table.rotary_dim > value.size(-1))
+        throw std::invalid_argument("invalid RoPE rotary dimension");
+    return cuda::ops::rope(std::move(value), std::move(positions), table, bf16, grid);
+}
+std::optional<Tensor> norm_rope_kv(const AttentionInput& request, const state::KvView& kv,
+    const RopeTable& table, const Tensor& q_norm, const Tensor& k_norm, double eps, double offset) {
+    return cuda::ops::norm_rope_kv(request, kv, table, q_norm, k_norm, eps, offset);
+}
+std::optional<Tensor> rope_kv(const AttentionInput& request, const state::KvView& kv,
+                               const RopeTable& table) {
+    return cuda::ops::rope_kv(request, kv, table);
+}
+
+std::pair<Tensor, Tensor> append_kv(state::KvView kv, Tensor key, Tensor value,
+                                    Tensor positions, std::int64_t start,
+                                    bool contiguous_prefill_prefix) {
+    compatible(key, value);
+    compatible(key, positions);
+    if (key.dim() != 4 || value.dim() != 4 || key.sizes() != value.sizes())
+        throw std::invalid_argument("KV write key and value geometry is incompatible");
+    for (const Tensor* tensor : {&kv.physical_key, &kv.physical_value, &kv.key_chunk_ptrs,
+                                  &kv.value_chunk_ptrs, &kv.page_table})
+        if (tensor->defined()) compatible(key, *tensor);
+    return cuda::ops::append_kv(std::move(kv), std::move(key), std::move(value),
+                                std::move(positions), start, contiguous_prefill_prefix);
 }
 
 Tensor add(Tensor left, Tensor right) {
@@ -109,9 +166,25 @@ Tensor rms_norm(Tensor value, const Tensor& weight, double eps, double offset, S
         value.size(-1) <= 0 || weight.numel() != value.size(-1) ||
         weight.size(-1) != value.size(-1))
         throw std::invalid_argument("rms_norm input and weight are incompatible");
-    if (output_type != ScalarType::float32 && output_type != ScalarType::float16)
+    if (output_type != ScalarType::float32 && output_type != ScalarType::float16 &&
+        output_type != ScalarType::bfloat16)
         throw std::invalid_argument("unsupported rms_norm output type");
     return cuda::ops::rms_norm(std::move(value), weight, eps, offset, output_type);
+}
+std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 3> weights,
+                               double eps, double offset, ScalarType output_type) {
+    if (output_type != ScalarType::float32 && output_type != ScalarType::bfloat16)
+        throw std::invalid_argument("unsupported qkv_norm output type");
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        input(values[i]);
+        if (weights[i].defined()) {
+            compatible(values[i], weights[i]);
+            if (values[i].dim() == 0 || weights[i].dim() == 0 ||
+                values[i].size(-1) <= 0 || weights[i].numel() != values[i].size(-1))
+                throw std::invalid_argument("qkv_norm input and weight are incompatible");
+        }
+    }
+    return cuda::ops::qkv_norm(std::move(values), std::move(weights), eps, offset, output_type);
 }
 Tensor softcap(Tensor value, double cap) {
     input(value);
@@ -128,6 +201,16 @@ Tensor embedding(Tensor ids, const weights::Matrix& weight) {
 Tensor project(Tensor value, const weights::Matrix& weight, const ProjectionOptions& options) {
     input(value);
     return cuda::ops::project(std::move(value), weight, options);
+}
+std::vector<Tensor> project(Tensor value, const weights::MatrixGroup& group,
+                            const ProjectionOptions& options) {
+    input(value);
+    return cuda::ops::project(std::move(value), group, options);
+}
+Tensor sigmoid_project(Tensor value, Tensor gate, const weights::Matrix& weight,
+                       const ProjectionOptions& options) {
+    compatible(value, gate);
+    return cuda::ops::sigmoid_project(std::move(value), std::move(gate), weight, options);
 }
 Tensor copy(Tensor value, Device target) {
     input(value);

@@ -2,6 +2,9 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_attention_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_paged_kv.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -15,8 +18,25 @@ namespace {
 
 using mfq_tensor_backend::indexing::Slice;
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+struct NativeAttentionInput {
+    mfq_tensor_backend::Tensor query, key, value, positions, write_positions;
+    MfqOptional<mfq_tensor_backend::Tensor> sequence_lengths, attention_mask;
+    std::int64_t cache_position, planned_kv_length, decode_attention_parts;
+};
+struct NativeKvView {
+    mfq_tensor_backend::Tensor visible_key, visible_value, physical_key, physical_value;
+    mfq_tensor_backend::Tensor key_chunk_ptrs, value_chunk_ptrs, page_table;
+    KvQuantization quantization;
+    std::int64_t page_size, pages_per_chunk, heads;
+    bool paged() const noexcept { return page_size > 0; }
+};
+#else
+using NativeAttentionInput = AttentionInput;
+#endif
+
 MfqOptional<mfq_tensor_backend::Tensor> minicpmo45_attention_mask(
-    const AttentionInput& request, const AttentionConfig& config,
+    const NativeAttentionInput& request, const AttentionConfig& config,
     std::int64_t batch, std::int64_t tokens, std::int64_t visible_len,
     bool explicit_causal) {
     MfqOptional<mfq_tensor_backend::Tensor> result = mfq_nullopt;
@@ -69,11 +89,88 @@ MfqOptional<mfq_tensor_backend::Tensor> minicpmo45_attention_mask(
 
 } // namespace
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+namespace {
+bool rope_kv_supported(const mfq::ops::AttentionInput& input,
+                               const mfq::state::KvView& kv, const mfq::ops::RopeTable& table) {
+    return input.query.defined() && input.key.defined() && input.positions.defined() &&
+        input.write_positions.defined() && input.query.dim() == 4 && input.key.dim() == 4 &&
+        input.query.device().is_cuda() &&
+        input.write_positions.dim() == 1 && input.positions.dim() == 1 && input.query.size(2) == 1 &&
+        !kv.paged() && !kv.ring && table.rotary_dim == 128 && table.sections.numel() == 0 &&
+        input.query.size(1) == 32 && input.key.size(1) == 8 && input.query.size(3) == 128 &&
+        kv.dtype == mfq::ScalarType::bfloat16;
+}
+}
+
+std::optional<mfq::Tensor> ops::norm_rope_kv(const mfq::ops::AttentionInput& input,
+    const mfq::state::KvView& kv, const mfq::ops::RopeTable& table,
+    const mfq::Tensor& q_norm, const mfq::Tensor& k_norm, double eps, double offset) {
+    if (!rope_kv_supported(input, kv, table) || kv.quantization.enabled() ||
+        !q_norm.defined() || !k_norm.defined() ||
+        !Executor::current().attention_options().fused_qk_rope_kv)
+        return std::nullopt;
+    using T = mfq_tensor_backend::Tensor;
+    return mfq::ops::measure("full.qk_norm_rope_kv_write", [&]() -> mfq::Tensor {
+        auto q = T(input.query);
+        return minicpm_qk_norm_rope_cache_write_bf16_cuda(
+            q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(), T(q_norm), T(k_norm),
+            T(input.positions).contiguous().to(q.device(), mfq_tensor_backend::kInt64),
+            T(input.write_positions), T(table.cos), T(table.sin), T(kv.physical_key), T(kv.physical_value),
+            eps, offset);
+    });
+}
+
+std::optional<mfq::Tensor> ops::rope_kv(const mfq::ops::AttentionInput& input,
+    const mfq::state::KvView& kv, const mfq::ops::RopeTable& table) {
+    if (!rope_kv_supported(input, kv, table) ||
+        !Executor::current().attention_options().fused_rope_kv)
+        return std::nullopt;
+    using T = mfq_tensor_backend::Tensor;
+    return mfq::ops::measure("full.rope_kv_write", [&]() -> mfq::Tensor {
+        auto q = T(input.query);
+        return minicpm_bf16_rope_cache_write_cuda(
+            q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(),
+            T(input.positions).contiguous().to(q.device(), mfq_tensor_backend::kInt64),
+            T(input.write_positions), T(table.cos), T(table.sin), T(kv.physical_key), T(kv.physical_value),
+            table.rotary_dim);
+    });
+}
+
+mfq::ops::AttentionResult ops::attention(const mfq::ops::AttentionInput& input,
+                                        const mfq::state::KvView& public_kv,
+                                        const mfq::ops::AttentionConfig& public_config) {
+    using Tensor = mfq_tensor_backend::Tensor;
+    const NativeAttentionInput request{
+        Tensor(input.query), Tensor(input.key), Tensor(input.value), Tensor(input.positions),
+        Tensor(input.write_positions),
+        input.sequence_lengths ? MfqOptional<Tensor>{Tensor(*input.sequence_lengths)} : mfq_nullopt,
+        input.attention_mask ? MfqOptional<Tensor>{Tensor(*input.attention_mask)} : mfq_nullopt,
+        input.cache_position, input.planned_kv_length, input.decode_attention_parts};
+    const NativeKvView kv{Tensor(public_kv.visible_key), Tensor(public_kv.visible_value),
+        Tensor(public_kv.physical_key), Tensor(public_kv.physical_value),
+        Tensor(public_kv.key_chunk_ptrs), Tensor(public_kv.value_chunk_ptrs),
+        Tensor(public_kv.page_table), public_kv.quantization, public_kv.page_size,
+        public_kv.pages_per_chunk, public_kv.heads};
+    auto& executor = Executor::current();
+    const AttentionConfig config{public_config.bf16, public_config.sliding, public_config.window,
+                                 public_config.scale, executor.attention_options().kernels};
+    auto& profiler = executor.profiler();
+    auto& scratch = executor.attention_scratch(request.query.device(),
+        {request.query.size(1), request.key.size(1), request.query.size(3),
+         config.sliding ? config.window : 0});
+    if (request.query.is_cuda())
+        scratch.split(request.query.size(0) * request.query.size(1), AttentionScratch::kMaxParts,
+                      request.query.size(3), request.query.device());
+    const auto pages = quantized_pages(public_kv);
+#else
 AttentionResult dispatch_attention(const AttentionInput& request,
                                    const AttentionKvView& kv,
                                    const AttentionConfig& config,
                                    AttentionScratch& scratch,
                                    CudaProfiler& profiler) {
+    const auto pages = quantized_pages(kv);
+#endif
     namespace tb = mfq_tensor_backend;
     const auto& q = request.query;
     const auto& k = request.key;
@@ -96,7 +193,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                       : request.cache_position + tokens;
             return cuda_kv_attention(
                 q, kv.physical_key, kv.physical_value, kv.quantization, {},
-                request.write_positions, request.cache_position, kv.quantized_pages(), capacity,
+                request.write_positions, request.cache_position, pages, capacity,
                 request.sequence_lengths.value_or(tb::Tensor{}),
                 request.attention_mask.value_or(tb::Tensor{}), attn_scale);
         }

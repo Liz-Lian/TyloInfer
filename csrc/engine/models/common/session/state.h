@@ -15,7 +15,8 @@
 struct TextSessionState;
 enum class TextSessionStateKind : int;
 struct KVCache;
-namespace mfq::cuda { struct KvQuantization; }
+namespace mfq::state { struct KvQuantization; }
+namespace mfq::cuda { using KvQuantization = mfq::state::KvQuantization; }
 
 struct KvSnapshot {
     mfq_tensor_backend::Tensor k;

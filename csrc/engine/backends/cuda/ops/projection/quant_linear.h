@@ -133,7 +133,7 @@ using QuantLinearProjectionRefs =
 bool tensor_parallel_output_projections_compatible(
     const QuantLinearProjectionRefs& projections);
 
-struct QuantLinearGroup {
+struct QuantLinearGroup : mfq::weights::MatrixGroup {
     bool nint_grouped = false;
     bool nvq_prefix2 = false;
     bool decode_branch_parallel = true;
@@ -142,10 +142,14 @@ struct QuantLinearGroup {
     std::vector<QuantLinear> layers;
     std::vector<int64_t> outs;
 
+    std::size_t size() const override { return outs.size(); }
+
     QuantLinearProjectionRefs tensor_parallel_output_projections() const;
 
     bool tensor_parallel_output_compatible() const;
 };
+
+const QuantLinearGroup& as_quant_linear_group(const mfq::weights::MatrixGroup& group);
 
 struct DenseLinearGroup {
     mfq_tensor_backend::Tensor w;

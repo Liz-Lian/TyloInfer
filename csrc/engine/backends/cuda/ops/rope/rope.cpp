@@ -14,6 +14,29 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/executor/executor.h"
+
+mfq::ops::RopeTable RopeCache::view() const {
+    return {cos, sin, sections, empty_sections, interleaved_order, interleaved_inverse, rotary_dim};
+}
+
+mfq::Tensor mfq::cuda::ops::rope(mfq::Tensor input, mfq::Tensor positions,
+    const mfq::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
+    RopeCache cache;
+    cache.cos = mfq_tensor_backend::Tensor(table.cos);
+    cache.sin = mfq_tensor_backend::Tensor(table.sin);
+    cache.sections = mfq_tensor_backend::Tensor(table.sections);
+    cache.empty_sections = mfq_tensor_backend::Tensor(table.empty_sections);
+    cache.interleaved_order = mfq_tensor_backend::Tensor(table.interleaved_order);
+    cache.interleaved_inverse = mfq_tensor_backend::Tensor(table.interleaved_inverse);
+    cache.rotary_dim = table.rotary_dim;
+    auto x = mfq_tensor_backend::Tensor(input), pos = mfq_tensor_backend::Tensor(positions);
+    return bf16 ? cache.apply_bf16(x.is_cuda() && Executor::current().attention_options().fused_rope, x, pos)
+                : cache.apply(x, pos, grid_mrope_positions);
+}
+#endif
+
 RopeCache::RopeCache(
         int64_t max_positions,
         int64_t dim,

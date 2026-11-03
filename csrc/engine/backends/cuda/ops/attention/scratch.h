@@ -23,6 +23,7 @@ struct MlaScratch {
 };
 
 struct AttentionScratch {
+    static constexpr std::int64_t kMaxParts = 16;
     mfq_tensor_backend::Tensor partial_o, partial_m, partial_l;
     mfq_tensor_backend::Tensor mask, kv_max, meta;
 
