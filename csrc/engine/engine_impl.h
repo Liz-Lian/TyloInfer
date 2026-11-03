@@ -14,6 +14,7 @@
 #include "engine/models/causal_model.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/components.h"
+#include "engine/models/common/prompt.h"
 #include "engine/scheduler/request.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
@@ -121,6 +122,7 @@ protected:
                 cache_.reset();
                 graph_.reset();
                 components_.reset();
+                images_.clear();
                 executor_.reset();
                 state_.reset();
                 model_.reset();
@@ -192,9 +194,16 @@ public:
         } else
 #endif
         return components().prepare(
-            language(), execution_->executor().projector(execution_->executor().mode().ffn, model_parallel_primary_device(execution_->config)), weights_.moe,
-            execution_->executor().collectives(), execution_->config.layer_placement.primary_device(),
-            executor_.get(), input.prompt, *input.vision);
+            language(), images_,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+            execution_->executor().projector(execution_->executor().mode().ffn, model_parallel_primary_device(execution_->config)),
+            execution_->executor().collectives(),
+#endif
+            execution_->config.layer_placement.primary_device(),
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+            executor_.get(),
+#endif
+            input.prompt, *input.vision);
     }
 
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
@@ -247,6 +256,7 @@ private:
     std::shared_ptr<Model> model_;
     std::unique_ptr<State> state_;
     std::unique_ptr<Executor> executor_;
+    MediaCache images_;
     std::optional<Parts> components_;
     mfq::models::Info model_info_{};
     mfq::engine::mtp::State mtp_state_;

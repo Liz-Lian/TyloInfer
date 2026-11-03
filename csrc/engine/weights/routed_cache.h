@@ -13,6 +13,8 @@ class TqExec;
 
 namespace mfq::cuda {
 
+class WeightLoan;
+
 // One loaded model owns both cache implementations; selected banks retain their backing.
 struct RoutedCache {
     RoutedCache() = default;
@@ -30,6 +32,7 @@ struct RoutedCache {
     std::size_t budget() const;
     void resize(std::size_t bytes);
     std::size_t reserve(std::size_t bytes);
+    WeightLoan borrow(std::size_t bytes);
     // The execution owner drains all consumers before releasing cache backing.
     void reset() noexcept;
 };

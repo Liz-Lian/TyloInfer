@@ -4,6 +4,7 @@
 #include "engine/load.h"
 #include "engine/drain.h"
 #include "engine/models/common/components.h"
+#include "engine/models/common/prompt.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/causal_model.h"
 #include "engine/weights/routed_cache.h"
@@ -69,6 +70,7 @@ struct Text {
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
+    MediaCache images;
     Parts components;
     Model& language;
     State& state;
@@ -366,8 +368,15 @@ struct Text {
             return causal.prepare(input.prompt, *input.vision, state);
         } else
 #endif
-        return components.prepare(language, execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)), weights.moe,
-            execution->executor().collectives(), execution->config.layer_placement.primary_device(), executor.get(),
+        return components.prepare(language, images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+            execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)),
+            execution->executor().collectives(),
+#endif
+            execution->config.layer_placement.primary_device(),
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+            executor.get(),
+#endif
             input.prompt, *input.vision);
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {

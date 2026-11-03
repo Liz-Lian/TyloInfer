@@ -7,8 +7,10 @@
 
 #include <cstdint>
 #include <array>
+#include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -36,6 +38,8 @@ struct AttentionConfig {
 struct AttentionResult { Tensor value; bool token_major = false; };
 AttentionResult attention(const AttentionInput& input, const state::KvView& kv,
                           const AttentionConfig& config);
+Tensor attention(Tensor query, Tensor key, Tensor value,
+                 const std::optional<Tensor>& additive_mask, double scale);
 // Writes the supplied backing and returns visible KV; paged prefixes may be gathered.
 // An unpaged, unquantized zero-batch write can use CPU tensors.
 std::pair<Tensor, Tensor> append_kv(state::KvView kv, Tensor key, Tensor value,
@@ -58,6 +62,13 @@ std::optional<Tensor> rope_kv(const AttentionInput&, const state::KvView&, const
 // Normalize over the last dimension, preserving shape; F32 output is the default.
 Tensor rms_norm(Tensor input, const Tensor& weight, double eps, double offset,
                 ScalarType output_type = ScalarType::float32);
+Tensor layer_norm(Tensor input, const Tensor& weight, const Tensor& bias, double epsilon);
+Tensor gelu(Tensor input, bool approximate = false);
+Tensor silu(Tensor input);
+Tensor relu_squared(Tensor input);
+Tensor axial_rope(Tensor input, const std::vector<std::int32_t>& positions, double theta);
+Tensor segmented_attention(Tensor query, Tensor key, Tensor value,
+                           const std::vector<std::int32_t>& lengths);
 // Undefined weights pass their value through, including CPU values; other outputs use F32 or BF16.
 std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 3> weights,
                                double eps, double offset, ScalarType output_type);
@@ -106,18 +117,56 @@ Tensor scale(Tensor input, double factor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
 Tensor embedding(Tensor ids, const weights::Matrix& weight);
 Tensor project(Tensor input, const weights::Matrix& weight);
+// linear uses dense weight dtype for dense projection and bias; otherwise it adds
+// bias in the projection result dtype. It restores input dtype and makes contiguous.
+// affine adds bias in the projection result dtype without restoring input dtype.
+Tensor linear(Tensor input, const weights::Matrix& weight, const Tensor& bias);
+Tensor affine(Tensor input, const weights::Matrix& weight, const Tensor& bias);
 std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group);
 // Computes project(input * sigmoid(gate)).
 Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight);
 // Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.
+// Copies typed values into owned storage on target.
+Tensor tensor(std::span<const float> values, Device target);
+Tensor tensor(std::span<const std::int32_t> values, Device target);
+Tensor tensor(std::span<const std::int64_t> values, Device target);
+Tensor tensor(std::span<const std::uint8_t> values, Device target);
+// The caller keeps external data alive until its last consumer completes.
+Tensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options);
+inline Tensor from_blob(void* data, std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
+    return from_blob(data, std::span<const std::int64_t>(shape.begin(), shape.size()), options);
+}
 Tensor copy(Tensor input, Device target);
+// Writes destination's existing backing; source and destination may use different devices.
+void copy_into(Tensor destination, Tensor source);
 Tensor cast(Tensor input, ScalarType type);
 // Targeted cast uses native tensor conversion; CUDA copy uses execution collectives.
 Tensor cast(Tensor input, ScalarType type, Device target);
 Tensor contiguous(Tensor input);
 Tensor clone(Tensor input);
 Tensor reshape(Tensor input, std::span<const std::int64_t> shape);
+inline Tensor reshape(Tensor input, std::initializer_list<std::int64_t> shape) {
+    return reshape(std::move(input), std::span<const std::int64_t>(shape.begin(), shape.size()));
+}
+Tensor expand(Tensor input, std::span<const std::int64_t> shape);
+inline Tensor expand(Tensor input, std::initializer_list<std::int64_t> shape) {
+    return expand(std::move(input), std::span<const std::int64_t>(shape.begin(), shape.size()));
+}
+Tensor cat(std::span<const Tensor> inputs, std::int64_t dim);
+inline Tensor cat(std::initializer_list<Tensor> inputs, std::int64_t dim) {
+    return cat(std::span<const Tensor>(inputs.begin(), inputs.size()), dim);
+}
+Tensor zeros(std::span<const std::int64_t> shape, const TensorOptions& options);
+inline Tensor zeros(std::initializer_list<std::int64_t> shape, const TensorOptions& options) {
+    return zeros(std::span<const std::int64_t>(shape.begin(), shape.size()), options);
+}
+Tensor select(Tensor input, std::int64_t dim, std::int64_t index);
+Tensor unsqueeze(Tensor input, std::int64_t dim);
 Tensor slice(Tensor input, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step = 1);
+Tensor index_select(Tensor input, std::int64_t dim, Tensor indices);
+Tensor sum(Tensor input, std::int64_t dim, bool keepdim = false);
+// Modifies the input's backing storage.
+void index_copy(Tensor input, std::int64_t dim, Tensor indices, Tensor source);
 std::vector<Tensor> chunk(Tensor input, std::int64_t count, std::int64_t dim);
 // Position tensors are I64.
 Tensor arange(std::int64_t first, std::int64_t last, Device device);

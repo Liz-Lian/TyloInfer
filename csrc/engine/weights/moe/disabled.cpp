@@ -81,10 +81,10 @@ void print_moe_expert_cache_stats(const std::shared_ptr<MoeExpertCache>& cache, 
 
 void set_moe_expert_cache_profile(MoeExpertCache& cache, mfq::MoeCacheProfile profile) {}
 
-MoePrefillWorkspaceLoan::~MoePrefillWorkspaceLoan() = default;
-std::size_t MoePrefillWorkspaceLoan::begin(std::size_t) { return 0; }
-void MoePrefillWorkspaceLoan::suspend() {}
-void MoePrefillWorkspaceLoan::finish() {}
+mfq::cuda::WeightLoan::~WeightLoan() = default;
+std::size_t mfq::cuda::WeightLoan::begin(std::size_t) { return 0; }
+void mfq::cuda::WeightLoan::suspend() {}
+void mfq::cuda::WeightLoan::finish() {}
 MoePrefillLayerPriority::MoePrefillLayerPriority(std::shared_ptr<MoeExpertCache> cache, int, int)
     : cache_(std::move(cache)) {}
 MoePrefillLayerPriority::~MoePrefillLayerPriority() = default;

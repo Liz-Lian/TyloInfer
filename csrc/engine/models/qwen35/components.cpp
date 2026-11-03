@@ -47,12 +47,25 @@ void Components::describe(mfq::engine::EngineInfo& info) const {
 }
 
 mfq::StepSequence<PreparedPrompt> Components::prepare(
-    Model& language, Projector projector, std::shared_ptr<MoeExpertCache> cache,
-    Collectives& collectives, int primary, Executor* executor,
+    Model& language, MediaCache& images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+    Projector projector, Collectives& collectives,
+#endif
+    int primary,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+    Executor* executor,
+#endif
     const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
     if (grid_vision)
-        return grid_vision->prepare(language, projector, std::move(cache),
-            collectives, primary, executor, tokens, media);
+        return grid_vision->prepare(language, images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+            projector, collectives,
+#endif
+            primary,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+            executor,
+#endif
+            tokens, media);
     throw std::invalid_argument("model has no multimodal component");
 }
 

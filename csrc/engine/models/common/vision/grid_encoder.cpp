@@ -9,7 +9,7 @@
 namespace mfq::cuda::grid_vision_runtime {
 namespace {
 
-Tensor required_vector(const weight_loader::Loader& weights,
+mfq_tensor_backend::Tensor required_vector(const weight_loader::Loader& weights,
                        GridVisionTensorRole role, int64_t width, size_t block = 0) {
     const auto name = grid_vision_canonical_name(role, block);
     auto value = weights.tensor(name);
@@ -91,38 +91,70 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
         }
         blocks.push_back(std::move(block));
     }
-    return CudaGridVisionEncoder(config, std::move(patch_weight), std::move(patch_bias),
+    return CudaGridVisionEncoder(weights.cache, config, std::move(patch_weight), std::move(patch_bias),
                                  std::move(position_weight), std::move(blocks));
 }
 
 mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
-    Projector projector, std::shared_ptr<MoeExpertCache> cache, Tensor pixels,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+    Projector projector,
+#endif
+    Tensor pixels,
     const std::vector<GridShape> &grids) const {
     return mfq::models::grid_vision::encode(
         std::move(pixels), config_, grids, blocks_,
-        [this, cache](Tensor input, int64_t count) {
+        [this](Tensor input, int64_t count) {
             if (input.dim() == 5)
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                input = mfq::ops::reshape(input, {input.size(0), -1});
+#else
                 input = input.reshape({input.size(0), -1});
+#endif
             if (input.dim() != 2 || input.size(0) != count ||
                 input.size(1) != config_.patch_width())
                 throw std::runtime_error(
                     "grid-ViT pixel values must be flattened CxTxHxW patches");
             auto run = [&] {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                auto weight = mfq::ops::cast(patch_weight_, patch_weight_.scalar_type(), mfq::Device{mfq::DeviceType::cuda, 0});
+                weight = mfq::ops::reshape(std::move(weight), {config_.hidden_size, config_.patch_width()});
+                auto output = mfq::ops::matmul(mfq::ops::cast(input, weight.scalar_type()),
+                                               mfq::ops::transpose(weight, 0, 1));
+                auto bias = mfq::ops::cast(patch_bias_, patch_bias_.scalar_type(), mfq::Device{mfq::DeviceType::cuda, 0});
+                bias = mfq::ops::cast(std::move(bias), output.scalar_type());
+                return mfq::ops::add(std::move(output), std::move(bias));
+#else
                 auto weight = patch_weight_.to(mfq_tensor_backend::kCUDA)
                                   .reshape({config_.hidden_size, config_.patch_width()});
                 auto output = mfq_tensor_backend::matmul(input.to(weight.scalar_type()),
                                                          weight.transpose(0, 1));
                 return output + patch_bias_.to(mfq_tensor_backend::kCUDA)
                                    .to(output.scalar_type());
+#endif
             };
             if (!host_weights()) return run();
-            MoePrefillWorkspaceLoan loan(cache);
-            loan.begin(patch_weight_.nbytes() + patch_bias_.nbytes() +
+            auto loan = weights_.borrow(patch_weight_.nbytes() + patch_bias_.nbytes() +
                        std::size_t(count * config_.hidden_size) * 16);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return Tensor(loan.finish(mfq_tensor_backend::Tensor(run())));
+#else
             return loan.finish(run());
+#endif
         },
-        [this, cache](const LearnedPositionInterpolation &interpolation) {
+        [this](const LearnedPositionInterpolation &interpolation) {
             auto run = [&] {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                auto position_weight = mfq::ops::cast(position_weight_, position_weight_.scalar_type(), mfq::Device{mfq::DeviceType::cuda, 0});
+                Tensor index = mfq::ops::tensor(interpolation.indices, mfq::Device{mfq::DeviceType::cpu, 0});
+                index = mfq::ops::cast(std::move(index), mfq_tensor_backend::kInt32, position_weight.device());
+                index = mfq::ops::cast(std::move(index), mfq_tensor_backend::kInt64);
+                Tensor weights = mfq::ops::tensor(interpolation.weights, mfq::Device{mfq::DeviceType::cpu, 0});
+                weights = mfq::ops::reshape(std::move(weights), {interpolation.patch_count, 4, 1});
+                weights = mfq::ops::cast(std::move(weights), mfq_tensor_backend::kFloat32, position_weight.device());
+                auto selected = mfq::ops::index_select(position_weight, 0, mfq::ops::reshape(std::move(index), {-1}));
+                selected = mfq::ops::reshape(std::move(selected), {interpolation.patch_count, 4, config_.hidden_size});
+                return mfq::ops::sum(mfq::ops::multiply(std::move(selected), std::move(weights)), 1);
+#else
                 auto position_weight = position_weight_.to(mfq_tensor_backend::kCUDA);
                 auto index = mfq_tensor_backend::tensor(
                                  interpolation.indices,
@@ -143,40 +175,67 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                             .reshape({interpolation.patch_count, 4, config_.hidden_size}) *
                         weights,
                     1);
+#endif
             };
             if (!host_weights()) return run();
-            MoePrefillWorkspaceLoan loan(cache);
-            loan.begin(position_weight_.nbytes() +
+            auto loan = weights_.borrow(position_weight_.nbytes() +
                        std::size_t(interpolation.patch_count * config_.hidden_size) * 48);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return Tensor(loan.finish(mfq_tensor_backend::Tensor(run())));
+#else
             return loan.finish(run());
+#endif
         },
-        [](Tensor hidden, Tensor learned) { return hidden + learned.to(hidden.scalar_type()); },
-        [this, projector, cache](const auto &block, Tensor value, const GridVisionLayout &layout) {
+        [](Tensor hidden, Tensor learned) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            auto dtype = hidden.scalar_type();
+            return mfq::ops::add(std::move(hidden), mfq::ops::cast(std::move(learned), dtype));
+#else
+            return hidden + learned.to(hidden.scalar_type());
+#endif
+        },
+        [this
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+         , projector
+#endif
+        ](const auto &block, Tensor value, const GridVisionLayout &layout) {
             // FP32 RoPE intermediates, Q/K/V copies and residual overlap;
             // FFN input/output plus a decoded FP16 projection. GELU is fused.
             const auto projection_scratch =
                 std::size_t(2) * config_.hidden_size *
                 std::max<int64_t>(3 * config_.hidden_size, config_.intermediate_size);
             if (host_weights()) {
-                MoePrefillWorkspaceLoan loan(cache);
-                loan.begin(fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
+                auto loan = weights_.borrow(fields::bytes(block) + value.nbytes() * 16 + projection_scratch +
                            std::size_t(value.size(0) * config_.intermediate_size) * 12 +
                            (std::size_t(16) << 20));
                 Tensor output;
                 {
                     auto resident = fields::to_cuda(block);
-                    output = resident(projector, value, layout.positions, layout.segment_lengths);
+                    output = resident(
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+                        projector,
+#endif
+                        value, layout.positions, layout.segment_lengths);
                 }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                return Tensor(loan.finish(mfq_tensor_backend::Tensor(std::move(output))));
+#else
                 return loan.finish(std::move(output));
+#endif
             }
-            return block(projector, std::move(value), layout.positions, layout.segment_lengths);
+            return block(
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+                projector,
+#endif
+                std::move(value), layout.positions, layout.segment_lengths);
         });
 }
 
 CudaGridVisionEncoder::CudaGridVisionEncoder(
-    GridVisionConfig config, Tensor patch_weight, Tensor patch_bias, Tensor position_weight,
+    RoutedCache& weights, GridVisionConfig config, Tensor patch_weight, Tensor patch_bias, Tensor position_weight,
     std::vector<Layer> blocks)
-    : config_(std::move(config)),
+    : weights_(weights),
+      config_(std::move(config)),
       patch_weight_(std::move(patch_weight)),
       patch_bias_(std::move(patch_bias)),
       position_weight_(std::move(position_weight)),
@@ -214,16 +273,17 @@ CudaGridVisionPromptComponent CudaGridVisionPromptComponent::load(
         throw std::runtime_error("grid-Vision merger geometry mismatch");
     }
     return CudaGridVisionPromptComponent(
-        CudaGridVisionEncoder::load(placed, vision), std::move(merger_norm),
+        weights.cache, CudaGridVisionEncoder::load(placed, vision), std::move(merger_norm),
         std::move(merger_up), std::move(merger_down), image_token_id, video_token_id,
         std::move(input_contract), std::move(position_policy));
 }
 
 CudaGridVisionPromptComponent::CudaGridVisionPromptComponent(
-    CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm, BiasWeight merger_up,
+    RoutedCache& weights, CudaGridVisionEncoder encoder, vision::LayerNorm merger_norm, BiasWeight merger_up,
     BiasWeight merger_down, int64_t image_token_id, int64_t video_token_id,
     std::string input_contract, std::string position_policy)
-    : encoder_(std::move(encoder)),
+    : weights_(weights),
+      encoder_(std::move(encoder)),
       merger_norm_(std::move(merger_norm)),
       merger_up_(std::move(merger_up)),
       merger_down_(std::move(merger_down)),

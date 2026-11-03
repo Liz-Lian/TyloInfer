@@ -12,10 +12,18 @@
 
 class MoeExpertCache;
 
-class MoePrefillWorkspaceLoan {
+namespace mfq::cuda {
+
+class WeightLoan {
 public:
-    explicit MoePrefillWorkspaceLoan(std::shared_ptr<MoeExpertCache> cache):cache_(std::move(cache)){}
-    ~MoePrefillWorkspaceLoan();
+    explicit WeightLoan(std::shared_ptr<MoeExpertCache> cache):cache_(std::move(cache)){}
+    WeightLoan(std::shared_ptr<MoeExpertCache> cache, std::size_t bytes)
+        : WeightLoan(std::move(cache)) { begin(bytes); }
+    ~WeightLoan();
+    WeightLoan(const WeightLoan&) = delete;
+    WeightLoan& operator=(const WeightLoan&) = delete;
+    WeightLoan(WeightLoan&&) = delete;
+    WeightLoan& operator=(WeightLoan&&) = delete;
     std::size_t begin(std::size_t bytes);
     void suspend();
     void finish();
@@ -25,6 +33,8 @@ private:
     std::shared_ptr<MoeExpertCache> cache_;
     bool active_=false;
 };
+
+} // namespace mfq::cuda
 
 namespace mfq {
 namespace source { class Source; }

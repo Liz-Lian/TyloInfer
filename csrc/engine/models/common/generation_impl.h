@@ -228,7 +228,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         if (hidden.defined()) {
             // The layer-major path has already advanced every physical cache.
         } else if (prepared && prepared->transformed()) {
-            MoePrefillWorkspaceLoan workspace(weights.moe);
+            WeightLoan workspace(weights.moe);
             const bool borrowed=generation_workspace(model,workspace,chunk.count);
             if constexpr (has_forward<Model, State>) {
                 mfq::cuda::Input input;

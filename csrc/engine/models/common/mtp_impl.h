@@ -133,7 +133,7 @@ template <class Model, class State> struct CudaMtpOps {
   InferenceOutput* output;
   std::function<void()> restore;
   // Destroy after local/result tensors, including cancellation of priming.
-  std::unique_ptr<MoePrefillWorkspaceLoan> predictor_loan;
+  std::unique_ptr<mfq::cuda::WeightLoan> predictor_loan;
   const mfq_tensor_backend::TensorOptions options =
       mfq_tensor_backend::TensorOptions()
           .device(mfq_tensor_backend::kCUDA)
@@ -433,7 +433,7 @@ template <class Model, class State> struct CudaMtpOps {
     mfq::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
       return std::move(*result);
-    MoePrefillWorkspaceLoan workspace(weights.moe);
+    mfq::cuda::WeightLoan workspace(weights.moe);
     const bool host_history=host_prompt_history(chunk.count);
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     Tensor hidden;

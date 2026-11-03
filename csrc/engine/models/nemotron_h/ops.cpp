@@ -285,6 +285,22 @@ static Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
     return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
 }
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+mfq::Tensor Model::embedding(mfq::Tensor ids, int primary) const {
+    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+                               "token IDs must have shape [tokens] or [batch,tokens]");
+    if (ids.dim() == 1) ids = Tensor(std::move(ids)).unsqueeze(0);
+    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+                               "token IDs must not be empty");
+    auto normalized = mfq::ops::contiguous(mfq::ops::copy(
+        mfq::ops::cast(std::move(ids), mfq::ScalarType::int64),
+        mfq::Device{mfq::DeviceType::cuda, primary}));
+    return mfq::ops::measure("model.embed", normalized.device(), [&] {
+        return mfq::ops::embedding(std::move(normalized), embed);
+    });
+}
+#endif
+
 Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
              int primary, Tensor ids, const Executor::Mode& mode) {
     const Task task{task::Embed{0, 0, model.embed}, -1, {}, "model.embed"};

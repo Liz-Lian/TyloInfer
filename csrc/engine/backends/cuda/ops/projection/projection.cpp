@@ -13,6 +13,7 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/ops.h"
 
 mfq::Tensor mfq::cuda::ops::embedding(mfq::Tensor ids, const mfq::weights::Matrix& weight) {
@@ -26,6 +27,26 @@ mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Matri
     if (input.is_cuda()) guard.emplace(input.device().index);
     return mfq::cuda::Executor::current().projector(mfq::cuda::Executor::current_ffn()).run(
         as_quant_linear(weight), mfq_tensor_backend::Tensor(input));
+}
+
+mfq::Tensor mfq::cuda::ops::linear(mfq::Tensor input, const mfq::weights::Matrix& weight,
+                                  const mfq::Tensor& bias) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
+    return biased(Executor::current().projector(Executor::current_ffn()), as_quant_linear(weight),
+                  mfq_tensor_backend::Tensor(bias), mfq_tensor_backend::Tensor(input));
+}
+
+mfq::Tensor mfq::cuda::ops::affine(mfq::Tensor input, const mfq::weights::Matrix& weight,
+                                    const mfq::Tensor& bias) {
+    auto output = project(std::move(input), weight);
+    if (!bias.defined()) return output;
+    if (output.device() != bias.device())
+        throw std::invalid_argument("tensor devices do not match");
+    std::optional<MfqCudaGuard> guard;
+    if (output.is_cuda()) guard.emplace(output.device().index);
+    auto native = mfq_tensor_backend::Tensor(output);
+    return native + mfq_tensor_backend::Tensor(bias).to(native.scalar_type());
 }
 
 std::vector<mfq::Tensor> mfq::cuda::ops::project(mfq::Tensor input,

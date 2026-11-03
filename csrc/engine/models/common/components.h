@@ -107,20 +107,42 @@ struct RuntimeComponents {
     }
 
     mfq::StepSequence<mfq::cuda::PreparedPrompt> prepare(
-        Model& language, mfq::cuda::Projector projector,
-        std::shared_ptr<MoeExpertCache> cache, mfq::cuda::Collectives& collectives,
-        int primary, mfq::cuda::Executor* executor,
+        Model& language, mfq::cuda::MediaCache& images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+        mfq::cuda::Projector projector, mfq::cuda::Collectives& collectives,
+#endif
+        int primary,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+        mfq::cuda::Executor* executor,
+#endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
         if (composite) return composite->prepare(tokens, media);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        if constexpr (std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>)
+#endif
         if (grid_vision)
-            return grid_vision->prepare(language, projector, std::move(cache),
-                collectives, primary, executor, tokens, media);
+            return grid_vision->prepare(language, images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+                projector, collectives,
+#endif
+                primary,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+                executor,
+#endif
+                tokens, media);
         if constexpr (std::is_same_v<Model, mfq::cuda::DeepseekV41CausalLm>)
             if (deepseek_vision)
-                return deepseek_vision->prepare(language, projector, tokens, media);
+                return deepseek_vision->prepare(language, images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+                    projector,
+#endif
+                    tokens, media);
         if constexpr (std::is_same_v<Model, mfq::cuda::nemotron_h::Model>)
             if (radio_vision)
-                return radio_vision->prepare(language, projector, *executor, collectives,
+                return radio_vision->prepare(language,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+                                             projector, *executor, collectives,
+#endif
                                              primary, tokens, media);
         throw std::invalid_argument("model has no multimodal component");
     }

@@ -567,7 +567,7 @@ template <> inline ScalarType scalar_type_for<float>() { return kFloat32; }
 template <> inline ScalarType scalar_type_for<double>() { return kFloat64; }
 
 template <typename Value>
-Tensor tensor(const std::vector<Value>& values, TensorOptions options = {}) {
+Tensor tensor(std::span<const Value> values, TensorOptions options = {}) {
     if (options.scalar_type() == kFloat32 && !std::is_same_v<Value, float>) {
         options.dtype(scalar_type_for<Value>());
     }
@@ -579,6 +579,11 @@ Tensor tensor(const std::vector<Value>& values, TensorOptions options = {}) {
         {static_cast<std::int64_t>(values.size())},
         host_options).clone();
     return target.is_cuda() ? host.to(target) : host;
+}
+
+template <typename Value>
+Tensor tensor(const std::vector<Value>& values, TensorOptions options = {}) {
+    return tensor(std::span<const Value>(values.data(), values.size()), options);
 }
 
 template <typename Value>

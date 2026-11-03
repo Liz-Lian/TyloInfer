@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -121,3 +122,26 @@ inline Tensor segmented_attention(
 }
 
 } // namespace mfq::cuda::vision
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+namespace mfq::cuda::ops {
+inline mfq::Tensor attention(mfq::Tensor query, mfq::Tensor key, mfq::Tensor value,
+                             const std::optional<mfq::Tensor>& mask, double scale) {
+    MfqCudaGuard guard(query.device().index);
+    std::optional<mfq_tensor_backend::Tensor> native_mask;
+    if (mask) native_mask.emplace(*mask);
+    return vision_non_causal_attention(mfq_tensor_backend::Tensor(query), mfq_tensor_backend::Tensor(key),
+                                       mfq_tensor_backend::Tensor(value), native_mask, scale);
+}
+inline mfq::Tensor axial_rope(mfq::Tensor input, const std::vector<std::int32_t>& positions, double theta) {
+    MfqCudaGuard guard(input.device().index);
+    return vision::apply_axial_rope(mfq_tensor_backend::Tensor(input), positions, theta);
+}
+inline mfq::Tensor segmented_attention(mfq::Tensor query, mfq::Tensor key, mfq::Tensor value,
+                                       const std::vector<std::int32_t>& lengths) {
+    MfqCudaGuard guard(query.device().index);
+    return vision::segmented_attention(mfq_tensor_backend::Tensor(query), mfq_tensor_backend::Tensor(key),
+                                       mfq_tensor_backend::Tensor(value), lengths);
+}
+}
+#endif

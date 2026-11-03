@@ -54,7 +54,7 @@ std::tuple<mfq_tensor_backend::Tensor, bool, bool> generation_prefill(
     return {std::move(hidden),layer_major,short_windows};
 }
 
-inline bool generation_workspace(Qwen4CausalLm& model, MoePrefillWorkspaceLoan& workspace,
+inline bool generation_workspace(Qwen4CausalLm& model, WeightLoan& workspace,
                                  int64_t rows) {
     return workspace.begin((std::size_t(4)<<30)+
         std::size_t(rows)*model.hidden_size()*model.hc_mult()*sizeof(float)*4)>0;

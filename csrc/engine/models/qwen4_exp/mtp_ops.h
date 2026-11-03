@@ -218,7 +218,7 @@ double mtp_begin_predictor_prefill(Qwen4CausalLm& model, Ops& ops, int64_t pairs
     const auto rows=std::min<int64_t>(1024,pairs);
     const auto bytes=(std::size_t(1)<<30)+std::size_t(rows)*model.config.hidden*
         model.config.streams*sizeof(float)*8+moe_prefill_transfer_bytes(ops.weights.moe,true);
-    auto loan=std::make_unique<MoePrefillWorkspaceLoan>(ops.weights.moe);
+    auto loan=std::make_unique<WeightLoan>(ops.weights.moe);
     if(loan->begin(bytes))ops.predictor_loan=std::move(loan);
     return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
@@ -234,7 +234,7 @@ void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tenso
                            Timer& timer, bool& prefill_finished) {
     if(ops.cache_only_prompt_history()) {
         auto& predictor=static_cast<qwen4_exp::Predictor&>(ops.mtp);
-        MoePrefillWorkspaceLoan workspace(ops.weights.moe);
+        WeightLoan workspace(ops.weights.moe);
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
         {

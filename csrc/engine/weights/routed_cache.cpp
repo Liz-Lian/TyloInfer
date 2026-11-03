@@ -2,6 +2,7 @@
 
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/tq/cache.h"
+#include "engine/weights/workspace.h"
 
 namespace mfq::cuda {
 
@@ -29,6 +30,10 @@ void RoutedCache::resize(std::size_t bytes) {
 
 std::size_t RoutedCache::reserve(std::size_t bytes) {
     return tq ? tq->reserve(bytes) : reclaim_moe_optional_host(moe, bytes);
+}
+
+WeightLoan RoutedCache::borrow(std::size_t bytes) {
+    return WeightLoan(moe, bytes);
 }
 
 void RoutedCache::reset() noexcept {

@@ -51,8 +51,14 @@ struct Components {
     void describe(mfq::engine::EngineInfo& info) const;
 
     mfq::StepSequence<PreparedPrompt> prepare(
-        Model& language, Projector projector, std::shared_ptr<MoeExpertCache> cache,
-        Collectives& collectives, int primary, Executor* executor,
+        Model& language, MediaCache& images,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+        Projector projector, Collectives& collectives,
+#endif
+        int primary,
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+        Executor* executor,
+#endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media);
 
     template <class T>

@@ -1265,16 +1265,16 @@ void MoeExpertCache::end_prefill_loan() {
 #endif
 }
 
-MoePrefillWorkspaceLoan::~MoePrefillWorkspaceLoan() {
+mfq::cuda::WeightLoan::~WeightLoan() {
     if(active_)try{finish();}catch(const std::exception& e) {
         std::cerr<<"runtime_prefill_loan cleanup_error="<<e.what()<<'\n';
     }
 }
-std::size_t MoePrefillWorkspaceLoan::begin(std::size_t bytes) {
+std::size_t mfq::cuda::WeightLoan::begin(std::size_t bytes) {
     const auto borrowed=cache_?cache_->begin_prefill_loan(bytes):0;active_=borrowed>0;return borrowed;
 }
-void MoePrefillWorkspaceLoan::suspend(){if(active_)cache_->suspend_prefill_loan();}
-void MoePrefillWorkspaceLoan::finish(){if(active_){cache_->end_prefill_loan();active_=false;}}
+void mfq::cuda::WeightLoan::suspend(){if(active_)cache_->suspend_prefill_loan();}
+void mfq::cuda::WeightLoan::finish(){if(active_){cache_->end_prefill_loan();active_=false;}}
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor) {
     return cache?cache->prefill_transfer_bytes(predictor):0;
 }

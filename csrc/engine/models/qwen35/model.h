@@ -59,6 +59,9 @@ struct Model {
     QuantLinear lm_head;
     Tensor output_norm;
     std::vector<Layer> layers;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::Tensor embedding(mfq::Tensor ids, int primary = 0) const;
+#endif
 };
 
 } // namespace mfq::cuda::qwen35

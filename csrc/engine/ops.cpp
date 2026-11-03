@@ -3,6 +3,8 @@
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
+#include "engine/backends/cuda/ops/norm/layer.h"
+#include "engine/backends/cuda/ops/vision/attention.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/ops/projection/projection.h"
 #include "engine/backends/cuda/ops/tensor.h"
@@ -57,6 +59,26 @@ AttentionResult attention(const AttentionInput& request, const state::KvView& kv
         if (tensor->defined()) compatible(request.query, *tensor);
     require_cuda(request.query);
     return cuda::ops::attention(request, kv, config);
+}
+
+Tensor attention(Tensor query, Tensor key, Tensor value,
+                 const std::optional<Tensor>& mask, double scale) {
+    compatible(query, key);
+    compatible(query, value);
+    if (mask) compatible(query, *mask);
+    if (query.dim() != 4 || key.dim() != 4 || value.dim() != 4 ||
+        query.size(3) != key.size(3) || key.size(2) != value.size(2))
+        throw std::invalid_argument("attention query, key and value geometry is incompatible");
+    const auto broadcasts = [](std::int64_t a, std::int64_t b) {
+        return a == b || a == 1 || b == 1;
+    };
+    for (int axis = 0; axis < 2; ++axis) {
+        const auto q = query.size(axis), k = key.size(axis), v = value.size(axis);
+        if (!broadcasts(q, k) || !broadcasts(q > k ? q : k, v))
+            throw std::invalid_argument("attention query, key and value geometry is incompatible");
+    }
+    require_cuda(query);
+    return cuda::ops::attention(std::move(query), std::move(key), std::move(value), mask, scale);
 }
 
 Tensor rope(Tensor value, Tensor positions, const RopeTable& table, bool bf16, bool grid) {
@@ -193,6 +215,42 @@ Tensor rms_norm(Tensor value, const Tensor& weight, double eps, double offset, S
     require_cuda(value);
     return cuda::ops::rms_norm(std::move(value), weight, eps, offset, output_type);
 }
+Tensor layer_norm(Tensor value, const Tensor& weight, const Tensor& bias, double epsilon) {
+    compatible(value, weight);
+    compatible(value, bias);
+    if (value.dim() == 0 || weight.dim() != 1 || bias.dim() != 1 ||
+        weight.size(0) != value.size(-1) || bias.size(0) != value.size(-1))
+        throw std::invalid_argument("layer_norm input and weights are incompatible");
+    require_cuda(value);
+    return cuda::ops::layer_norm(std::move(value), weight, bias, epsilon);
+}
+Tensor gelu(Tensor value, bool approximate) {
+    input(value);
+    require_cuda(value);
+    return cuda::ops::gelu(std::move(value), approximate);
+}
+Tensor silu(Tensor value) {
+    input(value);
+    require_cuda(value);
+    return cuda::ops::silu(std::move(value));
+}
+Tensor relu_squared(Tensor value) {
+    input(value);
+    require_cuda(value);
+    return cuda::ops::relu_squared(std::move(value));
+}
+Tensor axial_rope(Tensor value, const std::vector<std::int32_t>& positions, double theta) {
+    input(value);
+    require_cuda(value);
+    return cuda::ops::axial_rope(std::move(value), positions, theta);
+}
+Tensor segmented_attention(Tensor query, Tensor key, Tensor value,
+                           const std::vector<std::int32_t>& lengths) {
+    compatible(query, key);
+    compatible(query, value);
+    require_cuda(query);
+    return cuda::ops::segmented_attention(std::move(query), std::move(key), std::move(value), lengths);
+}
 std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 3> weights,
                                double eps, double offset, ScalarType output_type) {
     if (output_type != ScalarType::float32 && output_type != ScalarType::bfloat16)
@@ -228,6 +286,16 @@ Tensor project(Tensor value, const weights::Matrix& weight) {
     input(value);
     return cuda::ops::project(std::move(value), weight);
 }
+Tensor linear(Tensor value, const weights::Matrix& weight, const Tensor& bias) {
+    input(value);
+    if (bias.defined()) input(bias);
+    return cuda::ops::linear(std::move(value), weight, bias);
+}
+Tensor affine(Tensor value, const weights::Matrix& weight, const Tensor& bias) {
+    input(value);
+    if (bias.defined()) input(bias);
+    return cuda::ops::affine(std::move(value), weight, bias);
+}
 Tensor mlp(Tensor value, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
            MlpActivation activation, double swiglu_limit) {
     input(value);
@@ -241,10 +309,35 @@ Tensor sigmoid_project(Tensor value, Tensor gate, const weights::Matrix& weight)
     compatible(value, gate);
     return cuda::ops::sigmoid_project(std::move(value), std::move(gate), weight);
 }
+Tensor tensor(std::span<const float> values, Device target) {
+    device(target);
+    return cuda::ops::tensor(values, target);
+}
+Tensor tensor(std::span<const std::int32_t> values, Device target) {
+    device(target);
+    return cuda::ops::tensor(values, target);
+}
+Tensor tensor(std::span<const std::int64_t> values, Device target) {
+    device(target);
+    return cuda::ops::tensor(values, target);
+}
+Tensor tensor(std::span<const std::uint8_t> values, Device target) {
+    device(target);
+    return cuda::ops::tensor(values, target);
+}
+Tensor from_blob(void* data, std::span<const std::int64_t> shape, const TensorOptions& options) {
+    device(options.target_device());
+    return cuda::ops::from_blob(data, shape, options);
+}
 Tensor copy(Tensor value, Device target) {
     input(value);
     device(target);
     return cuda::ops::copy(std::move(value), target);
+}
+void copy_into(Tensor destination, Tensor source) {
+    input(destination);
+    input(source);
+    cuda::ops::copy_into(std::move(destination), std::move(source));
 }
 Tensor cast(Tensor value, ScalarType type) {
     input(value);
@@ -267,9 +360,47 @@ Tensor reshape(Tensor value, std::span<const std::int64_t> shape) {
     input(value);
     return cuda::ops::reshape(std::move(value), shape);
 }
+Tensor expand(Tensor value, std::span<const std::int64_t> shape) {
+    input(value);
+    return cuda::ops::expand(std::move(value), shape);
+}
+Tensor cat(std::span<const Tensor> values, std::int64_t dim) {
+    if (values.empty()) throw std::invalid_argument("cat requires at least one tensor");
+    input(values.front());
+    for (const auto& value : values.subspan(1)) compatible(values.front(), value);
+    return cuda::ops::cat(values, dim);
+}
+Tensor zeros(std::span<const std::int64_t> shape, const TensorOptions& options) {
+    device(options.target_device());
+    return cuda::ops::zeros(shape, options);
+}
+Tensor select(Tensor value, std::int64_t dim, std::int64_t index) {
+    input(value);
+    return cuda::ops::select(std::move(value), dim, index);
+}
+Tensor unsqueeze(Tensor value, std::int64_t dim) {
+    input(value);
+    return cuda::ops::unsqueeze(std::move(value), dim);
+}
 Tensor slice(Tensor value, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step) {
     input(value);
     return cuda::ops::slice(std::move(value), dim, start, end, step);
+}
+Tensor index_select(Tensor value, std::int64_t dim, Tensor indices) {
+    compatible(value, indices);
+    require_cuda(value);
+    return cuda::ops::index_select(std::move(value), dim, std::move(indices));
+}
+Tensor sum(Tensor value, std::int64_t dim, bool keepdim) {
+    input(value);
+    require_cuda(value);
+    return cuda::ops::sum(std::move(value), dim, keepdim);
+}
+void index_copy(Tensor value, std::int64_t dim, Tensor indices, Tensor source) {
+    compatible(value, indices);
+    compatible(value, source);
+    require_cuda(value);
+    cuda::ops::index_copy(std::move(value), dim, std::move(indices), std::move(source));
 }
 std::vector<Tensor> chunk(Tensor value, std::int64_t count, std::int64_t dim) {
     input(value);

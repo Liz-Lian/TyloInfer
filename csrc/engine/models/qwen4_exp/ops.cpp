@@ -2582,7 +2582,7 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
         }
     } restore{profiler,profiler.enabled,previous_profile,collect};
     compute_chunk=std::min(compute_chunk,tokens);
-    MoePrefillWorkspaceLoan workspace_loan(model.execution->weights.moe);
+    WeightLoan workspace_loan(model.execution->weights.moe);
     bool borrowed_workspace=false;
     {
         // Persistent decode graphs and prefill now coexist. Bound the compute

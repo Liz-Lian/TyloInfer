@@ -2,6 +2,7 @@
 
 #include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/models/prepared.h"
+#include "engine/state/media.h"
 
 #include <cstdint>
 #include <string>
@@ -11,8 +12,10 @@
 namespace mfq::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+using MediaCache = mfq::cache::Media<mfq::Tensor>;
 using PreparedPrompt = mfq::models::Prepared;
 #else
+using MediaCache = mfq::cache::Media<mfq_tensor_backend::Tensor>;
 struct PreparedPrompt {
     std::vector<std::int64_t> token_ids;
     mfq_tensor_backend::Tensor embeddings;
