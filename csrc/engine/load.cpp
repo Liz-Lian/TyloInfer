@@ -206,7 +206,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, Na
                 load.dense_cpu_layer_count = 0;
                 gemma4::load(*owner, loader, load.layer_placement, load.n_gpu_layers, load.expert_parallel.enabled());
                 state = model->make_state();
-                state->preallocate();
+                if (runtime_options::kv_vram_preallocated()) state->preallocate();
                 forward = root->fork(model_parallel_primary_device(load));
                 if (owner->plan.vision != CudaVisionAdapter::none || owner->plan.predictor != CudaPredictorAdapter::none)
                     throw std::runtime_error("CUDA component adapter is unsupported for this model");

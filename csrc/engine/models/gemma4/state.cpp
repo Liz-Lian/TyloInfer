@@ -1,8 +1,8 @@
 #include "engine/models/gemma4/state.h"
 #include "engine/models/gemma4/model.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/backends/cuda/native/tensor/backend.h"
-#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/models/common/session/paged.h"
 #endif
 
@@ -32,15 +32,17 @@ State::State(const Model& model) : layers(model.layers.size()) {
 }
 
 void State::preallocate() {
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (!runtime_options::kv_vram_preallocated()) return;
+#endif
     for (std::size_t index = 0; index < layers.size(); ++index) {
         if (layers[index].defined()) continue;
         const auto& layout = layout_[index];
-        MfqCudaGuard guard(layout.device);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         layers[index] = mfq::state::allocate_kv(1, layout.heads, layout.capacity, layout.head_dim, layout.sliding,
             mfq::Device(mfq::DeviceType::cuda, layout.device), layout.dtype, layout.quantization);
 #else
+        MfqCudaGuard guard(layout.device);
         layers[index] = KVCache(1, layout.heads, layout.capacity, layout.head_dim, layout.sliding,
             mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layout.device),
             layout.dtype, layout.quantization);
@@ -55,7 +57,6 @@ void State::reset(std::int64_t next_batch) {
         auto& cache = layers[index];
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if (!cache.defined() || cache.batch != next_batch) {
-            MfqCudaGuard guard(layout_[index].device);
             cache = {};
         }
 #else
