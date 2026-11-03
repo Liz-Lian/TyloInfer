@@ -94,13 +94,8 @@ void TextSessionCache::store(const std::string &session_id, TextSessionState sta
     impl_->store(session_id, std::move(state));
 }
 
-size_t TextSessionCache::fork_session(
-    const std::string &source_session, const std::string &target_session) {
-    return impl_->fork_session(source_session, target_session);
-}
-
-size_t TextSessionCache::close_session(const std::string &session_id) {
-    return impl_->close_session(session_id);
+mfq::engine::SessionResult TextSessionCache::control(const mfq::engine::SessionCommand &command) {
+    return impl_->control(command);
 }
 
 std::vector<std::pair<std::string, double>> TextSessionCache::metrics() const {
@@ -131,6 +126,5 @@ uint64_t TextSessionCache::set_hot_limit(uint64_t max_bytes) { return impl_->set
 uint64_t TextSessionCache::set_ram_limit(uint64_t max_bytes) { return impl_->set_ram_limit(max_bytes); }
 void TextSessionCache::reserve_ram(uint64_t bytes) { impl_->reserve_ram(bytes); }
 uint64_t TextSessionCache::set_disk_limit(uint64_t max_bytes) { return impl_->set_disk_limit(max_bytes); }
-uint64_t TextSessionCache::refresh_disk_index() { return impl_->refresh_disk_index(); }
 
 } // namespace mfq::cuda::internal

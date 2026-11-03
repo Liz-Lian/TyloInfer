@@ -76,7 +76,7 @@ protected:
     engine::SessionResult session_command(const engine::SessionCommand& command) override {
         return with_cuda([&] {
             return command.kind == engine::SessionCommand::Kind::memory_budget
-                ? set_budget(command) : engine::control_session(*cache_, command);
+                ? set_budget(command) : cache_->control(command);
         });
     }
     void unload_model() override {

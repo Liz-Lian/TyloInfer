@@ -3,10 +3,12 @@
 #include "prefix_cache.h"
 #include "paged.h"
 #include "snapshot.h"
+#include "../../requests/result.h"
 
 #include <algorithm>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,32 @@ template <class Backend> class SessionCache {
     using StateError = typename Backend::StateError;
 
   public:
+    SessionResult control(const SessionCommand &command) {
+        switch (command.kind) {
+        case SessionCommand::Kind::fork:
+            return {fork_session(command.source, command.target), {}};
+        case SessionCommand::Kind::close:
+            return {close_session(command.source), {}};
+        case SessionCommand::Kind::clear:
+            return {clear(), {}};
+        case SessionCommand::Kind::trim:
+            return {trim_hot(command.bytes), {}};
+        case SessionCommand::Kind::budget: {
+            if (command.disk_bytes) set_disk_limit(*command.disk_bytes);
+            auto released = set_hot_limit(command.bytes);
+            if (command.ram_bytes) released += set_ram_limit(*command.ram_bytes);
+            return {released, {}};
+        }
+        case SessionCommand::Kind::metrics:
+            return {0, metrics()};
+        case SessionCommand::Kind::refresh:
+            return {refresh_disk_index(), {}};
+        case SessionCommand::Kind::memory_budget:
+            throw std::invalid_argument("online resident memory budgets are unavailable for this backend");
+        }
+        throw std::invalid_argument("unknown session command");
+    }
+
     template <class Visitor> void visit_snapshots(Visitor&& visitor) const {
         snapshots_.visit_states(std::forward<Visitor>(visitor));
     }

@@ -1,4 +1,6 @@
 #include "table.h"
+#include "../requests/processor.h"
+#include "components/error.h"
 
 namespace mfq::engine {
 

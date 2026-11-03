@@ -88,7 +88,7 @@ class EngineInstance final : public Engine {
     SessionResult session_command(const SessionCommand& command) override {
         return visit([&](auto& ops) {
             if constexpr(requires { ops.session(command); })return ops.session(command);
-            else return control_session(ops.cache, command);
+            else return ops.cache.control(command);
         });
     }
     ControlResult control_command(ControlRequest request) override {

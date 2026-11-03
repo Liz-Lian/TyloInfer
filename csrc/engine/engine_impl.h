@@ -88,7 +88,7 @@ protected:
         const engine::SessionCommand& command) override {
         return with_cuda([&] {
             if (command.kind != engine::SessionCommand::Kind::memory_budget)
-                return engine::control_session(*cache_, command);
+                return cache_->control(command);
             return set_budget(command);
         });
     }

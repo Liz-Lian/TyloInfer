@@ -21,7 +21,6 @@
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
 #include "engine/runtime_metrics.h"
-#include "engine/scheduler/table.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/weights/memory.h"
@@ -340,7 +339,7 @@ struct Text {
         clear_bindings();
     }
     SessionResult session(const SessionCommand& command) {
-        if(command.kind!=SessionCommand::Kind::memory_budget)return control_session(cache,command);
+        if(command.kind!=SessionCommand::Kind::memory_budget)return cache.control(command);
         if(!online_budget_supported())throw std::invalid_argument("online memory budgeting requires a single-device CUDA worker");
         return budget->set(command, [this] {
             if(expert_space) expert_space->release();

@@ -125,10 +125,7 @@ public:
         const std::string& input_key = {});
 
     void store(const std::string& session_id, TextSessionState state);
-    std::size_t fork_session(
-        const std::string& source_session,
-        const std::string& target_session);
-    std::size_t close_session(const std::string& session_id);
+    mfq::engine::SessionResult control(const mfq::engine::SessionCommand& command);
     std::vector<std::pair<std::string, double>> metrics() const;
     std::map<int, std::size_t> device_hot_bytes() const;
     std::size_t clear_live_sessions() noexcept;
@@ -138,7 +135,6 @@ public:
     std::uint64_t set_ram_limit(std::uint64_t max_bytes);
     void reserve_ram(std::uint64_t bytes);
     std::uint64_t set_disk_limit(std::uint64_t max_bytes);
-    std::uint64_t refresh_disk_index();
 
 private:
     struct Impl : mfq::engine::SessionCache<CudaSessionOps> {
