@@ -42,13 +42,13 @@ Tensor copy_to_layer(Collectives& collectives, Tensor value, const Layer& layer)
 AttentionStep layer_step(Collectives& collectives, const Layer& layer,
                          const AttentionStep& step) {
     AttentionStep local = step;
-    local.positions = copy_to_layer(collectives, step.positions, layer);
+    local.positions = copy_to_layer(collectives, Tensor(step.positions), layer);
     if (step.sequence_lengths.has_value())
-        local.sequence_lengths = copy_to_layer(collectives, *step.sequence_lengths, layer);
+        local.sequence_lengths = copy_to_layer(collectives, Tensor(*step.sequence_lengths), layer);
     if (step.cache_positions.has_value())
-        local.cache_positions = copy_to_layer(collectives, *step.cache_positions, layer);
+        local.cache_positions = copy_to_layer(collectives, Tensor(*step.cache_positions), layer);
     if (step.attention_mask.has_value())
-        local.attention_mask = copy_to_layer(collectives, *step.attention_mask, layer);
+        local.attention_mask = copy_to_layer(collectives, Tensor(*step.attention_mask), layer);
     return local;
 }
 
@@ -301,7 +301,13 @@ Tensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& s
     const auto execute = [&](std::span<const AttentionKvView> kv,
                              std::span<const LinearStateView> linear,
                              LinearAttention::Options linear_options) {
-        Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step, &rope, trace,
+        Inputs inputs{{std::move(input), {}, {}}, 0, kv, local_step,
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                      rope.view(),
+#else
+                      &rope,
+#endif
+                      trace,
                       options.trace_layer, linear, linear_options, scratch_offset};
         return executor.run(tasks, std::move(inputs), options);
     };

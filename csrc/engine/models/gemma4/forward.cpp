@@ -1,6 +1,7 @@
 #include "engine/models/gemma4/forward.h"
 #include "engine/models/gemma4/ffn.h"
 #include "engine/models/common/check.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/ops.h"
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/native/collectives.h"
@@ -19,8 +20,12 @@
 namespace mfq::cuda::gemma4 {
 
 struct FfnStep {
-    Ffn::Mode ffn;
+    mfq::ops::FfnMode ffn;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::ops::Trace* trace;
+#else
     Trace* trace;
+#endif
     int trace_layer;
     bool fused_norms;
 };
@@ -29,21 +34,30 @@ static void trace_stage(const FfnStep& mode, int layer, const char* name,
                         const Tensor& value) {
     if (mode.trace != nullptr && layer == mode.trace_layer) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        mode.trace->emplace_back(name, Tensor(mfq::ops::clone(mfq::ops::contiguous(
-            mfq::ops::cast(value, mfq::ScalarType::float32)))));
+        mode.trace->emplace_back(name, mfq::ops::clone(mfq::ops::contiguous(
+            mfq::ops::cast(value, mfq::ScalarType::float32))));
 #else
         mode.trace->emplace_back(name, value.to(mfq_tensor_backend::kFloat32).contiguous().clone());
 #endif
     }
 }
 
-static mfq_tensor_backend::Tensor gemma_rms_norm_f16(mfq_tensor_backend::Tensor x,
-                                                     mfq_tensor_backend::Tensor weight, double eps,
-                                                     double weight_offset) {
-    TYLOINFER_RUNTIME_CHECK(x.scalar_type() == mfq_tensor_backend::kFloat16,
-                      "gemma_rms_norm_f16: activation must remain f16");
+static Tensor gemma_rms_norm_f16(Tensor x,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return Tensor(mfq::ops::rms_norm(x, weight, eps, weight_offset, mfq::ScalarType::float16));
+                                 const mfq::Tensor& weight, double eps,
+#else
+                                 mfq_tensor_backend::Tensor weight, double eps,
+#endif
+                                 double weight_offset) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    TYLOINFER_RUNTIME_CHECK(x.scalar_type() == mfq::ScalarType::float16,
+                            "gemma_rms_norm_f16: activation must remain f16");
+#else
+    TYLOINFER_RUNTIME_CHECK(x.scalar_type() == mfq_tensor_backend::kFloat16,
+                            "gemma_rms_norm_f16: activation must remain f16");
+#endif
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    return mfq::ops::rms_norm(x, weight, eps, weight_offset, mfq::ScalarType::float16);
 #else
     return rms_norm_f16_cuda(x.contiguous(), weight, eps, weight_offset);
 #endif
@@ -75,6 +89,8 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
     const auto norm_weight_offset = weights.attention.norm_weight_offset;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     using mfq::ops::measure;
+    const std::array<std::int64_t, 2> flat_shape{B * T, H};
+    const std::array<std::int64_t, 3> layer_shape{B, T, H};
 #else
     auto measure = [&](const char* name, auto&& operation) {
         return executor.profiler().measure(name, std::forward<decltype(operation)>(operation));
@@ -83,7 +99,6 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
     trace_stage(mode, layer, "attention_output", oo);
     const bool fused_norms = gemma4_moe && mode.fused_norms &&
                              mode.trace == nullptr && layer_scale.defined();
-    using Tensor = mfq_tensor_backend::Tensor;
     using Inputs = mfq::models::gemma4::FfnInputs<Tensor>;
     struct Selection { Tensor ids, weights; };
     auto inputs = mfq::models::gemma4::prepare_ffn(
@@ -94,28 +109,37 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
             auto prepared = measure("gemma.attn_residual_pre_norms", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                 auto values = mfq::ops::residual_norms(
-                    residual.reshape({B * T, H}), oo.reshape({B * T, H}), attn_post_norm, ffn_norm,
+                    mfq::ops::reshape(residual, flat_shape), mfq::ops::reshape(oo, flat_shape),
+                    attn_post_norm, ffn_norm,
                     gemma_router_norm_scale, ffn_pre_norm_2, rms_norm_eps);
-                return std::array<Tensor, 4>{Tensor(values.residual), Tensor(values.dense),
-                                             Tensor(values.router), Tensor(values.experts)};
+                return std::array<Tensor, 4>{values.residual, values.dense, values.router, values.experts};
 #else
                 return gemma4_attn_residual_pre_norms_f16_cuda(
                     residual.reshape({B * T, H}), oo.reshape({B * T, H}), attn_post_norm, ffn_norm,
                     gemma_router_norm_scale, ffn_pre_norm_2, rms_norm_eps);
 #endif
             });
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return Inputs{mfq::ops::reshape(prepared[0], layer_shape), prepared[1], prepared[2], prepared[3]};
+#else
             return Inputs{prepared[0].reshape({B, T, H}), prepared[1], prepared[2], prepared[3]};
+#endif
         },
         [&](Tensor oo) {
             return measure("gemma.attn_post_norm", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                return gemma_rms_norm_f16(mfq::ops::reshape(oo, flat_shape), attn_post_norm, rms_norm_eps,
+#else
                 return gemma_rms_norm_f16(oo.reshape({B * T, H}), attn_post_norm, rms_norm_eps,
+#endif
                                           norm_weight_offset);
             });
         },
         [&](Tensor residual, Tensor attn_post) {
             auto x = measure("gemma.attn_residual", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::add_residual(residual.reshape({B * T, H}), attn_post)).reshape({B, T, H});
+                return mfq::ops::reshape(
+                    mfq::ops::add_residual(mfq::ops::reshape(residual, flat_shape), attn_post), layer_shape);
 #else
                 return acc_cuda(residual.reshape({B * T, H}), attn_post).reshape({B, T, H});
 #endif
@@ -125,16 +149,20 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         },
         [&](Tensor x) {
             return measure("gemma.ffn_pre_norm", [&] {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                return gemma_rms_norm_f16(mfq::ops::reshape(x, flat_shape), ffn_norm, rms_norm_eps,
+#else
                 return gemma_rms_norm_f16(x.reshape({B * T, H}), ffn_norm, rms_norm_eps,
+#endif
                                           norm_weight_offset);
             });
         },
         [&](Tensor x) {
             return measure("gemma.router_norm", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::rms_norm(
-                    mfq::ops::cast(x.reshape({B * T, H}), mfq::ScalarType::float32),
-                    gemma_router_norm_scale, rms_norm_eps, norm_weight_offset));
+                return mfq::ops::rms_norm(
+                    mfq::ops::cast(mfq::ops::reshape(x, flat_shape), mfq::ScalarType::float32),
+                    gemma_router_norm_scale, rms_norm_eps, norm_weight_offset);
 #else
                 return qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
                                      gemma_router_norm_scale, rms_norm_eps, norm_weight_offset);
@@ -143,7 +171,11 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         },
         [&](Tensor x) {
             return measure("gemma.ffn_pre_norm_2", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                return gemma_rms_norm_f16(mfq::ops::reshape(x, flat_shape), ffn_pre_norm_2, rms_norm_eps,
+#else
                 return gemma_rms_norm_f16(x.reshape({B * T, H}), ffn_pre_norm_2, rms_norm_eps,
+#endif
                                           norm_weight_offset);
             });
         });
@@ -154,7 +186,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         [&] {
             return measure("gemma.ffn_dense", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return ffn.forward(dense_input, mode.ffn).reshape({B * T, H});
+                return mfq::ops::reshape(ffn.forward(dense_input, mode.ffn), flat_shape);
 #else
                 return ffn.forward(dense_input, executor, mode.ffn).reshape({B * T, H});
 #endif
@@ -166,7 +198,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
                 [&] {
                     return measure("gemma.router", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        return Tensor(mfq::ops::matmul(router_input, mfq::ops::transpose(gemma_router, 0, 1)));
+                        return mfq::ops::matmul(router_input, mfq::ops::transpose(gemma_router, 0, 1));
 #else
                         return mfq_tensor_backend::matmul(router_input, gemma_router.transpose(0, 1));
 #endif
@@ -177,7 +209,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         auto selected = mfq::ops::topk(router_logits, gemma_top_k,
                             {.activation = mfq::ops::RouterActivation::softmax, .delayed_softmax = true});
-                        return Selection{Tensor(selected.ids), Tensor(selected.weights)};
+                        return Selection{selected.ids, selected.weights};
 #else
                         auto selected = moe_topk_cuda(router_logits.contiguous(), gemma_top_k, false, false,
                                                       false, true, mfq_nullopt, 1e-20, 1.0);
@@ -191,7 +223,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
                                       selected.weights);
                     measure("gemma.route_scale", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        return Tensor(mfq::ops::expert_scale(selected.weights, selected.ids, gemma_expert_scale));
+                        return mfq::ops::expert_scale(selected.weights, selected.ids, gemma_expert_scale);
 #else
                         return moe_apply_expert_scale_cuda(selected.weights, selected.ids,
                                                            gemma_expert_scale);
@@ -203,13 +235,13 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                     const bool tracing = mode.trace != nullptr && layer == mode.trace_layer;
                     auto result = mfq::ops::routed_geglu(moe_input, selected.ids,
-                        gemma_moe_gate_up, gemma_moe_down,
+                        *gemma_moe_gate_up, *gemma_moe_down,
                         {mode.ffn.serial, mode.ffn.projection_major}, tracing);
                     if (tracing) {
-                        mode.trace->emplace_back("moe_gate_up", Tensor(result.gate_up));
-                        mode.trace->emplace_back("moe_hidden", Tensor(result.hidden));
+                        mode.trace->emplace_back("moe_gate_up", result.gate_up);
+                        mode.trace->emplace_back("moe_hidden", result.hidden);
                     }
-                    Tensor down_pair(result.pairs);
+                    auto down_pair = result.pairs;
                     trace_stage(mode, layer, "moe_down", down_pair);
                     return down_pair;
 #else
@@ -273,7 +305,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
                 [&](Tensor down_pair, const auto &selected) {
                     auto moe_output = measure("gemma.moe_reduce", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        return Tensor(mfq::ops::weighted_reduce(down_pair, selected.weights));
+                        return mfq::ops::weighted_reduce(down_pair, selected.weights);
 #else
                         return moe_weighted_reduce_cuda(down_pair, selected.weights);
 #endif
@@ -296,8 +328,8 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
                                                        : "gemma.ffn_post_norm";
             auto normalized = measure(name, [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::rms_norm(value, weight, rms_norm_eps,
-                                                  norm_weight_offset, mfq::ScalarType::float16));
+                return mfq::ops::rms_norm(value, weight, rms_norm_eps,
+                                          norm_weight_offset, mfq::ScalarType::float16);
 #else
                 return value.scalar_type() == mfq_tensor_backend::kFloat16
                            ? gemma_rms_norm_f16(value, weight, rms_norm_eps, norm_weight_offset)
@@ -314,7 +346,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         [&](Tensor dense, Tensor routed) {
             return measure("gemma.ffn_combine", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::add(dense, routed));
+                return mfq::ops::add(dense, routed);
 #else
                 return dense + routed;
 #endif
@@ -323,7 +355,8 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         [&](Tensor skip, Tensor value) {
             return measure("gemma.ffn_residual", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::add_residual(skip.reshape({B * T, H}), value)).reshape({B, T, H});
+                return mfq::ops::reshape(
+                    mfq::ops::add_residual(mfq::ops::reshape(skip, flat_shape), value), layer_shape);
 #else
                 return acc_cuda(skip.reshape({B * T, H}), value).reshape({B, T, H});
 #endif
@@ -332,7 +365,7 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         [&](Tensor value) {
             return measure("gemma.layer_scale", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::multiply(value, layer_scale));
+                return mfq::ops::multiply(value, layer_scale);
 #else
                 return value * layer_scale;
 #endif
@@ -341,9 +374,9 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
         [&](Tensor dense, Tensor routed, Tensor skip) {
             return measure("gemma.ffn_merge", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(mfq::ops::merge_norms(dense, routed, skip.reshape({B * T, H}),
-                    ffn_post_norm_1, ffn_post_norm_2, ffn_post_norm, layer_scale, rms_norm_eps))
-                    .reshape({B, T, H});
+                return mfq::ops::reshape(
+                    mfq::ops::merge_norms(dense, routed, mfq::ops::reshape(skip, flat_shape),
+                        ffn_post_norm_1, ffn_post_norm_2, ffn_post_norm, layer_scale, rms_norm_eps), layer_shape);
 #else
                 return gemma4_ffn_merge_f16_cuda(dense, routed, skip.reshape({B * T, H}),
                                                  ffn_post_norm_1, ffn_post_norm_2, ffn_post_norm,
@@ -365,13 +398,20 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
 #endif
     mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
-    if (ids.dim() == 1) ids = ids.unsqueeze(0);
+    if (ids.dim() == 1) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        const std::array<std::int64_t, 2> shape{1, ids.numel()};
+        ids = mfq::ops::reshape(std::move(ids), shape);
+#else
+        ids = ids.unsqueeze(0);
+#endif
+    }
     mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
                                "token IDs must not be empty");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return Tensor(mfq::ops::contiguous(mfq::ops::copy(
+    return mfq::ops::contiguous(mfq::ops::copy(
         mfq::ops::cast(std::move(ids), mfq::ScalarType::int64),
-        mfq::Device{mfq::DeviceType::cuda, primary})));
+        mfq::Device{mfq::DeviceType::cuda, primary}));
 #else
     return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
 #endif
@@ -381,7 +421,7 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq::Tensor Model::embedding(mfq::Tensor ids, int primary) const {
-    auto normalized = normalize_ids(primary, Tensor(std::move(ids)));
+    auto normalized = normalize_ids(primary, std::move(ids));
     return mfq::ops::measure("model.embed", [&] {
         return mfq::ops::embedding(std::move(normalized), *embed);
     });
@@ -452,7 +492,7 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Tensor forward_layer(const Layer& layer, KVCache& cache, Tensor input, const AttentionStep& step,
+Tensor forward_layer(const Layer& layer, mfq::state::KvView& cache, Tensor input, const AttentionStep& step,
                      const Model::Options& mode) {
 #else
 Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
@@ -466,15 +506,23 @@ Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
         : (mode.kv_capacity > 0 ? std::max<std::int64_t>(step.cache_position + T, mode.kv_capacity)
                                 : attention.max_position_embeddings);
     if (!cache.defined()) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        cache = mfq::state::allocate_kv(B, attention.kv_heads, capacity, attention.attention_head_dim,
+                        attention.sliding, input.device(),
+                        attention.official_bf16 ? mfq::ScalarType::bfloat16 : mfq::ScalarType::float16,
+                        attention.kv_quantization);
+#else
         cache = KVCache(B, attention.kv_heads, capacity, attention.attention_head_dim,
                         attention.sliding, input.device(),
                         attention.official_bf16 ? mfq_tensor_backend::kBFloat16
                                                 : mfq_tensor_backend::kFloat16,
                         attention.kv_quantization);
+#endif
     }
     cache.quantization = attention.kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto result = attention.forward(std::move(input), step, cache.view(), attention.attention_rope,
+    auto result = attention.forward(std::move(input), step,
+        cache, attention.attention_rope,
         {mode.ffn.serial, mode.ffn.projection_major},
         attention.layer == mode.trace_layer ? mode.trace : nullptr);
 #else
@@ -506,10 +554,12 @@ mfq::Tensor Model::forward(mfq::models::Input input, mfq::models::State& state_v
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     namespace tb = mfq_tensor_backend;
+#endif
     MfqCudaGuard guard(mode.primary);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto ids = normalize_ids(mode.primary, Tensor(std::move(input.ids)));
+    auto ids = normalize_ids(mode.primary, std::move(input.ids));
     auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
         : embedding(ids, mode.primary);
 #else
@@ -529,14 +579,14 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     const mfq::Device primary{mfq::DeviceType::cuda, mode.primary};
     auto physical = input.cache_positions.has_value()
-        ? Tensor(mfq::ops::contiguous(mfq::ops::copy(
-              mfq::ops::cast(*input.cache_positions, mfq::ScalarType::int64), primary)))
-        : Tensor(mfq::ops::arange(state.cache_pos, state.cache_pos + T, primary));
+        ? mfq::ops::contiguous(mfq::ops::copy(
+              mfq::ops::cast(*input.cache_positions, mfq::ScalarType::int64), primary))
+        : mfq::ops::arange(state.cache_pos, state.cache_pos + T, primary);
     auto semantic = input.positions.has_value()
-        ? Tensor(mfq::ops::contiguous(mfq::ops::copy(
-              mfq::ops::cast(*input.positions, mfq::ScalarType::int64), primary)))
+        ? mfq::ops::contiguous(mfq::ops::copy(
+              mfq::ops::cast(*input.positions, mfq::ScalarType::int64), primary))
         : (state.decode_position_delta == 0 ? physical
-            : Tensor(mfq::ops::add(physical, state.decode_position_delta)));
+            : mfq::ops::add(physical, state.decode_position_delta));
 #else
     const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary))
                              .dtype(tb::kInt64);
@@ -562,22 +612,28 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const std::array<std::int64_t, 1> shape{B};
-        input.lengths = Tensor(mfq::ops::full(shape, state.cache_pos + 1, primary));
+        input.lengths = mfq::ops::full(shape, state.cache_pos + 1, primary);
 #else
         input.lengths = tb::full({B}, state.cache_pos + 1, options);
 #endif
     }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    AttentionStep step{semantic, input.lengths,
+                       input.cache_positions.has_value() ? std::optional<Tensor>(physical) : std::nullopt,
+                       {}, state.cache_pos, input.kv_length, input.attention_parts};
+#else
     AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
                        input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto hidden = Tensor(mfq::ops::contiguous(mfq::ops::copy(std::move(embeddings), primary)));
+    auto hidden = mfq::ops::contiguous(mfq::ops::copy(std::move(embeddings), primary));
 #else
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     hidden = mfq::ops::measure("model.embed_scale", [&] {
-        return Tensor(mfq::ops::scale(std::move(hidden), model.embed_scale));
+        return mfq::ops::scale(std::move(hidden), model.embed_scale);
 #else
     hidden = executor.profiler().measure("model.embed_scale", [&] {
         return hidden * model.embed_scale;
@@ -586,8 +642,8 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     const auto trace = [&](const Tensor& value) {
         if (input.trace) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            input.trace->push_back(Tensor(mfq::ops::clone(mfq::ops::cast(
-                mfq::ops::copy(value, primary), mfq::ScalarType::float32))));
+            input.trace->push_back(mfq::ops::clone(mfq::ops::cast(
+                mfq::ops::copy(value, primary), mfq::ScalarType::float32)));
 #else
             input.trace->push_back(collectives.copy(value, mode.primary).to(tb::kFloat32).clone());
 #endif
@@ -601,13 +657,13 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
             auto local = step;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             const mfq::Device device{mfq::DeviceType::cuda, layer.device};
-            local.positions = Tensor(mfq::ops::copy(step.positions, device));
+            local.positions = mfq::ops::copy(step.positions, device);
             if (step.sequence_lengths.has_value())
-                local.sequence_lengths = Tensor(mfq::ops::copy(*step.sequence_lengths, device));
+                local.sequence_lengths = mfq::ops::copy(*step.sequence_lengths, device);
             if (step.cache_positions.has_value())
-                local.cache_positions = Tensor(mfq::ops::copy(*step.cache_positions, device));
+                local.cache_positions = mfq::ops::copy(*step.cache_positions, device);
             hidden = forward_layer(layer, state.layers[index],
-                                   Tensor(mfq::ops::copy(std::move(hidden), device)), local, mode);
+                                   mfq::ops::copy(std::move(hidden), device), local, mode);
 #else
             local.positions = collectives.copy(step.positions, layer.device);
             if (step.sequence_lengths.has_value())
@@ -622,7 +678,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     }
     if (!input.positions.has_value() || input.advance) state.cache_pos += T;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    hidden = Tensor(mfq::ops::copy(std::move(hidden), primary));
+    hidden = mfq::ops::copy(std::move(hidden), primary);
 #else
     hidden = collectives.copy(std::move(hidden), mode.primary);
 #endif

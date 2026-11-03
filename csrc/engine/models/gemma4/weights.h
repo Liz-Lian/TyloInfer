@@ -55,8 +55,8 @@ void load_layer(Attention &a, Layer &b, Loader &ops, const Config &c, int layer,
     std::vector<std::string> projections{attention + "query.weight", attention + "key.weight"};
     if (!spec.value_equals_key)
         projections.push_back(attention + "value.weight");
-    a.qkv = ops.projections(projections);
-    a.o = ops.linear(attention + "output.weight");
+    ops.qkv(a, projections);
+    ops.output(a, attention + "output.weight");
     const auto mlp = root + "mlp.";
     b.ffn_norm = ops.dense(mlp + "dense.input_norm.weight");
     b.ffn_post_norm = ops.dense(mlp + "output_norm.weight");
@@ -66,9 +66,7 @@ void load_layer(Attention &a, Layer &b, Loader &ops, const Config &c, int layer,
         b.ffn_pre_norm_2 = ops.dense(mlp + "experts.input_norm.weight");
         b.ffn_post_norm_2 = ops.dense(mlp + "experts.output_norm.weight");
     }
-    b.ffn.geglu = true;
-    b.ffn.down = ops.linear(mlp + "down.weight");
-    b.ffn.gate_up = ops.gate_up({mlp + "gate.weight", mlp + "up.weight"}, b.ffn.down);
+    b.ffn = ops.mlp({mlp + "gate.weight", mlp + "up.weight"}, mlp + "down.weight");
     if (!spec.moe)
         return;
     b.gemma_moe_gate_up = ops.experts(mlp + "experts.gate_up.weight", layer, "gate_up");

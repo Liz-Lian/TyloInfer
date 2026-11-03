@@ -80,13 +80,31 @@ void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::ve
         is_quant_dtype(require_tensor(weights.source, names[2]).dtype);
     if (mirror_kv) {
         block.split_q_kv_projections = true;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        block.q_projection = std::make_shared<QuantLinear>(linear(names[0]));
+        block.k_projection = std::make_shared<QuantLinear>(weights.projection(names[1], TensorParallelAxis::Mirrored));
+        block.v_projection = std::make_shared<QuantLinear>(weights.projection(names[2], TensorParallelAxis::Mirrored));
+#else
         block.q_projection = linear(names[0]);
         block.k_projection = weights.projection(names[1], TensorParallelAxis::Mirrored);
         block.v_projection = weights.projection(names[2], TensorParallelAxis::Mirrored);
+#endif
     } else {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        block.qkv = std::make_shared<QuantLinearGroup>(
+            weights.group(names, 2, nullptr, preserve_projection_boundaries));
+#else
         block.qkv = weights.group(names, 2, nullptr,
                                     preserve_projection_boundaries);
+#endif
     }
+}
+void TransformerWeightLoader::output(mfq::cuda::FullAttention& block, const std::string& name) const {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    block.o = std::make_shared<QuantLinear>(linear(name));
+#else
+    block.o = linear(name);
+#endif
 }
 void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {

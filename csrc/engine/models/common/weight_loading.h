@@ -126,7 +126,7 @@ void load_attention_mixer(Block& block, Loader& ops, const ModelConfig& config, 
     block.attn_norm = ops.dense(prefix + "attention.norm.weight");
     const auto attention = prefix + "attention.";
     ops.qkv(block, {attention + "query.weight", attention + "key.weight", attention + "value.weight"});
-    block.o = ops.linear(attention + "output.weight");
+    ops.output(block, attention + "output.weight");
     if (ops.has(attention + "query_norm.weight"))
         block.q_norm = ops.dense(attention + "query_norm.weight");
     if (ops.has(attention + "key_norm.weight"))

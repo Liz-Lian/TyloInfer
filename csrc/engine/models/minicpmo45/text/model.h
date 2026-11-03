@@ -2,6 +2,7 @@
 
 #include "engine/models/minicpmo45/layer.h"
 #include "engine/models/minicpmo45/config.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/source.h"

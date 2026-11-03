@@ -3,8 +3,13 @@
 #include "engine/models/gemma4/config.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/common/attention.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/models/common/mlp.h"
+#include "engine/weights/moe/bank.h"
+#else
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/weights/moe/experts.h"
+#endif
 #include "engine/weights/matrix.h"
 #include "engine/models/source.h"
 #include "engine/models/options.h"
@@ -17,20 +22,33 @@
 
 namespace mfq::cuda::gemma4 {
 
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+using Tensor = mfq::Tensor;
+#else
 using Tensor = mfq_tensor_backend::Tensor;
+#endif
 using Config = mfq::models::gemma4::Config;
 
 class State;
 
 struct Layer {
     FullAttention attention;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::Tensor ffn_norm;
+    mfq::models::Mlp ffn;
+    mfq::Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
+    mfq::Tensor layer_scale;
+    std::shared_ptr<const mfq::weights::ExpertBank> gemma_moe_gate_up, gemma_moe_down;
+    mfq::Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+#else
     Tensor ffn_norm;
     Ffn ffn;
-    bool gemma4_moe = false;
     Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     Tensor layer_scale;
     Experts gemma_moe_gate_up, gemma_moe_down;
     Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+#endif
+    bool gemma4_moe = false;
     int gemma_top_k = 0;
     int device = 0;
 };
@@ -67,7 +85,11 @@ struct Model
     Config config;
     double embed_scale = 1.0;
     std::shared_ptr<const mfq::weights::Matrix> embed, lm_head;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    mfq::Tensor output_norm;
+#else
     Tensor output_norm;
+#endif
     std::vector<Layer> layers;
 };
 

@@ -6,6 +6,7 @@
 #include "engine/models/common/causal_metadata.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/backends/cuda/executor/task.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/models/common/model_graph.h"
 #include "engine/models/common/capabilities.h"
 #include "engine/models/source.h"

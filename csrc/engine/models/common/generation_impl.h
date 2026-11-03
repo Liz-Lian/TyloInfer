@@ -5,6 +5,7 @@
 #include "engine/weights/routed_cache.h"
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
+#include "engine/backends/cuda/ops/attention/scratch.h"
 #include "engine/models/info.h"
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/requests/output.h"
@@ -320,7 +321,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
         const std::int64_t planned =
             decode_graph_bucket(requested, info.max_context);
         const std::int64_t parts =
-            decode_graph_attention_parts(planned, FullAttention::kDecodeAttentionMaxParts);
+            decode_graph_attention_parts(planned, AttentionScratch::kMaxParts);
         const bool greedy = sampler.greedy();
         auto graph_mode = mode;
         graph_mode.ffn.serial = true;

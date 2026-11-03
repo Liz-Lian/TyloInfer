@@ -14,7 +14,7 @@
 namespace mfq::cuda::gemma4 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Tensor forward_layer(const Layer&, KVCache&, Tensor, const AttentionStep&,
+Tensor forward_layer(const Layer&, mfq::state::KvView&, Tensor, const AttentionStep&,
                      const Model::Options&);
 #else
 Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids,

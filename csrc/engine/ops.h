@@ -116,9 +116,13 @@ Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight,
                        const ProjectionOptions& options = {});
 Tensor copy(Tensor input, Device target);
 Tensor cast(Tensor input, ScalarType type);
+// Targeted cast uses native tensor conversion; CUDA copy uses execution collectives.
+Tensor cast(Tensor input, ScalarType type, Device target);
 Tensor contiguous(Tensor input);
 Tensor clone(Tensor input);
 Tensor reshape(Tensor input, std::span<const std::int64_t> shape);
+Tensor slice(Tensor input, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step = 1);
+std::vector<Tensor> chunk(Tensor input, std::int64_t count, std::int64_t dim);
 // Position tensors are I64.
 Tensor arange(std::int64_t first, std::int64_t last, Device device);
 Tensor full(std::span<const std::int64_t> shape, std::int64_t value, Device device);
@@ -129,6 +133,9 @@ enum class GatedActivation { silu, gelu };
 // MLP activation selected by the model config. relu_squared consumes a single
 // Up projection, so it has no gate branch and no SwiGLU clamp.
 enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
+
+Tensor mlp(Tensor input, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
+           MlpActivation activation, double swiglu_limit, const FfnMode& mode);
 
 // Canonical gate/up -> activation product -> down graph. Native operations may
 // replace a contiguous part of this graph with an equivalent fused operation.

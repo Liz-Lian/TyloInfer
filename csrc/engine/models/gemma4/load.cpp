@@ -1,20 +1,24 @@
 #include "engine/models/gemma4/load.h"
 #include "engine/models/gemma4/weights.h"
 #include "engine/models/common/load.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/weights/loader.h"
 
 #include <algorithm>
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 
 namespace mfq::cuda::gemma4 {
 struct LayerLoader : TransformerWeightLoader {
-    auto projections(const std::vector<std::string> &names) {
-        return weights.group(names, 2);
-    }
     auto rope(int64_t capacity, const mfq::models::gemma4::LayerSpec &spec) {
-        return RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
+        auto cache = RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return cache.view();
+#else
+        return cache;
+#endif
     }
     auto ones(int64_t width) {
         return mfq_tensor_backend::ones({width}, mfq_tensor_backend::TensorOptions()
@@ -30,12 +34,40 @@ struct LayerLoader : TransformerWeightLoader {
     auto normalized_router_parameter(const std::string &name, double divisor) {
         return (router_parameter(name) / divisor).contiguous();
     }
-    auto experts(const std::string &name, int layer, const char *projection) {
-        return weights.experts(name, true, layer, projection);
+    auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
+        auto down = linear(down_name);
+        auto group = gate_up(names, down);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return mfq::models::Mlp{std::make_shared<QuantLinearGroup>(std::move(group)),
+                                std::make_shared<QuantLinear>(std::move(down)),
+                                mfq::ops::MlpActivation::gelu_gated};
+#else
+        Ffn result;
+        result.geglu = true;
+        result.down = std::move(down);
+        result.gate_up = std::move(group);
+        return result;
+#endif
     }
+    auto experts(const std::string &name, int layer, const char *projection) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        return std::shared_ptr<const mfq::weights::ExpertBank>(
+            std::make_shared<Experts>(weights.experts(name, true, layer, projection)));
+#else
+        return weights.experts(name, true, layer, projection);
+#endif
+    }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    static auto shape(const mfq::Tensor& value) { return value.sizes().vec(); }
+    static int64_t elements(const mfq::Tensor& value) { return value.numel(); }
+    static auto expert_shape(const std::shared_ptr<const mfq::weights::ExpertBank>& weight) {
+        return std::array<int64_t, 3>{weight->count(), weight->rows(), weight->cols()};
+    }
+#else
     static auto expert_shape(const mfq::cuda::Experts &weight) {
         return std::array<int64_t, 3>{weight.n_experts, weight.out_per_expert, weight.neuron_len};
     }
+#endif
 };
 
 Layer load_layer(const weight_loader::Loader& weights, const Config &config,

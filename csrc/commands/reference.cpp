@@ -92,7 +92,12 @@ template <typename Model> struct ReferenceLayers {
     bool resident = false;
     using Layer = typename std::remove_reference_t<decltype(model.layers)>::value_type;
     using LayerState = std::conditional_t<std::is_same_v<Model, mfq::cuda::qwen35::Model>,
-                                          mfq::cuda::qwen35::LayerState, KVCache>;
+                                          mfq::cuda::qwen35::LayerState,
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                                          mfq::state::KvView>;
+#else
+                                          KVCache>;
+#endif
     std::optional<Layer> streamed;
     LayerState state;
     std::unique_ptr<mfq::cuda::Executor> executor;
@@ -131,7 +136,7 @@ template <typename Model> struct ReferenceLayers {
             else
                 state.template emplace<mfq::cuda::qwen35::LinearState>();
         } else {
-            state = KVCache{};
+            state = {};
         }
         if (!executor) executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     }
@@ -165,11 +170,13 @@ template <typename Model> struct ReferenceLayers {
             auto hidden = mfq::cuda::gemma4::forward_layer(layer, state,
                 execution.executor().collectives().copy(std::move(input), layer.device), step,
                 mfq::cuda::forward_options(execution.executor().forward_mode(execution.config.layer_placement.primary_device())));
+            return execution.executor().collectives().copy(
+                tb::Tensor(std::move(hidden)), execution.config.layer_placement.primary_device());
 #else
             auto hidden = mfq::cuda::gemma4::forward_layer(layer, state, *executor, 0,
                 execution.executor().collectives().copy(std::move(input), layer.device), step, execution.executor().forward_mode(execution.config.layer_placement.primary_device()));
-#endif
             return execution.executor().collectives().copy(std::move(hidden), execution.config.layer_placement.primary_device());
+#endif
         }
     }
 
@@ -179,7 +186,7 @@ template <typename Model> struct ReferenceLayers {
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
             state.template emplace<KVCache>();
         else
-            state = KVCache{};
+            state = {};
     }
 
     tb::Tensor finalize(tb::Tensor hidden, std::int64_t batch, std::int64_t tokens) {

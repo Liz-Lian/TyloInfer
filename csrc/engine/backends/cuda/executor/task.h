@@ -1,8 +1,12 @@
 #pragma once
 
 #include "engine/models/common/attention.h"
+#include "engine/backends/cuda/ops/attention/attention.h"
 #include "engine/backends/cuda/ops/attention/linear.h"
 #include "engine/backends/cuda/ops/ffn/dense.h"
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/ops/rope/rope.h"
+#endif
 
 #include <optional>
 #include <span>
@@ -104,7 +108,11 @@ struct Inputs {
     std::optional<size_t> output = 0;
     std::span<const AttentionKvView> kv;
     AttentionStep attention;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    std::optional<mfq::ops::RopeTable> rope;
+#else
     const RopeCache* rope = nullptr;
+#endif
     Trace* trace = nullptr;
     int trace_scope = -1;
     std::span<const LinearStateView> linear;

@@ -377,7 +377,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
     inputs.output = 2;
     inputs.kv = std::span<const AttentionKvView>{&view, 1};
     inputs.attention = step;
-    inputs.rope = &attention.attention_rope;
+    inputs.rope = attention.attention_rope;
     inputs.trace = attention.layer == mode.trace_layer ? mode.trace : nullptr;
     inputs.trace_scope = 0;
     auto output = executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode);
@@ -451,11 +451,11 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& layer = model.layers[index];
         MfqCudaGuard layer_guard(layer.device);
         auto local = step;
-        local.positions = collectives.copy(step.positions, layer.device);
+        local.positions = collectives.copy(Tensor(step.positions), layer.device);
         if (step.sequence_lengths.has_value())
-            local.sequence_lengths = collectives.copy(*step.sequence_lengths, layer.device);
+            local.sequence_lengths = collectives.copy(Tensor(*step.sequence_lengths), layer.device);
         if (step.cache_positions.has_value())
-            local.cache_positions = collectives.copy(*step.cache_positions, layer.device);
+            local.cache_positions = collectives.copy(Tensor(*step.cache_positions), layer.device);
         hidden = forward_layer(layer, state.layers[index], executor, index,
             collectives.copy(std::move(hidden), layer.device), local, input.confirmed, mode);
         trace(hidden);

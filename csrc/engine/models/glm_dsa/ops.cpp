@@ -367,11 +367,11 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         {
             MfqCudaGuard layer_guard(layer.device);
             auto local = step;
-            local.positions = collectives.copy(step.positions, layer.device);
+            local.positions = collectives.copy(Tensor(step.positions), layer.device);
             if (step.sequence_lengths.has_value())
-                local.sequence_lengths = collectives.copy(*step.sequence_lengths, layer.device);
+                local.sequence_lengths = collectives.copy(Tensor(*step.sequence_lengths), layer.device);
             if (step.cache_positions.has_value())
-                local.cache_positions = collectives.copy(*step.cache_positions, layer.device);
+                local.cache_positions = collectives.copy(Tensor(*step.cache_positions), layer.device);
             const auto& rope = model.device_ropes.empty() ? model.rope : model.device_ropes.at(layer.device);
             hidden = forward_layer(layer, state.layers[index], state.selections.at(layer.device), executor,
                                    collectives.copy(std::move(hidden), layer.device), local, rope, mode);
@@ -506,8 +506,14 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
     const bool full_indexer = layer.full_indexer;
     auto& kv_cache = state.kv_cache;
     auto& index_cache = state.index_cache;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    const Tensor pos(step.positions);
+    const MfqOptional<Tensor> seq_len = step.sequence_lengths
+        ? MfqOptional<Tensor>(Tensor(*step.sequence_lengths)) : mfq_nullopt;
+#else
     const auto& pos = step.positions;
     const auto& seq_len = step.sequence_lengths;
+#endif
     const auto cache_pos = step.cache_position;
     const auto planned_kv_length = step.planned_kv_length;
     const int64_t B = x.size(0);

@@ -300,7 +300,11 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         values.values = {std::move(hidden), {}, {}};
         values.kv = std::span<const AttentionKvView>{&kv, 1};
         values.attention = std::move(step);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        values.rope = rope->view();
+#else
         values.rope = rope;
+#endif
         values.trace = mode.trace_layer == attention.layer ? mode.trace : nullptr;
         values.trace_scope = mode.trace_layer;
         values.scratch_offset = 2 * i;

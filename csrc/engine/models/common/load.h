@@ -28,6 +28,7 @@ struct TransformerWeightLoader {
     QuantLinearGroup projections(const std::vector<std::string>& names) const;
     QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down) const;
     void qkv(mfq::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
+    void output(mfq::cuda::FullAttention& attention, const std::string& name) const;
     void important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
         const std::string& down, const std::string& gate, const std::string& up) const;
     void experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,

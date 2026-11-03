@@ -202,6 +202,11 @@ Tensor project(Tensor value, const weights::Matrix& weight, const ProjectionOpti
     input(value);
     return cuda::ops::project(std::move(value), weight, options);
 }
+Tensor mlp(Tensor value, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
+           MlpActivation activation, double swiglu_limit, const FfnMode& mode) {
+    input(value);
+    return cuda::ops::mlp(std::move(value), gate_up, down, activation, swiglu_limit, mode);
+}
 std::vector<Tensor> project(Tensor value, const weights::MatrixGroup& group,
                             const ProjectionOptions& options) {
     input(value);
@@ -221,6 +226,11 @@ Tensor cast(Tensor value, ScalarType type) {
     input(value);
     return cuda::ops::cast(std::move(value), type);
 }
+Tensor cast(Tensor value, ScalarType type, Device target) {
+    input(value);
+    device(target);
+    return cuda::ops::cast(std::move(value), type, target);
+}
 Tensor contiguous(Tensor value) {
     input(value);
     return cuda::ops::contiguous(std::move(value));
@@ -232,6 +242,14 @@ Tensor clone(Tensor value) {
 Tensor reshape(Tensor value, std::span<const std::int64_t> shape) {
     input(value);
     return cuda::ops::reshape(std::move(value), shape);
+}
+Tensor slice(Tensor value, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step) {
+    input(value);
+    return cuda::ops::slice(std::move(value), dim, start, end, step);
+}
+std::vector<Tensor> chunk(Tensor value, std::int64_t count, std::int64_t dim) {
+    input(value);
+    return cuda::ops::chunk(std::move(value), count, dim);
 }
 Tensor arange(std::int64_t first, std::int64_t last, Device target) {
     device(target);

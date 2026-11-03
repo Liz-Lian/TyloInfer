@@ -19,10 +19,18 @@ mfq::Tensor copy(mfq::Tensor input, Device target) {
                             : tb::Tensor(input).to(target);
 }
 mfq::Tensor cast(mfq::Tensor input, ScalarType type) { return tb::Tensor(input).to(type); }
+mfq::Tensor cast(mfq::Tensor input, ScalarType type, Device target) { return tb::Tensor(input).to(target, type); }
 mfq::Tensor contiguous(mfq::Tensor input) { return tb::Tensor(input).contiguous(); }
 mfq::Tensor clone(mfq::Tensor input) { return tb::Tensor(input).clone(); }
 mfq::Tensor reshape(mfq::Tensor input, std::span<const std::int64_t> shape) {
     return tb::Tensor(input).reshape(shape);
+}
+mfq::Tensor slice(mfq::Tensor input, std::int64_t dim, std::int64_t start, std::int64_t end, std::int64_t step) {
+    return tb::Tensor(input).slice(dim, start, end, step);
+}
+std::vector<mfq::Tensor> chunk(mfq::Tensor input, std::int64_t count, std::int64_t dim) {
+    auto parts = tb::Tensor(input).chunk(count, dim);
+    return {parts.begin(), parts.end()};
 }
 mfq::Tensor arange(std::int64_t first, std::int64_t last, Device device) {
     return tb::arange(first, last, tb::TensorOptions().device(device).dtype(tb::kInt64));

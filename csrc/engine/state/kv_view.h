@@ -28,6 +28,15 @@ struct KvView {
     ScalarType dtype = ScalarType::float16;
 
     bool paged() const noexcept { return page_size > 0; }
+    bool defined() const noexcept {
+        return paged()
+            ? key_chunk_ptrs.defined() && value_chunk_ptrs.defined() && page_table.defined()
+            : physical_key.defined() && physical_value.defined();
+    }
 };
+
+KvView allocate_kv(std::int64_t batch, std::int64_t heads, std::int64_t capacity,
+                   std::int64_t head_dim, bool ring, Device device, ScalarType dtype,
+                   KvQuantization settings = {});
 
 } // namespace mfq::state

@@ -75,7 +75,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     const auto mode = execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn;
     auto attention = mfq::cuda::FullAttention::forward(
-        std::move(x), step, cache.view(), rope, {mode.serial, mode.projection_major},
+        std::move(x), step, cache.view(), rope.view(), {mode.serial, mode.projection_major},
         layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
 #else
     auto attention = mfq::cuda::FullAttention::forward(
@@ -83,7 +83,12 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
         std::move(x), step, cache.view(), execution.executor().attention_scratch()[this], rope,
         layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    return forward_ffn(execution, mfq_tensor_backend::Tensor(std::move(attention[0])),
+                       mfq_tensor_backend::Tensor(std::move(attention[1])), B, T, H);
+#else
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
+#endif
 }
 
 mfq_tensor_backend::Tensor FullBlock::forward_ffn(

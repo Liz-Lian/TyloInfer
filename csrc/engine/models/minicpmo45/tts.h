@@ -9,6 +9,7 @@
 #include "engine/generation/sampling.h"
 #include "engine/models/common/load.h"
 #include "engine/backends/cuda/executor/executor.h"
+#include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/state/kv_cache.h"
 
 #include <array>
@@ -290,7 +291,11 @@ struct Tts {
                 inputs.attention.positions = positions.first;
                 inputs.attention.sequence_lengths = positions.second;
                 inputs.attention.cache_position = state.position;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                inputs.rope = rope.view();
+#else
                 inputs.rope = &rope;
+#endif
                 inputs.trace = mode.trace;
                 inputs.trace_scope = mode.trace_layer;
                 inputs.scratch_offset = 2 * attention.layer;

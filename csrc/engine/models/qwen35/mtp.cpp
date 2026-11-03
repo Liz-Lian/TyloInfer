@@ -81,7 +81,11 @@ tb::Tensor Mtp::evaluate(tb::Tensor hidden,
     Inputs inputs;
     inputs.values = {std::move(hidden), std::move(embedded), {}};
     inputs.kv = kv;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    inputs.rope = rope_.view();
+#else
     inputs.rope = &rope_;
+#endif
     inputs.attention.positions = pos;
     inputs.attention.cache_position = state_.position();
     if (tokens == 1 && state_.position() > 0)

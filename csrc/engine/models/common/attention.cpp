@@ -12,20 +12,25 @@
 #include <utility>
 #include <vector>
 
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
 using mfq_tensor_backend::indexing::Slice;
+#endif
 
 namespace mfq::cuda {
 
-std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        mfq_tensor_backend::Tensor x, const AttentionStep& step, AttentionKvView cache,
-        const RopeCache& rope, const mfq::ops::ProjectionOptions& projection, Trace* trace) const {
+std::array<mfq::Tensor, 2> FullAttention::forward(
+        mfq::Tensor x, const AttentionStep& step, mfq::state::KvView cache,
+        const mfq::ops::RopeTable& rope, const mfq::ops::ProjectionOptions& projection, mfq::ops::Trace* trace) const {
+    using Tensor = mfq::Tensor;
     using mfq::ops::measure;
 #else
+std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
         mfq_tensor_backend::Tensor x,
         const AttentionStep& step, AttentionKvView cache,
         AttentionScratch& scratch, const RopeCache& rope, Trace* trace) const {
+    using Tensor = mfq_tensor_backend::Tensor;
     auto measure = [&](const char* name, auto&& operation) {
         return profiler.measure(name, std::forward<decltype(operation)>(operation));
     };
@@ -37,42 +42,54 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
     const auto cache_pos = step.cache_position;
     const auto planned_kv_length = step.planned_kv_length;
     const auto decode_attention_parts = step.decode_attention_parts;
-    int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    auto trace_qwen_stage = [&](const char *name, const mfq_tensor_backend::Tensor &value,
+    std::int64_t B = x.size(0), T = x.size(1), H = x.size(2);
+    auto trace_qwen_stage = [&](const char *name, const Tensor &value,
                                 int token_axis = 1) {
         if (!attention_output_gate || trace == nullptr)
             return;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        auto ordered = token_axis == 1 ? value
+            : mfq::ops::contiguous(mfq::ops::transpose(value, 1, token_axis));
+        trace->emplace_back(name, mfq::ops::clone(mfq::ops::contiguous(mfq::ops::cast(
+            mfq::ops::reshape(ordered, std::array{B, T, std::int64_t{-1}}), mfq::ScalarType::float32))));
+#else
         auto ordered = token_axis == 1 ? value : value.transpose(1, token_axis).contiguous();
         trace->emplace_back(name, ordered.reshape({B, T, -1})
                                      .to(mfq_tensor_backend::kFloat32).contiguous().clone());
+#endif
     };
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if (official_bf16 && x.scalar_type() != mfq::ScalarType::bfloat16) {
+        x = mfq::ops::contiguous(mfq::ops::cast(x, mfq::ScalarType::bfloat16));
+#else
     if (official_bf16 && x.scalar_type() != mfq_tensor_backend::kBFloat16) {
         x = x.to(mfq_tensor_backend::kBFloat16).contiguous();
+#endif
     }
-    const int64_t nh = attention_heads;
-    const int64_t nkh = kv_heads;
-    const int64_t hd = attention_head_dim;
-    const int64_t attn_width = nh * hd;
-    const RopeCache &active_rope = attention_rope.cos.defined() ? attention_rope : rope;
+    const std::int64_t nh = attention_heads;
+    const std::int64_t nkh = kv_heads;
+    const std::int64_t hd = attention_head_dim;
+    const std::int64_t attn_width = nh * hd;
+    const auto& active_rope = attention_rope.cos.defined() ? attention_rope : rope;
     const bool apply_rotary = !no_rope;
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (x.is_cuda())
-        scratch.split(B * nh, kDecodeAttentionMaxParts, hd, x.device());
+        scratch.split(B * nh, AttentionScratch::kMaxParts, hd, x.device());
 #endif
-    mfq_tensor_backend::Tensor physical_key(cache.physical_key), physical_value(cache.physical_value);
+    Tensor physical_key(cache.physical_key), physical_value(cache.physical_value);
     auto residual = x;
-    mfq_tensor_backend::Tensor write_positions, q, k, v, q_gate;
+    Tensor write_positions, q, k, v, q_gate;
     bool grid_mrope_positions;
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     bool fused_qk_rope_kv;
 #endif
-    std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> kv;
+    std::pair<Tensor, Tensor> kv;
     {
         auto xn = measure("full.attn_norm", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return mfq_tensor_backend::Tensor(mfq::ops::rms_norm(
+            return mfq::ops::rms_norm(
                 x, attn_norm, rms_norm_eps, norm_weight_offset,
-                official_bf16 ? mfq::ScalarType::bfloat16 : mfq::ScalarType::float32));
+                official_bf16 ? mfq::ScalarType::bfloat16 : mfq::ScalarType::float32);
 #else
             return official_bf16
                        ? qwen_rms_norm_bf16(options.fused_norm, x.reshape({B * T, H}), attn_norm,
@@ -83,12 +100,17 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                              .reshape({B, T, H});
 #endif
         });
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        write_positions = mfq::ops::contiguous(mfq::ops::cast(
+            cache_positions.has_value() ? *cache_positions : pos, mfq::ScalarType::int64, x.device()));
+#else
         write_positions =
             cache_positions.has_value()
                 ? cache_positions.value()
                       .to(x.device(), mfq_tensor_backend::kInt64)
                       .contiguous()
                 : pos.to(x.device(), mfq_tensor_backend::kInt64).contiguous();
+#endif
         if (!((write_positions.dim() == 1 && write_positions.numel() == T) ||
               (write_positions.dim() == 2 && write_positions.size(0) == B &&
                write_positions.size(1) == T))) {
@@ -112,14 +134,13 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         trace_qwen_stage("qwen.attn_norm", xn);
         auto parts = measure("full.qkv", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            std::vector<mfq_tensor_backend::Tensor> result;
+            std::vector<mfq::Tensor> result;
             if (!split_q_kv_projections) {
-                auto parts = mfq::ops::project(xn, qkv, projection);
-                for (auto& part : parts) result.emplace_back(part);
+                return mfq::ops::project(xn, *qkv, projection);
             } else {
-                result.emplace_back(mfq::ops::project(xn, q_projection, projection));
-                result.emplace_back(mfq::ops::project(xn, k_projection, projection));
-                result.emplace_back(mfq::ops::project(xn, v_projection, projection));
+                result.emplace_back(mfq::ops::project(xn, *q_projection, projection));
+                result.emplace_back(mfq::ops::project(xn, *k_projection, projection));
+                result.emplace_back(mfq::ops::project(xn, *v_projection, projection));
             }
             return result;
 #else
@@ -144,22 +165,48 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         trace_qwen_stage("qwen.k_projection", k_full);
         trace_qwen_stage("qwen.v_projection", v_full);
         if (official_bf16) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            q_full = mfq::ops::contiguous(mfq::ops::cast(q_full, mfq::ScalarType::bfloat16));
+            k_full = mfq::ops::contiguous(mfq::ops::cast(k_full, mfq::ScalarType::bfloat16));
+            v_full = mfq::ops::contiguous(mfq::ops::cast(v_full, mfq::ScalarType::bfloat16));
+#else
             q_full = q_full.to(mfq_tensor_backend::kBFloat16).contiguous();
             k_full = k_full.to(mfq_tensor_backend::kBFloat16).contiguous();
             v_full = v_full.to(mfq_tensor_backend::kBFloat16).contiguous();
+#endif
         }
-        mfq_tensor_backend::Tensor q_raw;
+        Tensor q_raw;
         measure("full.qkv_view", [&]() {
             if (attention_output_gate) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                auto qp = mfq::ops::reshape(q_full, std::array{B, T, nh, hd * 2});
+                auto chunks = mfq::ops::chunk(qp, 2, -1);
+#else
                 auto qp = q_full.reshape({B, T, nh, hd * 2});
                 auto chunks = qp.chunk(2, -1);
+#endif
                 q_raw = chunks[0];
                 q_gate = chunks[1];
             } else {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                q_raw = mfq::ops::reshape(q_full, std::array{B, T, nh, hd});
+#else
                 q_raw = q_full.reshape({B, T, nh, hd});
+#endif
             }
             return q_raw;
         });
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        q = measure("full.q_view", [&]() { return mfq::ops::contiguous(mfq::ops::transpose(q_raw, 1, 2)); });
+        k = measure("full.k_view", [&]() {
+            return mfq::ops::contiguous(mfq::ops::transpose(
+                mfq::ops::reshape(k_full, std::array{B, T, nkh, hd}), 1, 2));
+        });
+        v = measure("full.v_view", [&]() {
+            return mfq::ops::contiguous(mfq::ops::transpose(
+                mfq::ops::reshape(v_full, std::array{B, T, nkh, hd}), 1, 2));
+        });
+#else
         q = measure("full.q_view", [&]() { return q_raw.transpose(1, 2).contiguous(); });
         k = measure("full.k_view", [&]() {
             return k_full.reshape({B, T, nkh, hd}).transpose(1, 2).contiguous();
@@ -167,15 +214,16 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         v = measure("full.v_view", [&]() {
             return v_full.reshape({B, T, nkh, hd}).transpose(1, 2).contiguous();
         });
+#endif
     }
     bool prepared = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (apply_rotary && official_bf16 && !v_norm.defined()) {
         auto result = mfq::ops::norm_rope_kv(
             mfq::ops::AttentionInput{q, k, v, pos, write_positions}, cache,
-            active_rope.view(), q_norm, k_norm, rms_norm_eps, norm_weight_offset);
+            active_rope, q_norm, k_norm, rms_norm_eps, norm_weight_offset);
         if (result) {
-            q = mfq_tensor_backend::Tensor(*result);
+            q = *result;
             prepared = true;
         }
     }
@@ -192,17 +240,22 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
     }
 #endif
     if (prepared) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        kv = {mfq::ops::slice(physical_key, 2, 0, cache_pos + T),
+              mfq::ops::slice(physical_value, 2, 0, cache_pos + T)};
+#else
         kv = {physical_key.index({Slice(), Slice(), Slice(0, cache_pos + T), Slice()}),
               physical_value.index({Slice(), Slice(), Slice(0, cache_pos + T), Slice()})};
+#endif
     } else {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         {
             auto normalized = mfq::ops::qkv_norm({q, k, v}, {q_norm, k_norm, v_norm},
                 rms_norm_eps, norm_weight_offset,
                 official_bf16 ? mfq::ScalarType::bfloat16 : mfq::ScalarType::float32);
-            q = mfq_tensor_backend::Tensor(normalized[0]);
-            k = mfq_tensor_backend::Tensor(normalized[1]);
-            v = mfq_tensor_backend::Tensor(normalized[2]);
+            q = normalized[0];
+            k = normalized[1];
+            v = normalized[2];
         }
 #else
         const bool fused_bf16_norm =
@@ -268,9 +321,9 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if (apply_rotary && official_bf16) {
             auto result = mfq::ops::rope_kv(
-                mfq::ops::AttentionInput{q, k, v, pos, write_positions}, cache, active_rope.view());
+                mfq::ops::AttentionInput{q, k, v, pos, write_positions}, cache, active_rope);
             if (result) {
-                q = mfq_tensor_backend::Tensor(*result);
+                q = *result;
                 rotary_cached = true;
             }
         }
@@ -295,14 +348,18 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         }
 #endif
         if (rotary_cached) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            kv = {mfq::ops::slice(physical_key, 2, 0, cache_pos + T),
+                  mfq::ops::slice(physical_value, 2, 0, cache_pos + T)};
+#else
             kv = {physical_key.index({Slice(), Slice(), Slice(0, cache_pos + T), Slice()}),
                   physical_value.index({Slice(), Slice(), Slice(0, cache_pos + T), Slice()})};
+#endif
         } else {
             if (apply_rotary) {
                 q = measure("full.q_rope", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    return mfq_tensor_backend::Tensor(mfq::ops::rope(
-                        q, pos, active_rope.view(), official_bf16, grid_mrope_positions));
+                    return mfq::ops::rope(q, pos, active_rope, official_bf16, grid_mrope_positions);
 #else
                     return official_bf16 ? active_rope.apply_bf16(options.fused_rope, q, pos)
                                          : active_rope.apply(q, pos, grid_mrope_positions);
@@ -310,8 +367,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
                 });
                 k = measure("full.k_rope", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    return mfq_tensor_backend::Tensor(mfq::ops::rope(
-                        k, pos, active_rope.view(), official_bf16, grid_mrope_positions));
+                    return mfq::ops::rope(k, pos, active_rope, official_bf16, grid_mrope_positions);
 #else
                     return official_bf16 ? active_rope.apply_bf16(options.fused_rope, k, pos)
                                          : active_rope.apply(k, pos, grid_mrope_positions);
@@ -320,10 +376,8 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
             }
             kv = measure("full.kv_write", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto result = mfq::ops::append_kv(cache, k, v, write_positions, cache_pos,
-                                                  !seq_len.has_value());
-                return std::pair{mfq_tensor_backend::Tensor(result.first),
-                                 mfq_tensor_backend::Tensor(result.second)};
+                return mfq::ops::append_kv(cache, k, v, write_positions, cache_pos,
+                                           !seq_len.has_value());
 #else
                 return append_kv(cache, options.write_aten, k, v, write_positions, cache_pos,
                                  cache_pos + T, !seq_len.has_value());
@@ -365,48 +419,64 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         scratch, profiler);
 #endif
     const bool attention_token_major = result.token_major;
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto a = mfq_tensor_backend::Tensor(result.value);
-#else
     auto a = result.value;
-#endif
-    mfq_tensor_backend::Tensor oo;
+    Tensor oo;
     if (q_gate.defined()) {
         trace_qwen_stage("qwen.attention", a, attention_token_major ? 1 : 2);
         auto af = measure("full.attn_out_view", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return mfq::ops::reshape(attention_token_major ? a
+                : mfq::ops::contiguous(mfq::ops::transpose(a, 1, 2)), std::array{B, T, attn_width});
+#else
             return attention_token_major
                        ? a.reshape({B, T, attn_width})
                        : a.transpose(1, 2).contiguous().reshape({B, T, attn_width});
+#endif
         });
         auto gf = measure("full.q_gate_view", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return mfq::ops::reshape(mfq::ops::contiguous(q_gate), std::array{B, T, attn_width});
+#else
             return q_gate.contiguous().reshape({B, T, attn_width});
+#endif
         });
         oo = measure("full.o_proj_gate", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return mfq_tensor_backend::Tensor(mfq::ops::sigmoid_project(af, gf, o, projection));
+            return mfq::ops::sigmoid_project(af, gf, *o, projection);
 #else
             return project.gated(o, af, gf, InputGateMode::Sigmoid);
 #endif
         });
     } else {
         auto af = measure("full.attn_out_view", [&]() {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+            return mfq::ops::reshape(attention_token_major ? a
+                : mfq::ops::contiguous(mfq::ops::transpose(a, 1, 2)), std::array{B, T, attn_width});
+#else
             return attention_token_major
                        ? a.reshape({B, T, attn_width})
                        : a.transpose(1, 2).contiguous().reshape({B, T, attn_width});
+#endif
         });
         oo = measure("full.o_proj", [&]() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto output = mfq_tensor_backend::Tensor(mfq::ops::project(af, o, projection));
+            auto output = mfq::ops::project(af, *o, projection);
+            return official_bf16
+                ? mfq::ops::contiguous(mfq::ops::cast(output, mfq::ScalarType::bfloat16)) : output;
 #else
             auto output = project.run(o, af);
-#endif
             return official_bf16 ? output.to(mfq_tensor_backend::kBFloat16).contiguous()
                                  : output;
+#endif
         });
     }
     trace_qwen_stage("qwen.o_projection", oo);
     if (official_bf16) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+        oo = mfq::ops::contiguous(mfq::ops::cast(oo, mfq::ScalarType::bfloat16));
+#else
         oo = oo.to(mfq_tensor_backend::kBFloat16).contiguous();
+#endif
     }
     return {std::move(residual), std::move(oo)};
 }

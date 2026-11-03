@@ -4,6 +4,7 @@
 
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/executor/decode_graph.h"
+#include "engine/backends/cuda/ops/attention/scratch.h"
 #include "engine/budget.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "components/error.h"
@@ -210,7 +211,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     }
     const int64_t planned_len = decode_graph_bucket(requested_len, max_context());
     const int64_t graph_attention_parts =
-        decode_graph_attention_parts(planned_len, FullAttention::kDecodeAttentionMaxParts);
+        decode_graph_attention_parts(planned_len, AttentionScratch::kMaxParts);
     std::vector<const void*> graph_state_addresses;
     bool graph_cache_hit = false;
     bool graph_decode = false;

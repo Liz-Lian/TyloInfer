@@ -410,9 +410,15 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                             scratch_[inputs.scratch_offset + index],
                             *inputs.rope, trace);
 #endif
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+                        if (op.residual_out) *op.residual_out = tb::Tensor(output[0]);
+                        values[op.residual] = tb::Tensor(std::move(output[0]));
+                        return tb::Tensor(std::move(output[1]));
+#else
                         if (op.residual_out) *op.residual_out = output[0];
                         values[op.residual] = std::move(output[0]);
                         return std::move(output[1]);
+#endif
                     } else if constexpr (std::is_same_v<Op, task::Linear>) {
                         auto output = op.weights.forward(project, profiler_, inputs.linear_options,
                             std::move(input), inputs.linear[op.state].state,

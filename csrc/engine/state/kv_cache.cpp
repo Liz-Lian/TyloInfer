@@ -1,7 +1,28 @@
 #include "engine/state/kv_cache.h"
+#include "engine/state/kv_view.h"
 
 #include <stdexcept>
 #include <utility>
+
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+mfq::state::KvView mfq::state::allocate_kv(
+        int64_t B, int64_t H, int64_t max_seq, int64_t D, bool ring,
+        mfq::Device device, mfq::ScalarType dtype, KvQuantization quantization) {
+    auto opts = mfq_tensor_backend::TensorOptions().device(device).dtype(dtype);
+    if(quantization.enabled())opts=opts.dtype(mfq_tensor_backend::kInt32);
+    TYLOINFER_RUNTIME_CHECK(!ring || !quantization.enabled(),"TurboQuant ring cache is unsupported");
+    KvView result;
+    result.physical_key = mfq_tensor_backend::zeros({B,H,max_seq,quantization.enabled()?mfq::cuda::cuda_kv_packed_width(int(D),quantization.key_bits()):D},opts);
+    result.physical_value = mfq_tensor_backend::zeros({B,H,max_seq,quantization.enabled()?mfq::cuda::cuda_kv_packed_width(int(D),quantization.value_bits()):D},opts);
+    result.quantization = quantization;
+    result.ring = ring;
+    result.batch = B;
+    result.heads = H;
+    result.head_dim = D;
+    result.dtype = dtype;
+    return result;
+}
+#endif
 
 KVCache::KVCache(
         int64_t B,
@@ -13,11 +34,17 @@ KVCache::KVCache(
         mfq_tensor_backend::ScalarType dtype, mfq::cuda::KvQuantization settings)
     : ring(use_ring), quantization(settings), paged_batch(B), paged_heads(H),
       paged_head_dim(D), paged_dtype(dtype) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    auto allocated = mfq::state::allocate_kv(B, H, max_seq, D, use_ring, device, dtype, settings);
+    k = mfq_tensor_backend::Tensor(std::move(allocated.physical_key));
+    v = mfq_tensor_backend::Tensor(std::move(allocated.physical_value));
+#else
     auto opts = mfq_tensor_backend::TensorOptions().device(device).dtype(dtype);
     if(quantization.enabled())opts=opts.dtype(mfq_tensor_backend::kInt32);
     TYLOINFER_RUNTIME_CHECK(!ring || !quantization.enabled(),"TurboQuant ring cache is unsupported");
     k = mfq_tensor_backend::zeros({B,H,max_seq,quantization.enabled()?mfq::cuda::cuda_kv_packed_width(int(D),quantization.key_bits()):D},opts);
     v = mfq_tensor_backend::zeros({B,H,max_seq,quantization.enabled()?mfq::cuda::cuda_kv_packed_width(int(D),quantization.value_bits()):D},opts);
+#endif
 }
 
 KVCache KVCache::paged_view(

@@ -117,6 +117,29 @@ Mlp dense(const Ffn& f) {
 
 namespace {
 
+Tensor half(Tensor x, CudaProfiler& profiler) {
+    if (x.scalar_type() == mfq_tensor_backend::kFloat16) return x;
+    return profiler.measure("ffn.input_cast", [&] { return x.to(mfq_tensor_backend::kFloat16); });
+}
+
+Tensor sharded(const Mlp& mlp, Tensor x, Executor& executor, const Projector& project) {
+    auto& profiler = executor.profiler();
+    const auto& projection = executor.options().projection;
+    return profiler.measure("ffn.tensor_parallel", [&] {
+        return mlp.sharded(profiler, executor.mmq(), *executor.tq(), executor.collectives(),
+                           project.primary_device(), projection.peer_first,
+                           projection.reduce_to_primary, projection.fp16_reduce, x);
+    });
+}
+
+Tensor local(const Mlp& mlp, Tensor x, Executor& executor, const Projector& project) {
+    const auto& options = executor.options();
+    const Mlp::Options mlp_options{options.projection.nvq_fusion,
+                                   options.dense.mlp.gelu_fusion,
+                                   options.dense.mlp.silu_fusion};
+    return mlp.forward(project, executor.profiler(), mlp_options, x);
+}
+
 bool dense_linear_defined(const QuantLinear& linear) {
     return linear.out() > 0 && linear.neuron_len() > 0;
 }
@@ -221,19 +244,11 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
     auto &profiler = executor.profiler_;
     auto& stats = executor.routes_;
     auto& mmq_ = executor.mmq_;
-    auto& tq_ = *executor.tq_;
     auto& branches_ = executor.branches_;
-    auto& collectives_ = executor.collectives_;
     const auto& projection_ = executor.options_.projection;
     const auto& dense_ = executor.options_.dense;
     const auto& options_ = executor.options_.ffn;
-    mfq_tensor_backend::Tensor xh;
-    if (x.scalar_type() == mfq_tensor_backend::kFloat16) {
-        xh = x;
-    } else {
-        xh = profiler.measure("ffn.input_cast",
-                              [&]() { return x.to(mfq_tensor_backend::kFloat16); });
-    }
+    auto xh = half(x, profiler);
     if (allow_important_neurons && f.important_neurons) {
         if (f.is_moe) {
             throw std::runtime_error("important-neuron branches are only supported for dense FFNs");
@@ -269,11 +284,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
             });
     }
     if (!f.is_moe && dense(f).parallel()) {
-        return profiler.measure("ffn.tensor_parallel", [&] {
-            return dense(f).sharded(
-                profiler, mmq_, tq_, collectives_, project_.primary_device(), projection_.peer_first,
-                projection_.reduce_to_primary, projection_.fp16_reduce, xh);
-        });
+        return sharded(dense(f), xh, executor, project_);
     }
     if (f.is_moe) {
         const bool tq_routed=bool(f.moe_tq);
@@ -796,10 +807,7 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
     }
     TYLOINFER_RUNTIME_CHECK(f.activation != ActivationKind::relu_squared || !f.important_neurons,
                       "relu-squared FFN does not support important neurons");
-    const Mlp::Options options{projection_.nvq_fusion,
-                               dense_.mlp.gelu_fusion,
-                               dense_.mlp.silu_fusion};
-    return dense(f).forward(project_, profiler, options, xh);
+    return local(dense(f), xh, executor, project_);
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -828,6 +836,18 @@ Tensor Ffn::forward(Tensor x, Executor& executor, const Mode& mode,
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace mfq::cuda::ops {
+
+mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
+                const mfq::weights::Matrix& down, mfq::ops::MlpActivation activation,
+                double swiglu_limit, const mfq::ops::FfnMode& mode) {
+    auto& executor = Executor::current();
+    const auto project = executor.projector(mode);
+    const Mlp weights{as_quant_linear_group(gate_up), as_quant_linear(down), activation,
+                      activation == mfq::ops::MlpActivation::gelu_gated, swiglu_limit};
+    auto x = half(Tensor(input), executor.profiler());
+    return weights.parallel() ? sharded(weights, x, executor, project)
+                              : local(weights, x, executor, project);
+}
 
 mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count,
                                const mfq::ops::MoeRouting& routing) {
