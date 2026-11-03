@@ -88,7 +88,7 @@ protected:
                 offload_.reset(); kv_.reset(); weights_.reset();
             };
             try {
-                CudaScope scope(load_.layer_placement.primary_device(), root_->contexts());
+                auto scope = root_->enter(load_.layer_placement.primary_device());
                 release();
             } catch (...) {
                 remember(std::current_exception());
@@ -178,7 +178,6 @@ private:
     template <class F> decltype(auto) with_cuda(F&& work) {
         if (!ready_) throw std::runtime_error("CUDA engine is unloaded");
         auto scope = forward_->enter();
-        mfq_tensor_backend::NoGradGuard no_grad;
         return std::forward<F>(work)();
     }
     void restore_graph_expert_space() {
@@ -215,9 +214,8 @@ private:
         model_ = std::move(model); state_ = std::move(state); forward_ = std::move(forward);
         try {
             {
-                CudaScope scope(load_.layer_placement.primary_device(), root_->contexts());
+                auto scope = root_->enter(load_.layer_placement.primary_device());
                 WeightMemoryLoadScope memory_load(*ledger_);
-                mfq_tensor_backend::NoGradGuard no_grad;
                 model_info_ = model_->info();
                 graph_.emplace(model_info_.max_context);
                 cache_.emplace(runtime_.session_cache, runtime_.prefix_cache,

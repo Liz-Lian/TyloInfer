@@ -67,15 +67,16 @@ Tensor Projector::run(const Experts& weight, Tensor input,
                 : "mixed MFE GLU epilogue must use its native dispatch");
         const auto options = runtime_options::moe(options_.moe);
         if (weight.cached_source) {
+            auto scratch = moe_scratch_.get(weight.cached_source, input);
             if (prequantized)
                 return weight.cached_source->forward_prequantized(
-                    options, mmq_, options.heterogeneous, input, route);
+                    *scratch, options, mmq_, options.heterogeneous, input, route);
             return weight.cached_source->forward(
-                options, mmq_, options.heterogeneous, input, route);
+                *scratch, options, mmq_, options.heterogeneous, input, route);
         }
-        return weight.resident->forward(options, mmq_, input, route, prequantized);
+        return weight.resident->forward(*moe_scratch_.get(weight.resident, input), options, mmq_, input, route, prequantized);
     }
-    return nint(weight).forward(*weight.scratch, input, route, prequantized, epilogue);
+    return nint(weight).forward(mfe_scratch_, input, route, prequantized, epilogue);
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
@@ -93,8 +94,8 @@ Tensor Projector::glu(const Experts& weight, Tensor input,
         const auto options = runtime_options::moe(options_.moe);
         if (weight.cached_source)
             return weight.cached_source->forward_glu_output(
-                options, mmq_, options.heterogeneous, input, route, gelu);
-        return weight.resident->forward_glu_output(options, mmq_, input, route, gelu);
+                *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, gelu);
+        return weight.resident->forward_glu_output(*moe_scratch_.get(weight.resident, input), options, mmq_, input, route, gelu);
     }
     return run(weight, input, route, false, gelu ? 2 : 1);
 #else
@@ -113,7 +114,7 @@ Tensor Projector::gated(const Experts& weight, Tensor input,
     if (weight.cached_source) {
         const auto options = runtime_options::moe(options_.moe);
         return weight.cached_source->forward_glu(
-            options, mmq_, options.heterogeneous, input, route, gelu);
+            *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, gelu);
     }
     if (!input.is_cuda() || !input.is_contiguous() ||
         input.scalar_type() != mfq_tensor_backend::kFloat16 ||
@@ -137,13 +138,13 @@ Tensor Projector::clamped(const Experts& weight, Tensor input,
     if (weight.cached_source && weight.cached_source->supports_clamped_swiglu()) {
         const auto options = runtime_options::moe(options_.moe);
         return weight.cached_source->forward_clamped_swiglu(
-            options, mmq_, options.heterogeneous, input, route, limit);
+            *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, limit);
     }
     if (weight.resident && weight.resident->supports_clamped_swiglu()) {
         const auto options = runtime_options::moe(options_.moe);
-        return weight.resident->forward_clamped_swiglu(options, mmq_, input, route, limit);
+        return weight.resident->forward_clamped_swiglu(*moe_scratch_.get(weight.resident, input), options, mmq_, input, route, limit);
     }
-    return nint(weight).clamped(*weight.scratch, input, route, limit);
+    return nint(weight).clamped(mfe_scratch_, input, route, limit);
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif

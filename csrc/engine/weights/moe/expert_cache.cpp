@@ -5,6 +5,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/moe/cached_source_internal.h"
+#include "engine/backends/cuda/ops/ffn/moe.h"
 #include "engine/weights/moe/host_cache_policy.h"
 #include "engine/weights/moe/pinned_expert_arena.h"
 #include "engine/backends/cuda/native/device.h"
@@ -2570,7 +2571,9 @@ void release_moe_prefill_buffers(MoeExpertCache* cache) {
     cache->pipeline_prefill_release_.clear();
     for(auto i=cache->pipeline_stages_.begin();i!=cache->pipeline_stages_.end();)
         if(i->first.starts_with("prefill:"))i=cache->pipeline_stages_.erase(i);else ++i;
-    cache->pipeline_prefill_activations_.reset();
+    for(auto& weak:cache->pipeline_prefill_scratch_)
+        if(auto scratch=weak.lock())*scratch=MoeScratch{};
+    cache->pipeline_prefill_scratch_.clear();
     cache->pipeline_prefill_host_ring_={};cache->pipeline_prefill_host_stride_=0;
     cache->pipeline_prefill_metadata_host_={};cache->pipeline_prefill_metadata_stride_=0;
     cache->pipeline_prefill_ring_={};

@@ -4,7 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <unordered_map>
+#include <vector>
+
+struct MfePoolWeight;
 
 struct MoeActivationKey {
     int input_rows = 0;
@@ -83,9 +89,14 @@ struct MixedMoeActivationKeyHash {
 namespace mfq::cuda {
 
 struct MfeScratch {
-    std::unordered_map<MoeActivationKey, MoeActivationWorkspace, MoeActivationKeyHash> values;
+    using Buckets = std::unordered_map<MoeActivationKey, MoeActivationWorkspace, MoeActivationKeyHash>;
+    using Pools = std::vector<MfePoolWeight>;
+    std::map<std::weak_ptr<const Pools>, std::map<std::pair<int, std::uintptr_t>, Buckets>,
+             std::owner_less<std::weak_ptr<const Pools>>> values;
+    mutable std::mutex mutex;
 
-    MoeActivationWorkspace get(mfq_tensor_backend::Tensor input, int rows, int groups,
+    MoeActivationWorkspace get(const std::shared_ptr<const Pools>& pools,
+                               mfq_tensor_backend::Tensor input, int rows, int groups,
                                int gs, bool stable = true);
 };
 

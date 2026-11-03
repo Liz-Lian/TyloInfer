@@ -17,6 +17,7 @@
 #include <condition_variable>
 
 struct MoeFfnPrefillHostWorkspace;
+struct MoeScratch;
 struct CudaProfiler;
 class MoePinnedExpertArena;
 struct MoeSsdPrefillReader;
@@ -1372,9 +1373,7 @@ private:
     uint64_t pipeline_wire_fallback_cells_=0,pipeline_wire_fallback_bytes_=0;
     std::vector<std::function<void()>> pipeline_decode_release_;
     std::vector<std::function<bool()>> pipeline_decode_indirect_;
-    // Eager prefill projections execute in order on pipeline_pool_stream_.
-    // Their quantization scratch can be reused across projections and layers.
-    std::shared_ptr<MixedMoeRuntime> pipeline_prefill_activations_;
+    std::vector<std::weak_ptr<MoeScratch>> pipeline_prefill_scratch_;
     std::shared_ptr<void> pipeline_prefill_dma_metadata_;
     std::shared_ptr<void> pipeline_prefill_route_publication_;
     mfq_tensor_backend::Tensor pipeline_prefill_ring_;

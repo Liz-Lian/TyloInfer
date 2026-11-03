@@ -52,9 +52,43 @@ bool MixedMoeRuntime::nint_only() const {
         });
 }
 
-MoeActivationWorkspace MixedMoeRuntime::activation_workspace(
+void MoeScratch::bind(const std::shared_ptr<MixedNintDispatch>& dispatch) {
+    if (nint_binding.owner_before(dispatch) || dispatch.owner_before(nint_binding)) {
+        nint_input_plans.clear();
+        nint_expert_pool = {};
+        nint_expert_local = {};
+        nint_binding = dispatch;
+    }
+}
+
+void MoeScratch::bind(const std::shared_ptr<MixedNvqDispatch>& dispatch) {
+    if (nvq_binding.owner_before(dispatch) || dispatch.owner_before(nvq_binding)) {
+        nvq_expert_pool = {};
+        nvq_expert_local = {};
+        nvq_binding = dispatch;
+    }
+}
+
+std::shared_ptr<MoeScratch> mfq::cuda::MoeScratchCache::get(
+        const std::shared_ptr<const void>& source, mfq_tensor_backend::Tensor x) {
+    std::lock_guard lock(mutex);
+    for (auto it = values.begin(); it != values.end();) {
+        if (it->first.expired()) it = values.erase(it);
+        else ++it;
+    }
+    const int device = x.is_cuda() ? x.get_device() : -1;
+    const auto stream = x.is_cuda()
+        ? reinterpret_cast<std::uintptr_t>(mfq_get_current_cuda_stream(device).stream()) : 0;
+    auto& streams = values[source][source.get()];
+    const auto key = std::pair{device, stream};
+    auto it = streams.find(key);
+    if (it == streams.end()) it = streams.emplace(key, std::make_shared<MoeScratch>()).first;
+    return it->second;
+}
+
+MoeActivationWorkspace MoeScratch::activation_workspace(
         mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
-        MixedMoeTransformKey transform, bool stable) const {
+        MixedMoeTransformKey transform, bool stable) {
     // Shared quantization publishes an exact-row view. Honor that binding
     // before selecting our own scratch, including graph-sized inputs.
     const MixedMoeActivationKey exact{
@@ -82,13 +116,14 @@ MoeActivationWorkspace MixedMoeRuntime::activation_workspace(
             it->second.xscale.narrow(0, 0, input_rows)};
 }
 
-MoeActivationWorkspace MixedMoeRuntime::prefill_activation_workspace(
+MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
         mfq_tensor_backend::Tensor x,int input_rows,int groups,int gs,
-        MixedMoeTransformKey transform) const {
+        MixedMoeTransformKey transform) {
     return activation_workspace(x, input_rows, groups, gs, transform, false);
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
+        MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
         mfq_tensor_backend::Tensor x,
@@ -113,6 +148,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         (x.dim() == 3 && x.size(1) != routes)) {
         throw std::runtime_error("mixed MFE input and route shape mismatch");
     }
+    scratch.bind(nint_dispatch);
+    scratch.bind(nvq_dispatch);
     const int input_rows = x.dim() == 3 ? tokens * routes : tokens;
     const bool stable = input_rows <= MoeActivationWorkspace::stable_row_limit;
     const int result_width = epilogue_mode == 0
@@ -152,16 +189,22 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         tokens <= 8 && !prefill_only && options.nvq_decode;
     const bool use_active_nvq=use_nvq_decode && options.active_decode &&
         route.ids.numel()>0 && route.ids.numel()<=1024;
+    if (use_active_nvq && (!route.ids.is_cuda() || !route.ids.is_contiguous() ||
+            route.ids.scalar_type() != mfq_tensor_backend::kInt32 ||
+            route.ids.get_device() != x.get_device())) {
+        throw std::runtime_error("active NVQ routes require contiguous int32 IDs on the input CUDA device");
+    }
+    if ((use_nvq_prefill || use_nvq_decode) && !scratch.nvq_expert_pool.defined()) {
+        auto pool = nvq_dispatch->initial_expert_pool.clone();
+        auto local = nvq_dispatch->initial_expert_local.clone();
+        scratch.nvq_expert_pool = std::move(pool);
+        scratch.nvq_expert_local = std::move(local);
+    }
     mfq_tensor_backend::Tensor active_nvq_plan;
     if(use_active_nvq) {
-        if (!route.ids.is_cuda() || !route.ids.is_contiguous() ||
-            route.ids.scalar_type() != mfq_tensor_backend::kInt32 ||
-            route.ids.get_device() != x.get_device()) {
-            throw std::runtime_error("active NVQ routes require contiguous int32 IDs on the input CUDA device");
-        }
         const int pairs=int(route.ids.numel());
-        auto found=nvq_active_plans.find(pairs);
-        if(found==nvq_active_plans.end())found=nvq_active_plans.emplace(pairs,
+        auto found=scratch.nvq_active_plans.find(pairs);
+        if(found==scratch.nvq_active_plans.end())found=scratch.nvq_active_plans.emplace(pairs,
             mfq_tensor_backend::empty({1+int64_t(pairs)*3},route.ids.options())).first;
         active_nvq_plan=found->second;
         mfq::cuda::moe_plan_nvq_routes(reinterpret_cast<const uint64_t*>(nvq_dispatch->map_ptrs.data_ptr<int64_t>()),
@@ -170,8 +213,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         TYLOINFER_CUDA_CHECK(cudaGetLastError());
     } else if(use_nvq_prefill || use_nvq_decode) {
         mfq::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nvq_dispatch->map_ptrs.data_ptr<int64_t>()),
-            nvq_dispatch->pool_count,n_experts,nvq_dispatch->expert_pool.data_ptr<int32_t>(),
-            nvq_dispatch->expert_local.data_ptr<int32_t>(),mfq_current_cuda_stream());
+            nvq_dispatch->pool_count,n_experts,scratch.nvq_expert_pool.data_ptr<int32_t>(),
+            scratch.nvq_expert_local.data_ptr<int32_t>(),mfq_current_cuda_stream());
         TYLOINFER_CUDA_CHECK(cudaGetLastError());
     }
     int nint_pool_phase = 0;
@@ -200,8 +243,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             nvq_dispatch->weight_ptrs,
             nvq_dispatch->weight_sizes,
             nvq_dispatch->pool_params,
-            nvq_dispatch->expert_pool,
-            nvq_dispatch->expert_local,
+            scratch.nvq_expert_pool,
+            scratch.nvq_expert_local,
             x, n_experts, out_per_expert, neuron_len,
             nvq_tile_m, output,
             route.ids_dst, route.expert_bounds,
@@ -214,21 +257,21 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         const int groups = (neuron_len + 23) / 24;
         const MixedMoeActivationKey activation_key{
             input_rows, groups, 24, x.get_device(), identity};
-        auto workspace = activation_workspace(
+        auto workspace = scratch.activation_workspace(
             x, input_rows, groups, 24, identity, stable);
         auto qx = workspace.qx;
         auto xscale = workspace.xscale;
         bool input_quantized = input_prequantized;
         if(use_active_nvq)nvq_moe_grouped_matmul_active_ws_cuda(
             nvq_dispatch->weight_ptrs,nvq_dispatch->weight_sizes,nvq_dispatch->pool_params,
-            nvq_dispatch->expert_pool,nvq_dispatch->expert_local,x,route.ids,n_experts,
+            scratch.nvq_expert_pool,scratch.nvq_expert_local,x,route.ids,n_experts,
             out_per_expert,neuron_len,input_quantized,output,qx,xscale,active_nvq_plan);
         else nvq_moe_grouped_matmul_hetero_ws_cuda(
             nvq_dispatch->weight_ptrs,
             nvq_dispatch->weight_sizes,
             nvq_dispatch->pool_params,
-            nvq_dispatch->expert_pool,
-            nvq_dispatch->expert_local,
+            scratch.nvq_expert_pool,
+            scratch.nvq_expert_local,
             x, route.ids, n_experts, out_per_expert, neuron_len,
             input_quantized, output, qx, xscale);
         quantized.insert(activation_key);
@@ -238,14 +281,14 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         !use_f16_mma && !use_kl_mmq && !prefill_only && tokens<=8 &&
         int64_t(tokens)*routes<=65535 && epilogue_mode==0;
     if(use_nint_decode) {
-        auto found=nint_input_plans.find(input_rows);
-        if(found==nint_input_plans.end()) {
+        auto found=scratch.nint_input_plans.find(input_rows);
+        if(found==scratch.nint_input_plans.end()) {
             std::vector<int64_t> pointers,quantize;
             std::unordered_set<MixedMoeActivationKey,MixedMoeActivationKeyHash> geometries;
             MixedNintInputPlan plan;
             for(int index:nint_dispatch->pools) {
                 const auto& w=pools[index].nint;
-                auto workspace=activation_workspace(x,input_rows,int(w.ng),int(w.gs),identity,stable);
+                auto workspace=scratch.activation_workspace(x,input_rows,int(w.ng),int(w.gs),identity,stable);
                 pointers.insert(pointers.end(),{reinterpret_cast<int64_t>(w.q_packed.data_ptr()),
                     reinterpret_cast<int64_t>(w.row_q_bits.data_ptr()),reinterpret_cast<int64_t>(w.row_q_bit_offsets.data_ptr()),
                     reinterpret_cast<int64_t>(w.sub_scale.data_ptr()),reinterpret_cast<int64_t>(w.sub_min.data_ptr()),
@@ -260,7 +303,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             }
             plan.weight_ptrs=mfq_tensor_backend::tensor(pointers).reshape({int64_t(nint_dispatch->pools.size()),9}).to(x.device());
             plan.quantize_descriptors=mfq_tensor_backend::tensor(quantize).reshape({int64_t(geometries.size()),4}).to(x.device());
-            found=nint_input_plans.emplace(input_rows,std::move(plan)).first;
+            found=scratch.nint_input_plans.emplace(input_rows,std::move(plan)).first;
         }
         auto& plan=found->second;
         const auto row_setting=options.row_workspace;
@@ -299,7 +342,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         bool direct=false;
         if(nint_dispatch->pools.size()==1) {
             const auto& pool=pools[nint_dispatch->pools.front()];const auto& w=pool.nint;
-            auto workspace=activation_workspace(x,input_rows,int(w.ng),int(w.gs),identity,stable);
+            auto workspace=scratch.activation_workspace(x,input_rows,int(w.ng),int(w.gs),identity,stable);
             const auto& row_metadata=prepare_rows?plan.row_metadata_workspace:w.route_metadata;
             const NintSingleRouteWeight view{{reinterpret_cast<int64_t>(w.q_packed.data_ptr()),
                 reinterpret_cast<int64_t>(w.row_q_bits.data_ptr()),reinterpret_cast<int64_t>(w.row_q_bit_offsets.data_ptr()),
@@ -311,14 +354,20 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             direct=nint_try_single_route_cuda(view,pool.expert_local,route.ids,output,x.dim()==3,int(w.bits),prepare_rows);
         }
         if(!direct) {
-        mfq::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nint_dispatch->map_ptrs.data_ptr<int64_t>()),
-            int(nint_dispatch->pools.size()),n_experts,nint_dispatch->expert_pool.data_ptr<int32_t>(),
-            nint_dispatch->expert_local.data_ptr<int32_t>(),mfq_current_cuda_stream());
-        TYLOINFER_CUDA_CHECK(cudaGetLastError());
-        const auto& hint=pools[nint_dispatch->pools.front()].nint;
-        nint_moe_grouped_matmul_hinted_cuda(plan.weight_ptrs,nint_dispatch->pool_params,
-            nint_dispatch->expert_pool,nint_dispatch->expert_local,route.ids,output,neuron_len,x.dim()==3,
-            nint_dispatch->pools.size()==1?int(hint.gs):0,int(hint.bits));
+            if (!scratch.nint_expert_pool.defined()) {
+                auto pool = nint_dispatch->initial_expert_pool.clone();
+                auto local = nint_dispatch->initial_expert_local.clone();
+                scratch.nint_expert_pool = std::move(pool);
+                scratch.nint_expert_local = std::move(local);
+            }
+            mfq::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nint_dispatch->map_ptrs.data_ptr<int64_t>()),
+                int(nint_dispatch->pools.size()),n_experts,scratch.nint_expert_pool.data_ptr<int32_t>(),
+                scratch.nint_expert_local.data_ptr<int32_t>(),mfq_current_cuda_stream());
+            TYLOINFER_CUDA_CHECK(cudaGetLastError());
+            const auto& hint=pools[nint_dispatch->pools.front()].nint;
+            nint_moe_grouped_matmul_hinted_cuda(plan.weight_ptrs,nint_dispatch->pool_params,
+                scratch.nint_expert_pool,scratch.nint_expert_local,route.ids,output,neuron_len,x.dim()==3,
+                nint_dispatch->pools.size()==1?int(hint.gs):0,int(hint.bits));
         }
     }
 
@@ -484,7 +533,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         }
         MixedMoeActivationKey activation_key{
             input_rows, groups, gs, x.get_device(), transform};
-        auto workspace = activation_workspace(
+        auto workspace = scratch.activation_workspace(
             value, input_rows, groups, gs, transform, stable);
         bool input_quantized = input_prequantized ||
             quantized.find(activation_key) != quantized.end();
@@ -588,6 +637,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward_glu_output(
+        MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
         mfq_tensor_backend::Tensor x,
@@ -595,11 +645,11 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward_glu_output(
         bool gelu) const {
     if (nint_only() && kl_mmq.mode == KlMmqMode::Default) {
         return forward(
-            options, kl_mmq,
+            scratch, options, kl_mmq,
             x, route, false, gelu ? 2 : 1);
     }
     auto gate_up = forward(
-        options, kl_mmq,
+        scratch, options, kl_mmq,
         x, route);
     return gelu
         ? moe_geglu_split_cuda(gate_up)
@@ -611,6 +661,7 @@ bool MixedMoeRuntime::supports_clamped_swiglu() const {
 }
 
 mfq_tensor_backend::Tensor MixedMoeRuntime::forward_clamped_swiglu(
+        MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
         mfq_tensor_backend::Tensor gate_up,
@@ -637,6 +688,6 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward_clamped_swiglu(
     auto activation =
         (mfq_tensor_backend::silu(gate) * up).contiguous();
     return forward(
-        options, kl_mmq,
+        scratch, options, kl_mmq,
         activation, route);
 }

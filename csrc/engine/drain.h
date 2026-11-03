@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
-#include "engine/backends/cuda/native/scope.h"
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/state/kv_offload.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/weights/placement.h"
@@ -26,7 +26,7 @@ inline void drain_cuda(
         executor.tq()->empty() && executor.pipelines().empty() && executor.branches().empty() &&
         executor.collectives().streams().empty()) return;
 #endif
-    CudaScope scope(layer_placement.primary_device(), executor.contexts());
+    auto scope = executor.enter(layer_placement.primary_device());
     std::exception_ptr failure;
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }

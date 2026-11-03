@@ -89,6 +89,44 @@ std::vector<Tensor> Executor::storage() const {
         append(value.partial_o); append(value.partial_m); append(value.partial_l);
         append(value.mask); append(value.kv_max); append(value.meta);
     }
+    {
+        std::lock_guard lock(mfe_scratch_.mutex);
+        for (const auto& [pool, streams] : mfe_scratch_.values) {
+            (void)pool;
+            for (const auto& [stream, buckets] : streams) {
+                (void)stream;
+                for (const auto& [key, value] : buckets) {
+                    (void)key;
+                    append(value.qx); append(value.xscale);
+                }
+            }
+        }
+    }
+    {
+        std::lock_guard lock(moe_scratch_.mutex);
+        for (const auto& [owner, sources] : moe_scratch_.values) {
+            (void)owner;
+            for (const auto& [source, streams] : sources) {
+                (void)source;
+                for (const auto& [stream, scratch] : streams) {
+                    (void)stream;
+                    append(scratch->nint_expert_pool); append(scratch->nint_expert_local);
+                    append(scratch->nvq_expert_pool); append(scratch->nvq_expert_local);
+                    for (const auto& [rows, plan] : scratch->nint_input_plans) {
+                        (void)rows;
+                        append(plan.weight_ptrs); append(plan.quantize_descriptors);
+                        append(plan.row_metadata_workspace);
+                    }
+                    for (const auto& [rows, plan] : scratch->nvq_active_plans) {
+                        (void)rows; append(plan);
+                    }
+                    for (const auto& [key, workspace] : scratch->activation_workspaces) {
+                        (void)key; append(workspace.qx); append(workspace.xscale);
+                    }
+                }
+            }
+        }
+    }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::lock_guard lock(attention_scratch_mutex_);
     for (const auto& [key, geometries] : attention_scratch_) {
@@ -249,7 +287,7 @@ Projector Executor::projector(const Ffn::Mode& mode) {
 }
 
 Projector Executor::projector(const Ffn::Mode& mode, int primary) {
-    return {profiler_, mmq_, *tq_, branches_, collectives_, options_.projection,
+    return {profiler_, mmq_, *tq_, branches_, collectives_, mfe_scratch_, moe_scratch_, options_.projection,
             primary, mode.serial, mode.projection_major};
 }
 

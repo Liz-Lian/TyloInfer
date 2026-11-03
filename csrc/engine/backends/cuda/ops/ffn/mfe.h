@@ -12,7 +12,7 @@ struct Mfe {
     int out_per_expert;
     int neuron_len;
     bool partial_experts;
-    const std::vector<MfePoolWeight>& pools;
+    const std::shared_ptr<const std::vector<MfePoolWeight>>& pools;
 
     mfq_tensor_backend::Tensor forward(
         MfeScratch& scratch, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,

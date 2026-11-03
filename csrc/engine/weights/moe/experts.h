@@ -2,7 +2,6 @@
 
 #include "engine/weights/moe/bank.h"
 #include "engine/weights/moe/pool.h"
-#include "engine/backends/cuda/ops/ffn/activation.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -26,7 +25,7 @@ struct Experts : weights::ExpertBank {
     int n_experts = 0;
     int out_per_expert = 0;
     int neuron_len = 0;
-    std::vector<MfePoolWeight> pools;
+    std::shared_ptr<const std::vector<MfePoolWeight>> pools;
     int64_t mixed_weight_bytes = 0;
     bool partial_experts = false;
     bool unified_nint_projection = false;
@@ -35,7 +34,6 @@ struct Experts : weights::ExpertBank {
     std::shared_ptr<MoeCachedSource> cached_source;
     std::vector<MoeActivationGeometry> activation_geometries;
     int activation_workspace_domain = 0;
-    std::shared_ptr<MfeScratch> scratch = std::make_shared<MfeScratch>();
 
     std::int64_t count() const override { return n_experts; }
     std::int64_t rows() const override { return out_per_expert; }
@@ -44,7 +42,7 @@ struct Experts : weights::ExpertBank {
     bool expert_parallel() const { return !expert_parallel_shards.empty(); }
     bool supports_projection_glu_epilogue() const {
         if (!expert_parallel()) {
-            return unified_nint_projection || !pools.empty();
+            return unified_nint_projection || (pools && !pools->empty());
         }
         return std::all_of(
             expert_parallel_shards.begin(),
@@ -55,7 +53,7 @@ struct Experts : weights::ExpertBank {
             });
     }
     bool supports_prequantized_input() const {
-        return !expert_parallel() && (!pools.empty() || resident || cached_source);
+        return !expert_parallel() && ((pools && !pools->empty()) || resident || cached_source);
     }
     bool can_reuse_activation_for(const Experts& consumer) const {
         if (!supports_prequantized_input() ||
@@ -70,7 +68,7 @@ struct Experts : weights::ExpertBank {
         const bool shared = (cached_source && cached_source == consumer.cached_source) ||
                             (resident && resident == consumer.resident) ||
                             (!cached_source && !resident && !consumer.cached_source &&
-                             !consumer.resident && scratch == consumer.scratch);
+                             !consumer.resident && pools && pools == consumer.pools);
         if (!shared)
             return false;
         if (activation_geometries.empty() ||

@@ -13,14 +13,14 @@
 #include <unordered_set>
 
 static void initialize_mfe_nint_runtime(mfq::cuda::Experts & result) {
-    if (result.pools.empty()) {
+    if (!result.pools || result.pools->empty()) {
         throw std::runtime_error("MFE NINT runtime requires at least one pool");
     }
     result.activation_geometries.clear();
     result.activation_workspace_domain = 1;
     std::unordered_set<int64_t> quantized_shapes;
-    const auto target = result.pools.front().weight.q_packed.device();
-    for (const auto & pool : result.pools) {
+    const auto target = result.pools->front().weight.q_packed.device();
+    for (const auto & pool : *result.pools) {
         TYLOINFER_RUNTIME_CHECK(
             pool.weight.q_packed.is_cuda() &&
             pool.weight.q_packed.device() == target,
@@ -44,7 +44,8 @@ mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data & cpu) {
     result.n_experts = cpu.n_experts;
     result.out_per_expert = cpu.out_per_expert;
     result.neuron_len = cpu.neuron_len;
-    result.pools.reserve(cpu.pools.size());
+    std::vector<MfePoolWeight> pools;
+    pools.reserve(cpu.pools.size());
     for (const auto & source_pool : cpu.pools) {
         if (source_pool.dtype != "NINT") {
             throw std::runtime_error("non-NINT cohort reached the NINT-only loader");
@@ -62,8 +63,9 @@ mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data & cpu) {
         pool.expert_local = mfq_tensor_backend::from_blob(
             local.data(), {(int64_t)local.size()}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
             .clone().to(pool.weight.q_packed.device()).contiguous();
-        result.pools.push_back(std::move(pool));
+        pools.push_back(std::move(pool));
     }
+    result.pools = std::make_shared<const std::vector<MfePoolWeight>>(std::move(pools));
     initialize_mfe_nint_runtime(result);
     return result;
 }
@@ -87,17 +89,14 @@ int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
     int64_t bytes = 0;
     if(runtime.nint_dispatch) {
         const auto& d=*runtime.nint_dispatch;
-        for(const auto& t:{d.map_ptrs,d.pool_params,d.expert_pool,d.expert_local})bytes+=tensor_storage_bytes(t);
-    }
-    for(const auto& item:runtime.nint_input_plans) {
-        bytes+=tensor_storage_bytes(item.second.weight_ptrs)+tensor_storage_bytes(item.second.quantize_descriptors);
+        for(const auto& t:{d.map_ptrs,d.pool_params,d.initial_expert_pool,d.initial_expert_local})bytes+=tensor_storage_bytes(t);
     }
     if (runtime.nvq_dispatch) {
         bytes += tensor_storage_bytes(runtime.nvq_dispatch->weight_ptrs);
         bytes += tensor_storage_bytes(runtime.nvq_dispatch->weight_sizes);
         bytes += tensor_storage_bytes(runtime.nvq_dispatch->pool_params);
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->expert_pool);
-        bytes += tensor_storage_bytes(runtime.nvq_dispatch->expert_local);
+        bytes += tensor_storage_bytes(runtime.nvq_dispatch->initial_expert_pool);
+        bytes += tensor_storage_bytes(runtime.nvq_dispatch->initial_expert_local);
     }
     for (const auto & pool : runtime.pools) {
         bytes += tensor_storage_bytes(pool.expert_local);

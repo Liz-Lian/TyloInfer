@@ -175,12 +175,11 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, Na
         load = std::move(execution_config);
         root = std::make_unique<Executor>(std::move(numeric_options), 0);
         {
-            CudaScope outer_scope(load.layer_placement.primary_device(), root->contexts());
+            auto outer_scope = root->enter(load.layer_placement.primary_device());
             internal::setup_cuda_load(options, load, *root, *weights, kv, offload);
             root->profiler().enabled = false;
             ledger = std::make_shared<WeightMemoryLedger>();
             WeightMemoryLoadScope memory_load(*ledger);
-            mfq_tensor_backend::NoGradGuard no_grad;
             runtime = internal::resolve_cuda_runtime_config(options);
             const auto kv_options = runtime_options::qsa_kv_offload();
             kv = std::make_shared<KvMemoryManager>();
@@ -194,7 +193,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, Na
                 offload = std::make_shared<KvOffloadStore>(std::move(config));
             }
             {
-                CudaScope scope(load.layer_placement.primary_device(), root->contexts());
+                auto scope = root->enter(load.layer_placement.primary_device());
                 source = mfq::open_model_source(options.model_path);
                 auto definition = models::config_json(*source, options.config_path);
                 definition = configure_yarn(load.yarn, load.yarn_context_extension,
@@ -236,7 +235,7 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, Na
                 offload.reset(); kv.reset(); weights.reset();
             };
             try {
-                CudaScope scope(load.layer_placement.primary_device(), root->contexts());
+                auto scope = root->enter(load.layer_placement.primary_device());
                 release();
             } catch (const std::exception& error) {
                 std::cerr << "runtime_load_cleanup error=" << error.what() << '\n';

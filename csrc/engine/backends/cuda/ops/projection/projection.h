@@ -49,13 +49,15 @@ public:
     };
 
     Projector(CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
-              Branches& branches, Collectives& collectives, const Options& options,
+              Branches& branches, Collectives& collectives, MfeScratch& mfe_scratch,
+              MoeScratchCache& moe_scratch, const Options& options,
               int primary, const bool& serial, const bool& projection_major)
         : profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
-          collectives_(collectives), options_(options), primary_(primary),
+          collectives_(collectives), mfe_scratch_(mfe_scratch), moe_scratch_(moe_scratch), options_(options), primary_(primary),
           serial_(serial), projection_major_(projection_major) {}
 
     int primary_device() const { return primary_; }
+    MoeScratchCache& moe_scratch() const { return moe_scratch_; }
 
     mfq_tensor_backend::Tensor run(const QuantLinear& weight, mfq_tensor_backend::Tensor input) const;
     std::vector<mfq_tensor_backend::Tensor> run(
@@ -97,6 +99,8 @@ private:
     TqExec& tq_;
     Branches& branches_;
     Collectives& collectives_;
+    MfeScratch& mfe_scratch_;
+    MoeScratchCache& moe_scratch_;
     const Options& options_;
     int primary_;
     const bool& serial_;

@@ -7,9 +7,12 @@
 #include "engine/backends/cuda/ops/projection/mmq.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 void fp8_sq_moe_matmul(
@@ -40,6 +43,37 @@ struct MoeOptions {
     bool heterogeneous = true;
 };
 
+struct MoeScratch {
+    std::unordered_map<int,MixedNintInputPlan> nint_input_plans;
+    std::unordered_map<int,mfq_tensor_backend::Tensor> nvq_active_plans;
+    std::unordered_map<MixedMoeActivationKey, MoeActivationWorkspace,
+                       MixedMoeActivationKeyHash> activation_workspaces;
+    mfq_tensor_backend::Tensor nint_expert_pool, nint_expert_local;
+    mfq_tensor_backend::Tensor nvq_expert_pool, nvq_expert_local;
+    std::weak_ptr<MixedNintDispatch> nint_binding;
+    std::weak_ptr<MixedNvqDispatch> nvq_binding;
+
+    void bind(const std::shared_ptr<MixedNintDispatch>& dispatch);
+    void bind(const std::shared_ptr<MixedNvqDispatch>& dispatch);
+    MoeActivationWorkspace activation_workspace(
+            mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
+            MixedMoeTransformKey transform, bool stable = true);
+    MoeActivationWorkspace prefill_activation_workspace(
+            mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
+            MixedMoeTransformKey transform);
+};
+
+namespace mfq::cuda {
+struct MoeScratchCache {
+    std::map<std::weak_ptr<const void>,
+             std::map<const void*, std::map<std::pair<int, std::uintptr_t>, std::shared_ptr<MoeScratch>>>,
+             std::owner_less<std::weak_ptr<const void>>> values;
+    mutable std::mutex mutex;
+
+    std::shared_ptr<MoeScratch> get(const std::shared_ptr<const void>& source, mfq_tensor_backend::Tensor input);
+};
+}
+
 struct MixedMoeRuntime {
     int n_experts = 0;
     int out_per_expert = 0;
@@ -51,21 +85,10 @@ struct MixedMoeRuntime {
     std::vector<MixedMoePool> pools;
     std::shared_ptr<MixedNvqDispatch> nvq_dispatch;
     std::shared_ptr<MixedNintDispatch> nint_dispatch;
-    mutable std::unordered_map<int,MixedNintInputPlan> nint_input_plans;
-    mutable std::unordered_map<int,mfq_tensor_backend::Tensor> nvq_active_plans;
-    mutable std::unordered_map<
-        MixedMoeActivationKey, MoeActivationWorkspace,
-        MixedMoeActivationKeyHash> activation_workspaces;
-
     bool nint_only() const;
-    MoeActivationWorkspace activation_workspace(
-            mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
-            MixedMoeTransformKey transform, bool stable = true) const;
-    MoeActivationWorkspace prefill_activation_workspace(
-            mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
-            MixedMoeTransformKey transform) const;
 
     mfq_tensor_backend::Tensor forward(
+            MoeScratch& scratch,
             const MoeOptions& options,
             KlMmqState& kl_mmq,
             mfq_tensor_backend::Tensor x,
@@ -74,6 +97,7 @@ struct MixedMoeRuntime {
             int epilogue_mode = 0) const;
 
     mfq_tensor_backend::Tensor forward_glu_output(
+            MoeScratch& scratch,
             const MoeOptions& options,
             KlMmqState& kl_mmq,
             mfq_tensor_backend::Tensor x,
@@ -83,6 +107,7 @@ struct MixedMoeRuntime {
     bool supports_clamped_swiglu() const;
 
     mfq_tensor_backend::Tensor forward_clamped_swiglu(
+            MoeScratch& scratch,
             const MoeOptions& options,
             KlMmqState& kl_mmq,
             mfq_tensor_backend::Tensor gate_up,

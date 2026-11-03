@@ -139,6 +139,8 @@ private:
     Pipelines& pipelines_;
     int primary_;
     std::vector<AttentionScratch> scratch_;
+    MfeScratch mfe_scratch_;
+    MoeScratchCache moe_scratch_;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mutable std::mutex attention_scratch_mutex_;
     std::map<std::pair<int, std::uintptr_t>, std::map<AttentionGeometry, AttentionScratch>> attention_scratch_;

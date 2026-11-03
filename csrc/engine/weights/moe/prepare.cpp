@@ -103,7 +103,7 @@ static void upload_mixed_dispatch_metadata(
 
 static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
     namespace tb=mfq_tensor_backend;
-    runtime.nint_dispatch.reset();runtime.nint_input_plans.clear();
+    runtime.nint_dispatch.reset();
     if(runtime.n_experts<=0 || runtime.n_experts>4096 || runtime.neuron_len<=0 ||
         runtime.out_per_expert<=0 || runtime.out_per_expert>INT_MAX)return;
     auto dispatch=std::make_shared<MixedNintDispatch>();
@@ -135,8 +135,8 @@ static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
     upload_mixed_dispatch_metadata({
         {&dispatch->map_ptrs,tb::from_blob(maps.data(),{int64_t(maps.size())},i64)},
         {&dispatch->pool_params,tb::from_blob(params.data(),{int64_t(dispatch->pools.size()),3},i32)},
-        {&dispatch->expert_pool,tb::from_blob(missing.data(),{runtime.n_experts},i32)},
-        {&dispatch->expert_local,tb::from_blob(missing.data(),{runtime.n_experts},i32)}},
+        {&dispatch->initial_expert_pool,tb::from_blob(missing.data(),{runtime.n_experts},i32)},
+        {&dispatch->initial_expert_local,tb::from_blob(missing.data(),{runtime.n_experts},i32)}},
         device,runtime.prefill_only,dispatch->metadata_device,dispatch->metadata_host);
     runtime.nint_dispatch=std::move(dispatch);
 }
@@ -291,8 +291,8 @@ void prepare_moe(
         {&dispatch->weight_ptrs,tb::from_blob(weight_ptrs.data(),{dispatch_pool,5},i64)},
         {&dispatch->weight_sizes,tb::from_blob(weight_sizes.data(),{dispatch_pool,3},i64)},
         {&dispatch->pool_params,tb::from_blob(pool_params.data(),{dispatch_pool,7},i32)},
-        {&dispatch->expert_pool,tb::from_blob(expert_pool.data(),{runtime.n_experts},i32)},
-        {&dispatch->expert_local,tb::from_blob(expert_local.data(),{runtime.n_experts},i32)}},
+        {&dispatch->initial_expert_pool,tb::from_blob(expert_pool.data(),{runtime.n_experts},i32)},
+        {&dispatch->initial_expert_local,tb::from_blob(expert_local.data(),{runtime.n_experts},i32)}},
         target,runtime.prefill_only,dispatch->metadata_device,dispatch->metadata_host);
     runtime.nvq_dispatch = std::move(dispatch);
 }

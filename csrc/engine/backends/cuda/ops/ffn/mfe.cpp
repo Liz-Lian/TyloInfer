@@ -9,24 +9,32 @@ namespace mfq::cuda {
 
 using Tensor = mfq_tensor_backend::Tensor;
 
-MoeActivationWorkspace MfeScratch::get(Tensor x, int input_rows, int groups, int gs, bool stable) {
+MoeActivationWorkspace MfeScratch::get(const std::shared_ptr<const Pools>& pools, Tensor x,
+                                       int input_rows, int groups, int gs, bool stable) {
+    std::lock_guard lock(mutex);
+    for (auto it = values.begin(); it != values.end();) {
+        if (it->first.expired()) it = values.erase(it);
+        else ++it;
+    }
+    const auto stream = reinterpret_cast<std::uintptr_t>(mfq_get_current_cuda_stream(x.get_device()).stream());
+    auto& buckets = values[pools][{x.get_device(), stream}];
     // A producer may have already quantized this exact view for us.
     const MoeActivationKey exact{input_rows, groups, gs, x.get_device()};
-    auto found = values.find(exact);
-    if (found != values.end()) return found->second;
+    auto found = buckets.find(exact);
+    if (found != buckets.end()) return found->second;
     stable = stable && input_rows <= MoeActivationWorkspace::stable_row_limit;
     const int capacity = MoeActivationWorkspace::capacity_rows(input_rows, stable);
     // Each negative key owns a permanent capacity bucket. Larger eager
     // prefill uses key zero and cannot replace a captured bucket address.
     const MoeActivationKey key{stable ? -capacity : 0, groups, gs, x.get_device()};
-    auto it = values.find(key);
-    if (it == values.end() || it->second.qx.size(0) < input_rows) {
+    auto it = buckets.find(key);
+    if (it == buckets.end() || it->second.qx.size(0) < input_rows) {
         MoeActivationWorkspace workspace;
         workspace.qx = mfq_tensor_backend::empty(
             {capacity, groups * gs}, x.options().dtype(mfq_tensor_backend::kInt8));
         workspace.xscale = mfq_tensor_backend::empty(
             {capacity, groups}, x.options().dtype(mfq_tensor_backend::kFloat32));
-        it = values.insert_or_assign(key, std::move(workspace)).first;
+        it = buckets.insert_or_assign(key, std::move(workspace)).first;
     }
     return {it->second.qx.narrow(0, 0, input_rows),
             it->second.xscale.narrow(0, 0, input_rows)};
@@ -61,11 +69,11 @@ Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
     std::unordered_set<MoeActivationKey, MoeActivationKeyHash> quantized;
     int nint_pool_phase = 0;
     const bool stable = input_rows <= 2048;
-    for (const auto & pool : pools) {
+    if (pools) for (const auto & pool : *pools) {
         int groups = (int)pool.weight.ng;
         int gs = (int)pool.weight.gs;
         MoeActivationKey key{input_rows, groups, gs, x.get_device()};
-        auto workspace = scratch.get(x, input_rows, groups, gs, stable);
+        auto workspace = scratch.get(pools, x, input_rows, groups, gs, stable);
         bool input_quantized = input_prequantized ||
             quantized.find(key) != quantized.end();
         const int route_tile_m = select_nint_prefill_route_tile(
@@ -90,7 +98,7 @@ Tensor Mfe::forward(MfeScratch& scratch, Tensor x, const MoeRoutePlan& route,
 }
 
 Tensor Mfe::clamped(MfeScratch& scratch, Tensor gate_up, const MoeRoutePlan& route, double limit) const {
-    if (pools.empty() || !gate_up.is_cuda() ||
+    if (!pools || pools->empty() || !gate_up.is_cuda() ||
             !gate_up.is_contiguous() ||
             gate_up.scalar_type() != mfq_tensor_backend::kFloat16 ||
             gate_up.dim() != 3 ||

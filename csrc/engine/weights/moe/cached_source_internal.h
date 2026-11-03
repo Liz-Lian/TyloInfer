@@ -404,35 +404,39 @@ public:
     }
 
     mfq_tensor_backend::Tensor forward(
+            MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
             mfq_tensor_backend::Tensor x,
             const MoeRoutePlan & route) {
-        if (auto mixed = forward_hybrid_decode(options, mmq, x, route); mixed.defined()) return mixed;
+        if (auto mixed = forward_hybrid_decode(scratch, options, mmq, x, route); mixed.defined()) return mixed;
         if (use_full_projection(route)) {
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
-            return staged.resident->forward(options, mmq, x, route);
+            MoeScratch temporary;
+            return staged.resident->forward(temporary, options, mmq, x, route);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
             if (quant_source_) return quant_source_->forward_cpu(x,route);
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
-            return staged.resident->forward(options, mmq, x, route);
+            MoeScratch temporary;
+            return staged.resident->forward(temporary, options, mmq, x, route);
         }
-        auto output = active_->forward(options, mmq, x, route);
+        auto output = active_->forward(scratch, options, mmq, x, route);
         cache_->record_compute_use();
         return output;
     }
 
     mfq_tensor_backend::Tensor forward_prequantized(
+            MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
             mfq_tensor_backend::Tensor x,
             const MoeRoutePlan & route) {
         if (cache_->complete_residency()) {
             if (x.scalar_type()!=mfq_tensor_backend::kFloat16)
                 throw std::runtime_error("resident CPU experts require original f16 activations");
-            if (auto mixed=forward_hybrid_decode(options, mmq, x,route); mixed.defined()) return mixed;
+            if (auto mixed=forward_hybrid_decode(scratch, options, mmq, x,route); mixed.defined()) return mixed;
         }
         if (use_full_projection(route)) {
             throw std::runtime_error(
@@ -447,9 +451,10 @@ public:
             }
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
-            return staged.resident->forward(options, mmq, x, route);
+            MoeScratch temporary;
+            return staged.resident->forward(temporary, options, mmq, x, route);
         }
-        auto output = active_->forward(options, mmq, x, route, true);
+        auto output = active_->forward(scratch, options, mmq, x, route, true);
         cache_->record_compute_use();
         return output;
     }
@@ -462,18 +467,20 @@ public:
     }
 
     mfq_tensor_backend::Tensor forward_glu_output(
+            MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
             mfq_tensor_backend::Tensor x,
             const MoeRoutePlan & route,
             bool gelu) {
         if (cache_->complete_residency()) {
-            auto projected=forward(options, mmq, heterogeneous, x,route);
+            auto projected=forward(scratch, options, mmq, heterogeneous, x,route);
             return gelu ? moe_geglu_split_cuda(projected) : moe_swiglu_split_cuda(projected);
         }
         if (use_full_projection(route)) {
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
-            return staged.resident->forward_glu_output(options, mmq, x, route, gelu);
+            MoeScratch temporary;
+            return staged.resident->forward_glu_output(temporary, options, mmq, x, route, gelu);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
@@ -483,14 +490,16 @@ public:
             }
             cache_->count_full_projection_fallback();
             auto staged = stage_fallback_runtime(heterogeneous);
-            return staged.resident->forward_glu_output(options, mmq, x, route, gelu);
+            MoeScratch temporary;
+            return staged.resident->forward_glu_output(temporary, options, mmq, x, route, gelu);
         }
-        auto output = active_->forward_glu_output(options, mmq, x, route, gelu);
+        auto output = active_->forward_glu_output(scratch, options, mmq, x, route, gelu);
         cache_->record_compute_use();
         return output;
     }
 
     mfq_tensor_backend::Tensor forward_glu(
+            MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
             mfq_tensor_backend::Tensor gate_up,
             const MoeRoutePlan & route,
@@ -498,10 +507,11 @@ public:
         auto activation = gelu
             ? moe_geglu_split_cuda(gate_up)
             : moe_swiglu_split_cuda(gate_up);
-        return forward(options, mmq, heterogeneous, activation, route);
+        return forward(scratch, options, mmq, heterogeneous, activation, route);
     }
 
     mfq_tensor_backend::Tensor forward_clamped_swiglu(
+            MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
             mfq_tensor_backend::Tensor gate_up,
             const MoeRoutePlan & route,
@@ -510,20 +520,22 @@ public:
             auto parts=gate_up.split_with_sizes({cpu_->neuron_len,cpu_->neuron_len},-1);
             auto gate=mfq_tensor_backend::clamp_max(parts[0],limit);
             auto up=mfq_tensor_backend::clamp(parts[1],-limit,limit);
-            return forward(options, mmq, heterogeneous, (mfq_tensor_backend::silu(gate)*up).contiguous(),route);
+            return forward(scratch, options, mmq, heterogeneous, (mfq_tensor_backend::silu(gate)*up).contiguous(),route);
         }
         if (use_full_projection(route)) {
             cache_->count_full_projection_fallback();
             auto staged = stage_cpu_mixed_moe(cpu_, heterogeneous);
-            return staged.resident->forward_clamped_swiglu(options, mmq, gate_up, route, limit);
+            MoeScratch temporary;
+            return staged.resident->forward_clamped_swiglu(temporary, options, mmq, gate_up, route, limit);
         }
         if (!cache_->prepare(
                 *this, route_experts(route), false)) {
             cache_->count_full_projection_fallback();
             auto staged = stage_cpu_mixed_moe(cpu_, heterogeneous);
-            return staged.resident->forward_clamped_swiglu(options, mmq, gate_up, route, limit);
+            MoeScratch temporary;
+            return staged.resident->forward_clamped_swiglu(temporary, options, mmq, gate_up, route, limit);
         }
-        auto output = active_->forward_clamped_swiglu(options, mmq, gate_up, route, limit);
+        auto output = active_->forward_clamped_swiglu(scratch, options, mmq, gate_up, route, limit);
         cache_->record_compute_use();
         return output;
     }
@@ -596,7 +608,7 @@ private:
         return stage_cpu_mixed_moe(runtime, heterogeneous);
     }
 
-    mfq_tensor_backend::Tensor forward_hybrid_decode(const MoeOptions& options, KlMmqState& mmq,
+    mfq_tensor_backend::Tensor forward_hybrid_decode(MoeScratch& scratch, const MoeOptions& options, KlMmqState& mmq,
             const mfq_tensor_backend::Tensor& x, const MoeRoutePlan& route) {
         namespace tb = mfq_tensor_backend;
         // This adapter preserves decode's one-token kernel dispatch. Prefill
@@ -605,7 +617,7 @@ private:
                 !quant_source_->host_cache() || !x.is_cuda()) return {};
         if (route.ids.size(0)!=1) {
             if (!cache_->complete_residency()) return {};
-            return forward_resident_batch(options, mmq, x,route);
+            return forward_resident_batch(scratch, options, mmq, x,route);
         }
         auto host_ids = route.ids.to(tb::kCPU).to(tb::kInt32).contiguous();
         const auto count = static_cast<std::size_t>(host_ids.numel());
@@ -650,7 +662,7 @@ private:
             auto gpu_x = x.dim() == 3 ? x.index_select(1, gpu_index) : x;
             auto gpu_route = build_moe_route_plan(tb::tensor(gpu_ids).reshape({1,
                 static_cast<std::int64_t>(gpu_ids.size())}).to(x.device()), cpu_->n_experts);
-            gpu_y = active_->forward(options, mmq, gpu_x, gpu_route);
+            gpu_y = active_->forward(scratch, options, mmq, gpu_x, gpu_route);
             cache_->record_compute_use();
         }
         auto cpu_y = quant_source_->forward_cpu(cpu_x, cpu_route, &held);
@@ -662,7 +674,7 @@ private:
         return result;
     }
 
-    mfq_tensor_backend::Tensor forward_resident_batch(const MoeOptions& options, KlMmqState& mmq,
+    mfq_tensor_backend::Tensor forward_resident_batch(MoeScratch& scratch, const MoeOptions& options, KlMmqState& mmq,
             const mfq_tensor_backend::Tensor& x,const MoeRoutePlan& route) {
         namespace tb=mfq_tensor_backend;
         const auto tokens=route.ids.size(0),routes=route.ids.size(1);
@@ -697,7 +709,7 @@ private:
             if (!cache_->prepare(*this,gpu_experts,false)) throw std::logic_error("resident GPU subset does not fit its arena");
             auto gpu_x=x.reshape({-1,cpu_->neuron_len}).index_select(0,tb::tensor(gpu_input_positions).to(x.device()));
             auto gpu_route=build_moe_route_plan(tb::tensor(gpu_ids).reshape({static_cast<std::int64_t>(gpu_ids.size()),1}).to(x.device()),cpu_->n_experts);
-            gpu_y=active_->forward(options, mmq, gpu_x, gpu_route);
+            gpu_y=active_->forward(scratch, options, mmq, gpu_x, gpu_route);
             cache_->record_compute_use();
         }
         MoeRoutePlan cpu_route;

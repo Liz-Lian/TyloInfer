@@ -249,6 +249,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     };
     struct Binding {
         MixedMoeRuntime hot,transfer;
+        MoeScratch hot_scratch,transfer_scratch;
         std::vector<MoeGpuArena*> stages;
         std::vector<tb::Tensor> owner;
     };
@@ -401,6 +402,20 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     double cpu_ns_=0,cpu_work_=0,gpu_ns_=0,gpu_samples_=0;
     double stage_ns_=0,stage_bytes_=0;
     std::vector<mfq::MoeCpuCostModel::Key> cpu_cost_keys_;
+    std::shared_ptr<MoeScratch> prefill_scratch(const mfq::cuda::Projector& project,const tb::Tensor& input) {
+        auto scratch=project.moe_scratch().get(std::shared_ptr<MoeExpertCache>(sources_[0],cache_),input);
+        auto& borrowed=cache_->pipeline_prefill_scratch_;
+        bool found=false;
+        for(auto it=borrowed.begin();it!=borrowed.end();) {
+            if(it->expired())it=borrowed.erase(it);
+            else {
+                if(!it->owner_before(scratch) && !scratch.owner_before(*it))found=true;
+                ++it;
+            }
+        }
+        if(!found)borrowed.push_back(scratch);
+        return scratch;
+    }
     void bind_stream(cudaStream_t current) {
         const int device=mfq_current_cuda_device();
         if(stream_bound_) {
@@ -419,6 +434,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     static constexpr int prefill_group_capacity=96;
     struct PrefillBuffer {
         std::array<MixedMoeRuntime,3> projections;
+        std::array<MoeScratch,3> scratch;
         tb::Tensor maps;
         std::array<tb::Tensor,3> nvq_metadata;
         std::array<std::vector<MoeGpuArena*>,3> stages;
@@ -1043,20 +1059,20 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             route.mma_tile_m=group.mma_tile_m;route.wide_tile_m=group.wide_tile_m;
             const auto projection=[&](int p,const tb::Tensor& x) {
                 auto& runtime=buffer.projections[p];
-                if(!cache_->pipeline_prefill_activations_)
-                    cache_->pipeline_prefill_activations_=std::make_shared<MixedMoeRuntime>();
+                auto& scratch=buffer.scratch[p];
+                auto shared_scratch=prefill_scratch(project,x);
                 for(const auto& geometry:moe_activation_geometry(runtime.pools)) {
                     const MixedMoeTransformKey transform{geometry.transform_block,geometry.transform_seed};
                     const MixedMoeActivationKey key{group.rows,geometry.groups,geometry.gs,x.get_device(),transform};
-                    runtime.activation_workspaces.insert_or_assign(key,
-                        cache_->pipeline_prefill_activations_->prefill_activation_workspace(
+                    scratch.activation_workspaces.insert_or_assign(key,
+                        shared_scratch->prefill_activation_workspace(
                             x,group.rows,geometry.groups,geometry.gs,transform));
                 }
-                auto output=runtime.forward(mfq::cuda::runtime_options::moe(kernels_), mmq_, x, route);
+                auto output=runtime.forward(scratch, mfq::cuda::runtime_options::moe(kernels_), mmq_, x, route);
                 // Variable group densities must not retain one q8 scratch
                 // allocation per row count across all prompt chunks.
-                runtime.nint_input_plans.clear();runtime.nvq_active_plans.clear();
-                runtime.activation_workspaces.clear();return output;
+                scratch.nint_input_plans.clear();scratch.nvq_active_plans.clear();
+                scratch.activation_workspaces.clear();return output;
             };
             auto gate=projection(0,x);
             auto up=up_only_ ? gate : combined_gate_up_ ? gate.narrow(-1,ff_,ff_).contiguous() : projection(1,x);
@@ -1098,6 +1114,7 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     }
         struct LayerPrefill {
         std::array<MixedMoeRuntime,3> projections;
+        std::array<MoeScratch,3> scratch;
         int layer_id=0,slot=0;
         int64_t ram_begin=0,bytes=0;
     };
@@ -1484,8 +1501,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
         auto route=build_moe_route_plan(ids,experts_);
         const auto projection=[&](int p,const tb::Tensor& x) {
             auto& runtime=layer.projections[p];
-            if(!cache_->pipeline_prefill_activations_)
-                cache_->pipeline_prefill_activations_=std::make_shared<MixedMoeRuntime>();
+            auto& scratch=layer.scratch[p];
+            auto shared_scratch=prefill_scratch(project,x);
             const int rows=int(x.numel()/x.size(-1));
             // Direct FP16 MMA consumes x; allocate shared Q8 scratch only when
             // the integer path actually needs it.
@@ -1493,14 +1510,14 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             for(const auto& geometry:moe_activation_geometry(runtime.pools)) {
                 const MixedMoeTransformKey transform{geometry.transform_block,geometry.transform_seed};
                 const MixedMoeActivationKey key{rows,geometry.groups,geometry.gs,x.get_device(),transform};
-                runtime.activation_workspaces.insert_or_assign(key,
-                    cache_->pipeline_prefill_activations_->prefill_activation_workspace(
+                scratch.activation_workspaces.insert_or_assign(key,
+                    shared_scratch->prefill_activation_workspace(
                         x,rows,geometry.groups,geometry.gs,transform));
             }
             auto output=profiler_.measure(p==0?"prefill.expert_gate":p==1?"prefill.expert_up":"prefill.expert_down",[&] {
-                return runtime.forward(mfq::cuda::runtime_options::moe(kernels_), mmq_, x, route);
+                return runtime.forward(scratch, mfq::cuda::runtime_options::moe(kernels_), mmq_, x, route);
             });
-            runtime.activation_workspaces.clear();return output;
+            scratch.activation_workspaces.clear();return output;
         };
         auto gate=projection(0,input);
         auto up=up_only_ ? gate : combined_gate_up_ ? gate.narrow(-1,ff_,ff_).contiguous() : projection(1,input);
@@ -1787,15 +1804,14 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             prepare_moe(binding.hot, kernels_.heterogeneous, dense_prefill);
             prepare_moe(binding.transfer, kernels_.heterogeneous, dense_prefill);
             if(!cell.graph_replay) {
-                if(!cache_->pipeline_prefill_activations_)
-                    cache_->pipeline_prefill_activations_=std::make_shared<MixedMoeRuntime>();
+                auto shared_scratch=prefill_scratch(project,cell.input);
                 const int rows=projection==2?cell.entries:cell.tokens;
-                for(auto* runtime:{&binding.hot,&binding.transfer})
-                    for(const auto& g:moe_activation_geometry(runtime->pools)) {
+                for(auto pair:{std::pair{&binding.hot,&binding.hot_scratch},std::pair{&binding.transfer,&binding.transfer_scratch}})
+                    for(const auto& g:moe_activation_geometry(pair.first->pools)) {
                         const MixedMoeTransformKey transform{g.transform_block,g.transform_seed};
                         const MixedMoeActivationKey key{rows,g.groups,g.gs,cell.input.get_device(),transform};
-                        runtime->activation_workspaces.insert_or_assign(key,
-                            cache_->pipeline_prefill_activations_->activation_workspace(
+                        pair.second->activation_workspaces.insert_or_assign(key,
+                            shared_scratch->activation_workspace(
                                 cell.input,rows,g.groups,g.gs,transform));
                     }
             }
@@ -1812,10 +1828,10 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
             }
             std::vector<int64_t> descriptors;
             for(const auto& geometry:geometries) {
-                auto workspace=cell.binding[0].hot.activation_workspace(cell.input,cell.tokens,geometry.groups,geometry.gs,{});
+                auto workspace=cell.binding[0].hot_scratch.activation_workspace(cell.input,cell.tokens,geometry.groups,geometry.gs,{});
                 const MixedMoeActivationKey key{cell.tokens,geometry.groups,geometry.gs,cell.input.get_device(),{}};
-                for(int projection=0;projection<2;++projection)for(auto* runtime:{&cell.binding[projection].hot,&cell.binding[projection].transfer})
-                    runtime->activation_workspaces.insert_or_assign(key,workspace);
+                for(int projection=0;projection<2;++projection)for(auto* scratch:{&cell.binding[projection].hot_scratch,&cell.binding[projection].transfer_scratch})
+                    scratch->activation_workspaces.insert_or_assign(key,workspace);
                 descriptors.insert(descriptors.end(),{reinterpret_cast<int64_t>(workspace.qx.data_ptr()),
                     reinterpret_cast<int64_t>(workspace.xscale.data_ptr()),geometry.groups,geometry.gs});
                 cell.shared_input_groups+=geometry.groups;
@@ -2082,7 +2098,8 @@ class MoeFfnPipeline : public std::enable_shared_from_this<MoeFfnPipeline> {
     tb::Tensor gpu_ffn(Cell& cell,bool transfer,const MoeRoutePlan& route) {
         auto projection=[&](int i,const tb::Tensor& x) {
             auto& binding=cell.binding[i];auto& runtime=transfer ? binding.transfer : binding.hot;
-            return runtime.forward(mfq::cuda::runtime_options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
+            auto& scratch=transfer ? binding.transfer_scratch : binding.hot_scratch;
+            return runtime.forward(scratch, mfq::cuda::runtime_options::moe(kernels_), mmq_, x, route, cell.shared_input && i<2);
         };
         auto gate_output=projection(0,cell.input);
         // An ungated bank publishes Up in the Gate slot and has no activation
