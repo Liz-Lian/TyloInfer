@@ -80,8 +80,8 @@ protected:
         return executor_->enter(execution_->config.layer_placement.primary_device());
 #endif
     }
-    std::unique_ptr<engine::ExecutionRequest> prepare_request(engine::EngineRequest request, bool batched) override {
-        return engine::prepare_request(std::move(request), text_.get(), info_, batched, mtp_available());
+    void prepare_request(engine::Request& request, bool batched) override {
+        engine::prepare_request(request, text_.get(), info_, batched, mtp_available());
     }
 
     engine::SessionResult session_command(
@@ -183,12 +183,12 @@ public:
         if (batching_) batching_->step(eligible);
     }
 
-    mfq::StepSequence<Prepared> prepare(engine::InferenceRequest& input) {
+    mfq::StepSequence<Prepared> prepare(engine::InferenceRequest& input, State& state) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language()).prepare(
-                                   input.prompt, *input.vision, state()); }) {
+                                   input.prompt, *input.vision, state); }) {
             const mfq::models::CausalModel& causal = language();
-            return causal.prepare(input.prompt, *input.vision, state());
+            return causal.prepare(input.prompt, *input.vision, state);
         } else
 #endif
         return components().prepare(
@@ -206,10 +206,10 @@ public:
     }
 
     engine::Generation generate_text(
-        engine::InferenceRequest& input, engine::InferenceOutput& output,
+        engine::InferenceRequest& input, engine::InferenceOutput& output, State& state,
         std::optional<Prepared> prepared, const engine::RequestId& id, bool batched) {
         return internal::generate(
-            language(), state(), executor_.get(), execution_->executor().collectives(),
+            language(), state, executor_.get(), execution_->executor().collectives(),
             execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), execution_->executor().profiler(), weights_,
             execution_->executor().mode().ffn.serial,
             execution_->config.report_cuda_memory,
@@ -228,10 +228,9 @@ public:
     }
 
     engine::Generation generate(
-        const engine::RequestId& id, engine::ExecutionRequest& request) override {
+        const engine::RequestId& id, engine::Request& request) override {
         if (request.batched) graph_->invalidate();
-        return engine::generate_prepared(
-            *this, request.input, request.output, id, request.batched);
+        return engine::generate_prepared(*this, state(), request.input, *request.output, id, request.batched);
     }
 
 private:

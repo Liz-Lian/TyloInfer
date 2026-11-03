@@ -75,12 +75,12 @@ class EngineInstance final : public Engine {
 #endif
         }, *state);
     }
-    std::unique_ptr<ExecutionRequest> prepare_request(EngineRequest request, bool batched) override {
+    void prepare_request(Request& request, bool batched) override {
         const bool mtp = std::visit([](const auto& ops) { return ops->mtp_available(); }, *state);
-        return engine::prepare_request(std::move(request), text_.get(), info_, batched, mtp);
+        engine::prepare_request(request, text_.get(), info_, batched, mtp);
     }
-    Generation generate(const RequestId& id, ExecutionRequest& request) override {
-        return std::visit([&](auto& ops) { return ops->generate(id, request); }, *state);
+    Generation generate(const RequestId& id, Request& request) override {
+        return std::visit([&](auto& ops) { return ops->generate(id, request.input, *request.output, request.batched); }, *state);
     }
     void execute(const std::vector<RequestId>& eligible) override {
         std::visit([&](auto& ops) { ops->execute(eligible); }, *state);

@@ -33,17 +33,8 @@ public:
     std::optional<Engine::Reload> next_reload();
 
 private:
-    struct Request {
-        EngineRequest input;
-        std::shared_ptr<Output> outbox;
-        std::unique_ptr<ExecutionRequest> execution;
-        bool cancelling = false;
-        bool finished = false;
-        std::optional<Failed> failure;
-        // At most one engine quantum waits here; it prevents further execution.
-        std::deque<EngineEvent> pending;
-    };
-    struct Submit { Request request; std::promise<void> reply; };
+    friend class Engine;
+    struct Submit { EngineRequest input; std::shared_ptr<Output> outbox; std::promise<void> reply; };
     struct Cancel { std::string id; bool session = false, all = false; std::promise<bool> reply; };
     struct Control { ControlRequest request; std::promise<ControlResult> reply; };
     struct Session { SessionCommand request; std::promise<SessionResult> reply; };
@@ -58,6 +49,7 @@ private:
     EngineStatus execution_status() const;
     EngineStepResult advance(const std::vector<RequestId>& eligible);
     void retire_failed() noexcept;
+    void reset_states(std::int64_t batch);
     void refresh_snapshot(bool healthy, bool blocked, bool metrics);
 
     Engine& engine_;

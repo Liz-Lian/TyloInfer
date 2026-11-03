@@ -359,7 +359,7 @@ struct Text {
         if (batching) batching->step(eligible);
     }
     using Prepared = PreparedPrompt;
-    mfq::StepSequence<Prepared> prepare(InferenceRequest& input) {
+    mfq::StepSequence<Prepared> prepare(InferenceRequest& input, State& state) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language).prepare(
                                    input.prompt, *input.vision, state); }) {
@@ -377,8 +377,8 @@ struct Text {
         TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(), mfq_get_current_cuda_stream()));
         return std::pair{std::move(step), timer.elapsed_ms()};
     }
-    Generation generate_text(InferenceRequest& input, InferenceOutput& output, std::optional<Prepared> prepared,
-                             const RequestId& id, bool batched) {
+    Generation generate_text(InferenceRequest& input, InferenceOutput& output, State& state,
+                             std::optional<Prepared> prepared, const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
         return internal::generate(
             language, state, executor.get(), execution->executor().collectives(),
@@ -395,8 +395,8 @@ struct Text {
             batched ? nullptr : components.mtp.get(), std::move(prepared),
             batched ? batching.get() : nullptr, id, restore_decode_workspace);
     }
-    Generation generate(const RequestId& id, ExecutionRequest& request) {
-        if (request.batched) {
+    Generation generate(const RequestId& id, InferenceRequest& input, InferenceOutput& output, bool batched) {
+        if (batched) {
             graph.invalidate();
             if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
                 // Exclusive MTP generation has ended before a batch starts.
@@ -405,7 +405,7 @@ struct Text {
                 if (components.mtp) components.mtp->reset(1);
             }
         }
-        return generate_prepared(*this, request.input, request.output, id, request.batched);
+        return generate_prepared(*this, state, input, output, id, batched);
     }
     template <class T> ControlResult control(T value) {
         if constexpr (std::is_same_v<T, RuntimeMetrics>) {

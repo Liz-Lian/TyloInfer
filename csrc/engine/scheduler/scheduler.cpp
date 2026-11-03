@@ -33,6 +33,11 @@ std::size_t event_bytes(const EventData& data) {
 
 Engine::Engine() = default;
 Engine::~Engine() = default;
+void Engine::retire_request(Request& request) noexcept {
+    request.generation = {};
+    request.state.reset();
+}
+void Engine::reset_states(std::int64_t batch) { scheduler_->reset_states(batch); }
 void Engine::start() {
     try { scheduler_ = std::make_unique<Scheduler>(*this); }
     catch (...) {
@@ -174,7 +179,7 @@ std::shared_ptr<Output> Scheduler::submit(EngineRequest input) const {
         throw std::invalid_argument("request ID must contain 1-128 bytes");
     auto outbox = std::make_shared<Output>();
     outbox->wake_ = wake_;
-    Submit command{{std::move(input), outbox}, {}};
+    Submit command{std::move(input), outbox, {}};
     auto result = command.reply.get_future();
     enqueue(std::move(command));
     result.get();
@@ -272,9 +277,9 @@ void Scheduler::cancel(Request& request) {
     if (request.cancelling) return;
     request.cancelling = true;
     request.pending.clear();
-    if (request.execution) request.execution->output.result.cancelled = true;
+    if (request.output) request.output->result.cancelled = true;
     else {
-        publish(request, {request.input.id, Cancelled{}});
+        publish(request, {request.submitted.id, Cancelled{}});
     }
 }
 
@@ -283,11 +288,16 @@ EngineStatus Scheduler::execution_status() const {
     if (engine_.exclusive()) return {0, true};
     std::size_t active = 0;
     for (const auto& [id, request] : requests_) {
-        if (!request.execution) continue;
-        if (!request.execution->batched) return {0, true};
+        if (!request.output) continue;
+        if (!request.batched) return {0, true};
         ++active;
     }
     return {info_.max_requests - active, true};
+}
+
+void Scheduler::reset_states(std::int64_t batch) {
+    for (auto& [id, request] : requests_)
+        if (request.state) request.state->reset(batch);
 }
 
 EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
@@ -297,41 +307,42 @@ EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
     } catch (...) {
         healthy_ = false;
         for (auto& [id, request] : requests_)
-            if (request.execution) request.execution->complete(std::current_exception());
+            if (request.output) request.complete(std::current_exception());
     }
     EngineStepResult result;
     for (auto& [id, request] : requests_) {
-        if (!request.execution) continue;
-        auto& current = *request.execution;
-        if (!current.done && (current.output.result.cancelled ||
+        if (!request.output) continue;
+        if (!request.done && (request.output->result.cancelled ||
             std::find(eligible.begin(), eligible.end(), id) != eligible.end())) {
             try {
-                if (!current.started) {
-                    current.started = true;
-                    current.generation = engine_.generate(id, current);
+                if (!request.started) {
+                    request.started = true;
+                    request.generation = engine_.generate(id, request);
                 }
-                auto step = current.generation.next();
+                auto step = request.generation.next();
                 if (step.state == StepState::advanced) result.advanced.push_back(id);
                 if (step.value) {
                     if (auto* progress = std::get_if<PrefillProgress>(&*step.value))
-                        current.output.metrics.mark_prefill(progress->timing);
+                        request.output->metrics.mark_prefill(progress->timing);
                     result.events.push_back({id, std::move(*step.value)});
                 }
-                if (!step) current.complete();
-            } catch (...) { current.complete(std::current_exception()); }
+                if (!step) request.complete();
+            } catch (...) { request.complete(std::current_exception()); }
         }
-        if (!current.done) continue;
-        current.generation = {};
-        if (current.output.cleanup_failure) {
+        if (!request.done) continue;
+        engine_.retire_request(request);
+        if (request.output->cleanup_failure) {
             healthy_ = false;
-            current.failure = current.output.cleanup_failure;
+            request.error = request.output->cleanup_failure;
         }
-        finish_request(id, current, healthy_, result);
-        request.execution.reset();
+        finish_request(id, request, healthy_, result);
+        request.error = {};
+        request.output.reset();
+        request.input = {};
     }
     result.status = execution_status();
     result.has_work = std::any_of(requests_.begin(), requests_.end(),
-        [](const auto& entry) { return bool(entry.second.execution); });
+        [](const auto& entry) { return entry.second.output.has_value(); });
     return result;
 }
 
@@ -339,22 +350,24 @@ void Scheduler::retire_failed() noexcept {
     std::exception_ptr failure;
     const auto remember = [&](std::exception_ptr error) { if (!failure) failure = std::move(error); };
     for (auto& [id, request] : requests_)
-        if (request.execution) request.execution->output.result.cancelled = true;
+        if (request.output) request.output->result.cancelled = true;
     const auto active = [&] {
         return std::any_of(requests_.begin(), requests_.end(),
-            [](const auto& entry) { return bool(entry.second.execution); });
+            [](const auto& entry) { return entry.second.output.has_value(); });
     };
     if (active() && engine_.ready())
         try { (void)advance({}); } catch (...) { remember(std::current_exception()); }
     const auto clear = [&] {
         for (auto& [id, request] : requests_) {
-            if (!request.execution) continue;
-            request.execution->generation = {};
-            if (request.execution->output.cleanup_failure) {
+            if (!request.output) continue;
+            engine_.retire_request(request);
+            if (request.output->cleanup_failure) {
                 healthy_ = false;
-                remember(request.execution->output.cleanup_failure);
+                remember(request.output->cleanup_failure);
             }
-            request.execution.reset();
+            request.error = {};
+            request.output.reset();
+            request.input = {};
         }
     };
     if (active()) {
@@ -381,21 +394,23 @@ void Scheduler::loop() noexcept {
             using T = std::decay_t<decltype(value)>;
             try {
                 if constexpr (std::is_same_v<T, Submit>) {
-                    auto& request = value.request;
-                    const auto id = request.input.id;
+                    auto& input = value.input;
+                    const auto id = input.id;
                     if (stopping || !healthy_ || reload || duplex_active)
                         throw std::runtime_error("scheduler is not accepting requests");
                     if (requests_.contains(id)) throw std::invalid_argument("request ID is already active");
-                    const auto& session = request.input.input.cache_plan.session_id;
+                    const auto& session = input.input.cache_plan.session_id;
                     if (!session.empty()) for (const auto& [other_id, other] : requests_)
-                        if (other.input.input.cache_plan.session_id == session)
+                        if (other.submitted.input.cache_plan.session_id == session)
                             throw std::invalid_argument("session already has an active request");
-                    order_.push_back(id); requests_.emplace(id, std::move(request));
+                    requests_.try_emplace(id, std::move(input), std::move(value.outbox));
+                    try { order_.push_back(id); }
+                    catch (...) { requests_.erase(id); throw; }
                     value.reply.set_value();
                 } else if constexpr (std::is_same_v<T, Cancel>) {
                     bool found = false;
                     for (auto& [id, request] : requests_) {
-                        if (value.all || (value.session ? request.input.input.cache_plan.session_id == value.id : id == value.id)) {
+                        if (value.all || (value.session ? request.submitted.input.cache_plan.session_id == value.id : id == value.id)) {
                             cancel(request); found = true;
                         }
                     }
@@ -420,7 +435,7 @@ void Scheduler::loop() noexcept {
                     if (value.request.kind != SessionCommand::Kind::metrics) {
                         if (duplex_active || reload) throw std::runtime_error("session operation conflicts with runtime control");
                         for (const auto& [id, request] : requests_) {
-                            const auto& session = request.input.input.cache_plan.session_id;
+                            const auto& session = request.submitted.input.cache_plan.session_id;
                             if (value.request.kind == SessionCommand::Kind::clear ||
                                 value.request.kind == SessionCommand::Kind::memory_budget ||
                                 value.request.kind == SessionCommand::Kind::refresh ||
@@ -454,25 +469,25 @@ void Scheduler::loop() noexcept {
             std::vector<RequestId> eligible;
             std::vector<RequestId> ordered(order_.begin(), order_.end());
             std::stable_sort(ordered.begin(), ordered.end(), [&](const auto& a, const auto& b) {
-                return requests_.at(a).input.priority > requests_.at(b).input.priority;
+                return requests_.at(a).submitted.priority > requests_.at(b).submitted.priority;
             });
             bool admission_blocked = false;
             for (const auto& id : ordered) {
                 auto& request = requests_.at(id);
                 flush(request);
-                if (stopping || (request.input.deadline && *request.input.deadline <= Clock::now())) cancel(request);
+                if (stopping || (request.submitted.deadline && *request.submitted.deadline <= Clock::now())) cancel(request);
                 if (request.finished) continue;
-                if (request.input.deadline && !request.cancelling) wake_at = std::min(wake_at, *request.input.deadline);
-                if (request.cancelling) { executable |= bool(request.execution); continue; }
-                if (!request.execution && !reload && !admission_blocked && execution_status().available > 0) {
+                if (request.submitted.deadline && !request.cancelling) wake_at = std::min(wake_at, *request.submitted.deadline);
+                if (request.cancelling) { executable |= bool(request.output); continue; }
+                if (!request.output && !reload && !admission_blocked && execution_status().available > 0) {
                     try {
                         auto scope = engine_.enter();
-                        const bool batched = engine_.can_batch(request.input);
+                        const bool batched = engine_.can_batch(request.submitted);
                         const bool active = std::any_of(requests_.begin(), requests_.end(),
-                            [](const auto& entry) { return bool(entry.second.execution); });
+                            [](const auto& entry) { return entry.second.output.has_value(); });
                         if (!batched && active) admission_blocked = true;
                         else {
-                            request.execution = engine_.prepare_request(request.input, batched);
+                            engine_.prepare_request(request, batched);
                         }
                     }
                     catch (const InferenceInputError& error) {
@@ -482,7 +497,7 @@ void Scheduler::loop() noexcept {
                         publish(request, {id, Failed{"invalid_request", error.what()}}); continue;
                     }
                 }
-                if (!request.execution) continue;
+                if (!request.output) continue;
                 if (!request.pending.empty()) continue;
                 auto& box = *request.outbox;
                 std::lock_guard lock(box.mutex_);

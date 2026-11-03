@@ -2,8 +2,8 @@
 
 namespace mfq::engine {
 
-std::unique_ptr<ExecutionRequest> prepare_request(
-    EngineRequest request, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available) {
+void prepare_request(Request &current, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available) {
+    auto request = current.submitted;
     const bool raw = !request.token_ids.empty();
     InferenceRequest input;
     const MfqTokenizer *tokenizer = nullptr;
@@ -21,27 +21,30 @@ std::unique_ptr<ExecutionRequest> prepare_request(
         input.sampling.max_tokens, input.cache_plan.stable_prefix_tokens);
     input.sampling.max_tokens = plan.generation_tokens;
     input.cache_plan.stable_prefix_tokens = plan.stable_prefix_tokens;
-    auto current = std::make_unique<ExecutionRequest>(std::move(input), tokenizer, request.id);
-    current->output.metrics.mtp.available = mtp_available;
-    current->batched = batched;
-    return current;
+    try {
+        current.input = std::move(input);
+        current.output.emplace(current.input, tokenizer, current.submitted.id);
+    }
+    catch (...) { current.input = {}; throw; }
+    current.output->metrics.mtp.available = mtp_available;
+    current.batched = batched;
 }
 
-void finish_request(const RequestId &id, ExecutionRequest &request, bool &healthy, EngineStepResult &result) {
+void finish_request(const RequestId &id, Request &request, bool &healthy, EngineStepResult &result) {
     try {
-        if (request.failure)
-            std::rethrow_exception(request.failure);
-        auto delta = request.output.finish();
+        if (request.error)
+            std::rethrow_exception(request.error);
+        auto delta = request.output->finish();
         if (!delta.diffs.empty())
             result.events.push_back({id, std::move(delta)});
         const UsageUpdate usage{request.input.prompt.size(),
-            static_cast<std::size_t>(request.output.result.completion_tokens)};
+            static_cast<std::size_t>(request.output->result.completion_tokens)};
         result.events.push_back({id, usage});
-        if (request.output.result.cancelled)
-            result.events.push_back({id, Cancelled{usage, request.output.metrics}});
+        if (request.output->result.cancelled)
+            result.events.push_back({id, Cancelled{usage, request.output->metrics}});
         else
             result.events.push_back({id,
-                Completed{request.output.result.finish_reason, usage, request.output.metrics}});
+                Completed{request.output->result.finish_reason, usage, request.output->metrics}});
     } catch (const MfqResourceExhausted &error) {
         result.events.push_back({id, Failed{healthy ? "resource_exhausted" : "backend_failure", error.what(), healthy}});
     } catch (const InferenceInputError &error) {

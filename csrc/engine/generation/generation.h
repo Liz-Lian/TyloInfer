@@ -16,12 +16,12 @@ inline bool batch_compatible(const EngineRequest &request, bool persistent_prefi
            !(input.sampling.enable_mtp && has_mtp);
 }
 
-template <class Ops>
-Generation generate_prepared(Ops &ops, InferenceRequest &input, InferenceOutput &output,
+template <class Ops, class State>
+Generation generate_prepared(Ops &ops, State &state, InferenceRequest &input, InferenceOutput &output,
                              const RequestId& id, bool batched) {
     std::optional<typename Ops::Prepared> prepared;
     if (input.vision && !output.stopped()) {
-        auto preparation = ops.prepare(input);
+        auto preparation = ops.prepare(input, state);
         while (!output.stopped()) {
             auto [step, elapsed] = ops.advance_preparation(preparation);
             output.metrics.multimodal_ms += elapsed;
@@ -37,7 +37,7 @@ Generation generate_prepared(Ops &ops, InferenceRequest &input, InferenceOutput 
         co_yield PrefillProgress{{0, 0.0, elapsed, elapsed}};
     }
     if (output.stopped()) co_return;
-    auto sequence = ops.generate_text(input, output, std::move(prepared), id, batched);
+    auto sequence = ops.generate_text(input, output, state, std::move(prepared), id, batched);
     while (auto step = sequence.next()) {
         auto& event = step.value;
         if (auto *progress = event ? std::get_if<PrefillProgress>(&*event) : nullptr) {

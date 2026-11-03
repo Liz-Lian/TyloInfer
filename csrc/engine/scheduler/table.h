@@ -2,6 +2,7 @@
 
 #include "../engine.h"
 #include "../generation/step.h"
+#include "../models/state.h"
 #include "../requests/processor.h"
 #include "components/error.h"
 
@@ -48,26 +49,35 @@ template <class Cache> SessionResult control_session(Cache &cache, const Session
     throw std::invalid_argument("unknown session command");
 }
 
-// Serial and batched execution share state. Scheduler retires generation
-// before publishing the terminal event.
-struct ExecutionRequest {
+// Scheduler retires generation before publishing the terminal event.
+struct Request {
+    EngineRequest submitted;
+    std::shared_ptr<Output> outbox;
     InferenceRequest input;
-    InferenceOutput output;
+    std::optional<InferenceOutput> output;
+    std::unique_ptr<mfq::models::State> state;
     Generation generation;
-    std::exception_ptr failure;
+    std::exception_ptr error;
     bool started = false, batched = false, done = false;
+    bool cancelling = false, finished = false;
+    std::optional<Failed> failure;
+    // At most one engine quantum waits here; it prevents further execution.
+    std::deque<EngineEvent> pending;
 
-    ExecutionRequest(InferenceRequest prepared, const MfqTokenizer *tokenizer, const RequestId &id)
-        : input(std::move(prepared)), output(input, tokenizer, id) {}
+    Request(EngineRequest request, std::shared_ptr<Output> box)
+        : submitted(std::move(request)), outbox(std::move(box)) {}
+    Request(const Request&) = delete;
+    Request& operator=(const Request&) = delete;
+    Request(Request&&) = delete;
+    Request& operator=(Request&&) = delete;
 
-    void complete(std::exception_ptr error = {}) {
+    void complete(std::exception_ptr failure = {}) {
         done = true;
-        failure = error;
+        error = failure;
     }
 };
 
-std::unique_ptr<ExecutionRequest> prepare_request(
-    EngineRequest request, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available);
-void finish_request(const RequestId &id, ExecutionRequest &request, bool &healthy, EngineStepResult &result);
+void prepare_request(Request &current, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available);
+void finish_request(const RequestId &id, Request &request, bool &healthy, EngineStepResult &result);
 
 } // namespace mfq::engine

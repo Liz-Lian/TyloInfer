@@ -60,8 +60,18 @@ protected:
     engine::EngineInfo describe() const override { return info_; }
     bool ready() const override { return ready_; }
     std::unique_ptr<mfq::Executor::Scope> enter() override { return forward_->enter(); }
-    std::unique_ptr<engine::ExecutionRequest> prepare_request(engine::EngineRequest request, bool batched) override {
-        return engine::prepare_request(std::move(request), text_.get(), info_, batched, mtp_available());
+    void prepare_request(engine::Request& request, bool batched) override {
+        engine::prepare_request(request, text_.get(), info_, batched, mtp_available());
+        if (!idle_state_) {
+            request.output.reset();
+            request.input = {};
+            throw std::logic_error("native engine state is already in use");
+        }
+        request.state = std::move(idle_state_);
+    }
+    void retire_request(engine::Request& request) noexcept override {
+        request.generation = {};
+        if (request.state) idle_state_ = std::move(request.state);
     }
     engine::SessionResult session_command(const engine::SessionCommand& command) override {
         return with_cuda([&] {
@@ -83,7 +93,7 @@ protected:
                 expert_space_.reset();
                 clear_bindings();
                 budget_.reset(); cache_.reset(); graph_.reset();
-                forward_.reset(); state_.reset(); model_.reset(); mtp_state_ = {};
+                forward_.reset(); idle_state_.reset(); model_.reset(); mtp_state_ = {};
                 root_->pipelines().clear();
                 offload_.reset(); kv_.reset(); weights_.reset();
             };
@@ -127,8 +137,8 @@ public:
     bool exclusive() const override { return false; }
     bool mtp_available() const { return false; }
     void execute(const std::vector<engine::RequestId>&) override {}
-    mfq::StepSequence<Prepared> prepare(engine::InferenceRequest& input) {
-        return model_->prepare(input.prompt, *input.vision, *state_);
+    mfq::StepSequence<Prepared> prepare(engine::InferenceRequest& input, models::State& state) {
+        return model_->prepare(input.prompt, *input.vision, state);
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
         internal::PrefillCudaTimer timer;
@@ -137,8 +147,8 @@ public:
         return std::pair{std::move(step), timer.elapsed_ms()};
     }
     engine::Generation generate_text(engine::InferenceRequest& input, engine::InferenceOutput& output,
-        std::optional<Prepared> prepared, const engine::RequestId& id, bool) {
-        return internal::generate(*model_, *state_, forward_.get(), root_->collectives(),
+        models::State& state, std::optional<Prepared> prepared, const engine::RequestId& id, bool) {
+        return internal::generate(*model_, state, forward_.get(), root_->collectives(),
             root_->forward_mode(load_.layer_placement.primary_device()), root_->profiler(), *weights_,
             root_->mode().ffn.serial, load_.report_cuda_memory,
             load_.dsv4_cpu_offload_layers.empty() && load_.dense_cpu_layer_count == 0 &&
@@ -147,8 +157,8 @@ public:
             model_info_, source_.get(), *graph_, *cache_, runtime_, input, output, mtp_state_,
             static_cast<MtpModule*>(nullptr), std::move(prepared), nullptr, id, restore_);
     }
-    engine::Generation generate(const engine::RequestId& id, engine::ExecutionRequest& request) override {
-        return engine::generate_prepared(*this, request.input, request.output, id, request.batched);
+    engine::Generation generate(const engine::RequestId& id, engine::Request& request) override {
+        return engine::generate_prepared(*this, *request.state, request.input, *request.output, id, request.batched);
     }
 
 private:
@@ -162,7 +172,7 @@ private:
     std::shared_ptr<KvOffloadStore> offload_;
     std::unique_ptr<Executor> root_;
     std::shared_ptr<models::CausalModel> model_;
-    std::unique_ptr<models::State> state_;
+    std::unique_ptr<models::State> idle_state_;
     std::unique_ptr<Executor> forward_;
     models::Info model_info_{};
     engine::mtp::State mtp_state_;
@@ -199,7 +209,8 @@ private:
             if (expert_space_) expert_space_->release();
             finish_moe_expert_exchanges(weights_->moe);
             graph_->invalidate();
-            state_->reset(1);
+            if (ready_) reset_states(1);
+            if (idle_state_) idle_state_->reset(1);
         });
     }
     void install(std::string tokenizer_model, std::string config_path, CudaLoadConfig load, CudaRuntimeConfig runtime,
@@ -211,7 +222,7 @@ private:
         load_ = std::move(load); runtime_ = std::move(runtime);
         source_ = std::move(source); ledger_ = std::move(ledger); weights_ = std::move(weights);
         kv_ = std::move(kv); offload_ = std::move(offload); root_ = std::move(root);
-        model_ = std::move(model); state_ = std::move(state); forward_ = std::move(forward);
+        model_ = std::move(model); idle_state_ = std::move(state); forward_ = std::move(forward);
         try {
             {
                 auto scope = root_->enter(load_.layer_placement.primary_device());
@@ -220,8 +231,8 @@ private:
                 graph_.emplace(model_info_.max_context);
                 cache_.emplace(runtime_.session_cache, runtime_.prefix_cache,
                     internal::make_cuda_paged_prefix_cache(*source_, model_info_.max_context,
-                        state_->supports_paged_text_session_state(), runtime_.prefix_cache),
-                    state_->supports_text_session_state(), state_->supports_text_session_state() ? 0 : 1,
+                        idle_state_->supports_paged_text_session_state(), runtime_.prefix_cache),
+                    idle_state_->supports_text_session_state(), idle_state_->supports_text_session_state() ? 0 : 1,
                     internal::cuda_has_separate_memory());
                 budget_.emplace(*ledger_, *weights_, *cache_, load_.layer_placement.primary_device());
                 if (offload_) offload_->set_ram_reservation([this](std::size_t bytes) { cache_->reserve_ram(bytes); weights_->reserve(bytes); });
