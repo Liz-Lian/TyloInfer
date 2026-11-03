@@ -66,6 +66,7 @@ struct RopeTable {
 Tensor rope(Tensor input, Tensor positions, const RopeTable& table, bool bf16 = false,
             bool grid_mrope_positions = false);
 // Unsupported fusions return nullopt without writing; success writes the original KV and returns query.
+// Consumed data must share query's device; input.positions is converted to that device.
 std::optional<Tensor> norm_rope_kv(const AttentionInput&, const state::KvView&, const RopeTable&,
                                    const Tensor& q_norm, const Tensor& k_norm, double eps, double offset);
 std::optional<Tensor> rope_kv(const AttentionInput&, const state::KvView&, const RopeTable&);

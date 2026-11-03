@@ -101,6 +101,16 @@ bool rope_kv_supported(const mfq::ops::AttentionInput& input,
         input.query.size(1) == 32 && input.key.size(1) == 8 && input.query.size(3) == 128 &&
         kv.dtype == mfq::ScalarType::bfloat16;
 }
+void check_device(const mfq::Tensor& query, const mfq::Tensor& tensor) {
+    if (tensor.defined() && tensor.numel() != 0 && tensor.device() != query.device())
+        throw std::invalid_argument("fused attention tensor devices do not match");
+}
+void check_rope_kv_devices(const mfq::ops::AttentionInput& input,
+                           const mfq::state::KvView& kv, const mfq::ops::RopeTable& table) {
+    for (const mfq::Tensor* tensor : {&input.key, &input.value, &input.write_positions,
+                                      &table.cos, &table.sin, &kv.physical_key, &kv.physical_value})
+        check_device(input.query, *tensor);
+}
 }
 
 std::optional<mfq::Tensor> ops::norm_rope_kv(const mfq::ops::AttentionInput& input,
@@ -110,6 +120,9 @@ std::optional<mfq::Tensor> ops::norm_rope_kv(const mfq::ops::AttentionInput& inp
         !q_norm.defined() || !k_norm.defined() ||
         !Executor::current().attention_options().fused_qk_rope_kv)
         return std::nullopt;
+    check_rope_kv_devices(input, kv, table);
+    check_device(input.query, q_norm);
+    check_device(input.query, k_norm);
     using T = mfq_tensor_backend::Tensor;
     return mfq::ops::measure("full.qk_norm_rope_kv_write", [&]() -> mfq::Tensor {
         auto q = T(input.query);
@@ -126,6 +139,7 @@ std::optional<mfq::Tensor> ops::rope_kv(const mfq::ops::AttentionInput& input,
     if (!rope_kv_supported(input, kv, table) ||
         !Executor::current().attention_options().fused_rope_kv)
         return std::nullopt;
+    check_rope_kv_devices(input, kv, table);
     using T = mfq_tensor_backend::Tensor;
     return mfq::ops::measure("full.rope_kv_write", [&]() -> mfq::Tensor {
         auto q = T(input.query);

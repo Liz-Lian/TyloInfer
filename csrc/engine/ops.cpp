@@ -70,10 +70,12 @@ Tensor rope(Tensor value, Tensor positions, const RopeTable& table, bool bf16, b
 }
 std::optional<Tensor> norm_rope_kv(const AttentionInput& request, const state::KvView& kv,
     const RopeTable& table, const Tensor& q_norm, const Tensor& k_norm, double eps, double offset) {
+    if (!request.query.is_cuda()) return std::nullopt;
     return cuda::ops::norm_rope_kv(request, kv, table, q_norm, k_norm, eps, offset);
 }
 std::optional<Tensor> rope_kv(const AttentionInput& request, const state::KvView& kv,
                                const RopeTable& table) {
+    if (!request.query.is_cuda()) return std::nullopt;
     return cuda::ops::rope_kv(request, kv, table);
 }
 

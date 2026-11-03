@@ -1,6 +1,8 @@
 #include "rms.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
+#include <stdexcept>
+
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
 mfq::Tensor mfq::cuda::ops::rms_norm(mfq::Tensor input, const mfq::Tensor& weight,
@@ -28,12 +30,16 @@ std::array<mfq::Tensor, 3> mfq::cuda::ops::qkv_norm(std::array<mfq::Tensor, 3> v
     const bool fused = Executor::current().attention_options().fused_norm;
     if (bf16 && fused && qw.defined() && kw.defined() &&
         q.scalar_type() == mfq_tensor_backend::kBFloat16 && k.scalar_type() == mfq_tensor_backend::kBFloat16) {
+        if (values[0].device() != values[1].device())
+            throw std::invalid_argument("paired norm tensor devices do not match");
         auto normalized = mfq::ops::measure("full.qk_norm", [&] {
             return qwen_rms_norm_pair_bf16_cuda(q, k, qw, kw, eps, offset);
         });
         q = normalized[0].reshape_as(q); k = normalized[1].reshape_as(k);
     } else if (!bf16 && qw.defined() && kw.defined() &&
         q.scalar_type() == mfq_tensor_backend::kFloat16 && k.scalar_type() == mfq_tensor_backend::kFloat16) {
+        if (values[0].device() != values[1].device())
+            throw std::invalid_argument("paired norm tensor devices do not match");
         auto normalized = mfq::ops::measure("full.qk_norm", [&] {
             return rms_norm_pair_f16_f32_offset_cuda(q, k, qw, kw, eps, offset);
         });
