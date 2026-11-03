@@ -93,15 +93,6 @@ protected:
         });
     }
 
-    std::int64_t reload_model(std::int64_t context) override {
-        if (context < 1) throw std::invalid_argument("reload context must be positive");
-        unload_model();
-        options_.context_size = context;
-        source_ = mfq::open_model_source(options_.model_path);
-        load();
-        return info_.max_context;
-    }
-
     void unload_model() override {
         if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
             std::cerr << "cuda knobs in use:\n" << env_dump();
@@ -244,6 +235,7 @@ public:
     }
 
 private:
+    friend void ::mfq::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
     Options options_;
     std::shared_ptr<KvMemoryManager> kv_;
     RoutedCache weights_;

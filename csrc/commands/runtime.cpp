@@ -2,6 +2,7 @@
 #include "engine/backends/cuda/executor/execution.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "cli.h"
+#include "engine/engine.h"
 #include "engine/load.h"
 #include "minicpmo45.h"
 #include "engine/models/source.h"
@@ -10,16 +11,47 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace mfq::cuda::commands {
 namespace {
+
+class Reload {
+public:
+    Reload(const CudaEngineOptions& options, engine::Engine& engine)
+        : options_(options), engine_(engine), worker_([this] {
+            while (auto job = engine_.next_reload()) {
+                try {
+                    auto options = options_;
+                    options.context_size = job->context;
+                    reload_cuda_engine(engine_, std::move(options));
+                    job->reply.set_value();
+                } catch (...) { job->reply.set_exception(std::current_exception()); }
+            }
+        }) {
+        try { engine_.enable_reload(); }
+        catch (...) { stop(); worker_.join(); throw; }
+    }
+    ~Reload() { stop(); }
+
+private:
+    void stop() noexcept {
+        try { engine_.shutdown(); }
+        catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
+        catch (...) { std::cerr << "runtime_unload_cleanup error=unknown\n"; }
+    }
+    const CudaEngineOptions options_;
+    engine::Engine& engine_;
+    std::jthread worker_;
+};
 
 void print_help() {
     std::cout
@@ -209,6 +241,7 @@ int run_transport_runtime(RuntimeOptions& options) {
     auto transport = options.stdio_mode
         ? make_mfq_stdio_transport(transport_config)
         : make_mfq_http_transport(transport_config);
+    Reload reload(options, *engine);
     return transport->run(*engine);
 }
 

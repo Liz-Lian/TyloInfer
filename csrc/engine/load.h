@@ -107,6 +107,7 @@ struct CudaEngineOptions : CudaLoadOptions {
 };
 
 std::unique_ptr<mfq::engine::Engine> load_cuda_engine(CudaEngineOptions options);
+void reload_cuda_engine(mfq::engine::Engine& engine, CudaEngineOptions options);
 
 } // namespace mfq::cuda
 

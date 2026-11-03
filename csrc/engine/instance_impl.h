@@ -113,13 +113,6 @@ class EngineInstance final : public Engine {
                 return visit([&](auto& ops) { return ops.control(std::move(value)); });
         }, std::move(request));
     }
-    std::int64_t reload_model(std::int64_t context) override {
-        if (context < 1) throw std::invalid_argument("reload context must be positive");
-        unload_model();
-        options.context_size = context;
-        load();
-        return info_.max_context;
-    }
     void unload_model() override {
         loaded_ = false;
         text_.reset();
@@ -127,6 +120,7 @@ class EngineInstance final : public Engine {
     }
 
   private:
+    friend void ::mfq::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
     CudaEngineOptions options;
     std::shared_ptr<KvMemoryManager> kv;
     RoutedCache weights;

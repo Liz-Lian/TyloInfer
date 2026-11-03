@@ -52,6 +52,8 @@ Engine::Snapshot Engine::snapshot() const { return scheduler_->snapshot(); }
 ControlResult Engine::control(ControlRequest request) const { return scheduler_->control(std::move(request)); }
 SessionResult Engine::session(SessionCommand command) const { return scheduler_->session(std::move(command)); }
 std::int64_t Engine::reload(std::int64_t context) const { return scheduler_->reload(context); }
+void Engine::enable_reload() { scheduler_->enable_reload(); }
+std::optional<Engine::Reload> Engine::next_reload() { return scheduler_->next_reload(); }
 void Engine::shutdown() { if (scheduler_) scheduler_->shutdown(); else unload_model(); }
 void Engine::prepare_duplex_session(const std::string& prompt, MfqDuplexSessionParams& params) const {
     params = std::get<MfqDuplexSessionParams>(control(PrepareDuplex{prompt, params}));
@@ -99,8 +101,9 @@ Scheduler::Scheduler(Engine& engine, Limits limits)
 }
 Scheduler::~Scheduler() { shutdown(); }
 void Scheduler::shutdown() {
-    { std::lock_guard lock(mutex_); stopping_ = true; }
+    { std::lock_guard lock(mutex_); stopping_ = true; snapshot_.status.available = 0; }
     wake_->notify_one();
+    reload_wake_.notify_all();
     if (worker_.joinable()) worker_.join();
 }
 void Scheduler::enqueue(Command command) const {
@@ -111,7 +114,23 @@ void Scheduler::enqueue(Command command) const {
 }
 EngineInfo Scheduler::info() const {
     std::lock_guard lock(mutex_);
-    return info_;
+    auto info = info_;
+    info.reload &= reload_enabled_ && !stopping_;
+    return info;
+}
+void Scheduler::enable_reload() {
+    std::lock_guard lock(mutex_);
+    if (stopping_) throw std::runtime_error("scheduler is stopping");
+    if (reload_enabled_) throw std::runtime_error("reload owner already enabled");
+    reload_enabled_ = true;
+}
+std::optional<Engine::Reload> Scheduler::next_reload() {
+    std::unique_lock lock(mutex_);
+    reload_wake_.wait(lock, [&] { return reload_job_.has_value() || stopping_; });
+    if (!reload_job_) return std::nullopt;
+    auto job = std::move(reload_job_);
+    reload_job_.reset();
+    return job;
 }
 EngineStatus Scheduler::status() const {
     Status command;
@@ -135,6 +154,7 @@ void Scheduler::refresh_snapshot(bool healthy, bool blocked, bool metrics) {
         try { session = engine_.session_command({SessionCommand::Kind::metrics}).metrics; } catch (...) {}
     }
     std::lock_guard lock(mutex_);
+    if (stopping_) status.available = 0;
     snapshot_.status = status;
     const auto merge = [](Metrics& target, const Metrics& updates) {
         for (const auto& value : updates) {
@@ -182,7 +202,15 @@ SessionResult Scheduler::session(SessionCommand request) const {
 }
 std::int64_t Scheduler::reload(std::int64_t context) const {
     Reload command{context, {}};
-    auto result = command.reply.get_future(); enqueue(std::move(command)); return result.get();
+    auto result = command.reply.get_future();
+    {
+        std::lock_guard lock(mutex_);
+        if (stopping_) throw std::runtime_error("scheduler is stopping");
+        if (!reload_enabled_ || !info_.reload) throw std::runtime_error("reload is unavailable");
+        mailbox_.push_back(std::move(command));
+    }
+    wake_->notify_one();
+    return result.get();
 }
 void Scheduler::publish(Request& request, EngineEvent event) {
     auto& box = *request.outbox;
@@ -502,11 +530,39 @@ void Scheduler::loop() noexcept {
             else ++it;
         }
         if (reload && requests_.empty()) {
+            bool unloading = false;
             try {
-                const auto context = engine_.reload_model(reload->context);
-                { std::lock_guard lock(mutex_); info_ = engine_.describe(); }
-                healthy_ = true; reload->reply.set_value(context);
-            } catch (...) { healthy_ = false; reload->reply.set_exception(std::current_exception()); }
+                if (reload->context < 1) throw std::invalid_argument("reload context must be positive");
+                unloading = true;
+                engine_.unload_model();
+                Engine::Reload job{reload->context, {}};
+                auto done = job.reply.get_future();
+                {
+                    std::lock_guard lock(mutex_);
+                    if (stopping_ || !reload_enabled_) throw std::runtime_error("reload owner is unavailable");
+                    snapshot_.status = {0, false};
+                    reload_job_.emplace(std::move(job));
+                }
+                reload_wake_.notify_one();
+                done.get();
+                if (!engine_.ready()) throw std::runtime_error("reload did not load the engine");
+                auto info = engine_.describe();
+                const auto context = info.max_context;
+                { std::lock_guard lock(mutex_); info_ = std::move(info); }
+                healthy_ = true;
+                refresh_snapshot(healthy_, stopping, true);
+                reload->reply.set_value(context);
+            } catch (...) {
+                const auto failure = std::current_exception();
+                healthy_ = false;
+                if (unloading) {
+                    try { engine_.unload_model(); }
+                    catch (const std::exception& error) { std::cerr << "runtime_unload_cleanup error=" << error.what() << '\n'; }
+                    catch (...) { std::cerr << "runtime_unload_cleanup error=unknown\n"; }
+                }
+                try { refresh_snapshot(healthy_, stopping, true); } catch (...) {}
+                reload->reply.set_exception(failure);
+            }
             reload.reset();
         }
         if (!order_.empty()) { order_.push_back(order_.front()); order_.pop_front(); }

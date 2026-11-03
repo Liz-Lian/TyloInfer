@@ -29,6 +29,8 @@ public:
     ControlResult control(ControlRequest request) const;
     SessionResult session(SessionCommand command) const;
     std::int64_t reload(std::int64_t context) const;
+    void enable_reload();
+    std::optional<Engine::Reload> next_reload();
 
 private:
     struct Request {
@@ -62,11 +64,14 @@ private:
     Limits limits_;
     mutable std::mutex mutex_;
     std::shared_ptr<std::condition_variable> wake_ = std::make_shared<std::condition_variable>();
+    std::condition_variable reload_wake_;
+    std::optional<Engine::Reload> reload_job_;
     mutable std::deque<Command> mailbox_;
     EngineInfo info_;
     Engine::Snapshot snapshot_;
     mutable bool snapshot_requested_ = false;
     bool stopping_ = false;
+    bool reload_enabled_ = false;
     bool healthy_ = true;
     std::thread worker_;
     std::unordered_map<std::string, Request> requests_;

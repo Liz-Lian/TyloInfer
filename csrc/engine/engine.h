@@ -7,6 +7,7 @@
 #include "generation/sequence.h"
 
 #include <chrono>
+#include <future>
 #include <memory>
 #include <optional>
 #include <variant>
@@ -33,6 +34,9 @@ struct EngineStatus {
 };
 class Engine {
 public:
+    // Start one consumer before enable_reload(); next_reload() delivers posted work before shutdown.
+    // Complete reply only after binding and its execution scopes have exited.
+    struct Reload { std::int64_t context; std::promise<void> reply; };
     struct Snapshot {
         EngineStatus status;
         Metrics runtime, session;
@@ -50,6 +54,8 @@ public:
     ControlResult control(ControlRequest request) const;
     SessionResult session(SessionCommand command) const;
     std::int64_t reload(std::int64_t context) const;
+    void enable_reload();
+    std::optional<Reload> next_reload();
     void shutdown();
 
     bool supports_multimodal_generation() const { return info().multimodal; }
@@ -73,7 +79,6 @@ protected:
     virtual mfq::StepSequence<EventData> generate(const RequestId& id, ExecutionRequest& request) = 0;
     virtual void execute(const std::vector<RequestId>& eligible) = 0;
     virtual SessionResult session_command(const SessionCommand& command) = 0;
-    virtual std::int64_t reload_model(std::int64_t context) = 0;
     virtual void unload_model() = 0;
     virtual ControlResult control_command(ControlRequest request) = 0;
 

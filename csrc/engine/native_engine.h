@@ -39,13 +39,13 @@ class NativeEngine final : public engine::Engine {
 public:
     using Prepared = PreparedPrompt;
 
-    NativeEngine(CudaEngineOptions options, CudaLoadConfig load, CudaRuntimeConfig runtime,
+    NativeEngine(std::string tokenizer_model, std::string config_path, CudaLoadConfig load, CudaRuntimeConfig runtime,
         std::shared_ptr<const ModelSource> source, std::shared_ptr<WeightMemoryLedger> ledger,
         std::unique_ptr<RoutedCache> weights, std::shared_ptr<KvMemoryManager> kv,
         std::shared_ptr<KvOffloadStore> offload, std::unique_ptr<Executor> root,
         std::shared_ptr<models::CausalModel> model, std::unique_ptr<models::State> state,
         std::unique_ptr<Executor> forward) {
-        install(std::move(options), std::move(load), std::move(runtime), std::move(source),
+        install(std::move(tokenizer_model), std::move(config_path), std::move(load), std::move(runtime), std::move(source),
             std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
             std::move(root), std::move(model), std::move(state), std::move(forward));
         start();
@@ -68,13 +68,6 @@ protected:
             return command.kind == engine::SessionCommand::Kind::memory_budget
                 ? set_budget(command) : engine::control_session(*cache_, command);
         });
-    }
-    std::int64_t reload_model(std::int64_t context) override {
-        if (context < 1) throw std::invalid_argument("reload context must be positive");
-        unload_model();
-        options_.context_size = context;
-        load_native_engine(options_, this);
-        return info_.max_context;
     }
     void unload_model() override {
         if (env_frozen() && env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
@@ -160,7 +153,6 @@ public:
 
 private:
     friend std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions, NativeEngine*);
-    CudaEngineOptions options_;
     CudaLoadConfig load_;
     CudaRuntimeConfig runtime_;
     std::shared_ptr<const ModelSource> source_;
@@ -211,13 +203,13 @@ private:
             state_->reset(1);
         });
     }
-    void install(CudaEngineOptions options, CudaLoadConfig load, CudaRuntimeConfig runtime,
+    void install(std::string tokenizer_model, std::string config_path, CudaLoadConfig load, CudaRuntimeConfig runtime,
         std::shared_ptr<const ModelSource> source, std::shared_ptr<WeightMemoryLedger> ledger,
         std::unique_ptr<RoutedCache> weights, std::shared_ptr<KvMemoryManager> kv,
         std::shared_ptr<KvOffloadStore> offload, std::unique_ptr<Executor> root,
         std::shared_ptr<models::CausalModel> model, std::unique_ptr<models::State> state,
         std::unique_ptr<Executor> forward) {
-        options_ = std::move(options); load_ = std::move(load); runtime_ = std::move(runtime);
+        load_ = std::move(load); runtime_ = std::move(runtime);
         source_ = std::move(source); ledger_ = std::move(ledger); weights_ = std::move(weights);
         kv_ = std::move(kv); offload_ = std::move(offload); root_ = std::move(root);
         model_ = std::move(model); state_ = std::move(state); forward_ = std::move(forward);
@@ -264,9 +256,9 @@ private:
                 info_.duplex = caps.full_duplex;
                 info_.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
                 info_.reload = true;
-                text_ = engine::TextProcessor::load(*source_, options_.tokenizer_model, info_.vocab_size, info_.model_type);
+                text_ = engine::TextProcessor::load(*source_, tokenizer_model, info_.vocab_size, info_.model_type);
                 if (text_) info_.chat = text_->chat_template_capabilities();
-                info_.stop_token_ids = models::stop_token_ids(models::config_json(*source_, options_.config_path), info_.vocab_size);
+                info_.stop_token_ids = models::stop_token_ids(models::config_json(*source_, config_path), info_.vocab_size);
                 ready_ = true;
             }
         } catch (...) {

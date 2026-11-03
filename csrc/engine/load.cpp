@@ -132,6 +132,27 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
         engine_detail::State, with_model<false>>>(std::move(options));
 }
 
+void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if (auto* target = dynamic_cast<NativeEngine*>(&engine)) {
+        load_native_engine(std::move(options), target);
+        return;
+    }
+#endif
+    if (auto* target = dynamic_cast<CudaEngine<qwen35::Model, qwen35::State, qwen35::Components, load_qwen>*>(&engine)) {
+        target->options_ = std::move(options);
+        target->source_ = mfq::open_model_source(target->options_.model_path);
+        target->load();
+        return;
+    }
+    if (auto* target = dynamic_cast<engine_detail::EngineInstance<engine_detail::State, with_model<false>>*>(&engine)) {
+        target->options = std::move(options);
+        target->load();
+        return;
+    }
+    throw std::invalid_argument("unsupported CUDA engine for reload");
+}
+
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, NativeEngine* target) {
     std::shared_ptr<const ModelSource> source;
@@ -196,12 +217,12 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, Na
             }
         }
         if (target) {
-            target->install(std::move(options), std::move(load), std::move(runtime), std::move(source),
+            target->install(std::move(options.tokenizer_model), std::move(options.config_path), std::move(load), std::move(runtime), std::move(source),
                 std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
                 std::move(root), std::move(model), std::move(state), std::move(forward));
             return {};
         }
-        return std::make_unique<NativeEngine>(std::move(options), std::move(load), std::move(runtime),
+        return std::make_unique<NativeEngine>(std::move(options.tokenizer_model), std::move(options.config_path), std::move(load), std::move(runtime),
             std::move(source), std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
             std::move(root), std::move(model), std::move(state), std::move(forward));
     } catch (...) {
