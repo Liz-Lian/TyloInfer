@@ -345,11 +345,11 @@ struct DeepseekV41Dspark final : MtpModule {
                 auto floating = target_hidden.to(mfq_tensor_backend::kFloat32);
                 auto scale = (floating.abs().amax(-1, true) / 64.0).clamp_min(1.0);
                 return weighted_rms(
-                    execution->projector().run(main_projection, (floating / scale).to(mfq_tensor_backend::kFloat16).contiguous()),
+                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(main_projection, (floating / scale).to(mfq_tensor_backend::kFloat16).contiguous()),
                     main_norm, config.rms_eps);
             },
             [&](size_t index, const Tensor &main_x) {
-                auto key_value = weighted_rms(execution->projector().run(stages[index]->key_value, main_x),
+                auto key_value = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stages[index]->key_value, main_x),
                                               stages[index]->key_value_norm, config.rms_eps);
                 key_value = rotate_token_major_tail(
                     key_value,
@@ -373,9 +373,9 @@ struct DeepseekV41Dspark final : MtpModule {
         return mfq::models::deepseek_v41::dspark_attention(
             active,
             [&] {
-                auto q_rank = weighted_rms(execution->projector().run(stage.query_a, input),
+                auto q_rank = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_a, input),
                                            stage.query_a_norm, config.rms_eps);
-                auto query = execution->projector().run(stage.query_b, q_rank)
+                auto query = execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.query_b, q_rank)
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
@@ -384,7 +384,7 @@ struct DeepseekV41Dspark final : MtpModule {
                 return query;
             },
             [&] {
-                auto current_keys = weighted_rms(execution->projector().run(stage.key_value, input),
+                auto current_keys = weighted_rms(execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(stage.key_value, input),
                                                  stage.key_value_norm, config.rms_eps);
                 current_keys = rotate_token_major_tail(current_keys, positions, stage.rope);
                 current_keys = deepseek_v41_mxfp8_e4m3_sim_cuda(current_keys.contiguous());
@@ -476,10 +476,10 @@ struct DeepseekV41Dspark final : MtpModule {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         return stage.mlp.forward(value.reshape({-1, config.hidden}),
 #else
-                        auto executor = execution->make_executor();
+                        auto executor = execution->executor().fork(model_parallel_primary_device(execution->config));
                         return stage.mlp.forward(value.reshape({-1, config.hidden}), *executor,
 #endif
-                                     execution->forward_mode().ffn,
+                                     execution->executor().forward_mode(execution->config.layer_placement.primary_device()).ffn,
                                      draft_ids.narrow(1, 0, rows))
                             .reshape({batch, rows, config.hidden});
                     });
@@ -493,7 +493,7 @@ struct DeepseekV41Dspark final : MtpModule {
             },
             [&](Tensor head_hidden) {
                 return mfq::cuda::logits(output, weighted_rms(head_hidden, output_norm, config.rms_eps),
-                    execution->projector(), execution->executor().profiler(), softcap)
+                    execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)), execution->executor().profiler(), softcap)
                     .to(mfq_tensor_backend::kFloat32)
                     .contiguous();
             },
@@ -504,7 +504,7 @@ struct DeepseekV41Dspark final : MtpModule {
         auto markov = quant_embedding_lookup(markov_embedding, previous)
                           .to(mfq_tensor_backend::kFloat16)
                           .contiguous();
-        return logits + execution->projector().run(markov_output, markov).to(mfq_tensor_backend::kFloat32);
+        return logits + execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)).run(markov_output, markov).to(mfq_tensor_backend::kFloat32);
     }
 };
 
@@ -524,8 +524,10 @@ void run_dspark_self_check() {
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
     mfq::cuda::RoutedCache weights;
     std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-    CudaExecutionContext execution(weights, kv, offload);
-    CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
+    auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
+    auto executor = std::make_unique<mfq::cuda::Executor>(std::move(numeric_options), 0);
+    CudaExecutionContext execution(*executor, std::move(execution_config), weights, kv, offload);
+    CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
     DeepseekV41Dspark predictor;
     predictor.execution = &execution;
     predictor.config.hidden = 32;

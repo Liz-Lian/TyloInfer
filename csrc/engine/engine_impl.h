@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/engine.h"
+#include "engine/drain.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/load.h"
@@ -44,12 +45,9 @@
 
 namespace mfq::cuda {
 
-template <class LoadedModel, auto Load>
+template <class Model, class State, class Parts, auto Load>
 class CudaEngine final : public engine::Engine {
     using Options = CudaEngineOptions;
-    using Model = typename LoadedModel::Model;
-    using State = typename LoadedModel::State;
-    using Parts = typename LoadedModel::Parts;
 
 public:
     using Prepared = PreparedPrompt;
@@ -123,7 +121,7 @@ public:
         };
 
         if (execution_) {
-            CudaScope scope(execution_->layer_placement.primary_device(), execution_->executor().contexts());
+            CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
             remember(requests_.clear());
         } else {
             remember(requests_.clear());
@@ -132,19 +130,24 @@ public:
 
         if (execution_) {
             try {
-                execution_->drain();
+                drain_cuda(*root_executor_, weights_, offload_.get(),
+                           execution_->config.layer_placement, execution_->config.tensor_parallel,
+                           execution_->config.expert_parallel);
             } catch (...) {
                 remember(std::current_exception());
             }
             {
-                CudaScope scope(execution_->layer_placement.primary_device(), execution_->executor().contexts());
+                CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
                 expert_space_.reset();
                 clear_bindings();
                 batching_.reset();
                 budget_.reset();
                 cache_.reset();
                 graph_.reset();
-                loaded_.reset();
+                components_.reset();
+                executor_.reset();
+                state_.reset();
+                model_.reset();
                 mtp_state_ = {};
                 execution_->executor().pipelines().clear();
                 offload_.reset();
@@ -153,6 +156,7 @@ public:
             }
             execution_.reset();
         }
+        root_executor_.reset();
         weight_memory_.reset();
         source_.reset();
         preparing_ = false;
@@ -211,9 +215,9 @@ public:
         } else
 #endif
         return components().prepare(
-            language(), execution_->projector(), weights_.moe,
-            execution_->executor().collectives(), execution_->layer_placement.primary_device(),
-            loaded_->executor.get(), input.prompt, *input.vision);
+            language(), execution_->executor().projector(execution_->executor().mode().ffn, model_parallel_primary_device(execution_->config)), weights_.moe,
+            execution_->executor().collectives(), execution_->config.layer_placement.primary_device(),
+            executor_.get(), input.prompt, *input.vision);
     }
 
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
@@ -228,14 +232,18 @@ public:
         engine::InferenceRequest& input, engine::InferenceOutput& output,
         std::optional<Prepared> prepared, const engine::RequestId& id, bool batched) {
         return internal::generate(
-            language(), state(), loaded_->executor.get(), execution_->executor().collectives(),
-            execution_->forward_mode(), execution_->executor().profiler(), weights_,
-            execution_->decode_graph_serial_branches,
+            language(), state(), executor_.get(), execution_->executor().collectives(),
+            execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), execution_->executor().profiler(), weights_,
+            execution_->executor().mode().ffn.serial,
             execution_->config.report_cuda_memory,
-            execution_->dsv4_cpu_offload_layers.empty() &&
-                execution_->dense_cpu_layer_count == 0 &&
-                model_parallel_cuda_graph_enabled(*execution_),
-            [owner = execution_.get()] { owner->drain(); }, model_info_, source_.get(), *graph_,
+            execution_->config.dsv4_cpu_offload_layers.empty() &&
+                execution_->config.dense_cpu_layer_count == 0 &&
+                model_parallel_cuda_graph_enabled(execution_->config, execution_->executor(), execution_->weights),
+            [this] {
+                drain_cuda(*root_executor_, weights_, offload_.get(),
+                           execution_->config.layer_placement, execution_->config.tensor_parallel,
+                           execution_->config.expert_parallel);
+            }, model_info_, source_.get(), *graph_,
             *cache_, config_, input, output,
             mtp_state_,
             batched ? nullptr : components().mtp.get(), std::move(prepared),
@@ -254,11 +262,15 @@ private:
     std::shared_ptr<KvMemoryManager> kv_;
     RoutedCache weights_;
     std::shared_ptr<KvOffloadStore> offload_;
+    std::unique_ptr<Executor> root_executor_;
     std::unique_ptr<CudaExecutionContext> execution_;
     std::shared_ptr<WeightMemoryLedger> weight_memory_;
     std::shared_ptr<const mfq::ModelSource> source_;
     CudaRuntimeConfig config_;
-    std::optional<LoadedModel> loaded_;
+    std::shared_ptr<Model> model_;
+    std::unique_ptr<State> state_;
+    std::unique_ptr<Executor> executor_;
+    std::optional<Parts> components_;
     mfq::models::Info model_info_{};
     mfq::engine::mtp::State mtp_state_;
     std::optional<DecodeGraphCache> graph_;
@@ -276,32 +288,32 @@ private:
 
     template <class F>
     decltype(auto) with_cuda(F&& function) {
-        if (!ready_ || !execution_ || !loaded_)
+        if (!ready_ || !execution_ || !model_)
             throw std::runtime_error("CUDA engine is unloaded");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        auto scope = loaded_->executor->enter();
+        auto scope = executor_->enter();
 #else
-        CudaScope scope(execution_->layer_placement.primary_device(), execution_->executor().contexts());
+        CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
 #endif
         mfq_tensor_backend::NoGradGuard no_grad;
         return std::forward<F>(function)();
     }
 
-    Model& language() { return loaded_->language(); }
-    State& state() { return loaded_->state(); }
-    Parts& components() { return loaded_->components; }
-    const Parts& components() const { return loaded_->components; }
+    Model& language() { return *model_; }
+    State& state() { return *state_; }
+    Parts& components() { return *components_; }
+    const Parts& components() const { return *components_; }
 
     bool online_budget_supported() const {
-        return execution_->layer_placement.devices.size() <= 1 &&
-            !execution_->tensor_parallel.enabled() &&
-            !execution_->expert_parallel.enabled();
+        return execution_->config.layer_placement.devices.size() <= 1 &&
+            !execution_->config.tensor_parallel.enabled() &&
+            !execution_->config.expert_parallel.enabled();
     }
 
     void restore_graph_expert_space() {
         if (weights_.tq || preparing_) return;
         prepare_moe_decode_residency(weights_.moe);
-        default_context(execution_->layer_placement.primary_device())->reclaim_idle_memory();
+        default_context(execution_->config.layer_placement.primary_device())->reclaim_idle_memory();
         if (expert_space_)
             expert_space_->restore(runtime_options::workspace_reserve_bytes(), source_.get());
     }
@@ -337,10 +349,13 @@ private:
             if (!options_.context_size) options_.context_size = 32768;
             if (execution_) throw std::logic_error("CUDA load requires retired resources");
 
-            execution_ = std::make_unique<CudaExecutionContext>(weights_, kv_, offload_);
+            auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
+            root_executor_ = std::make_unique<Executor>(std::move(numeric_options), 0);
+            execution_ = std::make_unique<CudaExecutionContext>(
+                *root_executor_, std::move(execution_config), weights_, kv_, offload_);
             CudaScope outer_scope(
-                execution_->layer_placement.primary_device(), execution_->executor().contexts());
-            internal::setup_cuda_load(options_, *execution_);
+                execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
+            internal::setup_cuda_load(options_, execution_->config, *root_executor_, weights_, kv_, offload_);
             execution_->executor().profiler().enabled = false;
             weight_memory_ = std::make_shared<WeightMemoryLedger>();
             WeightMemoryLoadScope memory_load(*weight_memory_);
@@ -362,25 +377,29 @@ private:
             }
 
             CudaScope load_scope(
-                execution_->layer_placement.primary_device(), execution_->executor().contexts());
+                execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
             weight_loader::Loader loader{
                 *source_, execution_->config.weights,
-                {execution_->layer_placement.primary_device(), false,
-                 execution_->drop_file_cache, execution_->tensor_parallel,
-                 moe_parallel_config(*execution_)},
+                {execution_->config.layer_placement.primary_device(), false,
+                 execution_->config.drop_file_cache, execution_->config.tensor_parallel,
+                 moe_parallel_config(execution_->config)},
                 weights_, execution_->executor().tq()};
-            loaded_.emplace(Load(
-                source_, loader, execution_->layer_placement, execution_->yarn,
-                execution_->dense_cpu_layer_count, options_,
-                execution_->n_gpu_layers, execution_->yarn_context_extension,
-                execution_->expert_parallel.enabled(),
-                execution_->config.tensor_parallel_mirror_linear_attention_scalars,
-                execution_->make_executor(), execution_->executor().collectives(),
-                execution_->config.gdn_transposed_state,
+            executor_ = execution_->executor().fork(model_parallel_primary_device(execution_->config));
+            const bool preallocate = runtime_options::kv_vram_preallocated();
+            model_ = Load(
+                source_, loader, execution_->config.layer_placement, execution_->config.yarn,
+                execution_->config.dense_cpu_layer_count, options_,
+                execution_->config.n_gpu_layers, execution_->config.yarn_context_extension,
+                execution_->config.expert_parallel.enabled(),
+                execution_->config.tensor_parallel_mirror_linear_attention_scalars);
+            state_ = std::make_unique<State>(*model_, execution_->executor().mode().transposed);
+            if (preallocate) state_->preallocate();
+            components_.emplace(Parts::load(
+                *model_, loader, execution_->config.layer_placement, execution_->config.dense_cpu_layer_count,
+                *executor_, execution_->executor().collectives(),
                 execution_->executor().mmq().kv_cache_capacity,
-                execution_->gemma_stage_trace, execution_->gemma_trace_layer,
-                !execution_->dsv4_cpu_offload_layers.empty(),
-                runtime_options::kv_vram_preallocated()));
+                execution_->executor().mode().trace, execution_->executor().mode().trace_layer,
+                true, !execution_->config.dsv4_cpu_offload_layers.empty(), preallocate));
             model_info_ = mfq::models::model_info(language());
             finalize_kv(kv_.get(), weights_, offload_);
             finish_load(kv_.get(), weights_, 0,
@@ -412,7 +431,7 @@ private:
             internal::cuda_has_separate_memory());
         budget_.emplace(
             *weight_memory_, weights_, *cache_,
-            execution_->layer_placement.primary_device());
+            execution_->config.layer_placement.primary_device());
         if (offload_) {
             offload_->set_ram_reservation([this](std::size_t bytes) {
                 cache_->reserve_ram(bytes);
@@ -421,15 +440,15 @@ private:
         }
         if (config_.continuous_batch.max_sequences) {
             auto batch_config = config_.continuous_batch;
-            batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution_);
+            batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution_->config, execution_->executor(), execution_->weights);
             batching_ = make_batch(
-                std::shared_ptr<const Model>(loaded_->model), &state(),
-                execution_->make_executor(), execution_->executor().collectives(),
-                execution_->forward_mode(), weights_.moe, std::move(batch_config),
+                std::shared_ptr<const Model>(model_), &state(),
+                execution_->executor().fork(model_parallel_primary_device(execution_->config)), execution_->executor().collectives(),
+                execution_->executor().forward_mode(execution_->config.layer_placement.primary_device()), weights_.moe, std::move(batch_config),
                 config_.generation.prefill_chunk_size,
                 runtime_options::kv_vram_preallocated(),
-                execution_->dense_cpu_layer_count != 0 ||
-                    !execution_->dsv4_cpu_offload_layers.empty(),
+                execution_->config.dense_cpu_layer_count != 0 ||
+                    !execution_->config.dsv4_cpu_offload_layers.empty(),
                 execution_->config.weights.min_slots);
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -442,7 +461,7 @@ private:
             }
             if (expert_loan) {
                 expert_space_.emplace(
-                    weights_, execution_->layer_placement.primary_device(),
+                    weights_, execution_->config.layer_placement.primary_device(),
                     std::move(expert_loan));
             }
             restore_decode_workspace_ = [this] { restore_graph_expert_space(); };
@@ -492,8 +511,8 @@ private:
                 expert_space_ ? &*expert_space_ : nullptr, batching_.get(),
                 source_.get(), *weight_memory_, weights_, kv_.get(),
                 offload_.get(), *cache_, *budget_,
-                execution_->layer_placement, execution_->tensor_parallel,
-                execution_->expert_parallel);
+                execution_->config.layer_placement, execution_->config.tensor_parallel,
+                execution_->config.expert_parallel);
         } else {
             auto result = components().control(value);
             if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)

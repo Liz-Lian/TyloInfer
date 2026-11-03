@@ -20,15 +20,15 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load(
         mfq::cuda::Executor& language_executor,
         const mfq::cuda::weight_loader::Loader& weights,
         CudaExecutionContext& execution) {
-    auto &placement = execution.layer_placement;
+    auto &placement = execution.config.layer_placement;
     MfqCudaGuard guard(placement.primary_device());
-    auto projector = execution.projector();
+    auto projector = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config));
     return {language, language_state, language_executor, execution,
             MiniCPMO45VisionEncoder::load(weights),
             MiniCPMO45Resampler::load(weights),
             MiniCPMO45AudioEncoder::load(weights),
             mfq::cuda::minicpmo45::Tts::load(weights),
-            execution.make_executor(), execution.forward_mode(),
+            execution.executor().fork(model_parallel_primary_device(execution.config)), execution.executor().forward_mode(execution.config.layer_placement.primary_device()),
             projector};
 }
 
@@ -181,7 +181,7 @@ void Components::start(const MfqDuplexSessionParams& parameters) {
         }
 
         MfqCudaGuard guard(
-            state_->runtime.execution.layer_placement.primary_device());
+            state_->runtime.execution.config.layer_placement.primary_device());
         mfq_tensor_backend::manual_seed(static_cast<int64_t>(parameters.seed));
         mfq_cuda_manual_seed_all(parameters.seed);
         auto special_ids = MiniCPMO45DuplexSpecialIds::from_tensor(
@@ -244,7 +244,7 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
         }
 
         MfqCudaGuard guard(
-            state_->runtime.execution.layer_placement.primary_device());
+            state_->runtime.execution.config.layer_placement.primary_device());
         if (!state_->duplex_session) {
             throw std::runtime_error(
                 "MiniCPM-o duplex session is not prepared");
@@ -299,7 +299,7 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
 
 void Components::stop() {
         MfqCudaGuard guard(
-            state_->runtime.execution.layer_placement.primary_device());
+            state_->runtime.execution.config.layer_placement.primary_device());
         mfq_cuda_synchronize();
         state_->duplex_session.reset();
         state_->runtime.language_state.reset(1);

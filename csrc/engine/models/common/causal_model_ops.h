@@ -132,7 +132,7 @@ template <typename Model> struct CudaCausalOps : Model {
     }
 
     auto execution_scope() const {
-        return CudaScope(this->execution->layer_placement.primary_device(), this->execution->executor().contexts());
+        return CudaScope(this->execution->config.layer_placement.primary_device(), this->execution->executor().contexts());
     }
     static auto block_scope(const std::unique_ptr<Block> &block) {
         return MfqCudaGuard(block->cuda_device);
@@ -156,7 +156,7 @@ template <typename Model> struct CudaCausalOps : Model {
     static int64_t size(const Tensor &value, int axis) { return value.size(axis); }
     static Tensor batch_ids(Tensor ids) { return ids.unsqueeze(0); }
     Tensor device_ids(Tensor ids) const {
-        return this->execution->executor().collectives().copy(ids.to(mfq_tensor_backend::kInt64), this->execution->layer_placement.primary_device())
+        return this->execution->executor().collectives().copy(ids.to(mfq_tensor_backend::kInt64), this->execution->config.layer_placement.primary_device())
             .contiguous();
     }
     Tensor embed_tokens(Tensor ids) const {
@@ -193,7 +193,7 @@ template <typename Model> struct CudaCausalOps : Model {
         CausalModel &model;
         ForwardOps(CausalModel &model, Inputs input)
             : Inputs(std::move(input)), model(model),
-              primary(model.execution->layer_placement.primary_device()) {}
+              primary(model.execution->config.layer_placement.primary_device()) {}
         int primary;
         Tensor pos, full_positions, cache_positions, cpu_ids, cpu_pos, cpu_cache_positions;
         MfqOptional<Tensor> effective_attention_mask, cpu_attention_mask, cpu_seq_len;
@@ -222,7 +222,7 @@ template <typename Model> struct CudaCausalOps : Model {
                 cpu_ids=ids.to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kInt64).contiguous();
                 for(const auto& block:model.blocks)block->prefetch_token_ids(cpu_ids);
             }
-            if (model.execution->dense_cpu_layer_count > 0) {
+            if (model.execution->config.dense_cpu_layer_count > 0) {
                 cpu_ids = ids.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous();
                 cpu_pos = pos.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous();
                 cpu_cache_positions =

@@ -162,8 +162,8 @@ std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::L
 }
 
 void validate_load_options(const CudaExecutionContext &execution) {
-    if (execution.tensor_parallel.enabled() || execution.layer_placement.enabled() ||
-        execution.n_gpu_layers >= 0) {
+    if (execution.config.tensor_parallel.enabled() || execution.config.layer_placement.enabled() ||
+        execution.config.n_gpu_layers >= 0) {
         throw std::runtime_error("DeepSeek-V4.1 native CUDA currently supports single-device dense "
                                  "placement or expert parallelism");
     }

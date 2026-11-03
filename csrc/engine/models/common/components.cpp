@@ -44,8 +44,8 @@ template <class Model> struct ModelLoader {
     void prepare_blocks() { model.adapter_prepare_blocks(weights); }
     auto block(int layer, const std::string &type) {
         auto &execution = *model.execution;
-        const int device = execution.layer_placement.device_for_layer(layer);
-        const bool cpu_offloaded = layer < execution.dense_cpu_layer_count;
+        const int device = execution.config.layer_placement.device_for_layer(layer);
+        const bool cpu_offloaded = layer < execution.config.dense_cpu_layer_count;
         MfqCudaGuard layer_guard(device);
         std::cerr << "loading layer " << layer << ' ' << type << ' '
                   << (cpu_offloaded ? "CPU" : "CUDA") << std::endl;
@@ -73,23 +73,23 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     model.graph = mfq::models::graph(source);
     model.plan = cuda_model_plan(model.graph);
     auto definition=mfq::models::config_json(source, config_path);
-    definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
+    definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension, std::move(definition),
                                 model.graph.backbone, context_size_override);
     model.load_definition(definition, model.graph, source,
                           context_size_override);
 
     model.adapter_validate_load_options();
-    if (execution.expert_parallel.enabled() && model.num_experts() <= 0) {
+    if (execution.config.expert_parallel.enabled() && model.num_experts() <= 0) {
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
     }
 
-    execution.layer_placement.prepare(model.num_hidden_layers());
-    execution.dense_cpu_layer_count = 0;
-    if (execution.n_gpu_layers >= 0) {
-        execution.dense_cpu_layer_count = static_cast<int>(
-            std::max<int64_t>(model.num_hidden_layers() - execution.n_gpu_layers, 0));
-        if (execution.dense_cpu_layer_count > 0) {
-            if (model_parallel_enabled(execution) || execution.layer_placement.enabled()) {
+    execution.config.layer_placement.prepare(model.num_hidden_layers());
+    execution.config.dense_cpu_layer_count = 0;
+    if (execution.config.n_gpu_layers >= 0) {
+        execution.config.dense_cpu_layer_count = static_cast<int>(
+            std::max<int64_t>(model.num_hidden_layers() - execution.config.n_gpu_layers, 0));
+        if (execution.config.dense_cpu_layer_count > 0) {
+            if (model_parallel_enabled(execution.config) || execution.config.layer_placement.enabled()) {
                 throw std::runtime_error(
                     "--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
             }
@@ -102,33 +102,33 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
                 throw std::runtime_error(
                     "--n-gpu-layers currently supports dense Qwen-style blocks only");
             }
-            std::cerr << "dense_layer_placement cpu=0-" << (execution.dense_cpu_layer_count - 1)
-                      << " gpu=" << execution.dense_cpu_layer_count << '-'
+            std::cerr << "dense_layer_placement cpu=0-" << (execution.config.dense_cpu_layer_count - 1)
+                      << " gpu=" << execution.config.dense_cpu_layer_count << '-'
                       << (model.num_hidden_layers() - 1) << " cpu_threads=" << mfq_get_num_threads()
                       << std::endl;
         }
     }
 
-    CudaScope model_guard(execution.layer_placement.primary_device(), execution.executor().contexts());
-    if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.dense_cpu_layer_count > 0) {
+    CudaScope model_guard(execution.config.layer_placement.primary_device(), execution.executor().contexts());
+    if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.config.dense_cpu_layer_count > 0) {
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     }
 
     if (model.adapter_uses_common_rope() && !model.metadata.no_rope) {
         auto make_rope = [&](mfq_tensor_backend::Device device) {
             RopeCache rope(model.max_position_embeddings(), model.rotary_dim(), model.rope_base(),
-                           0, -1, device, model.metadata.rope_interleaved,execution.yarn);
+                           0, -1, device, model.metadata.rope_interleaved,execution.config.yarn);
             model.adapter_configure_rope(rope, device);
             return rope;
         };
         const auto primary = mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA,
-                                                        execution.layer_placement.primary_device());
+                                                        execution.config.layer_placement.primary_device());
         model.rope = make_rope(primary);
-        if (execution.dense_cpu_layer_count > 0) {
+        if (execution.config.dense_cpu_layer_count > 0) {
             model.cpu_rope = make_rope(mfq_tensor_backend::Device(mfq_tensor_backend::kCPU));
         }
-        if (execution.layer_placement.enabled()) {
-            for (int device : execution.layer_placement.devices) {
+        if (execution.config.layer_placement.enabled()) {
+            for (int device : execution.config.layer_placement.devices) {
                 MfqCudaGuard rope_guard(device);
                 model.device_ropes.emplace(device, make_rope(mfq_tensor_backend::Device(
                                                        mfq_tensor_backend::kCUDA, device)));
@@ -137,8 +137,8 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     }
 
     weight_loader::Loader tensors{source, execution.config.weights,
-        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-         execution.tensor_parallel, moe_parallel_config(execution)},
+        {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+         execution.config.tensor_parallel, moe_parallel_config(execution.config)},
         execution.weights, execution.executor().tq()};
     ModelLoader<Model> weights{model, tensors};
     if (load_input_output) {

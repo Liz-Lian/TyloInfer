@@ -223,9 +223,11 @@ int execute_runtime(RuntimeCommandOptions options) {
         std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
         mfq::cuda::RoutedCache weights;
         std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        CudaExecutionContext execution(weights, kv, offload);
-        CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
-        mfq::cuda::internal::setup_cuda_load(options, execution);
+        auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
+        auto executor = std::make_unique<mfq::cuda::Executor>(std::move(numeric_options), 0);
+        CudaExecutionContext execution(*executor, std::move(execution_config), weights, kv, offload);
+        CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
+        mfq::cuda::internal::setup_cuda_load(options, execution.config, *executor, weights, kv, offload);
         return !options.duplex_input_prefix.empty()
             ? mfq::cuda::minicpmo45::run_duplex(execution, options, options)
             : mfq::cuda::minicpmo45::run_composite(execution, options, options);

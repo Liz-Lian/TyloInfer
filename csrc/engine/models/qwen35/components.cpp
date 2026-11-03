@@ -56,32 +56,21 @@ mfq::StepSequence<PreparedPrompt> Components::prepare(
     throw std::invalid_argument("model has no multimodal component");
 }
 
-Loaded<Model, State, Components> assemble(
-    std::shared_ptr<const mfq::ModelSource> source,
+Components Components::load(
+    Model& model,
     const weight_loader::Loader& weights,
     LayerPlacementConfig& placement,
-    mfq::ops::YarnScaling& yarn,
     int& cpu_layers,
-    const LoadOptions& options,
-    std::unique_ptr<Executor> executor,
+    Executor& executor,
     Collectives& copies,
-    const bool& transposed,
     const int64_t& kv_capacity,
     Trace* const& trace,
     const int& trace_scope,
     bool optional,
     bool cpu_offload,
     bool preallocate) {
-    Loaded<Model, State, Components> result{
-        std::make_shared<Model>(load(
-            source, weights, placement, yarn, cpu_layers, options)), {},
-        std::move(executor), {}};
-    auto& model = *result.model;
-    result.owned_state = std::make_unique<State>(model, transposed);
-    if (preallocate) result.owned_state->preallocate();
-    result.components = Components{model.graph, model.plan};
-    if (!optional) return result;
-    auto& components = result.components;
+    Components components{model.graph, model.plan};
+    if (!optional) return components;
     const bool mtp_allowed =
         !placement.enabled() && cpu_layers == 0 && !cpu_offload &&
         !weights.cache.moe;
@@ -113,7 +102,7 @@ Loaded<Model, State, Components> assemble(
                 // Mtp retains these references, so they must outlive the result.
                 components.mtp = std::make_unique<Mtp>(
                     std::move(*predictor), model.embed, model.rope,
-                    result.executor->fork(), copies, weights.placement.device,
+                    executor.fork(), copies, weights.placement.device,
                     kv_capacity, trace, trace_scope, preallocate);
             }
         } else {
@@ -123,7 +112,7 @@ Loaded<Model, State, Components> assemble(
     } else if (components.plan.predictor != CudaPredictorAdapter::none) {
         throw std::runtime_error("CUDA predictor adapter is unsupported for Qwen");
     }
-    return result;
+    return components;
 }
 
 } // namespace mfq::cuda::qwen35

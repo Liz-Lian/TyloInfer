@@ -2,7 +2,6 @@
 #include "engine/models/source.h"
 #include "engine/ops.h"
 
-#include "engine/models/common/loaded.h"
 #include "engine/engine.h"
 #include "engine/models/common/vision/grid_encoder.h"
 #include "engine/models/qwen35/model.h"
@@ -24,14 +23,9 @@ class Collectives;
 class Executor;
 }
 
-namespace mfq::ops { struct YarnScaling; }
-
 struct LayerPlacementConfig;
 
 namespace mfq::cuda::qwen35 {
-
-struct LoadOptions;
-class State;
 
 struct Components {
     mfq::ModelGraph graph;
@@ -39,6 +33,11 @@ struct Components {
     std::optional<grid_vision_runtime::CudaGridVisionPromptComponent>
         grid_vision;
     std::unique_ptr<Mtp> mtp;
+
+    static Components load(Model& model, const weight_loader::Loader& weights,
+        LayerPlacementConfig& placement, int& cpu_layers, Executor& executor,
+        Collectives& copies, const int64_t& kv_capacity, Trace* const& trace,
+        const int& trace_scope, bool optional, bool cpu_offload, bool preallocate);
 
     CudaComponentState state() const noexcept {
         return cuda_component_state(
@@ -61,22 +60,5 @@ struct Components {
         throw std::invalid_argument("model has no duplex component");
     }
 };
-
-Loaded<Model, State, Components> assemble(
-    std::shared_ptr<const mfq::ModelSource> source,
-    const weight_loader::Loader& weights,
-    LayerPlacementConfig& placement,
-    mfq::ops::YarnScaling& yarn,
-    int& cpu_layers,
-    const LoadOptions& options,
-    std::unique_ptr<Executor> executor,
-    Collectives& copies,
-    const bool& transposed,
-    const int64_t& kv_capacity,
-    Trace* const& trace,
-    const int& trace_scope,
-    bool optional,
-    bool cpu_offload,
-    bool preallocate);
 
 } // namespace mfq::cuda::qwen35

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "engine/models/common/loaded.h"
 #include "engine/load.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
@@ -30,6 +29,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -41,11 +41,10 @@ inline constexpr auto with_model = []<typename F>(
         const CudaLoadOptions& options,
         bool load_optional_components,
         F&& run) -> auto {
-    CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
+    CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
     auto source = mfq::open_model_source(options.model_path);
-    auto finish = [&](auto& loaded, auto started) {
-        auto& model = *loaded.model;
-        auto& runtime_components = loaded.components;
+    auto finish = [&](auto& owner, auto& state, auto& executor, auto& runtime_components, auto started) {
+        auto& model = *owner;
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             Executor::prepare(model.vocab_size());
@@ -64,7 +63,7 @@ inline constexpr auto with_model = []<typename F>(
         const auto loaded_at = mfq::cuda::finish_load(
             execution.kv.get(), execution.weights,
             graph_reserve, execution.config.report_cuda_memory);
-        return run(loaded, started, loaded_at, source);
+        return run(owner, state, executor, runtime_components, started, loaded_at, source);
     };
     auto load = [&]<typename Model>() {
         auto started = std::chrono::steady_clock::now();
@@ -78,49 +77,49 @@ inline constexpr auto with_model = []<typename F>(
                 source));
         auto& model = *owner;
         weight_loader::Loader weights{*model.source, execution.config.weights,
-            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-             execution.tensor_parallel, moe_parallel_config(execution)},
+            {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+             execution.config.tensor_parallel, moe_parallel_config(execution.config)},
             execution.weights, execution.executor().tq()};
         auto runtime_components =
             load_runtime_components(model, weights, load_optional_components);
-        Loaded<Model> loaded{std::move(owner), {}, execution.make_executor(), std::move(runtime_components)};
-        return finish(loaded, started);
+        std::unique_ptr<Model> state;
+        auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+        auto components = std::move(runtime_components);
+        return finish(owner, state, executor, components, started);
     };
     auto load_tts = [&] {
         auto started = std::chrono::steady_clock::now();
         auto definition = mfq::models::config_json(*source, options.config_path);
-        definition = configure_yarn(execution.yarn, execution.yarn_context_extension, std::move(definition),
+        definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension, std::move(definition),
             mfq::models::graph(*source).backbone, options.context_size);
         auto owner = std::make_shared<minicpmo45::Model>(
             minicpmo45::read(source, definition, options.context_size));
         auto& model = *owner;
-        if (execution.expert_parallel.enabled())
+        if (execution.config.expert_parallel.enabled())
             throw std::runtime_error("--expert-parallel requires a model with routed experts");
-        execution.layer_placement.prepare(model.config.num_hidden_layers);
-        execution.dense_cpu_layer_count = execution.n_gpu_layers >= 0
-            ? static_cast<int>(std::max<int64_t>(model.config.num_hidden_layers - execution.n_gpu_layers, 0)) : 0;
-        if (execution.dense_cpu_layer_count > 0) {
-            if (model_parallel_enabled(execution) || execution.layer_placement.enabled())
+        execution.config.layer_placement.prepare(model.config.num_hidden_layers);
+        execution.config.dense_cpu_layer_count = execution.config.n_gpu_layers >= 0
+            ? static_cast<int>(std::max<int64_t>(model.config.num_hidden_layers - execution.config.n_gpu_layers, 0)) : 0;
+        if (execution.config.dense_cpu_layer_count > 0) {
+            if (model_parallel_enabled(execution.config) || execution.config.layer_placement.enabled())
                 throw std::runtime_error("--n-gpu-layers cannot be combined with tensor/expert/layer parallelism");
-            std::cerr << "dense_layer_placement cpu=0-" << execution.dense_cpu_layer_count - 1
-                << " gpu=" << execution.dense_cpu_layer_count << '-' << model.config.num_hidden_layers - 1
+            std::cerr << "dense_layer_placement cpu=0-" << execution.config.dense_cpu_layer_count - 1
+                << " gpu=" << execution.config.dense_cpu_layer_count << '-' << model.config.num_hidden_layers - 1
                 << " cpu_threads=" << mfq_get_num_threads() << '\n';
         }
         weight_loader::Loader weights{*source, execution.config.weights,
-            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-             execution.tensor_parallel, moe_parallel_config(execution)},
+            {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+             execution.config.tensor_parallel, moe_parallel_config(execution.config)},
             execution.weights, execution.executor().tq()};
-        minicpmo45::load(model, weights, execution.layer_placement,
-            execution.dense_cpu_layer_count, execution.yarn);
+        minicpmo45::load(model, weights, execution.config.layer_placement,
+            execution.config.dense_cpu_layer_count, execution.config.yarn);
         minicpmo45::State state(model);
         if (runtime_options::kv_vram_preallocated()) state.preallocate();
-        auto executor = execution.make_executor();
+        std::unique_ptr<minicpmo45::State> owned_state;
+        auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
         auto components = load_runtime_components(model, weights, load_optional_components);
-        Loaded<minicpmo45::Model, minicpmo45::State> loaded{
-            std::move(owner),
-            std::make_unique<minicpmo45::State>(std::move(state)),
-            std::move(executor), std::move(components)};
-        return finish(loaded, started);
+        owned_state = std::make_unique<minicpmo45::State>(std::move(state));
+        return finish(owner, owned_state, executor, components, started);
     };
 
     switch (cuda_backbone(mfq::models::graph(*source).backbone)) {
@@ -128,69 +127,73 @@ inline constexpr auto with_model = []<typename F>(
             if constexpr (IncludeQwen) {
                 auto started = std::chrono::steady_clock::now();
                 weight_loader::Loader weights{*source, execution.config.weights,
-                    {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                     execution.tensor_parallel, moe_parallel_config(execution)},
+                    {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                     execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                     execution.weights, execution.executor().tq()};
-                auto loaded = qwen35::assemble(
-                    source, weights, execution.layer_placement, execution.yarn,
-                    execution.dense_cpu_layer_count,
+                std::shared_ptr<qwen35::Model> owner;
+                std::unique_ptr<qwen35::State> state;
+                auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
+                const bool preallocate = runtime_options::kv_vram_preallocated();
+                owner = std::make_shared<qwen35::Model>(qwen35::load(
+                    source, weights, execution.config.layer_placement, execution.config.yarn,
+                    execution.config.dense_cpu_layer_count,
                     mfq::cuda::qwen35::LoadOptions{
                         .config_path = options.config_path,
                         .context_size = options.context_size,
-                        .gpu_layers = execution.n_gpu_layers,
-                        .extend_yarn = execution.yarn_context_extension,
-                        .expert_parallel = execution.expert_parallel.enabled(),
-                        .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars},
-                    execution.make_executor(), execution.executor().collectives(),
-                    execution.config.gdn_transposed_state,
-                    execution.executor().mmq().kv_cache_capacity, execution.gemma_stage_trace,
-                    execution.gemma_trace_layer, load_optional_components,
-                    !execution.dsv4_cpu_offload_layers.empty(),
-                    runtime_options::kv_vram_preallocated());
-                return finish(loaded, started);
+                        .gpu_layers = execution.config.n_gpu_layers,
+                        .extend_yarn = execution.config.yarn_context_extension,
+                        .expert_parallel = execution.config.expert_parallel.enabled(),
+                        .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars}));
+                state = std::make_unique<qwen35::State>(*owner, execution.executor().mode().transposed);
+                if (preallocate) state->preallocate();
+                auto components = qwen35::Components::load(
+                    *owner, weights, execution.config.layer_placement, execution.config.dense_cpu_layer_count,
+                    *executor, execution.executor().collectives(),
+                    execution.executor().mmq().kv_cache_capacity, execution.executor().mode().trace,
+                    execution.executor().mode().trace_layer, load_optional_components,
+                    !execution.config.dsv4_cpu_offload_layers.empty(), preallocate);
+                return finish(owner, state, executor, components, started);
             } else {
                 throw std::runtime_error("unsupported CUDA model backbone");
             }
         case CudaBackbone::minicpmo45: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
                 std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<minicpmo45::text::Model>(
                 minicpmo45::text::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
-                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                 execution.tensor_parallel, moe_parallel_config(execution)},
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                 execution.weights, execution.executor().tq()};
-            execution.dense_cpu_layer_count = execution.n_gpu_layers >= 0
-                ? static_cast<int>(std::max<int64_t>(owner->config.num_hidden_layers - execution.n_gpu_layers, 0)) : 0;
-            minicpmo45::text::load(*owner, weights, execution.layer_placement,
-                execution.n_gpu_layers, execution.expert_parallel.enabled(), true, true, execution.yarn);
+            execution.config.dense_cpu_layer_count = execution.config.n_gpu_layers >= 0
+                ? static_cast<int>(std::max<int64_t>(owner->config.num_hidden_layers - execution.config.n_gpu_layers, 0)) : 0;
+            minicpmo45::text::load(*owner, weights, execution.config.layer_placement,
+                execution.config.n_gpu_layers, execution.config.expert_parallel.enabled(), true, true, execution.config.yarn);
             auto state = std::make_unique<minicpmo45::text::State>(*owner);
             state->preallocate();
-            auto executor = execution.make_executor();
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, *state, *executor, weights,
                 load_optional_components, execution);
-            Loaded<minicpmo45::text::Model, minicpmo45::text::State> loaded{
-                std::move(owner), std::move(state), std::move(executor), std::move(components)};
-            return finish(loaded, started);
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::minicpmo_tts:
             return load_tts();
         case CudaBackbone::gemma4: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
                 std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<gemma4::Model>(
                 gemma4::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
-                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                 execution.tensor_parallel, moe_parallel_config(execution)},
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                 execution.weights, execution.executor().tq()};
-            execution.dense_cpu_layer_count = 0;
-            gemma4::load(*owner, weights, execution.layer_placement, execution.n_gpu_layers,
-                         execution.expert_parallel.enabled());
+            execution.config.dense_cpu_layer_count = 0;
+            gemma4::load(*owner, weights, execution.config.layer_placement, execution.config.n_gpu_layers,
+                         execution.config.expert_parallel.enabled());
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             const mfq::models::CausalModel& causal = *owner;
             auto state = causal.make_state();
@@ -198,113 +201,104 @@ inline constexpr auto with_model = []<typename F>(
             auto state = std::make_unique<gemma4::State>(*owner);
 #endif
             state->preallocate();
-            auto executor = execution.make_executor();
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, weights, load_optional_components);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            Loaded<mfq::models::CausalModel, mfq::models::State, RuntimeComponents<gemma4::Model>> loaded{
+            std::shared_ptr<mfq::models::CausalModel> causal_owner = owner;
+            return finish(causal_owner, state, executor, components, started);
 #else
-            Loaded<gemma4::Model, gemma4::State> loaded{
+            return finish(owner, state, executor, components, started);
 #endif
-                std::move(owner), std::move(state), std::move(executor), std::move(components)};
-            return finish(loaded, started);
         }
         case CudaBackbone::glm_dsa: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
                 std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<glm_dsa::Model>(
                 glm_dsa::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
-                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                 execution.tensor_parallel, moe_parallel_config(execution)},
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                 execution.weights, execution.executor().tq()};
-            execution.dense_cpu_layer_count = 0;
-            glm_dsa::load(*owner, weights, execution.layer_placement,
-                          execution.n_gpu_layers, true, true, execution.yarn);
+            execution.config.dense_cpu_layer_count = 0;
+            glm_dsa::load(*owner, weights, execution.config.layer_placement,
+                          execution.config.n_gpu_layers, true, true, execution.config.yarn);
             auto state = std::make_unique<glm_dsa::State>(*owner);
             state->preallocate();
-            auto executor = execution.make_executor();
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, weights, load_optional_components);
-            Loaded<glm_dsa::Model, glm_dsa::State> loaded{
-                std::move(owner), std::move(state), std::move(executor), std::move(components)};
-            return finish(loaded, started);
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::glm5_next: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
                 std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<glm5_next::Model>(
                 glm5_next::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
-                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                 execution.tensor_parallel, moe_parallel_config(execution)},
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                 execution.weights, execution.executor().tq()};
-            execution.dense_cpu_layer_count = 0;
-            glm5_next::load(*owner, weights, execution.layer_placement, execution.n_gpu_layers);
+            execution.config.dense_cpu_layer_count = 0;
+            glm5_next::load(*owner, weights, execution.config.layer_placement, execution.config.n_gpu_layers);
             auto state = std::make_unique<glm5_next::State>(*owner);
             state->preallocate();
-            auto executor = execution.make_executor();
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, weights, load_optional_components,
-                execution.projector(), execution.executor().collectives(), execution.executor().profiler());
-            Loaded<glm5_next::Model, glm5_next::State> loaded{
-                std::move(owner), std::move(state), std::move(executor), std::move(components)};
-            return finish(loaded, started);
+                execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().collectives(), execution.executor().profiler());
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::qwen4_exp:
             return load.template operator()<Qwen4CausalLm>();
         case CudaBackbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
                 std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<deepseek_v4::Model>(
                 deepseek_v4::read(source, definition, options.context_size));
-            deepseek_v4::validate_offload(owner->config, execution.dsv4_cpu_offload_layers);
-            if (!execution.dsv4_cpu_offload_layers.empty()) {
-                execution.dsv4_cpu_offload_host_bytes = 0;
-                execution.drop_file_cache = true;
+            deepseek_v4::validate_offload(owner->config, execution.config.dsv4_cpu_offload_layers);
+            if (!execution.config.dsv4_cpu_offload_layers.empty()) {
+                execution.config.dsv4_cpu_offload_host_bytes = 0;
+                execution.config.drop_file_cache = true;
             }
             weight_loader::Loader weights{*source, execution.config.weights,
-                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                 execution.tensor_parallel, moe_parallel_config(execution)},
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                 execution.weights, execution.executor().tq()};
-            execution.dense_cpu_layer_count = 0;
-            deepseek_v4::load(*owner, weights, execution.layer_placement, execution.executor().collectives(),
-                model_parallel_primary_device(execution), execution.dsv4_cpu_offload_layers,
-                execution.dsv4_cpu_offload_host_bytes, execution.n_gpu_layers);
+            execution.config.dense_cpu_layer_count = 0;
+            deepseek_v4::load(*owner, weights, execution.config.layer_placement, execution.executor().collectives(),
+                model_parallel_primary_device(execution.config), execution.config.dsv4_cpu_offload_layers,
+                execution.config.dsv4_cpu_offload_host_bytes, execution.config.n_gpu_layers);
             auto state = std::make_unique<deepseek_v4::State>(*owner);
             state->preallocate();
-            auto executor = execution.make_executor();
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, weights, load_optional_components);
-            Loaded<deepseek_v4::Model, deepseek_v4::State> loaded{
-                std::move(owner), std::move(state), std::move(executor), std::move(components)};
-            return finish(loaded, started);
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::deepseek_v41:
             return load.template operator()<DeepseekV41CausalLm>();
         case CudaBackbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
             auto definition = mfq::models::config_json(*source, options.config_path);
-            definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+            definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
                 std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<nemotron_h::Model>(
                 nemotron_h::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
-                {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-                 execution.tensor_parallel, moe_parallel_config(execution)},
+                {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+                 execution.config.tensor_parallel, moe_parallel_config(execution.config)},
                 execution.weights, execution.executor().tq()};
-            execution.dense_cpu_layer_count = 0;
-            nemotron_h::load(*owner, weights, execution.executor().pipelines(), execution.layer_placement,
-                             execution.n_gpu_layers, execution.expert_parallel.enabled());
+            execution.config.dense_cpu_layer_count = 0;
+            nemotron_h::load(*owner, weights, execution.executor().pipelines(), execution.config.layer_placement,
+                             execution.config.n_gpu_layers, execution.config.expert_parallel.enabled());
             auto state = std::make_unique<nemotron_h::State>(*owner);
             state->preallocate();
-            auto executor = execution.make_executor();
+            auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
             auto components = load_runtime_components(*owner, weights, load_optional_components, execution);
-            Loaded<nemotron_h::Model, nemotron_h::State> loaded{
-                std::move(owner), std::move(state), std::move(executor), std::move(components)};
-            return finish(loaded, started);
+            return finish(owner, state, executor, components, started);
         }
         case CudaBackbone::unsupported:
             throw std::runtime_error("unsupported CUDA model backbone");

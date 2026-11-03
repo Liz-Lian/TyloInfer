@@ -61,7 +61,7 @@ struct Mtp final : MtpModule {
         Mtp result;
         result.config = main;
         result.execution = &execution;
-        result.executor = execution.make_executor();
+        result.executor = execution.executor().fork(model_parallel_primary_device(execution.config));
         result.embedding = std::move(embedding);
         result.primary = weights.placement.device;
         result.embedding_norm = weights.tensor("predictor.embedding_norm.weight");
@@ -167,7 +167,7 @@ struct Mtp final : MtpModule {
                                       index, std::move(x), step, 0, mode);
                 return x;
             }
-        } ops{*this, execution->forward_mode()};
+        } ops{*this, execution->executor().forward_mode(execution->config.layer_placement.primary_device())};
         return mfq::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
                                                      true);
     }

@@ -4,6 +4,7 @@
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
+#include "engine/backends/cuda/ops/ffn/gated.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/executor.h"
 #endif
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 
 class TqExec;
 
@@ -57,6 +59,15 @@ public:
         Dense::Options dense;
         Ffn::Options ffn;
         MoeFfnOptions moe_ffn;
+        GatedResidual::Options residual;
+        bool gdn_fused_output = true;
+        bool gdn_fused_preparation = true;
+        bool gdn_fused_core = true;
+        bool tensor_parallel_shared_linear_attention_input = true;
+        bool linear_conv_prefill_fused = true;
+        bool gdn_transposed_state = true;
+        bool gemma4_fused_norms = true;
+        bool dsv4_groupwise_output_a = true;
         std::string profile_filter;
     };
 
@@ -75,6 +86,7 @@ public:
                                    const Mode& mode);
     std::vector<mfq_tensor_backend::Tensor> storage() const;
     Projector projector(const Ffn::Mode& mode);
+    Projector projector(const Ffn::Mode& mode, int primary);
     mfq_tensor_backend::Tensor full_ffn(
         const Ffn& ffn, const mfq_tensor_backend::Tensor& ffn_norm,
         const FullAttention& attention, mfq_tensor_backend::Tensor residual,
@@ -92,19 +104,24 @@ public:
     Branches& branches() noexcept { return branches_; }
     Pipelines& pipelines() noexcept { return pipelines_; }
     const Options& options() const noexcept { return options_; }
+    Mode& mode() noexcept { return mode_; }
+    const Mode& mode() const noexcept { return mode_; }
+    Mode forward_mode(int primary) const;
     const AttentionOptions& attention_options() const noexcept { return options_.attention; }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     using AttentionGeometry = std::tuple<std::int64_t, std::int64_t, std::int64_t, std::int64_t>;
     AttentionScratch& attention_scratch(mfq::Device device, AttentionGeometry geometry);
+#else
+    std::unordered_map<const void*, AttentionScratch>& attention_scratch() noexcept { return attention_scratch_; }
 #endif
     MlaScratch& mla_scratch(int device) { return mla_scratch_[device]; }
 
 private:
     Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
              Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
-             const Options& options, int primary);
+             const Options& options, Mode& mode, int primary);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::unique_ptr<mfq::Executor::Scope> enter(int device);
 #endif
@@ -113,6 +130,8 @@ private:
     ContextSet& contexts_;
     std::unique_ptr<Options> owned_options_;
     const Options& options_;
+    std::unique_ptr<Mode> owned_mode_;
+    Mode& mode_;
     std::unique_ptr<CudaProfiler> owned_profiler_;
     CudaProfiler& profiler_;
     std::unique_ptr<KlMmqState> owned_mmq_;
@@ -131,6 +150,8 @@ private:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mutable std::mutex attention_scratch_mutex_;
     std::map<std::pair<int, std::uintptr_t>, std::map<AttentionGeometry, AttentionScratch>> attention_scratch_;
+#else
+    std::unordered_map<const void*, AttentionScratch> attention_scratch_;
 #endif
     std::map<int, MlaScratch> mla_scratch_;
 };

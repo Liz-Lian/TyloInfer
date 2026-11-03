@@ -88,10 +88,10 @@ void BatchOps::resume_decode(int64_t) {}
 
 mfq::engine::PrefillChunk BatchOps::prefill_chunk(
     const std::shared_ptr<Request>& request, mfq::engine::PrefillChunk chunk) {
-    CudaScope guard(execution_.layer_placement.primary_device(), execution_.executor().contexts());
+    CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     initialize_prefill(request, chunk);
     return mfq::cuda::budget_batch_prefill(
-        model_.hidden_size(), model_.hc_mult(), execution_.layer_placement.primary_device(),
+        model_.hidden_size(), model_.hc_mult(), execution_.config.layer_placement.primary_device(),
         execution_.weights.moe, chunk,
         request->cache->prefill_growth_bytes(chunk.count));
 }
@@ -128,7 +128,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
             qwen4_release_decode_graphs(model_, nullptr);
             model_.reset(1);
             release_moe_decode_buffers(execution_.weights.moe);
-            default_context(execution_.layer_placement.primary_device())->reclaim_idle_memory();
+            default_context(execution_.config.layer_placement.primary_device())->reclaim_idle_memory();
         }
         requests_.push_back(request);
         request->cache = std::make_unique<Qwen4BatchRequestState>(model_);
@@ -138,7 +138,7 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
                 mfq_tensor_backend::TensorOptions()
                     .dtype(mfq_tensor_backend::kInt64)
                     .device(mfq_tensor_backend::Device(
-                        mfq_tensor_backend::kCUDA, execution_.layer_placement.primary_device())))
+                        mfq_tensor_backend::kCUDA, execution_.config.layer_placement.primary_device())))
                 .reshape({1, -1});
         request->sampler.emplace(request->sampling);
         if (request->sampler->has_penalties())
@@ -164,7 +164,7 @@ BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& reques
 BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
                                    mfq::engine::PrefillChunk chunk) {
     try {
-        CudaScope guard(execution_.layer_placement.primary_device(), execution_.executor().contexts());
+        CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
         initialize_prefill(request, chunk);
         auto timer = std::make_unique<PrefillCudaTimer>();
         auto hidden =
@@ -199,7 +199,7 @@ int64_t BatchOps::prefill_batch_token_budget() const {
 
 std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill_batch(
     const std::vector<std::pair<std::shared_ptr<Request>, mfq::engine::PrefillChunk>>& items) {
-    CudaScope guard(execution_.layer_placement.primary_device(), execution_.executor().contexts());
+    CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     qwen4_release_decode_graphs(model_, nullptr);
     model_.adapter_begin_forward(false);
     release_moe_decode_buffers(execution_.weights.moe);
@@ -320,12 +320,12 @@ void BatchOps::retire(const std::vector<std::shared_ptr<Request>>& retired, int6
         // Batch widths have distinct transfer arenas and graph scratch. Return
         // them at idle while preserving resident experts and adaptation heat.
         release_moe_decode_buffers(execution_.weights.moe);
-        default_context(execution_.layer_placement.primary_device())->reclaim_idle_memory();
+        default_context(execution_.config.layer_placement.primary_device())->reclaim_idle_memory();
     }
 }
 
 BatchOps::Decoded BatchOps::decode(State& state) {
-    CudaScope guard(execution_.layer_placement.primary_device(), execution_.executor().contexts());
+    CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     std::vector<Qwen4BatchRequestState*> caches;
     std::vector<int64_t> tokens;
     for (const auto& request : state.active) {
@@ -344,9 +344,9 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                         mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
                         .reshape({-1, 1});
     auto ids = host_ids.to(mfq_tensor_backend::Device(
-        mfq_tensor_backend::kCUDA, execution_.layer_placement.primary_device()));
+        mfq_tensor_backend::kCUDA, execution_.config.layer_placement.primary_device()));
     CacheScope moe_cache_scope(
-        execution_.continuous_batch_cache_serial, tokens.size() > 8);
+        execution_.executor().mode().ffn.batch_serial, tokens.size() > 8);
     const bool greedy =
         config_.greedy && std::all_of(
                               state.active.begin(), state.active.end(), [](const auto& request) {

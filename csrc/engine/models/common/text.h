@@ -2,6 +2,7 @@
 
 #include "env.h"
 #include "engine/load.h"
+#include "engine/drain.h"
 #include "engine/models/common/components.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/causal_model.h"
@@ -60,6 +61,7 @@ struct Text {
 
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
+    Executor& root_executor;
     RoutedCache& weights;
     std::shared_ptr<KvMemoryManager>& kv;
     std::shared_ptr<KvOffloadStore>& offload;
@@ -103,7 +105,7 @@ struct Text {
         if(weights.tq)return;
         if(preparing_graph_depth)return;
         prepare_moe_decode_residency(weights.moe);
-        mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
+        mfq::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
         if(expert_space)
             expert_space->restore(runtime_options::workspace_reserve_bytes(), source.get());
@@ -131,7 +133,7 @@ struct Text {
                 qwen4_release_decode_graphs(language,components.mtp.get());
                 release_moe_decode_buffers(weights.moe);
                 state.reset(1);components.mtp->reset(1);
-                auto context=mfq::cuda::default_context(execution->layer_placement.primary_device());
+                auto context=mfq::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
                 budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth),
                     expert_space ? &*expert_space : nullptr);
@@ -149,8 +151,8 @@ struct Text {
     }
 
     bool online_budget_supported() const {
-        return execution->layer_placement.devices.size()<=1 && !execution->tensor_parallel.enabled()
-            && !execution->expert_parallel.enabled();
+        return execution->config.layer_placement.devices.size()<=1 && !execution->config.tensor_parallel.enabled()
+            && !execution->config.expert_parallel.enabled();
     }
 
     Text(CudaExecutionContext& borrowed, RoutedCache& borrowed_weights,
@@ -161,7 +163,8 @@ struct Text {
             CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
             std::shared_ptr<WeightMemoryLedger> ledger)
-        : weight_memory(std::move(ledger)), execution(&borrowed), weights(borrowed_weights),
+        : weight_memory(std::move(ledger)), execution(&borrowed), root_executor(borrowed.executor()),
+          weights(borrowed_weights),
           kv(borrowed_kv), offload(borrowed_offload), config(std::move(runtime_config)),
           source(std::move(model_source)),
           model(std::move(model_owner)), owned_state(std::move(state_owner)),
@@ -179,7 +182,7 @@ struct Text {
                 cuda_has_separate_memory()) {
         try {
         budget.emplace(*weight_memory, weights, cache,
-            execution->layer_placement.primary_device());
+            execution->config.layer_placement.primary_device());
         if (offload)
             offload->set_ram_reservation([this](std::size_t bytes) {
                 cache.reserve_ram(bytes);weights.reserve(bytes);
@@ -190,15 +193,15 @@ struct Text {
                     config.generation.prefill_chunk_size);
             else {
                 auto batch_config = config.continuous_batch;
-                batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
+                batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(execution->config, execution->executor(), execution->weights);
                 batching = make_batch(
-                    std::shared_ptr<const Model>(model), &state, execution->make_executor(),
-                    execution->executor().collectives(), execution->forward_mode(),
+                    std::shared_ptr<const Model>(model), &state, execution->executor().fork(model_parallel_primary_device(execution->config)),
+                    execution->executor().collectives(), execution->executor().forward_mode(execution->config.layer_placement.primary_device()),
                     weights.moe, std::move(batch_config),
                     config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
-                    execution->dense_cpu_layer_count != 0 ||
-                        !execution->dsv4_cpu_offload_layers.empty(),
+                    execution->config.dense_cpu_layer_count != 0 ||
+                        !execution->config.dsv4_cpu_offload_layers.empty(),
                     execution->config.weights.min_slots);
             }
         }
@@ -211,7 +214,7 @@ struct Text {
             }
             if(expert_loan)
                 expert_space.emplace(weights,
-                    execution->layer_placement.primary_device(), std::move(expert_loan));
+                    execution->config.layer_placement.primary_device(), std::move(expert_loan));
             restore_decode_workspace=[this]{restore_graph_expert_space();};
             if constexpr (requires(Model& value) {
                               value.restore_decode_workspace = std::function<void()>();
@@ -227,7 +230,7 @@ struct Text {
         }
         if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
-                const auto device = execution->layer_placement.primary_device();
+                const auto device = execution->config.layer_placement.primary_device();
                 auto context = mfq::cuda::default_context(device);
                 if (context->available_memory() >= bytes) return;
                 if(expert_space && !expert_space->empty()) {
@@ -285,7 +288,7 @@ struct Text {
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
                 auto generation=run_mtp_generation(language,state,executor.get(),execution->executor().collectives(),
-                                                   execution->forward_mode(),weights,info,source.get(),predictor,mtp_state,request,output,16,
+                                                   execution->executor().forward_mode(execution->config.layer_placement.primary_device()),weights,info,source.get(),predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
                 finish_moe_expert_exchanges(weights.moe);
@@ -299,14 +302,17 @@ struct Text {
                     <<" ms="<<std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-start).count()<<'\n';
                 release_moe_prefill_buffers(weights.moe);
-                mfq::cuda::default_context(execution->layer_placement.primary_device())->reclaim_idle_memory();
+                mfq::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
             }
         }
         preparing_graph_depth=false;
         restore_graph_expert_space();
         } catch (...) {
             const auto failure = std::current_exception();
-            try { execution->drain(); }
+            try {
+                drain_cuda(root_executor, weights, offload.get(), execution->config.layer_placement,
+                           execution->config.tensor_parallel, execution->config.expert_parallel);
+            }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             clear_bindings();
             std::rethrow_exception(failure);
@@ -361,8 +367,8 @@ struct Text {
             return causal.prepare(input.prompt, *input.vision, state);
         } else
 #endif
-        return components.prepare(language, execution->projector(), weights.moe,
-            execution->executor().collectives(), execution->layer_placement.primary_device(), executor.get(),
+        return components.prepare(language, execution->executor().projector(execution->executor().mode().ffn, model_parallel_primary_device(execution->config)), weights.moe,
+            execution->executor().collectives(), execution->config.layer_placement.primary_device(), executor.get(),
             input.prompt, *input.vision);
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
@@ -376,11 +382,14 @@ struct Text {
         if(!batched)prepare_graph_depth(input);
         return internal::generate(
             language, state, executor.get(), execution->executor().collectives(),
-            execution->forward_mode(), execution->executor().profiler(), weights,
-            execution->decode_graph_serial_branches, execution->config.report_cuda_memory,
-            execution->dsv4_cpu_offload_layers.empty() && execution->dense_cpu_layer_count == 0 &&
-                model_parallel_cuda_graph_enabled(*execution),
-            [owner = execution] { owner->drain(); },
+            execution->executor().forward_mode(execution->config.layer_placement.primary_device()), execution->executor().profiler(), weights,
+            execution->executor().mode().ffn.serial, execution->config.report_cuda_memory,
+            execution->config.dsv4_cpu_offload_layers.empty() && execution->config.dense_cpu_layer_count == 0 &&
+                model_parallel_cuda_graph_enabled(execution->config, execution->executor(), execution->weights),
+            [this] {
+                drain_cuda(root_executor, weights, offload.get(), execution->config.layer_placement,
+                           execution->config.tensor_parallel, execution->config.expert_parallel);
+            },
             info, source.get(), graph, cache, config, input, output,
             mtp_state,
             batched ? nullptr : components.mtp.get(), std::move(prepared),
@@ -403,7 +412,7 @@ struct Text {
             return runtime_metrics(language,components,mtp_state,graph_draft_depth,
                 expert_space ? &*expert_space : nullptr,batching.get(),source.get(),
                 *weight_memory,weights,kv.get(),offload.get(),cache,*budget,
-                execution->layer_placement,execution->tensor_parallel,execution->expert_parallel);
+                execution->config.layer_placement,execution->config.tensor_parallel,execution->config.expert_parallel);
         } else {
             auto result = components.control(value);
             if constexpr (std::is_same_v<T, MfqDuplexSessionParams>)

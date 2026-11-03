@@ -73,15 +73,15 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
     }
     cache.quantization = kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    const auto mode = execution.forward_mode().ffn;
+    const auto mode = execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn;
     auto attention = mfq::cuda::FullAttention::forward(
         std::move(x), step, cache.view(), rope, {mode.serial, mode.projection_major},
-        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+        layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
 #else
     auto attention = mfq::cuda::FullAttention::forward(
-        execution.projector(), execution.executor().profiler(), execution.executor().options().attention,
-        std::move(x), step, cache.view(), execution.attention_scratch[this], rope,
-        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+        execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(), execution.executor().options().attention,
+        std::move(x), step, cache.view(), execution.executor().attention_scratch()[this], rope,
+        layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
 #endif
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
 }
@@ -89,9 +89,9 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
 mfq_tensor_backend::Tensor FullBlock::forward_ffn(
     CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
     mfq_tensor_backend::Tensor output, int64_t, int64_t, int64_t) {
-    auto executor = execution.make_executor();
+    auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     return executor->full_ffn(
         ffn, ffn_norm, *this, std::move(residual), std::move(output),
-        execution.forward_mode().ffn,
-        layer == execution.gemma_trace_layer ? execution.gemma_stage_trace : nullptr);
+        execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn,
+        layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
 }

@@ -1,5 +1,5 @@
 #include "options.h"
-#include "config.h"
+#include "engine/load.h"
 
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/ops/ffn/moe.h"
@@ -537,8 +537,8 @@ bool enabled_unless_disabled(const char* name) {
 
 } // namespace
 
-std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution_config() {
-    CudaExecutionConfig result;
+std::pair<mfq::cuda::CudaLoadConfig, mfq::cuda::Executor::Options> mfq::cuda::load_cuda_execution_config() {
+    CudaLoadConfig result;
     mfq::cuda::Executor::Options numeric;
     numeric.profile_filter = mfq::cuda::env_value("TYLOINFER_PROFILE_CUDA_FILTER").value_or("");
     result.report_cuda_memory = mfq::cuda::env_flag("TYLOINFER_REPORT_CUDA_MEMORY", false);
@@ -557,7 +557,7 @@ std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution
     }
     numeric.projection.grouped = mfq::cuda::env_flag(
         "TYLOINFER_TP_GROUPED_PROJECTIONS", true);
-    result.tensor_parallel_shared_linear_attention_input = mfq::cuda::env_flag(
+    numeric.tensor_parallel_shared_linear_attention_input = mfq::cuda::env_flag(
         "TYLOINFER_TP_SHARED_LINEAR_ATTENTION_INPUT", true);
     result.tensor_parallel_mirror_linear_attention_scalars = mfq::cuda::env_flag(
         "TYLOINFER_TP_MIRROR_LINEAR_ATTENTION_SCALARS", true);
@@ -624,9 +624,9 @@ std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution
         "TYLOINFER_DISABLE_FFN_SWIGLU_FUSION");
     numeric.dense.important_parallel = enabled_unless_disabled(
         "TYLOINFER_DISABLE_IN_BRANCH_PARALLEL");
-    result.gemma4_fused_norms = mfq::cuda::env_flag(
+    numeric.gemma4_fused_norms = mfq::cuda::env_flag(
         "TYLOINFER_GEMMA4_FUSED_NORMS", true);
-    result.dsv4_groupwise_output_a = mfq::cuda::env_flag(
+    numeric.dsv4_groupwise_output_a = mfq::cuda::env_flag(
         "TYLOINFER_DSV4_GROUPWISE_OUTPUT_A", true);
     result.weights.grouped = enabled_unless_disabled(
         "TYLOINFER_DIAGNOSTIC_DISABLE_NINT_GROUP");
@@ -636,10 +636,10 @@ std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution
         "TYLOINFER_DIAGNOSTIC_IN_F32_DOWN", false);
     numeric.attention.write_aten = mfq::cuda::env_flag(
         "TYLOINFER_KV_CACHE_WRITE_ATEN", false);
-    result.gdn_transposed_state = mfq::cuda::env_flag(
+    numeric.gdn_transposed_state = mfq::cuda::env_flag(
         "TYLOINFER_GDN_TRANSPOSED_STATE", true);
-    result.gdn_fused_output = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_OUTPUT",true);
-    result.linear_conv_prefill_fused = mfq::cuda::env_flag(
+    numeric.gdn_fused_output = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_OUTPUT",true);
+    numeric.linear_conv_prefill_fused = mfq::cuda::env_flag(
         "TYLOINFER_LINEAR_CONV_PREFILL_FUSED", true);
     numeric.attention.fused_rope = mfq::cuda::env_flag(
         "TYLOINFER_MINICPM_FUSED_BF16_ROPE", true);
@@ -686,17 +686,17 @@ std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution
     result.moe_residency_adapt = mfq::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_ADAPT",true);
     result.moe_residency_warm = mfq::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_WARM",true);
     result.moe_residency_projection_heat = mfq::cuda::env_flag("TYLOINFER_MOE_RESIDENCY_PROJECTION_HEAT",true);
-    result.residual.fused_projections = mfq::cuda::env_flag("TYLOINFER_GR_FUSED_PROJECTIONS",true);
-    result.residual.fused_activation = mfq::cuda::env_flag("TYLOINFER_GR_FUSED_PROJECTION_ACTIVATION",true);
-    result.residual.fused_post_norm = mfq::cuda::env_flag("TYLOINFER_GR_FUSED_POST_NORM",true);
-    result.gdn_fused_preparation = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_PREPARATION",true);
-    result.gdn_fused_core = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_CORE",true);
-    result.residual.prepared_dense = mfq::cuda::env_flag("TYLOINFER_GR_PREPARED_DENSE_PROJECTION",false);
-    result.residual.native_input = mfq::cuda::env_flag("TYLOINFER_GR_NATIVE_PROJECTION_INPUT",true);
-    result.residual.fixed_group = mfq::cuda::env_flag("TYLOINFER_GR_FIXED_GROUP_PROJECTION",true);
-    result.residual.compact_mix = mfq::cuda::env_flag("TYLOINFER_GR_COMPACT_MIX",true);
-    result.residual.two_stage = mfq::cuda::env_flag("TYLOINFER_GR_TWO_STAGE",true);
-    result.residual.dense_injection = mfq::cuda::env_flag("TYLOINFER_GR_TWO_STAGE_DENSE_INJECTION",true);
+    numeric.residual.fused_projections = mfq::cuda::env_flag("TYLOINFER_GR_FUSED_PROJECTIONS",true);
+    numeric.residual.fused_activation = mfq::cuda::env_flag("TYLOINFER_GR_FUSED_PROJECTION_ACTIVATION",true);
+    numeric.residual.fused_post_norm = mfq::cuda::env_flag("TYLOINFER_GR_FUSED_POST_NORM",true);
+    numeric.gdn_fused_preparation = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_PREPARATION",true);
+    numeric.gdn_fused_core = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_CORE",true);
+    numeric.residual.prepared_dense = mfq::cuda::env_flag("TYLOINFER_GR_PREPARED_DENSE_PROJECTION",false);
+    numeric.residual.native_input = mfq::cuda::env_flag("TYLOINFER_GR_NATIVE_PROJECTION_INPUT",true);
+    numeric.residual.fixed_group = mfq::cuda::env_flag("TYLOINFER_GR_FIXED_GROUP_PROJECTION",true);
+    numeric.residual.compact_mix = mfq::cuda::env_flag("TYLOINFER_GR_COMPACT_MIX",true);
+    numeric.residual.two_stage = mfq::cuda::env_flag("TYLOINFER_GR_TWO_STAGE",true);
+    numeric.residual.dense_injection = mfq::cuda::env_flag("TYLOINFER_GR_TWO_STAGE_DENSE_INJECTION",true);
     numeric.projection.moe.nint_decode = mfq::cuda::env_flag("TYLOINFER_MOE_NINT_HETEROGENEOUS_DECODE",true);
     if (const auto value = mfq::cuda::env_value("TYLOINFER_MOE_RAM_PCIE_FRACTION")) {
         std::size_t end = 0;

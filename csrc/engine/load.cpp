@@ -13,7 +13,7 @@
 #include "engine/models/common/model_graph.h"
 #include "engine/engine_impl.h"
 #include "engine/instance_impl.h"
-#include "engine/instance.h"
+#include "engine/drain.h"
 
 #include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/native/collectives.h"
@@ -61,6 +61,33 @@ using State = std::variant<
 
 namespace mfq::cuda {
 
+bool model_parallel_enabled(const CudaLoadConfig& config) {
+    return config.tensor_parallel.enabled() || config.expert_parallel.enabled();
+}
+
+const ParallelConfig& model_parallel_config(const CudaLoadConfig& config) {
+    return config.tensor_parallel.enabled() ? config.tensor_parallel : config.expert_parallel;
+}
+
+const ParallelConfig& moe_parallel_config(const CudaLoadConfig& config) {
+    return config.expert_parallel.enabled() ? config.expert_parallel : config.tensor_parallel;
+}
+
+int model_parallel_primary_device(const CudaLoadConfig& config) {
+    if (!config.tensor_parallel.devices.empty()) return config.tensor_parallel.primary_device();
+    if (!config.expert_parallel.devices.empty()) return config.expert_parallel.primary_device();
+    return 0;
+}
+
+bool model_parallel_cuda_graph_enabled(const CudaLoadConfig& config,
+        const Executor& executor, const RoutedCache& weights) {
+    if (weights.tq && moe_parallel_config(config).enabled()) return false;
+    if (!config.tensor_parallel.enabled() && !config.expert_parallel.enabled()) return true;
+    const bool enabled = config.expert_parallel.enabled() && !config.tensor_parallel.enabled()
+        ? config.expert_parallel_cuda_graph : config.tensor_parallel_cuda_graph;
+    return executor.collectives().enabled() && enabled;
+}
+
 namespace {
 
 auto load_qwen(
@@ -73,16 +100,8 @@ auto load_qwen(
     int gpu_layers,
     bool extend_yarn,
     bool expert_parallel,
-    bool mirror_scalars,
-    std::unique_ptr<Executor> executor,
-    Collectives& copies,
-    const bool& transposed,
-    const int64_t& kv_capacity,
-    Trace* const& trace,
-    const int& trace_scope,
-    bool cpu_offload,
-    bool preallocate) {
-    return qwen35::assemble(
+    bool mirror_scalars) {
+    return std::make_shared<qwen35::Model>(qwen35::load(
         source, weights, placement, yarn, cpu_layers,
         qwen35::LoadOptions{
             .config_path = options.config_path,
@@ -90,9 +109,7 @@ auto load_qwen(
             .gpu_layers = gpu_layers,
             .extend_yarn = extend_yarn,
             .expert_parallel = expert_parallel,
-            .mirror_scalars = mirror_scalars},
-        std::move(executor), copies, transposed, kv_capacity, trace,
-        trace_scope, true, cpu_offload, preallocate);
+            .mirror_scalars = mirror_scalars}));
 }
 
 } // namespace
@@ -102,12 +119,12 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     if (cuda_backbone(mfq::models::graph(*source).backbone) ==
             CudaBackbone::generic_qwen) {
         return std::make_unique<CudaEngine<
-            Loaded<qwen35::Model, qwen35::State, qwen35::Components>,
+            qwen35::Model, qwen35::State, qwen35::Components,
             load_qwen>>(std::move(options), std::move(source));
     }
     source.reset();
-    return std::make_unique<engine::EngineInstance<
-        engine_detail::Backend<engine_detail::State, with_model<false>>>>(std::move(options));
+    return std::make_unique<engine_detail::EngineInstance<
+        engine_detail::State, with_model<false>>>(std::move(options));
 }
 
 } // namespace mfq::cuda
@@ -305,63 +322,63 @@ static void print_parallel_config(
 }
 
 static void configure_model_parallel(
-        CudaExecutionContext& execution,
+        CudaLoadConfig& config, Collectives& collectives,
         const std::string & tensor_devices_arg,
         const std::string & tensor_split_arg,
         const std::string & expert_devices_arg,
         const std::string & expert_split_arg,
         bool allow_duplicate_devices = false) {
-    execution.executor().collectives().reset();
-    execution.tensor_parallel = {};
-    execution.expert_parallel = {};
+    collectives.reset();
+    config.tensor_parallel = {};
+    config.expert_parallel = {};
 
     int available = 0;
     TYLOINFER_CUDA_CHECK(cudaGetDeviceCount(&available));
-    execution.tensor_parallel = parse_parallel_config(
+    config.tensor_parallel = parse_parallel_config(
         tensor_devices_arg, tensor_split_arg,
         "--tensor-parallel", "--tensor-split",
         available, allow_duplicate_devices);
-    execution.expert_parallel = parse_parallel_config(
+    config.expert_parallel = parse_parallel_config(
         expert_devices_arg, expert_split_arg,
         "--expert-parallel", "--expert-split",
         available, allow_duplicate_devices);
 
-    if (execution.tensor_parallel.enabled() &&
-            execution.expert_parallel.enabled() &&
-            execution.tensor_parallel.devices !=
-                execution.expert_parallel.devices) {
+    if (config.tensor_parallel.enabled() &&
+            config.expert_parallel.enabled() &&
+            config.tensor_parallel.devices !=
+                config.expert_parallel.devices) {
         throw std::runtime_error(
             "combined tensor and expert parallelism requires the same "
             "ordered CUDA device group");
     }
-    if (!execution.tensor_parallel.enabled() &&
-            !execution.expert_parallel.enabled()) {
+    if (!config.tensor_parallel.enabled() &&
+            !config.expert_parallel.enabled()) {
         TYLOINFER_CUDA_CHECK(cudaSetDevice(0));
         return;
     }
 
-    const auto& config = execution.tensor_parallel.enabled()
-        ? execution.tensor_parallel : execution.expert_parallel;
-    Collectives::enable_peer_access(config.devices);
-    execution.executor().collectives().configure(
-        config.devices, allow_duplicate_devices);
-    TYLOINFER_CUDA_CHECK(cudaSetDevice(config.primary_device()));
+    const auto& group = config.tensor_parallel.enabled()
+        ? config.tensor_parallel : config.expert_parallel;
+    Collectives::enable_peer_access(group.devices);
+    collectives.configure(
+        group.devices, allow_duplicate_devices);
+    TYLOINFER_CUDA_CHECK(cudaSetDevice(group.primary_device()));
     print_parallel_config(
-        "tensor_parallel", execution.tensor_parallel);
+        "tensor_parallel", config.tensor_parallel);
     print_parallel_config(
-        "expert_parallel", execution.expert_parallel);
-    std::cerr << "model_parallel ranks=" << config.devices.size()
+        "expert_parallel", config.expert_parallel);
+    std::cerr << "model_parallel ranks=" << group.devices.size()
               << " collective_backend="
-              << (execution.executor().collectives().enabled()
+              << (collectives.enabled()
                   ? "nccl" : "serial")
               << '\n';
 }
 
 static void configure_layer_placement(
-        CudaExecutionContext& execution,
+        CudaLoadConfig& config,
         const std::string & devices_arg,
         const std::string & split_arg) {
-    auto& placement = execution.layer_placement;
+    auto& placement = config.layer_placement;
     placement = {};
     if (devices_arg.empty()) {
         if (!split_arg.empty()) {
@@ -369,11 +386,11 @@ static void configure_layer_placement(
                 "--layer-split requires --layer-parallel");
         }
         placement.devices = {
-            model_parallel_primary_device(execution)};
+            model_parallel_primary_device(config)};
         return;
     }
-    if (execution.tensor_parallel.enabled() ||
-            execution.expert_parallel.enabled()) {
+    if (config.tensor_parallel.enabled() ||
+            config.expert_parallel.enabled()) {
         throw std::runtime_error(
             "--layer-parallel cannot be combined with tensor/expert parallelism");
     }
@@ -436,33 +453,60 @@ static std::unordered_set<int> parse_layer_ranges(
 
 void setup_cuda_load(
         const mfq::cuda::CudaLoadOptions& options,
-        CudaExecutionContext& execution) {
-    execution.reset();
-    execution.offload.reset();
-    execution.kv.reset();
-    execution.weights.reset();
-    execution.weights.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
-    execution.weights.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
-    if (options.n_gpu_layers_set) execution.n_gpu_layers = options.n_gpu_layers;
+        CudaLoadConfig& config, Executor& executor, RoutedCache& weights,
+        std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload) {
+    drain_cuda(executor, weights, offload.get(),
+               config.layer_placement, config.tensor_parallel, config.expert_parallel);
+    executor.pipelines().clear();
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+    executor.attention_scratch().clear();
+#endif
+    executor.branches().clear();
+    executor.profiler().reset();
+    executor.collectives().reset();
+    config.tensor_parallel = {};
+    config.expert_parallel = {};
+    config.layer_placement = {};
+    config.dsv4_cpu_offload_layers.clear();
+    config.dsv4_cpu_offload_host_bytes = 0;
+    config.n_gpu_layers = -1;
+    config.dense_cpu_layer_count = 0;
+    config.drop_file_cache = false;
+    executor.mode().ffn.serial = false;
+    executor.mode().ffn.projection_major = false;
+    executor.mode().ffn.batch_serial = false;
+    executor.routes().clear();
+    executor.mmq().reset();
+    executor.mode().ffn.unfused = false;
+    executor.mode().ffn.materialized = false;
+    config.weights.min_slots = 8;
+    executor.mode().trace_layer = -1;
+    executor.mode().trace = nullptr;
+    offload.reset();
+    kv.reset();
+    weights.reset();
+    weights.host_bytes = env_size("TYLOINFER_MOE_HOST_CACHE_BYTES", 0);
+    weights.host_limit = env_size("TYLOINFER_MOE_HOST_PHYSICAL_BYTES", 0);
+    if (options.n_gpu_layers_set) config.n_gpu_layers = options.n_gpu_layers;
     if (options.cpu_threads_set && options.cpu_threads <= 0) {
         throw std::runtime_error("--threads must be positive");
     }
     if (options.cpu_threads > 0) {
         mfq_set_num_threads(options.cpu_threads);
     }
-    execution.yarn_context_extension=options.yarn_context_extension;
+    config.yarn_context_extension=options.yarn_context_extension;
     configure_model_parallel(
-        execution, options.tensor_parallel_arg, options.tensor_split_arg,
+        config, executor.collectives(), options.tensor_parallel_arg, options.tensor_split_arg,
         options.expert_parallel_arg, options.expert_split_arg,
         options.parallel_test_duplicates);
     configure_layer_placement(
-        execution, options.layer_parallel_arg, options.layer_split_arg);
+        config, options.layer_parallel_arg, options.layer_split_arg);
     if (!options.cpu_offload_layers_arg.empty()) {
-        execution.dsv4_cpu_offload_layers =
+        config.dsv4_cpu_offload_layers =
             parse_layer_ranges(options.cpu_offload_layers_arg);
         std::vector<int> ordered(
-            execution.dsv4_cpu_offload_layers.begin(),
-            execution.dsv4_cpu_offload_layers.end());
+            config.dsv4_cpu_offload_layers.begin(),
+            config.dsv4_cpu_offload_layers.end());
         std::sort(ordered.begin(), ordered.end());
         std::cerr << "cpu_offload_layers=";
         for (size_t index = 0; index < ordered.size(); ++index) {
@@ -471,7 +515,7 @@ void setup_cuda_load(
         }
         std::cerr << std::endl;
     }
-    if (options.n_gpu_layers_set && execution.n_gpu_layers < 0) {
+    if (options.n_gpu_layers_set && config.n_gpu_layers < 0) {
         throw std::runtime_error("--n-gpu-layers must be non-negative");
     }
     if (options.n_gpu_layers_set && !options.cpu_offload_layers_arg.empty()) {
@@ -490,8 +534,8 @@ void setup_cuda_load(
             "--cpu-offload-layers");
     }
     if (options.moe_gpu_cache_gb > 0.0 &&
-            (execution.tensor_parallel.enabled() ||
-             execution.expert_parallel.enabled())) {
+            (config.tensor_parallel.enabled() ||
+             config.expert_parallel.enabled())) {
         throw std::runtime_error(
             "--moe-gpu-cache-gb cannot be combined with "
             "tensor/expert parallelism");
@@ -515,34 +559,34 @@ void setup_cuda_load(
             throw std::runtime_error(
                 "--moe-gpu-cache-gb is outside the supported range");
         }
-        execution.weights.device_bytes = static_cast<std::size_t>(bytes);
-        execution.weights.moe =
+        weights.device_bytes = static_cast<std::size_t>(bytes);
+        weights.moe =
             make_moe_expert_cache(
                 static_cast<int64_t>(bytes), MoeCacheOptions{
-                .host_bytes = execution.weights.host_bytes,
-                .host_limit = execution.weights.host_limit,
-                .mapped = execution.config.moe_mapped_gather,
-                .copy_blocks = execution.config.moe_mapped_copy_blocks,
-                .io_workers = execution.config.moe_ssd_io_workers,
-                .overlap = execution.config.moe_ssd_overlap,
-                .pipeline = execution.config.moe_pipeline,
-                .hybrid_cpu = execution.config.moe_hybrid_cpu,
-                .preload = execution.config.weights.preload,
-                .assert_resident = execution.config.moe_assert_resident,
-                .ram_pcie = execution.config.moe_ram_pcie,
-                .direct_ram = execution.config.moe_direct_ram,
-                .adapt = execution.config.moe_residency_adapt,
-                .warm = execution.config.moe_residency_warm,
-                .projection_heat = execution.config.moe_residency_projection_heat,
-                .ram_fraction = execution.config.moe_ram_pcie_fraction,
-                .two_stage = execution.executor().options().moe_ffn.two_stage,
-                .heterogeneous = execution.executor().options().projection.moe.heterogeneous});
-        if (!profile_path.empty() && execution.weights.moe) {
-            set_moe_expert_cache_profile(*execution.weights.moe,mfq::load_moe_cache_profile(profile_path));
+                .host_bytes = weights.host_bytes,
+                .host_limit = weights.host_limit,
+                .mapped = config.moe_mapped_gather,
+                .copy_blocks = config.moe_mapped_copy_blocks,
+                .io_workers = config.moe_ssd_io_workers,
+                .overlap = config.moe_ssd_overlap,
+                .pipeline = config.moe_pipeline,
+                .hybrid_cpu = config.moe_hybrid_cpu,
+                .preload = config.weights.preload,
+                .assert_resident = config.moe_assert_resident,
+                .ram_pcie = config.moe_ram_pcie,
+                .direct_ram = config.moe_direct_ram,
+                .adapt = config.moe_residency_adapt,
+                .warm = config.moe_residency_warm,
+                .projection_heat = config.moe_residency_projection_heat,
+                .ram_fraction = config.moe_ram_pcie_fraction,
+                .two_stage = executor.options().moe_ffn.two_stage,
+                .heterogeneous = executor.options().projection.moe.heterogeneous});
+        if (!profile_path.empty() && weights.moe) {
+            set_moe_expert_cache_profile(*weights.moe,mfq::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }
-        execution.drop_file_cache = true;
+        config.drop_file_cache = true;
     }
 }
 

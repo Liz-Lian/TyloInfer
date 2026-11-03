@@ -22,6 +22,7 @@
 #include <optional>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace mfq::cuda::commands {
@@ -33,20 +34,20 @@ Model load_reference_model(CudaExecutionContext& execution,
                            const CudaLoadOptions& options,
                            const std::shared_ptr<const mfq::ModelSource>& source) {
     if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
-        CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
+        CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
         mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
-            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-             execution.tensor_parallel, moe_parallel_config(execution)},
+            {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+             execution.config.tensor_parallel, moe_parallel_config(execution.config)},
             execution.weights, execution.executor().tq()};
         auto model = mfq::cuda::qwen35::load(
-            source, weights, execution.layer_placement, execution.yarn,
-            execution.dense_cpu_layer_count,
+            source, weights, execution.config.layer_placement, execution.config.yarn,
+            execution.config.dense_cpu_layer_count,
             mfq::cuda::qwen35::LoadOptions{
                 .config_path = options.config_path,
                 .context_size = options.context_size,
-                .gpu_layers = execution.n_gpu_layers,
-                .extend_yarn = execution.yarn_context_extension,
-                .expert_parallel = execution.expert_parallel.enabled(),
+                .gpu_layers = execution.config.n_gpu_layers,
+                .extend_yarn = execution.config.yarn_context_extension,
+                .expert_parallel = execution.config.expert_parallel.enabled(),
                 .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars,
                 .load_layers = false,
                 .load_input_output = false});
@@ -55,18 +56,18 @@ Model load_reference_model(CudaExecutionContext& execution,
             finalize_moe_expert_cache(execution.weights.moe);
         return model;
     } else {
-        CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
+        CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
         auto definition = mfq::models::config_json(*source, options.config_path);
-        definition = configure_yarn(execution.yarn, execution.yarn_context_extension,
+        definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
             std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
         auto model = mfq::cuda::gemma4::read(source, definition, options.context_size);
         mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
-            {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-             execution.tensor_parallel, moe_parallel_config(execution)},
+            {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+             execution.config.tensor_parallel, moe_parallel_config(execution.config)},
             execution.weights, execution.executor().tq()};
-        execution.dense_cpu_layer_count = 0;
-        mfq::cuda::gemma4::load(model, weights, execution.layer_placement,
-            execution.n_gpu_layers, execution.expert_parallel.enabled(), false, false);
+        execution.config.dense_cpu_layer_count = 0;
+        mfq::cuda::gemma4::load(model, weights, execution.config.layer_placement,
+            execution.config.n_gpu_layers, execution.config.expert_parallel.enabled(), false, false);
         if (moe_expert_cache_has_sources(execution.weights.moe) &&
             !moe_expert_cache_finalized(execution.weights.moe))
             finalize_moe_expert_cache(execution.weights.moe);
@@ -97,8 +98,8 @@ template <typename Model> struct ReferenceLayers {
     std::unique_ptr<mfq::cuda::Executor> executor;
 
     Layer load_layer(int index) {
-        const int device = execution.layer_placement.device_for_layer(index);
-        const bool cpu = index < execution.dense_cpu_layer_count;
+        const int device = execution.config.layer_placement.device_for_layer(index);
+        const bool cpu = index < execution.config.dense_cpu_layer_count;
         auto placed = weights.for_layer(device, cpu);
         if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
             return mfq::cuda::qwen35::load_layer(placed, model.config, index,
@@ -132,7 +133,7 @@ template <typename Model> struct ReferenceLayers {
         } else {
             state = KVCache{};
         }
-        if (!executor) executor = execution.make_executor();
+        if (!executor) executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     }
 
     tb::Tensor forward(int index, tb::Tensor input, const tb::Tensor& positions) {
@@ -152,7 +153,7 @@ template <typename Model> struct ReferenceLayers {
                                                 mfq_nullopt, 0, 0, 0};
             return mfq::cuda::qwen35::forward_layer(
                 execution.executor().collectives(), layer, state, *executor, 0, std::move(input), step,
-                0, *rope, execution.forward_mode());
+                0, *rope, execution.executor().forward_mode(execution.config.layer_placement.primary_device()));
         } else {
             const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
                                          : *streamed;
@@ -163,12 +164,12 @@ template <typename Model> struct ReferenceLayers {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             auto hidden = mfq::cuda::gemma4::forward_layer(layer, state,
                 execution.executor().collectives().copy(std::move(input), layer.device), step,
-                mfq::cuda::forward_options(execution.forward_mode()));
+                mfq::cuda::forward_options(execution.executor().forward_mode(execution.config.layer_placement.primary_device())));
 #else
             auto hidden = mfq::cuda::gemma4::forward_layer(layer, state, *executor, 0,
-                execution.executor().collectives().copy(std::move(input), layer.device), step, execution.forward_mode());
+                execution.executor().collectives().copy(std::move(input), layer.device), step, execution.executor().forward_mode(execution.config.layer_placement.primary_device()));
 #endif
-            return execution.executor().collectives().copy(std::move(hidden), execution.layer_placement.primary_device());
+            return execution.executor().collectives().copy(std::move(hidden), execution.config.layer_placement.primary_device());
         }
     }
 
@@ -288,8 +289,8 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     }
     auto positions = tb::arange(0, context, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64));
     mfq::cuda::weight_loader::Loader weights{source_data, execution.config.weights,
-        {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
-         execution.tensor_parallel, moe_parallel_config(execution)},
+        {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
+         execution.config.tensor_parallel, moe_parallel_config(execution.config)},
         execution.weights, execution.executor().tq()};
     ReferenceLayers<Model> layers{model, execution, weights};
     if (resident) {
@@ -376,9 +377,11 @@ int run_reference(int argc, char** argv) {
         std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
         mfq::cuda::RoutedCache weights;
         std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        CudaExecutionContext execution(weights, kv, offload);
-        CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
-        internal::setup_cuda_load(options, execution);
+        auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
+        auto executor = std::make_unique<mfq::cuda::Executor>(std::move(numeric_options), 0);
+        CudaExecutionContext execution(*executor, std::move(execution_config), weights, kv, offload);
+        CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
+        internal::setup_cuda_load(options, execution.config, *executor, weights, kv, offload);
         tb::NoGradGuard guard;
         auto source = mfq::open_model_source(options.model_path);
         const auto backbone = mfq::models::graph(*source).backbone;

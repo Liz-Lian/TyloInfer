@@ -48,8 +48,8 @@ struct MiniCPMO45Runtime {
         Tensor embed(Tensor ids) {
             return mfq::cuda::minicpmo45::text::embed(
                 runtime.language, runtime.language_executor, runtime.execution.executor().collectives(),
-                runtime.execution.layer_placement.primary_device(), std::move(ids),
-                runtime.execution.forward_mode());
+                runtime.execution.config.layer_placement.primary_device(), std::move(ids),
+                runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()));
         }
         auto vision(Tensor pixels, Tensor mask, Tensor sizes) {
             return runtime.vision.forward_steps(runtime.projector,
@@ -268,11 +268,11 @@ struct MiniCPMO45DuplexSession {
         }
         auto hidden = mfq::cuda::minicpmo45::text::forward(
             runtime.language, runtime.language_state, runtime.language_executor,
-            runtime.execution.executor().collectives(), runtime.execution.forward_mode(),
+            runtime.execution.executor().collectives(), runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()),
             mfq::cuda::Input{token_ids, embeddings.to(mfq_tensor_backend::kBFloat16).contiguous()});
         auto logits = mfq::cuda::minicpmo45::text::logits(
             runtime.language, runtime.language_executor, hidden.index({Slice(), -1, Slice()}),
-            true, runtime.execution.forward_mode());
+            true, runtime.execution.executor().forward_mode(runtime.execution.config.layer_placement.primary_device()));
         return {logits, hidden};
     }
 

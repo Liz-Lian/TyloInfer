@@ -200,6 +200,7 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 Executor::Executor(Options options, int primary)
     : owned_contexts_(std::make_unique<ContextSet>()), contexts_(*owned_contexts_),
       owned_options_(std::make_unique<Options>(std::move(options))), options_(*owned_options_),
+      owned_mode_(std::make_unique<Mode>()), mode_(*owned_mode_),
       owned_profiler_(std::make_unique<CudaProfiler>()),
       profiler_(*owned_profiler_), owned_mmq_(std::make_unique<KlMmqState>()),
       mmq_(*owned_mmq_), tq_(std::make_shared<TqExec>()),
@@ -211,12 +212,18 @@ Executor::Executor(Options options, int primary)
                                                    options_.moe_ffn, routes_)),
       pipelines_(*owned_pipelines_), primary_(primary) {
     profiler_.filter = options_.profile_filter;
+    mode_.ffn.reuse_input = options_.moe_ffn.reuse_input;
+    mode_.linear.shared_input = options_.projection.grouped && options_.tensor_parallel_shared_linear_attention_input;
+    mode_.linear.fused_conv = options_.linear_conv_prefill_fused;
+    mode_.transposed = options_.gdn_transposed_state;
+    mode_.gemma4_fused_norms = options_.gemma4_fused_norms;
+    mode_.groupwise_output = options_.dsv4_groupwise_output_a;
 }
 
 Executor::Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
         Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
-        const Options& options, int primary)
-    : contexts_(contexts), options_(options), profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
+        const Options& options, Mode& mode, int primary)
+    : contexts_(contexts), options_(options), mode_(mode), profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
       collectives_(collectives), routes_(routes), pipelines_(pipelines), primary_(primary) {}
 
 Executor::~Executor() = default;
@@ -227,12 +234,23 @@ std::unique_ptr<Executor> Executor::fork() const {
 
 std::unique_ptr<Executor> Executor::fork(int primary) const {
     return std::unique_ptr<Executor>(new Executor(contexts_, profiler_, mmq_, tq_, branches_,
-        pipelines_, collectives_, routes_, options_, primary));
+        pipelines_, collectives_, routes_, options_, mode_, primary));
+}
+
+Executor::Mode Executor::forward_mode(int primary) const {
+    auto snapshot = mode_;
+    snapshot.kv_capacity = mmq_.kv_cache_capacity;
+    snapshot.primary = primary;
+    return snapshot;
 }
 
 Projector Executor::projector(const Ffn::Mode& mode) {
+    return projector(mode, primary_);
+}
+
+Projector Executor::projector(const Ffn::Mode& mode, int primary) {
     return {profiler_, mmq_, *tq_, branches_, collectives_, options_.projection,
-            primary_, mode.serial, mode.projection_major};
+            primary, mode.serial, mode.projection_major};
 }
 
 AttentionScratch& Executor::attention_scratch(std::size_t index) {
