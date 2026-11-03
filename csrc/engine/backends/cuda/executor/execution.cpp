@@ -1,6 +1,5 @@
 #include "engine/backends/cuda/executor/execution.h"
 
-#include "engine/backends/cuda/native/env.h"
 #include "engine/backends/cuda/executor/tq.h"
 #include "engine/weights/moe/expert_cache.h"
 #include "engine/state/kv_offload.h"
@@ -11,47 +10,37 @@
 #include <unordered_set>
 
 CudaExecutionContext::CudaExecutionContext(
-        mfq::cuda::ContextSet& borrowed_contexts,
         mfq::cuda::RoutedCache& borrowed_weights,
         std::shared_ptr<mfq::cuda::KvMemoryManager>& borrowed_kv,
-        std::shared_ptr<mfq::cuda::KvOffloadStore>& borrowed_offload,
-        std::shared_ptr<TqExec>& borrowed_tq)
-    : contexts(borrowed_contexts), config(load_cuda_execution_config()),
-      weights(borrowed_weights),
-      kv(borrowed_kv), offload(borrowed_offload), tq(borrowed_tq),
-      routes(mfq::cuda::env_value("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
-             mfq::cuda::env_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false)),
-      pipelines(profiler, kl_mmq, config.tasks.projection.moe, config.moe_ffn, routes) {
-    if (!tq) throw std::invalid_argument("CUDA execution context requires a TQ execution pool");
-    profiler.filter = config.profile_filter;
+        std::shared_ptr<mfq::cuda::KvOffloadStore>& borrowed_offload)
+    : weights(borrowed_weights),
+      kv(borrowed_kv), offload(borrowed_offload) {
+    auto [execution_config, options] = load_cuda_execution_config();
+    config = std::move(execution_config);
+    executor_ = std::make_unique<mfq::cuda::Executor>(
+        std::move(options),
+        model_parallel_primary_device(*this));
 }
 
 mfq::cuda::Projector CudaExecutionContext::projector() {
-    return {profiler, kl_mmq, *tq, branches, collectives, config.tasks.projection,
+    return {executor().profiler(), executor().mmq(), *executor().tq(), executor().branches(), executor().collectives(), executor().options().projection,
             model_parallel_primary_device(*this), decode_graph_serial_branches,
             decode_graph_tp_projection_major};
 }
 
-mfq::cuda::Executor CudaExecutionContext::executor() {
-    return {contexts, profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
-            model_parallel_primary_device(*this)};
-}
-
 std::unique_ptr<mfq::cuda::Executor> CudaExecutionContext::make_executor() {
-    return std::make_unique<mfq::cuda::Executor>(
-        contexts, profiler, kl_mmq, *tq, branches, collectives, routes, config.tasks, config.ffn,
-        model_parallel_primary_device(*this));
+    return executor_->fork(model_parallel_primary_device(*this));
 }
 
 mfq::cuda::Executor::Mode CudaExecutionContext::forward_mode() const {
     return {{force_moe_materialized_swiglu, force_moe_unfused_reduce,
              decode_graph_serial_branches, continuous_batch_cache_serial,
              continuous_batch_ffn_tile, continuous_batch_ffn_tiles,
-             config.moe_ffn.reuse_input, decode_graph_tp_projection_major},
-            {config.tasks.projection.grouped &&
+             executor().options().moe_ffn.reuse_input, decode_graph_tp_projection_major},
+            {executor().options().projection.grouped &&
                  config.tensor_parallel_shared_linear_attention_input,
              config.linear_conv_prefill_fused},
-            kl_mmq.kv_cache_capacity,
+            executor().mmq().kv_cache_capacity,
             config.gdn_transposed_state,
             gemma_stage_trace,
             gemma_trace_layer,
@@ -66,31 +55,32 @@ CudaExecutionContext::~CudaExecutionContext() {
         std::cerr << "runtime_execution_cleanup error=" << error.what() << '\n';
     }
     // Release pipelines while their borrowed branch streams still exist.
-    pipelines.clear();
+    executor().pipelines().clear();
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     attention_scratch.clear();
 #endif
+    executor_.reset();
 }
 
 void CudaExecutionContext::drain() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (contexts.empty() && !weights.moe &&
+    if (executor().contexts().empty() && !weights.moe &&
         !weights.tq && !offload &&
-        (!tq || tq->empty()) && pipelines.empty() && branches.empty() &&
-        collectives.streams().empty()) return;
+        executor().tq()->empty() && executor().pipelines().empty() && executor().branches().empty() &&
+        executor().collectives().streams().empty()) return;
 #endif
-    CudaScope scope(layer_placement.primary_device(), contexts);
+    CudaScope scope(layer_placement.primary_device(), executor().contexts());
     std::exception_ptr failure;
     const auto finish = [&](auto&& work) {
         try { work(); } catch (...) { if (!failure) failure = std::current_exception(); }
     };
     finish([&] { drain_moe_expert_cache(weights.moe); });
-    finish([&] { pipelines.drain(); });
-    finish([&] { collectives.drain(); });
+    finish([&] { executor().pipelines().drain(); });
+    finish([&] { executor().collectives().drain(); });
     if (offload) finish([&] { offload->flush(); });
     // shortcut: retirement fences the whole device; use events when every consumer has a completion handle.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    for (const auto& [device, context] : contexts) finish([&] {
+    for (const auto& [device, context] : executor().contexts()) finish([&] {
         MfqCudaGuard guard(device);
         TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     });
@@ -103,20 +93,20 @@ void CudaExecutionContext::drain() {
         TYLOINFER_CUDA_CHECK(cudaDeviceSynchronize());
     });
 #endif
-    if (tq) finish([&] { tq->drain(); });
-    finish([&] { branches.drain(); });
+    finish([&] { executor().tq()->drain(); });
+    finish([&] { executor().branches().drain(); });
     if (failure) std::rethrow_exception(failure);
 }
 
 void CudaExecutionContext::reset() {
     drain();
-    pipelines.clear();
+    executor().pipelines().clear();
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     attention_scratch.clear();
 #endif
-    branches.clear();
-    profiler.reset();
-    collectives.reset();
+    executor().branches().clear();
+    executor().profiler().reset();
+    executor().collectives().reset();
     tensor_parallel = {};
     expert_parallel = {};
     layer_placement = {};
@@ -128,8 +118,8 @@ void CudaExecutionContext::reset() {
     decode_graph_serial_branches = false;
     decode_graph_tp_projection_major = false;
     continuous_batch_cache_serial = false;
-    routes.clear();
-    kl_mmq.reset();
+    executor().routes().clear();
+    executor().mmq().reset();
     force_moe_unfused_reduce = false;
     force_moe_materialized_swiglu = false;
     config.weights.min_slots = 8;
@@ -177,5 +167,5 @@ bool model_parallel_cuda_graph_enabled(
             !execution.tensor_parallel.enabled()
         ? execution.config.expert_parallel_cuda_graph
         : execution.config.tensor_parallel_cuda_graph;
-    return execution.collectives.enabled() && enabled;
+    return execution.executor().collectives().enabled() && enabled;
 }

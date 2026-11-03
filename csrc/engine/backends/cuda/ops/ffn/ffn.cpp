@@ -131,7 +131,7 @@ Tensor Ffn::forward_experts(Tensor x, Executor& executor, const Mode& mode_,
     auto& stats = executor.routes_;
     auto& collectives_ = executor.collectives_;
     const auto& projection_ = executor.options_.projection;
-    const auto& options_ = executor.ffn_options_;
+    const auto& options_ = executor.options_.ffn;
     const size_t shard_count = f.moe_gate_up.expert_parallel_shards.size();
     std::vector<mfq_tensor_backend::Tensor> routed_partials(shard_count);
     std::vector<mfq_tensor_backend::Tensor> down_partials;
@@ -221,12 +221,12 @@ Tensor Ffn::forward_impl(Tensor x, Executor& executor, const Mode& mode_,
     auto &profiler = executor.profiler_;
     auto& stats = executor.routes_;
     auto& mmq_ = executor.mmq_;
-    auto& tq_ = executor.tq_;
+    auto& tq_ = *executor.tq_;
     auto& branches_ = executor.branches_;
     auto& collectives_ = executor.collectives_;
     const auto& projection_ = executor.options_.projection;
     const auto& dense_ = executor.options_.dense;
-    const auto& options_ = executor.ffn_options_;
+    const auto& options_ = executor.options_.ffn;
     mfq_tensor_backend::Tensor xh;
     if (x.scalar_type() == mfq_tensor_backend::kFloat16) {
         xh = x;

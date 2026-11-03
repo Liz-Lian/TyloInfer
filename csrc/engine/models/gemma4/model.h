@@ -42,8 +42,12 @@ struct Model
 {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mfq::models::Info info() const override;
+    MfqModelCapabilities capabilities() const override;
+    mfq::engine::Metrics metrics() const override;
 #else
     mfq::models::Info info() const;
+    MfqModelCapabilities capabilities() const;
+    mfq::engine::Metrics metrics() const;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     using Options = mfq::models::ForwardOptions;

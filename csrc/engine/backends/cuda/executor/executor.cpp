@@ -1,16 +1,23 @@
 #include "executor.h"
 
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
+#include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/native/branches.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/native/context.h"
+#include "engine/backends/cuda/native/env.h"
+#include "engine/backends/cuda/native/profile.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_sampling_ops.h"
 #include "engine/backends/cuda/kernels/gr_prefill_blas.h"
 #include "engine/backends/cuda/ops/norm/rms.h"
+#include "engine/backends/cuda/ops/projection/mmq.h"
+#include "diagnostics/route_stats.h"
 
 #include <iostream>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 namespace mfq::cuda {
 
@@ -190,13 +197,41 @@ std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inp
 
 } // namespace
 
+Executor::Executor(Options options, int primary)
+    : owned_contexts_(std::make_unique<ContextSet>()), contexts_(*owned_contexts_),
+      owned_options_(std::make_unique<Options>(std::move(options))), options_(*owned_options_),
+      owned_profiler_(std::make_unique<CudaProfiler>()),
+      profiler_(*owned_profiler_), owned_mmq_(std::make_unique<KlMmqState>()),
+      mmq_(*owned_mmq_), tq_(std::make_shared<TqExec>()),
+      owned_branches_(std::make_unique<Branches>()), branches_(*owned_branches_),
+      owned_collectives_(std::make_unique<Collectives>()), collectives_(*owned_collectives_),
+      owned_routes_(std::make_unique<RouteStats>(env_value("TYLOINFER_MOE_ROUTE_STATS").value_or(""),
+          env_flag("TYLOINFER_MOE_ROUTE_OUTPUT_ENERGY", false))), routes_(*owned_routes_),
+      owned_pipelines_(std::make_unique<Pipelines>(profiler_, mmq_, options_.projection.moe,
+                                                   options_.moe_ffn, routes_)),
+      pipelines_(*owned_pipelines_), primary_(primary) {
+    profiler_.filter = options_.profile_filter;
+}
+
+Executor::Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
+        Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
+        const Options& options, int primary)
+    : contexts_(contexts), options_(options), profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches),
+      collectives_(collectives), routes_(routes), pipelines_(pipelines), primary_(primary) {}
+
+Executor::~Executor() = default;
+
 std::unique_ptr<Executor> Executor::fork() const {
-    return std::make_unique<Executor>(contexts_, profiler_, mmq_, tq_, branches_, collectives_, routes_,
-                                      options_, ffn_options_, primary_);
+    return fork(primary_);
+}
+
+std::unique_ptr<Executor> Executor::fork(int primary) const {
+    return std::unique_ptr<Executor>(new Executor(contexts_, profiler_, mmq_, tq_, branches_,
+        pipelines_, collectives_, routes_, options_, primary));
 }
 
 Projector Executor::projector(const Ffn::Mode& mode) {
-    return {profiler_, mmq_, tq_, branches_, collectives_, options_.projection,
+    return {profiler_, mmq_, *tq_, branches_, collectives_, options_.projection,
             primary_, mode.serial, mode.projection_major};
 }
 
@@ -310,7 +345,7 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                         values[op.residual] = std::move(output[0]);
                         return std::move(output[1]);
                     } else if constexpr (std::is_same_v<Op, task::Dense>) {
-                        return op.weights.forward(project, profiler_, mmq_, tq_, branches_, collectives_,
+                        return op.weights.forward(project, profiler_, mmq_, *tq_, branches_, collectives_,
                             options.projection, options.dense, mode.ffn.serial, std::move(second), std::move(input), trace);
                     } else if constexpr (std::is_same_v<Op, task::FullFfn>) {
                         return full_ffn(op.weights, op.norm, op.attention,

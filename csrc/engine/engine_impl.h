@@ -4,15 +4,15 @@
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/state.h"
 #include "engine/load.h"
-#include "engine/metrics.h"
+#include "engine/runtime_metrics.h"
 #include "engine/backends/cuda/native/scope.h"
-#include "engine/backends/cuda/executor/tq.h"
 #include "engine/budget.h"
 #include "engine/requests/processor.h"
 #include "engine/requests/output.h"
 #include "engine/models/prepare.h"
 #include "engine/models/causal_model.h"
 #include "engine/models/common/causal_metadata.h"
+#include "engine/models/common/components.h"
 #include "engine/scheduler/table.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
@@ -123,7 +123,7 @@ public:
         };
 
         if (execution_) {
-            CudaScope scope(execution_->layer_placement.primary_device(), contexts_);
+            CudaScope scope(execution_->layer_placement.primary_device(), execution_->executor().contexts());
             remember(requests_.clear());
         } else {
             remember(requests_.clear());
@@ -136,23 +136,23 @@ public:
             } catch (...) {
                 remember(std::current_exception());
             }
-            CudaScope scope(execution_->layer_placement.primary_device(), contexts_);
-            expert_space_.reset();
-            clear_bindings();
-            batching_.reset();
-            budget_.reset();
-            cache_.reset();
-            graph_.reset();
-            loaded_.reset();
-            mtp_state_ = {};
-            execution_->pipelines.clear();
-            offload_.reset();
-            kv_.reset();
-            weights_.reset();
+            {
+                CudaScope scope(execution_->layer_placement.primary_device(), execution_->executor().contexts());
+                expert_space_.reset();
+                clear_bindings();
+                batching_.reset();
+                budget_.reset();
+                cache_.reset();
+                graph_.reset();
+                loaded_.reset();
+                mtp_state_ = {};
+                execution_->executor().pipelines().clear();
+                offload_.reset();
+                kv_.reset();
+                weights_.reset();
+            }
             execution_.reset();
         }
-        contexts_.clear();
-        tq_.reset();
         weight_memory_.reset();
         source_.reset();
         preparing_ = false;
@@ -212,7 +212,7 @@ public:
 #endif
         return components().prepare(
             language(), execution_->projector(), weights_.moe,
-            execution_->collectives, execution_->layer_placement.primary_device(),
+            execution_->executor().collectives(), execution_->layer_placement.primary_device(),
             loaded_->executor.get(), input.prompt, *input.vision);
     }
 
@@ -228,8 +228,8 @@ public:
         engine::InferenceRequest& input, engine::InferenceOutput& output,
         std::optional<Prepared> prepared, const engine::RequestId& id, bool batched) {
         return internal::generate(
-            language(), state(), loaded_->executor.get(), execution_->collectives,
-            execution_->forward_mode(), execution_->profiler, weights_,
+            language(), state(), loaded_->executor.get(), execution_->executor().collectives(),
+            execution_->forward_mode(), execution_->executor().profiler(), weights_,
             execution_->decode_graph_serial_branches,
             execution_->config.report_cuda_memory,
             execution_->dsv4_cpu_offload_layers.empty() &&
@@ -251,11 +251,9 @@ public:
 
 private:
     Options options_;
-    std::shared_ptr<TqExec> tq_;
     std::shared_ptr<KvMemoryManager> kv_;
     RoutedCache weights_;
     std::shared_ptr<KvOffloadStore> offload_;
-    ContextSet contexts_;
     std::unique_ptr<CudaExecutionContext> execution_;
     std::shared_ptr<WeightMemoryLedger> weight_memory_;
     std::shared_ptr<const mfq::ModelSource> source_;
@@ -283,7 +281,7 @@ private:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = loaded_->executor->enter();
 #else
-        CudaScope scope(execution_->layer_placement.primary_device(), contexts_);
+        CudaScope scope(execution_->layer_placement.primary_device(), execution_->executor().contexts());
 #endif
         mfq_tensor_backend::NoGradGuard no_grad;
         return std::forward<F>(function)();
@@ -339,13 +337,11 @@ private:
             if (!options_.context_size) options_.context_size = 32768;
             if (execution_) throw std::logic_error("CUDA load requires retired resources");
 
-            tq_ = std::make_shared<TqExec>();
-            execution_ = std::make_unique<CudaExecutionContext>(
-                contexts_, weights_, kv_, offload_, tq_);
+            execution_ = std::make_unique<CudaExecutionContext>(weights_, kv_, offload_);
             CudaScope outer_scope(
-                execution_->layer_placement.primary_device(), contexts_);
+                execution_->layer_placement.primary_device(), execution_->executor().contexts());
             internal::setup_cuda_load(options_, *execution_);
-            execution_->profiler.enabled = false;
+            execution_->executor().profiler().enabled = false;
             weight_memory_ = std::make_shared<WeightMemoryLedger>();
             WeightMemoryLoadScope memory_load(*weight_memory_);
             mfq_tensor_backend::NoGradGuard no_grad;
@@ -366,22 +362,22 @@ private:
             }
 
             CudaScope load_scope(
-                execution_->layer_placement.primary_device(), contexts_);
+                execution_->layer_placement.primary_device(), execution_->executor().contexts());
             weight_loader::Loader loader{
                 *source_, execution_->config.weights,
                 {execution_->layer_placement.primary_device(), false,
                  execution_->drop_file_cache, execution_->tensor_parallel,
                  moe_parallel_config(*execution_)},
-                weights_, tq_};
+                weights_, execution_->executor().tq()};
             loaded_.emplace(Load(
                 source_, loader, execution_->layer_placement, execution_->yarn,
                 execution_->dense_cpu_layer_count, options_,
                 execution_->n_gpu_layers, execution_->yarn_context_extension,
                 execution_->expert_parallel.enabled(),
                 execution_->config.tensor_parallel_mirror_linear_attention_scalars,
-                execution_->make_executor(), execution_->collectives,
+                execution_->make_executor(), execution_->executor().collectives(),
                 execution_->config.gdn_transposed_state,
-                execution_->kl_mmq.kv_cache_capacity,
+                execution_->executor().mmq().kv_cache_capacity,
                 execution_->gemma_stage_trace, execution_->gemma_trace_layer,
                 !execution_->dsv4_cpu_offload_layers.empty(),
                 runtime_options::kv_vram_preallocated()));
@@ -428,7 +424,7 @@ private:
             batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution_);
             batching_ = make_batch(
                 std::shared_ptr<const Model>(loaded_->model), &state(),
-                execution_->make_executor(), execution_->collectives,
+                execution_->make_executor(), execution_->executor().collectives(),
                 execution_->forward_mode(), weights_.moe, std::move(batch_config),
                 config_.generation.prefill_chunk_size,
                 runtime_options::kv_vram_preallocated(),
@@ -478,7 +474,7 @@ private:
         info_.max_context = model_info_.max_context;
         info_.vocab_size = static_cast<std::int32_t>(model_info_.vocab_size);
         info_.model_type = model_info_.model_type;
-        components().describe(info_);
+        describe_model(language(), components(), info_);
         info_.reload = true;
         text_ = engine::TextProcessor::load(
             *source_, options_.tokenizer_model, info_.vocab_size, info_.model_type);

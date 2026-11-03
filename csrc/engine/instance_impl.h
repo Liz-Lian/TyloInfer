@@ -7,7 +7,6 @@
 #include "engine/models/common/capabilities.h"
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/backends/cuda/executor/execution.h"
-#include "engine/backends/cuda/executor/tq.h"
 #include "engine/models/common/text.h"
 #include "engine/state/kv_memory.h"
 #include "engine/state/kv_offload.h"
@@ -37,11 +36,9 @@ template <class State, auto Load>
 struct Backend {
     using Options = CudaEngineOptions;
     Options options;
-    std::shared_ptr<TqExec> tq;
     std::shared_ptr<KvMemoryManager> kv;
     RoutedCache weights;
     std::shared_ptr<KvOffloadStore> offload;
-    mfq::cuda::ContextSet contexts;
     std::unique_ptr<CudaExecutionContext> execution;
     std::optional<State> state;
     ~Backend() {
@@ -55,7 +52,7 @@ struct Backend {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             auto guard = value->executor->enter();
 #else
-            CudaScope guard(value->execution->layer_placement.primary_device(), contexts);
+            CudaScope guard(value->execution->layer_placement.primary_device(), value->execution->executor().contexts());
 #endif
             mfq_tensor_backend::NoGradGuard no_grad;
             return run(*value);
@@ -67,11 +64,10 @@ struct Backend {
         if (dump_env) std::cerr << "cuda knobs at load:\n" << mfq::cuda::env_dump();
         if (!options.context_size) options.context_size = 32768;
         if (execution) throw std::logic_error("CUDA load requires retired resources");
-        tq = std::make_shared<TqExec>();
-        execution = std::make_unique<CudaExecutionContext>(contexts, weights, kv, offload, tq);
-        CudaScope scope(execution->layer_placement.primary_device(), contexts);
+        execution = std::make_unique<CudaExecutionContext>(weights, kv, offload);
+        CudaScope scope(execution->layer_placement.primary_device(), execution->executor().contexts());
         setup_cuda_load(options, *execution);
-        execution->profiler.enabled = false;
+        execution->executor().profiler().enabled = false;
         auto weight_memory=std::make_shared<WeightMemoryLedger>();
         const WeightMemoryLoadScope memory_load(*weight_memory);
         mfq_tensor_backend::NoGradGuard no_grad;
@@ -92,8 +88,11 @@ struct Backend {
                 using LoadedModel = std::remove_cvref_t<decltype(loaded)>;
                 if (offload && !loaded.components.streamed_kv())
                     throw std::invalid_argument("CUDA streamed KV requires a QSA model");
-                return std::make_unique<Text<LoadedModel>>(
-                    *execution, weights, kv, offload, std::move(loaded), config,
+                return std::make_unique<Text<typename LoadedModel::Model, typename LoadedModel::State,
+                                             typename LoadedModel::Parts>>(
+                    *execution, weights, kv, offload, std::move(loaded.model),
+                    std::move(loaded.owned_state), std::move(loaded.executor),
+                    std::move(loaded.components), config,
                     std::move(source), weight_memory);
             });
         return visit([&](auto& state) {
@@ -102,7 +101,7 @@ struct Backend {
             info.max_context = state.info.max_context;
             info.vocab_size = static_cast<int32_t>(state.info.vocab_size);
             info.model_type = state.info.model_type;
-            state.components.describe(info);
+            describe_model(state.language, state.components, info);
             info.reload = true;
             auto text = TextProcessor::load(*state.source, options.tokenizer_model,
                 info.vocab_size, info.model_type);
@@ -122,17 +121,15 @@ struct Backend {
         if (execution) {
             try { execution->drain(); } catch (...) { failure = std::current_exception(); }
             {
-                CudaScope scope(execution->layer_placement.primary_device(), contexts);
+                CudaScope scope(execution->layer_placement.primary_device(), execution->executor().contexts());
                 state.reset();
-                execution->pipelines.clear();
+                execution->executor().pipelines().clear();
             }
         }
         offload.reset();
         kv.reset();
         weights.reset();
         execution.reset();
-        contexts.clear();
-        tq.reset();
         if (failure) std::rethrow_exception(failure);
     }
 };

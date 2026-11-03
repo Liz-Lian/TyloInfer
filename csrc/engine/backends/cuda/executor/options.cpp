@@ -537,9 +537,10 @@ bool enabled_unless_disabled(const char* name) {
 
 } // namespace
 
-CudaExecutionConfig load_cuda_execution_config() {
+std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution_config() {
     CudaExecutionConfig result;
-    result.profile_filter = mfq::cuda::env_value("TYLOINFER_PROFILE_CUDA_FILTER").value_or("");
+    mfq::cuda::Executor::Options numeric;
+    numeric.profile_filter = mfq::cuda::env_value("TYLOINFER_PROFILE_CUDA_FILTER").value_or("");
     result.report_cuda_memory = mfq::cuda::env_flag("TYLOINFER_REPORT_CUDA_MEMORY", false);
 
     const auto parallel_graph = mfq::cuda::env_value("TYLOINFER_MODEL_PARALLEL_CUDA_GRAPH");
@@ -554,30 +555,30 @@ CudaExecutionConfig load_cuda_execution_config() {
         result.expert_parallel_cuda_graph = mfq::cuda::env_flag(
             "TYLOINFER_EP_CUDA_GRAPH", true);
     }
-    result.tasks.projection.grouped = mfq::cuda::env_flag(
+    numeric.projection.grouped = mfq::cuda::env_flag(
         "TYLOINFER_TP_GROUPED_PROJECTIONS", true);
     result.tensor_parallel_shared_linear_attention_input = mfq::cuda::env_flag(
         "TYLOINFER_TP_SHARED_LINEAR_ATTENTION_INPUT", true);
     result.tensor_parallel_mirror_linear_attention_scalars = mfq::cuda::env_flag(
         "TYLOINFER_TP_MIRROR_LINEAR_ATTENTION_SCALARS", true);
-    result.tasks.projection.reduce_to_primary = mfq::cuda::env_value(
+    numeric.projection.reduce_to_primary = mfq::cuda::env_value(
         "TYLOINFER_MODEL_PARALLEL_REDUCE_TO_PRIMARY")
         ? mfq::cuda::env_flag("TYLOINFER_MODEL_PARALLEL_REDUCE_TO_PRIMARY", true)
         : mfq::cuda::env_flag("TYLOINFER_TP_REDUCE_TO_PRIMARY", true);
-    result.tasks.projection.fp16_reduce = mfq::cuda::env_value(
+    numeric.projection.fp16_reduce = mfq::cuda::env_value(
         "TYLOINFER_MODEL_PARALLEL_FP16_REDUCE")
         ? mfq::cuda::env_flag("TYLOINFER_MODEL_PARALLEL_FP16_REDUCE", true)
         : mfq::cuda::env_flag("TYLOINFER_TP_FP16_REDUCE", true);
-    result.tasks.projection.peer_first = mfq::cuda::env_value(
+    numeric.projection.peer_first = mfq::cuda::env_value(
         "TYLOINFER_MODEL_PARALLEL_PEER_FIRST_LAUNCH")
         ? mfq::cuda::env_flag("TYLOINFER_MODEL_PARALLEL_PEER_FIRST_LAUNCH", true)
         : mfq::cuda::env_flag("TYLOINFER_TP_PEER_FIRST_LAUNCH", true);
 
-    result.tasks.projection.parallel = enabled_unless_disabled(
+    numeric.projection.parallel = enabled_unless_disabled(
         "TYLOINFER_DISABLE_DECODE_BRANCH_PARALLEL");
     result.weights.shard_dense = mfq::cuda::env_flag(
         "TYLOINFER_TP_SHARD_NATIVE_FLOAT", false);
-    result.tasks.projection.nvq_fusion = mfq::cuda::env_value("TYLOINFER_DISABLE_NVQ_FUSION")
+    numeric.projection.nvq_fusion = mfq::cuda::env_value("TYLOINFER_DISABLE_NVQ_FUSION")
         ? enabled_unless_disabled("TYLOINFER_DISABLE_NVQ_FUSION")
         : enabled_unless_disabled("TYLOINFER_DISABLE_NIQ_FUSION");
     result.weights.quant.nvq2 = mfq::cuda::env_flag("TYLOINFER_NVQ2_EXEC", false) &&
@@ -586,42 +587,42 @@ CudaExecutionConfig load_cuda_execution_config() {
             : enabled_unless_disabled("TYLOINFER_DISABLE_NIQ2_EXEC"));
     result.weights.quant.nvq_groups = mfq::cuda::env_flag(
         "TYLOINFER_NVQ_EXTENDED_GROUP_EXEC", false);
-    result.tasks.projection.moe.heterogeneous = enabled_unless_disabled(
+    numeric.projection.moe.heterogeneous = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_NVQ_HETERO");
-    result.tasks.projection.moe.nvq_decode =
+    numeric.projection.moe.nvq_decode =
         enabled_unless_disabled("TYLOINFER_DISABLE_MOE_NVQ_HETERO_DECODE") &&
         !mfq::cuda::env_flag("TYLOINFER_NVQ_MOE_EXACT_REDUCTION", false) &&
         !mfq::cuda::env_value("TYLOINFER_NVQ_MOE_ROWS_PER_BLOCK") &&
         !mfq::cuda::env_value("TYLOINFER_NVQ_MOE_WARPS") &&
         !mfq::cuda::env_value("TYLOINFER_NVQ_MOE_SHARE_GROUP_STATE");
-    result.tasks.projection.moe.active_decode = mfq::cuda::env_flag("TYLOINFER_MOE_NVQ_ACTIVE_DECODE",false);
-    result.tasks.projection.moe.prefill = enabled_unless_disabled(
+    numeric.projection.moe.active_decode = mfq::cuda::env_flag("TYLOINFER_MOE_NVQ_ACTIVE_DECODE",false);
+    numeric.projection.moe.prefill = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_PREFILL_MMA");
-    result.tasks.projection.moe.min_tokens = mfq::cuda::env_int(
+    numeric.projection.moe.min_tokens = mfq::cuda::env_int(
         "TYLOINFER_MOE_PREFILL_MMA_MIN_TOKENS", 9, 9,
         std::numeric_limits<int>::max());
-    result.ffn.small_heterogeneous = enabled_unless_disabled(
+    numeric.ffn.small_heterogeneous = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SMALL_HETERO");
-    result.ffn.delayed_readback = mfq::cuda::env_flag(
+    numeric.ffn.delayed_readback = mfq::cuda::env_flag(
         "TYLOINFER_MOE_DELAYED_ROUTE_READBACK", true);
-    result.ffn.bundle_prefetch = enabled_unless_disabled(
+    numeric.ffn.bundle_prefetch = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_PROJECTION_BUNDLE_PREFETCH");
-    result.moe_ffn.reuse_input = enabled_unless_disabled(
+    numeric.moe_ffn.reuse_input = enabled_unless_disabled(
         "TYLOINFER_DISABLE_SPLIT_MOE_ACTIVATION_REUSE");
-    result.moe_ffn.resident_dispatch = mfq::cuda::env_flag(
+    numeric.moe_ffn.resident_dispatch = mfq::cuda::env_flag(
         "TYLOINFER_MOE_GPU_RESIDENT_DISPATCH", false);
-    result.moe_ffn.fused_activation = mfq::cuda::env_flag(
+    numeric.moe_ffn.fused_activation = mfq::cuda::env_flag(
         "TYLOINFER_MOE_FFN_FUSED_ACTIVATION", true);
-    result.moe_ffn.two_stage = mfq::cuda::env_flag("TYLOINFER_MOE_TWO_STAGE_FFN", false);
-    result.ffn.swiglu_fusion = enabled_unless_disabled(
+    numeric.moe_ffn.two_stage = mfq::cuda::env_flag("TYLOINFER_MOE_TWO_STAGE_FFN", false);
+    numeric.ffn.swiglu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_SWIGLU_QUANT_FUSION");
-    result.ffn.reduce_fusion = enabled_unless_disabled(
+    numeric.ffn.reduce_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MOE_REDUCE_GATE_FUSION");
-    result.tasks.dense.mlp.gelu_fusion = enabled_unless_disabled(
+    numeric.dense.mlp.gelu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_FFN_GEGLU_FUSION");
-    result.tasks.dense.mlp.silu_fusion = enabled_unless_disabled(
+    numeric.dense.mlp.silu_fusion = enabled_unless_disabled(
         "TYLOINFER_DISABLE_FFN_SWIGLU_FUSION");
-    result.tasks.dense.important_parallel = enabled_unless_disabled(
+    numeric.dense.important_parallel = enabled_unless_disabled(
         "TYLOINFER_DISABLE_IN_BRANCH_PARALLEL");
     result.gemma4_fused_norms = mfq::cuda::env_flag(
         "TYLOINFER_GEMMA4_FUSED_NORMS", true);
@@ -629,41 +630,41 @@ CudaExecutionConfig load_cuda_execution_config() {
         "TYLOINFER_DSV4_GROUPWISE_OUTPUT_A", true);
     result.weights.grouped = enabled_unless_disabled(
         "TYLOINFER_DIAGNOSTIC_DISABLE_NINT_GROUP");
-    result.tasks.dense.fp32_residual = mfq::cuda::env_flag(
+    numeric.dense.fp32_residual = mfq::cuda::env_flag(
         "TYLOINFER_DIAGNOSTIC_FP32_RESIDUAL", false);
-    result.tasks.dense.important_fp32 = mfq::cuda::env_flag(
+    numeric.dense.important_fp32 = mfq::cuda::env_flag(
         "TYLOINFER_DIAGNOSTIC_IN_F32_DOWN", false);
-    result.tasks.attention.write_aten = mfq::cuda::env_flag(
+    numeric.attention.write_aten = mfq::cuda::env_flag(
         "TYLOINFER_KV_CACHE_WRITE_ATEN", false);
     result.gdn_transposed_state = mfq::cuda::env_flag(
         "TYLOINFER_GDN_TRANSPOSED_STATE", true);
     result.gdn_fused_output = mfq::cuda::env_flag("TYLOINFER_GDN_FUSED_OUTPUT",true);
     result.linear_conv_prefill_fused = mfq::cuda::env_flag(
         "TYLOINFER_LINEAR_CONV_PREFILL_FUSED", true);
-    result.tasks.attention.fused_rope = mfq::cuda::env_flag(
+    numeric.attention.fused_rope = mfq::cuda::env_flag(
         "TYLOINFER_MINICPM_FUSED_BF16_ROPE", true);
-    result.tasks.attention.fused_qk_rope_kv = mfq::cuda::env_flag(
+    numeric.attention.fused_qk_rope_kv = mfq::cuda::env_flag(
         "TYLOINFER_MINICPM_FUSED_QK_NORM_ROPE_KV", true);
-    result.tasks.attention.fused_norm = mfq::cuda::env_flag(
+    numeric.attention.fused_norm = mfq::cuda::env_flag(
         "TYLOINFER_MINICPM_FUSED_BF16_RMSNORM", true);
-    result.tasks.attention.fused_rope_kv = mfq::cuda::env_flag(
+    numeric.attention.fused_rope_kv = mfq::cuda::env_flag(
         "TYLOINFER_MINICPM_FUSED_ROPE_KV", true);
-    result.tasks.attention.kernels.bf16_flash128 = enabled_unless_disabled(
+    numeric.attention.kernels.bf16_flash128 = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_BF16_FLASH128");
-    result.tasks.attention.kernels.flash128_casts = enabled_unless_disabled(
+    numeric.attention.kernels.flash128_casts = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_FLASH128_SPECIALIZED_CASTS");
-    result.tasks.attention.kernels.bf16_gqa_decode = mfq::cuda::env_flag(
+    numeric.attention.kernels.bf16_gqa_decode = mfq::cuda::env_flag(
         "TYLOINFER_MINICPM_BF16_GQA_DECODE", true);
-    result.tasks.dense.bf16_swiglu = enabled_unless_disabled(
+    numeric.dense.bf16_swiglu = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_BF16_SWIGLU_FUSION");
-    result.tasks.dense.bf16_residual = enabled_unless_disabled(
+    numeric.dense.bf16_residual = enabled_unless_disabled(
         "TYLOINFER_DISABLE_MINICPM_BF16_RESIDUAL_ACC");
-    result.tasks.attention.kernels.mma_prefill = mfq::cuda::env_flag("TYLOINFER_MMA_ATTENTION", true);
-    result.tasks.attention.kernels.mma_decode = mfq::cuda::env_flag(
+    numeric.attention.kernels.mma_prefill = mfq::cuda::env_flag("TYLOINFER_MMA_ATTENTION", true);
+    numeric.attention.kernels.mma_decode = mfq::cuda::env_flag(
         "TYLOINFER_MMA_ATTENTION_DECODE", true);
-    result.tasks.attention.kernels.decode_aten = mfq::cuda::env_flag(
+    numeric.attention.kernels.decode_aten = mfq::cuda::env_flag(
         "TYLOINFER_ATTENTION_DECODE_ATEN", false);
-    result.tasks.attention.kernels.split_k = mfq::cuda::env_flag(
+    numeric.attention.kernels.split_k = mfq::cuda::env_flag(
         "TYLOINFER_ATTENTION_DECODE_SPLITK", true);
     result.deepseek_v41_engram_cache_rows = mfq::cuda::env_size(
         "TYLOINFER_DEEPSEEK_V41_ENGRAM_CACHE_ROWS", 16'384);
@@ -696,7 +697,7 @@ CudaExecutionConfig load_cuda_execution_config() {
     result.residual.compact_mix = mfq::cuda::env_flag("TYLOINFER_GR_COMPACT_MIX",true);
     result.residual.two_stage = mfq::cuda::env_flag("TYLOINFER_GR_TWO_STAGE",true);
     result.residual.dense_injection = mfq::cuda::env_flag("TYLOINFER_GR_TWO_STAGE_DENSE_INJECTION",true);
-    result.tasks.projection.moe.nint_decode = mfq::cuda::env_flag("TYLOINFER_MOE_NINT_HETEROGENEOUS_DECODE",true);
+    numeric.projection.moe.nint_decode = mfq::cuda::env_flag("TYLOINFER_MOE_NINT_HETEROGENEOUS_DECODE",true);
     if (const auto value = mfq::cuda::env_value("TYLOINFER_MOE_RAM_PCIE_FRACTION")) {
         std::size_t end = 0;
         const auto fraction = std::stod(*value,&end);
@@ -704,7 +705,7 @@ CudaExecutionConfig load_cuda_execution_config() {
             throw std::invalid_argument("TYLOINFER_MOE_RAM_PCIE_FRACTION must be in [0,1]");
         result.moe_ram_pcie_fraction = fraction;
     }
-    result.weights.quant.heterogeneous = result.tasks.projection.moe.heterogeneous;
+    result.weights.quant.heterogeneous = numeric.projection.moe.heterogeneous;
     result.weights.mapped_embedding = result.moe_pipeline && result.moe_ram_pcie;
-    return result;
+    return {std::move(result), std::move(numeric)};
 }

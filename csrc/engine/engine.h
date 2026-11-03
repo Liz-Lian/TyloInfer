@@ -1,23 +1,12 @@
 #pragma once
 
+#include "models/capabilities.h"
 #include "requests/request.h"
 #include "requests/result.h"
 
 #include <chrono>
 #include <optional>
 #include <variant>
-
-struct MfqModelCapabilities {
-    std::string family = "unknown";
-    bool text = true;
-    bool image_input = false;
-    bool video_input = false;
-    bool audio_input = false;
-    bool audio_output = false;
-    bool full_duplex = false;
-    bool mtp = false;
-    std::string source;
-};
 
 namespace mfq::engine {
 

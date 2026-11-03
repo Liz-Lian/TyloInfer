@@ -80,7 +80,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     };
     const auto* profile_layer=mfq::cuda::env_lookup("TYLOINFER_PROFILE_DSV41_LAYER");
     const auto apply_layer=[&](auto& ops,int64_t layer,Tensor hidden) {
-        auto& profiler=model.execution->profiler;
+        auto& profiler=model.execution->executor().profiler();
         const bool selected=profile_layer && layer==std::atoi(profile_layer);
         const bool previous=profiler.enabled;
         if(selected) {profiler.reset();profiler.enabled=true;}
@@ -115,7 +115,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
             if (!block.kv_source()) continue;
             auto source = deepseek_v41_hc_input_cuda(hidden, model.shared->previous_pre,
                                                      block.attention_norm, config.rms_eps);
-            model.execution->profiler.measure("deepseek_v41.ced.global_kv", [&] {
+            model.execution->executor().profiler().measure("deepseek_v41.ced.global_kv", [&] {
                 block.publish_compressed_source(*model.execution, source, model.cache_pos);
                 return source;
             });

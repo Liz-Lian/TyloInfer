@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/backends/cuda/executor/task.h"
+#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/context.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -10,12 +11,16 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <string>
 #include <tuple>
+
+class TqExec;
 
 namespace mfq::cuda {
 
 class Branches;
 class Collectives;
+class Pipelines;
 class RouteStats;
 
 class Executor
@@ -28,8 +33,9 @@ public:
     std::unique_ptr<mfq::Executor::Scope> enter() override;
     static Executor& current();
 
-    Collectives& collectives() noexcept { return collectives_; }
 #endif
+    Collectives& collectives() noexcept { return collectives_; }
+    const Collectives& collectives() const noexcept { return collectives_; }
     struct Mode {
         Ffn::Mode ffn;
         LinearAttention::Options linear;
@@ -49,19 +55,21 @@ public:
                 .bf16_gqa_decode = true, .decode_aten = false,
                 .mma_prefill = true, .mma_decode = true, .split_k = true}};
         Dense::Options dense;
+        Ffn::Options ffn;
+        MoeFfnOptions moe_ffn;
+        std::string profile_filter;
     };
 
     static void prepare(std::int64_t vocabulary);
 
-    Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
-             Branches& branches, Collectives& collectives, RouteStats& routes,
-             const Options& options, const Ffn::Options& ffn_options,
-             int primary)
-        : contexts_(contexts), profiler_(profiler), mmq_(mmq), tq_(tq), branches_(branches), collectives_(collectives),
-          routes_(routes), options_(options), primary_(primary), ffn_options_(ffn_options) {}
+    Executor(Options options, int primary);
+    ~Executor();
     Executor(const Executor&) = delete;
     Executor& operator=(const Executor&) = delete;
     std::unique_ptr<Executor> fork() const;
+    std::unique_ptr<Executor> fork(int primary) const;
+    ContextSet& contexts() noexcept { return contexts_; }
+    const ContextSet& contexts() const noexcept { return contexts_; }
 
     mfq_tensor_backend::Tensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
@@ -76,6 +84,14 @@ public:
         const LinearAttention& attention, mfq_tensor_backend::Tensor residual,
         mfq_tensor_backend::Tensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }
+    KlMmqState& mmq() noexcept { return mmq_; }
+    const KlMmqState& mmq() const noexcept { return mmq_; }
+    const std::shared_ptr<TqExec>& tq() const noexcept { return tq_; }
+    RouteStats& routes() noexcept { return routes_; }
+    const RouteStats& routes() const noexcept { return routes_; }
+    Branches& branches() noexcept { return branches_; }
+    Pipelines& pipelines() noexcept { return pipelines_; }
+    const Options& options() const noexcept { return options_; }
     const AttentionOptions& attention_options() const noexcept { return options_.attention; }
     bool fp32_residual() const noexcept { return options_.dense.fp32_residual; }
     AttentionScratch& attention_scratch(std::size_t index);
@@ -86,20 +102,31 @@ public:
     MlaScratch& mla_scratch(int device) { return mla_scratch_[device]; }
 
 private:
+    Executor(ContextSet& contexts, CudaProfiler& profiler, KlMmqState& mmq, const std::shared_ptr<TqExec>& tq,
+             Branches& branches, Pipelines& pipelines, Collectives& collectives, RouteStats& routes,
+             const Options& options, int primary);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::unique_ptr<mfq::Executor::Scope> enter(int device);
 #endif
     friend class Ffn;
+    std::unique_ptr<ContextSet> owned_contexts_;
     ContextSet& contexts_;
-    CudaProfiler& profiler_;
-    KlMmqState& mmq_;
-    TqExec& tq_;
-    Branches& branches_;
-    Collectives& collectives_;
-    RouteStats& routes_;
+    std::unique_ptr<Options> owned_options_;
     const Options& options_;
+    std::unique_ptr<CudaProfiler> owned_profiler_;
+    CudaProfiler& profiler_;
+    std::unique_ptr<KlMmqState> owned_mmq_;
+    KlMmqState& mmq_;
+    std::shared_ptr<TqExec> tq_;
+    std::unique_ptr<Branches> owned_branches_;
+    Branches& branches_;
+    std::unique_ptr<Collectives> owned_collectives_;
+    Collectives& collectives_;
+    std::unique_ptr<RouteStats> owned_routes_;
+    RouteStats& routes_;
+    std::unique_ptr<Pipelines> owned_pipelines_;
+    Pipelines& pipelines_;
     int primary_;
-    const Ffn::Options& ffn_options_;
     std::vector<AttentionScratch> scratch_;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mutable std::mutex attention_scratch_mutex_;

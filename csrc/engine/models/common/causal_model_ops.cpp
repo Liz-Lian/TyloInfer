@@ -67,7 +67,7 @@ CausalResources::adapter_finalize_hidden(mfq_tensor_backend::Tensor hidden,
                                          const mfq_tensor_backend::Tensor &output_norm,
                                          int64_t batch, int64_t tokens) const {
     return normalize_hidden(std::move(hidden), output_norm, metadata, batch, tokens,
-                            execution->profiler);
+                            execution->executor().profiler());
 }
 
 mfq_tensor_backend::Tensor
@@ -79,7 +79,7 @@ CausalResources::adapter_raw_hidden(const mfq_tensor_backend::Tensor &hidden,
 mfq_tensor_backend::Tensor
 CausalResources::adapter_logits(const QuantLinear &lm_head,
                                 mfq_tensor_backend::Tensor hidden) const {
-    auto logits = execution->profiler.measure(
+    auto logits = execution->executor().profiler().measure(
         "model.lm_head", [&]() { return execution->projector().run(lm_head, hidden); });
     return logits;
 }
@@ -94,7 +94,7 @@ mfq_tensor_backend::Tensor
 CausalResources::adapter_next_token(const QuantLinear &lm_head,
                                     mfq_tensor_backend::Tensor hidden) const {
     auto input = hidden.to(mfq_tensor_backend::kFloat16).contiguous();
-    auto logits = execution->profiler.measure("model.lm_head",
+    auto logits = execution->executor().profiler().measure("model.lm_head",
                                               [&]() { return execution->projector().run(lm_head, input); });
     return sample_greedy_cuda(logits.contiguous().view({input.size(0), -1}));
 }

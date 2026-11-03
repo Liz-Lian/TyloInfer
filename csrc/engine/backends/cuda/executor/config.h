@@ -3,26 +3,22 @@
 #include "engine/weights/encoding/format_features.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/executor/executor.h"
-#include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/ops/ffn/gated.h"
 
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <utility>
 
 // Read once at owner construction; controls read on access stay in options.h.
 struct CudaExecutionConfig {
     mfq::cuda::weight_loader::Loader::Options weights;
-    mfq::cuda::Executor::Options tasks;
-    MoeFfnOptions moe_ffn;
-    std::string profile_filter;
     bool report_cuda_memory = false;
     bool model_parallel_cuda_graph = true;
     bool tensor_parallel_cuda_graph = true;
     bool expert_parallel_cuda_graph = true;
     bool tensor_parallel_shared_linear_attention_input = true;
     bool tensor_parallel_mirror_linear_attention_scalars = true;
-    mfq::cuda::Ffn::Options ffn;
     bool gemma4_fused_norms = true;
     bool dsv4_groupwise_output_a = true;
     mfq::cuda::GatedResidual::Options residual;
@@ -48,4 +44,4 @@ struct CudaExecutionConfig {
     std::optional<double> moe_ram_pcie_fraction;
 };
 
-CudaExecutionConfig load_cuda_execution_config();
+std::pair<CudaExecutionConfig, mfq::cuda::Executor::Options> load_cuda_execution_config();

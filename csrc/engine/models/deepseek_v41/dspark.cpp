@@ -3,7 +3,6 @@
 #include "engine/backends/cuda/native/scope.h"
 #include "engine/weights/loader.h"
 #include "engine/backends/cuda/ops/ffn/ffn.h"
-#include "engine/backends/cuda/executor/tq.h"
 #include "engine/backends/cuda/executor/tq_moe.h"
 #include "dspark.h"
 #include "engine/models/deepseek_v41/policy.h"
@@ -199,7 +198,7 @@ struct DeepseekV41Dspark final : MtpModule {
             weights.projection(last + "confidence.projection.weight");
         result.stages.reserve(static_cast<std::size_t>(result.config.n_mtp_layers));
         for (std::int64_t stage = 0; stage < result.config.n_mtp_layers; ++stage) {
-            result.stages.push_back(load_stage(execution.pipelines, weights, result.config, stage));
+            result.stages.push_back(load_stage(execution.executor().pipelines(), weights, result.config, stage));
         }
         const auto target_width =
             result.config.hidden *
@@ -433,8 +432,8 @@ struct DeepseekV41Dspark final : MtpModule {
         return mfq::models::deepseek_v41::dspark_draft(
             physical_width, requested, stages.size(),
             [&](int64_t) {
-                return mfq::cuda::embed(embedding, draft_ids, execution->collectives,
-                    execution->profiler, primary).to(mfq_tensor_backend::kFloat16);
+                return mfq::cuda::embed(embedding, draft_ids, execution->executor().collectives(),
+                    execution->executor().profiler(), primary).to(mfq_tensor_backend::kFloat16);
             },
             [&](Tensor embedded) {
                 return embedded.unsqueeze(2)
@@ -457,7 +456,7 @@ struct DeepseekV41Dspark final : MtpModule {
                         // Its following FFN is independent for each token.
                         const auto rows = branch == 0 ? physical_width : output_rows;
                         return stage.collapse(
-                            execution->profiler, value.narrow(1, 0, rows), pre.narrow(1, 0, rows),
+                            execution->executor().profiler(), value.narrow(1, 0, rows), pre.narrow(1, 0, rows),
                             branch == 0 ? stage.attention_mhc_function : stage.mlp_mhc_function,
                             branch == 0 ? stage.attention_mhc_scale : stage.mlp_mhc_scale,
                             branch == 0 ? stage.attention_mhc_base : stage.mlp_mhc_base,
@@ -467,7 +466,7 @@ struct DeepseekV41Dspark final : MtpModule {
                     },
                     [&](Tensor value) { return attention(value, stage, rings[index]); },
                     [&](Tensor value, Tensor residual, const auto &mix, int branch) {
-                        return stage.expand(execution->profiler, value,
+                        return stage.expand(execution->executor().profiler(), value,
                                             residual.narrow(1, 0, value.size(1)), mix,
                                             branch == 0 ? "deepseek_v41.dspark.mhc.attention.expand"
                                                         : "deepseek_v41.dspark.mhc.mlp.expand");
@@ -477,8 +476,8 @@ struct DeepseekV41Dspark final : MtpModule {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         return stage.mlp.forward(value.reshape({-1, config.hidden}),
 #else
-                        auto executor = execution->executor();
-                        return stage.mlp.forward(value.reshape({-1, config.hidden}), executor,
+                        auto executor = execution->make_executor();
+                        return stage.mlp.forward(value.reshape({-1, config.hidden}), *executor,
 #endif
                                      execution->forward_mode().ffn,
                                      draft_ids.narrow(1, 0, rows))
@@ -494,7 +493,7 @@ struct DeepseekV41Dspark final : MtpModule {
             },
             [&](Tensor head_hidden) {
                 return mfq::cuda::logits(output, weighted_rms(head_hidden, output_norm, config.rms_eps),
-                    execution->projector(), execution->profiler, softcap)
+                    execution->projector(), execution->executor().profiler(), softcap)
                     .to(mfq_tensor_backend::kFloat32)
                     .contiguous();
             },
@@ -522,13 +521,11 @@ std::unique_ptr<::MtpModule> load_dspark_if_present(CudaExecutionContext &execut
 void run_dspark_self_check() {
     // Seeding only the final window must address the same absolute RoPE and
     // ring slots as a complete target history.
-    auto tq = std::make_shared<TqExec>();
     std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
     mfq::cuda::RoutedCache weights;
     std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-    mfq::cuda::ContextSet contexts;
-    CudaExecutionContext execution(contexts, weights, kv, offload, tq);
-    CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
+    CudaExecutionContext execution(weights, kv, offload);
+    CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
     DeepseekV41Dspark predictor;
     predictor.execution = &execution;
     predictor.config.hidden = 32;

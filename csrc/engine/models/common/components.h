@@ -9,6 +9,7 @@
 #include "engine/models/deepseek_v4/model.h"
 #include "engine/models/deepseek_v41/ops.h"
 #include "engine/models/gemma4/model.h"
+#include "engine/models/causal_model.h"
 #include "engine/models/glm5_next/model.h"
 #include "engine/models/glm_dsa/model.h"
 #include "engine/models/minicpmo45/model.h"
@@ -27,6 +28,19 @@
 #include <vector>
 
 struct CudaExecutionContext;
+
+template <class Model, class Parts>
+void describe_model(const Model& language, const Parts& components, mfq::engine::EngineInfo& info) {
+    if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language); }) {
+        info.capabilities = static_cast<const mfq::models::CausalModel&>(language).capabilities();
+        const auto& caps = info.capabilities;
+        info.duplex = caps.full_duplex;
+        info.multimodal = caps.image_input || caps.video_input || caps.audio_input ||
+            caps.audio_output || caps.full_duplex;
+    } else {
+        components.describe(info);
+    }
+}
 
 template <typename Model>
 struct RuntimeComponents {

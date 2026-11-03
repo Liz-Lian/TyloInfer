@@ -19,7 +19,7 @@
 #include "engine/backends/cuda/executor/options.h"
 #include "engine/generation/batch.h"
 #include "engine/models/common/session/cache.h"
-#include "engine/metrics.h"
+#include "engine/runtime_metrics.h"
 #include "engine/scheduler/table.h"
 #include "engine/generation/generation.h"
 #include "engine/generation/mtp/state.h"
@@ -52,11 +52,11 @@ std::unique_ptr<engine::Batch> make_batch(
     throw std::invalid_argument("continuous batching is unavailable for this model");
 }
 
-template <class LoadedModel>
+template <class M, class S = M, class P = RuntimeComponents<M>>
 struct Text {
-    using Model = typename LoadedModel::Model;
-    using State = typename LoadedModel::State;
-    using Parts = typename LoadedModel::Parts;
+    using Model = M;
+    using State = S;
+    using Parts = P;
 
     std::shared_ptr<WeightMemoryLedger> weight_memory;
     CudaExecutionContext* execution;
@@ -65,9 +65,10 @@ struct Text {
     std::shared_ptr<KvOffloadStore>& offload;
     CudaRuntimeConfig config;
     std::shared_ptr<const mfq::ModelSource> source;
-    LoadedModel loaded;
-    Parts& components;
-    std::unique_ptr<Executor>& executor;
+    std::shared_ptr<Model> model;
+    std::unique_ptr<State> owned_state;
+    std::unique_ptr<Executor> executor;
+    Parts components;
     Model& language;
     State& state;
     const mfq::models::Info info;
@@ -155,15 +156,20 @@ struct Text {
     Text(CudaExecutionContext& borrowed, RoutedCache& borrowed_weights,
             std::shared_ptr<KvMemoryManager>& borrowed_kv,
             std::shared_ptr<KvOffloadStore>& borrowed_offload,
-            LoadedModel loaded_model,
+            std::shared_ptr<Model> model_owner, std::unique_ptr<State> state_owner,
+            std::unique_ptr<Executor> executor_owner, Parts model_components,
             CudaRuntimeConfig runtime_config,
             std::shared_ptr<const mfq::ModelSource> model_source,
             std::shared_ptr<WeightMemoryLedger> ledger)
         : weight_memory(std::move(ledger)), execution(&borrowed), weights(borrowed_weights),
           kv(borrowed_kv), offload(borrowed_offload), config(std::move(runtime_config)),
           source(std::move(model_source)),
-          loaded(std::move(loaded_model)), components(loaded.components), executor(loaded.executor),
-          language(loaded.language()), state(loaded.state()),
+          model(std::move(model_owner)), owned_state(std::move(state_owner)),
+          executor(std::move(executor_owner)), components(std::move(model_components)),
+          language(*model), state([this]() -> State& {
+              if constexpr (std::is_same_v<Model, State>) return language;
+              else return *owned_state;
+          }()),
           info(mfq::models::model_info(language)),
           graph(info.max_context),
           cache(config.session_cache, config.prefix_cache,
@@ -186,8 +192,8 @@ struct Text {
                 auto batch_config = config.continuous_batch;
                 batch_config.cuda_graph &= model_parallel_cuda_graph_enabled(*execution);
                 batching = make_batch(
-                    std::shared_ptr<const Model>(loaded.model), &state, execution->make_executor(),
-                    execution->collectives, execution->forward_mode(),
+                    std::shared_ptr<const Model>(model), &state, execution->make_executor(),
+                    execution->executor().collectives(), execution->forward_mode(),
                     weights.moe, std::move(batch_config),
                     config.generation.prefill_chunk_size,
                     runtime_options::kv_vram_preallocated(),
@@ -278,7 +284,7 @@ struct Text {
                 for(int i=0;i<16;++i)request.prompt.push_back((i*7919+17)%language.vocab_size());
                 InferenceOutput output(request,nullptr,"cuda-mtp-warmup");
                 auto scope=language.execution_scope();
-                auto generation=run_mtp_generation(language,state,executor.get(),execution->collectives,
+                auto generation=run_mtp_generation(language,state,executor.get(),execution->executor().collectives(),
                                                    execution->forward_mode(),weights,info,source.get(),predictor,mtp_state,request,output,16,
                                                    nullptr,0,{},nullptr,0,restore_decode_workspace);
                 while(generation.next()) {}
@@ -356,7 +362,7 @@ struct Text {
         } else
 #endif
         return components.prepare(language, execution->projector(), weights.moe,
-            execution->collectives, execution->layer_placement.primary_device(), executor.get(),
+            execution->executor().collectives(), execution->layer_placement.primary_device(), executor.get(),
             input.prompt, *input.vision);
     }
     auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
@@ -369,8 +375,8 @@ struct Text {
                              const RequestId& id, bool batched) {
         if(!batched)prepare_graph_depth(input);
         return internal::generate(
-            language, state, executor.get(), execution->collectives,
-            execution->forward_mode(), execution->profiler, weights,
+            language, state, executor.get(), execution->executor().collectives(),
+            execution->forward_mode(), execution->executor().profiler(), weights,
             execution->decode_graph_serial_branches, execution->config.report_cuda_memory,
             execution->dsv4_cpu_offload_layers.empty() && execution->dense_cpu_layer_count == 0 &&
                 model_parallel_cuda_graph_enabled(*execution),

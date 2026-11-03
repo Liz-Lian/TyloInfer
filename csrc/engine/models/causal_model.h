@@ -1,6 +1,8 @@
 #pragma once
 
 #include "engine/tensor.h"
+#include "engine/metrics.h"
+#include "engine/models/capabilities.h"
 #include "engine/models/input.h"
 #include "engine/models/info.h"
 #include "engine/models/options.h"
@@ -20,6 +22,8 @@ class CausalModel {
 public:
     virtual ~CausalModel() = default;
     virtual Info info() const = 0;
+    virtual MfqModelCapabilities capabilities() const = 0;
+    virtual mfq::engine::Metrics metrics() const = 0;
     virtual std::unique_ptr<State> make_state() const = 0;
     virtual mfq::StepSequence<Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, State& state) const = 0;

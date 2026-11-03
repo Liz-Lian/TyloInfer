@@ -77,7 +77,7 @@ struct Mtp final : MtpModule {
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
                 std::string(mfq::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
-            result.layers.push_back(load_layer(execution.pipelines, weights, main,
+            result.layers.push_back(load_layer(execution.executor().pipelines(), weights, main,
                                                static_cast<int>(index), type, "predictor"));
         }
         result.states = std::vector<LayerState>(result.layers.size());
@@ -124,7 +124,7 @@ struct Mtp final : MtpModule {
             static bool defined(const Tensor &x) { return x.defined(); }
             Tensor embed(Tensor ids, const Tensor &like) {
                 return mfq::cuda::embed(model.embedding, std::move(ids),
-                    model.execution->collectives, model.execution->profiler, model.primary)
+                    model.execution->executor().collectives(), model.execution->executor().profiler(), model.primary)
                     .to(like.scalar_type());
             }
             Tensor normalize(const Tensor &x, mfq::models::nemotron_h::PredictorNorm role) {

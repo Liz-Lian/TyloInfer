@@ -28,27 +28,20 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 #include <utility>
 #include <vector>
 
-class TqExec;
-
 struct CudaExecutionContext {
     CudaExecutionContext(
-        mfq::cuda::ContextSet& contexts,
         mfq::cuda::RoutedCache& weights,
         std::shared_ptr<mfq::cuda::KvMemoryManager>& kv,
-        std::shared_ptr<mfq::cuda::KvOffloadStore>& offload,
-        std::shared_ptr<TqExec>& tq);
+        std::shared_ptr<mfq::cuda::KvOffloadStore>& offload);
     ~CudaExecutionContext();
     CudaExecutionContext(const CudaExecutionContext&) = delete;
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
-    mfq::cuda::ContextSet& contexts;
     bool yarn_context_extension=false;
     mfq::ops::YarnScaling yarn;
 
-    CudaProfiler profiler;
     CudaExecutionConfig config;
     bool force_moe_unfused_reduce = false;
     bool force_moe_materialized_swiglu = false;
-    KlMmqState kl_mmq;
     std::unordered_set<int> dsv4_cpu_offload_layers;
     int64_t dsv4_cpu_offload_host_bytes = 0;
     int n_gpu_layers = -1;
@@ -63,26 +56,24 @@ struct CudaExecutionContext {
     mfq::cuda::Trace* gemma_stage_trace = nullptr;
     ParallelConfig tensor_parallel;
     ParallelConfig expert_parallel;
-    mfq::cuda::Collectives collectives;
     LayerPlacementConfig layer_placement;
     mfq::cuda::RoutedCache& weights;
     std::shared_ptr<mfq::cuda::KvMemoryManager>& kv;
     std::shared_ptr<mfq::cuda::KvOffloadStore>& offload;
-    const std::shared_ptr<TqExec>& tq;
-    mfq::cuda::Branches branches;
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     // Layer addresses identify reusable workspace; only execution retires it after drain.
     std::unordered_map<const void*, mfq::cuda::AttentionScratch> attention_scratch;
 #endif
-    mfq::cuda::RouteStats routes;
-    mfq::cuda::Pipelines pipelines;
-
     mfq::cuda::Projector projector();
-    mfq::cuda::Executor executor();
+    mfq::cuda::Executor& executor() { return *executor_; }
+    const mfq::cuda::Executor& executor() const { return *executor_; }
     std::unique_ptr<mfq::cuda::Executor> make_executor();
     mfq::cuda::Executor::Mode forward_mode() const;
     void drain();
     void reset();
+
+private:
+    std::unique_ptr<mfq::cuda::Executor> executor_;
 };
 
 bool model_parallel_enabled(const CudaExecutionContext& execution);

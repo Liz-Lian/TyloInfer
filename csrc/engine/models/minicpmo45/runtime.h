@@ -47,7 +47,7 @@ struct MiniCPMO45Runtime {
         }
         Tensor embed(Tensor ids) {
             return mfq::cuda::minicpmo45::text::embed(
-                runtime.language, runtime.language_executor, runtime.execution.collectives,
+                runtime.language, runtime.language_executor, runtime.execution.executor().collectives(),
                 runtime.execution.layer_placement.primary_device(), std::move(ids),
                 runtime.execution.forward_mode());
         }
@@ -268,7 +268,7 @@ struct MiniCPMO45DuplexSession {
         }
         auto hidden = mfq::cuda::minicpmo45::text::forward(
             runtime.language, runtime.language_state, runtime.language_executor,
-            runtime.execution.collectives, runtime.execution.forward_mode(),
+            runtime.execution.executor().collectives(), runtime.execution.forward_mode(),
             mfq::cuda::Input{token_ids, embeddings.to(mfq_tensor_backend::kBFloat16).contiguous()});
         auto logits = mfq::cuda::minicpmo45::text::logits(
             runtime.language, runtime.language_executor, hidden.index({Slice(), -1, Slice()}),

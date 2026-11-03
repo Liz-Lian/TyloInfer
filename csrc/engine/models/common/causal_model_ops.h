@@ -132,7 +132,7 @@ template <typename Model> struct CudaCausalOps : Model {
     }
 
     auto execution_scope() const {
-        return CudaScope(this->execution->layer_placement.primary_device(), this->execution->contexts);
+        return CudaScope(this->execution->layer_placement.primary_device(), this->execution->executor().contexts());
     }
     static auto block_scope(const std::unique_ptr<Block> &block) {
         return MfqCudaGuard(block->cuda_device);
@@ -156,11 +156,11 @@ template <typename Model> struct CudaCausalOps : Model {
     static int64_t size(const Tensor &value, int axis) { return value.size(axis); }
     static Tensor batch_ids(Tensor ids) { return ids.unsqueeze(0); }
     Tensor device_ids(Tensor ids) const {
-        return this->execution->collectives.copy(ids.to(mfq_tensor_backend::kInt64), this->execution->layer_placement.primary_device())
+        return this->execution->executor().collectives().copy(ids.to(mfq_tensor_backend::kInt64), this->execution->layer_placement.primary_device())
             .contiguous();
     }
     Tensor embed_tokens(Tensor ids) const {
-        return this->execution->profiler.measure(
+        return this->execution->executor().profiler().measure(
             "model.embed", [&] { return this->adapter_embed(quant_embedding_lookup(embed, ids)); });
     }
     Tensor sequence_lengths(int64_t batch, int64_t end) const {
@@ -175,7 +175,7 @@ template <typename Model> struct CudaCausalOps : Model {
         return mfq_tensor_backend::tanh(logits / cap) * cap;
     }
     Tensor scale_hidden(Tensor hidden, double scale) const {
-        return this->execution->profiler.measure("model.embed_scale",
+        return this->execution->executor().profiler().measure("model.embed_scale",
                                                  [&] { return hidden * scale; });
     }
     static Tensor repeat_hidden(Tensor hidden, int64_t streams) {
@@ -203,7 +203,7 @@ template <typename Model> struct CudaCausalOps : Model {
         static int64_t elements(const Tensor &value) { return value.numel(); }
 
         Tensor device_ids(Tensor value) {
-            return model.execution->collectives.copy(value.to(mfq_tensor_backend::kInt64), primary)
+            return model.execution->executor().collectives().copy(value.to(mfq_tensor_backend::kInt64), primary)
                 .contiguous();
         }
         void prepare_inputs() { ids = device_ids(ids); }
@@ -239,7 +239,7 @@ template <typename Model> struct CudaCausalOps : Model {
                 }
             }
             return model.adapter_prepare_hidden(
-                model.execution->collectives.copy(input_embeddings, primary)
+                model.execution->executor().collectives().copy(input_embeddings, primary)
                     .contiguous(),
                 B, T);
         }
@@ -248,11 +248,11 @@ template <typename Model> struct CudaCausalOps : Model {
             auto local_ids =
                 b->cpu_offloaded
                     ? cpu_ids
-                    : model.execution->collectives.copy(ids, b->cuda_device);
+                    : model.execution->executor().collectives().copy(ids, b->cuda_device);
             auto local_pos =
                 b->cpu_offloaded
                     ? cpu_pos
-                    : model.execution->collectives.copy(pos, b->cuda_device);
+                    : model.execution->executor().collectives().copy(pos, b->cuda_device);
             MfqOptional<mfq_tensor_backend::Tensor> local_cache_positions = mfq_nullopt;
             // Grid-MRoPE semantic coordinates never double as physical KV
             // slots, during either prepared prefill or delta-adjusted decode.
@@ -261,25 +261,25 @@ template <typename Model> struct CudaCausalOps : Model {
                 local_cache_positions =
                     b->cpu_offloaded
                         ? cpu_cache_positions
-                        : model.execution->collectives.copy(cache_positions, b->cuda_device);
+                        : model.execution->executor().collectives().copy(cache_positions, b->cuda_device);
             }
             MfqOptional<mfq_tensor_backend::Tensor> local_seq_len = mfq_nullopt;
             if (seq_len.has_value()) {
                 local_seq_len =
                     b->cpu_offloaded
                         ? cpu_seq_len.value()
-                        : model.execution->collectives.copy(seq_len.value(), b->cuda_device);
+                        : model.execution->executor().collectives().copy(seq_len.value(), b->cuda_device);
             }
             MfqOptional<mfq_tensor_backend::Tensor> local_attention_mask = mfq_nullopt;
             if (effective_attention_mask.has_value()) {
                 local_attention_mask =
                     b->cpu_offloaded
                         ? cpu_attention_mask.value()
-                        : model.execution->collectives.copy(effective_attention_mask.value(), b->cuda_device);
+                        : model.execution->executor().collectives().copy(effective_attention_mask.value(), b->cuda_device);
             }
             x = b->cpu_offloaded
                     ? x.to(mfq_tensor_backend::kCPU).contiguous()
-                    : model.execution->collectives.copy(x, b->cuda_device);
+                    : model.execution->executor().collectives().copy(x, b->cuda_device);
             b->set_token_ids(local_ids);
             const RopeCache &active_rope =
                 b->cpu_offloaded
@@ -307,12 +307,12 @@ template <typename Model> struct CudaCausalOps : Model {
         void trace(const Tensor &x) {
             if (block_trace)
                 block_trace->push_back(
-                    model.execution->collectives.copy(x, primary)
+                    model.execution->executor().collectives().copy(x, primary)
                         .to(mfq_tensor_backend::kFloat32)
                         .clone());
         }
         Tensor finish(Tensor x, int64_t B, int64_t T) {
-            x = model.execution->collectives.copy(x, primary);
+            x = model.execution->executor().collectives().copy(x, primary);
             auto finalized = model.finalize_hidden(x, B, T);
             if (raw_hidden)
                 *raw_hidden = model.adapter_raw_hidden(x, finalized);

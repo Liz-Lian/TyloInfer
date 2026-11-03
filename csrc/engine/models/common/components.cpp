@@ -109,7 +109,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
         }
     }
 
-    CudaScope model_guard(execution.layer_placement.primary_device(), execution.contexts);
+    CudaScope model_guard(execution.layer_placement.primary_device(), execution.executor().contexts());
     if (model.plan.vision == CudaVisionAdapter::grid_vit && execution.dense_cpu_layer_count > 0) {
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     }
@@ -139,7 +139,7 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     weight_loader::Loader tensors{source, execution.config.weights,
         {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
          execution.tensor_parallel, moe_parallel_config(execution)},
-        execution.weights, execution.tq};
+        execution.weights, execution.executor().tq()};
     ModelLoader<Model> weights{model, tensors};
     if (load_input_output) {
         model.load_weights(weights, load_blocks);

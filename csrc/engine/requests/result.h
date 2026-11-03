@@ -1,6 +1,7 @@
 #pragma once
 
 #include "request.h"
+#include "../metrics.h"
 #include "../generation/mtp/metrics.h"
 
 #include <chrono>
@@ -35,8 +36,6 @@ struct MfqPrefillTiming {
 };
 
 namespace mfq::engine {
-
-using Metrics = std::vector<std::pair<std::string, double>>;
 
 struct InferenceMetrics {
     using Clock = std::chrono::steady_clock;

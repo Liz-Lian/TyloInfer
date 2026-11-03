@@ -41,7 +41,7 @@ inline constexpr auto with_model = []<typename F>(
         const CudaLoadOptions& options,
         bool load_optional_components,
         F&& run) -> auto {
-    CudaScope scope(execution.layer_placement.primary_device(), execution.contexts);
+    CudaScope scope(execution.layer_placement.primary_device(), execution.executor().contexts());
     auto source = mfq::open_model_source(options.model_path);
     auto finish = [&](auto& loaded, auto started) {
         auto& model = *loaded.model;
@@ -80,7 +80,7 @@ inline constexpr auto with_model = []<typename F>(
         weight_loader::Loader weights{*model.source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.weights, execution.tq};
+            execution.weights, execution.executor().tq()};
         auto runtime_components =
             load_runtime_components(model, weights, load_optional_components);
         Loaded<Model> loaded{std::move(owner), {}, execution.make_executor(), std::move(runtime_components)};
@@ -109,7 +109,7 @@ inline constexpr auto with_model = []<typename F>(
         weight_loader::Loader weights{*source, execution.config.weights,
             {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
              execution.tensor_parallel, moe_parallel_config(execution)},
-            execution.weights, execution.tq};
+            execution.weights, execution.executor().tq()};
         minicpmo45::load(model, weights, execution.layer_placement,
             execution.dense_cpu_layer_count, execution.yarn);
         minicpmo45::State state(model);
@@ -130,7 +130,7 @@ inline constexpr auto with_model = []<typename F>(
                 weight_loader::Loader weights{*source, execution.config.weights,
                     {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                      execution.tensor_parallel, moe_parallel_config(execution)},
-                    execution.weights, execution.tq};
+                    execution.weights, execution.executor().tq()};
                 auto loaded = qwen35::assemble(
                     source, weights, execution.layer_placement, execution.yarn,
                     execution.dense_cpu_layer_count,
@@ -141,9 +141,9 @@ inline constexpr auto with_model = []<typename F>(
                         .extend_yarn = execution.yarn_context_extension,
                         .expert_parallel = execution.expert_parallel.enabled(),
                         .mirror_scalars = execution.config.tensor_parallel_mirror_linear_attention_scalars},
-                    execution.make_executor(), execution.collectives,
+                    execution.make_executor(), execution.executor().collectives(),
                     execution.config.gdn_transposed_state,
-                    execution.kl_mmq.kv_cache_capacity, execution.gemma_stage_trace,
+                    execution.executor().mmq().kv_cache_capacity, execution.gemma_stage_trace,
                     execution.gemma_trace_layer, load_optional_components,
                     !execution.dsv4_cpu_offload_layers.empty(),
                     runtime_options::kv_vram_preallocated());
@@ -161,7 +161,7 @@ inline constexpr auto with_model = []<typename F>(
             weight_loader::Loader weights{*source, execution.config.weights,
                 {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                  execution.tensor_parallel, moe_parallel_config(execution)},
-                execution.weights, execution.tq};
+                execution.weights, execution.executor().tq()};
             execution.dense_cpu_layer_count = execution.n_gpu_layers >= 0
                 ? static_cast<int>(std::max<int64_t>(owner->config.num_hidden_layers - execution.n_gpu_layers, 0)) : 0;
             minicpmo45::text::load(*owner, weights, execution.layer_placement,
@@ -187,7 +187,7 @@ inline constexpr auto with_model = []<typename F>(
             weight_loader::Loader weights{*source, execution.config.weights,
                 {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                  execution.tensor_parallel, moe_parallel_config(execution)},
-                execution.weights, execution.tq};
+                execution.weights, execution.executor().tq()};
             execution.dense_cpu_layer_count = 0;
             gemma4::load(*owner, weights, execution.layer_placement, execution.n_gpu_layers,
                          execution.expert_parallel.enabled());
@@ -218,7 +218,7 @@ inline constexpr auto with_model = []<typename F>(
             weight_loader::Loader weights{*source, execution.config.weights,
                 {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                  execution.tensor_parallel, moe_parallel_config(execution)},
-                execution.weights, execution.tq};
+                execution.weights, execution.executor().tq()};
             execution.dense_cpu_layer_count = 0;
             glm_dsa::load(*owner, weights, execution.layer_placement,
                           execution.n_gpu_layers, true, true, execution.yarn);
@@ -240,14 +240,14 @@ inline constexpr auto with_model = []<typename F>(
             weight_loader::Loader weights{*source, execution.config.weights,
                 {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                  execution.tensor_parallel, moe_parallel_config(execution)},
-                execution.weights, execution.tq};
+                execution.weights, execution.executor().tq()};
             execution.dense_cpu_layer_count = 0;
             glm5_next::load(*owner, weights, execution.layer_placement, execution.n_gpu_layers);
             auto state = std::make_unique<glm5_next::State>(*owner);
             state->preallocate();
             auto executor = execution.make_executor();
             auto components = load_runtime_components(*owner, weights, load_optional_components,
-                execution.projector(), execution.collectives, execution.profiler);
+                execution.projector(), execution.executor().collectives(), execution.executor().profiler());
             Loaded<glm5_next::Model, glm5_next::State> loaded{
                 std::move(owner), std::move(state), std::move(executor), std::move(components)};
             return finish(loaded, started);
@@ -269,9 +269,9 @@ inline constexpr auto with_model = []<typename F>(
             weight_loader::Loader weights{*source, execution.config.weights,
                 {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                  execution.tensor_parallel, moe_parallel_config(execution)},
-                execution.weights, execution.tq};
+                execution.weights, execution.executor().tq()};
             execution.dense_cpu_layer_count = 0;
-            deepseek_v4::load(*owner, weights, execution.layer_placement, execution.collectives,
+            deepseek_v4::load(*owner, weights, execution.layer_placement, execution.executor().collectives(),
                 model_parallel_primary_device(execution), execution.dsv4_cpu_offload_layers,
                 execution.dsv4_cpu_offload_host_bytes, execution.n_gpu_layers);
             auto state = std::make_unique<deepseek_v4::State>(*owner);
@@ -294,9 +294,9 @@ inline constexpr auto with_model = []<typename F>(
             weight_loader::Loader weights{*source, execution.config.weights,
                 {execution.layer_placement.primary_device(), false, execution.drop_file_cache,
                  execution.tensor_parallel, moe_parallel_config(execution)},
-                execution.weights, execution.tq};
+                execution.weights, execution.executor().tq()};
             execution.dense_cpu_layer_count = 0;
-            nemotron_h::load(*owner, weights, execution.pipelines, execution.layer_placement,
+            nemotron_h::load(*owner, weights, execution.executor().pipelines(), execution.layer_placement,
                              execution.n_gpu_layers, execution.expert_parallel.enabled());
             auto state = std::make_unique<nemotron_h::State>(*owner);
             state->preallocate();

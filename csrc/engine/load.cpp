@@ -43,19 +43,19 @@
 namespace mfq::cuda::engine_detail {
 
 using State = std::variant<
-    std::unique_ptr<Text<Loaded<minicpmo45::text::Model, minicpmo45::text::State>>>,
-    std::unique_ptr<Text<Loaded<minicpmo45::Model, minicpmo45::State>>>,
+    std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State>>,
+    std::unique_ptr<Text<minicpmo45::Model, minicpmo45::State>>,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::unique_ptr<Text<Loaded<mfq::models::CausalModel, mfq::models::State, RuntimeComponents<gemma4::Model>>>>,
+    std::unique_ptr<Text<mfq::models::CausalModel, mfq::models::State, RuntimeComponents<gemma4::Model>>>,
 #else
-    std::unique_ptr<Text<Loaded<gemma4::Model, gemma4::State>>>,
+    std::unique_ptr<Text<gemma4::Model, gemma4::State>>,
 #endif
-    std::unique_ptr<Text<Loaded<glm_dsa::Model, glm_dsa::State>>>,
-    std::unique_ptr<Text<Loaded<glm5_next::Model, glm5_next::State>>>,
-    std::unique_ptr<Text<Loaded<Qwen4CausalLm>>>,
-    std::unique_ptr<Text<Loaded<deepseek_v4::Model, deepseek_v4::State>>>,
-    std::unique_ptr<Text<Loaded<DeepseekV41CausalLm>>>,
-    std::unique_ptr<Text<Loaded<nemotron_h::Model, nemotron_h::State>>> >;
+    std::unique_ptr<Text<glm_dsa::Model, glm_dsa::State>>,
+    std::unique_ptr<Text<glm5_next::Model, glm5_next::State>>,
+    std::unique_ptr<Text<Qwen4CausalLm>>,
+    std::unique_ptr<Text<deepseek_v4::Model, deepseek_v4::State>>,
+    std::unique_ptr<Text<DeepseekV41CausalLm>>,
+    std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State>>>;
 
 } // namespace mfq::cuda::engine_detail
 
@@ -311,7 +311,7 @@ static void configure_model_parallel(
         const std::string & expert_devices_arg,
         const std::string & expert_split_arg,
         bool allow_duplicate_devices = false) {
-    execution.collectives.reset();
+    execution.executor().collectives().reset();
     execution.tensor_parallel = {};
     execution.expert_parallel = {};
 
@@ -343,7 +343,7 @@ static void configure_model_parallel(
     const auto& config = execution.tensor_parallel.enabled()
         ? execution.tensor_parallel : execution.expert_parallel;
     Collectives::enable_peer_access(config.devices);
-    execution.collectives.configure(
+    execution.executor().collectives().configure(
         config.devices, allow_duplicate_devices);
     TYLOINFER_CUDA_CHECK(cudaSetDevice(config.primary_device()));
     print_parallel_config(
@@ -352,7 +352,7 @@ static void configure_model_parallel(
         "expert_parallel", execution.expert_parallel);
     std::cerr << "model_parallel ranks=" << config.devices.size()
               << " collective_backend="
-              << (execution.collectives.enabled()
+              << (execution.executor().collectives().enabled()
                   ? "nccl" : "serial")
               << '\n';
 }
@@ -535,8 +535,8 @@ void setup_cuda_load(
                 .warm = execution.config.moe_residency_warm,
                 .projection_heat = execution.config.moe_residency_projection_heat,
                 .ram_fraction = execution.config.moe_ram_pcie_fraction,
-                .two_stage = execution.config.moe_ffn.two_stage,
-                .heterogeneous = execution.config.tasks.projection.moe.heterogeneous});
+                .two_stage = execution.executor().options().moe_ffn.two_stage,
+                .heterogeneous = execution.executor().options().projection.moe.heterogeneous});
         if (!profile_path.empty() && execution.weights.moe) {
             set_moe_expert_cache_profile(*execution.weights.moe,mfq::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")

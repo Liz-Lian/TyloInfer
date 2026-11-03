@@ -663,12 +663,12 @@ struct Block final : ::Block {
                                       "DeepSeek-V4.1 hierarchical indexer has no candidates");
                     candidates = candidate_positions(shared->candidate_blocks,
                                                      config.candidate_block_size, pool_length);
-                    return execution.profiler.measure("deepseek_v41.indexer.candidate_scores", [&] {
+                    return execution.executor().profiler().measure("deepseek_v41.indexer.candidate_scores", [&] {
                         return dsv4_indexer_candidate_scores_cuda(query, keys, weights, candidates,
                                                                   position, ratio);
                     });
                 }
-                return execution.profiler.measure("deepseek_v41.indexer.full_scores", [&] {
+                return execution.executor().profiler().measure("deepseek_v41.indexer.full_scores", [&] {
                     return dsv4_indexer_scores_cuda(query, keys, weights, position, ratio);
                 });
             },
@@ -826,7 +826,7 @@ struct Block final : ::Block {
                    std::int64_t cache_position, const MfqOptional<Tensor> &sequence_lengths,
                    const RopeCache &, const MfqOptional<Tensor> &cache_positions = mfq_nullopt,
                    const MfqOptional<Tensor> &attention_mask = mfq_nullopt) override {
-        auto &profiler = execution.profiler;
+        auto &profiler = execution.executor().profiler();
         TYLOINFER_RUNTIME_CHECK(current_ids.defined() && hidden.dim() == 4 &&
                               hidden.size(2) == config.hc_mult && hidden.size(3) == config.hidden &&
                               positions.dim() == 1 && positions.numel() == hidden.size(1) &&
@@ -876,22 +876,22 @@ struct Block final : ::Block {
                         return mlp.forward(
                             value.reshape({-1,config.hidden}), execution.forward_mode().ffn, current_ids, bias)
 #else
-                        auto executor = execution.executor();
+                        auto executor = execution.make_executor();
                         return mlp.forward(
-                            value.reshape({-1,config.hidden}), executor, execution.forward_mode().ffn, current_ids, bias)
+                            value.reshape({-1,config.hidden}), *executor, execution.forward_mode().ffn, current_ids, bias)
 #endif
                             .reshape({batch,tokens,config.hidden});
                     }
                     if(layer+1<static_cast<int64_t>(shared->router_prefetch.size()))
                         if(const auto* next=shared->router_prefetch[layer+1]) {
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-                            auto executor = execution.executor();
+                            auto executor = execution.make_executor();
 #endif
                             next->prefetch(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                                 value, execution.forward_mode().ffn,
 #else
-                                value, executor, execution.forward_mode().ffn,
+                                value, *executor, execution.forward_mode().ffn,
 #endif
                                 moe_expert_cache_ssd_router_prefetch(
                                     execution.weights.moe),
@@ -901,9 +901,9 @@ struct Block final : ::Block {
                     return mlp.forward(
                             value.reshape({-1, config.hidden}), execution.forward_mode().ffn, current_ids)
 #else
-                    auto executor = execution.executor();
+                    auto executor = execution.make_executor();
                     return mlp.forward(
-                            value.reshape({-1, config.hidden}), executor, execution.forward_mode().ffn, current_ids)
+                            value.reshape({-1, config.hidden}), *executor, execution.forward_mode().ffn, current_ids)
 #endif
                         .reshape({batch, tokens, config.hidden});
                 });

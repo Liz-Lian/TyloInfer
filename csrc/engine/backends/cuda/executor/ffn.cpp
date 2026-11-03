@@ -27,7 +27,7 @@ Tensor Executor::full_ffn(
         auto options = dense_;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
         options.bf16_norm = attention_.fused_norm;
-        return op.forward(project_, profiler_, mmq_, tq_, branches_, collectives_, parallel, options,
+        return op.forward(project_, profiler_, mmq_, *tq_, branches_, collectives_, parallel, options,
             mode.serial, std::move(residual), std::move(output), trace_output);
     }
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);
@@ -73,7 +73,7 @@ Tensor Executor::linear_ffn(
         const auto& parallel = projection_;
         auto options = dense_;
         options.mlp.nvq_fusion = parallel.nvq_fusion;
-        return op.forward(project_, profiler_, mmq_, tq_, branches_, collectives_, parallel, options,
+        return op.forward(project_, profiler_, mmq_, *tq_, branches_, collectives_, parallel, options,
             mode.serial, std::move(residual), std::move(output));
     }
     const int64_t B = residual.size(0), T = residual.size(1), H = residual.size(2);

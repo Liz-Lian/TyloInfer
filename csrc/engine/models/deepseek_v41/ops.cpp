@@ -236,7 +236,7 @@ std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const mfq::cuda::wei
                                                             int layer, int,
                                                             const std::string &type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
-    return deepseek_v41_runtime::load_block(execution->pipelines, weights, layer, shared,
+    return deepseek_v41_runtime::load_block(execution->executor().pipelines(), weights, layer, shared,
                                               execution->config.deepseek_v41_engram_cache_rows);
 }
 
@@ -247,14 +247,14 @@ void DeepseekV41Model::adapter_begin_forward(bool capture_raw_hidden) {
 
 mfq_tensor_backend::Tensor DeepseekV41Model::collapse_hidden(mfq_tensor_backend::Tensor hidden,
                                                              int64_t batch, int64_t tokens) const {
-    return deepseek_v41_runtime::finalize_hidden(shared, hidden, execution->profiler);
+    return deepseek_v41_runtime::finalize_hidden(shared, hidden, execution->executor().profiler());
 }
 
 mfq_tensor_backend::Tensor
 DeepseekV41Model::normalize_hidden(mfq_tensor_backend::Tensor hidden,
                                    const mfq_tensor_backend::Tensor &output_norm, int64_t batch,
                                    int64_t tokens) const {
-    return execution->profiler.measure("model.output_norm", [&]() {
+    return execution->executor().profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, metadata.hidden_size})
                                  .to(mfq_tensor_backend::kFloat32),
                              output_norm, metadata.rms_norm_eps, metadata.norm_weight_offset)

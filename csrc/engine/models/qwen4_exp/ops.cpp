@@ -345,15 +345,15 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
 #endif
         const auto layer_prefill = mfq::cuda::runtime_options::moe_prefill_layer();
         const bool combined_prefill = source.size(0)>8 &&
-            execution.kl_mmq.mode==KlMmqMode::Default &&
+            execution.executor().mmq().mode==KlMmqMode::Default &&
             ((layer_prefill && *layer_prefill!=0 && moe_expert_cache_layer_prefill_ready(execution.weights.moe)) ||
              moe_expert_cache_ssd_experts(execution.weights.moe));
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         const bool use_pipeline=borrowed && (gate_up.projections.size()!=1 ||
             combined_prefill ||
             ((source.size(0)<=8 || (source.size(0)<=32 && execution.continuous_batch_cache_serial)) &&
-             execution.config.moe_ffn.two_stage &&
-             execution.kl_mmq.mode==KlMmqMode::Default));
+             execution.executor().options().moe_ffn.two_stage &&
+             execution.executor().mmq().mode==KlMmqMode::Default));
 #else
         const bool use_pipeline=false;
 #endif
@@ -375,7 +375,7 @@ static auto qwen_moe(Pipelines& pipelines, const ParallelConfig& parallel, weigh
                     selected[0].to(tb::kInt32).contiguous(),selected[1],execution.continuous_batch_cache_serial,
                     execution.continuous_batch_ffn_tile,execution.continuous_batch_ffn_tiles);
 #endif
-                if(tq)return execution.profiler.measure("tq.moe",[&] {
+                if(tq)return execution.executor().profiler().measure("tq.moe",[&] {
                     return execution.projector().run(*tq,source,selected[0],selected[1]);
                 });
                 return mfq::ops::routed_experts(
@@ -429,7 +429,7 @@ struct BlockLoader : weight_loader::Loader {
             ? GatedResidual::Part::final_down
             : name=="model.mhc.pre.up.weight" || name=="predictor.mhc.pre.up.weight"
                 ? GatedResidual::Part::final_up : GatedResidual::Part::generic;
-        return GatedResidual::projection(linear(name), execution.projector(), execution.profiler,
+        return GatedResidual::projection(linear(name), execution.projector(), execution.executor().profiler(),
                                           execution.config.residual, part);
     }
     GatedResidual residual(Tensor norm, GatedResidual::Projection down,
@@ -501,7 +501,7 @@ struct BlockLoader : weight_loader::Loader {
                     Linear shared_gate, Linear sg, Linear su, Linear sd, const Config &c) const {
         if(router_capture)*router_capture=router;
         if(tq_graph_capture)*tq_graph_capture=gate_up.tq_projections.size()==2 && down.tq_projections.size()==1;
-        return qwen_moe(execution.pipelines, placement.experts, std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
+        return qwen_moe(execution.executor().pipelines(), placement.experts, std::move(gate_up), std::move(down), std::move(router), std::move(shared_gate),
                         std::move(sg), std::move(su), std::move(sd), c, prefetch_capture);
     }
     auto embedding(const std::string &name) const {
@@ -637,7 +637,7 @@ struct Qwen4Block final : Block {
     Tensor execute(CudaExecutionContext &execution, Tensor x, const Tensor &ids,
                    const Tensor &positions, const Tensor &full_positions, int64_t confirmed = 0,const Tensor& host_ids = {}) {
         retained_prefix=confirmed>0 && ids.size(1)<=8;
-        auto& profiler=execution.profiler;
+        auto& profiler=execution.executor().profiler();
         if(ple)x=x+profiler.measure("prefill.ple",[&] {
             return ple->forward(execution.projector(),x,ids,true,confirmed,host_ids,full_positions.size(-1)-ids.size(1));
         });
@@ -646,7 +646,7 @@ struct Qwen4Block final : Block {
         });
         auto attention_output=gdn
             ? profiler.measure("prefill.gdn",[&] {
-                return gdn->forward(execution.projector(),execution.profiler,attention_input,true,confirmed,full_positions.size(-1)-ids.size(1));
+                return gdn->forward(execution.projector(),execution.executor().profiler(),attention_input,true,confirmed,full_positions.size(-1)-ids.size(1));
             })
             : profiler.measure("prefill.qsa",[&] {
                 return qsa->forward(execution.projector(),attention_input,positions,full_positions,true);
@@ -670,21 +670,21 @@ struct Qwen4Block final : Block {
                        context.full_positions, context.confirmed_prefix,context.host_token_ids);
     }
     Tensor prefill_ple(CudaExecutionContext& execution,Tensor x,const Context& context) {
-        if(ple)x=x+execution.profiler.measure("prefill.ple",[&] {
+        if(ple)x=x+execution.executor().profiler().measure("prefill.ple",[&] {
             return ple->forward(execution.projector(),x,context.token_ids,true,0,context.host_token_ids);
         });
         return x;
     }
     Tensor prefill_attention_core(CudaExecutionContext& execution,const Tensor& input,const Context& context) {
         return gdn?
-            execution.profiler.measure("prefill.gdn",[&] {return gdn->forward(execution.projector(),execution.profiler,input,true,0);}):
-            execution.profiler.measure("prefill.qsa",[&] {return qsa->forward(execution.projector(),input,context.positions,context.full_positions,true);});
+            execution.executor().profiler().measure("prefill.gdn",[&] {return gdn->forward(execution.projector(),execution.executor().profiler(),input,true,0);}):
+            execution.executor().profiler().measure("prefill.qsa",[&] {return qsa->forward(execution.projector(),input,context.positions,context.full_positions,true);});
     }
     GatedResidual::Result prefill_attention(CudaExecutionContext& execution,Tensor x,const Context& context) {
         x=prefill_ple(execution,std::move(x),context);
-        auto mix=execution.profiler.measure("prefill.gr_attention",[&] {return attention_gr.pre(x);});
+        auto mix=execution.executor().profiler().measure("prefill.gr_attention",[&] {return attention_gr.pre(x);});
         auto attention_output=prefill_attention_core(execution,mix.mixed,context);
-        return execution.profiler.measure("prefill.gr_ffn_pre",[&] {
+        return execution.executor().profiler().measure("prefill.gr_ffn_pre",[&] {
             return ffn_gr.pre_after(attention_output,mix.residual,mix.gate);
         });
     }
@@ -716,8 +716,8 @@ struct Qwen4Block final : Block {
             : attention_gr.pre(x,marker("attention_mhc_"));
         mark("attention_core_begin");
         auto attention_output=gdn
-            ? (confirmed ? gdn->forward_graph(execution.projector(),execution.profiler,attention_input,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
-                         : gdn->forward_chunk(execution.projector(),execution.profiler,attention_input,true))
+            ? (confirmed ? gdn->forward_graph(execution.projector(),execution.executor().profiler(),attention_input,confirmed,checkpoint->gdn_conv,checkpoint->gdn_state)
+                         : gdn->forward_chunk(execution.projector(),execution.executor().profiler(),attention_input,true))
             : qsa->forward_graph(execution.projector(),attention_input,positions,cache_positions);
         mark("attention_core_end");
         auto ffn_result=ffn_gr.pre_after(attention_output,attention_residual,attention_gate,marker("ffn_mhc_"));
@@ -951,13 +951,13 @@ std::optional<Predictor> Predictor::load_if_present(CudaExecutionContext &execut
 }
 
 Tensor Predictor::embed(Tensor ids) const {
-    return mfq::cuda::embed(embedding, std::move(ids), execution->collectives,
-                           execution->profiler, primary);
+    return mfq::cuda::embed(embedding, std::move(ids), execution->executor().collectives(),
+                           execution->executor().profiler(), primary);
 }
 
 Tensor Predictor::logits(Tensor hidden) const {
     return mfq::cuda::logits(output, std::move(hidden), execution->projector(),
-                            execution->profiler, softcap);
+                            execution->executor().profiler(), softcap);
 }
 
 void Predictor::reset(int64_t next_batch) {
@@ -1078,8 +1078,8 @@ MtpStep Predictor::step_positioned(Tensor hidden, Tensor ids, Tensor positions) 
         positions=positions.to(tb::kInt32).contiguous();
     }
     const auto graph=mfq::cuda::runtime_options::mtp_predictor_graph();
-    if((!graph || *graph) && execution->config.moe_pipeline && execution->config.moe_ffn.two_stage &&
-        execution->kl_mmq.mode==KlMmqMode::Default && execution->weights.moe &&
+    if((!graph || *graph) && execution->config.moe_pipeline && execution->executor().options().moe_ffn.two_stage &&
+        execution->executor().mmq().mode==KlMmqMode::Default && execution->weights.moe &&
         streamed_decode_graphs(*execution) && batch==1 && ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
         hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) && hidden.size(2)==hidden_norm.numel() &&
         ids.is_cuda() && hidden.is_cuda() && !lengths.empty() && lengths[0]>0 &&
@@ -1102,7 +1102,7 @@ void Predictor::history_step(Tensor hidden,Tensor ids,Tensor positions,bool scal
     }
     const auto graph=mfq::cuda::runtime_options::mtp_predictor_graph();
     if(reuse_decode_graphs && (!graph || *graph) && execution->config.moe_pipeline &&
-            execution->config.moe_ffn.two_stage && execution->kl_mmq.mode==KlMmqMode::Default &&
+            execution->executor().options().moe_ffn.two_stage && execution->executor().mmq().mode==KlMmqMode::Default &&
             execution->weights.moe && streamed_decode_graphs(*execution) && layers.size()==1 && batch==1 &&
             ids.dim()==2 && ids.size(0)==1 && ids.size(1)>0 && ids.size(1)<=8 &&
             hidden.dim()==3 && hidden.size(0)==1 && hidden.size(1)==ids.size(1) &&
@@ -1405,7 +1405,7 @@ struct Qwen4DecodeGraph {
             if(!cell.window.valid()) {
                 if(!prepare_moe_graph_pool(model.execution->weights.moe) &&
                    model.execution->weights.tq)
-                    model.execution->tq->get(mfq_current_cuda_device())->prepare_graph();
+                    model.execution->executor().tq()->get(mfq_current_cuda_device())->prepare_graph();
                 DecodeGraphBranchScope branch_scope(
                     model.execution->decode_graph_serial_branches);
                 const auto capture_started=std::chrono::steady_clock::now();
@@ -2148,7 +2148,7 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
         // Dense fixtures need a pool owned by this decoder instead.
         if (!prepare_moe_graph_pool(model.execution->weights.moe)) {
             if (model.execution->weights.tq) {
-                model.execution->tq->get(mfq_current_cuda_device())->prepare_graph();
+                model.execution->executor().tq()->get(mfq_current_cuda_device())->prepare_graph();
             } else {
                 graph.memory_pool = std::make_unique<Graph>();
                 graph.memory_pool->prepare_memory();
@@ -2231,7 +2231,7 @@ std::optional<mfq_tensor_backend::Tensor> Qwen4BatchDecodeGraph::run(
                     auto attention_input = mix.mixed.narrow(0,row,1);
                     std::vector<tb::Tensor> projected;
                     for(const auto& value:projections)projected.push_back(value.narrow(0,row,1));
-                    attended.push_back(layer.gdn ? layer.gdn->forward_chunk(execution.projector(),execution.profiler,attention_input,true,std::move(projected),!project_batch)
+                    attended.push_back(layer.gdn ? layer.gdn->forward_chunk(execution.projector(),execution.executor().profiler(),attention_input,true,std::move(projected),!project_batch)
                         : layer.qsa->forward_graph(execution.projector(),attention_input,graph.positions[row],graph.cache_positions[row],
                             std::move(projected),!project_batch));
                 }
@@ -2331,7 +2331,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
                 auto& layer=requests[row]->state_->layers[i];
                 auto ple=packed ? layer.ple->forward(execution.projector(),x,chunks[row],true,0,
                     host_ids.narrow(1,offsets[row],chunks[row].size(1))) :
-                    execution.profiler.measure("prefill.ple",[&] {
+                    execution.executor().profiler().measure("prefill.ple",[&] {
                         return layer.ple->forward(execution.projector(),x,chunks[row],true,0,
                             host_ids.narrow(1,offsets[row],chunks[row].size(1)));
                     });
@@ -2340,7 +2340,7 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
             hidden=join_request_outputs(positional,1);
         }
         auto mix=packed ? block.attention_gr.pre(hidden) :
-            execution.profiler.measure("prefill.gr_attention",[&] { return block.attention_gr.pre(hidden); });
+            execution.executor().profiler().measure("prefill.gr_attention",[&] { return block.attention_gr.pre(hidden); });
         tb::Tensor attention;
         if(packed) {
             const auto projections=block.gdn?block.gdn->project_inputs(execution.projector(),mix.mixed)
@@ -2352,28 +2352,28 @@ std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(Qwen4CausalLm& model
                 std::vector<tb::Tensor> projected;
                 for (const auto& value:projections)
                     projected.push_back(value.narrow(1,offsets[row],chunks[row].size(1)));
-                attended.push_back(layer.gdn?layer.gdn->forward_chunk(execution.projector(),execution.profiler,attention_input,true,std::move(projected),false)
+                attended.push_back(layer.gdn?layer.gdn->forward_chunk(execution.projector(),execution.executor().profiler(),attention_input,true,std::move(projected),false)
                     :layer.qsa->forward(execution.projector(),attention_input,current[row],full[row],true,nullptr,std::move(projected),false));
             }
             attention=join_request_outputs(attended,1);
             attention=block.gdn?block.gdn->project_output(execution.projector(),attention):block.qsa->project_output(execution.projector(),attention);
         } else {
             auto& layer=requests.front()->state_->layers[i];
-            if(layer.gdn)attention=execution.profiler.measure("prefill.gdn",[&] {
-                return layer.gdn->forward(execution.projector(),execution.profiler,mix.mixed,true,0);
+            if(layer.gdn)attention=execution.executor().profiler().measure("prefill.gdn",[&] {
+                return layer.gdn->forward(execution.projector(),execution.executor().profiler(),mix.mixed,true,0);
             });
-            else attention=execution.profiler.measure("prefill.qsa",[&] {
+            else attention=execution.executor().profiler().measure("prefill.qsa",[&] {
                 return layer.qsa->forward(execution.projector(),mix.mixed,current.front(),full.front(),true);
             });
         }
         auto ffn_mix=packed ? block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate) :
-            execution.profiler.measure("prefill.gr_ffn_pre",[&] {
+            execution.executor().profiler().measure("prefill.gr_ffn_pre",[&] {
                 return block.ffn_gr.pre_after(std::move(attention),mix.residual,mix.gate);
             });
         auto ffn_output=packed ? block.ffn(execution,ffn_mix.mixed) :
-            execution.profiler.measure("prefill.ffn",[&] { return block.ffn(execution,ffn_mix.mixed); });
+            execution.executor().profiler().measure("prefill.ffn",[&] { return block.ffn(execution,ffn_mix.mixed); });
         hidden=packed ? block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate) :
-            execution.profiler.measure("prefill.gr_ffn_post",[&] {
+            execution.executor().profiler().measure("prefill.gr_ffn_post",[&] {
                 return block.ffn_gr.post(ffn_output,ffn_mix.residual,ffn_mix.gate);
             });
     }
@@ -2429,7 +2429,7 @@ mfq_tensor_backend::Tensor qwen4_batch_decode(Qwen4CausalLm& model,
             auto attention_input = mix.mixed.narrow(0,row,1);
             std::vector<tb::Tensor> projected;
             for(const auto& value:projections)projected.push_back(value.narrow(0,row,1));
-            attended.push_back(layer.gdn ? layer.gdn->forward_chunk(execution.projector(),execution.profiler,attention_input,true,std::move(projected),!project_batch)
+            attended.push_back(layer.gdn ? layer.gdn->forward_chunk(execution.projector(),execution.executor().profiler(),attention_input,true,std::move(projected),!project_batch)
                 : layer.qsa->forward(execution.projector(),attention_input,current[row],full[row],true));
         }
         auto attention=join_request_outputs(attended,0);
@@ -2489,7 +2489,7 @@ void Qwen4Model::adapter_begin_forward(bool) {
 mfq_tensor_backend::Tensor
 Qwen4Model::adapter_block_positions(const mfq_tensor_backend::Tensor &full_positions,
                                     const mfq_tensor_backend::Tensor &, int device) const {
-    return execution->collectives.copy(full_positions, device);
+    return execution->executor().collectives().copy(full_positions, device);
 }
 
 void Qwen4Model::adapter_finish_forward(const mfq_tensor_backend::Tensor &full_positions,
@@ -2558,7 +2558,7 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
     ids=model.device_ids(std::move(ids));
     const auto tokens=ids.size(1);
     const auto cache_start=model.cache_pos;
-    auto& profiler=model.execution->profiler;
+    auto& profiler=model.execution->executor().profiler();
     const auto* profile_once=mfq::cuda::env_lookup("TYLOINFER_PROFILE_PREFILL_ONCE");
     static std::atomic<uint64_t> profile_requests{0};
     const bool profile_enabled=profile_once && profile_once[0]=='1';
@@ -2692,7 +2692,7 @@ mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
                 if(cancelled && cancelled())return {};
                 const qwen4_exp::QwenGdnPrefillProjectionRowsScope projection_rows(compute_chunk);
                 attention_output=profiler.measure("prefill.gdn",[&] {
-                    return qwen_block.gdn->forward(model.execution->projector(),model.execution->profiler,attention_result.mixed,true,0);
+                    return qwen_block.gdn->forward(model.execution->projector(),model.execution->executor().profiler(),attention_result.mixed,true,0);
                 });
             }
         }

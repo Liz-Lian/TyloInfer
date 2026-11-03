@@ -13,6 +13,27 @@ mfq::models::Info Model::info() const {
             std::size_t(config.hidden_size) * sizeof(float) * 8, true, true};
 }
 
+MfqModelCapabilities Model::capabilities() const {
+    const auto state = cuda_component_state(graph, plan, false, false);
+    const auto caps = cuda_runtime_capabilities(graph, plan, state, false, false);
+    return {graph.architecture, caps.text, caps.image_input, caps.video_input,
+        caps.audio_input, caps.audio_output, caps.full_duplex, caps.mtp,
+        "model-graph+cuda-adapters"};
+}
+
+mfq::engine::Metrics Model::metrics() const {
+    const auto state = cuda_component_state(graph, plan, false, false);
+    return {{"kv_memory_supported", 0.0},
+        {"kv_quantization_supported", 0.0},
+        {"kv_quantization_bits", 0.0},
+        {"vision_declared", double(state.vision_declared)},
+        {"vision_supported", double(state.vision_supported)},
+        {"vision_available", double(state.vision_available)},
+        {"mtp_declared", double(state.mtp_declared)},
+        {"mtp_supported", double(state.mtp_supported)},
+        {"mtp_available", double(state.mtp_available)}};
+}
+
 Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
            std::int64_t context) {
     validate_model_source(*source);
