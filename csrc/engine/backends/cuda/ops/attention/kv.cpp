@@ -6,6 +6,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #endif
 
+#include <optional>
 #include <utility>
 
 using mfq_tensor_backend::indexing::Slice;
@@ -19,6 +20,8 @@ std::pair<mfq::Tensor, mfq::Tensor> ops::append_kv(
     mfq_tensor_backend::Tensor kk(key), vv(value), pos(positions);
     const auto end_pos = start_pos + kk.size(2);
     const bool aten_write = Executor::current().attention_options().write_aten;
+    std::optional<MfqCudaGuard> guard;
+    if (key.is_cuda()) guard.emplace(key.device().index);
     mfq_tensor_backend::Tensor k(cache.physical_key), v(cache.physical_value);
     const mfq_tensor_backend::Tensor k_chunk_ptrs(cache.key_chunk_ptrs);
     const mfq_tensor_backend::Tensor v_chunk_ptrs(cache.value_chunk_ptrs);

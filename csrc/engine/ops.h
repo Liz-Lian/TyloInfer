@@ -93,9 +93,10 @@ Tensor merge_norms(Tensor dense, Tensor experts, Tensor residual, const Tensor& 
                    const Tensor& expert_weight, const Tensor& output_weight,
                    const Tensor& scale, double eps);
 
+// A CUDA target selects the measurement device; by default the current execution scope is used.
 class ProfileRange {
 public:
-    explicit ProfileRange(const char* name);
+    explicit ProfileRange(const char* name, std::optional<Device> device = {});
     ~ProfileRange();
     void finish();
 private:
@@ -103,11 +104,15 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 template <class Fn>
-auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
-    ProfileRange range(name);
+auto measure(const char* name, std::optional<Device> device, Fn&& operation) -> decltype(operation()) {
+    ProfileRange range(name, device);
     auto result = operation();
     range.finish();
     return result;
+}
+template <class Fn>
+auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
+    return measure(name, std::nullopt, std::forward<Fn>(operation));
 }
 // Preserve dtype; a cap that is not positive returns the input handle.
 Tensor softcap(Tensor input, double cap);

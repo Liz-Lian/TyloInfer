@@ -10,6 +10,7 @@
 #include "engine/backends/cuda/ops/attention/kv.h"
 #include "engine/backends/cuda/ops/rope/rope.h"
 #include "engine/backends/cuda/native/profile.h"
+#include "engine/backends/cuda/native/device.h"
 #endif
 
 namespace mfq::ops {
@@ -141,16 +142,20 @@ Tensor merge_norms(Tensor dense, Tensor experts, Tensor residual, const Tensor& 
                                   dense_weight, expert_weight, output_weight, scale, eps);
 }
 struct ProfileRange::Impl {
-    CudaProfiler::Range range;
-    Impl(CudaProfiler& profiler, const char* name) : range(profiler, name) {}
+    std::optional<cuda::DeviceGuard> guard;
+    std::optional<CudaProfiler::Range> range;
+    Impl(CudaProfiler& profiler, const char* name, std::optional<Device> device) {
+        if (device && device->is_cuda()) guard.emplace(device->index);
+        range.emplace(profiler, name);
+    }
 };
-ProfileRange::ProfileRange(const char* name) {
+ProfileRange::ProfileRange(const char* name, std::optional<Device> device) {
     auto& profiler = cuda::Executor::current().profiler();
     if (profiler.enabled && profiler.selected(name))
-        impl_ = std::make_unique<Impl>(profiler, name);
+        impl_ = std::make_unique<Impl>(profiler, name, device);
 }
 ProfileRange::~ProfileRange() = default;
-void ProfileRange::finish() { if (impl_) impl_->range.finish(); }
+void ProfileRange::finish() { if (impl_) impl_->range->finish(); }
 SelectedExperts topk(Tensor logits, std::int64_t count, const MoeRouting& routing) {
     input(logits);
     require_cuda(logits);

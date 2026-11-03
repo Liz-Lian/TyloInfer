@@ -23,6 +23,7 @@ mfq::ops::RopeTable RopeCache::view() const {
 
 mfq::Tensor mfq::cuda::ops::rope(mfq::Tensor input, mfq::Tensor positions,
     const mfq::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
+    MfqCudaGuard guard(input.device().index);
     RopeCache cache;
     cache.cos = mfq_tensor_backend::Tensor(table.cos);
     cache.sin = mfq_tensor_backend::Tensor(table.sin);

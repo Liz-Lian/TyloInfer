@@ -8,6 +8,7 @@
 #include "engine/backends/cuda/kernels/mfq_cuda_nint_route_hint.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -15,11 +16,15 @@
 #include "engine/ops.h"
 
 mfq::Tensor mfq::cuda::ops::embedding(mfq::Tensor ids, const mfq::weights::Matrix& weight) {
+    std::optional<MfqCudaGuard> guard;
+    if (ids.is_cuda()) guard.emplace(ids.device().index);
     return quant_embedding_lookup(as_quant_linear(weight), mfq_tensor_backend::Tensor(ids));
 }
 
 mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Matrix& weight,
                                    const mfq::ops::ProjectionOptions& options) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
     mfq::cuda::Ffn::Mode mode;
     mode.serial = options.serial;
     mode.projection_major = options.projection_major;
@@ -29,6 +34,8 @@ mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Matri
 
 std::vector<mfq::Tensor> mfq::cuda::ops::project(mfq::Tensor input,
     const mfq::weights::MatrixGroup& group, const mfq::ops::ProjectionOptions& options) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
     mfq::cuda::Ffn::Mode mode;
     mode.serial = options.serial;
     mode.projection_major = options.projection_major;
@@ -39,6 +46,8 @@ std::vector<mfq::Tensor> mfq::cuda::ops::project(mfq::Tensor input,
 
 mfq::Tensor mfq::cuda::ops::sigmoid_project(mfq::Tensor input, mfq::Tensor gate,
     const mfq::weights::Matrix& weight, const mfq::ops::ProjectionOptions& options) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
     mfq::cuda::Ffn::Mode mode;
     mode.serial = options.serial;
     mode.projection_major = options.projection_major;

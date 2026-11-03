@@ -1,9 +1,9 @@
 #include "engine/models/gemma4/forward.h"
 #include "engine/models/gemma4/ffn.h"
 #include "engine/models/common/check.h"
-#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/ops.h"
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "engine/backends/cuda/native/tensor/backend.h"
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_moe_ops.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
@@ -50,7 +50,7 @@ static Tensor gemma_rms_norm_f16(Tensor x,
 #endif
                                  double weight_offset) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    TYLOINFER_RUNTIME_CHECK(x.scalar_type() == mfq::ScalarType::float16,
+    mfq::models::require_model(x.scalar_type() == mfq::ScalarType::float16,
                             "gemma_rms_norm_f16: activation must remain f16");
 #else
     TYLOINFER_RUNTIME_CHECK(x.scalar_type() == mfq_tensor_backend::kFloat16,
@@ -88,7 +88,10 @@ static Tensor forward_ffn(const Layer& weights, Executor& executor, const FfnSte
     const auto rms_norm_eps = weights.attention.rms_norm_eps;
     const auto norm_weight_offset = weights.attention.norm_weight_offset;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using mfq::ops::measure;
+    const auto profile_device = residual.device();
+    auto measure = [&](const char* name, auto&& operation) {
+        return mfq::ops::measure(name, profile_device, std::forward<decltype(operation)>(operation));
+    };
     const std::array<std::int64_t, 2> flat_shape{B * T, H};
     const std::array<std::int64_t, 3> layer_shape{B, T, H};
 #else
@@ -422,7 +425,7 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq::Tensor Model::embedding(mfq::Tensor ids, int primary) const {
     auto normalized = normalize_ids(primary, std::move(ids));
-    return mfq::ops::measure("model.embed", [&] {
+    return mfq::ops::measure("model.embed", normalized.device(), [&] {
         return mfq::ops::embedding(std::move(normalized), *embed);
     });
 #else
@@ -441,7 +444,7 @@ mfq::Tensor Model::normalize(mfq::Tensor hidden, std::int64_t batch, std::int64_
     const auto& model = *this;
     const std::array<std::int64_t, 3> shape{batch, tokens, model.config.hidden_size};
     hidden = mfq::ops::reshape(std::move(hidden), shape);
-    return mfq::ops::measure("model.output_norm", [&] {
+    return mfq::ops::measure("model.output_norm", hidden.device(), [&] {
         return mfq::ops::rms_norm(std::move(hidden), model.output_norm,
                                        model.config.rms_norm_eps, 0.0);
     });
@@ -472,7 +475,7 @@ Tensor softcap(const Model& model, Executor& executor, Tensor logits) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 mfq::Tensor Model::logits(mfq::Tensor hidden, bool capped, const Options& mode) const {
     const auto& model = *this;
-    auto result = mfq::ops::measure("model.lm_head", [&] {
+    auto result = mfq::ops::measure("model.lm_head", hidden.device(), [&] {
         return mfq::ops::project(std::move(hidden), *model.lm_head,
                                  {mode.ffn.serial, mode.ffn.projection_major});
     });
@@ -499,7 +502,9 @@ Tensor forward_layer(const Layer& layer, KVCache& cache, Executor& executor,
                      std::size_t scratch_index, Tensor input, const AttentionStep& step,
                      const Executor::Mode& mode) {
 #endif
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     MfqCudaGuard guard(layer.device);
+#endif
     const auto B = input.size(0), T = input.size(1), H = input.size(2);
     const auto& attention = layer.attention;
     const auto capacity = attention.sliding ? attention.attention_window
@@ -556,8 +561,8 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
 #endif
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     namespace tb = mfq_tensor_backend;
-#endif
     MfqCudaGuard guard(mode.primary);
+#endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     auto ids = normalize_ids(mode.primary, std::move(input.ids));
     auto embeddings = input.embeddings.has_value() ? std::move(*input.embeddings)
@@ -632,7 +637,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    hidden = mfq::ops::measure("model.embed_scale", [&] {
+    hidden = mfq::ops::measure("model.embed_scale", hidden.device(), [&] {
         return mfq::ops::scale(std::move(hidden), model.embed_scale);
 #else
     hidden = executor.profiler().measure("model.embed_scale", [&] {
@@ -653,7 +658,9 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     for (std::size_t index = 0; index < model.layers.size(); ++index) {
         const auto& layer = model.layers[index];
         {
+#ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
             MfqCudaGuard layer_guard(layer.device);
+#endif
             auto local = step;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             const mfq::Device device{mfq::DeviceType::cuda, layer.device};

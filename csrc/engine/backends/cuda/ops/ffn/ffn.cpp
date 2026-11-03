@@ -840,6 +840,8 @@ namespace mfq::cuda::ops {
 mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
                 const mfq::weights::Matrix& down, mfq::ops::MlpActivation activation,
                 double swiglu_limit, const mfq::ops::FfnMode& mode) {
+    std::optional<MfqCudaGuard> guard;
+    if (input.is_cuda()) guard.emplace(input.device().index);
     auto& executor = Executor::current();
     const auto project = executor.projector(mode);
     const Mlp weights{as_quant_linear_group(gate_up), as_quant_linear(down), activation,
@@ -851,6 +853,7 @@ mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
 
 mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count,
                                const mfq::ops::MoeRouting& routing) {
+    MfqCudaGuard guard(logits.device().index);
     auto result = moe_topk_cuda(Tensor(logits).contiguous(), count,
         routing.activation == mfq::ops::RouterActivation::sigmoid,
         routing.activation == mfq::ops::RouterActivation::sqrt_softplus,
@@ -858,9 +861,11 @@ mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count,
     return {result.at(0), result.at(1)};
 }
 mfq::Tensor expert_scale(mfq::Tensor weights, mfq::Tensor ids, const mfq::Tensor& scales) {
+    MfqCudaGuard guard(weights.device().index);
     return moe_apply_expert_scale_cuda(Tensor(weights), Tensor(ids), Tensor(scales));
 }
 mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights) {
+    MfqCudaGuard guard(pairs.device().index);
     return moe_weighted_reduce_cuda(Tensor(pairs), Tensor(weights));
 }
 mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
@@ -870,6 +875,7 @@ mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
     const auto* gate = dynamic_cast<const Experts*>(&gate_bank);
     const auto* down = dynamic_cast<const Experts*>(&down_bank);
     if (!gate || !down) throw std::invalid_argument("unsupported expert weight representation");
+    MfqCudaGuard guard(input.device().index);
     auto& executor = Executor::current();
     Ffn::Mode mode;
     mode.serial = options.serial;

@@ -123,6 +123,7 @@ std::optional<mfq::Tensor> ops::norm_rope_kv(const mfq::ops::AttentionInput& inp
     check_rope_kv_devices(input, kv, table);
     check_device(input.query, q_norm);
     check_device(input.query, k_norm);
+    MfqCudaGuard guard(input.query.device().index);
     using T = mfq_tensor_backend::Tensor;
     return mfq::ops::measure("full.qk_norm_rope_kv_write", [&]() -> mfq::Tensor {
         auto q = T(input.query);
@@ -140,6 +141,7 @@ std::optional<mfq::Tensor> ops::rope_kv(const mfq::ops::AttentionInput& input,
         !Executor::current().attention_options().fused_rope_kv)
         return std::nullopt;
     check_rope_kv_devices(input, kv, table);
+    MfqCudaGuard guard(input.query.device().index);
     using T = mfq_tensor_backend::Tensor;
     return mfq::ops::measure("full.rope_kv_write", [&]() -> mfq::Tensor {
         auto q = T(input.query);
@@ -154,6 +156,7 @@ std::optional<mfq::Tensor> ops::rope_kv(const mfq::ops::AttentionInput& input,
 mfq::ops::AttentionResult ops::attention(const mfq::ops::AttentionInput& input,
                                         const mfq::state::KvView& public_kv,
                                         const mfq::ops::AttentionConfig& public_config) {
+    MfqCudaGuard guard(input.query.device().index);
     using Tensor = mfq_tensor_backend::Tensor;
     const NativeAttentionInput request{
         Tensor(input.query), Tensor(input.key), Tensor(input.value), Tensor(input.positions),

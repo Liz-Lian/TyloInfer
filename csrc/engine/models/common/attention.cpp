@@ -23,7 +23,10 @@ std::array<mfq::Tensor, 2> FullAttention::forward(
         mfq::Tensor x, const AttentionStep& step, mfq::state::KvView cache,
         const mfq::ops::RopeTable& rope, const mfq::ops::ProjectionOptions& projection, mfq::ops::Trace* trace) const {
     using Tensor = mfq::Tensor;
-    using mfq::ops::measure;
+    const auto profile_device = x.device();
+    auto measure = [&](const char* name, auto&& operation) {
+        return mfq::ops::measure(name, profile_device, std::forward<decltype(operation)>(operation));
+    };
 #else
 std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
         const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
