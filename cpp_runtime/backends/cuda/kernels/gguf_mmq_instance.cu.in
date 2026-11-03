@@ -1,0 +1,4 @@
+#include "mmq.cuh"
+@_tyloinfer_mmq_hook@
+
+DECL_MMQ_CASE(GGML_TYPE_@_type@);

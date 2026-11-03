@@ -1,4 +1,5 @@
 #include "full_block.h"
+#include "gguf_prefill_fusion.h"
 #include "runtime/execution_options.h"
 #include "models/common/attention.h"
 #include "models/common/gated_mlp.h"
@@ -70,12 +71,22 @@ mfq_tensor_backend::Tensor FullBlock::forward_context(CudaExecutionContext &exec
                         context.decode_attention_parts);
 }
 
+void FullBlock::append_history(CudaExecutionContext& execution, mfq_tensor_backend::Tensor x,
+                              const Context& context, const RopeCache& rope) {
+    TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0,
+                          "predictor history cannot start a speculative transaction");
+    (void)forward_impl(execution, std::move(x), context.positions, context.cache_position,
+                      context.sequence_lengths, rope, context.cache_positions,
+                      context.attention_mask, context.planned_kv_length,
+                      context.decode_attention_parts, true);
+}
+
 mfq_tensor_backend::Tensor FullBlock::forward_impl(
     CudaExecutionContext &execution, mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos,
     int64_t cache_pos, const MfqOptional<mfq_tensor_backend::Tensor> &seq_len,
     const RopeCache &rope, const MfqOptional<mfq_tensor_backend::Tensor> &cache_positions,
     const MfqOptional<mfq_tensor_backend::Tensor> &attention_mask, int64_t planned_kv_length,
-    int64_t decode_attention_parts) {
+    int64_t decode_attention_parts, bool cache_only) {
     auto &profiler = execution.profiler;
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     auto trace_qwen_stage = [&](const char *name, const mfq_tensor_backend::Tensor &value,
@@ -120,15 +131,30 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
             decode_partial_l = mfq_tensor_backend::empty({total, kDecodeAttentionMaxParts}, opts);
         }
     }
+    GgufProjectionInput normalized_projection_input;
+    std::unique_ptr<GgufPrefillInputScope> normalized_prefill_input;
+    QuantLinearGroup split_normalized_group;
+    if(split_q_kv_projections) {
+        split_normalized_group.layers={q_projection,k_projection};
+        if(!value_equals_key)split_normalized_group.layers.push_back(v_projection);
+    }
+    const auto& normalized_group=split_q_kv_projections?split_normalized_group:qkv;
     return mfq::models::attention_layer(
         x,
         [&](mfq_tensor_backend::Tensor x) {
             return profiler.measure("full.attn_norm", [&]() {
+                if(!official_bf16) {
+                    mfq_tensor_backend::Tensor normalized;
+                    normalized_prefill_input=normalized_group.prepare_prefill_rms_norm_input(execution,x,attn_norm,rms_norm_eps,norm_weight_offset,normalized);
+                    if(normalized.defined())return normalized;
+                    normalized_projection_input=normalized_group.prepare_rms_norm_input(execution,x,attn_norm,rms_norm_eps,norm_weight_offset,normalized);
+                    if(normalized.defined())return normalized;
+                }
                 return official_bf16
                            ? qwen_rms_norm_bf16(execution.config, x.reshape({B * T, H}), attn_norm,
                                                 rms_norm_eps, norm_weight_offset)
                                  .reshape({B, T, H})
-                           : qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
+                           : qwen_rms_norm(x.reshape({B * T, H}),
                                            attn_norm, rms_norm_eps, norm_weight_offset)
                                  .reshape({B, T, H});
             });
@@ -158,6 +184,15 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                 active_rope.sections.numel() == 0 && nh == 32 && nkh == 8 && hd == 128 &&
                 cache.scalar_type() == mfq_tensor_backend::kBFloat16 &&
                 execution.config.minicpm_fused_qk_norm_rope_kv;
+            const bool native_qk_candidate=apply_rotary && !official_bf16 && x.is_cuda() &&
+                T==1 && pos.dim()==1 && write_positions.dim()==1 && !cache.is_paged() &&
+                !cache.ring && !cache.quantization.enabled() && !execution.config.kv_cache_write_aten &&
+                cache.scalar_type()==mfq_tensor_backend::kFloat16 && !v_norm.defined() &&
+                q_norm.defined() && k_norm.defined() &&
+                q_norm.scalar_type()==mfq_tensor_backend::kFloat32 && q_norm.is_contiguous() &&
+                k_norm.scalar_type()==mfq_tensor_backend::kFloat32 && k_norm.is_contiguous() &&
+                !(execution.gemma_stage_trace && layer==execution.gemma_trace_layer);
+            bool native_qk_ready=false;
             std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> kv;
             bool attention_token_major = false;
             return mfq::models::full_attention(
@@ -165,9 +200,9 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                 [&](mfq_tensor_backend::Tensor xn) {
                     trace_qwen_stage("qwen.attn_norm", xn);
                     auto parts = profiler.measure("full.qkv", [&]() {
-                        if (!split_q_kv_projections) {
-                            return qkv.forward(execution, xn);
-                        }
+                        if(!normalized_projection_input.shape.empty())
+                            return normalized_group.forward_prepared_rms(normalized_projection_input);
+                        if(!split_q_kv_projections)return qkv.forward(execution,xn);
                         std::vector<mfq_tensor_backend::Tensor> result;
                         result.reserve(3);
                         result.push_back(q_projection.forward(execution, xn));
@@ -175,6 +210,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                         result.push_back(v_projection.forward(execution, xn));
                         return result;
                     });
+                    normalized_prefill_input.reset();
                     if (parts.size() != (value_equals_key ? 2u : 3u)) {
                         throw std::runtime_error(
                             "attention projection group has the wrong output count");
@@ -201,8 +237,14 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                         }
                         return q_raw;
                     });
-                    auto q = profiler.measure("full.q_view",
-                                              [&]() { return q_raw.transpose(1, 2).contiguous(); });
+                    native_qk_ready=native_qk_candidate &&
+                        (q_raw.scalar_type()==mfq_tensor_backend::kFloat16 ||
+                         q_raw.scalar_type()==mfq_tensor_backend::kFloat32) &&
+                        k_full.scalar_type()==q_raw.scalar_type() && v_full.scalar_type()==q_raw.scalar_type();
+                    auto q = profiler.measure("full.q_view",[&]() {
+                        auto view=q_raw.transpose(1,2);
+                        return native_qk_ready?view:view.contiguous();
+                    });
                     auto k = profiler.measure("full.k_view", [&]() {
                         return k_full.reshape({B, T, nkh, hd}).transpose(1, 2).contiguous();
                     });
@@ -218,6 +260,16 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     auto &q = heads.query;
                     auto &k = heads.key;
                     auto &v = heads.value;
+                    if(native_qk_ready) {
+                        q=profiler.measure("full.qk_norm_rope_kv_write",[&] {
+                            return qk_norm_rope_cache_cuda(q,k,v,q_norm,k_norm,
+                                pos.to(q.device(),mfq_tensor_backend::kInt64).contiguous(),
+                                write_positions,active_rope.cos,active_rope.sin,cache.k,cache.v,
+                                active_rope.rotary_dim,rms_norm_eps,norm_weight_offset);
+                        });
+                        kv={cache.k.narrow(2,0,cache_pos+T),cache.v.narrow(2,0,cache_pos+T)};
+                        return true;
+                    }
                     if (!fused_qk_rope_kv)
                         return false;
 
@@ -265,8 +317,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                                                 q.reshape({-1, hd}), q_norm,
                                                                 rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(q)
-                                           : qwen_rms_norm(q.reshape({-1, hd}).to(
-                                                               mfq_tensor_backend::kFloat32),
+                                           : qwen_rms_norm(q.reshape({-1, hd}),
                                                            q_norm, rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(q);
                             });
@@ -277,8 +328,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                                                 k.reshape({-1, hd}), k_norm,
                                                                 rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(k)
-                                           : qwen_rms_norm(k.reshape({-1, hd}).to(
-                                                               mfq_tensor_backend::kFloat32),
+                                           : qwen_rms_norm(k.reshape({-1, hd}),
                                                            k_norm, rms_norm_eps, norm_weight_offset)
                                                  .reshape_as(k);
                             });
@@ -291,7 +341,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                                             norm_weight_offset)
                                              .reshape_as(v)
                                        : qwen_rms_norm(
-                                             v.reshape({-1, hd}).to(mfq_tensor_backend::kFloat32),
+                                             v.reshape({-1, hd}),
                                              v_norm, rms_norm_eps, norm_weight_offset)
                                              .reshape_as(v);
                         });
@@ -344,6 +394,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     });
                 },
                 [&](auto &heads) {
+                    if (cache_only) return mfq_tensor_backend::Tensor{};
                     auto &q = heads.query;
                     auto &k = heads.key;
                     auto &v = heads.value;
@@ -468,10 +519,14 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                         }
                         const auto attention_dtype = official_bf16 ? mfq_tensor_backend::kBFloat16
                                                                    : mfq_tensor_backend::kFloat16;
-                        auto qh = q.to(attention_dtype).contiguous();
-                        auto kh = k.to(attention_dtype).contiguous();
-                        auto vh = v.to(attention_dtype).contiguous();
+                        mfq_tensor_backend::Tensor qh;
+                        const auto typed_query=[&]() -> const mfq_tensor_backend::Tensor& {
+                            if(!qh.defined())qh=q.to(attention_dtype).contiguous();
+                            return qh;
+                        };
                         if (cache_pos == 0 && T > 1) {
+                            auto kh=k.to(attention_dtype).contiguous();
+                            auto vh=v.to(attention_dtype).contiguous();
                             if (official_bf16) {
                                 const bool bf16_flash128 = !sliding && hd == 128 && nh == 4 * nkh &&
                                                            !seq_len.has_value() &&
@@ -482,8 +537,8 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                         execution.config.minicpm_flash128_specialized_casts;
                                     auto flash_q = profiler.measure("full.flash128_q_cast", [&]() {
                                         return specialized_casts
-                                                   ? minicpm_flash128_q_cast_cuda(qh)
-                                                   : qh.to(mfq_tensor_backend::kFloat32)
+                                                   ? minicpm_flash128_q_cast_cuda(typed_query())
+                                                   : typed_query().to(mfq_tensor_backend::kFloat32)
                                                          .contiguous();
                                     });
                                     auto flash_kv =
@@ -519,7 +574,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                     }
                                     auto mask = minicpmo45_attention_mask(T, false);
                                     a = mfq_scaled_dot_product_attention(
-                                        qh, repeated_k, repeated_v, mask, 0.0, !mask.has_value(),
+                                        typed_query(), repeated_k, repeated_v, mask, 0.0, !mask.has_value(),
                                         attn_scale, false);
                                 }
                             } else {
@@ -544,11 +599,11 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                         attn_scale);
                                     attention_token_major = true;
                                 } else if (sliding) {
-                                    a = attention_swa_cuda(qh, kh, vh, attn_scale,
+                                    a = attention_swa_cuda(typed_query(), kh, vh, attn_scale,
                                                            attention_window);
                                 } else {
                                     a = mfq_scaled_dot_product_attention(
-                                        qh, kh, vh, std::nullopt, 0.0, true, attn_scale, true);
+                                        typed_query(), kh, vh, std::nullopt, 0.0, true, attn_scale, true);
                                 }
                             }
                         } else if (seq_len.has_value()) {
@@ -558,13 +613,19 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                 official_bf16 && T == 1 && execution.config.minicpm_bf16_gqa_decode;
                             const bool aten_decode_enabled = (official_bf16 && !bf16_gqa_decode) ||
                                                              execution.config.attention_decode_aten;
-                            const bool mma_decode_enabled = execution.config.mma_attention_decode;
+                            int mma_major = 0;
+                            if (execution.config.mma_attention_decode)
+                                TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(
+                                    &mma_major, cudaDevAttrComputeCapabilityMajor, q.get_device()));
+                            // The FP16 MMA implementation requires Volta instructions.
+                            const bool mma_decode_enabled = execution.config.mma_attention_decode && mma_major >= 7;
                             auto prepare_mma_decode_workspace = [&](int64_t visible_len,
                                                                     int64_t kv_tile) {
                                 const int64_t mask_stride =
                                     (visible_len + kv_tile - 1) / kv_tile * kv_tile;
                                 const int64_t ntiles_kv = (visible_len + kv_tile - 1) / kv_tile;
-                                const int64_t max_blocks = B * nkh * ntiles_kv;
+                                const int64_t gqa_tiles = std::max<int64_t>(1, (nh / nkh + 7) / 8);
+                                const int64_t max_blocks = B * nkh * gqa_tiles * ntiles_kv;
                                 const int64_t meta_float2 = max_blocks * 8 * (2 + hd / 2);
                                 auto cuda = mfq_tensor_backend::TensorOptions().device(
                                     mfq_tensor_backend::kCUDA);
@@ -584,7 +645,15 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                         cuda.dtype(mfq_tensor_backend::kFloat32));
                                 }
                             };
-                            if (cache.is_paged()) {
+                            if (T > 1 && !sliding && !cache.is_paged() &&
+                                !official_bf16) {
+                                // Full attention is the causal window kernel
+                                // with a window covering the entire cache.
+                                // Each query uses its own seq_len-T+t bound.
+                                a = attention_cache_swa_planned_cuda(
+                                    typed_query(),cache.k,cache.v,seq_len.value(),attn_scale,
+                                    cache.k.size(2),planned_len);
+                            } else if (cache.is_paged()) {
                                 const bool split_enabled =
                                     execution.config.attention_decode_split_k;
                                 int64_t parts =
@@ -595,7 +664,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                     parts = decode_attention_parts;
                                 parts = std::min<int64_t>(parts, kDecodeAttentionMaxParts);
                                 a = attention_paged_cache_decode_cuda(
-                                    qh, cache.k_chunk_ptrs, cache.v_chunk_ptrs, cache.page_table,
+                                    typed_query(), cache.k_chunk_ptrs, cache.v_chunk_ptrs, cache.page_table,
                                     seq_len.value(), attn_scale, cache.page_size,
                                     cache.pages_per_chunk, cache.paged_heads, decode_partial_o,
                                     decode_partial_m, decode_partial_l, parts, dynamic_parts);
@@ -621,7 +690,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                     cached_k = cached_k.repeat_interleave(repeat, 1).contiguous();
                                     cached_v = cached_v.repeat_interleave(repeat, 1).contiguous();
                                 }
-                                a = mfq_scaled_dot_product_attention(qh, cached_k, cached_v, mask,
+                                a = mfq_scaled_dot_product_attention(typed_query(), cached_k, cached_v, mask,
                                                                      0.0, false, attn_scale,
                                                                      !official_bf16);
                             } else if (sliding && T == 1 && mma_decode_enabled && hd == 256 &&
@@ -634,8 +703,8 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                     cache.v, seq_len.value(), attn_scale, visible_len,
                                     decode_mma_mask, decode_mma_kv_max, decode_mma_meta);
                                 attention_token_major = true;
-                            } else if (!sliding && T == 1 && mma_decode_enabled && nh == 8 * nkh &&
-                                       (hd == 256 || hd == 512)) {
+                            } else if (!sliding && T == 1 && mma_decode_enabled && nkh > 0 &&
+                                       nh % nkh == 0 && (hd == 256 || (hd == 512 && nh == 8 * nkh))) {
                                 const int64_t kv_tile = hd == 512 ? 32 : 64;
                                 prepare_mma_decode_workspace(planned_len, kv_tile);
                                 a = hd == 512 ? mfq_attention_mma512_decode_cuda(
@@ -650,7 +719,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                                     decode_mma_meta);
                                 attention_token_major = true;
                             } else if (sliding) {
-                                a = attention_cache_swa_planned_cuda(qh, cache.k, cache.v,
+                                a = attention_cache_swa_planned_cuda(typed_query(), cache.k, cache.v,
                                                                      seq_len.value(), attn_scale,
                                                                      attention_window, planned_len);
                             } else {
@@ -664,15 +733,15 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                 parts = std::min<int64_t>(parts, kDecodeAttentionMaxParts);
                                 a = decode_attention_parts > 1
                                         ? attention_cache_decode_dynamic_cuda(
-                                              qh, cache.k, cache.v, seq_len.value(), attn_scale,
+                                              typed_query(), cache.k, cache.v, seq_len.value(), attn_scale,
                                               decode_partial_o, decode_partial_m, decode_partial_l,
                                               parts)
                                     : parts > 1
                                         ? attention_cache_decode_split_cuda(
-                                              qh, cache.k, cache.v, seq_len.value(), attn_scale,
+                                              typed_query(), cache.k, cache.v, seq_len.value(), attn_scale,
                                               decode_partial_o, decode_partial_m, decode_partial_l,
                                               parts)
-                                        : attention_cache_decode_cuda(qh, cache.k, cache.v,
+                                        : attention_cache_decode_cuda(typed_query(), cache.k, cache.v,
                                                                       seq_len.value(), attn_scale);
                             }
                         } else {
@@ -690,15 +759,15 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                 auto mask = minicpmo45_attention_mask(cached_k.size(2),
                                                                       cache_pos > 0 && T > 1);
                                 a = mfq_scaled_dot_product_attention(
-                                    qh, cached_k, cached_v, mask, 0.0,
+                                    typed_query(), cached_k, cached_v, mask, 0.0,
                                     !mask.has_value() && cache_pos == 0 && T > 1, attn_scale,
                                     false);
                             } else {
                                 a = sliding
-                                        ? attention_swa_cuda(qh, kv.first.contiguous(),
+                                        ? attention_swa_cuda(typed_query(), kv.first.contiguous(),
                                                              kv.second.contiguous(), attn_scale,
                                                              attention_window)
-                                        : attention_cuda(qh, kv.first.contiguous(),
+                                        : attention_cuda(typed_query(), kv.first.contiguous(),
                                                          kv.second.contiguous(), attn_scale, true);
                             }
                         }
@@ -707,6 +776,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                     return a;
                 },
                 [&](mfq_tensor_backend::Tensor a, std::optional<mfq_tensor_backend::Tensor> gate) {
+                    if (cache_only) return mfq_tensor_backend::Tensor{};
                     auto q_gate = gate.value_or(mfq_tensor_backend::Tensor{});
                     mfq_tensor_backend::Tensor oo;
                     if (q_gate.defined()) {
@@ -716,11 +786,8 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                                        ? a.reshape({B, T, attn_width})
                                        : a.transpose(1, 2).contiguous().reshape({B, T, attn_width});
                         });
-                        auto gf = profiler.measure("full.q_gate_view", [&]() {
-                            return q_gate.contiguous().reshape({B, T, attn_width});
-                        });
                         oo = profiler.measure("full.o_proj_gate", [&]() {
-                            return o.forward_input_mul(execution, af, gf, 1);
+                            return o.forward_input_head_mul(execution,af,q_gate,1);
                         });
                     } else {
                         auto af = profiler.measure("full.attn_out_view", [&]() {
@@ -742,6 +809,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
                 apply_rotary);
         },
         [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor oo) {
+            if (cache_only) return mfq_tensor_backend::Tensor{};
             return forward_ffn(execution, std::move(residual), std::move(oo), B, T, H);
         });
 }
@@ -758,12 +826,20 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
             return;
         trace_gemma_stage(execution, layer, name, value.reshape({B, T, -1}));
     };
+    GgufProjectionInput normalized_ffn_input;
     return mfq::models::residual_ffn(
         std::move(residual), std::move(oo),
         [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor oo) {
             auto attn_pair = profiler.measure("full.attn_residual_ffn_norm", [&]() {
                 auto rr = residual.reshape({-1, H});
                 auto oo2 = oo.reshape({-1, H});
+                if(!official_bf16 && !execution.config.diagnostic_fp32_residual && ffn.supports_prepared_gguf_input()) {
+                    mfq_tensor_backend::Tensor sum,norm;
+                    normalized_ffn_input=ffn.gate_up.prepare_acc_rms_norm_input(execution,rr,oo2,ffn_norm,
+                        rms_norm_eps,norm_weight_offset,sum,norm);
+                    if(sum.defined())return std::vector<mfq_tensor_backend::Tensor>{sum,norm};
+                }
+
                 if (!rr.is_cuda()) {
                     auto summed =
                         (rr.to(mfq_tensor_backend::kFloat32) + oo2.to(mfq_tensor_backend::kFloat32))
@@ -776,7 +852,11 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
                                                       ffn_norm, rms_norm_eps, norm_weight_offset);
                     return std::vector<mfq_tensor_backend::Tensor>{summed, normalized};
                 }
-                if (oo2.scalar_type() != rr.scalar_type()) {
+                const bool fused_projection_conversion =
+                    !execution.config.diagnostic_fp32_residual &&
+                    rr.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                    oo2.scalar_type() == mfq_tensor_backend::kFloat32;
+                if (oo2.scalar_type() != rr.scalar_type() && !fused_projection_conversion) {
                     oo2 = oo2.to(rr.scalar_type()).contiguous();
                 }
                 if (execution.config.diagnostic_fp32_residual) {
@@ -785,7 +865,7 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
                                              rms_norm_eps, norm_weight_offset);
                 }
                 if (rr.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                    oo2.scalar_type() == mfq_tensor_backend::kFloat16) {
+                    (oo2.scalar_type() == mfq_tensor_backend::kFloat16 || fused_projection_conversion)) {
                     return acc_rms_norm_f16_cuda(rr, oo2, ffn_norm, rms_norm_eps,
                                                  norm_weight_offset);
                 }
@@ -816,6 +896,10 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
                     if (!official_bf16) {
                         auto ffn_input = xn.reshape({B * T, H});
                         auto residual_flat = residual.reshape({B * T, H});
+                        if(auto fused=ffn.try_forward_gguf_prefill_residual(execution,ffn_input,residual_flat))
+                            return fused->reshape({B,T,H});
+                        if(auto fused=ffn.try_forward_prepared_gguf_residual(
+                            execution,normalized_ffn_input,residual_flat))return fused->reshape({B,T,H});
                         if (ffn.can_forward_fused_residual(execution.config, ffn_input,
                                                            residual_flat)) {
                             return profiler.measure("full.ffn_down_residual", [&]() {
@@ -869,7 +953,8 @@ mfq_tensor_backend::Tensor FullBlock::forward_ffn(CudaExecutionContext &executio
                                  .to(mfq_tensor_backend::kBFloat16)
                                  .contiguous();
                     } else {
-                        ff = ffn.forward(execution, xn.reshape({B * T, H})).reshape({B, T, H});
+                        ff = (normalized_ffn_input.shape.empty()?ffn.forward(execution,xn.reshape({B*T,H}))
+                            :ffn.forward_prepared_gguf(execution,normalized_ffn_input)).reshape({B,T,H});
                     }
 
                     return ff;
@@ -917,7 +1002,7 @@ mfq_tensor_backend::Tensor qwen_rms_norm(mfq_tensor_backend::Tensor x,
         auto inverse = mfq_tensor_backend::rsqrt(xf.square().mean(-1, true) + eps);
         return (xf * inverse * wf).contiguous();
     }
-    return rms_norm_offset_cuda(x, weight, eps, weight_offset);
+    return rms_norm_offset_cuda(x.contiguous(), weight, eps, weight_offset);
 }
 
 mfq_tensor_backend::Tensor qwen_rms_norm_bf16(const CudaExecutionConfig &config,

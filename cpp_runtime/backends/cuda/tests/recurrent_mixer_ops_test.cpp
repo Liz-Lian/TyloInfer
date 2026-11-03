@@ -9,12 +9,14 @@
 #include "mfq_cuda_activation_ops.h"
 #include "mfq_cuda_context.h"
 #include "mfq_cuda_norm_ops.h"
+#include "mfq_cuda_linear_attention_ops.h"
 #include "mfq_cuda_selective_state_scan_ops.h"
 #include "mfq_tensor_backend.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -661,9 +663,98 @@ void check_relu_squared(tb::ScalarType dtype)
         wide_output ? 2.0e-2f : 1.0e-6f, "relu_squared");
 }
 
+void check_rms_input_conversion() {
+    int cases=0;
+    for(int rows:{1,3,48})for(int width:{127,768,5120,8193})
+    for(auto dtype:{tb::kFloat32,tb::kFloat16,tb::kBFloat16})for(double offset:{0.,1.}) {
+        auto host=tb::empty({rows,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        auto wh=tb::empty({width},host.options());
+        for(int64_t i=0;i<host.numel();++i)host.data_ptr<float>()[i]=i%17==0?1e-7f:std::sin(float(i)*.173f)*2.f;
+        for(int i=0;i<width;++i)wh.data_ptr<float>()[i]=std::cos(float(i)*.31f)*.73f;
+        auto x=host.to(tb::kCUDA,dtype),weight=wh.to(tb::kCUDA);
+        auto expected=rms_norm_offset_cuda(x.to(tb::kFloat32),weight,1e-5,offset).cpu();
+        auto actual=rms_norm_offset_cuda(x,weight,1e-5,offset).cpu();
+        require(actual.scalar_type()==tb::kFloat32 && actual.sizes()==expected.sizes() &&
+                std::memcmp(actual.data_ptr(),expected.data_ptr(),actual.nbytes())==0,"RMSNorm input fusion changed FP32 results");
+        if(offset==0.) {
+            auto plain=rms_norm_cuda(x,weight,1e-5).cpu();
+            require(std::memcmp(plain.data_ptr(),expected.data_ptr(),plain.nbytes())==0,"RMSNorm plain input fusion changed FP32 results");
+        }
+        ++cases;
+    }
+    std::cout<<"RMSNorm FP16/BF16/FP32 input to FP32 output: "<<cases<<" exact cases PASS\n";
+}
+
+void check_residual_input_conversion() {
+    int cases=0;
+    for(int rows:{1,3,48})for(int width:{127,768,2048,2049,4096,5120,8192,8193})
+    for(double offset:{0.,1.}) {
+        auto host=tb::empty({rows,width},tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        auto other=tb::empty_like(host),wh=tb::empty({width},host.options());
+        for(int64_t i=0;i<host.numel();++i) {
+            host.data_ptr<float>()[i]=std::sin(float(i)*.173f)*2.f;
+            // Include half-way rounding and subnormal input values.
+            other.data_ptr<float>()[i]=i%13==0?1.00048828125f:(i%17==0?1e-7f:std::cos(float(i)*.31f)*.73f);
+        }
+        for(int i=0;i<width;++i)wh.data_ptr<float>()[i]=std::cos(float(i)*.27f)*.73f;
+        auto a=host.to(tb::kCUDA,tb::kFloat16),b=other.to(tb::kCUDA),weight=wh.to(tb::kCUDA);
+        auto expected=acc_rms_norm_f16_cuda(a,b.to(tb::kFloat16),weight,1e-5,offset);
+        auto actual=acc_rms_norm_f16_cuda(a,b,weight,1e-5,offset);
+        for(int output=0;output<2;++output) {
+            auto e=expected[output].cpu(),v=actual[output].cpu();
+            require(v.scalar_type()==tb::kFloat16 && v.sizes()==e.sizes() &&
+                    std::memcmp(v.data_ptr(),e.data_ptr(),v.nbytes())==0,
+                    "residual RMSNorm input conversion changed rounding");
+        }
+        auto sums=actual[0].cpu().to(tb::kFloat32),norms=actual[1].cpu().to(tb::kFloat32);
+        for(int row=0;row<rows;++row) {
+            double squared=0.;
+            for(int i=0;i<width;++i){const double v=sums.data_ptr<float>()[row*width+i];squared+=v*v;}
+            const double inverse=1./std::sqrt(squared/width+1e-5);
+            for(int i=0;i<width;++i)close_value(norms.data_ptr<float>()[row*width+i],
+                sums.data_ptr<float>()[row*width+i]*inverse*(wh.data_ptr<float>()[i]+offset),
+                1e-5f,1e-3f,"residual RMSNorm double reference");
+        }
+        ++cases;
+    }
+    std::cout<<"Residual RMSNorm FP32 projection conversion: "<<cases<<" exact cases PASS\n";
+}
+
+void check_f32_convolution_decode() {
+    int cases=0;
+    for(int batch:{1,2})for(int width:{64,128,255})for(int taps:{2,4})
+    for(int layout:{0,1,2})for(bool has_bias:{false,true}) {
+        constexpr int nk=2,nv=6,dv=96;
+        const int channels=2*nk*width+nv*dv;
+        auto state=upload(pattern(batch*(taps-1)*channels,.3f,1.f),{batch,taps-1,channels});
+        auto input=upload(pattern(batch*channels,.4f,2.f),{batch,1,channels});
+        auto weight=upload(pattern(channels*taps,.2f,3.f),{channels,1,taps});
+        if(layout==1)weight=weight.reshape({channels,taps});
+        if(layout==2)weight=weight.reshape({channels,taps}).transpose(0,1).contiguous();
+        auto bias=upload(pattern(has_bias?channels:0,.1f,4.f),{has_bias?channels:0});
+        auto expected_state=state.clone(),actual_state=state.clone();
+        auto conv=ssm_conv_silu_decode_cuda(expected_state,input,weight,bias);
+        auto q=conv.narrow(2,0,nk*width).contiguous().reshape({batch,nk,1,width});
+        auto k=conv.narrow(2,nk*width,nk*width).contiguous().reshape({batch,nk,1,width});
+        auto v=conv.narrow(2,2*nk*width,nv*dv).contiguous().reshape({batch,nv,1,dv});
+        auto expected=std::vector<Tensor>{
+            l2_norm_cuda(q.reshape({-1,width}),1e-6).reshape_as(q),
+            l2_norm_cuda(k.reshape({-1,width}),1e-6).reshape_as(k),v,expected_state};
+        auto actual=linear_conv_qkv_decode_f32_cuda(actual_state,input,weight,bias,nk,nv,width,dv,1e-6);
+        actual.push_back(actual_state);
+        for(int output=0;output<4;++output) {
+            auto e=expected[output].cpu(),a=actual[output].cpu();
+            require(a.sizes()==e.sizes() && std::memcmp(a.data_ptr(),e.data_ptr(),a.nbytes())==0,
+                "F32 convolution/QK normalization changed values or recurrent state");
+        }
+        ++cases;
+    }
+    std::cout<<"Unified F32 convolution/QK normalization decode: "<<cases<<" exact cases PASS\n";
+}
+
 }  // namespace
 
-int main()
+int main(int argc,char** argv)
 {
     int devices = 0;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDeviceCount(&devices));
@@ -672,6 +763,12 @@ int main()
         return 77;
     }
 
+    if(argc==2 && std::string(argv[1])=="--rms-input-check") {check_rms_input_conversion();return 0;}
+    if(argc==2 && std::string(argv[1])=="--residual-input-check") {check_residual_input_conversion();return 0;}
+    if(argc==2 && std::string(argv[1])=="--conv-decode-check") {check_f32_convolution_decode();return 0;}
+    check_rms_input_conversion();
+    check_residual_input_conversion();
+    check_f32_convolution_decode();
     int cases = 0;
     // Decode: grouped B/C (G < H), several successive in-place steps.
     for (auto dtype : {tb::kFloat32, tb::kBFloat16}) {

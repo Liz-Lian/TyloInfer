@@ -20,6 +20,8 @@
 
 namespace mfq {
 
+class RowResidualFile;
+
 inline constexpr const char* kTokenizerGgufAsset = "__mfq_asset__/tokenizer.gguf";
 
 inline constexpr std::string_view kModelConfigAsset =
@@ -70,6 +72,7 @@ public:
     // A null pointer retains compatibility with metadata-only providers;
     // a non-null empty map means no weight requires a transform.
     virtual const HadamardTransforms* hadamard_transforms() const noexcept { return nullptr; }
+    virtual std::shared_ptr<const RowResidualFile> row_residual(std::string_view) const { return {}; }
     virtual const std::vector<TensorMetadata>& tensors() const noexcept = 0;
     virtual const TensorMetadata* find_tensor(
         std::string_view name) const noexcept = 0;

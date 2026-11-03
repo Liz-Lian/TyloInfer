@@ -135,9 +135,10 @@ void gdn_output_case() {
     }
     std::cout<<"GDN fused output FP32 reference cases="<<cases<<" PASS\n";
 }
-void packed_convolution() {
-    for(int batch:{1,2})for(int tokens:{2,17,129})for(int width:{32,128,256})
-    for(auto dtype:{tb::kFloat16,tb::kFloat32})for(auto gate_type:{tb::kFloat16,tb::kFloat32}) {
+void packed_convolution(bool focused=false) {
+    for(int batch:{1,2})for(int tokens:{2,3,4,17,129,513})for(int width:{17,32,64,65,128,129,256})
+    for(bool stable:{false,true})for(auto dtype:{tb::kFloat16,tb::kFloat32})for(auto gate_type:{tb::kFloat16,tb::kFloat32}) {
+        if(focused && !(batch==2 && tokens==513 && (width==17 || width==129) && dtype==tb::kFloat32 && gate_type==tb::kFloat16))continue;
         const int nk=2,nv=6,taps=4,channels=(2*nk+nv)*width;
         auto previous=data({batch,taps-1,channels},471,.1f);
         auto projected=data({batch,tokens,channels+17},472,.2f).to(dtype).narrow(2,0,channels);
@@ -146,10 +147,25 @@ void packed_convolution() {
         auto beta=data({batch,tokens,nv+7},477,.2f).to(gate_type).narrow(2,0,nv);
         const auto expected=linear_conv_qkv_prefill_cuda(previous,projected.narrow(2,0,2*nk*width).contiguous(),
             projected.narrow(2,2*nk*width,nv*width).contiguous(),weight,tb::empty({0},previous.options()),nk,nv,width,width,1e-6);
-        const auto gates=linear_gate_beta_cuda(alpha.to(tb::kFloat32).contiguous(),beta.to(tb::kFloat32).contiguous(),dt,a,true);
-        const auto actual=linear_conv_qkv_gate_prefill_cuda(previous,projected,weight,alpha,beta,dt,a,nk,nv,width,1e-6);
+        const auto gates=linear_gate_beta_cuda(alpha.to(tb::kFloat32).contiguous(),beta.to(tb::kFloat32).contiguous(),dt,a,stable);
+        const auto actual=linear_conv_qkv_gate_prefill_cuda(previous,projected,weight,alpha,beta,dt,a,nk,nv,width,1e-6,stable);
         for(int i=0;i<4;++i)equal(actual[i],expected[i],"packed prefill convolution/QK/state",2e-6,2e-5);
         for(int i=0;i<2;++i)equal(actual[i+4],gates[i],"packed prefill decay/beta",2e-6,2e-5);
+        if(dtype==tb::kFloat32) {
+            auto product=projected.to(tb::kFloat16);
+            auto host=product.to(tb::kCPU,tb::kFloat32).contiguous();
+            auto rows=tb::empty({batch*tokens},tb::TensorOptions{}.device(tb::kCPU).dtype(tb::kInt32));
+            auto columns=tb::empty({channels},rows.options());
+            for(int r=0;r<batch*tokens;++r)rows.data_ptr<int32_t>()[r]=(r%7)-3;
+            for(int c=0;c<channels;++c)columns.data_ptr<int32_t>()[c]=(c%9)-4;
+            for(int r=0;r<batch*tokens;++r)for(int c=0;c<channels;++c)
+                host.data_ptr<float>()[r*channels+c]=std::ldexp(host.data_ptr<float>()[r*channels+c],
+                    rows.data_ptr<int32_t>()[r]+columns.data_ptr<int32_t>()[c]);
+            const auto restored=linear_conv_qkv_gate_prefill_cuda(previous,host.to(tb::kCUDA),weight,alpha,beta,dt,a,nk,nv,width,1e-6,stable);
+            const auto scaled=linear_conv_qkv_gate_scaled_prefill_cuda(previous,product,rows.to(tb::kCUDA),columns.to(tb::kCUDA),
+                weight,alpha,beta,dt,a,nk,nv,width,1e-6,stable);
+            for(int i=0;i<6;++i)equal(scaled[i],restored[i],"scaled prefill restoration/conv/norm/gates/state",0,0);
+        }
     }
     std::cout<<"Packed GDN prefill f16/f32 + strided QKV/gates PASS"<<std::endl;
 }
@@ -162,6 +178,8 @@ int main(int argc,char** argv) {
             std::shared_ptr<mfq::cuda::Context> context;cudaStream_t stream;
             ~ReleasePool(){context->end_graph_pool(stream);}
         } pool{context,stream};
+        if(argc==2 && std::string(argv[1])=="--packed-prefill-memcheck"){packed_convolution(true);return 0;}
+        if(argc==2 && std::string(argv[1])=="--packed-prefill-check"){packed_convolution();return 0;}
         if(argc==2 && std::string(argv[1])=="--gdn-replay-check"){gdn_replay_checkpoint_case();return 0;}
         if(argc==2 && std::string(argv[1])=="--gdn-output-warp-check"){gdn_output_warp_case(false);return 0;}
         if(argc==2 && std::string(argv[1])=="--gdn-keyhead-check"){gdn_prefill_keyhead_case(false);return 0;}

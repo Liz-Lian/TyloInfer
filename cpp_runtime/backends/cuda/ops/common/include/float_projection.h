@@ -3,6 +3,9 @@
 #include <vector>
 
 struct NintWeight;
+// Single-row FP32 projections whose packed-row grid would underfill the GPU.
+mfq_tensor_backend::Tensor try_dense_f32_projection_cuda(
+    const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& weight);
 int nint_float_projection_resident_blocks(int device);
 // Strata's default GR prefill arithmetic: BF16 operands, FP32 accumulation
 // and output. Small windows retain their direct FP32-input projections.

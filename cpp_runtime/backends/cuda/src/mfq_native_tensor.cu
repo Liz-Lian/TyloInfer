@@ -241,6 +241,27 @@ __global__ void convert_strided_kernel(
     }
 }
 
+// Copy contiguous inner spans with one outer-index calculation per warp.
+// This also handles slices, broadcast outer axes and arbitrary axis orders.
+__global__ void copy_strided_inner_kernel(TensorView source,void* destination,
+        std::int64_t rows,std::int64_t packs,int outer_rank,int element_bytes) {
+    const int lane=threadIdx.x%32,warp=threadIdx.x/32;
+    auto* output=static_cast<uint4*>(destination);
+    for(auto row=std::int64_t(blockIdx.x)*4+warp;row<rows;row+=std::int64_t(gridDim.x)*4) {
+        std::int64_t offset=0;
+        if(!lane) {
+            auto remaining=row;
+            for(int d=outer_rank-1;d>=0;--d) {
+                offset+=(remaining%source.sizes[d])*source.strides[d];
+                remaining/=source.sizes[d];
+            }
+        }
+        offset=__shfl_sync(0xffffffffu,offset,0);
+        const auto* input=reinterpret_cast<const uint4*>(static_cast<const char*>(source.data)+offset*element_bytes);
+        for(auto p=std::int64_t(lane);p<packs;p+=32)output[row*packs+p]=input[p];
+    }
+}
+
 __global__ void convert_contiguous_bf16_to_f16_kernel(
     const __nv_bfloat16* __restrict__ input,
     __half* __restrict__ output,
@@ -413,6 +434,29 @@ void launch_convert(
             static_cast<const Source*>(source.data_ptr()), source.numel());
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
         return;
+    }
+    if constexpr(std::is_same_v<Destination,Source>) {
+        if(!source.is_contiguous() && destination.is_contiguous() && source.dim()>0 &&
+                source.stride(source.dim()-1)==1 &&
+                reinterpret_cast<std::uintptr_t>(source.data_ptr())%alignof(uint4)==0 &&
+                reinterpret_cast<std::uintptr_t>(destination.data_ptr())%alignof(uint4)==0) {
+            int inner=source.dim()-1;
+            std::int64_t elements=source.size(inner);
+            while(inner>0 && source.stride(inner-1)==elements) {
+                --inner;elements*=source.size(inner);
+            }
+            bool aligned=(elements*sizeof(Source))%sizeof(uint4)==0;
+            for(int d=0;d<inner;++d)
+                aligned&=source.size(d)<=1 || (source.stride(d)*sizeof(Source))%sizeof(uint4)==0;
+            if(aligned) {
+                const auto rows=source.numel()/elements;
+                const auto packs=elements*sizeof(Source)/sizeof(uint4);
+                const auto grid=unsigned(std::min<std::int64_t>(4096,(rows+3)/4));
+                copy_strided_inner_kernel<<<grid,128,0,stream>>>(source.view_descriptor(),destination.data_ptr(),rows,packs,inner,sizeof(Source));
+                TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
+                return;
+            }
+        }
     }
     convert_strided_kernel<Destination, Source><<<blocks, threads, 0, stream>>>(
         destination.view_descriptor(), source.view_descriptor(), source.numel());

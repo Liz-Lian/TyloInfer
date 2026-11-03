@@ -4,48 +4,111 @@
 #include <cuda_runtime.h>
 #include "mfq_tensor_backend.h"
 #include <cuda_fp16.h>
+#include <algorithm>
 #include <atomic>
+#include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
 #include "reduce.cuh"
+#include "cpp_runtime/backends/cuda/kernels/gguf_prefill_scale.cuh"
 
 constexpr int SSM_CONV_BD = 256;
+
+// Unified F32 QKV projections can use the same fused decode preparation as
+// split half projections. Keep the standalone convolution and L2 reduction
+// orders, and update each state channel in exactly one CTA.
+__global__ void ssm_conv_qkv_f32_decode_kernel(float* state,const float* input,
+        const float* weight,const float* bias,float* q,float* k,float* v,
+        int nk,int nv,int dk,int dv,int taps,bool channels_first,float eps) {
+    const int tid=threadIdx.x,batch=blockIdx.y,qk_width=2*nk*dk,width=qk_width+nv*dv;
+    const bool query_key=blockIdx.x<unsigned(2*nk);
+    const int channel=query_key?int(blockIdx.x)*dk+tid:qk_width+int(blockIdx.x-2*nk)*256+tid;
+    const bool valid=query_key?tid<dk:channel<width;
+    float value=0.f;
+    if(valid) {
+        const auto base=std::int64_t(batch)*(taps-1)*width+channel;
+        float sum=0.f;
+        for(int j=0;j<taps-1;++j) {
+            const float w=weight[channels_first?std::int64_t(channel)*taps+j:std::int64_t(j)*width+channel];
+            sum+=state[base+std::int64_t(j)*width]*w;
+        }
+        const float current=input[std::int64_t(batch)*width+channel];
+        sum+=current*weight[channels_first?std::int64_t(channel)*taps+taps-1:std::int64_t(taps-1)*width+channel];
+        if(bias)sum+=bias[channel];
+        value=sum/(1.f+expf(-sum));
+        for(int j=0;j<taps-2;++j)state[base+std::int64_t(j)*width]=state[base+std::int64_t(j+1)*width];
+        state[base+std::int64_t(taps-2)*width]=current;
+    }
+    if(query_key) {
+        const float squared=block_sum<8>(value*value);
+        const float inverse=1.f/fmaxf(sqrtf(squared),eps);
+        if(valid) {
+            const int which=int(blockIdx.x)/nk,head=int(blockIdx.x)%nk;
+            (which?k:q)[(std::int64_t(batch)*nk+head)*dk+tid]=value*inverse;
+        }
+    }else if(valid)v[std::int64_t(batch)*nv*dv+channel-qk_width]=value;
+}
+
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_decode_f32_cuda(
+        mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor input,
+        mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor bias,
+        int64_t nk,int64_t nv,int64_t dk,int64_t dv,double eps) {
+    namespace tb=mfq_tensor_backend;
+    TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() && state.scalar_type()==tb::kFloat32 &&
+        state.dim()==3 && state.size(0)>0 && state.size(1)>0 && nk>0 && nv>0 && nv%nk==0 && dk>0 && dk<=256 && dv>0,
+        "F32 convolution decode state/geometry disagrees");
+    const auto batch=state.size(0),taps=state.size(1)+1,width=2*nk*dk+nv*dv;
+    TYLOINFER_RUNTIME_CHECK(batch<=65535 && width<=INT_MAX && taps<=INT_MAX &&
+        2*nk+(nv*dv+255)/256<=INT_MAX,"F32 convolution decode exceeds CUDA grid bounds");
+    const auto same=[&](const tb::Tensor& x){return x.is_cuda() && x.device()==state.device() &&
+        x.is_contiguous() && x.scalar_type()==tb::kFloat32;};
+    TYLOINFER_RUNTIME_CHECK(same(input) && input.sizes().vec()==std::vector<int64_t>({batch,1,width}) &&
+        state.size(2)==width,"F32 convolution decode projection disagrees");
+    TYLOINFER_RUNTIME_CHECK(same(weight) && same(bias) &&
+        (bias.numel()==0 || (bias.dim()==1 && bias.numel()==width)),"F32 convolution decode parameters disagree");
+    const bool channels_first=weight.sizes().vec()==std::vector<int64_t>({width,1,taps}) ||
+        weight.sizes().vec()==std::vector<int64_t>({width,taps});
+    TYLOINFER_RUNTIME_CHECK(channels_first || weight.sizes().vec()==std::vector<int64_t>({taps,width}),
+        "F32 convolution decode weight geometry disagrees");
+    MfqCudaGuard guard(state.device());
+    auto q=tb::empty({batch,nk,1,dk},state.options()),k=tb::empty_like(q),v=tb::empty({batch,nv,1,dv},state.options());
+    ssm_conv_qkv_f32_decode_kernel<<<dim3(unsigned(2*nk+(nv*dv+255)/256),unsigned(batch)),256,0,mfq_current_cuda_stream()>>>(
+        state.data_ptr<float>(),input.data_ptr<float>(),weight.data_ptr<float>(),bias.numel()?bias.data_ptr<float>():nullptr,
+        q.data_ptr<float>(),k.data_ptr<float>(),v.data_ptr<float>(),int(nk),int(nv),int(dk),int(dv),int(taps),channels_first,float(eps));
+    TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
+    return {q,k,v};
+}
 
 __device__ inline float silu_f32(float x)
 {
     return x / (1.0f + expf(-x));
 }
 
-__global__ void ssm_conv_silu_kernel(
-    const float* __restrict__ x,
-    const float* __restrict__ w,
-    const float* __restrict__ bias,
-    float* __restrict__ out,
-    int B,
-    int T,
-    int C,
-    int K,
-    int weight_layout,
-    int has_bias)
-{
-    int b = blockIdx.x;
-    int c = blockIdx.y * blockDim.x + threadIdx.x;
-    if (b >= B || c >= C) {
-        return;
-    }
-    for (int t = 0; t < T; ++t) {
-        float sum = 0.0f;
-        for (int j = 0; j < K; ++j) {
-            float xv = x[((size_t)b * (T + K - 1) + t + j) * C + c];
-            float wv = weight_layout == 0 ? w[(size_t)c * K + j] : w[(size_t)j * C + c];
-            sum += xv * wv;
+__global__ void ssm_conv_silu_tiled_kernel(const float* __restrict__ x,const float* __restrict__ w,
+    const float* __restrict__ bias,float* __restrict__ out,int B,int T,int C,int K,int weight_layout,int has_bias) {
+    constexpr int Tile=4;
+    const auto channels=(std::uint64_t(C)+SSM_CONV_BD-1)/SSM_CONV_BD;
+    const auto times=(std::uint64_t(T)+Tile-1)/Tile;
+    const auto total=std::uint64_t(B)*channels*times;
+    for(auto tile=std::uint64_t(blockIdx.x);tile<total;tile+=gridDim.x) {
+        const auto c=(tile%channels)*SSM_CONV_BD+threadIdx.x;
+        const auto bt=tile/channels,b=bt/times,t=(bt%times)*Tile;
+        if(c>=std::uint64_t(C))continue;
+        float sums[Tile]={};
+        for(int j=0;j<K;++j) {
+            const float wv=weight_layout==0?w[c*K+j]:w[std::uint64_t(j)*C+c];
+            #pragma unroll
+            for(int r=0;r<Tile;++r)if(t+r<std::uint64_t(T))
+                sums[r]+=x[(b*std::uint64_t(T+K-1)+t+r+j)*C+c]*wv;
         }
-        if (has_bias) {
-            sum += bias[c];
+        #pragma unroll
+        for(int r=0;r<Tile;++r)if(t+r<std::uint64_t(T)) {
+            if(has_bias)sums[r]+=bias[c];
+            out[(b*T+t+r)*C+c]=silu_f32(sums[r]);
         }
-        out[((size_t)b * T + t) * C + c] = silu_f32(sum);
     }
 }
 
@@ -82,8 +145,9 @@ mfq_tensor_backend::Tensor ssm_conv_silu_cuda(mfq_tensor_backend::Tensor conv_in
     int T = (int)n_tokens;
     TYLOINFER_RUNTIME_CHECK(T > 0 && conv_input.size(1) == T + K - 1, "ssm_conv_silu: conv_input length must be K-1+T");
     auto out = mfq_tensor_backend::empty({B, T, C}, conv_input.options());
-    dim3 blocks(B, (C + SSM_CONV_BD - 1) / SSM_CONV_BD);
-    ssm_conv_silu_kernel<<<blocks, SSM_CONV_BD, 0, mfq_current_cuda_stream()>>>(
+    const auto tiles=std::uint64_t(B)*((std::uint64_t(T)+3)/4)*((std::uint64_t(C)+SSM_CONV_BD-1)/SSM_CONV_BD);
+    const auto blocks=unsigned(std::min<std::uint64_t>(65535,tiles));
+    ssm_conv_silu_tiled_kernel<<<blocks, SSM_CONV_BD, 0, mfq_current_cuda_stream()>>>(
         conv_input.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(), out.data_ptr<float>(),
         B, T, C, K, layout, has_bias);
     return out;
@@ -454,7 +518,8 @@ __global__ void linear_conv_qk_norm_prefill_kernel(
     float* __restrict__ q,
     float* __restrict__ k,
     int B, int T, int nk, int dk, int C, int K,
-    int weight_layout, int has_bias, float eps,int64_t ps0=0,int64_t ps1=0)
+    int weight_layout, int has_bias, float eps,int64_t ps0=0,int64_t ps1=0,
+    const int32_t* row_exponents=nullptr,const int32_t* column_exponents=nullptr)
 {
     int row = blockIdx.x;
     int h = row % nk;
@@ -480,6 +545,8 @@ __global__ void linear_conv_qk_norm_prefill_kernel(
                 xv = static_cast<float>(qk[Packed && ps1?int64_t(b)*ps0+int64_t(token)*ps1+c:
                     ((size_t)b * T + token) * (Packed ? C : qkC) + c]);
             }
+            if(row_exponents && token>=0)
+                xv=prefill_ldexp(xv,row_exponents[int64_t(b)*T+token]+column_exponents[c]);
             float wv = weight_layout == 0 ? w[(size_t)c * K + j] : w[(size_t)j * C + c];
             sum += xv * wv;
         }
@@ -506,7 +573,8 @@ __global__ void linear_conv_v_prefill_kernel(
     const Gate* alpha = nullptr, const Gate* beta = nullptr,
     const float* dt_bias = nullptr, const float* a_log = nullptr,
     float* gate_out = nullptr, float* beta_out = nullptr,
-    int64_t ps0=0,int64_t ps1=0,int64_t as0=0,int64_t as1=0,int64_t bs0=0,int64_t bs1=0)
+    int64_t ps0=0,int64_t ps1=0,int64_t as0=0,int64_t as1=0,int64_t bs0=0,int64_t bs1=0,
+    bool stable_softplus=true,const int32_t* row_exponents=nullptr,const int32_t* column_exponents=nullptr)
 {
     int bt = blockIdx.x;
     int b = bt / T;
@@ -528,6 +596,8 @@ __global__ void linear_conv_v_prefill_kernel(
             xv = static_cast<float>(v_in[Packed && ps1?int64_t(b)*ps0+int64_t(token)*ps1+vi:
                 ((size_t)b * T + token) * (Packed ? C : vsz) + vi]);
         }
+        if(row_exponents && token>=0)
+            xv=prefill_ldexp(xv,row_exponents[int64_t(b)*T+token]+column_exponents[c]);
         float wv = weight_layout == 0 ? w[(size_t)c * K + j] : w[(size_t)j * C + c];
         sum += xv * wv;
     }
@@ -538,7 +608,8 @@ __global__ void linear_conv_v_prefill_kernel(
     if constexpr(Packed) {
         if(d == 0) {
             const float a = static_cast<float>(alpha[as1?int64_t(b)*as0+int64_t(t)*as1+h:(size_t)bt * nv + h]) + dt_bias[h];
-            const float sp = fmaxf(a,0.f) + log1pf(expf(-fabsf(a)));
+            const float sp = stable_softplus ? fmaxf(a,0.f) + log1pf(expf(-fabsf(a)))
+                                             : (a>20.f ? a : log1pf(expf(a)));
             const auto index = ((size_t)b * nv + h) * T + t;
             gate_out[index] = sp * -expf(a_log[h]);
             const float raw = static_cast<float>(beta[bs1?int64_t(b)*bs0+int64_t(t)*bs1+h:(size_t)bt * nv + h]);
@@ -564,7 +635,8 @@ __global__ void linear_conv_state_prefill_kernel(
     const Input* __restrict__ qk,
     const Input* __restrict__ v,
     float* __restrict__ new_state,
-    int B, int T, int qkC, int vsz, int C, int K,int64_t ps0=0,int64_t ps1=0)
+    int B, int T, int qkC, int vsz, int C, int K,int64_t ps0=0,int64_t ps1=0,
+    const int32_t* row_exponents=nullptr,const int32_t* column_exponents=nullptr)
 {
     size_t total = (size_t)B * (K - 1) * C;
     for (size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -578,8 +650,101 @@ __global__ void linear_conv_state_prefill_kernel(
             new_state[idx] = old_state[((size_t)b * (K - 1) + combined) * C + c];
         } else {
             int token = combined - (K - 1);
-            new_state[idx] = linear_prefill_input<Packed,Input>(qk, v, b, token, c, T, qkC, vsz,ps0,ps1);
+            const auto value=linear_prefill_input<Packed,Input>(qk, v, b, token, c, T, qkC, vsz,ps0,ps1);
+            new_state[idx] = row_exponents?prefill_ldexp(value,row_exponents[int64_t(b)*T+token]+column_exponents[c]):value;
         }
+    }
+}
+
+// A temporal tile restores each projected value once, then shares it across
+// every convolution tap. Q/K normalization writes the recurrent head layout.
+template<int RowThreads,class Input,class Gate,bool Scaled>
+__global__ void packed_conv_prefill_tile(const float* state,const Input* projected,
+    const float* weight,const Gate* alpha,const Gate* beta,const float* dt_bias,const float* a_log,
+    const int32_t* row_exponents,const int32_t* column_exponents,
+    float* q,float* k,float* v,float* next,float* decay,float* bt,
+    int T,int nk,int nv,int width,int taps,int layout,float eps,bool stable_softplus,
+    int64_t ps0,int64_t ps1,int64_t as0,int64_t as1,int64_t bs0,int64_t bs1) {
+    constexpr int Tile=16,Segments=RowThreads/32;
+    const int tiles=(T+Tile-1)/Tile,heads=2*nk+nv;
+    const int tile=int(blockIdx.x)%tiles,head=(int(blockIdx.x)/tiles)%heads,b=int(blockIdx.x)/(tiles*heads);
+    const int begin=tile*Tile,C=heads*width,offset=head*width;
+    const bool normalize=head<2*nk;
+    const int lane=threadIdx.x%32,warp=threadIdx.x/32;
+    extern __shared__ float image[];
+    for(int i=threadIdx.x;i<(Tile+taps-1)*width;i+=256) {
+        const int column=i%width,token=begin+i/width-(taps-1);float value=0;
+        if(token<0)value=state[(int64_t(b)*(taps-1)+token+taps-1)*C+offset+column];
+        else if(token<T) {
+            value=float(projected[int64_t(b)*ps0+int64_t(token)*ps1+offset+column]);
+            if constexpr(Scaled)value=prefill_ldexp(value,row_exponents[int64_t(b)*T+token]+column_exponents[offset+column]);
+        }
+        image[i]=value;
+    }
+    __syncthreads();
+    // Eight independent query rows share the same immutable temporal image.
+    // Each warp keeps every 32-channel segment of its row in registers.
+    for(int first=0;first<Tile;first+=8) {
+        const int local=first+warp,token=begin+local;
+        float value[Segments];
+        #pragma unroll
+        for(int segment=0;segment<Segments;++segment)value[segment]=0;
+        // Interleave channel accumulators and share the tap control/address
+        // calculation. The compact loop avoids four expanded tap pipelines.
+        #pragma unroll 1
+        for(int tap=0;tap<taps;++tap) {
+            #pragma unroll
+            for(int segment=0;segment<Segments;++segment) {
+                const int column=segment*32+lane;
+                if(token<T && column<width) {
+                    const float w=weight[layout?int64_t(tap)*C+offset+column:int64_t(offset+column)*taps+tap];
+                    value[segment]=fmaf(image[(local+tap)*width+column],w,value[segment]);
+                }
+            }
+        }
+        #pragma unroll
+        for(int segment=0;segment<Segments;++segment)
+            if(token<T && segment*32+lane<width)value[segment]=silu_f32(value[segment]);
+        float inverse=1;
+        if(normalize) {
+            float partial=0;
+            #pragma unroll
+            for(int segment=0;segment<Segments;++segment) {
+                const float sum=warp_sum(value[segment]*value[segment]);
+                // The original kernel publishes lane zero's partial from
+                // each segment. XOR reduction results can vary by lane.
+                const float original=__shfl_sync(0xffffffffu,sum,0);
+                if(lane==segment)partial=original;
+            }
+            const float sum=warp_sum(partial);
+            if(!lane)inverse=1.f/fmaxf(sqrtf(sum),eps);
+            inverse=__shfl_sync(0xffffffffu,inverse,0);
+        }
+        #pragma unroll
+        for(int segment=0;segment<Segments;++segment) {
+            const int column=segment*32+lane;
+            if(token<T && column<width) {
+                if(normalize) {
+                    const int h=head<nk?head:head-nk;
+                    (head<nk?q:k)[((int64_t(b)*nk+h)*T+token)*width+column]=value[segment]*inverse;
+                }else {
+                    const int h=head-2*nk;
+                    v[((int64_t(b)*nv+h)*T+token)*width+column]=value[segment];
+                }
+            }
+        }
+        if(!normalize && token<T && !lane) {
+            const int h=head-2*nk;
+            const float a=float(alpha[int64_t(b)*as0+int64_t(token)*as1+h])+dt_bias[h];
+            const float sp=stable_softplus?fmaxf(a,0.f)+log1pf(expf(-fabsf(a))):(a>20.f?a:log1pf(expf(a)));
+            decay[(int64_t(b)*nv+h)*T+token]=sp*-expf(a_log[h]);
+            const float raw=float(beta[int64_t(b)*bs0+int64_t(token)*bs1+h]);
+            bt[(int64_t(b)*nv+h)*T+token]=1.f/(1.f+expf(-raw));
+        }
+    }
+    if(tile==tiles-1)for(int i=threadIdx.x;i<(taps-1)*width;i+=256) {
+        const int tap=i/width,d=i%width;
+        next[(int64_t(b)*(taps-1)+tap)*C+offset+d]=image[(T+tap-begin)*width+d];
     }
 }
 
@@ -663,11 +828,12 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_prefill_cuda(
 
 // Keep projected Q/K/V together for prefill and short verification windows.
 // The V convolution also prepares recurrent gates, preserving FP32 operands.
-std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
+static std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_impl(
     mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
     mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,
     mfq_tensor_backend::Tensor beta,mfq_tensor_backend::Tensor dt_bias,
-    mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps)
+    mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps,
+    bool stable_softplus,mfq_tensor_backend::Tensor row_exponents,mfq_tensor_backend::Tensor column_exponents)
 {
     namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && (qkv.scalar_type()==tb::kFloat16 || qkv.scalar_type()==tb::kFloat32) &&
@@ -691,6 +857,15 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
         beta.scalar_type()==alpha.scalar_type() &&
         (alpha.scalar_type()==tb::kFloat16 || alpha.scalar_type()==tb::kFloat32) &&
         dt_bias.numel()==nv && a_log.numel()==nv,"short GDN gate geometry disagrees");
+    const bool scaled=row_exponents.defined();
+    TYLOINFER_RUNTIME_CHECK(scaled==column_exponents.defined(),"scaled convolution requires both exponent vectors");
+    if(scaled)for(const auto* tensor:{&row_exponents,&column_exponents})
+        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->device()==qkv.device() && tensor->is_contiguous() &&
+            tensor->scalar_type()==tb::kInt32,"scaled convolution exponents must be contiguous device int32");
+    TYLOINFER_RUNTIME_CHECK(!scaled || (qkv.scalar_type()==tb::kFloat16 && row_exponents.numel()==int64_t(B)*T &&
+        column_exponents.numel()==C),"scaled convolution exponent geometry disagrees");
+    const auto* re=scaled?row_exponents.data_ptr<int32_t>():nullptr;
+    const auto* ce=scaled?column_exponents.data_ptr<int32_t>():nullptr;
     const int layout=weight.dim()==2?1:0;
     TYLOINFER_RUNTIME_CHECK(layout?weight.sizes().vec()==std::vector<int64_t>({K,C}):
         weight.sizes().vec()==std::vector<int64_t>({C,1,K}),"short GDN convolution weight geometry disagrees");
@@ -698,12 +873,38 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
     auto q=tb::empty({B,nk,T,width},options),k=tb::empty_like(q),v=tb::empty({B,nv,T,width},options);
     auto next=tb::empty_like(state),decay=tb::empty({B,nv,T},options),bt=tb::empty_like(decay);
     const auto stream=mfq_current_cuda_stream();
+    const int64_t tiled_blocks=int64_t(B)*(2*nk+nv)*((int64_t(T)+15)/16);
+    if(T>=256 && tiled_blocks<=INT_MAX) {
+        const auto launch_input=[&]<class Input>() {
+            const auto launch_gate=[&]<class Gate>() {
+                const auto launch=[&]<int Threads,bool Scaled>() {
+                    packed_conv_prefill_tile<Threads,Input,Gate,Scaled><<<unsigned(tiled_blocks),256,
+                        size_t(16+K-1)*width*sizeof(float),stream>>>(state.data_ptr<float>(),static_cast<const Input*>(qkv.data_ptr()),
+                        weight.data_ptr<float>(),static_cast<const Gate*>(alpha.data_ptr()),static_cast<const Gate*>(beta.data_ptr()),
+                        dt_bias.data_ptr<float>(),a_log.data_ptr<float>(),re,ce,q.data_ptr<float>(),k.data_ptr<float>(),v.data_ptr<float>(),
+                        next.data_ptr<float>(),decay.data_ptr<float>(),bt.data_ptr<float>(),T,int(nk),int(nv),int(width),K,layout,float(eps),stable_softplus,
+                        qkv.stride(0),qkv.stride(1),alpha.stride(0),alpha.stride(1),beta.stride(0),beta.stride(1));
+                };
+                const auto choose=[&]<int Threads>() {if(scaled)launch.template operator()<Threads,true>();else launch.template operator()<Threads,false>();};
+                if(width<=32)choose.template operator()<32>();else if(width<=64)choose.template operator()<64>();
+                else if(width<=128)choose.template operator()<128>();else choose.template operator()<256>();
+            };
+            if(alpha.scalar_type()==tb::kFloat16)launch_gate.template operator()<__half>();else launch_gate.template operator()<float>();
+        };
+        if(qkv.scalar_type()==tb::kFloat16)launch_input.template operator()<__half>();else launch_input.template operator()<float>();
+        TYLOINFER_CUDA_CHECK(cudaGetLastError());
+        if(const auto* trace=std::getenv("TYLOINFER_TRACE_KERNEL_DISPATCH");trace && trace[0]=='1') {
+            static std::atomic<bool> reported{};
+            if(!reported.exchange(true))std::fprintf(stderr,"native_gdn_prefill_conv_tile actual_match=1 tokens=%d tile=16 scaled=%d shared_restore_once=1 warp_rows=8 inner_cta_barriers=0\n",T,int(scaled));
+        }
+        return {q,k,v,next,decay,bt};
+    }
     const auto launch_input=[&]<class Input>() {
         const auto* projected=static_cast<const Input*>(qkv.data_ptr());
         const auto launch_qk=[&]<int Threads>() {
             linear_conv_qk_norm_prefill_kernel<Threads,true,Input><<<B*T*2*int(nk),Threads,0,stream>>>(
                 state.data_ptr<float>(),projected,weight.data_ptr<float>(),nullptr,q.data_ptr<float>(),k.data_ptr<float>(),
-                B,T,int(nk),int(width),C,K,layout,0,float(eps),qkv.stride(0),qkv.stride(1));
+                B,T,int(nk),int(width),C,K,layout,0,float(eps),qkv.stride(0),qkv.stride(1),re,ce);
         };
         if(width<=32)launch_qk.template operator()<32>();
         else if(width<=64)launch_qk.template operator()<64>();
@@ -715,16 +916,40 @@ std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
                 B,T,int(nk),int(nv),int(width),int(width),C,K,layout,0,
                 static_cast<const Gate*>(alpha.data_ptr()),static_cast<const Gate*>(beta.data_ptr()),
                 dt_bias.data_ptr<float>(),a_log.data_ptr<float>(),decay.data_ptr<float>(),bt.data_ptr<float>(),
-                qkv.stride(0),qkv.stride(1),alpha.stride(0),alpha.stride(1),beta.stride(0),beta.stride(1));
+                qkv.stride(0),qkv.stride(1),alpha.stride(0),alpha.stride(1),beta.stride(0),beta.stride(1),stable_softplus,re,ce);
         };
         if(alpha.scalar_type()==tb::kFloat16)launch_gate.template operator()<__half>();else launch_gate.template operator()<float>();
         const int elements=B*(K-1)*C;
         linear_conv_state_prefill_kernel<true,Input><<<(elements+255)/256,256,0,stream>>>(
-            state.data_ptr<float>(),projected,projected+qkC,next.data_ptr<float>(),B,T,qkC,vsz,C,K,qkv.stride(0),qkv.stride(1));
+            state.data_ptr<float>(),projected,projected+qkC,next.data_ptr<float>(),B,T,qkC,vsz,C,K,qkv.stride(0),qkv.stride(1),re,ce);
     };
     if(qkv.scalar_type()==tb::kFloat16)launch_input.template operator()<__half>();else launch_input.template operator()<float>();
     TYLOINFER_CUDA_CHECK(cudaGetLastError());
     return {q,k,v,next,decay,bt};
+}
+
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,mfq_tensor_backend::Tensor beta,
+    mfq_tensor_backend::Tensor dt_bias,mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,
+    double eps,bool stable_softplus) {
+    return linear_conv_qkv_gate_prefill_impl(state,qkv,weight,alpha,beta,dt_bias,a_log,nk,nv,width,eps,stable_softplus,{},{});
+}
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_scaled_prefill_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor product,
+    mfq_tensor_backend::Tensor row_exponents,mfq_tensor_backend::Tensor column_exponents,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,mfq_tensor_backend::Tensor beta,
+    mfq_tensor_backend::Tensor dt_bias,mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,
+    double eps,bool stable_softplus) {
+    return linear_conv_qkv_gate_prefill_impl(state,product,weight,alpha,beta,dt_bias,a_log,nk,nv,width,eps,stable_softplus,
+        row_exponents,column_exponents);
+}
+
+std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_prefill_cuda(
+    mfq_tensor_backend::Tensor state,mfq_tensor_backend::Tensor qkv,
+    mfq_tensor_backend::Tensor weight,mfq_tensor_backend::Tensor alpha,mfq_tensor_backend::Tensor beta,
+    mfq_tensor_backend::Tensor dt_bias,mfq_tensor_backend::Tensor a_log,int64_t nk,int64_t nv,int64_t width,double eps) {
+    return linear_conv_qkv_gate_prefill_cuda(state,qkv,weight,alpha,beta,dt_bias,a_log,nk,nv,width,eps,true);
 }
 
 std::vector<mfq_tensor_backend::Tensor> linear_conv_qkv_gate_short_cuda(

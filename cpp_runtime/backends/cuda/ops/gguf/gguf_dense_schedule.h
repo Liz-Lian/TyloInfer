@@ -16,9 +16,9 @@ namespace mfq_gguf_dense_schedule {
 template<class Separate,class Batch>
 bool choose_batch(const std::vector<mfq::cuda::gguf::DenseProjection>& projections,
         int device,int64_t columns,int64_t tokens,bool half_output,cudaStream_t stream,
-        Separate&& separate,Batch&& batch) {
+        Separate&& separate,Batch&& batch,bool aligned_m1=false) {
     std::string key=std::to_string(device)+":"+std::to_string(columns)+":"+
-        std::to_string(tokens)+":"+std::to_string(half_output);
+        std::to_string(tokens)+":"+std::to_string(half_output)+":"+std::to_string(aligned_m1);
     for(const auto& p:projections)key+="/"+std::to_string(int(p.type))+":"+
         std::to_string(p.rows)+":"+std::to_string(p.stride);
     static std::mutex mutex;

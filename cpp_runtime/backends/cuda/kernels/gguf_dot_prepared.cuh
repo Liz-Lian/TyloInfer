@@ -1,4 +1,5 @@
 #pragma once
+#include "gguf_iq_selectors.cuh"
 // Included after Dot inside gguf_dot.cuh. Keep the bundled ggml dot arithmetic
 // and split its weight decode from activation work, as in Strata's multi-row
 // traits (MIT, third_party/strata.LICENSE).
@@ -89,6 +90,10 @@ template<> struct PreparedDot<GGML_TYPE_Q4_K> : PreparedAffineK<GGML_TYPE_Q4_K> 
 template<> struct PreparedDot<GGML_TYPE_Q5_K> : PreparedAffineK<GGML_TYPE_Q5_K> {};
 
 template<> struct PreparedDot<GGML_TYPE_Q6_K> : Dot<GGML_TYPE_Q6_K> {
+    // This decoder consumes eight weights per fragment. Its 32 fragments
+    // cover one 256-value block independently of ggml's MMVQ vector width.
+    // Inheriting VDR=2 skips every odd fragment and drops half the dot.
+    static constexpr int parts = 32, step = 1;
     using DecodedWeight = void;
     struct Weight {int codes[2],scales[2];float scale;int offset,part;};
     struct Activation {int codes[2];float scale[2];};
@@ -222,21 +227,74 @@ template<> struct PreparedDot<GGML_TYPE_IQ4_XS> : Dot<GGML_TYPE_IQ4_XS> {
         sum*=w.scale_code;return (w.scale*__low2float(x[w.block].ds))*sum;
     }
 };
-template<int Format> struct PreparedIq3 : Dot<Format> {
+// Spread four sign bits into byte MSBs, then replicate each MSB with PRMT.
+// The four-bit fields never overlap during multiplication. PRMT is available
+// on every CUDA target capable of the DP4A dots used by these formats.
+__device__ __forceinline__ unsigned iq_nibble_sign_mask(unsigned nibble) {
+    const unsigned spread=nibble*0x10204080u;unsigned mask;
+    asm("prmt.b32 %0, %1, %1, 0xba98;" : "=r"(mask) : "r"(spread));
+    return mask;
+}
+
+// Ordinary M=1 rows stream through the compressed weights once. Retain L1
+// caching for adjacent block metadata, but give those cache lines streaming
+// priority so they do not evict the frequently reused IQ codebooks.
+// Other callers retain their existing reuse policy.
+template<bool Streaming,class Value>
+__device__ __forceinline__ Value iq_weight_read(const Value* pointer) {
+    if constexpr(Streaming)return __ldcs(pointer);
+    else return *pointer;
+}
+template<bool Streaming,class Value>
+__device__ __forceinline__ int iq_weight_word(const Value* pointer,int index) {
+    if constexpr(!Streaming)return get_int_b2(pointer,index);
+    else {
+        // GGUF block payloads guarantee two-byte alignment, not four.
+        const auto* words=reinterpret_cast<const std::uint16_t*>(pointer)+2*index;
+        return unsigned(__ldcs(words))|(unsigned(__ldcs(words+1))<<16);
+    }
+}
+template<bool Streaming>
+__device__ __forceinline__ float iq_weight_scale(const half* pointer) {
+    if constexpr(Streaming)
+        return __half2float(__ushort_as_half(__ldcs(reinterpret_cast<const std::uint16_t*>(pointer))));
+    else return __half2float(*pointer);
+}
+
+// Raw PRMT is valid only for the IQ grids whose selector nibbles are
+// already 0..7. Other callers retain CUDA's masked byte permutation.
+template<bool Raw>
+__device__ __forceinline__ unsigned iq_grid_byte_perm(unsigned a,unsigned b,unsigned selector) {
+    if constexpr(Raw) {
+        unsigned result;
+        asm("prmt.b32 %0,%1,%2,%3;":"=r"(result):"r"(a),"r"(b),"r"(selector));
+        return result;
+    }else return __byte_perm(a,b,selector);
+}
+
+template<int Format,bool RawPermutation=false> struct PreparedIq3 : Dot<Format> {
     using DecodedWeight = void;
     struct Weight {int codes[8];float scale;int block,scale_code;};
+    __device__ static unsigned magnitude_at(int code) {
+        if constexpr(Format==GGML_TYPE_IQ3_XXS)
+            return iq_grid_byte_perm<RawPermutation>(0x1c140c04u,0x3e342c24u,iq3xxs_grid_selectors[code]);
+        else return iq_grid_byte_perm<RawPermutation>(0x07050301u,0x0f0d0b09u,iq3s_grid_selectors[code]);
+    }
     __device__ static Weight load(const void* data,int block,int part) {
         return load_grid<false>(data,block,part,nullptr);
     }
-    template<bool Staged>
+    __device__ static Weight load_streaming(const void* data,int block,int part) {
+        return load_grid<false,true>(data,block,part,nullptr);
+    }
+    template<bool Staged,bool Streaming=false>
     __device__ static Weight load_grid(const void* data,int block,int part,const uint32_t* grid) {
         Weight w;w.block=part/2;
         if constexpr(Format==GGML_TYPE_IQ3_XXS) {
             const auto* b=static_cast<const block_iq3_xxs*>(data)+block;
-            const int2 packed=make_int2(get_int_b2(b->qs,part),get_int_b2(b->qs,part+1));
+            const int2 packed=make_int2(iq_weight_word<Streaming>(b->qs,part),iq_weight_word<Streaming>(b->qs,part+1));
             const auto* codes=reinterpret_cast<const std::uint8_t*>(&packed);
-            const auto aux=std::uint32_t(get_int_b2(b->qs,QK_K/16+part/2));
-            w.scale=__half2float(b->d);w.scale_code=aux>>28;
+            const auto aux=std::uint32_t(iq_weight_word<Streaming>(b->qs,QK_K/16+part/2));
+            w.scale=iq_weight_scale<Streaming>(&b->d);w.scale_code=aux>>28;
             #pragma unroll
             for(int j=0;j<8;j+=2) {
                 if constexpr(Staged) {
@@ -245,31 +303,33 @@ template<int Format> struct PreparedIq3 : Dot<Format> {
                     w.codes[j]=(grid[codes[j]]^lo)+(lo&0x01010101u);
                     w.codes[j+1]=(grid[codes[j+1]]^hi)+(hi&0x01010101u);
                 }else {
-                    const auto signs=unpack_ksigns(aux>>(7*j/2));
-                    const int lo=__vcmpne4(signs&0x08040201,0),hi=__vcmpne4(signs&0x80402010,0);
-                    w.codes[j]=__vsub4(iq3xxs_grid[codes[j]]^lo,lo);
-                    w.codes[j+1]=__vsub4(iq3xxs_grid[codes[j+1]]^hi,hi);
+                    const unsigned sign=(aux>>(7*j/2))&127u;
+                    const unsigned signs=sign^((__popc(sign)&1u)<<7);
+                    const int lo=iq_nibble_sign_mask(signs&15u),hi=iq_nibble_sign_mask(signs>>4);
+                    w.codes[j]=(magnitude_at(codes[j])^lo)+(lo&0x01010101u);
+                    w.codes[j+1]=(magnitude_at(codes[j+1])^hi)+(hi&0x01010101u);
                 }
             }
         } else {
             const auto* b=static_cast<const block_iq3_s*>(data)+block;
-            const int2 packed=make_int2(get_int_b2(b->qs,part),get_int_b2(b->qs,part+1));
+            const int2 packed=make_int2(iq_weight_word<Streaming>(b->qs,part),iq_weight_word<Streaming>(b->qs,part+1));
             const auto* codes=reinterpret_cast<const std::uint8_t*>(&packed);
-            const int qh=b->qh[part/2],sign_word=get_int_b2(b->signs,part/2);
+            const int qh=iq_weight_read<Streaming>(b->qh+part/2),sign_word=iq_weight_word<Streaming>(b->signs,part/2);
             const auto* signs=reinterpret_cast<const std::uint8_t*>(&sign_word);
-            w.scale=__half2float(b->d);w.scale_code=1+2*((b->scales[part/4]>>((part<<1)&4))&15);
+            w.scale=iq_weight_scale<Streaming>(&b->d);w.scale_code=1+2*((iq_weight_read<Streaming>(b->scales+part/4)>>((part<<1)&4))&15);
             #pragma unroll
             for(int j=0;j<8;j+=2) {
                 const int low_code=codes[j]|((qh<<(8-j))&256),high_code=codes[j+1]|((qh<<(7-j))&256);
                 if constexpr(Staged) {
                     const auto lo=grid[512+signs[j/2]],hi=grid[768+signs[j/2]];
-                    w.codes[j]=(grid[low_code]^lo)+(lo&0x01010101u);
-                    w.codes[j+1]=(grid[high_code]^hi)+(hi&0x01010101u);
+                    w.codes[j]=grid[low_code]^(lo&0xfefefefeu);
+                    w.codes[j+1]=grid[high_code]^(hi&0xfefefefeu);
                 }else {
-                    const int lo=__vcmpne4(((signs[j/2]&3)<<7)|((signs[j/2]&12)<<21),0);
-                    const int hi=__vcmpne4(((signs[j/2]&48)<<3)|((signs[j/2]&192)<<17),0);
-                    w.codes[j]=__vsub4(iq3s_grid[low_code]^lo,lo);
-                    w.codes[j+1]=__vsub4(iq3s_grid[high_code]^hi,hi);
+                    const unsigned lo=iq_nibble_sign_mask(signs[j/2]&15u);
+                    const unsigned hi=iq_nibble_sign_mask(signs[j/2]>>4);
+                    // Every IQ3_S magnitude byte is odd; negation flips bits 1..7.
+                    w.codes[j]=magnitude_at(low_code)^(lo&0xfefefefeu);
+                    w.codes[j+1]=magnitude_at(high_code)^(hi&0xfefefefeu);
                 }
             }
         }
@@ -280,7 +340,9 @@ template<int Format> struct PreparedIq3 : Dot<Format> {
         int sum=0;
         #pragma unroll
         for(int j=0;j<8;++j)sum=ggml_cuda_dp4a(w.codes[j],codes[j],sum);
-        if constexpr(Format==GGML_TYPE_IQ3_XXS)sum=(w.scale_code*sum+sum/2)/2;
+        // Scaling by a nonnegative integer preserves the dot's sign. Both
+        // nested truncations equal this division, including negative dots.
+        if constexpr(Format==GGML_TYPE_IQ3_XXS)sum=((2*w.scale_code+1)*sum)/4;
         else sum*=w.scale_code;
         return (w.scale*scale)*sum;
     }
@@ -294,13 +356,27 @@ template<int Format> struct PreparedIq3 : Dot<Format> {
 template<> struct PreparedDot<GGML_TYPE_IQ3_XXS> : PreparedIq3<GGML_TYPE_IQ3_XXS> {};
 template<> struct PreparedDot<GGML_TYPE_IQ3_S> : PreparedIq3<GGML_TYPE_IQ3_S> {};
 
-template<int Format> struct PreparedIq2 : Dot<Format> {
+template<int Format,bool RawPermutation=false> struct PreparedIq2 : Dot<Format> {
+    __device__ static int2 decode_selectors(unsigned selectors,unsigned signs) {
+            if constexpr(Format!=GGML_TYPE_IQ2_S)signs|=(__popc(signs)&1u)<<7;
+            // Spread all eight signs into the selector nibbles together.
+            // PRMT then selects one of the three signed magnitudes directly.
+            // All operations are lane-local, including incomplete warp tails.
+            unsigned pairs=(signs|(signs<<4))&0x0f0fu;
+            pairs=(pairs|(pairs<<2))&0x3333u;
+            selectors|=iq_grid_byte_perm<RawPermutation>(0x44400400u,0u,pairs);
+            return make_int2(iq_grid_byte_perm<RawPermutation>(0x002b1908u,0x00d5e7f8u,selectors),
+                iq_grid_byte_perm<RawPermutation>(0x002b1908u,0x00d5e7f8u,selectors>>16));
+    }
     using DecodedWeight = void;
     struct Weight {int codes[8];float scale;int block,low_scale,high_scale;};
     __device__ static Weight load(const void* data,int block,int part) {
         return load_grid<false>(data,block,part,nullptr);
     }
-    template<bool Staged>
+    __device__ static Weight load_streaming(const void* data,int block,int part) {
+        return load_grid<false,true>(data,block,part,nullptr);
+    }
+    template<bool Staged,bool Streaming=false>
     __device__ static Weight load_grid(const void* data,int block,int part,const uint32_t* table) {
         constexpr int GridWords=Format==GGML_TYPE_IQ2_XXS?512:Format==GGML_TYPE_IQ2_XS?1024:2048;
         constexpr int Masks=Format==GGML_TYPE_IQ2_S?256:128;
@@ -308,49 +384,63 @@ template<int Format> struct PreparedIq2 : Dot<Format> {
             int lo,hi;
             if constexpr(Staged) {lo=table[GridWords+sign];hi=table[GridWords+Masks+sign];}
             else {
-                const unsigned bits=Format==GGML_TYPE_IQ2_S?unsigned(sign):unsigned(unpack_ksigns(sign));
+                const unsigned bits=unsigned(sign);
                 if constexpr(Format==GGML_TYPE_IQ2_S) {
                     lo=__vcmpne4(((bits&3)<<7)|((bits&12)<<21),0);
                     hi=__vcmpne4(((bits&48)<<3)|((bits&192)<<17),0);
-                }else {lo=__vcmpne4(bits&0x08040201,0);hi=__vcmpne4(bits&0x80402010,0);}
+                }else {
+                    const unsigned signs=bits^((__popc(bits)&1u)<<7);
+                    lo=iq_nibble_sign_mask(signs&15u);hi=iq_nibble_sign_mask(signs>>4);
+                }
             }
-            return make_int2(__vsub4(unsigned(grid)^lo,lo),__vsub4(unsigned(grid>>32)^hi,hi));
+            // IQ2 grid magnitudes are strictly positive and below 128.
+            // Adding one to each inverted byte cannot carry into its
+            // neighbor, so ordinary integer adds give exact signed bytes.
+            return make_int2((unsigned(grid)^lo)+(lo&0x01010101u),
+                (unsigned(grid>>32)^hi)+(hi&0x01010101u));
         };
+
         Weight w;w.block=part/2;w.high_scale=0;
         if constexpr(Format==GGML_TYPE_IQ2_XXS) {
             const auto* b=static_cast<const block_iq2_xxs*>(data)+block;
-            const int packed=get_int_b2(b->qs,part);
+            const int packed=iq_weight_word<Streaming>(b->qs,part);
             const auto* codes=reinterpret_cast<const std::uint8_t*>(&packed);
-            const auto aux=std::uint32_t(get_int_b2(b->qs,part+1));
-            w.scale=__half2float(b->d);w.low_scale=(aux>>27)|1;
+            const auto aux=std::uint32_t(iq_weight_word<Streaming>(b->qs,part+1));
+            w.scale=iq_weight_scale<Streaming>(&b->d);w.low_scale=(aux>>27)|1;
             #pragma unroll
             for(int j=0;j<8;j+=2) {
                 const int code=codes[j/2],sign=int((aux>>(7*j/2))&127);
-                const auto grid=Staged?reinterpret_cast<const uint64_t*>(table)[code]:iq2xxs_grid[code];
-                const auto values=decode(grid,sign);w.codes[j]=values.x;w.codes[j+1]=values.y;
+                int2 values;
+                if constexpr(Staged)values=decode(reinterpret_cast<const uint64_t*>(table)[code],sign);
+                else values=decode_selectors(iq2xxs_grid_selectors[code],unsigned(sign));
+                w.codes[j]=values.x;w.codes[j+1]=values.y;
             }
         } else if constexpr(Format==GGML_TYPE_IQ2_XS) {
             const auto* b=static_cast<const block_iq2_xs*>(data)+block;
-            const int2 packed=make_int2(get_int_b2(b->qs,part),get_int_b2(b->qs,part+1));
+            const int2 packed=make_int2(iq_weight_word<Streaming>(b->qs,part),iq_weight_word<Streaming>(b->qs,part+1));
             const auto* codes=reinterpret_cast<const std::uint16_t*>(&packed);
-            w.scale=__half2float(b->d);w.low_scale=b->scales[part/2]&15;w.high_scale=b->scales[part/2]>>4;
+            w.scale=iq_weight_scale<Streaming>(&b->d);w.low_scale=iq_weight_read<Streaming>(b->scales+part/2)&15;w.high_scale=iq_weight_read<Streaming>(b->scales+part/2)>>4;
             #pragma unroll
             for(int j=0;j<8;j+=2) {
                 const int code=codes[j/2]&511,sign=codes[j/2]>>9;
-                const auto grid=Staged?reinterpret_cast<const uint64_t*>(table)[code]:iq2xs_grid[code];
-                const auto values=decode(grid,sign);w.codes[j]=values.x;w.codes[j+1]=values.y;
+                int2 values;
+                if constexpr(Staged)values=decode(reinterpret_cast<const uint64_t*>(table)[code],sign);
+                else values=decode_selectors(iq2xs_grid_selectors[code],unsigned(sign));
+                w.codes[j]=values.x;w.codes[j+1]=values.y;
             }
         } else {
             const auto* b=static_cast<const block_iq2_s*>(data)+block;
-            const int packed=get_int_b2(b->qs,part/2),sign_word=get_int_b2(b->qs,QK_K/32+part/2),qh=b->qh[part/2];
+            const int packed=iq_weight_word<Streaming>(b->qs,part/2),sign_word=iq_weight_word<Streaming>(b->qs,QK_K/32+part/2),qh=iq_weight_read<Streaming>(b->qh+part/2);
             const auto* codes=reinterpret_cast<const std::uint8_t*>(&packed);
             const auto* signs=reinterpret_cast<const std::uint8_t*>(&sign_word);
-            w.scale=__half2float(b->d);w.low_scale=b->scales[part/2]&15;w.high_scale=b->scales[part/2]>>4;
+            w.scale=iq_weight_scale<Streaming>(&b->d);w.low_scale=iq_weight_read<Streaming>(b->scales+part/2)&15;w.high_scale=iq_weight_read<Streaming>(b->scales+part/2)>>4;
             #pragma unroll
             for(int j=0;j<8;j+=2) {
                 const int code=codes[j/2]|((qh<<(8-j))&768),sign=signs[j/2];
-                const auto grid=Staged?reinterpret_cast<const uint64_t*>(table)[code]:iq2s_grid[code];
-                const auto values=decode(grid,sign);w.codes[j]=values.x;w.codes[j+1]=values.y;
+                int2 values;
+                if constexpr(Staged)values=decode(reinterpret_cast<const uint64_t*>(table)[code],sign);
+                else values=decode_selectors(iq2s_grid_selectors[code],unsigned(sign));
+                w.codes[j]=values.x;w.codes[j+1]=values.y;
             }
         }
         return w;
@@ -444,3 +534,14 @@ template<int Format> struct StagedIq2 : PreparedDot<Format> {
 template<> struct StagedPreparedDot<GGML_TYPE_IQ2_XXS> : StagedIq2<GGML_TYPE_IQ2_XXS> {};
 template<> struct StagedPreparedDot<GGML_TYPE_IQ2_XS> : StagedIq2<GGML_TYPE_IQ2_XS> {};
 template<> struct StagedPreparedDot<GGML_TYPE_IQ2_S> : StagedIq2<GGML_TYPE_IQ2_S> {};
+
+#include "gguf_dot_m1_iq1.cuh"
+
+// These M=1 grids have proven in-range selector nibbles. The multi-token
+// PreparedDot specializations keep their existing decoder and scheduling.
+template<>struct M1PreparedDot<GGML_TYPE_IQ2_XXS>:PreparedIq2<GGML_TYPE_IQ2_XXS,true>{};
+template<>struct M1PreparedDot<GGML_TYPE_IQ3_S>:PreparedIq3<GGML_TYPE_IQ3_S,true>{};
+
+#include "gguf_dot_m1_q2k.cuh"
+#include "gguf_dot_m1_affine_k.cuh"
+#include "gguf_dot_m1_iq4.cuh"

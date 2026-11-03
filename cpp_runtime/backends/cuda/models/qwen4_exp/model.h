@@ -15,6 +15,7 @@
 #include "runtime/row_stage.h"
 #include "runtime/kv_offload.h"
 #include "runtime/kv_memory.h"
+#include "runtime/qsa_tq_cache.h"
 #include "runtime/decode_window.h"
 #include "runtime/recurrent_copy_batch.h"
 #include "mfq_cuda_kv_quantization.h"
@@ -1104,6 +1105,7 @@ struct QsaConfig {
 };
 
 class Qsa {
+    struct Projection;
   public:
     Qsa(QsaWeights weights, QsaConfig config, std::shared_ptr<RotaryEmbedding> rotary,
         bool fused_projection = true, bool grouped_projection = true,
@@ -1122,6 +1124,14 @@ class Qsa {
         // BF16 sources otherwise record repeated casts in each row's graph.
         for(auto* weight:{&w_.query_norm,&w_.key_norm,&w_.index_query_norm,&w_.index_key_norm})
             if(weight->defined())*weight=weight->to(tb::kFloat32).contiguous();
+        if(qsa_tq_cache_enabled()) {
+            TYLOINFER_RUNTIME_CHECK(c_.pool==4 && !c_.dense_window && !quantization_.enabled(),
+                "adaptive QSA requires four-token sparse blocks and its own KV codec");
+            adaptive_=std::make_unique<QsaTqCache>(c_.maximum,int(c_.heads),int(c_.kv_heads),int(c_.width),
+                int(c_.index_heads),int(c_.index_width),int(c_.budget),w_.query_norm.options(),
+                memory?memory->ssd_enabled():kv_memory_options().placement=="auto_ssd");
+            return;
+        }
         memory_manager_=memory;
         offload_ = std::move(offload);
         if(memory && !offload_)memory_=memory->add(c_.maximum,c_.kv_heads,key_width(),value_width(),
@@ -1133,12 +1143,16 @@ class Qsa {
             offloaded_pooled_ = std::make_unique<KvOffloadSequence>(offload_, c_.index_width, 16);
         }
     }
-    int64_t position() const { return offload_ && offloaded_kv_ ? offloaded_kv_->position() : keys_.position(); }
+    int64_t position() const { return adaptive_?adaptive_->position():offload_ && offloaded_kv_ ? offloaded_kv_->position() : keys_.position(); }
     bool managed_memory() const {return memory_ && memory_->ready;}
-    int64_t graph_capacity() const {return managed_memory()?c_.maximum:0;}
+    std::optional<tyloinfer::qsa::AdaptiveCacheStats> adaptive_stats() const {return adaptive_?std::optional(adaptive_->stats()):std::nullopt;}
+    void wait_adaptive() {if(adaptive_)adaptive_->wait();}
+    void set_adaptive_budget(std::size_t bytes) {if(adaptive_)adaptive_->set_budget(bytes);}
+    int pending_device_graph_kind(int64_t tokens) const {return adaptive_?adaptive_->device_graph_kind(tokens):0;}
+    int64_t graph_capacity() const {return adaptive_ || managed_memory()?c_.maximum:0;}
     // Tail queries share all history KV/index writes. Streamed attention also
     // stages raw KV by query row, so retain its complete-row path for now.
-    bool supports_history_tail_graph() const {return !offload_;}
+    bool supports_history_tail_graph() const {return !adaptive_ && !offload_;}
     void activate_memory() {
         if(!managed_memory())return;
         if(!index_.storage().defined())index_.replace_storage(memory_->index);
@@ -1160,6 +1174,7 @@ class Qsa {
         return w_.output(execution,x);
     }
     std::size_t growth_bytes(int64_t tokens) const {
+        if(adaptive_)return 0;
         if(managed_memory())return memory_->growth_bytes(position()+tokens);
         if (offload_) return 0;
         const auto required = position() + tokens;
@@ -1179,6 +1194,7 @@ class Qsa {
         return bytes;
     }
     std::size_t graph_growth_bytes(int64_t capacity) const {
+        if(adaptive_)return 0;
         if(managed_memory())return memory_->growth_bytes(capacity);
         if (graph_keys_.defined()) return 0;
         auto bytes = std::size_t(capacity) * c_.kv_heads * (key_width()+value_width()) * (quantization_.enabled()?4:2);
@@ -1187,7 +1203,7 @@ class Qsa {
         bytes += std::size_t((capacity+c_.pool-1)/c_.pool) * c_.index_width * 2;
         return bytes;
     }
-    bool supports_session() const { return !offload_ && !(memory_ && memory_->offload); }
+    bool supports_session() const { return !adaptive_ && !offload_ && !(memory_ && memory_->offload); }
     std::size_t session_bytes(int64_t count) const {
         if(count<=0)return 0;
         return std::size_t(count)*(c_.kv_heads*(key_width()+value_width())*(quantization_.enabled()?4:2)+
@@ -1247,6 +1263,7 @@ class Qsa {
         rotary_->set_fused(enabled);
     }
     void leave_graph() {
+        if(adaptive_)return;
         if(managed_memory()){graph_prepared_=false;return;}
         if(!graph_keys_.defined())return;
         const auto n=position();
@@ -1255,6 +1272,7 @@ class Qsa {
         graph_keys_={};graph_values_={};graph_pooled_={};
     }
     void reset() {
+        if(adaptive_){adaptive_->reset();return;}
         if (offload_) {
             if(offloaded_kv_)offloaded_kv_->reset();
             if(offloaded_index_)offloaded_index_->reset();
@@ -1267,7 +1285,8 @@ class Qsa {
         if(managed_memory()){memory_->hot.reset();activate_memory();return;}
         graph_keys_={};graph_values_={};graph_pooled_={};
     }
-    void prepare_graph(const Tensor& full_positions, int64_t capacity) {
+    void prepare_graph(const Tensor& full_positions, int64_t capacity,bool allow_pending_device_graph=false) {
+        if(adaptive_){adaptive_->prepare_decode(allow_pending_device_graph);return;}
         activate_memory();
         TYLOINFER_RUNTIME_CHECK(!offload_ || managed_memory(), "streamed QSA graphs require a resident indexer");
         if(managed_memory()) {
@@ -1310,6 +1329,41 @@ class Qsa {
                          const Tensor& positions,const Tensor& cache_positions,
                          std::vector<Tensor> projections={},bool project_output=true,bool history_only=false,
                          bool query_tail=false) {
+        if(adaptive_) {
+            TYLOINFER_RUNTIME_CHECK(!query_tail,"adaptive QSA uses complete verification rows");
+            auto p=history_only?project_history(execution,hidden,positions):project(execution,hidden,positions,true,{},{},{},std::move(projections));
+            if(!history_only && adaptive_->pending_graph_enabled()) {
+                auto buffer=tb::empty({1,hidden.size(1),c_.heads*c_.width},hidden.options().dtype(
+                    hidden.scalar_type()==tb::kFloat16?tb::kFloat16:tb::kFloat32));
+                auto output=adaptive_->forward_pending_graph(p.query,p.key,p.value,p.iq,p.raw,cache_positions,p.gate,buffer,
+                    [this](const Tensor& raw,const Tensor& starts){return adaptive_pool(raw,starts);},positions).to(hidden.scalar_type());
+                return project_output?w_.output(execution,output):output;
+            }
+            auto* window=DecodeWindow::recording();
+            TYLOINFER_RUNTIME_CHECK(window,"adaptive QSA graph requires a decode window");
+            struct AdaptiveStage {Projection inputs;Tensor positions,output,attention_output;};
+            const auto stage=window->workspace<AdaptiveStage>(this,[&] {
+                ResidentAllocationScope resident;
+                const auto zeros=[](const Tensor& x){return x.defined()?tb::zeros(x.sizes(),x.options()):Tensor{};};
+                auto value=std::make_shared<AdaptiveStage>();
+                value->inputs={zeros(p.gate),zeros(p.query),zeros(p.key),zeros(p.value),zeros(p.iq),zeros(p.raw)};
+                value->positions=zeros(positions);
+                value->output=tb::zeros({1,hidden.size(1),c_.heads*c_.width},hidden.options());
+                value->attention_output=(hidden.scalar_type()==tb::kFloat16 || hidden.scalar_type()==tb::kFloat32)?value->output:
+                    tb::zeros(value->output.sizes(),hidden.options().dtype(tb::kFloat32));return value;
+            });
+            const auto copy=[](Tensor& dst,const Tensor& src){if(src.defined())dst.copy_(src);};
+            copy(stage->inputs.gate,p.gate);copy(stage->inputs.query,p.query);copy(stage->inputs.key,p.key);
+            copy(stage->inputs.value,p.value);copy(stage->inputs.iq,p.iq);copy(stage->inputs.raw,p.raw);stage->positions.copy_(positions);
+            // Projection and FFN segments remain captured; cache append and
+            // background publication run at an explicit completed boundary.
+            window->host_barrier([this,stage,history_only] {
+                adaptive_attention(stage->inputs,stage->positions,history_only,stage->attention_output);
+                if(!history_only && stage->attention_output.data_ptr()!=stage->output.data_ptr())stage->output.copy_(stage->attention_output);
+            });
+            if(history_only)return {};
+            return project_output?w_.output(execution,stage->output):stage->output;
+        }
         const auto mark=[](const char* phase) {
             if(auto* window=DecodeWindow::recording())window->mark_current(phase);
         };
@@ -1485,10 +1539,12 @@ class Qsa {
         return finish(std::move(gated));
     }
     void advance_graph(int64_t tokens) {
+        if(adaptive_){adaptive_->advance_graph(tokens);return;}
         if(!offload_){keys_.advance_fixed(tokens);values_.advance_fixed(tokens);}
         index_.advance_fixed(tokens);
     }
     void truncate(int64_t keep) {
+        if(adaptive_){adaptive_->truncate(keep);return;}
         if (offload_) {
             TYLOINFER_RUNTIME_CHECK(keep >= 0 && keep <= position(), "invalid offloaded QSA truncation");
             offloaded_kv_->truncate(keep);
@@ -1513,6 +1569,36 @@ class Qsa {
                           "Qwen4 QSA requires nonempty [B,T,H] input");
         activate_memory();
         TYLOINFER_RUNTIME_CHECK(!history_only || use_cache,"QSA history priming requires a cache");
+        if(adaptive_ && use_cache) {
+            TYLOINFER_RUNTIME_CHECK(hidden.size(0)==1,"adaptive QSA needs one cache per sequence");
+            TYLOINFER_RUNTIME_CHECK(!selection_trace,"adaptive QSA does not expose the legacy FP16 selection trace");
+            const auto start=position();
+            // Bound attention scratch independently of the model's FFN tile.
+            const int64_t rows=adaptive_->prefill_rows(hidden.size(1));
+            // Keep only the attention workspace tiled. The output projection
+            // consumes the complete batch, sharing weight decode and a GEMM.
+            auto gated_output=history_only?Tensor{}:tb::empty({1,hidden.size(1),c_.heads*c_.width},hidden.options().dtype(
+                hidden.scalar_type()==tb::kFloat16?tb::kFloat16:tb::kFloat32));
+            try {
+                for(int64_t begin=0;begin<hidden.size(1);begin+=rows) {
+                    const auto count=std::min(rows,hidden.size(1)-begin);
+                    std::vector<Tensor> projected;for(const auto& x:projections)projected.push_back(x.narrow(1,begin,count));
+                    auto h=hidden.narrow(1,begin,count),pos=current_positions.narrow(-1,begin,count);
+                    auto p=history_only?project_history(execution,h,pos):project(execution,h,pos,true,{},{},{},std::move(projected));
+                    auto buffer=history_only?Tensor{}:gated_output.narrow(1,begin,count);
+                    auto a=adaptive_attention(p,pos,history_only,buffer);
+                    if(!history_only) {
+                        auto gated=a.reshape({1,count,c_.heads*c_.width}).to(hidden.scalar_type());
+                        if(gated.data_ptr()!=buffer.data_ptr())buffer.copy_(gated);
+                    }
+                }
+                if(history_only){if(hidden.size(1)>8)adaptive_->release_prefill_workspace();return {};}
+                auto gated=gated_output.to(hidden.scalar_type());
+                auto result=project_output?w_.output(execution,gated):gated;
+                if(hidden.size(1)>8)adaptive_->release_prefill_workspace();
+                return result;
+            }catch(...){adaptive_->truncate(start);if(hidden.size(1)>8)adaptive_->release_prefill_workspace();throw;}
+        }
         if(use_cache && hidden.size(1)>8 && !selection_trace && !history_only) {
             // Index scores grow with both query rows and the accumulated
             // context. Bound that workspace independently of the FFN tile.
@@ -1664,6 +1750,18 @@ class Qsa {
     }
 
   private:
+    Tensor adaptive_pool(const Tensor& raw,const Tensor& starts) {
+        auto fused=rotary_->pool_normalized(raw,w_.index_key_norm,starts,4,c_.eps);
+        if(fused.defined())return fused;
+        const auto pools=raw.size(1)/4;
+        auto pooled=raw.reshape({1,pools,4,c_.index_width}).to(tb::kFloat32).mean(2).to(raw.scalar_type());
+        pooled=rms_norm(pooled,w_.index_key_norm.to(tb::kFloat32)+1,c_.eps);
+        return rotary_->forward(pooled.unsqueeze(1),starts).squeeze(1);
+    }
+    Tensor adaptive_attention(const Projection& p,const Tensor& positions,bool history_only,Tensor output={}) {
+        return adaptive_->forward(p.query,p.key,p.value,p.iq,p.raw,positions,
+            [this](const Tensor& raw,const Tensor& starts){return adaptive_pool(raw,starts);},history_only,p.gate,std::move(output));
+    }
     Tensor window_indices(const Tensor& positions,int64_t batches) const {
         if(!c_.dense_window || c_.dense_window>=c_.maximum)return {};
         const auto tokens=positions.numel(),count=std::min(c_.dense_window,c_.maximum);
@@ -1962,6 +2060,7 @@ class Qsa {
     bool fused_projection_;
     bool grouped_projection_;
     SequenceCache keys_, values_, index_;
+    std::unique_ptr<QsaTqCache> adaptive_;
     std::shared_ptr<KvOffloadStore> offload_;
     std::unique_ptr<KvOffloadSequence> offloaded_kv_, offloaded_index_, offloaded_pooled_;
     Tensor graph_keys_,graph_values_,graph_pooled_;

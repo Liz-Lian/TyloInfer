@@ -16,6 +16,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,6 +25,7 @@
 
 struct QuantLinear;
 struct QuantLinearGroup;
+class GgufPrefillInputScope;
 struct DenseLinearGroup;
 
 mfq_tensor_backend::Tensor dense_projection(
@@ -165,6 +167,24 @@ struct QuantLinear {
             mfq_tensor_backend::Tensor x,
             mfq_tensor_backend::Tensor gate,
             int mode) const;
+    mfq_tensor_backend::Tensor forward_input_head_mul(
+            CudaExecutionContext& execution,
+            mfq_tensor_backend::Tensor input,
+            mfq_tensor_backend::Tensor gate,
+            int mode) const;
+    // The model selects the GDN output gate; Qwen4 uses Sigmoid.
+    mfq_tensor_backend::Tensor forward_input_rms_gate(
+            CudaExecutionContext& execution,
+            mfq_tensor_backend::Tensor attended,
+            mfq_tensor_backend::Tensor gate,
+            mfq_tensor_backend::Tensor norm_weight,
+            double eps, bool silu_gate) const;
+    mfq_tensor_backend::Tensor forward_input_rms_silu(
+            CudaExecutionContext& execution,
+            mfq_tensor_backend::Tensor attended,
+            mfq_tensor_backend::Tensor gate,
+            mfq_tensor_backend::Tensor norm_weight,
+            double eps) const;
     mfq_tensor_backend::Tensor forward_input_mul_f32_kld(
             CudaExecutionContext& execution,
             mfq_tensor_backend::Tensor x,
@@ -197,6 +217,22 @@ struct QuantLinearGroup {
         branch_executor =
             std::make_shared<CudaIndependentBranchExecutor>();
 
+    // Empty input means this group's representation needs the ordinary path.
+    GgufProjectionInput prepare_rms_norm_input(
+        CudaExecutionContext& execution,mfq_tensor_backend::Tensor input,mfq_tensor_backend::Tensor weight,
+        double eps,double offset,mfq_tensor_backend::Tensor& normalized) const;
+    std::unique_ptr<GgufPrefillInputScope> prepare_prefill_rms_norm_input(
+        CudaExecutionContext& execution,const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& weight,double eps,double offset,
+        mfq_tensor_backend::Tensor& normalized) const;
+    GgufProjectionInput prepare_acc_rms_norm_input(
+        CudaExecutionContext& execution,mfq_tensor_backend::Tensor residual,
+        mfq_tensor_backend::Tensor projection,mfq_tensor_backend::Tensor weight,
+        double eps,double offset,mfq_tensor_backend::Tensor& sum,
+        mfq_tensor_backend::Tensor& normalized) const;
+    std::vector<mfq_tensor_backend::Tensor> forward_prepared_rms(
+        const GgufProjectionInput& input) const;
+
     QuantLinearProjectionRefs tensor_parallel_output_projections() const;
 
     bool tensor_parallel_output_compatible() const;
@@ -222,6 +258,10 @@ struct DenseLinearGroup {
     std::vector<int64_t> outs;
 
     std::vector<mfq_tensor_backend::Tensor> forward(mfq_tensor_backend::Tensor x) const;
+    // Independent small projections may share a graph's execution window.
+    std::vector<mfq_tensor_backend::Tensor> forward_parallel(
+        mfq_tensor_backend::Tensor x,const std::function<void()>& independent,
+        CudaIndependentBranchExecutor& executor) const;
 };
 
 mfq_tensor_backend::Tensor quant_embedding_lookup(

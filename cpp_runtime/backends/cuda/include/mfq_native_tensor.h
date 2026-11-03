@@ -230,6 +230,8 @@ public:
     }
 
     bool defined() const noexcept { return storage_ != nullptr; }
+    // Auxiliary caches can follow immutable storage without retaining weights.
+    std::weak_ptr<void> weak_storage_owner() const noexcept { return storage_; }
     std::int64_t dim() const noexcept { return defined() ? view_.rank : 0; }
     std::int64_t numel() const { return defined() ? view_.numel() : 0; }
     std::size_t nbytes() const { return defined() ? view_.nbytes() : 0; }

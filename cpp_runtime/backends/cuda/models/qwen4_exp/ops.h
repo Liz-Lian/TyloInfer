@@ -5,6 +5,7 @@
 #include "models/qwen4_exp/causal_lm.h"
 #include "models/qwen4_exp/config.h"
 #include "quant_linear.h"
+#include "tyloinfer/qsa_adaptive_cache.h"
 
 #include <memory>
 #include <functional>
@@ -81,6 +82,9 @@ std::optional<mfq_tensor_backend::Tensor> qwen4_decode_graph_hidden(
     bool* initialized=nullptr,const mfq_tensor_backend::Tensor& host_ids={},
     mfq_tensor_backend::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
 void qwen4_report_decode_graph(const Qwen4CausalLm&,std::ostream&);
+void qwen4_wait_adaptive_qsa(Qwen4CausalLm&);
+void qwen4_set_adaptive_qsa_budget(Qwen4CausalLm&,std::size_t bytes_per_layer);
+std::vector<tyloinfer::qsa::AdaptiveCacheStats> qwen4_adaptive_qsa_stats(const Qwen4CausalLm&);
 std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const Qwen4CausalLm&,const MtpModule*);
 mfq_tensor_backend::Tensor qwen4_decode_graph_compact_topk(const Qwen4CausalLm&);
 void qwen4_release_decode_graphs(Qwen4CausalLm&,MtpModule*);

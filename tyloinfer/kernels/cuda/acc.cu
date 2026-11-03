@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
+#include <cstdint>
 #include "mfq_tensor_backend.h"
 #include <type_traits>
 #include <vector>
@@ -106,9 +107,9 @@ __global__ void acc_rms_norm_bf16_kernel(
     }
 }
 
-template <typename scalar_t, typename norm_t, int BD, bool REUSE_STORED_SUM>
+template <typename scalar_t, typename norm_t, int BD, bool REUSE_STORED_SUM, typename added_t = scalar_t>
 __global__ void acc_rms_norm_kernel(const scalar_t* __restrict__ a,
-                                    const scalar_t* __restrict__ b,
+                                    const added_t* __restrict__ b,
                                     const float* __restrict__ w,
                                     scalar_t* __restrict__ sum_out,
                                     norm_t* __restrict__ norm_out,
@@ -120,14 +121,16 @@ __global__ void acc_rms_norm_kernel(const scalar_t* __restrict__ a,
     }
 
     const scalar_t* ar = a + (size_t)row * D;
-    const scalar_t* br = b + (size_t)row * D;
+    const added_t* br = b + (size_t)row * D;
     scalar_t* sr = sum_out + (size_t)row * D;
     norm_t* nr = norm_out + (size_t)row * D;
     int tid = threadIdx.x;
 
     float ssq = 0.0f;
     for (int i = tid; i < D; i += BD) {
-        float sf = (float)ar[i] + (float)br[i];
+        // Preserve the explicit projection-to-residual dtype conversion,
+        // including its rounding before the residual addition.
+        float sf = (float)ar[i] + (float)(scalar_t)br[i];
         scalar_t stored = (scalar_t)sf;
         sr[i] = stored;
         float sn = (float)stored;
@@ -141,7 +144,7 @@ __global__ void acc_rms_norm_kernel(const scalar_t* __restrict__ a,
         if constexpr (REUSE_STORED_SUM) {
             sn = (float)sr[i];
         } else {
-            float sf = (float)ar[i] + (float)br[i];
+            float sf = (float)ar[i] + (float)(scalar_t)br[i];
             scalar_t stored = (scalar_t)sf;
             sn = (float)stored;
         }
@@ -178,6 +181,30 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_cuda(mfq_tensor_backend::Te
     return {sum, norm};
 }
 
+template<class Added,int BD>
+__global__ void acc_rms_norm_f16x2_kernel(const half2* __restrict__ a,const Added* __restrict__ b,
+        const float2* __restrict__ weight,half2* __restrict__ sum_out,half2* __restrict__ norm_out,
+        int pairs,float eps,float offset) {
+    const auto base=std::int64_t(blockIdx.x)*pairs;
+    const auto added=[&](int i) {
+        if constexpr(std::is_same_v<Added,half2>)return b[base+i];
+        else {const auto value=b[base+i];return __floats2half2_rn(value.x,value.y);}
+    };
+    float squared=0.f;
+    for(int i=threadIdx.x;i<pairs;i+=BD) {
+        const half2 sum=__hadd2(a[base+i],added(i));sum_out[base+i]=sum;
+        const auto value=__half22float2(sum);
+        squared+=value.x*value.x+value.y*value.y;
+    }
+    squared=block_sum<BD/32>(squared);
+    const float inverse=rsqrtf(squared/float(pairs*2)+eps);
+    for(int i=threadIdx.x;i<pairs;i+=BD) {
+        const auto value=__half22float2(__hadd2(a[base+i],added(i)));
+        const auto scale=weight[i];
+        norm_out[base+i]=__floats2half2_rn(value.x*inverse*(scale.x+offset),value.y*inverse*(scale.y+offset));
+    }
+}
+
 std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b,
                                                  mfq_tensor_backend::Tensor weight, double eps,
                                                  double weight_offset)
@@ -186,8 +213,11 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend
     TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc_rms_norm_f16: b must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == mfq_tensor_backend::kFloat32,
                 "acc_rms_norm_f16: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == mfq_tensor_backend::kFloat16 && b.scalar_type() == mfq_tensor_backend::kFloat16,
-                "acc_rms_norm_f16: a/b must be f16");
+    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                (b.scalar_type() == mfq_tensor_backend::kFloat16 || b.scalar_type() == mfq_tensor_backend::kFloat32),
+                "acc_rms_norm_f16: a must be f16; b must be f16 or f32");
+    TYLOINFER_RUNTIME_CHECK(a.device() == b.device() && a.device() == weight.device(),
+                "acc_rms_norm_f16: inputs must share a device");
     TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc_rms_norm_f16: a/b shape mismatch");
     TYLOINFER_RUNTIME_CHECK(a.dim() >= 1, "acc_rms_norm_f16: a must have at least one dim");
     int D = (int)a.size(-1);
@@ -196,10 +226,33 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend
 
     auto sum = mfq_tensor_backend::empty_like(a);
     auto norm = mfq_tensor_backend::empty_like(a);
-    acc_rms_norm_kernel<mfq_half, mfq_half, ACC_RMS_BD, false><<<N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
-        a.data_ptr<mfq_half>(), b.data_ptr<mfq_half>(), weight.data_ptr<float>(),
-        sum.data_ptr<mfq_half>(), norm.data_ptr<mfq_half>(), N, D,
-        (float)eps, (float)weight_offset);
+    const auto aligned=[](const void* p,std::size_t alignment) {
+        return (reinterpret_cast<std::uintptr_t>(p)&(alignment-1))==0;
+    };
+    // Four complete pair iterations amortize vector loads and half2 addition.
+    // Odd widths and unaligned views keep the scalar implementation.
+    if(D>=2*ACC_RMS_BD*4 && D%2==0 && aligned(a.data_ptr(),alignof(half2)) &&
+            aligned(b.data_ptr(),b.scalar_type()==mfq_tensor_backend::kFloat32?alignof(float2):alignof(half2)) &&
+            aligned(weight.data_ptr(),alignof(float2)) &&
+            aligned(sum.data_ptr(),alignof(half2)) && aligned(norm.data_ptr(),alignof(half2))) {
+        const auto launch_pairs=[&]<class Added>() {
+            acc_rms_norm_f16x2_kernel<Added,ACC_RMS_BD><<<N,ACC_RMS_BD,0,mfq_current_cuda_stream()>>>(
+                reinterpret_cast<const half2*>(a.data_ptr()),static_cast<const Added*>(b.data_ptr()),
+                reinterpret_cast<const float2*>(weight.data_ptr()),reinterpret_cast<half2*>(sum.data_ptr()),
+                reinterpret_cast<half2*>(norm.data_ptr()),D/2,float(eps),float(weight_offset));
+        };
+        if(b.scalar_type()==mfq_tensor_backend::kFloat32)launch_pairs.template operator()<float2>();
+        else launch_pairs.template operator()<half2>();
+        return {sum,norm};
+    }
+    const auto launch = [&]<typename Added>() {
+        acc_rms_norm_kernel<mfq_half, mfq_half, ACC_RMS_BD, false, Added><<<N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
+            a.data_ptr<mfq_half>(), b.data_ptr<Added>(), weight.data_ptr<float>(),
+            sum.data_ptr<mfq_half>(), norm.data_ptr<mfq_half>(), N, D,
+            (float)eps, (float)weight_offset);
+    };
+    if (b.scalar_type() == mfq_tensor_backend::kFloat32) launch.template operator()<float>();
+    else launch.template operator()<mfq_half>();
     return {sum, norm};
 }
 

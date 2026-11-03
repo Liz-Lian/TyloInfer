@@ -480,11 +480,12 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
     Output* output,block_q8_1* quantized_output,float* convolution_out,float* recurrent_out,int key_heads,int value_heads,
     int width,int taps,int layout,float convolution_eps,double norm_eps,bool silu_gate,
     bool transposed_state,int64_t as0,int64_t as2,int64_t bs0,int64_t bs2,
-    float* workspace,const int64_t* state_addresses,int64_t qkv_stride,int64_t gate_stride,bool warp_reductions,float* checkpoint_convolution,float* checkpoint_recurrent,bool qkv_float,bool tiled_heads) {
+    float* workspace,const int64_t* state_addresses,int64_t qkv_stride,int64_t gate_stride,bool warp_reductions,float* checkpoint_convolution,float* checkpoint_recurrent,bool qkv_float,bool tiled_heads,GdnHeadDivisors divisors) {
     if constexpr(FixedWidth>0)width=FixedWidth;
     if constexpr(FixedTaps>0)taps=FixedTaps;
     const int bh=blockIdx.x/tiles,tile=blockIdx.x%tiles;
-    const int batch=bh/value_heads,head=bh%value_heads;
+    const int batch=int(gdn_head_quotient(bh,value_heads,divisors.value_heads));
+    const int head=bh-batch*value_heads;
     const int state_batch=state_addresses?0:batch;
     if(state_addresses) {
         convolution_state=reinterpret_cast<const float*>(state_addresses[3*batch]);
@@ -493,8 +494,10 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
         workspace=reinterpret_cast<float*>(state_addresses[3*batch+2]);
     }
     const int workspace_head=state_addresses?head:bh;
-    const int key_head=tiled_heads?head%key_heads:head/(value_heads/key_heads),tid=threadIdx.x;
-    const bool first_value_head=tiled_heads?head<key_heads:head%(value_heads/key_heads)==0;
+    const int head_group=int(gdn_head_quotient(head,key_heads,divisors.key_heads));
+    const int key_head=tiled_heads?head-head_group*key_heads:
+        int(gdn_head_quotient(head,divisors.group_size,divisors.groups)),tid=threadIdx.x;
+    const bool first_value_head=tiled_heads?head<key_heads:head==key_head*int(divisors.group_size);
     const int qk_width=2*key_heads*width,channels=qk_width+value_heads*width;
     __shared__ float query[128],key[128],value[128],attended[128];
     __shared__ float qsum[256],ksum[256],norm_sum[128],decay_value,beta_value;
@@ -602,14 +605,22 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
     const float decay=decay_value,bt=beta_value,scale=1.f/sqrtf(float(width));
     const int columns_per_tile=(width+tiles-1)/tiles;
     const int column_end=min(width,(tile+1)*columns_per_tile);
+    // Every recurrent-state column uses the same normalized Q/K vectors.
+    // Keep each lane's four coordinates across columns instead of issuing
+    // the same shared-memory reads for every column iteration.
+    float keys[4],queries[4];
+    #pragma unroll
+    for(int row=0;row<4;++row)if(row<rows) {
+        const int i=row*32+lane;keys[row]=key[i];queries[row]=query[i];
+    }
     for(int column=tile*columns_per_tile+warp;column<column_end;column+=warps) {
-        float states[4],keys[4],queries[4];
+        float states[4];
         #pragma unroll
         for(int row=0;row<4;++row) if(row<rows) {
             const int i=row*32+lane;
             const size_t index=transposed_state?size_t(column)*width+i:size_t(i)*width+column;
             states[row]=recurrent_state[state_head+index];
-            keys[row]=key[i];queries[row]=query[i];
+
         }
         float projected=0.f;
         #pragma unroll
@@ -658,11 +669,11 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
         if constexpr(InplaceConv)if(tid==0) {
             // The existing tile publication already follows every history
             // read. Publish group readiness before the output epilogue.
-            const int group_size=value_heads/key_heads,first_head=tiled_heads?key_head:key_head*group_size;
+            const int group_size=int(divisors.group_size),first_head=tiled_heads?key_head:key_head*group_size;
             auto* counter=reinterpret_cast<uint32_t*>(workspace+
                 (size_t(batch)*value_heads+first_head)*(width+1)+width);
             cuda::atomic_ref<uint32_t,cuda::thread_scope_device> progress(*counter);
-            const uint32_t bit=1u<<(8+(tiled_heads?head/key_heads:head-first_head)),mask=((1u<<group_size)-1u)<<8;
+            const uint32_t bit=1u<<(8+(tiled_heads?head_group:head-first_head)),mask=((1u<<group_size)-1u)<<8;
             const uint32_t previous=progress.fetch_or(bit,cuda::std::memory_order_acq_rel);
             final_key_group=((previous|bit)&mask)==mask;
         }
@@ -738,7 +749,7 @@ __global__ void gdn_decode_core_kernel(const void* qkv,const Gate* output_gate,
     if constexpr(InplaceConv) {
         // A subsequent replay starts only after this kernel completes. All
         // group heads have published readiness, so no counters remain in use.
-        const int group_size=value_heads/key_heads,first_head=tiled_heads?key_head:key_head*group_size;
+        const int group_size=int(divisors.group_size),first_head=tiled_heads?key_head:key_head*group_size;
         if(final_key_group && tid<group_size) {
                 auto* counter=reinterpret_cast<uint32_t*>(workspace+
                     (size_t(batch)*value_heads+first_head+tid*(tiled_heads?key_heads:1))*(width+1)+width);
@@ -843,6 +854,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
     TYLOINFER_RUNTIME_CHECK(!workspace.defined() || (real(workspace) &&
         workspace.sizes().vec()==std::vector<int64_t>({state_batch,value_heads,width+1})),
         "GDN decode core workspace shape/device/dtype disagrees");
+    const auto head_divisors=gdn_head_divisors(unsigned(value_heads),unsigned(key_heads));
     const auto launch=[&]<int Tiles,class Gate,class Output,int FixedWidth=0,int FixedTaps=0>() {
         const auto run=[&]<bool InplaceConv>() {
         const auto normalizations=[&]<int BroadcastNorm>() {
@@ -865,7 +877,7 @@ static std::vector<mfq_tensor_backend::Tensor> gdn_decode_core_impl(
             independent?state_addresses.data_ptr<int64_t>():nullptr,qkv.stride(0),output_gate.stride(0),
             [] {const char* option=std::getenv("TYLOINFER_GDN_WARP_REDUCTIONS");return !option || option[0]!='0';}(),
             checkpoint_convolution.defined()?checkpoint_convolution.data_ptr<float>():nullptr,
-            checkpoint_recurrent.defined()?checkpoint_recurrent.data_ptr<float>():nullptr,qkv.scalar_type()==tb::kFloat32,tiled_heads);
+            checkpoint_recurrent.defined()?checkpoint_recurrent.data_ptr<float>():nullptr,qkv.scalar_type()==tb::kFloat32,tiled_heads,head_divisors);
         };
         if(checkpoint_convolution.defined())dispatch.template operator()<true>();
         else dispatch.template operator()<false>();

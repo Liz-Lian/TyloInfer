@@ -13,7 +13,7 @@ mfq_tensor_backend::Tensor normalize_hidden(mfq_tensor_backend::Tensor hidden,
                                             int64_t batch, int64_t tokens, CudaProfiler &profiler) {
     return profiler.measure("model.output_norm", [&]() {
         auto flat = hidden.reshape({batch * tokens, metadata.hidden_size});
-        return qwen_rms_norm(flat.to(mfq_tensor_backend::kFloat32), output_norm,
+        return qwen_rms_norm(flat, output_norm,
                              metadata.rms_norm_eps, metadata.norm_weight_offset)
             .reshape({batch, tokens, metadata.hidden_size});
     });

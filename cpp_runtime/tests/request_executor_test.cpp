@@ -319,7 +319,37 @@ static void check_runtime_config() {
     rejects([] { environment_enabled("TYLOINFER_RUNTIME_TRACE_SESSION_CACHE"); });
 }
 
+void batch_prefix_policy_test() {
+    for(bool prefix:{false,true})for(bool persistent:{false,true})for(bool tokenized:{false,true})
+    for(bool stable:{false,true})for(bool session:{false,true})for(bool media:{false,true})
+    for(bool mtp:{false,true})for(bool head:{false,true}) {
+        EngineRequest value;
+        value.input.prefix_cache_enabled=prefix;
+        if(tokenized)value.token_ids={1,2};
+        value.input.cache_plan.stable_prefix_tokens=stable?1:0;
+        if(session)value.input.cache_plan.session_id="session";
+        if(media)value.input.media.emplace();
+        value.input.sampling.enable_mtp=mtp;
+        const bool blocked_feature=media || session || (mtp && head);
+        const bool requires_prefix=prefix && persistent && (!tokenized || stable);
+        assert(batch_compatible(value,persistent,head)==!(blocked_feature || requires_prefix));
+    }
+    struct PrefixPolicyOps : TestOps {
+        bool can_batch(const EngineRequest& value)const {return batch_compatible(value,true,false);}
+    } ops;
+    ops.batch=true;
+    RequestExecutor executor(2);
+    auto first=request("cache-off-a"),second=request("cache-off-b");
+    first.input.cache_plan.stable_prefix_tokens=second.input.cache_plan.stable_prefix_tokens=1;
+    first.input.prefix_cache_enabled=second.input.prefix_cache_enabled=false;
+    assert(executor.admit(std::move(first),nullptr,info(),ops)==Admission::accepted);
+    assert(executor.admit(std::move(second),nullptr,info(),ops)==Admission::accepted);
+    executor.cancel("cache-off-a");executor.cancel("cache-off-b");executor.step({},ops);
+    assert(executor.empty());
+}
+
 int main() {
+    batch_prefix_policy_test();
     // Text admission needs a tokenizer; a raw token request does not.
     {
         TestOps ops;

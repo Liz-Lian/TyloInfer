@@ -7,6 +7,8 @@
 #include "mfq_cuda_norm_ops.h"
 #include "storage/moe_expert_cache.h"
 #include "storage/moe_ffn_pipeline.h"
+#include "../kernels/gguf_m1_residual.h"
+#include "../kernels/gguf.h"
 
 #include <algorithm>
 #include <array>
@@ -1075,6 +1077,64 @@ mfq_tensor_backend::Tensor FFN::forward_fused_residual(CudaProfiler &profiler,
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
+}
+
+bool FFN::supports_prepared_gguf_input() const {
+    return !is_moe && !geglu && activation==mfq::models::MlpActivation::silu_gated && swiglu_limit<=0 &&
+        !important_neurons && !tensor_parallel_dense_compatible() && down.is_gguf() && !down.tensor_parallel() &&
+        gate_up.layers.size()==2 && gate_up.outs.size()==2 && gate_up.outs[0]==gate_up.outs[1];
+}
+
+std::optional<mfq_tensor_backend::Tensor> FFN::try_forward_gguf_prefill_residual(
+        CudaExecutionContext& execution,const mfq_tensor_backend::Tensor& input,
+        const mfq_tensor_backend::Tensor& residual) const {
+    namespace tb=mfq_tensor_backend;
+    if(execution.config.diagnostic_fp32_residual || execution.kl_mmq.mode!=KlMmqMode::Default ||
+            !supports_prepared_gguf_input() || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
+            input.scalar_type()!=tb::kFloat16 || input.size(-1)<1)return {};
+    const auto tokens=input.numel()/input.size(-1);
+    if(!down.gguf.can_forward_prefill_residual(tokens,residual) || down.gguf.packed.device()!=input.device() ||
+            gate_up.outs[0]!=down.gguf.neuron_len)return {};
+    for(const auto& layer:gate_up.layers)if(!layer.is_gguf() || layer.tensor_parallel() ||
+            layer.gguf.packed.device()!=input.device() || layer.gguf.neuron_len!=input.size(-1))return {};
+    auto parts=execution.profiler.measure("ffn.gate_up",[&]{return gate_up.forward(execution,input);});
+    if(parts[0].scalar_type()!=tb::kFloat16 || parts[1].scalar_type()!=tb::kFloat16 ||
+            !parts[0].is_contiguous() || !parts[1].is_contiguous()) {
+        // A representation-specific correction may return floating rows.
+        // Reuse the completed projections with the ordinary rounding order.
+        auto down_output=down.forward_input_mul(execution,parts[1],parts[0],2);
+        return acc_cuda(residual,down_output.to(tb::kFloat16).contiguous());
+    }
+    auto hidden=tb::empty_like(parts[0]);const auto stream=mfq_get_current_cuda_stream(input.get_device());
+    for(const auto& tensor:{parts[0],parts[1],hidden})mfq_cuda_record_stream(tensor,stream);
+    execution.profiler.measure("ffn.swiglu",[&]{
+        mfq::cuda::gguf::materialize_gated_input(parts[1].data_ptr(),parts[0].data_ptr(),true,hidden.numel(),true,hidden.data_ptr(),stream.stream());
+        return 0;
+    });
+    return execution.profiler.measure("ffn.down_residual",[&]{return down.gguf.forward_base(hidden,true,residual);});
+}
+
+std::optional<mfq_tensor_backend::Tensor> FFN::try_forward_prepared_gguf_residual(
+        CudaExecutionContext& execution,const GgufProjectionInput& input,
+        const mfq_tensor_backend::Tensor& residual) const {
+    namespace tb=mfq_tensor_backend;
+    if(execution.config.diagnostic_fp32_residual || !supports_prepared_gguf_input() ||
+        input.tokens!=1 || input.dtype!=tb::kFloat16 || input.shape.empty() ||
+        !residual.is_cuda() || residual.scalar_type()!=tb::kFloat16 ||
+        !residual.is_contiguous() || residual.numel()!=down.gguf.out ||
+        residual.device()!=down.gguf.packed.device() || down.gguf.prefers_original_input() ||
+        !mfq::cuda::gguf::supports_m1_residual(down.gguf.type))return {};
+    auto parts=execution.profiler.measure("ffn.gate_up",[&] {return gate_up.forward_prepared_rms(input);});
+    return execution.profiler.measure("ffn.down_residual",[&] {
+        return down.gguf.forward_gated_residual(parts.at(0),parts.at(1),residual);
+    });
+}
+
+mfq_tensor_backend::Tensor FFN::forward_prepared_gguf(CudaExecutionContext& execution,
+        const GgufProjectionInput& input) const {
+    TYLOINFER_RUNTIME_CHECK(supports_prepared_gguf_input(),"prepared FFN requires ordinary GGUF SwiGLU projections");
+    auto parts=execution.profiler.measure("ffn.gate_up",[&] {return gate_up.forward_prepared_rms(input);});
+    return execution.profiler.measure("ffn.down",[&] {return down.forward_input_mul(execution,parts.at(1),parts.at(0),2);});
 }
 
 mfq_tensor_backend::Tensor FFN::forward(CudaExecutionContext &execution,

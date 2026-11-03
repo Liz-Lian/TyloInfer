@@ -158,6 +158,7 @@ void check_weight_memory() {
 
 #include "matmul_rows_test.h"
 #include "contiguous_convert_test.h"
+#include "strided_copy_test.h"
 }  // namespace
 
 int main(int argc,char** argv) try {
@@ -170,6 +171,7 @@ int main(int argc,char** argv) try {
 
     using namespace mfq::cuda;
     const Device cuda_device{DeviceType::cuda, 0};
+    if(argc==2 && std::string(argv[1])=="--strided-copy-check") {check_strided_inner_copy();return 0;}
     if(argc==2 && std::string(argv[1])=="--where-broadcast-check") {check_where_broadcast();return 0;}
     check_where_broadcast();
     if(argc==2 && std::string(argv[1])=="--contiguous-convert-check") {

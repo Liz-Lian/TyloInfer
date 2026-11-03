@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cmath>
@@ -17,6 +16,7 @@
 
 namespace {
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+#include "gguf_qwen35_mtp_test.h"
 struct MirrorSetting {
     std::string previous;bool present=false;
     explicit MirrorSetting(const std::filesystem::path& directory) {
@@ -690,8 +690,10 @@ void qwen35_nextn_source(const std::filesystem::path& directory) {
         require(config.at("num_hidden_layers") == 3 - predictors && config.at("layer_types").size() == 3 - predictors,
             "GGUF NextN blocks leaked into the ordinary backbone");
         require(config.at("layer_types").at(0) == "linear_attention", "NextN changed the backbone attention types");
-        require(source.find_tensor(predictors == 1 ? "predictor.block.0.attention.query.weight" :
-            "model.block.2.attention.query.weight"), "NextN tensor record was discarded");
+        const auto nextn_query = predictors > 0 ?
+            "predictor.block." + std::to_string(predictors - 1) + ".attention.query.weight" :
+            "model.block.2.attention.query.weight";
+        require(source.find_tensor(nextn_query), "NextN tensor record was discarded");
         require(config.at("mtp_num_hidden_layers") == 0, "partial NextN fixture advertised a complete MTP head");
     }
     for (int invalid = 0; invalid < 4; ++invalid) {
@@ -797,6 +799,11 @@ int main() {
         gguf_free(gguf); ggml_free(tensors);
         auto source = mfq::open_model_source(path);
         require(source->architecture() == "qwen35", "architecture lost");
+        const auto& layout=source->legacy_tensor_compatibility().layout;
+        require(layout.norm_weight_offset==0.0 && !layout.linear_attention_a_is_log &&
+            layout.qwen_gdn_gguf_layout,"canonical Qwen GGUF tensor conventions lost");
+        require(source->legacy_tensor_compatibility().canonical_to_stored.empty(),
+            "canonical GGUF source exposed raw-name remapping");
         const auto* table = source->find_tensor("model.token_embedding.weight");
         require(table && table->dtype == "GGUF_Q4_K" && *table->shape == std::vector<int64_t>({3, 256}), "GGUF quantized metadata wrong");
         const auto data = source->read(table->name);
@@ -838,6 +845,7 @@ int main() {
         require(truncated, "truncated GGUF accepted");
         qwen35_nextn_source(directory);
         qwen4_source(directory);
+        qwen35_nextn_companion_source(directory);
         compact_formats(directory);
         deepseek_source(directory);
         std::filesystem::remove_all(directory);

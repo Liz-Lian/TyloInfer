@@ -10,6 +10,7 @@
 
 #include <cuda_runtime.h>
 #include "mfq_tensor_backend.h"
+#include "attention_mma_verify.h"
 #include <cuda_fp16.h>
 #include <mma.h>
 #include <cfloat>
@@ -1035,6 +1036,12 @@ static mfq_tensor_backend::Tensor attention_cache_swa_impl_cuda(
     TYLOINFER_RUNTIME_CHECK(T > 0 && capacity >= window, "attention_cache_swa: cache capacity must cover the window");
     TYLOINFER_RUNTIME_CHECK(k_cache.size(0) == B && k_cache.size(3) == D, "attention_cache_swa: cache shape mismatch");
     TYLOINFER_RUNTIME_CHECK(Hq % Hk == 0, "attention_cache_swa: GQA requires Hq % Hk == 0");
+
+    if(T>1 && T<=8 && planned_length>0 && window>=planned_length &&
+            q.scalar_type()==mfq_tensor_backend::kFloat16) {
+        auto mma=try_attention_mma_verify_cuda(q,k_cache,v_cache,seq_len,scale,planned_length);
+        if(mma.defined())return mma.to(q.scalar_type()).permute({0,2,1,3});
+    }
 
     auto out = mfq_tensor_backend::empty_like(q);
     const int total = B * Hq * T;

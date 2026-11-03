@@ -63,6 +63,8 @@ add_library(mfq-model-source STATIC
     include/tyloinfer/mfq_model_source.h
     mfq_model_source.cpp
     model_source.cpp
+    row_residual.cpp
+    include/tyloinfer/row_residual.h
     tq_fixture_source.cpp
     include/tyloinfer/tq_fixture_source.h
     include/tyloinfer/tq_rows.h
@@ -85,9 +87,15 @@ set_target_properties(mfq-model-source PROPERTIES
 )
 
 add_library(mfq-core INTERFACE)
-add_library(mfq-qsa-kv-store STATIC qsa_kv_store.cpp include/tyloinfer/qsa_kv_store.h)
+add_library(mfq-qsa-kv-store STATIC
+    qsa_kv_store.cpp include/tyloinfer/qsa_kv_store.h
+    qsa_adaptive_cache.cpp include/tyloinfer/qsa_adaptive_cache.h
+    qsa_tq_cpu.cpp include/tyloinfer/qsa_tq_cpu.h
+    include/tyloinfer/qsa_energy_allocation.h
+    include/tyloinfer/qsa_precision_policy.h)
 target_include_directories(mfq-qsa-kv-store PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mfq-qsa-kv-store PUBLIC Threads::Threads)
+target_link_libraries(mfq-qsa-kv-store PRIVATE mfq-ggml mfq-host-parallel)
 target_compile_features(mfq-qsa-kv-store PUBLIC cxx_std_17)
 set_target_properties(mfq-qsa-kv-store PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)

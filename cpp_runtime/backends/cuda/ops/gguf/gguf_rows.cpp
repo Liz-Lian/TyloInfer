@@ -1,5 +1,6 @@
 #include "gguf_weight.h"
 #include "gguf_rotation.h"
+#include "tyloinfer/row_residual.h"
 #include "../../kernels/gguf.h"
 #include "mfq_weight_memory.h"
 #include <algorithm>
@@ -35,6 +36,8 @@ GgufRowTable::GgufRowTable(const mfq::ModelSource& source, const std::string& na
         throw std::invalid_argument("invalid GGUF row table payload: " + name);
     read_ = std::make_shared<mfq::ModelSource::TensorReader>(source.tensor_reader(name));
     batch_ = source.tensor_batch_reader(name);
+    correction_=source.row_residual(name);
+    if(correction_ && !correction_->payload_bytes())correction_.reset();
     cache_ = std::make_unique<RowCache>();
     // Include per-entry metadata in this small optional cache's bound.
     cache_->capacity=row_bytes_>SIZE_MAX-128?0:(8ULL<<20)/(row_bytes_+128);
@@ -45,6 +48,31 @@ GgufRowTable::~GgufRowTable()=default;
 void GgufRowTable::read_row(std::int64_t id, void* destination) const {
     if (id < 0 || id >= rows_) throw std::out_of_range("GGUF table row id");
     read_rows({{std::uint64_t(id)*row_bytes_,static_cast<std::byte*>(destination),std::size_t(row_bytes_)}});
+}
+void GgufRowTable::decode_row(std::int64_t id,float* output) const {
+    std::vector<std::uint8_t> base(row_bytes_);read_row(id,base.data());
+    decode_gguf_cpu(type_,base.data(),output,columns_);
+    if(correction_) {
+        const auto& row=correction_->rows().at(std::size_t(id));
+        if(row.type) {
+            auto packed=correction_->read_row(id);
+            std::vector<float> values((columns_+127)/128*128);
+            decode_gguf_cpu(ggml_type(row.type),packed.data(),values.data(),std::int64_t(values.size()));
+            for(std::int64_t column=0;column<columns_;++column)output[column]+=values[column];
+        }
+    }
+}
+void GgufRowTable::read_staged_rows(const std::vector<mfq::ReadSpan>& rows) const {
+    if(!correction_) {read_rows(rows);return;}
+    std::vector<float> values(columns_);
+    for(const auto& row:rows) {
+        if(row.offset%row_bytes_ || row.offset/row_bytes_>=std::uint64_t(rows_) ||
+            row.size!=staged_row_bytes() || !row.destination)
+            throw std::invalid_argument("invalid corrected GGUF row request");
+        decode_row(std::int64_t(row.offset/row_bytes_),values.data());
+        auto* output=reinterpret_cast<ggml_fp16_t*>(row.destination);
+        for(std::int64_t column=0;column<columns_;++column)output[column]=ggml_fp32_to_fp16(values[column]);
+    }
 }
 void GgufRowTable::read_rows(const std::vector<mfq::ReadSpan>& requests) const {
     std::lock_guard lock(cache_->mutex);
@@ -120,7 +148,7 @@ public:
         }
         for (const auto& table : tables_) {
             if (!table || table->width() != width_) throw std::invalid_argument("GGUF table widths differ");
-            stride_ = std::max(stride_, static_cast<std::size_t>(table->row_bytes()));
+            stride_ = std::max(stride_, static_cast<std::size_t>(table->staged_row_bytes()));
         }
         stride_ = (stride_ + 7) & ~std::size_t(7);
         if (std::uint64_t(count_) > std::uint64_t(INT64_MAX) /
@@ -148,7 +176,7 @@ public:
         std::memset(host_->data(), 0, bytes_);
         auto* descriptors = static_cast<mfq::cuda::gguf::StagedRow*>(host_->data());
         for (std::int64_t i = 0; i < count_; ++i)
-            descriptors[i] = {offset_ + i * stride_, std::int32_t(tables_[0]->type()), 0};
+            descriptors[i] = {offset_ + i * stride_, std::int32_t(tables_[0]->staged_type()), 0};
         if (!mapped_) TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(packet_address_, host_->data(), bytes_,
             cudaMemcpyHostToDevice, mfq_current_cuda_stream()));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
@@ -177,11 +205,11 @@ public:
             if (id < 0 || std::uint64_t(id / rows_per_shard_) >= tables_.size())
                 throw std::out_of_range("GGUF row stage shard id");
             const auto& table = tables_[id / rows_per_shard_];
-            descriptors[i].type = table->type();
+            descriptors[i].type = table->staged_type();
             requests[id/rows_per_shard_].push_back({std::uint64_t(id%rows_per_shard_)*table->row_bytes(),
-                reinterpret_cast<std::byte*>(bytes+descriptors[i].offset),std::size_t(table->row_bytes())});
+                reinterpret_cast<std::byte*>(bytes+descriptors[i].offset),std::size_t(table->staged_row_bytes())});
         }
-        for(std::size_t shard=0;shard<tables_.size();++shard)tables_[shard]->read_rows(requests[shard]);
+        for(std::size_t shard=0;shard<tables_.size();++shard)tables_[shard]->read_staged_rows(requests[shard]);
         if (!mapped_) TYLOINFER_NATIVE_CUDA_CHECK(cudaMemcpyAsync(packet_address_, host_->data(), bytes_,
             cudaMemcpyHostToDevice, mfq_current_cuda_stream()));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaEventRecord(done_->get(), mfq_current_cuda_stream()));
@@ -226,12 +254,10 @@ tb::Tensor lookup_gguf_shards(const std::vector<std::shared_ptr<GgufRowTable>>& 
         const auto width = tables[0]->width();
         auto result = tb::empty({static_cast<std::int64_t>(ids.size()), width},
             tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
-        std::vector<std::uint8_t> row;
         for (std::size_t i = 0; i < ids.size(); ++i) {
             if (ids[i] < 0 || std::uint64_t(ids[i] / rows) >= tables.size()) throw std::out_of_range("GGUF table id");
             const auto& table = tables[ids[i] / rows];
-            row.resize(table->row_bytes()); table->read_row(ids[i] % rows, row.data());
-            decode_gguf_cpu(table->type(), row.data(), result.data_ptr<float>() + i * width, width);
+            table->decode_row(ids[i]%rows,result.data_ptr<float>()+i*width);
         }
         return result;
     }

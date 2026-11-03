@@ -913,6 +913,59 @@ static void check_batching(const char* model_path, const char* tokenizer) {
     check_media_steps(*engine, model_path);
 }
 
+static void check_speculative_recurrent_input_reuse() {
+    namespace tb=mfq_tensor_backend;
+    const auto data=[](std::vector<int64_t> shape,float phase,float scale) {
+        auto cpu=tb::empty(shape,tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
+        for(int64_t i=0;i<cpu.numel();++i)cpu.data_ptr<float>()[i]=std::sin(float(i)*.037f+phase)*scale;
+        return cpu.to(tb::kCUDA);
+    };
+    int cases=0;
+    for(int batch:{1,2})for(int width:{32,128})for(int tokens:{2,3,4})
+    for(bool transposed:{false,true})for(int retained=1;retained<tokens;++retained) {
+        const int nk=2,nv=4,channels=(2*nk+nv)*width;
+        auto convolution=data({batch,3,channels},.1f,.2f);
+        auto recurrent=data({batch,nv,width,width},.2f,.01f);
+        auto projected=data({batch,tokens,channels},.3f,.4f);
+        auto weight=data({channels,1,4},.4f,.3f);
+        auto empty=tb::empty({0},convolution.options());
+        auto conv=ssm_conv_silu_cuda(tb::cat({convolution,projected},1),weight,empty,tokens);
+        auto q=conv.narrow(2,0,nk*width).reshape({batch,tokens,nk,width}).transpose(1,2);
+        auto k=conv.narrow(2,nk*width,nk*width).reshape({batch,tokens,nk,width}).transpose(1,2);
+        auto v=conv.narrow(2,2*nk*width,nv*width).reshape({batch,tokens,nv,width}).transpose(1,2);
+        q=l2_norm_cuda(q.contiguous().reshape({-1,width}),1e-6).reshape_as(q);
+        k=l2_norm_cuda(k.contiguous().reshape({-1,width}),1e-6).reshape_as(k);
+        qwen35::LinearRecurrentInputs inputs;
+        inputs.batch=batch;inputs.tokens=tokens;inputs.qkv=projected;
+        inputs.gate=tb::full({batch,nv,tokens},-.1,convolution.options());
+        inputs.beta=tb::full({batch,nv,tokens},.4,convolution.options());
+        qwen35::LinearAttentionBlock reference,reused;
+        for(auto* block:{&reference,&reused}) {
+            block->qwen_config.linear_conv_kernel_dim=4;
+            block->qwen_config.linear_num_key_heads=nk;
+            block->qwen_config.linear_num_value_heads=nv;
+            block->qwen_config.linear_key_head_dim=width;
+            block->qwen_config.linear_value_head_dim=width;
+            block->qwen_config.rms_norm_eps=1e-6;
+            block->transposed_gdn_state=transposed;block->conv_weight=weight;
+            block->mixer.convolution=convolution.clone();block->mixer.recurrent=recurrent.clone();
+        }
+        reference.replay_recurrent_cuda(inputs,retained);
+        inputs.normalized_q=q.contiguous();inputs.normalized_k=k.contiguous();inputs.convolved_v=v.contiguous();
+        reused.replay_recurrent_cuda(inputs,retained);
+        const auto exact=[](const auto& a,const auto& b) {
+            auto x=a.cpu().contiguous(),y=b.cpu().contiguous();
+            return x.nbytes()==y.nbytes() && std::memcmp(x.data_ptr(),y.data_ptr(),x.nbytes())==0;
+        };
+        check(exact(reference.mixer.convolution,reused.mixer.convolution),
+            "reused recurrent inputs changed convolution rollback");
+        check(exact(reference.mixer.recurrent,reused.mixer.recurrent),
+            "reused recurrent inputs changed GDN rollback");
+        ++cases;
+    }
+    std::cout<<"Retained Q/K/V vs raw-projection GDN rollback: "<<cases<<" exact cases PASS\n";
+}
+
 static void check_retained_recurrent_storage() {
     namespace tb=mfq_tensor_backend;
     const auto options=tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32);
@@ -1646,6 +1699,7 @@ int main(int argc, char** argv) try {
     check_gelu_approximations();
     check_streamed_graph_segments();
     check_retained_recurrent_storage();
+    check_speculative_recurrent_input_reuse();
     check_sampling_storage();
     check_linear_execution();
     check_graph_warmup_state();

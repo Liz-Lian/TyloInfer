@@ -58,6 +58,18 @@ function(mfq_add_core_test target source)
 endfunction()
 
 mfq_add_core_test(tyloinfer-tq-rows-test tq_rows_test.cpp)
+mfq_add_core_test(tyloinfer-qsa-precision-policy-test qsa_precision_policy_test.cpp)
+mfq_add_core_test(tyloinfer-qsa-uniform-fit-test qsa_uniform_fit_test.cpp)
+target_link_libraries(tyloinfer-qsa-uniform-fit-test PRIVATE mfq-ggml)
+add_executable(tyloinfer-qsa-adaptive-cache-test qsa_adaptive_cache_test.cpp)
+target_link_libraries(tyloinfer-qsa-adaptive-cache-test PRIVATE mfq-core)
+target_compile_features(tyloinfer-qsa-adaptive-cache-test PRIVATE cxx_std_17)
+add_test(NAME tyloinfer-qsa-adaptive-cache-test COMMAND tyloinfer-qsa-adaptive-cache-test
+    "${CMAKE_CURRENT_BINARY_DIR}/qsa-adaptive-cache-test")
+set_tests_properties(tyloinfer-qsa-adaptive-cache-test PROPERTIES TIMEOUT 30
+    ENVIRONMENT "TYLOINFER_DISK_BUDGET_DIR=${CMAKE_CURRENT_BINARY_DIR}/qsa-adaptive-disk-budget-test")
+mfq_add_core_test(tyloinfer-row-residual-source-test row_residual_test.cpp)
+target_link_libraries(tyloinfer-row-residual-source-test PRIVATE mfq-ggml)
 mfq_add_core_test(tyloinfer-format-features-test format_features_test.cpp)
 
 add_executable(mfq-text-emitter-test mfq_text_emitter_test.cpp)

@@ -318,15 +318,15 @@ __global__ void minicpm_qk_norm_rope_cache_write_bf16_kernel(
     }
 }
 
-template <int BD>
-__global__ void rms_norm_kernel(const float* __restrict__ x, const float* __restrict__ w,
+template <int BD,class Input=float>
+__global__ void rms_norm_kernel(const Input* __restrict__ x, const float* __restrict__ w,
                                 float* __restrict__ out, int N, int D, float eps, float weight_offset)
 {
     int row = blockIdx.x;
     if (row >= N) {
         return;
     }
-    const float* xr = x + (size_t)row * D;
+    const Input* xr = x + (size_t)row * D;
     float* or_ = out + (size_t)row * D;
     int tid = threadIdx.x;
 
@@ -339,7 +339,7 @@ __global__ void rms_norm_kernel(const float* __restrict__ x, const float* __rest
 
     float rinv = rsqrtf(ssq / (float)D + eps);
     for (int i = tid; i < D; i += BD) {
-        or_[i] = xr[i] * rinv * (w[i] + weight_offset);
+        or_[i] = float(xr[i]) * rinv * (w[i] + weight_offset);
     }
 }
 
@@ -468,31 +468,62 @@ __global__ void l2_norm_kernel(const float* __restrict__ x, float* __restrict__ 
     }
 }
 
+// Long rows with too few independent CTAs benefit from spreading their
+// serial load/reduction chain over more warps. Keep two values per thread
+// before using the larger block; well populated grids retain 256 threads.
+static int rms_row_threads(int rows,int width) {
+    if(width<2*1024)return NORM_BD;
+    int device=0;TYLOINFER_RUNTIME_CHECK(cudaGetDevice(&device)==cudaSuccess,"RMSNorm device query failed");
+    static thread_local int cached_device=-1,processors=0;
+    if(cached_device!=device) {
+        TYLOINFER_RUNTIME_CHECK(cudaDeviceGetAttribute(&processors,cudaDevAttrMultiProcessorCount,device)==cudaSuccess,
+            "RMSNorm processor count query failed");
+        cached_device=device;
+    }
+    return rows<processors?1024:NORM_BD;
+}
+
 mfq_tensor_backend::Tensor rms_norm_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
-                "rms_norm: x must be cuda contiguous f32");
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && (x.scalar_type() == mfq_tensor_backend::kFloat32 ||
+                    x.scalar_type() == mfq_tensor_backend::kFloat16 || x.scalar_type() == mfq_tensor_backend::kBFloat16),
+                "rms_norm: x must be cuda contiguous f32/f16/bf16");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == mfq_tensor_backend::kFloat32, "weight must be cuda f32");
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
-    rms_norm_kernel<NORM_BD><<<N, NORM_BD, 0, mfq_current_cuda_stream()>>>(
-        x.data_ptr<float>(), weight.data_ptr<float>(), out.data_ptr<float>(),
-        N, D, (float)eps, 0.0f);
+    auto out = mfq_tensor_backend::empty(x.sizes(), x.options().dtype(mfq_tensor_backend::kFloat32));
+    const auto launch=[&]<class Input>() {
+        const auto launch=[&]<int Threads>() {
+            rms_norm_kernel<Threads,Input><<<N,Threads,0,mfq_current_cuda_stream()>>>(
+                static_cast<const Input*>(x.data_ptr()),weight.data_ptr<float>(),out.data_ptr<float>(),N,D,(float)eps,0.0f);
+        };
+        if(rms_row_threads(N,D)==1024)launch.template operator()<1024>();else launch.template operator()<NORM_BD>();
+    };
+    if(x.scalar_type()==mfq_tensor_backend::kFloat16)launch.template operator()<mfq_half>();
+    else if(x.scalar_type()==mfq_tensor_backend::kBFloat16)launch.template operator()<__nv_bfloat16>();
+    else launch.template operator()<float>();
     return out;
 }
 
 mfq_tensor_backend::Tensor rms_norm_offset_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps, double weight_offset)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
-                "rms_norm_offset: x must be cuda contiguous f32");
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && (x.scalar_type() == mfq_tensor_backend::kFloat32 ||
+                    x.scalar_type() == mfq_tensor_backend::kFloat16 || x.scalar_type() == mfq_tensor_backend::kBFloat16),
+                "rms_norm_offset: x must be cuda contiguous f32/f16/bf16");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == mfq_tensor_backend::kFloat32, "weight must be cuda f32");
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
-    rms_norm_kernel<NORM_BD><<<N, NORM_BD, 0, mfq_current_cuda_stream()>>>(
-        x.data_ptr<float>(), weight.data_ptr<float>(), out.data_ptr<float>(),
-        N, D, (float)eps, (float)weight_offset);
+    auto out = mfq_tensor_backend::empty(x.sizes(), x.options().dtype(mfq_tensor_backend::kFloat32));
+    const auto launch=[&]<class Input>() {
+        const auto launch=[&]<int Threads>() {
+            rms_norm_kernel<Threads,Input><<<N,Threads,0,mfq_current_cuda_stream()>>>(
+                static_cast<const Input*>(x.data_ptr()),weight.data_ptr<float>(),out.data_ptr<float>(),N,D,(float)eps,(float)weight_offset);
+        };
+        if(rms_row_threads(N,D)==1024)launch.template operator()<1024>();else launch.template operator()<NORM_BD>();
+    };
+    if(x.scalar_type()==mfq_tensor_backend::kFloat16)launch.template operator()<mfq_half>();
+    else if(x.scalar_type()==mfq_tensor_backend::kBFloat16)launch.template operator()<__nv_bfloat16>();
+    else launch.template operator()<float>();
     return out;
 }
 

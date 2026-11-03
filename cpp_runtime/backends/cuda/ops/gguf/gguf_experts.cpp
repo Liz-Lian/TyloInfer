@@ -1,4 +1,5 @@
 #include "gguf_weight.h"
+#include "gguf_row_correction.h"
 #include "gguf_rotation.h"
 #include "gguf_cpu_executor.h"
 #include "gguf_decode_dma.h"
@@ -2823,6 +2824,8 @@ GgufRoutedWeight::GgufRoutedWeight(CudaExecutionContext& execution,
     if (std::uint64_t(experts) > UINT64_MAX / expert_bytes ||
             record->nbytes != std::uint64_t(experts) * expert_bytes)
         throw std::invalid_argument("GGUF expert bank payload size mismatch");
+    if(auto residual=source.row_residual(name);residual && residual->payload_bytes())
+        correction=std::make_shared<GgufRowCorrection>(std::move(residual),mfq_current_cuda_device(),true);
     reader = source.tensor_reader(name);
     batch_reader = source.tensor_batch_reader(name);
     const bool resident=name.starts_with("predictor.");
@@ -4102,6 +4105,13 @@ tb::Tensor GgufMoeBanks::forward(tb::Tensor source, tb::Tensor ids, tb::Tensor w
         if(independent_work)independent_work();
         return tb::empty({0, down->out}, source.options());
     }
+    if(gate->correction || up->correction || down->correction) {
+        if(independent_work)independent_work();
+        auto g=gate->forward(source,ids),u=up->forward(source,ids);
+        if(limit>0) {g=tb::clamp_max(g.to(tb::kFloat32),limit);u=tb::clamp(u.to(tb::kFloat32),-limit,limit);}
+        auto hidden=((g*tb::sigmoid(g))*u).to(source.scalar_type());
+        return moe_weighted_reduce_cuda(down->forward(hidden,ids),weights.to(tb::kFloat32).contiguous());
+    }
     if(source.size(0)<=32 && gate->resident_packed.defined() && up->resident_packed.defined() && down->resident_packed.defined()) {
         if(auto output=try_shared_branch(shared_executor,independent_work,
                 [&]{return resident_moe(*this,source,ids,weights,limit);},source.size(0)))return *output;
@@ -4175,7 +4185,12 @@ tb::Tensor GgufMoeBanks::forward(tb::Tensor source, tb::Tensor ids, tb::Tensor w
     return stage->compute(limit,independent_work);
 }
 
-tb::Tensor GgufRoutedWeight::forward(tb::Tensor source, tb::Tensor ids) const {
+tb::Tensor GgufRoutedWeight::forward(tb::Tensor source,tb::Tensor ids) const {
+    auto output=forward_base(source,ids);
+    return correction?correction->add(source,std::move(output),ids,experts,source.dim()==3):output;
+}
+
+tb::Tensor GgufRoutedWeight::forward_base(tb::Tensor source, tb::Tensor ids) const {
     cache->wait_direct_admission();
     if (!source.is_cuda() || ids.dim() != 2 || source.size(0) != ids.size(0) ||
             source.size(-1) != input || (source.dim() != 2 && source.dim() != 3) ||

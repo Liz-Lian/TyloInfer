@@ -46,7 +46,10 @@ struct FullBlock : Block {
     mfq_tensor_backend::Tensor decode_mma_kv_max;
     mfq_tensor_backend::Tensor decode_mma_meta;
 
-    static constexpr int64_t kDecodeAttentionMaxParts = 16;
+    // Matches the paged attention API limit. The active split count still
+    // follows the visible context; reserve enough slots for narrower GQA
+    // tiles without forcing their work into sixteen long token segments.
+    static constexpr int64_t kDecodeAttentionMaxParts = 64;
 
     bool supports_speculation() const noexcept override { return !sliding; }
     void reset(int64_t batch) override;
@@ -65,6 +68,10 @@ struct FullBlock : Block {
         mfq_tensor_backend::Tensor x,
         const Context& context,
         const RopeCache& rope) override;
+    // Teacher-forced predictor history has no attention/FFN output consumer.
+    // Preserve the normal projection, normalization, RoPE and cache writes.
+    void append_history(CudaExecutionContext& execution, mfq_tensor_backend::Tensor x,
+                        const Context& context, const RopeCache& rope);
     mfq_tensor_backend::Tensor forward_impl(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor x,
@@ -75,7 +82,7 @@ struct FullBlock : Block {
         const MfqOptional<mfq_tensor_backend::Tensor>& cache_positions,
         const MfqOptional<mfq_tensor_backend::Tensor>& attention_mask,
         int64_t planned_kv_length,
-        int64_t decode_attention_parts);
+        int64_t decode_attention_parts, bool cache_only = false);
     virtual mfq_tensor_backend::Tensor forward_ffn(
         CudaExecutionContext& execution,
         mfq_tensor_backend::Tensor residual,

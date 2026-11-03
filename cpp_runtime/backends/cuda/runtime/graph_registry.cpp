@@ -57,6 +57,7 @@ void retire_host_registration(HostRegistrationRetirement* item)noexcept {
 struct CapturedGraph::Impl {
     std::unique_ptr<HostRegistrationBlock> registration;
     Graph graph;
+    std::size_t node_count=0;
     Event completion;
     StreamHandle stream;
     struct KernelLaunch {cudaKernelNodeParams params{};bool enabled=true;};
@@ -72,12 +73,14 @@ struct CapturedGraph::Impl {
 CapturedGraph::CapturedGraph(void* stream, const std::function<void()>& body)
     : CapturedGraph(stream) { body(); finish(); }
 CapturedGraph::CapturedGraph(void* stream) : impl_(std::make_unique<Impl>(stream)) {}
-void CapturedGraph::finish() {
+void CapturedGraph::finish() { finish(false); }
+void CapturedGraph::finish(bool allow_empty) {
     StreamGuard selected(impl_->stream);
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetLastError());
     impl_->graph.capture_end();
     impl_->registration.reset();
-    if (!impl_->graph.nodes()) throw Error("CUDA graph body produced no work");
+    impl_->node_count=impl_->graph.nodes();
+    if (!allow_empty && !impl_->node_count) throw Error("CUDA graph body produced no work");
 }
 CapturedGraph::~CapturedGraph() = default;
 CapturedGraph::CapturedGraph(CapturedGraph&&) noexcept = default;
@@ -107,13 +110,15 @@ void CapturedGraph::set_kernel_rows(cudaGraphNode_t node,unsigned rows)const {
     throw Error("graph kernel enable/disable requires CUDA11.6 or newer");
 #endif
 }
-std::size_t CapturedGraph::nodes() const { return impl_ ? impl_->graph.nodes() : 0; }
+std::size_t CapturedGraph::nodes() const { return impl_ ? impl_->node_count : 0; }
 bool CapturedGraph::launch(void* stream, std::string& error) const {
     try {
         if (!valid() || impl_->stream.stream() != static_cast<cudaStream_t>(stream))
             throw Error("CUDA graph replay has no matching capture stream");
         StreamGuard selected(impl_->stream);
-        impl_->graph.replay();
+        // An empty segment still fences asynchronous work from the preceding
+        // host callback. Its completion event preserves that stream ordering.
+        if (impl_->node_count) impl_->graph.replay();
         impl_->completion.record(impl_->stream.stream());
         return true;
     } catch (const std::exception& failure) { error = failure.what(); return false; }
@@ -143,6 +148,9 @@ void GraphRegistry::begin(std::uint64_t identity,int tokens) {
 }
 void GraphRegistry::end(std::uint64_t identity,int tokens) {
     graphs_.at({identity,tokens}).finish();++captures_;
+}
+void GraphRegistry::end_segment(std::uint64_t identity,int tokens) {
+    graphs_.at({identity,tokens}).finish(true);++captures_;
 }
 const CapturedGraph* GraphRegistry::find(std::uint64_t identity, int tokens) const {
     const auto found = graphs_.find({identity, tokens});

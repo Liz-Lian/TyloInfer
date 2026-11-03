@@ -54,6 +54,7 @@ public:
     void set_reservation(std::function<void(std::size_t)> callback) { reserve_ = std::move(callback); }
     std::shared_ptr<KvOffloadStore> offload() const { return offload_; }
     bool dynamic() const { return options_.dynamic; }
+    bool ssd_enabled() const { return options_.placement=="auto_ssd"; }
     std::shared_ptr<KvExpertLoan> expert_loan() const { return expert_loan_; }
     std::size_t growth_reserve() const;
     std::size_t expert_budget_charge() const;

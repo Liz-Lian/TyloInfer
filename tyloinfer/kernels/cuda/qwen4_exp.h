@@ -37,6 +37,12 @@ Tensor live_topk_blocks(const Tensor& scores, const Tensor& cache_positions,
     int64_t pool, int64_t count);
 Tensor live_topk_selected_tokens(const Tensor& scores, const Tensor& cache_positions,
     int64_t pool, int64_t count, int64_t budget);
+// [1,queries,ceil((budget+pool-1)/pool),2] int32 (block ID, token mask).
+// Whole-block budgets and pool widths up to 32 are supported.
+// Returns the selected block set with causal masks. Order is unspecified;
+// equal scores prefer lower block IDs. Attention does not depend on rank order.
+Tensor live_topk_selected_blocks(const Tensor& scores, const Tensor& cache_positions,
+    int64_t pool, int64_t count, int64_t budget);
 std::vector<Tensor> ple_dilated_conv_silu(
     const Tensor&, const Tensor&, const std::optional<Tensor>& state,
     int64_t dilation);
