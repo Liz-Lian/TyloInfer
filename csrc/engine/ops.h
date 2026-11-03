@@ -16,6 +16,9 @@
 
 namespace mfq::ops {
 
+// In the native CUDA runtime, computation requires CUDA unless stated below.
+// CUDA execution and prepared-weight operations require an execution scope.
+// qkv_norm and append_kv also require a scope for their CPU passthrough cases.
 using Trace = std::vector<std::pair<std::string, Tensor>>;
 
 // Query, key and value are [B,H,T,D]; KV may use fewer heads.
@@ -34,6 +37,7 @@ struct AttentionResult { Tensor value; bool token_major = false; };
 AttentionResult attention(const AttentionInput& input, const state::KvView& kv,
                           const AttentionConfig& config);
 // Writes the supplied backing and returns visible KV; paged prefixes may be gathered.
+// An unpaged, unquantized zero-batch write can use CPU tensors.
 std::pair<Tensor, Tensor> append_kv(state::KvView kv, Tensor key, Tensor value,
                                     Tensor positions, std::int64_t start,
                                     bool contiguous_prefill_prefix = false);
@@ -69,7 +73,7 @@ std::optional<Tensor> rope_kv(const AttentionInput&, const state::KvView&, const
 // Normalize over the last dimension, preserving shape; F32 output is the default.
 Tensor rms_norm(Tensor input, const Tensor& weight, double eps, double offset,
                 ScalarType output_type = ScalarType::float32);
-// Undefined weights skip their value; other outputs use F32 or BF16 as requested.
+// Undefined weights pass their value through, including CPU values; other outputs use F32 or BF16.
 std::array<Tensor, 3> qkv_norm(std::array<Tensor, 3> values, std::array<Tensor, 3> weights,
                                double eps, double offset, ScalarType output_type);
 Tensor add(Tensor left, Tensor right);
@@ -107,6 +111,7 @@ auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
 // Preserve dtype; a cap that is not positive returns the input handle.
 Tensor softcap(Tensor input, double cap);
 Tensor scale(Tensor input, double factor);
+// Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
 Tensor embedding(Tensor ids, const weights::Matrix& weight);
 Tensor project(Tensor input, const weights::Matrix& weight, const ProjectionOptions& options = {});
 std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group,
@@ -114,6 +119,7 @@ std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group,
 // Computes project(input * sigmoid(gate)).
 Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight,
                        const ProjectionOptions& options = {});
+// Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.
 Tensor copy(Tensor input, Device target);
 Tensor cast(Tensor input, ScalarType type);
 // Targeted cast uses native tensor conversion; CUDA copy uses execution collectives.
@@ -134,6 +140,7 @@ enum class GatedActivation { silu, gelu };
 // Up projection, so it has no gate branch and no SwiGLU clamp.
 enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
 
+// Prepared weights determine supported host and sharded MLP paths.
 Tensor mlp(Tensor input, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
            MlpActivation activation, double swiglu_limit, const FfnMode& mode);
 
