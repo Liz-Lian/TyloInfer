@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine/engine.h"
-#include "table.h"
+#include "request.h"
 
 #include <condition_variable>
 #include <deque>
@@ -9,6 +9,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 namespace mfq::engine {
 
@@ -46,8 +47,9 @@ private:
     void publish(Request& request, EngineEvent event);
     void flush(Request& request);
     void cancel(Request& request);
+    bool has_active() const;
     EngineStatus execution_status() const;
-    EngineStepResult advance(const std::vector<RequestId>& eligible);
+    std::pair<bool, std::vector<EngineEvent>> advance(const std::vector<RequestId>& eligible);
     void retire_failed() noexcept;
     void reset_states(std::int64_t batch);
     void refresh_snapshot(bool healthy, bool blocked, bool metrics);

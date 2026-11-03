@@ -15,7 +15,7 @@
 #include "engine/models/common/session/cache.h"
 #include "engine/engine.h"
 #include "engine/requests/processor.h"
-#include "engine/scheduler/table.h"
+#include "engine/scheduler/request.h"
 #include "engine/models/prepare.h"
 #include "engine/weights/memory.h"
 

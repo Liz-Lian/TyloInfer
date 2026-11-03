@@ -1,4 +1,4 @@
-#include "table.h"
+#include "request.h"
 #include "../requests/processor.h"
 #include "components/error.h"
 
@@ -32,37 +32,37 @@ void prepare_request(Request &current, const TextProcessor *text, const EngineIn
     current.batched = batched;
 }
 
-void finish_request(const RequestId &id, Request &request, bool &healthy, EngineStepResult &result) {
+void finish_request(const RequestId &id, Request &request, bool &healthy, std::vector<EngineEvent> &events) {
     try {
         if (request.error)
             std::rethrow_exception(request.error);
         auto delta = request.output->finish();
         if (!delta.diffs.empty())
-            result.events.push_back({id, std::move(delta)});
+            events.push_back({id, std::move(delta)});
         const UsageUpdate usage{request.input.prompt.size(),
             static_cast<std::size_t>(request.output->result.completion_tokens)};
-        result.events.push_back({id, usage});
+        events.push_back({id, usage});
         if (request.output->result.cancelled)
-            result.events.push_back({id, Cancelled{usage, request.output->metrics}});
+            events.push_back({id, Cancelled{usage, request.output->metrics}});
         else
-            result.events.push_back({id,
+            events.push_back({id,
                 Completed{request.output->result.finish_reason, usage, request.output->metrics}});
     } catch (const MfqResourceExhausted &error) {
-        result.events.push_back({id, Failed{healthy ? "resource_exhausted" : "backend_failure", error.what(), healthy}});
+        events.push_back({id, Failed{healthy ? "resource_exhausted" : "backend_failure", error.what(), healthy}});
     } catch (const InferenceInputError &error) {
         const auto code = !healthy                                            ? "backend_failure"
                           : error.code == InferenceInputErrorCode::Unsupported ? "unsupported_input"
                                                                                : "invalid_request";
-        result.events.push_back({id, Failed{code, error.what()}});
+        events.push_back({id, Failed{code, error.what()}});
     } catch (const std::invalid_argument &error) {
-        result.events.push_back(
+        events.push_back(
             {id, Failed{healthy ? "invalid_request" : "backend_failure", error.what()}});
     } catch (const std::exception &error) {
         healthy = false;
-        result.events.push_back({id, Failed{"backend_failure", error.what()}});
+        events.push_back({id, Failed{"backend_failure", error.what()}});
     } catch (...) {
         healthy = false;
-        result.events.push_back({id, Failed{"backend_failure", "unknown execution failure"}});
+        events.push_back({id, Failed{"backend_failure", "unknown execution failure"}});
     }
 }
 

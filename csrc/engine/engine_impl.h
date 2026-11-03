@@ -14,7 +14,7 @@
 #include "engine/models/causal_model.h"
 #include "engine/models/common/causal_metadata.h"
 #include "engine/models/common/components.h"
-#include "engine/scheduler/table.h"
+#include "engine/scheduler/request.h"
 #include "engine/weights/workspace.h"
 #include "engine/generation/batch.h"
 #include "engine/generate.h"

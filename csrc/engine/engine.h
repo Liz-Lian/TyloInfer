@@ -5,16 +5,30 @@
 #include "requests/result.h"
 #include "executor.h"
 #include "generation/sequence.h"
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+#include "models/prepared.h"
+#endif
 
 #include <chrono>
 #include <future>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <variant>
+
+namespace mfq::models { class CausalModel; class State; }
+namespace mfq::engine { class Engine; }
+namespace mfq::cuda {
+struct CudaEngineOptions;
+std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions);
+void reload_cuda_engine(engine::Engine&, CudaEngineOptions);
+namespace internal { void assemble_engine(engine::Engine&, CudaEngineOptions); }
+}
 
 namespace mfq::engine {
 
 class Scheduler;
+class InferenceOutput;
 struct Request;
 
 struct EngineInfo {
@@ -42,7 +56,6 @@ public:
         Metrics runtime, session;
         Clock::time_point captured;
     };
-    Engine();
     virtual ~Engine();
     std::shared_ptr<Output> submit(EngineRequest request) const;
     bool cancel(const std::string& id) const;
@@ -68,8 +81,18 @@ public:
         const std::unordered_set<std::int64_t>& excluded = {}) const;
 
 protected:
+    Engine();
     // Start after loading; shut down before derived members are destroyed.
     void start();
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    virtual EngineInfo describe() const;
+    virtual bool ready() const;
+    virtual bool can_batch(const EngineRequest& request) const;
+    virtual bool exclusive() const;
+    virtual std::unique_ptr<mfq::Executor::Scope> enter();
+    virtual void prepare_request(Request& request, bool batched);
+    virtual mfq::StepSequence<EventData> generate(const RequestId& id, Request& request);
+#else
     virtual EngineInfo describe() const = 0;
     virtual bool ready() const = 0;
     virtual bool can_batch(const EngineRequest& request) const = 0;
@@ -77,15 +100,44 @@ protected:
     virtual std::unique_ptr<mfq::Executor::Scope> enter() = 0;
     virtual void prepare_request(Request& request, bool batched) = 0;
     virtual mfq::StepSequence<EventData> generate(const RequestId& id, Request& request) = 0;
+#endif
     virtual void retire_request(Request& request) noexcept;
     void reset_states(std::int64_t batch);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    virtual void execute(const std::vector<RequestId>& eligible);
+    virtual SessionResult session_command(const SessionCommand& command);
+    virtual void unload_model();
+    virtual ControlResult control_command(ControlRequest request);
+#else
     virtual void execute(const std::vector<RequestId>& eligible) = 0;
     virtual SessionResult session_command(const SessionCommand& command) = 0;
     virtual void unload_model() = 0;
     virtual ControlResult control_command(ControlRequest request) = 0;
+#endif
 
 private:
     friend class Scheduler;
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    friend std::unique_ptr<Engine> mfq::cuda::load_cuda_engine(mfq::cuda::CudaEngineOptions);
+    friend void mfq::cuda::reload_cuda_engine(Engine&, mfq::cuda::CudaEngineOptions);
+    friend void mfq::cuda::internal::assemble_engine(Engine&, mfq::cuda::CudaEngineOptions);
+    template <class Ops, class State>
+    friend mfq::StepSequence<EventData> generate_prepared(Ops&, State&, InferenceRequest&, InferenceOutput&,
+        const RequestId&, bool);
+    using Prepared = models::Prepared;
+    mfq::StepSequence<Prepared> prepare(InferenceRequest&, models::State&);
+    std::pair<mfq::StepResult<Prepared>, double> advance_preparation(mfq::StepSequence<Prepared>&);
+    mfq::StepSequence<EventData> generate_text(InferenceRequest&, InferenceOutput&, models::State&,
+        std::optional<Prepared>, const RequestId&, bool);
+    SessionResult set_budget(const SessionCommand&);
+    void restore_graph_expert_space();
+    void clear_bindings() noexcept;
+    template <class F> decltype(auto) with_cuda(F&& work);
+    struct Impl;
+    std::shared_ptr<models::CausalModel> model_;
+    std::unique_ptr<mfq::Executor> executor_;
+    std::unique_ptr<Impl> impl_;
+#endif
     std::unique_ptr<Scheduler> scheduler_;
 };
 

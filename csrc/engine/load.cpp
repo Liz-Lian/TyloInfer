@@ -15,7 +15,8 @@
 #include "engine/instance_impl.h"
 #include "engine/drain.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-#include "engine/native_engine.h"
+#include "engine/impl.h"
+#include "engine/models/common/model_config.h"
 #include "engine/models/gemma4/load.h"
 #endif
 
@@ -39,6 +40,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -126,19 +128,18 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
     }
     source.reset();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (backbone == CudaBackbone::gemma4) return load_native_engine(std::move(options));
+    if (backbone == CudaBackbone::gemma4) {
+        auto target = std::unique_ptr<engine::Engine>(new engine::Engine);
+        internal::assemble_engine(*target, std::move(options));
+        target->start();
+        return target;
+    }
 #endif
     return std::make_unique<engine_detail::EngineInstance<
         engine_detail::State, with_model<false>>>(std::move(options));
 }
 
 void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (auto* target = dynamic_cast<NativeEngine*>(&engine)) {
-        load_native_engine(std::move(options), target);
-        return;
-    }
-#endif
     if (auto* target = dynamic_cast<CudaEngine<qwen35::Model, qwen35::State, qwen35::Components, load_qwen>*>(&engine)) {
         target->options_ = std::move(options);
         target->source_ = mfq::open_model_source(target->options_.model_path);
@@ -150,11 +151,17 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
         target->load();
         return;
     }
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    if (typeid(engine) == typeid(mfq::engine::Engine)) {
+        internal::assemble_engine(engine, std::move(options));
+        return;
+    }
+#endif
     throw std::invalid_argument("unsupported CUDA engine for reload");
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, NativeEngine* target) {
+void internal::assemble_engine(engine::Engine& target, CudaEngineOptions options) {
     std::shared_ptr<const ModelSource> source;
     std::shared_ptr<WeightMemoryLedger> ledger;
     auto weights = std::make_unique<RoutedCache>();
@@ -215,18 +222,73 @@ std::unique_ptr<engine::Engine> load_native_engine(CudaEngineOptions options, Na
                 if (offload) throw std::invalid_argument("CUDA streamed KV requires a QSA model");
             }
         }
-        if (target) {
-            target->install(std::move(options.tokenizer_model), std::move(options.config_path), std::move(load), std::move(runtime), std::move(source),
-                std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
-                std::move(root), std::move(model), std::move(state), std::move(forward));
-            return {};
+        target.impl_ = std::make_unique<engine::Engine::Impl>();
+        target.impl_->load_ = std::move(load);
+        target.impl_->runtime_ = std::move(runtime);
+        target.impl_->source_ = std::move(source);
+        target.impl_->ledger_ = std::move(ledger);
+        target.impl_->weights_ = std::move(weights);
+        target.impl_->kv_ = std::move(kv);
+        target.impl_->offload_ = std::move(offload);
+        target.executor_ = std::move(root);
+        target.model_ = std::move(model);
+        target.impl_->idle_state_ = std::move(state);
+        target.impl_->forward_ = std::move(forward);
+        {
+            auto& impl = *target.impl_;
+            auto& installed_root = static_cast<Executor&>(*target.executor_);
+            auto scope = installed_root.enter(impl.load_.layer_placement.primary_device());
+            WeightMemoryLoadScope memory_load(*impl.ledger_);
+            impl.model_info_ = target.model_->info();
+            impl.graph_.emplace(impl.model_info_.max_context);
+            impl.cache_.emplace(impl.runtime_.session_cache, impl.runtime_.prefix_cache,
+                internal::make_cuda_paged_prefix_cache(*impl.source_, impl.model_info_.max_context,
+                    impl.idle_state_->supports_paged_text_session_state(), impl.runtime_.prefix_cache),
+                impl.idle_state_->supports_text_session_state(), impl.idle_state_->supports_text_session_state() ? 0 : 1,
+                internal::cuda_has_separate_memory());
+            impl.budget_.emplace(*impl.ledger_, *impl.weights_, *impl.cache_, impl.load_.layer_placement.primary_device());
+            if (impl.offload_) impl.offload_->set_ram_reservation([owner = &target](std::size_t bytes) { owner->impl_->cache_->reserve_ram(bytes); owner->impl_->weights_->reserve(bytes); });
+            if (impl.runtime_.continuous_batch.max_sequences)
+                throw std::invalid_argument("continuous batching is unavailable for this model");
+            if (impl.weights_->moe) {
+                auto loan = impl.kv_ ? impl.kv_->expert_loan() : nullptr;
+                if (!loan && moe_expert_cache_ssd_experts(impl.weights_->moe)) {
+                    loan = std::make_shared<KvExpertLoan>();
+                    set_moe_kv_expert_loan(impl.weights_->moe, loan);
+                }
+                if (loan) impl.expert_space_.emplace(*impl.weights_, impl.load_.layer_placement.primary_device(), std::move(loan));
+                impl.restore_ = [owner = &target] { owner->restore_graph_expert_space(); };
+                set_moe_workspace_reservation(impl.weights_->moe,
+                    [owner = &target](std::size_t bytes) { owner->impl_->budget_->reclaim(bytes, owner->impl_->expert_space_ ? &*owner->impl_->expert_space_ : nullptr); },
+                    [owner = &target](std::size_t bytes) { owner->impl_->cache_->reserve_ram(bytes); owner->impl_->weights_->reserve(bytes); });
+            }
+            if (const auto bytes = runtime_options::resident_budget_bytes()) {
+                engine::SessionCommand command; command.kind = engine::SessionCommand::Kind::memory_budget; command.bytes = bytes;
+                target.set_budget(command);
+            }
+            target.restore_graph_expert_space();
+            impl.info_ = {};
+            impl.info_.max_requests = std::max<std::size_t>(1, impl.runtime_.continuous_batch.max_sequences);
+            impl.info_.max_context = impl.model_info_.max_context;
+            impl.info_.vocab_size = static_cast<std::int32_t>(impl.model_info_.vocab_size);
+            impl.info_.model_type = impl.model_info_.model_type;
+            impl.info_.capabilities = target.model_->capabilities();
+            const auto& caps = impl.info_.capabilities;
+            impl.info_.duplex = caps.full_duplex;
+            impl.info_.multimodal = caps.image_input || caps.video_input || caps.audio_input || caps.audio_output || caps.full_duplex;
+            impl.info_.reload = true;
+            impl.text_ = engine::TextProcessor::load(*impl.source_, options.tokenizer_model, impl.info_.vocab_size, impl.info_.model_type);
+            if (impl.text_) impl.info_.chat = impl.text_->chat_template_capabilities();
+            impl.info_.stop_token_ids = models::stop_token_ids(models::config_json(*impl.source_, options.config_path), impl.info_.vocab_size);
+            impl.ready_ = true;
         }
-        return std::make_unique<NativeEngine>(std::move(options.tokenizer_model), std::move(options.config_path), std::move(load), std::move(runtime),
-            std::move(source), std::move(ledger), std::move(weights), std::move(kv), std::move(offload),
-            std::move(root), std::move(model), std::move(state), std::move(forward));
     } catch (...) {
         const auto failure = std::current_exception();
-        if (root) {
+        if (target.executor_) {
+            try { target.unload_model(); }
+            catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
+            catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }
+        } else if (root) {
             try { drain_cuda(*root, *weights, offload.get(), load.layer_placement, load.tensor_parallel, load.expert_parallel); }
             catch (const std::exception& error) { std::cerr << "runtime_load_cleanup error=" << error.what() << '\n'; }
             catch (...) { std::cerr << "runtime_load_cleanup error=unknown\n"; }

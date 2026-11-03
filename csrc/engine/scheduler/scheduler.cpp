@@ -1,5 +1,5 @@
 #include "scheduler.h"
-#include "table.h"
+#include "request.h"
 
 #include <algorithm>
 #include <exception>
@@ -31,12 +31,6 @@ std::size_t event_bytes(const EventData& data) {
 }
 }
 
-Engine::Engine() = default;
-Engine::~Engine() = default;
-void Engine::retire_request(Request& request) noexcept {
-    request.generation = {};
-    request.state.reset();
-}
 void Engine::reset_states(std::int64_t batch) { scheduler_->reset_states(batch); }
 void Engine::start() {
     try { scheduler_ = std::make_unique<Scheduler>(*this); }
@@ -283,6 +277,11 @@ void Scheduler::cancel(Request& request) {
     }
 }
 
+bool Scheduler::has_active() const {
+    return std::any_of(requests_.begin(), requests_.end(),
+        [](const auto& entry) { return entry.second.output.has_value(); });
+}
+
 EngineStatus Scheduler::execution_status() const {
     if (!healthy_ || !engine_.ready()) return {0, false};
     if (engine_.exclusive()) return {0, true};
@@ -300,7 +299,7 @@ void Scheduler::reset_states(std::int64_t batch) {
         if (request.state) request.state->reset(batch);
 }
 
-EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
+std::pair<bool, std::vector<EngineEvent>> Scheduler::advance(const std::vector<RequestId>& eligible) {
     auto scope = engine_.enter();
     try {
         engine_.execute(eligible);
@@ -309,7 +308,8 @@ EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
         for (auto& [id, request] : requests_)
             if (request.output) request.complete(std::current_exception());
     }
-    EngineStepResult result;
+    bool advanced = false;
+    std::vector<EngineEvent> events;
     for (auto& [id, request] : requests_) {
         if (!request.output) continue;
         if (!request.done && (request.output->result.cancelled ||
@@ -320,11 +320,11 @@ EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
                     request.generation = engine_.generate(id, request);
                 }
                 auto step = request.generation.next();
-                if (step.state == StepState::advanced) result.advanced.push_back(id);
+                if (step.state == StepState::advanced) advanced = true;
                 if (step.value) {
                     if (auto* progress = std::get_if<PrefillProgress>(&*step.value))
                         request.output->metrics.mark_prefill(progress->timing);
-                    result.events.push_back({id, std::move(*step.value)});
+                    events.push_back({id, std::move(*step.value)});
                 }
                 if (!step) request.complete();
             } catch (...) { request.complete(std::current_exception()); }
@@ -335,15 +335,12 @@ EngineStepResult Scheduler::advance(const std::vector<RequestId>& eligible) {
             healthy_ = false;
             request.error = request.output->cleanup_failure;
         }
-        finish_request(id, request, healthy_, result);
+        finish_request(id, request, healthy_, events);
         request.error = {};
         request.output.reset();
         request.input = {};
     }
-    result.status = execution_status();
-    result.has_work = std::any_of(requests_.begin(), requests_.end(),
-        [](const auto& entry) { return entry.second.output.has_value(); });
-    return result;
+    return {advanced, std::move(events)};
 }
 
 void Scheduler::retire_failed() noexcept {
@@ -351,11 +348,7 @@ void Scheduler::retire_failed() noexcept {
     const auto remember = [&](std::exception_ptr error) { if (!failure) failure = std::move(error); };
     for (auto& [id, request] : requests_)
         if (request.output) request.output->result.cancelled = true;
-    const auto active = [&] {
-        return std::any_of(requests_.begin(), requests_.end(),
-            [](const auto& entry) { return entry.second.output.has_value(); });
-    };
-    if (active() && engine_.ready())
+    if (has_active() && engine_.ready())
         try { (void)advance({}); } catch (...) { remember(std::current_exception()); }
     const auto clear = [&] {
         for (auto& [id, request] : requests_) {
@@ -370,7 +363,7 @@ void Scheduler::retire_failed() noexcept {
             request.input = {};
         }
     };
-    if (active()) {
+    if (has_active()) {
         if (engine_.ready()) {
             try { auto scope = engine_.enter(); clear(); }
             catch (...) { healthy_ = false; remember(std::current_exception()); clear(); }
@@ -483,8 +476,7 @@ void Scheduler::loop() noexcept {
                     try {
                         auto scope = engine_.enter();
                         const bool batched = engine_.can_batch(request.submitted);
-                        const bool active = std::any_of(requests_.begin(), requests_.end(),
-                            [](const auto& entry) { return entry.second.output.has_value(); });
+                        const bool active = has_active();
                         if (!batched && active) admission_blocked = true;
                         else {
                             engine_.prepare_request(request, batched);
@@ -509,21 +501,21 @@ void Scheduler::loop() noexcept {
             }
             executable |= !eligible.empty();
             if (executable) {
-                auto result = advance(eligible);
+                auto [advanced, events] = advance(eligible);
+                auto status = execution_status();
                 // Teardown has completed when the engine becomes idle. Publish
                 // its final resource snapshot before the terminal response;
                 // otherwise a short request can leave prefill usage visible.
-                if (!result.has_work && std::any_of(result.events.begin(), result.events.end(),
+                if (!has_active() && std::any_of(events.begin(), events.end(),
                         [](const auto& event) { return terminal(event.data); }))
-                    refresh_snapshot(healthy_ && result.status.healthy,
+                    refresh_snapshot(healthy_ && status.healthy,
                         reload.has_value() || duplex_active || stopping, true);
-                for (auto& event : result.events) {
+                for (auto& event : events) {
                     auto found = requests_.find(event.id);
                     if (found != requests_.end()) publish(found->second, std::move(event));
                 }
-                if (!result.status.healthy) throw std::runtime_error("engine is unhealthy");
-                executable = !result.advanced.empty() || !result.events.empty();
-                if (result.wake_at) wake_at = std::min(wake_at, *result.wake_at);
+                if (!status.healthy) throw std::runtime_error("engine is unhealthy");
+                executable = advanced || !events.empty();
             }
         } catch (const std::exception& error) {
             healthy_ = false;

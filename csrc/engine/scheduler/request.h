@@ -10,14 +10,6 @@ namespace mfq::engine {
 
 class TextProcessor;
 
-struct EngineStepResult {
-    std::vector<RequestId> advanced;
-    std::vector<EngineEvent> events;
-    EngineStatus status;
-    bool has_work = false;
-    std::optional<Clock::time_point> wake_at;
-};
-
 // Scheduler retires generation before publishing the terminal event.
 struct Request {
     EngineRequest submitted;
@@ -47,6 +39,6 @@ struct Request {
 };
 
 void prepare_request(Request &current, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available);
-void finish_request(const RequestId &id, Request &request, bool &healthy, EngineStepResult &result);
+void finish_request(const RequestId &id, Request &request, bool &healthy, std::vector<EngineEvent> &events);
 
 } // namespace mfq::engine
