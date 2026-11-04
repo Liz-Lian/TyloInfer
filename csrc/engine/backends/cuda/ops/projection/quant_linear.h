@@ -118,6 +118,11 @@ void check_projection(const QuantLinear& weight, const ::tyloi::DenseTensor& inp
 void check_device(const ::tyloi::DenseTensor& weight, const ::tyloi::DenseTensor& input);
 void check_device(const ::tyloi::Tensor& weight, const ::tyloi::DenseTensor& input);
 
+// Where a weight's buffers actually live, matched against the running device.
+void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device device);
+// Every buffer of a representation is defined and resident on `device`.
+void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true);
+
 // One projection weight, shared by every record that projects it.
 using QuantLinearRef = std::shared_ptr<const QuantLinear>;
 

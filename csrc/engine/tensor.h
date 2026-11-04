@@ -454,6 +454,13 @@ public:
     // Every buffer this representation requires, in declaration order: values,
     // scales, codebooks, packed payloads. An undefined entry means the weight
     // is not prepared. Callers deduplicate by storage identity.
+    //
+    // View and cast rules: an encoded representation has no dense view of the
+    // values it stands for, so reshape/narrow/cast never apply to it. buffers()
+    // enumerates the payload for accounting, residency and keep-alive only.
+    // The only path that changes a representation's storage is preparation,
+    // which publishes a new one through relocated(); a published weight is
+    // never rewritten in place.
     virtual std::vector<const DenseTensor*> buffers() const = 0;
     virtual void record_stream(std::uintptr_t stream) const = 0;
 

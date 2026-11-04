@@ -16,6 +16,8 @@ void check_width(int64_t width, int64_t expected, bool padded) {
         throw std::invalid_argument("projection input width does not match weight");
 }
 
+}  // namespace
+
 void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device device) {
     if (placement.caller && *placement.caller == (device.is_cuda() ? tyloi::DeviceType::cuda : tyloi::DeviceType::cpu))
         return;
@@ -25,7 +27,7 @@ void check_placement(const tyloi::weights::Placement& placement, ::tyloi::Device
     throw std::invalid_argument("projection weight and input devices do not match");
 }
 
-void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device = true) {
+void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool check_device) {
     for (const auto* field : weight.buffers()) {
         field->require_dense();
         if (!check_device || !field->defined() || field->numel() == 0) continue;
@@ -33,8 +35,6 @@ void check_fields(const ::tyloi::Tensor& weight, ::tyloi::Device device, bool ch
             throw std::invalid_argument("projection weight fields and input devices do not match");
     }
 }
-
-}  // namespace
 
 int64_t shard_width(const QuantLinearShard& shard) { return shard.weight->size(1); }
 

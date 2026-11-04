@@ -838,6 +838,10 @@ tyloi::DenseTensor weighted_reduce(tyloi::DenseTensor pairs, tyloi::DenseTensor 
 }
 tyloi::ops::RoutedGeglu routed_geglu(tyloi::DenseTensor input, tyloi::DenseTensor ids,
     const Experts& gate_bank, const Experts& down_bank, bool trace) {
+    // Expert banks are not projection weights, but the same rule applies: every
+    // buffer they keep alive must be resident where the tokens are.
+    check_placement(gate_bank.placement(), input.device());
+    check_placement(down_bank.placement(), input.device());
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto* gate = &gate_bank;
     const auto* down = &down_bank;
