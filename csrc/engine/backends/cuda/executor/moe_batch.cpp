@@ -25,9 +25,9 @@ bool mfe_ffn_compact_transferred_fused(const MfeFfnBatch&,cudaStream_t,const int
 namespace {
 namespace tb=mfq_tensor_backend;
 using View=mfq::cuda::MfePackedProjection;
-template<class T>tb::Tensor upload(const std::vector<T>& values) {
+template<class T>tb::Tensor upload(const std::vector<T>& values,tb::Device device) {
     auto host=tb::empty({int64_t(values.size()*sizeof(T))},tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8));
-    std::memcpy(host.data_ptr(),values.data(),values.size()*sizeof(T));return host.to(tb::kCUDA);
+    std::memcpy(host.data_ptr(),values.data(),values.size()*sizeof(T));return host.to(device);
 }
 View nint_view(const NintWeight& w,int rows,int experts,std::vector<tb::Tensor>& owners) {
     View result;result.family=1;result.output_rows=rows;result.local_experts=experts;
@@ -108,6 +108,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         sigmoid.get_device()!=input.get_device() || !sigmoid.is_contiguous() ||
         sigmoid.scalar_type()!=tb::kFloat16 || sigmoid.dim()!=2 || sigmoid.size(0)!=2 || sigmoid.size(1)!=65536)
         throw std::invalid_argument("two-stage MFE tensor contract mismatch");
+    const MfqCudaGuard guard(input.device());
     batch_.swiglu_limit=float(swiglu_limit);
     batch_.expert_activation=ungated_experts?1:0;
     batch_.shared_activation=ungated_shared?1:0;
@@ -275,14 +276,14 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         });
     batch_.token_group_compact=grouped_math &&
         (!(batch_.nvq_format_mask&compact_formats) || batch_.compact_nvq);
-    descriptors_=upload(views);cohorts_=tb::tensor(mapping).to(tb::kCUDA);
+    descriptors_=upload(views,input_.device());cohorts_=tb::tensor(mapping).to(input_.device());
     std::vector<mfq::cuda::MfeInputQuantization> quantization;
     for(const auto& entry:quantizers) {
         const auto& q=entry.second.first;const auto& s=entry.second.second;
         quantization.push_back({q.data_ptr<int8_t>(),s.data_ptr<float>(),entry.first.first,entry.first.second});
         owners_.push_back(q);owners_.push_back(s);quantization_groups_+=entry.first.first;
     }
-    quantization_count_=int(quantization.size());quantization_=upload(quantization);
+    quantization_count_=int(quantization.size());quantization_=upload(quantization,input_.device());
     batch_.hidden_stride=std::max(batch_.intermediate,batch_.shared_intermediate);
     const int slots=batch_.tokens*(batch_.routes+(shared[0]?1:0));
     hidden_=tb::empty({slots,batch_.hidden_stride},input.options());
@@ -528,6 +529,7 @@ void MoeBatch::trace_dispatch() {
 }
 void MoeBatch::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
         const std::array<std::vector<std::vector<int64_t>>,3>& bytes,uint32_t* snapshot_ready) {
+    const MfqCudaGuard guard(input_.device());
     if(!mapped || !snapshot_ready || cached_dispatch_.mapped || !batch_.resident_plan_overlap || batch_.tokens*batch_.routes>256)
         throw std::invalid_argument("MFE cached resident dispatch contract invalid");
     std::vector<View> views;
@@ -553,8 +555,8 @@ void MoeBatch::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
     }
     const int shared_offset=int(views.size());
     if(batch_.shared)views.insert(views.end(),host_views_.end()-3,host_views_.end());
-    descriptors_=upload(views);primary_cohorts_=cohorts_;
-    cohorts_=tb::tensor(host_cohorts_).to(tb::kCUDA);
+    descriptors_=upload(views,input_.device());primary_cohorts_=cohorts_;
+    cohorts_=tb::tensor(host_cohorts_).to(input_.device());
     for(int p=0;p<3;++p){batch_.projection_offsets[p]=offsets[p];batch_.projection_counts[p]=counts[p];}
     batch_.projections=reinterpret_cast<const View*>(descriptors_.data_ptr());
     batch_.cohort_by_expert=cohorts_.data_ptr<int32_t>();
@@ -636,6 +638,7 @@ void MoeBatch::prepare(int32_t* published_ids,uint32_t* ready){
     }
 }
 std::pair<tb::Tensor,tb::Tensor> MoeBatch::reserve_input_quantization(int groups,int group_size) {
+    const MfqCudaGuard guard(input_.device());
     if(group_size<4 || group_size>64 || groups!=(batch_.input_width+group_size-1)/group_size)
         throw std::invalid_argument("MFE additional input quantization geometry is invalid");
     const auto key=std::make_pair(groups,group_size);
@@ -652,7 +655,7 @@ std::pair<tb::Tensor,tb::Tensor> MoeBatch::reserve_input_quantization(int groups
         views.push_back({tensors.first.data_ptr<int8_t>(),tensors.second.data_ptr<float>(),geometry.first,geometry.second});
         quantization_groups_+=geometry.first;
     }
-    quantization_=upload(views);quantization_count_=int(views.size());
+    quantization_=upload(views,input_.device());quantization_count_=int(views.size());
     return {q,s};
 }
 void MoeBatch::gate_up(){mfq::cuda::mfe_ffn_gate_up(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
@@ -662,6 +665,7 @@ void MoeBatch::resident(){
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void MoeBatch::start_shared(bool early){
+    const MfqCudaGuard guard(input_.device());
     if(shared_in_flight_)return;
     if(early) {
         const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_EARLY");
@@ -712,8 +716,8 @@ void MoeBatch::start_shared(bool early){
                 early_shared_gate_.activation=found->second.first.data_ptr<int8_t>();
                 early_shared_gate_.activation_scales=found->second.second.data_ptr<float>();
             }
-            early_shared_descriptors_=upload(std::vector<View>(views.begin(),views.end()));
-            early_shared_quantizers_=upload(quantizers);early_shared_quantizer_count_=int(quantizers.size());
+            early_shared_descriptors_=upload(std::vector<View>(views.begin(),views.end()),input_.device());
+            early_shared_quantizers_=upload(quantizers,input_.device());early_shared_quantizer_count_=int(quantizers.size());
         }
         if(!shared_stream_) {
             // Initialization is outside graph capture: pipeline warmup owns

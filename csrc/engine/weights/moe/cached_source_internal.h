@@ -273,6 +273,7 @@ public:
     }
 
     void finalize() {
+        const MfqCudaGuard guard(cache_->device());
         if (active_) return;
         active_ = std::make_shared<MixedMoeRuntime>();
         active_->n_experts = cpu_->n_experts;
@@ -287,7 +288,7 @@ public:
             pool.expert_local = mfq_tensor_backend::full(
                 {cpu_->n_experts}, -1,
                 mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCUDA)
+                    .device(cache_->device())
                     .dtype(mfq_tensor_backend::kInt32));
             size_t field = 0;
             if (pool.family == MixedMoeFamily::Nint) {
@@ -403,6 +404,11 @@ public:
         return !range_store_ && !quant_source_ && route.ids.size(0) > 8;
     }
 
+    void require_cache_device(const mfq_tensor_backend::Tensor& input) const {
+        if(input.is_cuda() && input.device()!=cache_->device())
+            throw std::runtime_error("cached MoE input device differs from cache owner");
+    }
+
     mfq_tensor_backend::Tensor forward(
             MoeScratch& scratch,
             const MoeOptions& options, KlMmqState& mmq, bool heterogeneous,
@@ -423,6 +429,8 @@ public:
             MoeScratch temporary;
             return staged.resident->forward(temporary, options, mmq, x, route);
         }
+        require_cache_device(x);
+        const MfqCudaGuard guard(cache_->device());
         auto output = active_->forward(scratch, options, mmq, x, route);
         cache_->record_compute_use();
         return output;
@@ -454,6 +462,8 @@ public:
             MoeScratch temporary;
             return staged.resident->forward(temporary, options, mmq, x, route);
         }
+        require_cache_device(x);
+        const MfqCudaGuard guard(cache_->device());
         auto output = active_->forward(scratch, options, mmq, x, route, true);
         cache_->record_compute_use();
         return output;
@@ -493,6 +503,8 @@ public:
             MoeScratch temporary;
             return staged.resident->forward_glu_output(temporary, options, mmq, x, route, gelu);
         }
+        require_cache_device(x);
+        const MfqCudaGuard guard(cache_->device());
         auto output = active_->forward_glu_output(scratch, options, mmq, x, route, gelu);
         cache_->record_compute_use();
         return output;
@@ -535,6 +547,8 @@ public:
             MoeScratch temporary;
             return staged.resident->forward_clamped_swiglu(temporary, options, mmq, gate_up, route, limit);
         }
+        require_cache_device(gate_up);
+        const MfqCudaGuard guard(cache_->device());
         auto output = active_->forward_clamped_swiglu(scratch, options, mmq, gate_up, route, limit);
         cache_->record_compute_use();
         return output;
@@ -657,6 +671,8 @@ private:
         cpu_route.n_experts = cpu_->n_experts;
         tb::Tensor gpu_y, gpu_index;
         if (!gpu_ids.empty()) {
+            require_cache_device(x);
+            const MfqCudaGuard guard(cache_->device());
             if (!cache_->prepare(*this, gpu_experts, false)) return {};
             gpu_index = tb::tensor(gpu_pos).to(x.device());
             auto gpu_x = x.dim() == 3 ? x.index_select(1, gpu_index) : x;
@@ -706,6 +722,8 @@ private:
         }
         tb::Tensor gpu_y;
         if (!gpu_ids.empty()) {
+            require_cache_device(x);
+            const MfqCudaGuard guard(cache_->device());
             if (!cache_->prepare(*this,gpu_experts,false)) throw std::logic_error("resident GPU subset does not fit its arena");
             auto gpu_x=x.reshape({-1,cpu_->neuron_len}).index_select(0,tb::tensor(gpu_input_positions).to(x.device()));
             auto gpu_route=build_moe_route_plan(tb::tensor(gpu_ids).reshape({static_cast<std::int64_t>(gpu_ids.size()),1}).to(x.device()),cpu_->n_experts);

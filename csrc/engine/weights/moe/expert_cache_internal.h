@@ -6,6 +6,7 @@
 #include "context.h"
 #include "engine/weights/moe/residency.h"
 #include "engine/backends/cuda/native/copy_batch.h"
+#include "engine/backends/cuda/native/device.h"
 #include "engine/weights/moe/kv_expert_loan.h"
 #include "engine/backends/cpu/native/host_parallel.h"
 #include "engine/weights/cpu_cost_model.h"
@@ -56,10 +57,11 @@ public:
     }
     bool layer_prefill_ready() const { return pipeline_prefill_layer_layout_ && pipeline_ram_registered_bytes_>0; }
     std::uint64_t streamed_bytes() const {return stats_.ram_pcie_bytes;}
+    mfq_tensor_backend::Device device() const {return mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, owner_device_);}
     MoeExpertCache(
             int64_t budget_bytes,
             const MoeCacheOptions& options)
-        : budget_bytes_(budget_bytes),options_(options) {
+        : options_(options),owner_device_(mfq_current_cuda_device()),budget_bytes_(budget_bytes) {
         if (budget_bytes_ <= 0) {
             throw std::invalid_argument(
                 "MoE GPU cache budget must be positive");
@@ -115,63 +117,66 @@ public:
     }
 
     ~MoeExpertCache() {
-        ssd_prediction_reader_.reset();
-        ssd_prediction_reads_.reset();ssd_previous_prediction_.reset();
-        ssd_prefill_reader_.reset();
-        try{finish_prefill_copies();}catch(const std::exception& error) {
-            std::cerr<<"runtime_prefill_copy destructor_error="<<error.what()<<'\n';
-        }
-        if(prefill_loan_)try{end_prefill_loan();}catch(const std::exception& e) {
-            std::cerr<<"runtime_prefill_loan destructor_error="<<e.what()<<'\n';
-        }
-        pipeline_cpu_calibration_.wait();
-        if(pipeline_prefill_layer_buffer_.defined() && weight_stream_)
-            (void)cudaStreamSynchronize(weight_stream_);
-        if(pipeline_prefill_pool_)
-            (void)cudaMemPoolSetAttribute(pipeline_prefill_pool_,cudaMemPoolAttrReleaseThreshold,
-                &pipeline_prefill_pool_previous_threshold_);
-        moe_residency_.reset();
-        try {release_direct_transfer_cache();}catch(const std::exception& error) {
-            std::cerr<<"runtime_direct_expert_cache destructor_error="<<error.what()<<'\n';
-        }
-        if(pipeline_pool_context_) {
-            (void)cudaStreamSynchronize(pipeline_pool_stream_);
-        }
-        // Drain and destroy copy graphs while their stream and graph buffers
-        // are still alive. Every layer shares these two phase caches.
-        for(auto& batch:pipeline_dma_batches_)batch.reset();
-        if(pipeline_pool_context_)
-            pipeline_pool_context_->end_graph_pool(pipeline_pool_stream_);
-        if ((!registered_host_fields_.empty() || pinned_expert_arena_ ||
-                pipeline_prefill_host_ring_.defined() || pipeline_prefill_metadata_host_.defined()) &&
-                weight_stream_ != nullptr) {
-            (void)cudaStreamSynchronize(weight_stream_);
-        }
-        for (auto it = registered_host_fields_.rbegin();
-             it != registered_host_fields_.rend();
-             ++it) {
-            if (it->owned) {
-                (void)cudaHostUnregister(it->host);
+        mfq::cuda::internal::on_device_noexcept(owner_device_, [&] {
+            ssd_prediction_reader_.reset();
+            ssd_prediction_reads_.reset();ssd_previous_prediction_.reset();
+            ssd_prefill_reader_.reset();
+            try{finish_prefill_copies();}catch(const std::exception& error) {
+                std::cerr<<"runtime_prefill_copy destructor_error="<<error.what()<<'\n';
             }
-        }
-        for (auto & stage : stages_) {
-            if (stage.done != nullptr) cudaEventDestroy(stage.done);
-        }
-        for(auto event:pipeline_prefill_layer_ready_)if(event)cudaEventDestroy(event);
-        for(auto event:pipeline_prefill_layer_gate_up_ready_)if(event)cudaEventDestroy(event);
-        for(auto event:pipeline_prefill_layer_read_done_)if(event)cudaEventDestroy(event);
-        if (compute_done_ != nullptr) cudaEventDestroy(compute_done_);
-        if (transfer_ready_ != nullptr) {
-            cudaEventDestroy(transfer_ready_);
-        }
-        if (route_input_ready_ != nullptr) {
-            cudaEventDestroy(route_input_ready_);
-        }
-        if (route_done_ != nullptr) {
-            cudaEventDestroy(route_done_);
-        }
-        if (route_stream_ != nullptr) cudaStreamDestroy(route_stream_);
-        if (weight_stream_ != nullptr) cudaStreamDestroy(weight_stream_);
+            if(prefill_loan_)try{end_prefill_loan();}catch(const std::exception& e) {
+                std::cerr<<"runtime_prefill_loan destructor_error="<<e.what()<<'\n';
+            }
+            pipeline_cpu_calibration_.wait();
+            if(pipeline_prefill_layer_buffer_.defined() && weight_stream_)
+                (void)cudaStreamSynchronize(weight_stream_);
+            if(pipeline_prefill_pool_)
+                (void)cudaMemPoolSetAttribute(pipeline_prefill_pool_,cudaMemPoolAttrReleaseThreshold,
+                    &pipeline_prefill_pool_previous_threshold_);
+            moe_residency_.reset();
+            try {release_direct_transfer_cache();}catch(const std::exception& error) {
+                std::cerr<<"runtime_direct_expert_cache destructor_error="<<error.what()<<'\n';
+            }
+            if(pipeline_pool_context_) {
+                (void)cudaStreamSynchronize(pipeline_pool_stream_);
+            }
+            // Drain and destroy copy graphs while their stream and graph buffers
+            // are still alive. Every layer shares these two phase caches.
+            for(auto& batch:pipeline_dma_batches_)batch.reset();
+            if(pipeline_pool_context_)
+                pipeline_pool_context_->end_graph_pool(pipeline_pool_stream_);
+            if ((!registered_host_fields_.empty() || pinned_expert_arena_ ||
+                    pipeline_prefill_host_ring_.defined() || pipeline_prefill_metadata_host_.defined()) &&
+                    weight_stream_ != nullptr) {
+                (void)cudaStreamSynchronize(weight_stream_);
+            }
+            for (auto it = registered_host_fields_.rbegin();
+                 it != registered_host_fields_.rend();
+                 ++it) {
+                if (it->owned) {
+                    (void)cudaHostUnregister(it->host);
+                }
+            }
+            preload_h2d_timings_.clear();prefill_loan_.reset();
+            for (auto & stage : stages_) {
+                if (stage.done != nullptr) cudaEventDestroy(stage.done);
+            }
+            for(auto event:pipeline_prefill_layer_ready_)if(event)cudaEventDestroy(event);
+            for(auto event:pipeline_prefill_layer_gate_up_ready_)if(event)cudaEventDestroy(event);
+            for(auto event:pipeline_prefill_layer_read_done_)if(event)cudaEventDestroy(event);
+            if (compute_done_ != nullptr) cudaEventDestroy(compute_done_);
+            if (transfer_ready_ != nullptr) {
+                cudaEventDestroy(transfer_ready_);
+            }
+            if (route_input_ready_ != nullptr) {
+                cudaEventDestroy(route_input_ready_);
+            }
+            if (route_done_ != nullptr) {
+                cudaEventDestroy(route_done_);
+            }
+            if (route_stream_ != nullptr) cudaStreamDestroy(route_stream_);
+            if (weight_stream_ != nullptr) cudaStreamDestroy(weight_stream_);
+        });
     }
 
     std::shared_ptr<MoeCachedSource> register_source(
@@ -608,6 +613,8 @@ public:
             int n_experts) {
         if (route.host_unique_experts) return;
         const auto & ids = route.ids;
+        if(ids.device()!=device())throw std::runtime_error("cached MoE routes must use the cache device");
+        const MfqCudaGuard guard(owner_device_);
         if (!ids.is_cuda() || !ids.is_contiguous() ||
                 ids.scalar_type() != mfq_tensor_backend::kInt32 ||
                 ids.dim() != 2) {
@@ -663,6 +670,7 @@ public:
     std::vector<int32_t> read_route_experts(
             const MoeRoutePlan & route,
             int n_experts) {
+        const MfqCudaGuard guard(owner_device_);
         if (!route.host_unique_experts &&
                 (!route_readback_pending_ ||
                  pending_route_generation_ != route.generation)) {
@@ -698,6 +706,7 @@ public:
     }
 
     void record_compute_use() {
+        const MfqCudaGuard guard(owner_device_);
         TYLOINFER_CUDA_CHECK(cudaEventRecord(
             compute_done_,
             mfq_get_current_cuda_stream().stream()));
@@ -1495,7 +1504,7 @@ private:
                     stage.device = mfq_tensor_backend::empty(
                         {capacity},
                         mfq_tensor_backend::TensorOptions()
-                            .device(mfq_tensor_backend::kCUDA)
+                            .device(device())
                             .dtype(mfq_tensor_backend::kUInt8));
                 }
                 return stage;
@@ -1525,7 +1534,7 @@ private:
             stage.device = mfq_tensor_backend::empty(
                 {capacity},
                 mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCUDA)
+                    .device(device())
                     .dtype(mfq_tensor_backend::kUInt8));
         }
         return stage;
@@ -1782,6 +1791,7 @@ private:
     void invalidate(const mfq::MoeCacheKey & key, int slot,bool retain_cold=true);
     void publish_quant_promotions(const std::vector<MoeCacheNewLease>& leases);
 
+    const int owner_device_;
     int64_t budget_bytes_ = 0;
     int64_t allocated_bytes_ = 0;
     int64_t host_bytes_ = 0;

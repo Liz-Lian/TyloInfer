@@ -413,6 +413,7 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
     :impl_(std::make_unique<Impl>(cache,std::move(observer),std::move(memory_probe))) {
     if(!cache || !cache->pipeline_ready() || cache->pipeline_bundles_.empty())
         throw std::invalid_argument("adaptive tier requires resident expert bundles");
+    const MfqCudaGuard guard(cache->device());
     auto& s=*impl_;s.first=std::numeric_limits<int>::max();s.last=std::numeric_limits<int>::min();
     std::cerr<<"moe_residency_policy retention="<<s.heat_retention<<" interval="<<s.interval
         <<" projection_heat="<<(cache->options_.warm && cache->options_.projection_heat)<<'\n';
@@ -530,30 +531,38 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
     if(window_event!=cudaSuccess){cudaEventDestroy(s.done);s.done=nullptr;cudaStreamDestroy(s.stream);s.stream=nullptr;TYLOINFER_CUDA_CHECK(window_event);}
 }
 MoeResidencyManager::~MoeResidencyManager() {
-    if(impl_->prefill_done) {
-        (void)cudaEventSynchronize(impl_->prefill_done);
-        (void)cudaEventDestroy(impl_->prefill_done);
-    }
-    if(impl_->worker.joinable()) {
+    mfq::cuda::internal::on_device_noexcept(impl_->cache->owner_device_, [&] {
+        if(impl_->prefill_done) {
+            (void)cudaEventSynchronize(impl_->prefill_done);
+            (void)cudaEventDestroy(impl_->prefill_done);
+        }
+        if(impl_->worker.joinable()) {
+            {std::lock_guard<std::mutex> lock(impl_->worker_mutex);impl_->stopping=true;}
+            impl_->work_available.notify_one();impl_->work_finished.notify_all();impl_->worker.join();
+        }
+        try {if(!impl_->pending.empty())rollback();}catch(...) {}
+        // Batch storage is allocated on the adaptation stream. Its async frees
+        // must be issued while that stream is still alive.
+        impl_->device_work={};impl_->device_descriptors={};
+        impl_->copy_descriptors={};impl_->upload={};impl_->backup={};
+        if(impl_->stream)(void)cudaStreamSynchronize(impl_->stream);
+        if(impl_->done)cudaEventDestroy(impl_->done);
+        if(impl_->window_done)cudaEventDestroy(impl_->window_done);
+        if(impl_->backup_stream)(void)cudaStreamSynchronize(impl_->backup_stream);
+        for(auto event:impl_->preserve_events)cudaEventDestroy(event);
+        if(impl_->backup_done)cudaEventDestroy(impl_->backup_done);
+        if(impl_->backup_stream)cudaStreamDestroy(impl_->backup_stream);
+        if(impl_->stream)cudaStreamDestroy(impl_->stream);
+        impl_.reset();
+    });
+    if(impl_ && impl_->worker.joinable()) {
         {std::lock_guard<std::mutex> lock(impl_->worker_mutex);impl_->stopping=true;}
         impl_->work_available.notify_one();impl_->work_finished.notify_all();impl_->worker.join();
     }
-    try {if(!impl_->pending.empty())rollback();}catch(...) {}
-    // Batch storage is allocated on the adaptation stream. Its async frees
-    // must be issued while that stream is still alive.
-    impl_->device_work={};impl_->device_descriptors={};
-    impl_->copy_descriptors={};impl_->upload={};impl_->backup={};
-    if(impl_->stream)(void)cudaStreamSynchronize(impl_->stream);
-    if(impl_->done)cudaEventDestroy(impl_->done);
-    if(impl_->window_done)cudaEventDestroy(impl_->window_done);
-    if(impl_->backup_stream)(void)cudaStreamSynchronize(impl_->backup_stream);
-    for(auto event:impl_->preserve_events)cudaEventDestroy(event);
-    if(impl_->backup_done)cudaEventDestroy(impl_->backup_done);
-    if(impl_->backup_stream)cudaStreamDestroy(impl_->backup_stream);
-    if(impl_->stream)cudaStreamDestroy(impl_->stream);
 }
 void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int tokens,int routes,void* raw_stream) {
     auto& s=*impl_;
+    const MfqCudaGuard guard(s.cache->device());
     if(layer<0 || !s.cache->options_.adapt || !s.cache->options_.warm)return;
     const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_RESIDENCY");
     if(option && option[0]=='0')return;
@@ -566,7 +575,7 @@ void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int
         // The samples are consumed after prefill returns the borrowed expert
         // storage. They must not be allocated from that temporary workspace.
         mfq::cuda::ResidentAllocationScope resident;
-        auto next=tb::empty({elements},tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32));
+        auto next=tb::empty({elements},tb::TensorOptions().device(s.cache->device()).dtype(tb::kInt32));
         // Preserve samples if a model uses different routing widths by layer.
         if(s.prefill_route_device.defined())for(std::size_t b=0;b<s.prefill_routes.size();++b) {
             const auto& sample=s.prefill_routes[b];if(!sample.tokens)continue;
@@ -592,6 +601,7 @@ void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int
 }
 void MoeResidencyManager::prepare_decode() {
     auto& s=*impl_;
+    const MfqCudaGuard guard(s.cache->device());
     if(!s.prefill_pending)return;
     apply_pending();
     TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(s.stream,s.prefill_done,0));
@@ -651,6 +661,7 @@ bool MoeResidencyManager::prepare_during_window() const noexcept {
 }
 void MoeResidencyManager::record_window_expert_fence(int layer,void* raw_stream) {
     auto& s=*impl_;
+    const MfqCudaGuard guard(s.cache->device());
     if(!s.expert_fence || !s.window_prepare || layer!=s.last)return;
     const auto stream=static_cast<cudaStream_t>(raw_stream);
     cudaStreamCaptureStatus status=cudaStreamCaptureStatusNone;
@@ -722,6 +733,7 @@ void MoeResidencyManager::discard_speculative_routes() noexcept {
 }
 void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,int tokens,bool window_inflight,bool independent_sequences) {
     auto& s=*impl_;
+    const MfqCudaGuard guard(s.cache->device());
     if(s.cache->pipeline_residency_suspended_)return;
     for(std::size_t b=0;b<s.cache->pipeline_bundles_.size();++b)
         if(s.cache->sources_[s.cache->pipeline_bundles_[b][0]]->layer_id_==layer) {
@@ -769,7 +781,7 @@ void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,
                 // cache-hit round may reach the Driver API without any CUDA
                 // Runtime operation establishing this worker's context.
                 if(!device_ready) {
-                    TYLOINFER_CUDA_CHECK(cudaSetDevice(state.cache->sources_.front()->cohorts_.front().active.expert_local.get_device()));
+                    TYLOINFER_CUDA_CHECK(cudaSetDevice(state.cache->owner_device_));
                     device_ready=true;
                 }
                 prepare();
