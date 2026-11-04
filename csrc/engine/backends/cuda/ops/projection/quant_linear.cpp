@@ -9,15 +9,19 @@
 #include <utility>
 #include <vector>
 
-const QuantLinear& as_quant_linear(const mfq::weights::Matrix& weight) {
+const QuantLinear& as_quant_linear(const mfq::weights::Weights& weight) {
     const auto* result = dynamic_cast<const QuantLinear*>(&weight);
-    if (!result) throw std::invalid_argument("matrix was not prepared by the CUDA backend");
+    if (!result || weight.backend() != mfq::DeviceType::cuda ||
+        weight.layout() != mfq::weights::Layout::matrix)
+        throw std::invalid_argument("matrix was not prepared by the CUDA backend");
     return *result;
 }
 
-const QuantLinearGroup& as_quant_linear_group(const mfq::weights::MatrixGroup& group) {
+const QuantLinearGroup& as_quant_linear_group(const mfq::weights::Weights& group) {
     const auto* result = dynamic_cast<const QuantLinearGroup*>(&group);
-    if (!result) throw std::invalid_argument("matrix group was not prepared by the CUDA backend");
+    if (!result || group.backend() != mfq::DeviceType::cuda ||
+        group.layout() != mfq::weights::Layout::group)
+        throw std::invalid_argument("matrix group was not prepared by the CUDA backend");
     return *result;
 }
 

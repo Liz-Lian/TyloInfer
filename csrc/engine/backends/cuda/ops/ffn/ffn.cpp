@@ -837,8 +837,8 @@ Tensor Ffn::forward(Tensor x, Executor& executor, const Mode& mode,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace mfq::cuda::ops {
 
-mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
-                const mfq::weights::Matrix& down, mfq::ops::MlpActivation activation,
+mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::Weights& gate_up,
+                const mfq::weights::Weights& down, mfq::ops::MlpActivation activation,
                 double swiglu_limit) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
@@ -869,7 +869,7 @@ mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights) {
     return moe_weighted_reduce_cuda(Tensor(pairs), Tensor(weights));
 }
 mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
-    const mfq::weights::ExpertBank& gate_bank, const mfq::weights::ExpertBank& down_bank, bool trace) {
+    const mfq::weights::Weights& gate_bank, const mfq::weights::Weights& down_bank, bool trace) {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto* gate = dynamic_cast<const Experts*>(&gate_bank);
     const auto* down = dynamic_cast<const Experts*>(&down_bank);

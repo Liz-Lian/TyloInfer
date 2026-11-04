@@ -610,7 +610,7 @@ bool is_quant_dtype(const std::string & dtype) {
         dtype == "MXFP4" || dtype == "MXFP8";
 }
 
-QuantLinearGroup mfq::cuda::weight_loader::Loader::group(const std::vector<std::string> & names,
+QuantLinearGroup mfq::cuda::weight_loader::Loader::build_group(const std::vector<std::string> & names,
     size_t required_compatible_prefix,
     const std::vector<mfq::TensorParallelSlice> *
         slices_override,
@@ -664,7 +664,7 @@ tensor_parallel_output_slices_for_input(
     return result;
 }
 
-QuantLinearGroup mfq::cuda::weight_loader::Loader::gate_up(const std::vector<std::string> & names,
+QuantLinearGroup mfq::cuda::weight_loader::Loader::build_gate_up(const std::vector<std::string> & names,
         const QuantLinear & down,
         size_t required_compatible_prefix,
         bool preserve_projection_boundaries) const {
@@ -675,11 +675,11 @@ QuantLinearGroup mfq::cuda::weight_loader::Loader::gate_up(const std::vector<std
         tensor_parallel_output_slices_for_input(
             down);
     return slices.empty()
-        ? group(names,
+        ? build_group(names,
             required_compatible_prefix,
             nullptr,
             preserve_projection_boundaries)
-        : group(names,
+        : build_group(names,
             required_compatible_prefix,
             &slices,
             preserve_projection_boundaries);
@@ -723,7 +723,7 @@ std::shared_ptr<mfq::NintRows> load_nint_row_table(
 #endif
 }
 
-mfq::cuda::Experts mfq::cuda::weight_loader::Loader::experts(const std::string & name,
+mfq::cuda::Experts mfq::cuda::weight_loader::Loader::build_experts(const std::string & name,
         bool cacheable,
         int layer_id,
         const std::string & projection_role) const {
@@ -863,6 +863,25 @@ std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
 
 namespace mfq::cuda::weight_loader {
 namespace tb = mfq_tensor_backend;
+std::shared_ptr<const mfq::weights::Weights> Loader::weight(const std::string& name,
+    std::optional<TensorParallelAxis> axis, const std::vector<mfq::TensorParallelSlice>* slices) const {
+    return std::make_shared<QuantLinear>(projection(name, axis, slices));
+}
+std::shared_ptr<const mfq::weights::Weights> Loader::group(const std::vector<std::string>& names,
+    size_t prefix, const std::vector<mfq::TensorParallelSlice>* slices, bool preserve_boundaries) const {
+    return std::make_shared<QuantLinearGroup>(build_group(names, prefix, slices, preserve_boundaries));
+}
+std::shared_ptr<const mfq::weights::Weights> Loader::gate_up(const std::vector<std::string>& names,
+    const mfq::weights::Weights& down, size_t prefix, bool preserve_boundaries) const {
+    return std::make_shared<QuantLinearGroup>(build_gate_up(names, as_quant_linear(down), prefix, preserve_boundaries));
+}
+std::shared_ptr<const mfq::weights::Weights> Loader::embedding(const std::string& name, bool independent_output) const {
+    return std::make_shared<QuantLinear>(build_embedding(name, independent_output));
+}
+std::shared_ptr<const mfq::weights::Weights> Loader::experts(const std::string& name, bool cacheable,
+    int layer, const std::string& role) const {
+    return std::make_shared<Experts>(build_experts(name, cacheable, layer, role));
+}
 Linear Loader::linear(const std::string& name) const {
     return std::make_shared<const QuantLinear>(projection(name));
 }
@@ -911,7 +930,7 @@ Routed Loader::routed(const std::string& name, int layer,
     // Predictor layers have their own expert images and must not share the
     // backbone's layer-zero transfer range or prefill lookahead.
     if(name.starts_with("predictor."))layer=-1-layer;
-    auto w=std::make_shared<mfq::cuda::Experts>(this->experts(name,true,layer,role.empty() ? this->role : role));
+    auto w=std::make_shared<mfq::cuda::Experts>(this->build_experts(name,true,layer,role.empty() ? this->role : role));
     TYLOINFER_RUNTIME_CHECK(w->n_experts==experts && w->out_per_expert==output && w->neuron_len==input,
         "routed tensor shape mismatch: ",name);
     Routed result=[w,experts](const Projector& project, const Tensor& x,const Tensor& ids) {
@@ -982,7 +1001,7 @@ mfq_tensor_backend::Tensor mfq::cuda::weight_loader::Loader::native(const std::s
     return host(name).to(mfq_tensor_backend::kCUDA).contiguous();
 }
 
-QuantLinear mfq::cuda::weight_loader::Loader::embedding(const std::string& name, bool independent_output) const {
+QuantLinear mfq::cuda::weight_loader::Loader::build_embedding(const std::string& name, bool independent_output) const {
     const auto* mapped=mfq::cuda::env_lookup("TYLOINFER_EMBEDDING_MAPPED");
     const bool mapped_control=mapped && mapped[0]=='2';
     const bool use_mapped=mapped ? mapped[0]=='1' || mapped_control :

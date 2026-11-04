@@ -28,7 +28,7 @@ template <class Model> struct ModelLoader {
     Model &model;
     const mfq::cuda::weight_loader::Loader& weights;
     auto embedding(const std::string& name) {
-        return weights.embedding(name,
+        return weights.build_embedding(name,
                               model.has_independent_output_weights(*this));
     }
     auto output(const std::string &name) {

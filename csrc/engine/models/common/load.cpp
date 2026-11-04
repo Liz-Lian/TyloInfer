@@ -36,7 +36,7 @@ void load_important_neuron_branch(const mfq::cuda::weight_loader::Loader& weight
 
     auto high = std::make_unique<mfq::cuda::Ffn>();
     high->down = weights.projection(down_high, TensorParallelAxis::Input);
-    high->gate_up = weights.gate_up({gate_high, up_high}, high->down);
+    high->gate_up = weights.build_gate_up({gate_high, up_high}, high->down);
     high->geglu = f.geglu;
     high->swiglu_limit = f.swiglu_limit;
 
@@ -66,11 +66,11 @@ mfq_tensor_backend::Tensor TransformerWeightLoader::router_parameter(const std::
     return dense(name).to(mfq_tensor_backend::kFloat32).contiguous();
 }
 QuantLinearGroup TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
-    return weights.group(names);
+    return weights.build_group(names);
 }
 QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>& names,
                                                  const QuantLinear& down) const {
-    return weights.gate_up(names, down, shared_gate_up_compatible_prefix,
+    return weights.build_gate_up(names, down, shared_gate_up_compatible_prefix,
                               preserve_projection_boundaries);
 }
 void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::vector<std::string>& names) const {
@@ -81,9 +81,9 @@ void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::ve
     if (mirror_kv) {
         block.split_q_kv_projections = true;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        block.q_projection = std::make_shared<QuantLinear>(linear(names[0]));
-        block.k_projection = std::make_shared<QuantLinear>(weights.projection(names[1], TensorParallelAxis::Mirrored));
-        block.v_projection = std::make_shared<QuantLinear>(weights.projection(names[2], TensorParallelAxis::Mirrored));
+        block.q_projection = weights.weight(names[0]);
+        block.k_projection = weights.weight(names[1], TensorParallelAxis::Mirrored);
+        block.v_projection = weights.weight(names[2], TensorParallelAxis::Mirrored);
 #else
         block.q_projection = linear(names[0]);
         block.k_projection = weights.projection(names[1], TensorParallelAxis::Mirrored);
@@ -91,17 +91,16 @@ void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::ve
 #endif
     } else {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        block.qkv = std::make_shared<QuantLinearGroup>(
-            weights.group(names, 2, nullptr, preserve_projection_boundaries));
+        block.qkv = weights.group(names, 2, nullptr, preserve_projection_boundaries);
 #else
-        block.qkv = weights.group(names, 2, nullptr,
+        block.qkv = weights.build_group(names, 2, nullptr,
                                     preserve_projection_boundaries);
 #endif
     }
 }
 void TransformerWeightLoader::output(mfq::cuda::FullAttention& block, const std::string& name) const {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    block.o = std::make_shared<QuantLinear>(linear(name));
+    block.o = weights.weight(name);
 #else
     block.o = linear(name);
 #endif
@@ -164,7 +163,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
         *cpu = load_mfe_cpu_offloaded(weights.source, name);
         *weight = cpu_mixed_moe_metadata(*cpu);
     } else {
-        *weight = weights.experts(name, true, layer, role);
+        *weight = weights.build_experts(name, true, layer, role);
     }
 
 #else
@@ -174,7 +173,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
 mfq::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
-    return weights.experts(name);
+    return weights.build_experts(name);
 
 #else
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");

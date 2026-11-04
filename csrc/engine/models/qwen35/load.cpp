@@ -36,7 +36,7 @@ struct LayerLoader : TransformerWeightLoader {
                             bool split_qkv) const {
         if (split_qkv) {
             attention.split_in_proj = true;
-            attention.qkv_proj = weights.group({names.qk, names.value});
+            attention.qkv_proj = weights.build_group({names.qk, names.value});
             if (is_quant_dtype(require_tensor(weights.source, names.gate).dtype)) {
                 attention.z_proj = weights.projection(names.gate);
                 const bool alpha_quant = is_quant_dtype(require_tensor(weights.source, names.alpha).dtype);
@@ -76,10 +76,10 @@ struct LayerLoader : TransformerWeightLoader {
             throw std::runtime_error(
                 "linear_attention alpha/beta must use the same storage kind");
         if (alpha_quant) {
-            attention.in_proj = weights.group({names.qkv, names.gate, names.alpha, names.beta});
+            attention.in_proj = weights.build_group({names.qkv, names.gate, names.alpha, names.beta});
         } else {
             attention.dense_ab_tail = true;
-            attention.in_proj = weights.group({names.qkv, names.gate});
+            attention.in_proj = weights.build_group({names.qkv, names.gate});
             attention.ab_proj = make_dense_group({
                 weights.tensor(names.alpha),
                 weights.tensor(names.beta)});
@@ -235,7 +235,7 @@ Model load(std::shared_ptr<const mfq::ModelSource> source,
     if (options.load_input_output) {
         const auto output_name = std::string("model.output.weight");
         const bool independent_output = !config.tie_word_embeddings && weights.has(output_name);
-        model.embed = weights.embedding("model.token_embedding.weight", independent_output);
+        model.embed = weights.build_embedding("model.token_embedding.weight", independent_output);
         model.output_norm = weights.tensor("model.output_norm.weight");
         if (config.tie_word_embeddings || !weights.has(output_name)) {
             model.lm_head = weights.placement.tensor.enabled()

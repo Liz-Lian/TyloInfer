@@ -2,8 +2,7 @@
 
 #include "engine/tensor.h"
 #include "engine/state/kv_view.h"
-#include "engine/weights/matrix.h"
-#include "engine/weights/moe/bank.h"
+#include "engine/weights/weights.h"
 
 #include <cstdint>
 #include <array>
@@ -115,16 +114,16 @@ auto measure(const char* name, Fn&& operation) -> decltype(operation()) {
 Tensor softcap(Tensor input, double cap);
 Tensor scale(Tensor input, double factor);
 // Prepared weights determine supported host, CUDA and sharded projection/embedding paths.
-Tensor embedding(Tensor ids, const weights::Matrix& weight);
-Tensor project(Tensor input, const weights::Matrix& weight);
+Tensor embedding(Tensor ids, const weights::Weights& weight);
+Tensor project(Tensor input, const weights::Weights& weight);
 // linear uses dense weight dtype for dense projection and bias; otherwise it adds
 // bias in the projection result dtype. It restores input dtype and makes contiguous.
 // affine adds bias in the projection result dtype without restoring input dtype.
-Tensor linear(Tensor input, const weights::Matrix& weight, const Tensor& bias);
-Tensor affine(Tensor input, const weights::Matrix& weight, const Tensor& bias);
-std::vector<Tensor> project(Tensor input, const weights::MatrixGroup& group);
+Tensor linear(Tensor input, const weights::Weights& weight, const Tensor& bias);
+Tensor affine(Tensor input, const weights::Weights& weight, const Tensor& bias);
+std::vector<Tensor> project_group(Tensor input, const weights::Weights& group);
 // Computes project(input * sigmoid(gate)).
-Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Matrix& weight);
+Tensor sigmoid_project(Tensor input, Tensor gate, const weights::Weights& weight);
 // Copy, cast, views and allocation support CPU as well as CUDA, subject to dtype support.
 // Copies typed values into owned storage on target.
 Tensor tensor(std::span<const float> values, Device target);
@@ -180,7 +179,7 @@ enum class GatedActivation { silu, gelu };
 enum class MlpActivation { silu_gated, gelu_gated, relu_squared };
 
 // Prepared weights determine supported host and sharded MLP paths.
-Tensor mlp(Tensor input, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
+Tensor mlp(Tensor input, const weights::Weights& gate_up, const weights::Weights& down,
            MlpActivation activation, double swiglu_limit);
 
 // Canonical gate/up -> activation product -> down graph. Native operations may
@@ -239,8 +238,8 @@ Tensor expert_scale(Tensor weights, Tensor ids, const Tensor& scales);
 Tensor weighted_reduce(Tensor pairs, Tensor weights);
 // Traced intermediates are F32 snapshots taken before subsequent projections.
 struct RoutedGeglu { Tensor pairs, gate_up, hidden; };
-RoutedGeglu routed_geglu(Tensor input, Tensor ids, const weights::ExpertBank& gate_up,
-                         const weights::ExpertBank& down, bool trace);
+RoutedGeglu routed_geglu(Tensor input, Tensor ids, const weights::Weights& gate_up,
+                         const weights::Weights& down, bool trace);
 
 // Both branches consume the same input. Native routing may prepare an expert
 // cache before shared computation, but never changes the selected experts.

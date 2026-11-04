@@ -119,13 +119,13 @@ bool expert_parallel(const Ffn& ffn);
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace mfq::cuda::ops {
-mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::MatrixGroup& gate_up,
-                const mfq::weights::Matrix& down, mfq::ops::MlpActivation activation,
+mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::Weights& gate_up,
+                const mfq::weights::Weights& down, mfq::ops::MlpActivation activation,
                 double swiglu_limit);
 mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count, const mfq::ops::MoeRouting& routing);
 mfq::Tensor expert_scale(mfq::Tensor weights, mfq::Tensor ids, const mfq::Tensor& scales);
 mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights);
 mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
-    const mfq::weights::ExpertBank& gate_up, const mfq::weights::ExpertBank& down, bool trace);
+    const mfq::weights::Weights& gate_up, const mfq::weights::Weights& down, bool trace);
 }
 #endif

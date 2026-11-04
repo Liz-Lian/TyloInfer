@@ -16,20 +16,20 @@
 #include "engine/backends/cuda/ops/projection/bias.h"
 #include "engine/ops.h"
 
-mfq::Tensor mfq::cuda::ops::embedding(mfq::Tensor ids, const mfq::weights::Matrix& weight) {
+mfq::Tensor mfq::cuda::ops::embedding(mfq::Tensor ids, const mfq::weights::Weights& weight) {
     std::optional<MfqCudaGuard> guard;
     if (ids.is_cuda()) guard.emplace(ids.device().index);
     return quant_embedding_lookup(as_quant_linear(weight), mfq_tensor_backend::Tensor(ids));
 }
 
-mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Matrix& weight) {
+mfq::Tensor mfq::cuda::ops::project(mfq::Tensor input, const mfq::weights::Weights& weight) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     return mfq::cuda::Executor::current().projector(mfq::cuda::Executor::current_ffn()).run(
         as_quant_linear(weight), mfq_tensor_backend::Tensor(input));
 }
 
-mfq::Tensor mfq::cuda::ops::linear(mfq::Tensor input, const mfq::weights::Matrix& weight,
+mfq::Tensor mfq::cuda::ops::linear(mfq::Tensor input, const mfq::weights::Weights& weight,
                                   const mfq::Tensor& bias) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
@@ -37,7 +37,7 @@ mfq::Tensor mfq::cuda::ops::linear(mfq::Tensor input, const mfq::weights::Matrix
                   mfq_tensor_backend::Tensor(bias), mfq_tensor_backend::Tensor(input));
 }
 
-mfq::Tensor mfq::cuda::ops::affine(mfq::Tensor input, const mfq::weights::Matrix& weight,
+mfq::Tensor mfq::cuda::ops::affine(mfq::Tensor input, const mfq::weights::Weights& weight,
                                     const mfq::Tensor& bias) {
     auto output = project(std::move(input), weight);
     if (!bias.defined()) return output;
@@ -49,17 +49,41 @@ mfq::Tensor mfq::cuda::ops::affine(mfq::Tensor input, const mfq::weights::Matrix
     return native + mfq_tensor_backend::Tensor(bias).to(native.scalar_type());
 }
 
-std::vector<mfq::Tensor> mfq::cuda::ops::project(mfq::Tensor input,
-    const mfq::weights::MatrixGroup& group) {
+std::vector<mfq::Tensor> mfq::cuda::ops::project_group(mfq::Tensor input,
+    const mfq::weights::Weights& group) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     auto parts = mfq::cuda::Executor::current().projector(mfq::cuda::Executor::current_ffn()).run(
         as_quant_linear_group(group), mfq_tensor_backend::Tensor(input));
-    return {parts.begin(), parts.end()};
+    if (parts.size() == group.size()) {
+        for (std::size_t i = 0; i < parts.size(); ++i)
+            if (parts[i].size(-1) != group.shape(i).rows)
+                throw std::runtime_error("grouped projection output boundaries mismatch");
+        return {parts.begin(), parts.end()};
+    }
+    std::vector<mfq::Tensor> result;
+    result.reserve(group.size());
+    std::size_t index = 0;
+    for (const auto& part : parts) {
+        int64_t offset = 0;
+        while (offset < part.size(-1) && index < group.size()) {
+            const auto width = group.shape(index).rows;
+            if (width <= 0 || width > part.size(-1) - offset)
+                throw std::runtime_error("grouped projection output boundaries mismatch");
+            result.push_back(part.narrow(-1, offset, width));
+            offset += width;
+            ++index;
+        }
+        if (offset != part.size(-1))
+            throw std::runtime_error("grouped projection output boundaries mismatch");
+    }
+    if (index != group.size())
+        throw std::runtime_error("grouped projection output count mismatch");
+    return result;
 }
 
 mfq::Tensor mfq::cuda::ops::sigmoid_project(mfq::Tensor input, mfq::Tensor gate,
-    const mfq::weights::Matrix& weight) {
+    const mfq::weights::Weights& weight) {
     std::optional<MfqCudaGuard> guard;
     if (input.is_cuda()) guard.emplace(input.device().index);
     return mfq::cuda::Executor::current().projector(mfq::cuda::Executor::current_ffn()).gated(

@@ -139,7 +139,7 @@ std::array<mfq_tensor_backend::Tensor, 2> FullAttention::forward(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             std::vector<mfq::Tensor> result;
             if (!split_q_kv_projections) {
-                return mfq::ops::project(xn, *qkv);
+                return mfq::ops::project_group(xn, *qkv);
             } else {
                 result.emplace_back(mfq::ops::project(xn, *q_projection));
                 result.emplace_back(mfq::ops::project(xn, *k_projection));

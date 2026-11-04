@@ -599,7 +599,7 @@ void load(Model& model, const weight_loader::Loader& weights, Pipelines& pipelin
     MfqCudaGuard guard(placement.primary_device());
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
-        model.embed = weights.embedding("model.token_embedding.weight", separate);
+        model.embed = weights.build_embedding("model.token_embedding.weight", separate);
         model.output_norm = weights.tensor("model.output_norm.weight");
         model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)
             : weights.placement.tensor.enabled()

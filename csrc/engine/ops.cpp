@@ -33,6 +33,10 @@ void compatible(const Tensor& left, const Tensor& right) {
     if (left.device() != right.device())
         throw std::invalid_argument("tensor devices do not match");
 }
+void check_weight(const weights::Weights& value, weights::Layout layout) {
+    if (value.backend() != DeviceType::cuda || value.layout() != layout)
+        throw std::invalid_argument("weight backend or layout does not match operation");
+}
 void require_cuda(const Tensor& value) {
     if (!value.device().is_cuda()) throw std::invalid_argument("operation requires a CUDA tensor");
 }
@@ -191,12 +195,14 @@ Tensor weighted_reduce(Tensor pairs, Tensor weights) {
     require_cuda(pairs);
     return cuda::ops::weighted_reduce(std::move(pairs), std::move(weights));
 }
-RoutedGeglu routed_geglu(Tensor value, Tensor ids, const weights::ExpertBank& gate_up,
-                         const weights::ExpertBank& down, bool trace) {
+RoutedGeglu routed_geglu(Tensor value, Tensor ids, const weights::Weights& gate_up,
+                         const weights::Weights& down, bool trace) {
+    check_weight(gate_up, weights::Layout::experts);
+    check_weight(down, weights::Layout::experts);
     compatible(value, ids);
-    if (value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
-        gate_up.count() != down.count() || gate_up.cols() != value.size(-1) ||
-        gate_up.rows() % 2 != 0 || gate_up.rows() / 2 != down.cols())
+    if (gate_up.size() == 0 || down.size() == 0 || value.dim() != 2 || ids.dim() != 2 || value.size(0) != ids.size(0) ||
+        gate_up.size() != down.size() || gate_up.shape().cols != value.size(-1) ||
+        gate_up.shape().rows % 2 != 0 || gate_up.shape().rows / 2 != down.shape().cols)
         throw std::invalid_argument("routed GEGLU input, routes, and expert banks are incompatible");
     require_cuda(value);
     return cuda::ops::routed_geglu(std::move(value), std::move(ids), gate_up, down, trace);
@@ -278,34 +284,42 @@ Tensor scale(Tensor value, double factor) {
     require_cuda(value);
     return cuda::ops::scale(std::move(value), factor);
 }
-Tensor embedding(Tensor ids, const weights::Matrix& weight) {
+Tensor embedding(Tensor ids, const weights::Weights& weight) {
+    check_weight(weight, weights::Layout::matrix);
     input(ids);
     return cuda::ops::embedding(std::move(ids), weight);
 }
-Tensor project(Tensor value, const weights::Matrix& weight) {
+Tensor project(Tensor value, const weights::Weights& weight) {
+    check_weight(weight, weights::Layout::matrix);
     input(value);
     return cuda::ops::project(std::move(value), weight);
 }
-Tensor linear(Tensor value, const weights::Matrix& weight, const Tensor& bias) {
+Tensor linear(Tensor value, const weights::Weights& weight, const Tensor& bias) {
+    check_weight(weight, weights::Layout::matrix);
     input(value);
     if (bias.defined()) input(bias);
     return cuda::ops::linear(std::move(value), weight, bias);
 }
-Tensor affine(Tensor value, const weights::Matrix& weight, const Tensor& bias) {
+Tensor affine(Tensor value, const weights::Weights& weight, const Tensor& bias) {
+    check_weight(weight, weights::Layout::matrix);
     input(value);
     if (bias.defined()) input(bias);
     return cuda::ops::affine(std::move(value), weight, bias);
 }
-Tensor mlp(Tensor value, const weights::MatrixGroup& gate_up, const weights::Matrix& down,
+Tensor mlp(Tensor value, const weights::Weights& gate_up, const weights::Weights& down,
            MlpActivation activation, double swiglu_limit) {
+    check_weight(gate_up, weights::Layout::group);
+    check_weight(down, weights::Layout::matrix);
     input(value);
     return cuda::ops::mlp(std::move(value), gate_up, down, activation, swiglu_limit);
 }
-std::vector<Tensor> project(Tensor value, const weights::MatrixGroup& group) {
+std::vector<Tensor> project_group(Tensor value, const weights::Weights& group) {
+    check_weight(group, weights::Layout::group);
     input(value);
-    return cuda::ops::project(std::move(value), group);
+    return cuda::ops::project_group(std::move(value), group);
 }
-Tensor sigmoid_project(Tensor value, Tensor gate, const weights::Matrix& weight) {
+Tensor sigmoid_project(Tensor value, Tensor gate, const weights::Weights& weight) {
+    check_weight(weight, weights::Layout::matrix);
     compatible(value, gate);
     return cuda::ops::sigmoid_project(std::move(value), std::move(gate), weight);
 }

@@ -7,7 +7,7 @@
 #include "engine/backends/cuda/ops/projection/vq.h"
 #include "engine/backends/cuda/ops/projection/tq.h"
 #include "engine/weights/encoding/format_features.h"
-#include "engine/weights/matrix.h"
+#include "engine/weights/weights.h"
 
 #include "mmq.h"
 #include "parallel.h"
@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -90,7 +91,7 @@ struct QuantLinearShard {
     TqWeight tq;
 };
 
-struct QuantLinear : mfq::weights::Matrix {
+struct QuantLinear : mfq::weights::Weights {
     QuantLinearKind kind = QuantLinearKind::Nint;
     NintWeight nint;
     NvqWeight nvq;
@@ -121,11 +122,16 @@ struct QuantLinear : mfq::weights::Matrix {
 
     int64_t out() const;
     int64_t neuron_len() const;
-    std::int64_t rows() const override { return out(); }
-    std::int64_t cols() const override { return neuron_len(); }
+    mfq::weights::Layout layout() const override { return mfq::weights::Layout::matrix; }
+    mfq::DeviceType backend() const override { return mfq::DeviceType::cuda; }
+    std::size_t size() const override { return 1; }
+    mfq::weights::Shape shape(std::size_t index = 0) const override {
+        if (index != 0) throw std::out_of_range("matrix index out of range");
+        return {out(), neuron_len()};
+    }
 };
 
-const QuantLinear& as_quant_linear(const mfq::weights::Matrix& weight);
+const QuantLinear& as_quant_linear(const mfq::weights::Weights& weight);
 
 void check_device(const mfq_tensor_backend::Tensor& weight, const mfq_tensor_backend::Tensor& input);
 void check_device(const NintWeight& weight, const mfq_tensor_backend::Tensor& input);
@@ -143,7 +149,7 @@ using QuantLinearProjectionRefs =
 bool tensor_parallel_output_projections_compatible(
     const QuantLinearProjectionRefs& projections);
 
-struct QuantLinearGroup : mfq::weights::MatrixGroup {
+struct QuantLinearGroup : mfq::weights::Weights {
     bool nint_grouped = false;
     bool nvq_prefix2 = false;
     bool decode_branch_parallel = true;
@@ -151,15 +157,21 @@ struct QuantLinearGroup : mfq::weights::MatrixGroup {
     TqProjectionGroup tq;
     std::vector<QuantLinear> layers;
     std::vector<int64_t> outs;
+    std::vector<int64_t> cols;
 
+    mfq::weights::Layout layout() const override { return mfq::weights::Layout::group; }
+    mfq::DeviceType backend() const override { return mfq::DeviceType::cuda; }
     std::size_t size() const override { return outs.size(); }
+    mfq::weights::Shape shape(std::size_t index = 0) const override {
+        return {outs.at(index), cols.at(index)};
+    }
 
     QuantLinearProjectionRefs tensor_parallel_output_projections() const;
 
     bool tensor_parallel_output_compatible() const;
 };
 
-const QuantLinearGroup& as_quant_linear_group(const mfq::weights::MatrixGroup& group);
+const QuantLinearGroup& as_quant_linear_group(const mfq::weights::Weights& group);
 
 struct DenseLinearGroup {
     mfq_tensor_backend::Tensor w;

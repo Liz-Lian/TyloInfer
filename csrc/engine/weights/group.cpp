@@ -136,11 +136,13 @@ QuantLinearGroup make_quant_group(
     QuantLinearGroup result;
     result.decode_branch_parallel = !preserve_projection_boundaries;
     result.outs.reserve(layers.size());
+    result.cols.reserve(layers.size());
     bool all_nint = true;
     std::vector<NintWeight> nint_weights;
     nint_weights.reserve(layers.size());
     for (const auto & layer : layers) {
         result.outs.push_back(layer.out());
+        result.cols.push_back(layer.neuron_len());
         all_nint = all_nint && (mfq::mfq_compat_enabled && layer.is_nint());
         if ((mfq::mfq_compat_enabled && layer.is_nint()) && !layer.tensor_parallel()) {
             nint_weights.push_back(layer.nint);

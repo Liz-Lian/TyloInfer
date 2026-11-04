@@ -92,7 +92,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
         layer.compressor.cache_quant_mode = 1;
         layer.compressor.projection = make_fp32_quant_group(
             collectives, primary,
-            weights.group({p + "attention.compressor.key_value.weight",
+            weights.build_group({p + "attention.compressor.key_value.weight",
                                          p + "attention.compressor.gate.weight"}));
         layer.compressor.ape = weights.tensor(p + "attention.compressor.position")
                                 .to(mfq_tensor_backend::kFloat32)
@@ -108,7 +108,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
         layer.indexer_compressor.cache_quant_mode = 2;
         layer.indexer_compressor.projection = make_fp32_quant_group(
             collectives, primary,
-            weights.group({p + "attention.indexer.compressor.key_value.weight",
+            weights.build_group({p + "attention.indexer.compressor.key_value.weight",
                                          p + "attention.indexer.compressor.gate.weight"}));
         layer.indexer_compressor.ape =
             weights.tensor(p + "attention.indexer.compressor.position")
@@ -294,7 +294,7 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     }
     MfqCudaGuard guard(placement.primary_device());
     const bool separate = !c.tie_word_embeddings && weights.has("model.output.weight");
-    model.embed = weights.embedding("model.token_embedding.weight", separate);
+    model.embed = weights.build_embedding("model.token_embedding.weight", separate);
     model.output_norm = weights.tensor("model.output_norm.weight");
     model.output_head = load_output_head(weights);
     model.lm_head = separate ? weights.projection("model.output.weight", TensorParallelAxis::Output)

@@ -104,14 +104,24 @@ struct Loader {
     QuantLinear projection(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
         const std::vector<mfq::TensorParallelSlice>* slices = nullptr) const;
-    QuantLinearGroup group(const std::vector<std::string>& names, size_t prefix = 0,
+    QuantLinearGroup build_group(const std::vector<std::string>& names, size_t prefix = 0,
         const std::vector<mfq::TensorParallelSlice>* slices = nullptr,
         bool preserve_boundaries = false) const;
-    QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down,
+    QuantLinearGroup build_gate_up(const std::vector<std::string>& names, const QuantLinear& down,
         size_t prefix = 2, bool preserve_boundaries = false) const;
-    QuantLinear embedding(const std::string& name, bool independent_output) const;
-    Experts experts(const std::string& name, bool cacheable = false, int layer = -1,
+    QuantLinear build_embedding(const std::string& name, bool independent_output) const;
+    Experts build_experts(const std::string& name, bool cacheable = false, int layer = -1,
                     const std::string& role = {}) const;
+    std::shared_ptr<const mfq::weights::Weights> weight(const std::string& name,
+        std::optional<TensorParallelAxis> axis = std::nullopt,
+        const std::vector<mfq::TensorParallelSlice>* slices = nullptr) const;
+    std::shared_ptr<const mfq::weights::Weights> group(const std::vector<std::string>& names, size_t prefix = 0,
+        const std::vector<mfq::TensorParallelSlice>* slices = nullptr, bool preserve_boundaries = false) const;
+    std::shared_ptr<const mfq::weights::Weights> gate_up(const std::vector<std::string>& names,
+        const mfq::weights::Weights& down, size_t prefix = 2, bool preserve_boundaries = false) const;
+    std::shared_ptr<const mfq::weights::Weights> embedding(const std::string& name, bool independent_output) const;
+    std::shared_ptr<const mfq::weights::Weights> experts(const std::string& name, bool cacheable = false,
+        int layer = -1, const std::string& role = {}) const;
     Linear linear(const std::string& name) const;
     Tensor dense(const std::string& name) const;
     Routed routed(const std::string& name, int layer, int64_t experts, int64_t output,

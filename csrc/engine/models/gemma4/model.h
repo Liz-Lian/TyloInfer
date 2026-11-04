@@ -5,12 +5,11 @@
 #include "engine/models/common/attention.h"
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/models/common/mlp.h"
-#include "engine/weights/moe/bank.h"
 #else
 #include "engine/backends/cuda/ops/ffn/ffn.h"
 #include "engine/weights/moe/experts.h"
 #endif
-#include "engine/weights/matrix.h"
+#include "engine/weights/weights.h"
 #include "engine/models/source.h"
 #include "engine/models/options.h"
 #include "engine/models/input.h"
@@ -38,7 +37,7 @@ struct Layer {
     mfq::models::Mlp ffn;
     mfq::Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
     mfq::Tensor layer_scale;
-    std::shared_ptr<const mfq::weights::ExpertBank> gemma_moe_gate_up, gemma_moe_down;
+    std::shared_ptr<const mfq::weights::Weights> gemma_moe_gate_up, gemma_moe_down;
     mfq::Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #else
     Tensor ffn_norm;
@@ -84,7 +83,7 @@ struct Model
     CudaModelPlan plan;
     Config config;
     double embed_scale = 1.0;
-    std::shared_ptr<const mfq::weights::Matrix> embed, lm_head;
+    std::shared_ptr<const mfq::weights::Weights> embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mfq::Tensor output_norm;
 #else

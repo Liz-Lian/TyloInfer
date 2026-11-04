@@ -35,13 +35,15 @@ struct LayerLoader : TransformerWeightLoader {
         return (router_parameter(name) / divisor).contiguous();
     }
     auto mlp(const std::vector<std::string>& names, const std::string& down_name) {
-        auto down = linear(down_name);
-        auto group = gate_up(names, down);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return mfq::models::Mlp{std::make_shared<QuantLinearGroup>(std::move(group)),
-                                std::make_shared<QuantLinear>(std::move(down)),
+        auto down = weights.weight(down_name);
+        auto group = weights.gate_up(names, *down, shared_gate_up_compatible_prefix,
+                                     preserve_projection_boundaries);
+        return mfq::models::Mlp{std::move(group), std::move(down),
                                 mfq::ops::MlpActivation::gelu_gated};
 #else
+        auto down = linear(down_name);
+        auto group = gate_up(names, down);
         Ffn result;
         result.geglu = true;
         result.down = std::move(down);
@@ -51,17 +53,17 @@ struct LayerLoader : TransformerWeightLoader {
     }
     auto experts(const std::string &name, int layer, const char *projection) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return std::shared_ptr<const mfq::weights::ExpertBank>(
-            std::make_shared<Experts>(weights.experts(name, true, layer, projection)));
-#else
         return weights.experts(name, true, layer, projection);
+#else
+        return weights.build_experts(name, true, layer, projection);
 #endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     static auto shape(const mfq::Tensor& value) { return value.sizes().vec(); }
     static int64_t elements(const mfq::Tensor& value) { return value.numel(); }
-    static auto expert_shape(const std::shared_ptr<const mfq::weights::ExpertBank>& weight) {
-        return std::array<int64_t, 3>{weight->count(), weight->rows(), weight->cols()};
+    static auto expert_shape(const std::shared_ptr<const mfq::weights::Weights>& weight) {
+        const auto shape = weight->shape();
+        return std::array<int64_t, 3>{static_cast<int64_t>(weight->size()), shape.rows, shape.cols};
     }
 #else
     static auto expert_shape(const mfq::cuda::Experts &weight) {
@@ -97,13 +99,12 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     MfqCudaGuard guard(placement.primary_device());
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
-        model.embed = std::make_shared<QuantLinear>(
-            weights.embedding("model.token_embedding.weight", separate));
+        model.embed = weights.embedding("model.token_embedding.weight", separate);
         model.output_norm = weights.tensor("model.output_norm.weight");
         if (separate || weights.placement.tensor.enabled()) {
-            model.lm_head = std::make_shared<QuantLinear>(weights.projection(
+            model.lm_head = weights.weight(
                 separate ? "model.output.weight" : "model.token_embedding.weight",
-                TensorParallelAxis::Output));
+                TensorParallelAxis::Output);
         } else {
             model.lm_head = model.embed;
         }

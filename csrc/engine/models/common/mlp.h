@@ -9,8 +9,8 @@
 namespace mfq::models {
 
 struct Mlp {
-    std::shared_ptr<const weights::MatrixGroup> gate_up;
-    std::shared_ptr<const weights::Matrix> down;
+    std::shared_ptr<const weights::Weights> gate_up;
+    std::shared_ptr<const weights::Weights> down;
     ops::MlpActivation activation = ops::MlpActivation::silu_gated;
     double swiglu_limit = 0.0;
 

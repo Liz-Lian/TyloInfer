@@ -1,11 +1,12 @@
 #pragma once
 
-#include "engine/weights/moe/bank.h"
+#include "engine/weights/weights.h"
 #include "engine/weights/moe/pool.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 class MoeCachedSource;
@@ -14,7 +15,7 @@ struct MoeRoutePlan;
 
 namespace mfq::cuda {
 
-struct Experts : weights::ExpertBank {
+struct Experts : weights::Weights {
     struct Shard {
         int device = 0;
         int64_t expert_begin = 0;
@@ -35,9 +36,13 @@ struct Experts : weights::ExpertBank {
     std::vector<MoeActivationGeometry> activation_geometries;
     int activation_workspace_domain = 0;
 
-    std::int64_t count() const override { return n_experts; }
-    std::int64_t rows() const override { return out_per_expert; }
-    std::int64_t cols() const override { return neuron_len; }
+    weights::Layout layout() const override { return weights::Layout::experts; }
+    DeviceType backend() const override { return DeviceType::cuda; }
+    std::size_t size() const override { return static_cast<std::size_t>(n_experts); }
+    weights::Shape shape(std::size_t index = 0) const override {
+        if (index >= size()) throw std::out_of_range("expert index out of range");
+        return {out_per_expert, neuron_len};
+    }
 
     bool expert_parallel() const { return !expert_parallel_shards.empty(); }
     bool supports_projection_glu_epilogue() const {

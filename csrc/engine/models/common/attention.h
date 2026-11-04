@@ -51,7 +51,7 @@ struct FullAttention {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     mfq::ops::RopeTable attention_rope;
     mfq::Tensor attn_norm, q_norm, k_norm, v_norm;
-    std::shared_ptr<const mfq::weights::MatrixGroup> qkv;
+    std::shared_ptr<const mfq::weights::Weights> qkv;
 #else
     RopeCache attention_rope;
     mfq_tensor_backend::Tensor attn_norm, q_norm, k_norm, v_norm;
@@ -60,10 +60,10 @@ struct FullAttention {
     bool attention_output_gate = false;
     bool split_q_kv_projections = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::shared_ptr<const mfq::weights::Matrix> q_projection;
-    std::shared_ptr<const mfq::weights::Matrix> k_projection;
-    std::shared_ptr<const mfq::weights::Matrix> v_projection;
-    std::shared_ptr<const mfq::weights::Matrix> o;
+    std::shared_ptr<const mfq::weights::Weights> q_projection;
+    std::shared_ptr<const mfq::weights::Weights> k_projection;
+    std::shared_ptr<const mfq::weights::Weights> v_projection;
+    std::shared_ptr<const mfq::weights::Weights> o;
 #else
     QuantLinear q_projection;
     QuantLinear k_projection;

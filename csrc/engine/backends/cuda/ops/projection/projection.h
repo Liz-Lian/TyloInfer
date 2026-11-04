@@ -5,12 +5,12 @@
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace mfq::cuda::ops {
-mfq::Tensor embedding(mfq::Tensor ids, const weights::Matrix& weight);
-mfq::Tensor project(mfq::Tensor input, const weights::Matrix& weight);
-mfq::Tensor linear(mfq::Tensor input, const weights::Matrix& weight, const mfq::Tensor& bias);
-mfq::Tensor affine(mfq::Tensor input, const weights::Matrix& weight, const mfq::Tensor& bias);
-std::vector<mfq::Tensor> project(mfq::Tensor input, const weights::MatrixGroup& group);
-mfq::Tensor sigmoid_project(mfq::Tensor input, mfq::Tensor gate, const weights::Matrix& weight);
+mfq::Tensor embedding(mfq::Tensor ids, const weights::Weights& weight);
+mfq::Tensor project(mfq::Tensor input, const weights::Weights& weight);
+mfq::Tensor linear(mfq::Tensor input, const weights::Weights& weight, const mfq::Tensor& bias);
+mfq::Tensor affine(mfq::Tensor input, const weights::Weights& weight, const mfq::Tensor& bias);
+std::vector<mfq::Tensor> project_group(mfq::Tensor input, const weights::Weights& group);
+mfq::Tensor sigmoid_project(mfq::Tensor input, mfq::Tensor gate, const weights::Weights& weight);
 }
 #endif
 
