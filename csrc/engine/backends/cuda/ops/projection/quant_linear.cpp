@@ -257,6 +257,32 @@ mfq_tensor_backend::Tensor dense_projection(
     return mfq_tensor_backend::matmul(input, weight.transpose(0, 1));
 }
 
+mfq::weights::Placement QuantLinear::placement(std::size_t index) const {
+    if (index != 0) throw std::out_of_range("matrix index out of range");
+    mfq::weights::Placement result;
+    if (tensor_parallel()) {
+        for (const auto& shard : tensor_parallel_shards)
+            result.devices.emplace_back(mfq::DeviceType::cuda, shard.device);
+        return result;
+    }
+    const mfq_tensor_backend::Tensor* payload = nullptr;
+    if (is_tq()) payload = &tq.image;
+    else if (is_nint()) payload = &nint.q_packed;
+    else if (is_nvq()) payload = &nvq.indices_packed;
+    else if (is_mxfp4()) payload = &mxfp4.weight.values;
+    else if (is_mxfp8()) payload = &mxfp8.weight.values;
+    else if (is_mxfp4_sq()) payload = &mxfp4_sq.weight.blob;
+    else if (is_fp8_sq()) payload = &fp8_sq.weight.blob;
+    else if (is_dense()) payload = &dense;
+    if (!payload || !payload->defined())
+        throw std::invalid_argument("matrix weight is not prepared");
+    if (is_tq() && payload->is_cpu()) result.caller = mfq::DeviceType::cuda;
+    else if (payload->is_cuda()) result.devices.emplace_back(mfq::DeviceType::cuda, payload->get_device());
+    else if (payload->is_cpu()) result.devices.emplace_back(mfq::DeviceType::cpu);
+    else throw std::invalid_argument("unsupported matrix weight device");
+    return result;
+}
+
 int64_t QuantLinear::out() const {
     if (tensor_parallel()) return logical_out;
     if(is_tq())return tq.out;

@@ -129,6 +129,7 @@ struct QuantLinear : mfq::weights::Weights {
         if (index != 0) throw std::out_of_range("matrix index out of range");
         return {out(), neuron_len()};
     }
+    mfq::weights::Placement placement(std::size_t index = 0) const override;
 };
 
 const QuantLinear& as_quant_linear(const mfq::weights::Weights& weight);
@@ -158,12 +159,16 @@ struct QuantLinearGroup : mfq::weights::Weights {
     std::vector<QuantLinear> layers;
     std::vector<int64_t> outs;
     std::vector<int64_t> cols;
+    std::vector<mfq::weights::Placement> placements;
 
     mfq::weights::Layout layout() const override { return mfq::weights::Layout::group; }
     mfq::DeviceType backend() const override { return mfq::DeviceType::cuda; }
     std::size_t size() const override { return outs.size(); }
     mfq::weights::Shape shape(std::size_t index = 0) const override {
         return {outs.at(index), cols.at(index)};
+    }
+    mfq::weights::Placement placement(std::size_t index = 0) const override {
+        return placements.at(index);
     }
 
     QuantLinearProjectionRefs tensor_parallel_output_projections() const;

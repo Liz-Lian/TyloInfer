@@ -36,6 +36,22 @@ void compatible(const Tensor& left, const Tensor& right) {
 void check_weight(const weights::Weights& value, weights::Layout layout) {
     if (value.backend() != DeviceType::cuda || value.layout() != layout)
         throw std::invalid_argument("weight backend or layout does not match operation");
+    if (value.size() == 0 || (layout == weights::Layout::matrix && value.size() != 1))
+        throw std::invalid_argument("weight has invalid size");
+    const auto count = layout == weights::Layout::group ? value.size() : 1;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto placement = value.placement(i);
+        if (placement.devices.empty() && !placement.caller)
+            throw std::invalid_argument("weight has no execution placement");
+        for (const auto& place : placement.devices) {
+            if ((!place.is_cpu() && !place.is_cuda()) || place.index < 0 ||
+                (place.is_cpu() && place.index != 0))
+                throw std::invalid_argument("invalid weight execution device");
+        }
+        if (placement.caller && *placement.caller != DeviceType::cpu &&
+            *placement.caller != DeviceType::cuda)
+            throw std::invalid_argument("invalid caller-selected weight device type");
+    }
 }
 void require_cuda(const Tensor& value) {
     if (!value.device().is_cuda()) throw std::invalid_argument("operation requires a CUDA tensor");

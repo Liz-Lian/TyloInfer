@@ -43,6 +43,7 @@ struct Experts : weights::Weights {
         if (index >= size()) throw std::out_of_range("expert index out of range");
         return {out_per_expert, neuron_len};
     }
+    weights::Placement placement(std::size_t index = 0) const override;
 
     bool expert_parallel() const { return !expert_parallel_shards.empty(); }
     bool supports_projection_glu_epilogue() const {

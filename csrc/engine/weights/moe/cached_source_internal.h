@@ -25,6 +25,13 @@ struct MoeCachedCohort {
 
 class MoeCachedSource {
 public:
+    mfq::weights::Placement placement() const {
+        mfq::weights::Placement result;
+        result.devices.emplace_back(mfq::DeviceType::cuda, cache_->owner_device_);
+        if (quant_source_) result.devices.emplace_back(mfq::DeviceType::cpu);
+        else result.caller = mfq::DeviceType::cuda;
+        return result;
+    }
     bool pipeline_enabled() const { return cache_->options_.pipeline; }
     bool two_stage_compatible() const {
         return std::all_of(cohorts_.begin(),cohorts_.end(),[](const auto& cohort) {
