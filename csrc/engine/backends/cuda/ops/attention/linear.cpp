@@ -13,9 +13,9 @@
 #include <utility>
 #include <vector>
 
-using mfq_tensor_backend::indexing::Slice;
+using ::tyloi::indexing::Slice;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 namespace {
 
@@ -39,16 +39,16 @@ Tensor linear_attention(Tensor normalized, Project project, Gates gates, Convolv
 
 } // namespace
 
-std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::forward(
+std::array<::tyloi::Tensor, 2> LinearAttention::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        mfq_tensor_backend::Tensor input,
+        ::tyloi::Tensor input,
         LinearView state, LinearInputs* captured) const {
     return input.is_cuda() ? cuda(project, profiler, options, std::move(input), state, captured)
                            : cpu(project, std::move(input), state);
 }
 
-std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
-        const Projector& project, mfq_tensor_backend::Tensor x,
+std::array<::tyloi::Tensor, 2> LinearAttention::cpu(
+        const Projector& project, ::tyloi::Tensor x,
         LinearView state) const {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     const int64_t nk = key_heads;
@@ -59,24 +59,18 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
     const int64_t vsz = (value_heads * value_dim);
     const int64_t conv_dim = 2 * ksz + vsz;
 
-    return mfq::ops::attention_layer(
-        std::move(x),
-        [&](mfq_tensor_backend::Tensor x) {
-          return qwen_rms_norm(
-                     x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
-                     attn_norm, rms_norm_eps,
-                     norm_weight_offset)
-              .reshape({B, T, H});
-        },
-        [&](mfq_tensor_backend::Tensor xn) {
-          return linear_attention(
+    auto xn = qwen_rms_norm(
+                  x.reshape({B * T, H}).to(::tyloi::kFloat32),
+                  attn_norm, rms_norm_eps, norm_weight_offset)
+                  .reshape({B, T, H});
+    auto output = linear_attention(
               std::move(xn),
-              [&](mfq_tensor_backend::Tensor xn) {
-                mfq_tensor_backend::Tensor qkv, qk_part, v_part, z, alpha_raw,
+              [&](::tyloi::Tensor xn) {
+                ::tyloi::Tensor qkv, qk_part, v_part, z, alpha_raw,
                     beta_raw;
                 if (dense_ab_tail) {
                   auto parts = project.run(in_proj, xn);
-                  qkv = parts[0].to(mfq_tensor_backend::kFloat32);
+                  qkv = parts[0].to(::tyloi::kFloat32);
                   z = parts[1];
                   auto ab = ab_proj.forward(xn);
                   alpha_raw = ab[0];
@@ -100,53 +94,53 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                     alpha_raw = ab[0];
                     beta_raw = ab[1];
                   }
-                  qkv = mfq_tensor_backend::cat(
-                      {qk_part.to(mfq_tensor_backend::kFloat32),
-                       v_part.to(mfq_tensor_backend::kFloat32)},
+                  qkv = ::tyloi::cuda::cat(
+                      {qk_part.to(::tyloi::kFloat32),
+                       v_part.to(::tyloi::kFloat32)},
                       -1);
                 } else {
                   auto parts = project.run(in_proj, xn);
-                  qkv = parts[0].to(mfq_tensor_backend::kFloat32);
+                  qkv = parts[0].to(::tyloi::kFloat32);
                   z = parts[1];
                   alpha_raw = parts[2];
                   beta_raw = parts[3];
                 }
 
                 return LinearProjections<
-                    mfq_tensor_backend::Tensor>{qkv, qk_part,   v_part,
+                    ::tyloi::Tensor>{qkv, qk_part,   v_part,
                                                 z,   alpha_raw, beta_raw};
               },
               [&](const LinearProjections<
-                  mfq_tensor_backend::Tensor> &p) {
+                  ::tyloi::Tensor> &p) {
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
-                auto beta = mfq_tensor_backend::sigmoid(
-                    beta_raw.to(mfq_tensor_backend::kFloat32)
+                auto beta = ::tyloi::cuda::sigmoid(
+                    beta_raw.to(::tyloi::kFloat32)
                         .reshape({B, T, nv}));
-                auto alpha = alpha_raw.to(mfq_tensor_backend::kFloat32)
+                auto alpha = alpha_raw.to(::tyloi::kFloat32)
                                  .reshape({B, T, nv});
-                auto gate = mfq_tensor_backend::softplus(
-                    alpha + dt_bias.to(mfq_tensor_backend::kFloat32)
+                auto gate = ::tyloi::cuda::softplus(
+                    alpha + dt_bias.to(::tyloi::kFloat32)
                                 .reshape({1, 1, nv}));
-                auto coefficient = -mfq_tensor_backend::exp(
-                    a_log.to(mfq_tensor_backend::kFloat32));
+                auto coefficient = -::tyloi::cuda::exp(
+                    a_log.to(::tyloi::kFloat32));
                 gate = gate * coefficient.reshape({1, 1, nv});
 
                 auto gate_t = gate.transpose(1, 2).contiguous();
                 auto beta_t = beta.transpose(1, 2).contiguous();
 
-                return std::array<mfq_tensor_backend::Tensor, 2>{gate_t,
+                return std::array<::tyloi::Tensor, 2>{gate_t,
                                                                  beta_t};
               },
               [&](const LinearProjections<
-                  mfq_tensor_backend::Tensor> &p) {
+                  ::tyloi::Tensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
-                auto conv_input = mfq_tensor_backend::cat({state.convolution, qkv}, 1);
+                auto conv_input = ::tyloi::cuda::cat({state.convolution, qkv}, 1);
                 state.convolution.copy_(conv_input.narrow(
                     1,
                     conv_input.size(1) -
                         (conv_kernel - 1),
                     conv_kernel - 1));
-                auto weight = conv_weight.to(mfq_tensor_backend::kFloat32);
+                auto weight = conv_weight.to(::tyloi::kFloat32);
                 if (weight.dim() == 3)
                   weight = weight.squeeze(1);
                 if (weight.dim() != 2) {
@@ -168,10 +162,10 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                          {1, 1, conv_dim, conv_kernel}))
                         .sum(-1);
                 if (conv_bias.defined()) {
-                  conv = conv + conv_bias.to(mfq_tensor_backend::kFloat32)
+                  conv = conv + conv_bias.to(::tyloi::kFloat32)
                                     .reshape({1, 1, conv_dim});
                 }
-                conv = mfq_tensor_backend::silu(conv);
+                conv = ::tyloi::cuda::silu(conv);
 
                 auto q = conv.narrow(-1, 0, ksz)
                              .reshape({B, T, nk, dk})
@@ -185,9 +179,9 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                              .reshape({B, T, nv, dv})
                              .transpose(1, 2)
                              .contiguous();
-                q = q / mfq_tensor_backend::sqrt(q.square().sum(-1, true))
+                q = q / ::tyloi::cuda::sqrt(q.square().sum(-1, true))
                             .clamp_min(rms_norm_eps);
-                k = k / mfq_tensor_backend::sqrt(k.square().sum(-1, true))
+                k = k / ::tyloi::cuda::sqrt(k.square().sum(-1, true))
                             .clamp_min(rms_norm_eps);
                 if (nk != nv) {
                   TYLOINFER_RUNTIME_CHECK(nv % nk == 0,
@@ -202,14 +196,14 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                   }
                 }
 
-                return std::array<mfq_tensor_backend::Tensor, 3>{q, k, v};
+                return std::array<::tyloi::Tensor, 3>{q, k, v};
               },
-              [&](std::array<mfq_tensor_backend::Tensor, 3> qkv,
-                  std::array<mfq_tensor_backend::Tensor, 2> gates) {
+              [&](std::array<::tyloi::Tensor, 3> qkv,
+                  std::array<::tyloi::Tensor, 2> gates) {
                 auto q = qkv[0], k = qkv[1], v = qkv[2];
                 auto gate_t = gates[0], beta_t = gates[1];
                 auto recurrent = state.recurrent;
-                std::vector<mfq_tensor_backend::Tensor> outputs;
+                std::vector<::tyloi::Tensor> outputs;
                 outputs.reserve(static_cast<size_t>(T));
                 const double retrieve_scale =
                     1.0 / std::sqrt(static_cast<double>(dk));
@@ -218,46 +212,46 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                   auto kt = k.select(2, token);
                   auto vt = v.select(2, token);
                   recurrent =
-                      recurrent * mfq_tensor_backend::exp(gate_t.select(2, token))
+                      recurrent * ::tyloi::cuda::exp(gate_t.select(2, token))
                                   .reshape({B, nv, 1, 1});
-                  auto state_k = mfq_tensor_backend::matmul(
+                  auto state_k = ::tyloi::cuda::matmul(
                                      recurrent.transpose(-1, -2), kt.unsqueeze(-1))
                                      .squeeze(-1);
                   auto delta =
                       (vt - state_k) * beta_t.select(2, token).unsqueeze(-1);
                   recurrent = recurrent + kt.unsqueeze(-1) * delta.unsqueeze(-2);
                   outputs.push_back(
-                      mfq_tensor_backend::matmul(recurrent.transpose(-1, -2),
+                      ::tyloi::cuda::matmul(recurrent.transpose(-1, -2),
                                                  qt.unsqueeze(-1))
                           .squeeze(-1) *
                       retrieve_scale);
                 }
                 state.recurrent = recurrent.contiguous();
-                auto y = mfq_tensor_backend::stack(outputs, 2);
+                auto y = ::tyloi::cuda::stack(outputs, 2);
 
                 return y;
               },
-              [&](mfq_tensor_backend::Tensor y) {
+              [&](::tyloi::Tensor y) {
                 auto y_flat =
-                    y.reshape({-1, dv}).to(mfq_tensor_backend::kFloat32);
-                auto inverse = mfq_tensor_backend::rsqrt(
+                    y.reshape({-1, dv}).to(::tyloi::kFloat32);
+                auto inverse = ::tyloi::cuda::rsqrt(
                     y_flat.square().mean(-1, true) + rms_norm_eps);
                 auto y_norm = (y_flat * inverse *
-                               linear_norm.to(mfq_tensor_backend::kFloat32))
+                               linear_norm.to(::tyloi::kFloat32))
                                   .reshape_as(y);
                 auto yf =
                     y_norm.transpose(1, 2).contiguous().reshape({B, T, vsz});
 
                 return yf;
               },
-              [&](mfq_tensor_backend::Tensor yf, mfq_tensor_backend::Tensor z) {
+              [&](::tyloi::Tensor yf, ::tyloi::Tensor z) {
                 z = z.reshape({B, T, nv, dv}).transpose(1, 2).contiguous();
                 auto zf = z.transpose(1, 2).contiguous().reshape({B, T, vsz});
-                mfq_tensor_backend::Tensor attention_output;
+                ::tyloi::Tensor attention_output;
                 if (dense_out_proj) {
                   auto dtype = out_proj_dense.scalar_type();
                   auto gated =
-                      yf.to(dtype) * mfq_tensor_backend::silu(zf.to(dtype));
+                      yf.to(dtype) * ::tyloi::cuda::silu(zf.to(dtype));
                   attention_output =
                       dense_projection(gated.reshape({B * T, vsz}),
                                        out_proj_dense)
@@ -268,15 +262,12 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cpu(
                 }
                 return attention_output;
               });
-        },
-        [](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor output) {
-            return std::array<mfq_tensor_backend::Tensor, 2>{std::move(residual), std::move(output)};
-        });
+    return std::array<::tyloi::Tensor, 2>{std::move(x), std::move(output)};
 }
 
-std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
+std::array<::tyloi::Tensor, 2> LinearAttention::cuda(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        mfq_tensor_backend::Tensor x,
+        ::tyloi::Tensor x,
         LinearView state, LinearInputs* captured) const {
     int64_t B = x.size(0), T = x.size(1), H = x.size(2);
     int64_t nk = key_heads,
@@ -286,29 +277,24 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
     int64_t ksz = (key_heads * key_dim),
             vsz = (value_heads * value_dim);
 
-    return mfq::ops::attention_layer(
-        std::move(x),
-        [&](mfq_tensor_backend::Tensor x) {
-          return profiler.measure("linear.attn_norm", [&]() {
+    auto xn = profiler.measure("linear.attn_norm", [&]() {
             return qwen_rms_norm(
-                       x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
+                       x.reshape({B * T, H}).to(::tyloi::kFloat32),
                        attn_norm, rms_norm_eps,
                        norm_weight_offset)
                 .reshape({B, T, H});
           });
-        },
-        [&](mfq_tensor_backend::Tensor xn) {
-          return linear_attention(
+    auto output = linear_attention(
               std::move(xn),
-              [&](mfq_tensor_backend::Tensor xn) {
-                mfq_tensor_backend::Tensor qkv, qk_part, v_part, z, alpha_raw,
+              [&](::tyloi::Tensor xn) {
+                ::tyloi::Tensor qkv, qk_part, v_part, z, alpha_raw,
                     beta_raw;
                 if (dense_ab_tail) {
                   auto parts = profiler.measure("linear.in_proj", [&]() {
                     return project.run(in_proj, xn);
                   });
                   qkv = profiler.measure("linear.qkv_cast", [&]() {
-                    return parts[0].to(mfq_tensor_backend::kFloat32);
+                    return parts[0].to(::tyloi::kFloat32);
                   });
                   z = parts[1];
                   auto ab = profiler.measure(
@@ -393,7 +379,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                     return project.run(in_proj, xn);
                   });
                   qkv = profiler.measure("linear.qkv_cast", [&]() {
-                    return parts[0].to(mfq_tensor_backend::kFloat32);
+                    return parts[0].to(::tyloi::kFloat32);
                   });
                   z = parts[1];
                   alpha_raw = parts[2];
@@ -401,11 +387,11 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                 }
 
                 return LinearProjections<
-                    mfq_tensor_backend::Tensor>{qkv, qk_part,   v_part,
+                    ::tyloi::Tensor>{qkv, qk_part,   v_part,
                                                 z,   alpha_raw, beta_raw};
               },
               [&](const LinearProjections<
-                  mfq_tensor_backend::Tensor> &p) {
+                  ::tyloi::Tensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto alpha_raw = p.alpha, beta_raw = p.beta;
                 auto gates = profiler.measure("linear.gates_fused", [&]() {
@@ -426,20 +412,20 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   captured->split = split_in_proj;
                 }
 
-                return std::array<mfq_tensor_backend::Tensor, 2>{gate_t,
+                return std::array<::tyloi::Tensor, 2>{gate_t,
                                                                  beta_t};
               },
               [&](const LinearProjections<
-                  mfq_tensor_backend::Tensor> &p) {
+                  ::tyloi::Tensor> &p) {
                 auto qkv = p.qkv, qk_part = p.qk, v_part = p.value;
                 auto bias =
                     conv_bias.defined()
                         ? conv_bias
-                        : mfq_tensor_backend::empty(
-                              {0}, mfq_tensor_backend::TensorOptions()
-                                       .device(mfq_tensor_backend::kCUDA)
-                                       .dtype(mfq_tensor_backend::kFloat32));
-                mfq_tensor_backend::Tensor q, k, v;
+                        : ::tyloi::cuda::empty(
+                              {0}, ::tyloi::TensorOptions()
+                                       .device(::tyloi::kCUDA)
+                                       .dtype(::tyloi::kFloat32));
+                ::tyloi::Tensor q, k, v;
                 bool fused_prefill =
                     T >= 256 && options.fused_conv;
                 if (T > 1 && split_in_proj && fused_prefill) {
@@ -470,13 +456,13 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                 } else {
                   if (split_in_proj) {
                     qkv = profiler.measure("linear.qkv_cat", [&]() {
-                      return mfq_tensor_backend::cat(
-                          {qk_part.to(mfq_tensor_backend::kFloat32),
-                           v_part.to(mfq_tensor_backend::kFloat32)},
+                      return ::tyloi::cuda::cat(
+                          {qk_part.to(::tyloi::kFloat32),
+                           v_part.to(::tyloi::kFloat32)},
                           -1);
                     });
                   }
-                  mfq_tensor_backend::Tensor conv;
+                  ::tyloi::Tensor conv;
                   if (T == 1) {
                     conv = profiler.measure("linear.conv_silu_decode", [&]() {
                       return ssm_conv_silu_decode_cuda(state.convolution, qkv,
@@ -484,7 +470,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                     });
                   } else {
                     auto conv_in = profiler.measure("linear.conv_input", [&]() {
-                      return mfq_tensor_backend::cat({state.convolution, qkv}, 1);
+                      return ::tyloi::cuda::cat({state.convolution, qkv}, 1);
                     });
                     auto next_conv_state =
                         profiler.measure("linear.conv_state_update", [&]() {
@@ -493,7 +479,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                                   {Slice(),
                                    Slice(-(conv_kernel -
                                            1),
-                                         mfq_tensor_backend::indexing::None),
+                                         ::tyloi::indexing::None),
                                    Slice()})
                               .contiguous();
                         });
@@ -531,17 +517,17 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   });
                 }
 
-                return std::array<mfq_tensor_backend::Tensor, 3>{q, k, v};
+                return std::array<::tyloi::Tensor, 3>{q, k, v};
               },
-              [&](std::array<mfq_tensor_backend::Tensor, 3> qkv,
-                  std::array<mfq_tensor_backend::Tensor, 2> gates) {
+              [&](std::array<::tyloi::Tensor, 3> qkv,
+                  std::array<::tyloi::Tensor, 2> gates) {
                 auto q = qkv[0], k = qkv[1], v = qkv[2];
                 auto gate_t = gates[0], beta_t = gates[1];
-                auto recurrent_step = [&](mfq_tensor_backend::Tensor rq,
-                                          mfq_tensor_backend::Tensor rk,
-                                          mfq_tensor_backend::Tensor rv,
-                                          mfq_tensor_backend::Tensor rg,
-                                          mfq_tensor_backend::Tensor rb) {
+                auto recurrent_step = [&](::tyloi::Tensor rq,
+                                          ::tyloi::Tensor rk,
+                                          ::tyloi::Tensor rv,
+                                          ::tyloi::Tensor rg,
+                                          ::tyloi::Tensor rb) {
                   const bool transposed = state.transposed;
                   if (transposed) {
                     if (tiled_v_heads)
@@ -567,10 +553,10 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
 
                 return y;
               },
-              [&](mfq_tensor_backend::Tensor y) {
+              [&](::tyloi::Tensor y) {
                 auto y_norm = profiler.measure("linear.out_norm", [&]() {
                   return rms_norm_cuda(y.reshape({-1, dv}).to(
-                                           mfq_tensor_backend::kFloat32),
+                                           ::tyloi::kFloat32),
                                        linear_norm, rms_norm_eps)
                       .reshape_as(y);
                 });
@@ -581,8 +567,8 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
 
                 return yf;
               },
-              [&](mfq_tensor_backend::Tensor yf, mfq_tensor_backend::Tensor z) {
-                mfq_tensor_backend::Tensor oo;
+              [&](::tyloi::Tensor yf, ::tyloi::Tensor z) {
+                ::tyloi::Tensor oo;
                 z = profiler.measure("linear.z_view", [&]() {
                   return z.reshape({B, T, nv, dv}).transpose(1, 2).contiguous();
                 });
@@ -593,7 +579,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                   oo = profiler.measure("linear.out_proj_gate_dense", [&]() {
                     auto dtype = out_proj_dense.scalar_type();
                     auto gated =
-                        yf.to(dtype) * mfq_tensor_backend::silu(zf.to(dtype));
+                        yf.to(dtype) * ::tyloi::cuda::silu(zf.to(dtype));
                     return dense_projection(gated.reshape({B * T, vsz}),
                                             out_proj_dense)
                         .reshape({B, T, H});
@@ -605,10 +591,7 @@ std::array<mfq_tensor_backend::Tensor, 2> LinearAttention::cuda(
                 }
                 return oo;
               });
-        },
-        [](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor output) {
-            return std::array<mfq_tensor_backend::Tensor, 2>{std::move(residual), std::move(output)};
-        });
+    return std::array<::tyloi::Tensor, 2>{std::move(x), std::move(output)};
 }
 
 void LinearAttention::replay(
@@ -626,19 +609,19 @@ void LinearAttention::replay(
     const int64_t vsz = (value_heads * value_dim);
     auto bias = conv_bias.defined()
                     ? conv_bias
-                    : mfq_tensor_backend::empty(
-                          {0}, mfq_tensor_backend::TensorOptions()
-                                   .device(mfq_tensor_backend::kCUDA)
-                                   .dtype(mfq_tensor_backend::kFloat32));
+                    : ::tyloi::cuda::empty(
+                          {0}, ::tyloi::TensorOptions()
+                                   .device(::tyloi::kCUDA)
+                                   .dtype(::tyloi::kFloat32));
     auto qkv =
         inputs.split
-            ? mfq_tensor_backend::cat(
-                  {inputs.qk.narrow(1, 0, T).to(mfq_tensor_backend::kFloat32),
+            ? ::tyloi::cuda::cat(
+                  {inputs.qk.narrow(1, 0, T).to(::tyloi::kFloat32),
                    inputs.value.narrow(1, 0, T).to(
-                       mfq_tensor_backend::kFloat32)},
+                       ::tyloi::kFloat32)},
                   -1)
             : inputs.qkv.narrow(1, 0, T);
-    auto conv_input = mfq_tensor_backend::cat({state.convolution, qkv}, 1);
+    auto conv_input = ::tyloi::cuda::cat({state.convolution, qkv}, 1);
     state.convolution.copy_(conv_input.narrow(
         1, conv_input.size(1) - (conv_kernel - 1),
         conv_kernel - 1));
@@ -654,7 +637,7 @@ void LinearAttention::replay(
     const bool transposed = state.transposed;
     const auto gate = inputs.gate.narrow(2, 0, T).contiguous();
     const auto beta = inputs.beta.narrow(2, 0, T).contiguous();
-    std::vector<mfq_tensor_backend::Tensor> output;
+    std::vector<::tyloi::Tensor> output;
     if (transposed) {
       output = tiled_v_heads
                    ? gdn_inplace_transposed_tiled_cuda(
@@ -674,4 +657,4 @@ void LinearAttention::replay(
     state.recurrent = output[1];
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

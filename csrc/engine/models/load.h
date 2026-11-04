@@ -35,7 +35,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template <bool IncludeQwen = true>
 inline constexpr auto with_model = []<typename F>(
@@ -44,13 +44,13 @@ inline constexpr auto with_model = []<typename F>(
         bool load_optional_components,
         F&& run) -> auto {
     CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
-    auto source = mfq::open_model_source(options.model_path);
+    auto source = tyloi::open_model_source(options.model_path);
     auto finish = [&](auto& owner, auto& state, auto& executor, auto& runtime_components, auto started) {
         auto& model = *owner;
         using Model = std::remove_cvref_t<decltype(model)>;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>)
             Executor::prepare(model.vocab_size());
-        mfq::cuda::finalize_kv(execution.kv.get(),
+        tyloi::cuda::finalize_kv(execution.kv.get(),
             execution.weights, execution.offload);
         std::size_t graph_reserve=0;
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
@@ -62,7 +62,7 @@ inline constexpr auto with_model = []<typename F>(
                     <<" initial_depth=3 lend_unused_to_experts=1\n";
             }
         }
-        const auto loaded_at = mfq::cuda::finish_load(
+        const auto loaded_at = tyloi::cuda::finish_load(
             execution.kv.get(), execution.weights,
             graph_reserve, execution.config.report_cuda_memory);
         return run(owner, state, executor, runtime_components, started, loaded_at, source);
@@ -91,9 +91,9 @@ inline constexpr auto with_model = []<typename F>(
     };
     auto load_tts = [&] {
         auto started = std::chrono::steady_clock::now();
-        auto definition = mfq::models::config_json(*source, options.config_path);
+        auto definition = tyloi::models::config_json(*source, options.config_path);
         definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension, std::move(definition),
-            mfq::models::graph(*source).backbone, options.context_size);
+            tyloi::models::graph(*source).backbone, options.context_size);
         auto owner = std::make_shared<minicpmo45::Model>(
             minicpmo45::read(source, definition, options.context_size));
         auto& model = *owner;
@@ -124,7 +124,7 @@ inline constexpr auto with_model = []<typename F>(
         return finish(owner, owned_state, executor, components, started);
     };
 
-    switch (cuda_backbone(mfq::models::graph(*source).backbone)) {
+    switch (cuda_backbone(tyloi::models::graph(*source).backbone)) {
         case CudaBackbone::generic_qwen:
             if constexpr (IncludeQwen) {
                 auto started = std::chrono::steady_clock::now();
@@ -139,7 +139,7 @@ inline constexpr auto with_model = []<typename F>(
                 owner = std::make_shared<qwen35::Model>(qwen35::load(
                     source, weights, execution.config.layer_placement, execution.config.yarn,
                     execution.config.dense_cpu_layer_count,
-                    mfq::cuda::qwen35::LoadOptions{
+                    tyloi::cuda::qwen35::LoadOptions{
                         .config_path = options.config_path,
                         .context_size = options.context_size,
                         .gpu_layers = execution.config.n_gpu_layers,
@@ -160,9 +160,9 @@ inline constexpr auto with_model = []<typename F>(
             }
         case CudaBackbone::minicpmo45: {
             auto started = std::chrono::steady_clock::now();
-            auto definition = mfq::models::config_json(*source, options.config_path);
+            auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<minicpmo45::text::Model>(
                 minicpmo45::text::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
@@ -187,9 +187,9 @@ inline constexpr auto with_model = []<typename F>(
             throw std::runtime_error("unsupported CUDA model backbone");
 #else
             auto started = std::chrono::steady_clock::now();
-            auto definition = mfq::models::config_json(*source, options.config_path);
+            auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<gemma4::Model>(
                 gemma4::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
@@ -208,9 +208,9 @@ inline constexpr auto with_model = []<typename F>(
         }
         case CudaBackbone::glm_dsa: {
             auto started = std::chrono::steady_clock::now();
-            auto definition = mfq::models::config_json(*source, options.config_path);
+            auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<glm_dsa::Model>(
                 glm_dsa::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
@@ -228,9 +228,9 @@ inline constexpr auto with_model = []<typename F>(
         }
         case CudaBackbone::glm5_next: {
             auto started = std::chrono::steady_clock::now();
-            auto definition = mfq::models::config_json(*source, options.config_path);
+            auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<glm5_next::Model>(
                 glm5_next::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
@@ -250,9 +250,9 @@ inline constexpr auto with_model = []<typename F>(
             return load.template operator()<Qwen4CausalLm>();
         case CudaBackbone::deepseek_v4: {
             auto started = std::chrono::steady_clock::now();
-            auto definition = mfq::models::config_json(*source, options.config_path);
+            auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<deepseek_v4::Model>(
                 deepseek_v4::read(source, definition, options.context_size));
             deepseek_v4::validate_offload(owner->config, execution.config.dsv4_cpu_offload_layers);
@@ -278,9 +278,9 @@ inline constexpr auto with_model = []<typename F>(
             return load.template operator()<DeepseekV41CausalLm>();
         case CudaBackbone::nemotron_h: {
             auto started = std::chrono::steady_clock::now();
-            auto definition = mfq::models::config_json(*source, options.config_path);
+            auto definition = tyloi::models::config_json(*source, options.config_path);
             definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-                std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
+                std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
             auto owner = std::make_shared<nemotron_h::Model>(
                 nemotron_h::read(source, definition, options.context_size));
             weight_loader::Loader weights{*source, execution.config.weights,
@@ -302,4 +302,4 @@ inline constexpr auto with_model = []<typename F>(
     throw std::runtime_error("invalid CUDA model backbone");
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

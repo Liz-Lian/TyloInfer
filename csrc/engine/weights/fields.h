@@ -4,9 +4,9 @@
 
 #include <cstddef>
 
-namespace mfq::cuda::fields {
+namespace tyloi::cuda::fields {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 template <class Visitor>
 void tensors(QuantLinear& weight, Visitor visit) {
@@ -33,17 +33,17 @@ void tensors(QuantLinear& weight, Visitor visit) {
              &v.codebook,
              &v.integer_codebook,
              &v.decode_records,
-             &weight.mxfp4.weight.values,
-             &weight.mxfp4.weight.scales,
-             &weight.mxfp8.weight.values,
-             &weight.mxfp8.weight.scales,
-             &weight.mxfp4_sq.weight.blob,
-             &weight.mxfp4_sq.weight.row_q,
-             &weight.mxfp4_sq.weight.row_symbol_byte_offsets,
-             &weight.mxfp4_sq.weight.row_auxiliary,
-             &weight.fp8_sq.weight.blob,
-             &weight.fp8_sq.weight.row_q,
-             &weight.fp8_sq.weight.row_symbol_byte_offsets,
+             &weight.mxfp4.values,
+             &weight.mxfp4.scales,
+             &weight.mxfp8.values,
+             &weight.mxfp8.scales,
+             &weight.mxfp4_sq.blob,
+             &weight.mxfp4_sq.row_q,
+             &weight.mxfp4_sq.row_symbol_byte_offsets,
+             &weight.mxfp4_sq.row_auxiliary,
+             &weight.fp8_sq.blob,
+             &weight.fp8_sq.row_q,
+             &weight.fp8_sq.row_symbol_byte_offsets,
          }) {
         if (tensor->defined()) visit(*tensor);
     }
@@ -63,7 +63,7 @@ void tensors(Weights& weights, Visitor visit) {
 template <class Weights>
 Weights to_cuda(Weights weights) {
     tensors(weights,
-        [](Tensor& tensor) { tensor = tensor.to(mfq_tensor_backend::kCUDA); });
+        [](Tensor& tensor) { tensor = tensor.to(::tyloi::kCUDA); });
     return weights;
 }
 
@@ -75,4 +75,4 @@ std::size_t bytes(Weights weights) {
     return bytes;
 }
 
-} // namespace mfq::cuda::fields
+} // namespace tyloi::cuda::fields

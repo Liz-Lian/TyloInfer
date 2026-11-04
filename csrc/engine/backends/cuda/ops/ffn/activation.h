@@ -41,8 +41,8 @@ struct MoeActivationWorkspace {
         while (capacity < rows) capacity *= 2;
         return capacity;
     }
-    mfq_tensor_backend::Tensor qx;
-    mfq_tensor_backend::Tensor xscale;
+    ::tyloi::Tensor qx;
+    ::tyloi::Tensor xscale;
 };
 
 struct MixedMoeTransformKey {
@@ -86,7 +86,7 @@ struct MixedMoeActivationKeyHash {
     }
 };
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct MfeScratch {
     using Buckets = std::unordered_map<MoeActivationKey, MoeActivationWorkspace, MoeActivationKeyHash>;
@@ -96,8 +96,8 @@ struct MfeScratch {
     mutable std::mutex mutex;
 
     MoeActivationWorkspace get(const std::shared_ptr<const Pools>& pools,
-                               mfq_tensor_backend::Tensor input, int rows, int groups,
+                               ::tyloi::Tensor input, int rows, int groups,
                                int gs, bool stable = true);
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

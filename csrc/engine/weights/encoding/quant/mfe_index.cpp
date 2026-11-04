@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::mfe {
+namespace tyloi::mfe {
 namespace {
 
 template<class T>
@@ -91,4 +91,4 @@ Index parse(std::size_t bytes,
     return result;
 }
 
-} // namespace mfq::mfe
+} // namespace tyloi::mfe

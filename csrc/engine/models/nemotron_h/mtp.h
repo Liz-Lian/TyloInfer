@@ -16,7 +16,7 @@
 #include <string>
 #include <utility>
 
-namespace mfq::cuda::nemotron_h {
+namespace tyloi::cuda::nemotron_h {
 
 // Nemotron-H's predictor is one multi-token-prediction head whose sub-blocks
 // are listed in mtp_layers_block_type; both blocks run inside the single stage
@@ -28,9 +28,9 @@ namespace mfq::cuda::nemotron_h {
 // reuses this module's final_layernorm output. The final norm stays RMSNorm as
 // in vLLM/SGLang (llama.cpp uses LayerNorm; the real model will A/B the two).
 struct Mtp final : MtpModule {
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
 
-    mfq::cuda::nemotron_h::Config config;
+    tyloi::cuda::nemotron_h::Config config;
     QuantLinear embedding;
     int primary = 0;
     QuantLinear fusion;
@@ -48,7 +48,7 @@ struct Mtp final : MtpModule {
 
     static std::optional<Mtp> load_if_present(CudaExecutionContext &execution,
                                               const weight_loader::Loader& weights,
-                                              const mfq::models::nemotron_h::Config &main,
+                                              const tyloi::models::nemotron_h::Config &main,
                                               QuantLinear embedding) {
         const bool fusion_present = weights.has("predictor.fusion.weight");
         if (!fusion_present) {
@@ -76,7 +76,7 @@ struct Mtp final : MtpModule {
                           "Nemotron-H MTP fusion/norm dimensions disagree with the backbone");
         for (std::size_t index = 0; index < main.mtp_mixers.size(); ++index) {
             const auto type =
-                std::string(mfq::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
+                std::string(tyloi::models::nemotron_h::Config::mixer_name(main.mtp_mixers[index]));
             result.layers.push_back(load_layer(execution.executor().pipelines(), weights, main,
                                                static_cast<int>(index), type, "predictor"));
         }
@@ -90,9 +90,9 @@ struct Mtp final : MtpModule {
                     cache = KVCache(1, full->kv_heads,
                         full->sliding ? full->attention_window : full->max_position_embeddings,
                         full->attention_head_dim, full->sliding,
-                        mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layer.device),
-                        full->official_bf16 ? mfq_tensor_backend::kBFloat16 :
-                                              mfq_tensor_backend::kFloat16,
+                        ::tyloi::Device(::tyloi::kCUDA, layer.device),
+                        full->official_bf16 ? ::tyloi::kBFloat16 :
+                                              ::tyloi::kFloat16,
                         full->kv_quantization);
                 }
             }
@@ -115,7 +115,7 @@ struct Mtp final : MtpModule {
                                        const Tensor &ids, int64_t depth = 0,
                                        const Tensor &supplied_positions = {}) {
         struct Ops {
-            using Tensor = mfq_tensor_backend::Tensor;
+            using Tensor = ::tyloi::Tensor;
             Mtp &model;
             Executor::Mode mode;
             static int rank(const Tensor &x) { return x.dim(); }
@@ -123,35 +123,35 @@ struct Mtp final : MtpModule {
             static int64_t elements(const Tensor &x) { return x.numel(); }
             static bool defined(const Tensor &x) { return x.defined(); }
             Tensor embed(Tensor ids, const Tensor &like) {
-                return mfq::cuda::embed(model.embedding, std::move(ids),
+                return tyloi::cuda::embed(model.embedding, std::move(ids),
                     model.execution->executor().collectives(), model.execution->executor().profiler(), model.primary)
                     .to(like.scalar_type());
             }
-            Tensor normalize(const Tensor &x, mfq::models::nemotron_h::PredictorNorm role) {
-                using Norm = mfq::models::nemotron_h::PredictorNorm;
+            Tensor normalize(const Tensor &x, tyloi::models::nemotron_h::PredictorNorm role) {
+                using Norm = tyloi::models::nemotron_h::PredictorNorm;
                 const auto &weight = role == Norm::embedding ? model.embedding_norm
                                      : role == Norm::hidden  ? model.hidden_norm
                                                              : model.output_norm;
                 return qwen_rms_norm(x.reshape({-1, model.config.hidden_size})
-                                         .to(mfq_tensor_backend::kFloat32),
+                                         .to(::tyloi::kFloat32),
                                      weight, model.config.rms_norm_eps, 0.0)
                     .reshape(x.sizes());
             }
             Tensor positions(Tensor explicit_positions, int64_t start, int64_t tokens) {
                 if (explicit_positions.defined())
-                    return explicit_positions.to(mfq_tensor_backend::kInt64).contiguous();
+                    return explicit_positions.to(::tyloi::kInt64).contiguous();
                 // NoPE: positions only address the predictor's KV history.
-                return mfq_tensor_backend::arange(start, start + tokens,
-                                                  mfq_tensor_backend::TensorOptions()
-                                                      .device(mfq_tensor_backend::kCUDA)
-                                                      .dtype(mfq_tensor_backend::kInt64));
+                return ::tyloi::cuda::arange(start, start + tokens,
+                                                  ::tyloi::TensorOptions()
+                                                      .device(::tyloi::kCUDA)
+                                                      .dtype(::tyloi::kInt64));
             }
             Tensor fuse(Tensor e, Tensor h) {
                 return model.executor->projector(mode.ffn).run(
-                    model.fusion, mfq_tensor_backend::cat({e, h}, -1));
+                    model.fusion, ::tyloi::cuda::cat({e, h}, -1));
             }
             static Tensor lengths(int64_t batch, int64_t end, const Tensor &positions) {
-                return mfq_tensor_backend::full({batch}, end, positions.options());
+                return ::tyloi::cuda::full({batch}, end, positions.options());
             }
             // One predictor stage: every declared sub-block adds its own
             // pre-normed mixer branch to the same residual stream.
@@ -168,7 +168,7 @@ struct Mtp final : MtpModule {
                 return x;
             }
         } ops{*this, execution->executor().forward_mode(execution->config.layer_placement.primary_device())};
-        return mfq::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
+        return tyloi::models::nemotron_h::mtp_predictor(ops, hidden, ids, supplied_positions, depth,
                                                      true);
     }
 
@@ -213,7 +213,7 @@ struct Mtp final : MtpModule {
 
     MtpSessionState
     capture_session_state(int64_t target_cache_position,
-                          const mfq_tensor_backend::Tensor &last_target_hidden) const override {
+                          const ::tyloi::Tensor &last_target_hidden) const override {
         const int64_t predictor_position = target_cache_position - 1;
         if (predictor_position <= 0 || predictor_position > cache_position() ||
             !last_target_hidden.defined() || last_target_hidden.dim() != 3 ||
@@ -254,11 +254,11 @@ struct Mtp final : MtpModule {
             const auto& attention = std::get<FullAttention>(layers[layer_index].weights);
             restore_kv(std::get<KVCache>(states[layer_index]), (*blocks)[index],
                 attention.attention_head_dim,
-                attention.official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+                attention.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
                 attention.kv_quantization);
         }
         lengths.front() = state.cache_pos;
     }
 };
 
-} // namespace mfq::cuda::nemotron_h
+} // namespace tyloi::cuda::nemotron_h

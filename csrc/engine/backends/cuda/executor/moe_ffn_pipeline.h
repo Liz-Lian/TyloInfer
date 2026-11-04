@@ -9,8 +9,8 @@
 struct CudaProfiler;
 struct KlMmqState;
 struct MoeOptions;
-namespace mfq { struct MoeDispatchPlan; }
-namespace mfq::cuda { class Projector; class RouteStats; struct Experts; class Ffn; }
+namespace tyloi { struct MoeDispatchPlan; }
+namespace tyloi::cuda { class Projector; class RouteStats; struct Experts; class Ffn; }
 
 struct MoeFfnOptions {
     bool fused_activation = true;
@@ -20,9 +20,9 @@ struct MoeFfnOptions {
     std::optional<bool> transfer_phases;
 };
 
-using MoeFfnShared=std::function<mfq_tensor_backend::Tensor(const mfq::cuda::Projector&,const mfq_tensor_backend::Tensor&)>;
-using MoeFfnDispatchObserver=std::function<void(const mfq::MoeDispatchPlan&)>;
-using MoeFfnPrefetch=std::function<mfq::cuda::DecodeWindow::Task(const mfq_tensor_backend::Tensor&)>;
+using MoeFfnShared=std::function<::tyloi::Tensor(const tyloi::cuda::Projector&,const ::tyloi::Tensor&)>;
+using MoeFfnDispatchObserver=std::function<void(const tyloi::MoeDispatchPlan&)>;
+using MoeFfnPrefetch=std::function<tyloi::cuda::DecodeWindow::Task(const ::tyloi::Tensor&)>;
 class MoeFfnPipeline;
 struct QuantLinear;
 struct MoeFfnSharedWeights {
@@ -30,7 +30,7 @@ struct MoeFfnSharedWeights {
     MoeFfnShared gate;
     std::shared_ptr<const QuantLinear> scalar_gate;
 };
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Pipelines own mutable workspaces; models only borrow the resulting handles.
 class Pipelines {
@@ -61,13 +61,13 @@ private:
     std::vector<std::shared_ptr<MoeFfnPipeline>> items_;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-mfq_tensor_backend::Tensor run_moe_ffn_pipeline(
-    std::shared_ptr<MoeFfnPipeline> pipeline,const mfq::cuda::Projector& project,
-    const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& ids,
-    const mfq_tensor_backend::Tensor& weights,bool batch_serial=false,int tile=0,int tiles=1);
-mfq::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
-    std::shared_ptr<MoeFfnPipeline> pipeline,const mfq_tensor_backend::Tensor& ids);
+::tyloi::Tensor run_moe_ffn_pipeline(
+    std::shared_ptr<MoeFfnPipeline> pipeline,const tyloi::cuda::Projector& project,
+    const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,
+    const ::tyloi::Tensor& weights,bool batch_serial=false,int tile=0,int tiles=1);
+tyloi::cuda::DecodeWindow::Task prefetch_moe_ffn_pipeline(
+    std::shared_ptr<MoeFfnPipeline> pipeline,const ::tyloi::Tensor& ids);
 void activate_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);
 void drain_moe_ffn_pipeline(std::shared_ptr<MoeFfnPipeline> pipeline);

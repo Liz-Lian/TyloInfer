@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct MfqSource::Impl {
     std::unique_ptr<source::Files> files;
@@ -188,7 +188,7 @@ ModelSource::TensorReader MfqSource::mapped_tensor_reader(std::string_view name)
     if(found==impl_->index.names.end() || impl_->index.records[found->second].asset)
         throw std::runtime_error("mapped model tensor not found: "+std::string(name));
     const auto& record=impl_->index.records[found->second];
-    return mfq::mapped_reader(record.source_path,record.offset,record.tensor.nbytes);
+    return tyloi::mapped_reader(record.source_path,record.offset,record.tensor.nbytes);
 }
 
 bool MfqSource::supports_parallel_tensor_reads() const noexcept {
@@ -199,7 +199,7 @@ ModelSource::TensorBatchReader MfqSource::mapped_tensor_batch_reader(std::string
     if(found==impl_->index.names.end() || impl_->index.records[found->second].asset)
         throw std::runtime_error("mapped model tensor not found: "+std::string(name));
     const auto& record=impl_->index.records[found->second];
-    return mfq::mapped_batch_reader(record.source_path,record.offset,record.tensor.nbytes);
+    return tyloi::mapped_batch_reader(record.source_path,record.offset,record.tensor.nbytes);
 }
 ModelSource::TensorBatchReader MfqSource::tensor_batch_reader(std::string_view name) const {
     const auto found=impl_->index.names.find(std::string(name));
@@ -250,4 +250,4 @@ std::optional<ModelGraph> MfqSource::model_graph() const {
         reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

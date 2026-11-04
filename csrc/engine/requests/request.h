@@ -24,7 +24,7 @@ struct MfqPromptCachePlan {
     bool cache_output_tokens = false;
 };
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 enum class InferenceInputErrorCode {
     Invalid,
@@ -129,4 +129,4 @@ using ControlRequest = std::variant<DecodeTokens, PrepareDuplex,
     PrepareDuplexStep, MfqDuplexSessionParams, MfqDuplexStepInput, StopDuplex,
     RuntimeMetrics, CountTokens, ScoreText, ScoreTokens>;
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

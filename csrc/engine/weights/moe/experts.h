@@ -13,7 +13,7 @@ class MoeCachedSource;
 struct MixedMoeRuntime;
 struct MoeRoutePlan;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct Experts : weights::Weights {
     struct Shard {
@@ -101,8 +101,8 @@ bool prefetch_cached_moe_projection_bundle(
 bool prefetch_cached_moe_projection_bundle(
     const Experts& gate_up, const Experts& down, const MoeRoutePlan& route);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-mfq::cuda::Experts stage_cpu_mixed_moe(
+tyloi::cuda::Experts stage_cpu_mixed_moe(
     const std::shared_ptr<MixedMoeRuntime>& runtime,
     bool heterogeneous);

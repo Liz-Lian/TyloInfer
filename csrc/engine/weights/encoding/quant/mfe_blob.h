@@ -9,16 +9,16 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::mfe {
+namespace tyloi::mfe {
 
 struct Pool {
     std::vector<int32_t> expert_ids;
     std::string dtype;
     std::vector<uint8_t> payload;
     std::vector<uint8_t> runtime_payload;
-    mfq::nint::Data weight;
-    mfq::nint8::Data q8_zero;
-    mfq::mxfp4::Data mxfp4;
+    tyloi::nint::Data weight;
+    tyloi::nint8::Data q8_zero;
+    tyloi::mxfp4::Data mxfp4;
 };
 
 struct Data {
@@ -41,4 +41,4 @@ std::vector<std::byte> expert_prefix(
 
 Data unpack(const std::vector<uint8_t>& blob);
 
-} // namespace mfq::mfe
+} // namespace tyloi::mfe

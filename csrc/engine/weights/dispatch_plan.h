@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 enum class MoeDispatchKind { Cpu = -1, GpuResident = 0, GpuTransfer = 1 };
 struct MoeDispatchGroup {
     std::int32_t expert = -1;

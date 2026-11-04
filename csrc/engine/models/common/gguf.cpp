@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 using json = nlohmann::json;
 
@@ -199,4 +199,4 @@ json gguf_config(const json& meta, const json& shapes, const std::string& arch) 
     return config;
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

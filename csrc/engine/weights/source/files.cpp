@@ -11,7 +11,7 @@
 #include <unistd.h>
 #endif
 
-namespace mfq::source {
+namespace tyloi::source {
 
 Files::Files(std::vector<std::filesystem::path> paths, FileReadMode mode)
     : paths_(std::move(paths)), mode_(mode) {
@@ -31,7 +31,7 @@ void Files::read(const std::filesystem::path& path, std::uint64_t absolute_offse
                  std::byte* destination, std::size_t size) const {
     if (mode_ == FileReadMode::Direct)
         direct_.at(path)->read(absolute_offset, destination, size);
-    else mfq::read_buffered(path, absolute_offset, destination, size);
+    else tyloi::read_buffered(path, absolute_offset, destination, size);
 }
 
 std::function<void(std::uint64_t, std::byte*, std::size_t)> Files::reader(
@@ -47,7 +47,7 @@ std::function<void(std::uint64_t, std::byte*, std::size_t)> Files::reader(
             reader->read(base + offset, destination, size);
         };
     }
-    return mfq::buffered_reader(path, offset, bytes);
+    return tyloi::buffered_reader(path, offset, bytes);
 }
 
 std::function<void(const std::vector<ReadSpan>&)> Files::batch_reader(
@@ -119,4 +119,4 @@ void Files::drop_cache() const noexcept {
 #endif
 }
 
-} // namespace mfq::source
+} // namespace tyloi::source

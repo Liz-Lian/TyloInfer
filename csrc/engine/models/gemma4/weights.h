@@ -5,7 +5,7 @@
 #include <array>
 #include <cmath>
 
-namespace mfq::models::gemma4 {
+namespace tyloi::models::gemma4 {
 
 struct LayerSpec {
     bool moe, sliding, value_equals_key;
@@ -87,4 +87,4 @@ void load_layer(Attention &a, Layer &b, Loader &ops, const Config &c, int layer,
         "Gemma4 MoE tensor shapes disagree with config");
 }
 
-} // namespace mfq::models::gemma4
+} // namespace tyloi::models::gemma4

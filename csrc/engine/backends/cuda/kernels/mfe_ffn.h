@@ -6,7 +6,7 @@
 #include <algorithm>
 #include "shared_storage.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 struct MfePackedProjection {
     const void* fields[9]{};
     std::int64_t sizes[3]{};

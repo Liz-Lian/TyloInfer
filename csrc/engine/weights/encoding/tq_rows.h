@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 using TqRead = std::function<void(
     std::uint64_t, std::byte*, std::size_t)>;
 
@@ -290,4 +290,4 @@ inline std::vector<std::int64_t> tq_tensor_shape(std::size_t bytes,
         throw std::invalid_argument("TQ logical rows differ");
     return logical;
 }
-} // namespace mfq
+} // namespace tyloi

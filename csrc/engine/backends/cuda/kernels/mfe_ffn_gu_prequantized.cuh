@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 // The following hidden-quantization node owns completion and Down geometry.
 // One warp reads the immutable route classification and descriptors before

@@ -9,7 +9,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 constexpr std::size_t kRankStride = 256;
@@ -111,8 +111,8 @@ const std::uint8_t* NintRows::selectors(
 void NintRows::initialize() {
     Cursor cursor(nbytes_, read_);
     const auto raw_bits = cursor.scalar<std::uint8_t>();
-    adaptive_ = mfq::nint_has_adaptive_storage(raw_bits);
-    bits_ = mfq::nint_logical_bits(raw_bits);
+    adaptive_ = tyloi::nint_has_adaptive_storage(raw_bits);
+    bits_ = tyloi::nint_logical_bits(raw_bits);
     sub_bits_ = cursor.scalar<std::uint8_t>();
     group_size_ = cursor.scalar<std::int32_t>();
     const auto axis = cursor.scalar<std::int32_t>();
@@ -495,4 +495,4 @@ void NintRowBatch::copy_row(std::size_t row,NintRowBatch& output) const {
     }
     result.descriptors_.insert(result.descriptors_.end(),d+3,d+6);output.append_batch(result);
 }
-} // namespace mfq
+} // namespace tyloi

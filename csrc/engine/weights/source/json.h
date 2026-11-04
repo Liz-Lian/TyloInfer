@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::source {
+namespace tyloi::source {
 
 std::vector<std::byte> read_file(const std::filesystem::path& path);
 std::string read_text(const std::filesystem::path& path);
@@ -16,4 +16,4 @@ nlohmann::json parse_json(
     std::string_view payload,
     const std::filesystem::path& path);
 
-} // namespace mfq::source
+} // namespace tyloi::source

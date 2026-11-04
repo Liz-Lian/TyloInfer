@@ -10,9 +10,9 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::cuda::deepseek_v4 {
-using Tensor = mfq_tensor_backend::Tensor;
-using Config = mfq::models::deepseek_v4::Config;
+namespace tyloi::cuda::deepseek_v4 {
+using Tensor = ::tyloi::Tensor;
+using Config = tyloi::models::deepseek_v4::Config;
 struct PoolState;
 
 struct Compressor {
@@ -44,14 +44,14 @@ struct Layer {
 struct OutputHeadWeights { Tensor function, scale, base; };
 
 struct Model {
-    std::shared_ptr<const mfq::ModelSource> source;
-    mfq::ModelGraph graph;
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
     Config config;
-    mfq::models::CausalLmMetadata metadata;
+    tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
     Tensor output_norm;
     OutputHeadWeights output_head;
     std::vector<Layer> layers;
 };
-} // namespace mfq::cuda::deepseek_v4
+} // namespace tyloi::cuda::deepseek_v4

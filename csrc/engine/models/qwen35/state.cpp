@@ -8,11 +8,11 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 namespace {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 void require_state(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -56,8 +56,8 @@ void validate_linear_snapshot(const Layout& model_layer, const LinearLayout& lay
     const auto width = 2 * layer.key_heads * layer.key_dim +
                        layer.value_heads * layer.value_dim;
     if (!(mixer.defined() && mixer.transposed == transposed &&
-          mixer.convolution.scalar_type() == mfq_tensor_backend::kFloat32 &&
-          mixer.recurrent.scalar_type() == mfq_tensor_backend::kFloat32 &&
+          mixer.convolution.scalar_type() == ::tyloi::kFloat32 &&
+          mixer.recurrent.scalar_type() == ::tyloi::kFloat32 &&
           mixer.convolution.dim() == 3 && mixer.convolution.size(0) == 1 &&
           mixer.convolution.size(1) == layer.conv_kernel - 1 &&
           mixer.convolution.size(2) == width && mixer.recurrent.dim() == 4 &&
@@ -74,7 +74,7 @@ void validate_full_snapshot(const Layout& model_layer, const FullLayout& layer,
                             const KvSnapshot& state) {
     validate_kv(state);
     const bool quantized = layer.quantization.enabled();
-    const auto dtype = quantized ? mfq_tensor_backend::kInt32 : layer.dtype;
+    const auto dtype = quantized ? ::tyloi::kInt32 : layer.dtype;
     if (!(state.ring == layer.sliding && state.k.scalar_type() == dtype &&
           state.v.scalar_type() == dtype && on_layer_device(state.k, model_layer) &&
           on_layer_device(state.v, model_layer) && state.k.size(1) == layer.kv_heads &&
@@ -126,8 +126,8 @@ State::State(const Model& model, const bool& transposed)
                                           full->attention.attention_head_dim,
                                           full->attention.sliding,
                                           full->attention.official_bf16
-                                              ? mfq_tensor_backend::kBFloat16
-                                              : mfq_tensor_backend::kFloat16,
+                                              ? ::tyloi::kBFloat16
+                                              : ::tyloi::kFloat16,
                                           full->attention.kv_quantization,
                                           full->attention.sliding
                                               ? full->attention.attention_window
@@ -157,7 +157,7 @@ void State::preallocate() {
         MfqCudaGuard guard(layer.device);
         cache = KVCache(
             1, full->kv_heads, full->capacity, full->head_dim, full->sliding,
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layer.device), full->dtype,
+            ::tyloi::Device(::tyloi::kCUDA, layer.device), full->dtype,
             full->quantization);
     }
 }
@@ -225,8 +225,8 @@ void State::abort_speculative() noexcept {
     speculative_confirmed = 0;
 }
 
-std::vector<mfq_tensor_backend::Tensor*> State::graph_state() {
-    std::vector<mfq_tensor_backend::Tensor*> result;
+std::vector<::tyloi::Tensor*> State::graph_state() {
+    std::vector<::tyloi::Tensor*> result;
     for (auto& state : layers) {
         auto* linear = std::get_if<LinearState>(&state);
         if (linear == nullptr) continue;
@@ -239,9 +239,9 @@ std::vector<mfq_tensor_backend::Tensor*> State::graph_state() {
     return result;
 }
 
-std::vector<mfq_tensor_backend::Tensor> State::storage() const {
-    std::vector<mfq_tensor_backend::Tensor> result;
-    const auto append = [&result](const mfq_tensor_backend::Tensor& tensor) {
+std::vector<::tyloi::Tensor> State::storage() const {
+    std::vector<::tyloi::Tensor> result;
+    const auto append = [&result](const ::tyloi::Tensor& tensor) {
         if (tensor.defined()) result.push_back(tensor);
     };
     for (const auto& state : layers) {
@@ -416,9 +416,9 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
             linear.speculative_ffn_batches = current.speculative_ffn_batches;
             linear.speculative_projection_batches = current.speculative_projection_batches;
             // Candidate owns copy targets through the caller's asynchronous drain.
-            linear.mixer.view().convolution = mfq_tensor_backend::empty(
+            linear.mixer.view().convolution = ::tyloi::cuda::empty(
                 saved.mixer.convolution.sizes(), saved.mixer.convolution.options());
-            linear.mixer.view().recurrent = mfq_tensor_backend::empty(
+            linear.mixer.view().recurrent = ::tyloi::cuda::empty(
                 saved.mixer.recurrent.sizes(), saved.mixer.recurrent.options());
             linear.mixer.restore(saved.mixer);
         }
@@ -434,4 +434,4 @@ void State::publish(Restore&& restore) noexcept {
     batch = 1;
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

@@ -14,17 +14,17 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 class FileRangeReader;
 
 bool is_gguf_file(const std::filesystem::path& path);
 
-} // namespace mfq
+} // namespace tyloi
 
-namespace mfq::gguf {
+namespace tyloi::gguf {
 
-struct Tensor {
+struct ShardTensorInfo {
     std::string name;
     std::vector<std::int64_t> shape;
     int type = 0;
@@ -48,7 +48,7 @@ public:
     nlohmann::json metadata() const;
     std::vector<std::byte> tokenizer() const;
     std::vector<std::string> names() const;
-    Tensor tensor(std::int64_t index) const;
+    ShardTensorInfo tensor(std::int64_t index) const;
 
 private:
     struct Impl;
@@ -71,4 +71,4 @@ struct Record {
 int splits(const std::filesystem::path& path);
 std::vector<std::filesystem::path> paths(const std::filesystem::path& path, int splits);
 
-} // namespace mfq::gguf
+} // namespace tyloi::gguf

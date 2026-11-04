@@ -5,8 +5,8 @@
 
 namespace {
 
-bool same_tensor_layout(const mfq_tensor_backend::Tensor& expected,
-                        const mfq_tensor_backend::Tensor& candidate) {
+bool same_tensor_layout(const ::tyloi::Tensor& expected,
+                        const ::tyloi::Tensor& candidate) {
     if (expected.defined() != candidate.defined()) return false;
     if (!expected.defined()) return true;
     if (expected.data_ptr() != candidate.data_ptr() ||
@@ -22,8 +22,8 @@ bool same_tensor_layout(const mfq_tensor_backend::Tensor& expected,
     return true;
 }
 
-bool same_storage(const std::vector<mfq_tensor_backend::Tensor>& expected,
-                  const std::vector<mfq_tensor_backend::Tensor>& candidate) {
+bool same_storage(const std::vector<::tyloi::Tensor>& expected,
+                  const std::vector<::tyloi::Tensor>& candidate) {
     if (expected.size() != candidate.size()) return false;
     for (std::size_t index = 0; index < expected.size(); ++index)
         if (!same_tensor_layout(expected[index], candidate[index])) return false;
@@ -34,7 +34,7 @@ bool same_storage(const std::vector<mfq_tensor_backend::Tensor>& expected,
 
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
         const MfqCudaStream& primary_stream,
-        const mfq::cuda::Collectives& collectives) {
+        const tyloi::cuda::Collectives& collectives) {
     if (collectives.streams().empty()) return {primary_stream};
     std::vector<MfqCudaStream> streams;
     streams.reserve(collectives.streams().size());
@@ -50,7 +50,7 @@ std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
 
 std::vector<MfqCudaStream> cuda_graph_participant_streams(
         const std::vector<MfqCudaStream>& compute_streams,
-        const mfq::cuda::Collectives& collectives) {
+        const tyloi::cuda::Collectives& collectives) {
     auto participants = compute_streams;
     participants.insert(
         participants.end(),
@@ -75,20 +75,20 @@ DecodeGraphCache::DecodeGraphCache(int64_t context_capacity)
       generated_capacity(std::max<int64_t>(context_capacity, 2048)) {}
 
 void DecodeGraphCache::ensure_compute_streams(
-        const mfq::cuda::Collectives& collectives) {
+        const tyloi::cuda::Collectives& collectives) {
     if (!compute_streams.empty()) return;
     compute_streams = make_cuda_graph_compute_streams(stream, collectives);
 }
 
 std::vector<MfqCudaStream> DecodeGraphCache::graph_participant_streams(
-        const mfq::cuda::Collectives& collectives) const {
+        const tyloi::cuda::Collectives& collectives) const {
     return cuda_graph_participant_streams(compute_streams, collectives);
 }
 
 bool DecodeGraphCache::matches(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-        const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) const {
+        const std::vector<::tyloi::Tensor>& candidate_storage) const {
     return valid && planned_len == candidate_len && greedy == candidate_greedy &&
            same_storage(storage, candidate_storage) &&
            (candidate_greedy ||
@@ -100,25 +100,25 @@ bool DecodeGraphCache::matches(
 }
 
 void DecodeGraphCache::ensure_storage(int64_t vocab_size) {
-    auto i64 = mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA);
-    if (!static_input.defined()) static_input = mfq_tensor_backend::empty({1, 1}, i64);
-    if (!static_pos.defined()) static_pos = mfq_tensor_backend::empty({1}, i64);
-    if (!static_len.defined()) static_len = mfq_tensor_backend::empty({1}, i64);
-    if (!static_step.defined()) static_step = mfq_tensor_backend::empty({1}, i64);
-    if (!generated.defined()) generated = mfq_tensor_backend::empty({generated_capacity}, i64);
+    auto i64 = ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
+    if (!static_input.defined()) static_input = ::tyloi::cuda::empty({1, 1}, i64);
+    if (!static_pos.defined()) static_pos = ::tyloi::cuda::empty({1}, i64);
+    if (!static_len.defined()) static_len = ::tyloi::cuda::empty({1}, i64);
+    if (!static_step.defined()) static_step = ::tyloi::cuda::empty({1}, i64);
+    if (!generated.defined()) generated = ::tyloi::cuda::empty({generated_capacity}, i64);
     if (!random.defined()) {
-        random = mfq_tensor_backend::empty(
-            {1}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32).device(mfq_tensor_backend::kCUDA));
+        random = ::tyloi::cuda::empty(
+            {1}, ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCUDA));
     }
     if (!counts.defined()) {
-        counts = mfq_tensor_backend::empty(
-            {vocab_size}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32).device(mfq_tensor_backend::kCUDA));
+        counts = ::tyloi::cuda::empty(
+            {vocab_size}, ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCUDA));
     }
 }
 
 void DecodeGraphCache::initialize_inputs(
-        const mfq_tensor_backend::Tensor& pending, int64_t position,
-        const mfq_tensor_backend::Tensor& random_host) {
+        const ::tyloi::Tensor& pending, int64_t position,
+        const ::tyloi::Tensor& random_host) {
     cudaStream_t graph_stream = stream.stream();
     std::int64_t length = position + 1;
     std::int64_t step = 1;
@@ -152,7 +152,7 @@ void DecodeGraphCache::initialize_inputs(
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(graph_stream));
 }
 
-void DecodeGraphCache::upload_random(const mfq_tensor_backend::Tensor& random_host) {
+void DecodeGraphCache::upload_random(const ::tyloi::Tensor& random_host) {
     TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(random.data_ptr<float>(),
         random_host.data_ptr<float>(),
         sizeof(float),
@@ -164,14 +164,14 @@ void DecodeGraphCache::invalidate() {
     if (graph) graph->reset();
     graph.reset();
     storage.clear();
-    static_next = mfq_tensor_backend::Tensor();
+    static_next = ::tyloi::Tensor();
     valid = false;
 }
 
 void DecodeGraphCache::set_key(
         int64_t candidate_len, const MfqSamplingParams & sampling,
         bool candidate_greedy,
-        const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) {
+        const std::vector<::tyloi::Tensor>& candidate_storage) {
     planned_len = candidate_len;
     greedy = candidate_greedy;
     temperature = sampling.temperature;

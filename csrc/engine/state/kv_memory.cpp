@@ -21,12 +21,11 @@
 #include <unistd.h>
 #endif
 
-namespace mfq::cuda {
-namespace tb = mfq_tensor_backend;
+namespace tyloi::cuda {
 namespace {
 constexpr const char* insufficient = "kv_memory_insufficient: available VRAM and RAM cannot hold the configured KV cache; choose automatic with SSD KV or reduce context length";
 std::size_t setting(const char* name, std::size_t fallback) {
-    const char* value = mfq::cuda::env_lookup(name);
+    const char* value = tyloi::cuda::env_lookup(name);
     if (!value || !*value) return fallback;
     char* end = nullptr;
     const auto result = std::strtoull(value, &end, 10);
@@ -42,24 +41,24 @@ std::size_t host_available() {
     return pages > 0 && size > 0 ? std::size_t(pages) * size : 0;
 #endif
 }
-std::size_t width_bytes(const tb::TensorOptions& options) { return options.scalar_type() == tb::kInt32 ? 4 : 2; }
+std::size_t width_bytes(const ::tyloi::TensorOptions& options) { return options.scalar_type() == ::tyloi::kInt32 ? 4 : 2; }
 bool discrete_device() {
-    if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_MEMORY_ARCHITECTURE"))return std::string(value)=="discrete";
+    if(const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MEMORY_ARCHITECTURE"))return std::string(value)=="discrete";
     int device=0,integrated=0,host_tables=0;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device));
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&integrated,cudaDevAttrIntegrated,device));
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceGetAttribute(&host_tables,cudaDevAttrPageableMemoryAccessUsesHostPageTables,device));
     return !integrated && !host_tables;
 }
-tb::Tensor external(void* data, std::shared_ptr<void> owner, const std::vector<int64_t>& shape,
-                    const tb::TensorOptions& options) {
+::tyloi::Tensor external(void* data, std::shared_ptr<void> owner, const std::vector<int64_t>& shape,
+                    const ::tyloi::TensorOptions& options) {
     auto view = make_contiguous_view(data, shape, options.scalar_type(), options.target_device());
     auto storage = std::make_shared<TensorStorage>();
     storage->base = data; storage->bytes = view.nbytes(); storage->device = options.target_device();
     storage->owner = std::move(owner);
     return Tensor(std::move(storage), view);
 }
-tb::Tensor host_tensor(const std::vector<int64_t>& shape, const tb::TensorOptions& options) {
+::tyloi::Tensor host_tensor(const std::vector<int64_t>& shape, const ::tyloi::TensorOptions& options) {
     std::size_t bytes = width_bytes(options);
     for (const auto dimension : shape) {
         if (dimension <= 0 || std::size_t(dimension) > std::numeric_limits<std::size_t>::max()/bytes)
@@ -117,10 +116,10 @@ struct KvMemoryAllocation::Virtual {
 
 KvMemoryOptions kv_memory_options() {
     KvMemoryOptions o;
-    if (const auto* p=mfq::cuda::env_lookup("TYLOINFER_KV_PLACEMENT")) o.placement=p;
+    if (const auto* p=tyloi::cuda::env_lookup("TYLOINFER_KV_PLACEMENT")) o.placement=p;
     if (o.placement!="auto" && o.placement!="auto_ssd" && o.placement!="vram" && o.placement!="ram")
         throw std::invalid_argument("invalid KV placement");
-    if (const auto* p=mfq::cuda::env_lookup("TYLOINFER_KV_ALLOCATION")) {
+    if (const auto* p=tyloi::cuda::env_lookup("TYLOINFER_KV_ALLOCATION")) {
         const std::string allocation=p;
         if (allocation!="preallocated" && allocation!="dynamic") throw std::invalid_argument("invalid KV allocation");
         o.dynamic=allocation=="dynamic";
@@ -129,14 +128,14 @@ KvMemoryOptions kv_memory_options() {
         throw std::invalid_argument("kv_dynamic_unavailable: experimental dynamic KV requires VRAM or automatic without SSD");
     o.gpu_limit=setting("TYLOINFER_KV_GPU_LIMIT_BYTES",0);
     o.gpu_budget=setting("TYLOINFER_KV_GPU_BUDGET_BYTES",0);
-    o.budget_policy=mfq::cuda::env_lookup("TYLOINFER_KV_RAM_PREALLOCATED") || o.gpu_budget;
+    o.budget_policy=tyloi::cuda::env_lookup("TYLOINFER_KV_RAM_PREALLOCATED") || o.gpu_budget;
     o.ram_preallocated=setting("TYLOINFER_KV_RAM_PREALLOCATED",1)!=0;
     if(!o.ram_preallocated && o.placement!="auto_ssd")throw std::invalid_argument("kv_ssd_required: disabling RAM preallocation requires SSD KV");
-    o.ram_limit_set=mfq::cuda::env_lookup("TYLOINFER_KV_RAM_LIMIT_BYTES")!=nullptr;
+    o.ram_limit_set=tyloi::cuda::env_lookup("TYLOINFER_KV_RAM_LIMIT_BYTES")!=nullptr;
     o.ram_limit=setting("TYLOINFER_KV_RAM_LIMIT_BYTES",0);
     o.auto_stream_threshold=int64_t(setting("TYLOINFER_KV_AUTO_STREAM_MIN_CONTEXT",65536));
     o.resident_cells=int64_t(setting("TYLOINFER_KV_RESIDENT_CELLS",32768));
-    if (const auto* p=mfq::cuda::env_lookup("TYLOINFER_RUNTIME_PREFIX_CACHE_DIR")) o.directory=p;
+    if (const auto* p=tyloi::cuda::env_lookup("TYLOINFER_RUNTIME_PREFIX_CACHE_DIR")) o.directory=p;
     return o;
 }
 std::size_t KvMemoryAllocation::raw_bytes() const {return std::size_t(maximum)*heads*(key_width+value_width)*width_bytes(options);}
@@ -162,7 +161,7 @@ void KvMemoryAllocation::ensure(int64_t tokens) {
 }
 KvMemoryManager::KvMemoryManager(KvMemoryOptions options):options_(std::move(options)) {}
 std::shared_ptr<KvMemoryAllocation> KvMemoryManager::add(int64_t maximum,int64_t heads,int64_t kw,int64_t vw,
-        int64_t iw,int64_t pool,const tb::TensorOptions& options,int64_t selected_columns) {
+        int64_t iw,int64_t pool,const ::tyloi::TensorOptions& options,int64_t selected_columns) {
     if (ready_) {
         auto policy=options_;policy.additional_request=true;
         if(policy.budget_policy && policy.gpu_budget)for(const auto& weak:allocations_)if(auto existing=weak.lock()) {
@@ -287,9 +286,9 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
     if(tiered_budget && !options_.additional_request && !options_.dynamic && setting("TYLOINFER_KV_EXPERT_LOAN",1))expert_loan_=std::make_shared<KvExpertLoan>();
     for(auto& weak:allocations_)if(auto a=weak.lock()) {
         const auto shape=[&](int64_t w){return std::vector<int64_t>{1,a->heads,a->maximum,w};};
-        auto index_options=a->options;index_options.dtype(tb::kFloat16);
-        a->index=tb::zeros({1,a->maximum,a->index_width},index_options);
-        a->pooled=tb::zeros({1,(a->maximum+a->pool-1)/a->pool,a->index_width},index_options);
+        auto index_options=a->options;index_options.dtype(::tyloi::kFloat16);
+        a->index=::tyloi::cuda::zeros({1,a->maximum,a->index_width},index_options);
+        a->pooled=::tyloi::cuda::zeros({1,(a->maximum+a->pool-1)/a->pool,a->index_width},index_options);
         a->host=options_.placement=="ram" || automatic_ram_ || exclusive || raw_host_only;a->offload=offload_;
         if(options_.dynamic) {
             a->virtual_keys=std::make_shared<KvMemoryAllocation::Virtual>(a->maximum,a->heads,a->key_width,width_bytes(a->options));
@@ -304,13 +303,13 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
             a->hot.set_cold_storage(cold_keys,cold_values);
             // Logical geometry only: tier-aware kernels resolve every row via
             // the maps. The owner retains the smaller physical RAM tensors.
-            a->keys=external(cold_keys.data_ptr(),std::make_shared<tb::Tensor>(cold_keys),shape(a->key_width),a->options);
-            a->values=external(cold_values.data_ptr(),std::make_shared<tb::Tensor>(cold_values),shape(a->value_width),a->options);
+            a->keys=external(cold_keys.data_ptr(),std::make_shared<::tyloi::Tensor>(cold_keys),shape(a->key_width),a->options);
+            a->values=external(cold_values.data_ptr(),std::make_shared<::tyloi::Tensor>(cold_values),shape(a->value_width),a->options);
         } else if(a->host) {
             a->keys=host_tensor(shape(a->key_width),a->options);a->values=host_tensor(shape(a->value_width),a->options);
             if(automatic_ram_)a->hot=HotKvCache::allocate(a->heads,a->maximum,cells,a->key_width,a->value_width,a->options);
         } else if(!offload_) {
-            a->keys=tb::zeros(shape(a->key_width),a->options);a->values=tb::zeros(shape(a->value_width),a->options);
+            a->keys=::tyloi::cuda::zeros(shape(a->key_width),a->options);a->values=::tyloi::cuda::zeros(shape(a->value_width),a->options);
         }
         a->ready=true;
         if(expert_loan_) {
@@ -328,7 +327,7 @@ void KvMemoryManager::finalize(std::size_t minimum_experts) {
     if(offload_ && expert_loan_)offload_->set_expert_loan(expert_loan_);
     // Reserve shared decode I/O buffers before sizing the expert arenas.
     // Graph capture must not discover a large workspace after admission.
-    const auto* stream_graphs=mfq::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
+    const auto* stream_graphs=tyloi::cuda::env_lookup("TYLOINFER_KV_STREAM_GRAPHS");
     if(offload_ && (!stream_graphs || stream_graphs[0]!='0'))for(auto& weak:allocations_)if(auto a=weak.lock()) {
         if(a->selected_columns)offload_->gather_workspace(8*a->selected_columns,
             a->heads*(a->key_width+a->value_width),a->options.scalar_type(),a->heads,a->key_width);

@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 template<class T> T at(const std::vector<std::uint8_t>& bytes,std::size_t offset) {
     if (offset>bytes.size() || sizeof(T)>bytes.size()-offset)
@@ -310,4 +310,4 @@ std::size_t NvqRows::row_range_nbytes(std::int64_t begin,std::int64_t end) const
         packed(rows*(aux_bits_==1 ? groups_ : signs_),aux_bits_);
     return bytes;
 }
-} // namespace mfq
+} // namespace tyloi

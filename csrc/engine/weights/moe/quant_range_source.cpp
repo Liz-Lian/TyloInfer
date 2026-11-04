@@ -18,37 +18,36 @@
 #include <limits>
 #include <stdexcept>
 
-namespace tb=mfq_tensor_backend;
-using mfq::cuda::quant_format::cpu_u8_tensor;
-using mfq::cuda::quant_format::cpu_f16_to_f32_tensor;
+using tyloi::cuda::quant_format::cpu_u8_tensor;
+using tyloi::cuda::quant_format::cpu_f16_to_f32_tensor;
 
 namespace {
-void copy_neuron_anchors(std::vector<uint16_t>& anchors,const tb::Tensor& target) {
+void copy_neuron_anchors(std::vector<uint16_t>& anchors,const ::tyloi::Tensor& target) {
     const auto count=int64_t(anchors.size());
-    auto output=tb::from_blob(target.data_ptr(),{count},
-        tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32));
-    output.copy_(tb::from_blob(anchors.data(),{count},
-        tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat16)));
+    auto output=::tyloi::cuda::from_blob(target.data_ptr(),{count},
+        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat32));
+    output.copy_(::tyloi::cuda::from_blob(anchors.data(),{count},
+        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat16)));
 }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 struct NvqFieldOwner {
-    mfq::NvqRows::Fields fields;
-    explicit NvqFieldOwner(mfq::NvqRows::Fields value):fields(std::move(value)) {
-        mfq::cuda::charge_tensor_host_bytes(fields.nbytes());
+    tyloi::NvqRows::Fields fields;
+    explicit NvqFieldOwner(tyloi::NvqRows::Fields value):fields(std::move(value)) {
+        tyloi::cuda::charge_tensor_host_bytes(fields.nbytes());
     }
-    ~NvqFieldOwner(){mfq::cuda::tensor_host_bytes.fetch_sub(fields.nbytes());}
+    ~NvqFieldOwner(){tyloi::cuda::tensor_host_bytes.fetch_sub(fields.nbytes());}
 };
-tb::Tensor nvq_field_view(const std::shared_ptr<NvqFieldOwner>& owner,std::vector<uint8_t>& bytes) {
-    if(bytes.empty())return tb::empty({0},tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8));
-    auto storage=std::make_shared<tb::TensorStorage>();
-    const auto device=tb::Device{tb::kCPU,0};
+::tyloi::Tensor nvq_field_view(const std::shared_ptr<NvqFieldOwner>& owner,std::vector<uint8_t>& bytes) {
+    if(bytes.empty())return ::tyloi::cuda::empty({0},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8));
+    auto storage=std::make_shared<::tyloi::TensorStorage>();
+    const auto device=::tyloi::Device{::tyloi::kCPU,0};
     storage->owner=owner;storage->base=bytes.data();storage->bytes=bytes.size();storage->device=device;
     const std::array<int64_t,1> shape{int64_t(bytes.size())};
-    return tb::Tensor(storage,tb::make_contiguous_view(bytes.data(),shape,tb::kUInt8,device));
+    return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(bytes.data(),shape,::tyloi::kUInt8,device));
 }
 #endif
-std::vector<tb::Tensor> expert_field_tensors(const MixedMoePool& pool) {
-    std::vector<tb::Tensor> fields;
+std::vector<::tyloi::Tensor> expert_field_tensors(const MixedMoePool& pool) {
+    std::vector<::tyloi::Tensor> fields;
     if (pool.family==MixedMoeFamily::Nint)
         fields={pool.nint.q_packed,pool.nint.row_q_bits,pool.nint.row_q_bit_offsets,
             pool.nint.sub_scale,pool.nint.sub_min,pool.nint.neuron_scale,pool.nint.neuron_min};
@@ -63,14 +62,14 @@ std::size_t expert_fields_bytes(const MixedMoePool& pool) {
 }
 }
 
-MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<mfq::MfeQuantExpertStore> store)
+MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<tyloi::MfeQuantExpertStore> store)
     :store_(std::move(store)),metadata_(std::make_shared<MixedMoeRuntime>()) {
     if (!store_) throw std::invalid_argument("missing quantized expert range source");
-    const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
+    const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     profile_ssd_=profile && profile[0]=='1';
-    const auto dense=mfq::cuda::runtime_options::moe_nvq_dense();
-    const auto preload=mfq::cuda::runtime_options::moe_preload_all();
-    const auto sealed=mfq::cuda::runtime_options::moe_assert_resident();
+    const auto dense=tyloi::cuda::runtime_options::moe_nvq_dense();
+    const auto preload=tyloi::cuda::runtime_options::moe_preload_all();
+    const auto sealed=tyloi::cuda::runtime_options::moe_assert_resident();
     const bool complete=preload && *preload && sealed && *sealed;
     dense_groups_=dense ? *dense : complete;
     if(dense_groups_ && !complete)
@@ -105,7 +104,7 @@ MoeQuantRangeSource::MoeQuantRangeSource(std::shared_ptr<mfq::MfeQuantExpertStor
         pool.local_experts=static_cast<int>(ids.size());
         std::vector<std::int32_t> local(store_->num_experts(),-1);
         for (std::size_t j=0; j<ids.size(); ++j) local[ids[j]]=static_cast<std::int32_t>(j);
-        pool.expert_local=tb::tensor(local,tb::TensorOptions().dtype(tb::kInt32));
+        pool.expert_local=::tyloi::cuda::tensor(local,::tyloi::TensorOptions().dtype(::tyloi::kInt32));
         metadata_->pools.push_back(std::move(pool));
     }
 }
@@ -123,14 +122,14 @@ MixedMoePool MoeQuantRangeSource::read_expert(int expert) const {
 
 MixedMoePool MoeQuantRangeSource::allocate_expert(int expert) const {
     const auto index=store_->expert_pool(expert);
-    std::vector<tb::Tensor> fields;
+    std::vector<::tyloi::Tensor> fields;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     {
         auto block=pinned_arena_?pinned_arena_->allocate(arena_bytes_.at(index)):nullptr;
         const auto& layouts=field_layouts_.at(index);
         std::vector<std::shared_ptr<MoePinnedExpertArena::Block>> pinned_fields;
         std::vector<std::size_t> pageable_offsets;
-        std::shared_ptr<tb::Tensor> pageable;
+        std::shared_ptr<::tyloi::Tensor> pageable;
         if(!block) {
             // Large expert images can fail despite smaller free intervals.
             // Retain any fields that fit there; only the remaining fields
@@ -144,8 +143,8 @@ MixedMoePool MoeQuantRangeSource::allocate_expert(int expert) const {
                     bytes=(bytes+15)&~std::size_t(15);pageable_offsets[f]=bytes;bytes+=layouts[f].bytes;
                 }
             }
-            pageable=std::make_shared<tb::Tensor>(tb::empty({std::int64_t(bytes)},
-                tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8)));
+            pageable=std::make_shared<::tyloi::Tensor>(::tyloi::cuda::empty({std::int64_t(bytes)},
+                ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8)));
             if(pinned_bytes) {
                 static std::atomic<bool> reported{false};
                 if(!reported.exchange(true,std::memory_order_relaxed))std::fprintf(stderr,
@@ -155,8 +154,8 @@ MixedMoePool MoeQuantRangeSource::allocate_expert(int expert) const {
         }
         for(std::size_t f=0;f<layouts.size();++f) {
             const auto& layout=layouts[f];
-            auto storage=std::make_shared<tb::TensorStorage>();
-            const auto device=tb::Device{tb::kCPU,0};
+            auto storage=std::make_shared<::tyloi::TensorStorage>();
+            const auto device=::tyloi::Device{::tyloi::kCPU,0};
             std::uint8_t* address=nullptr;
             if(block){storage->owner=block;address=block->data()+layout.offset;}
             else if(pinned_fields[f]){storage->owner=pinned_fields[f];address=pinned_fields[f]->data();}
@@ -166,12 +165,12 @@ MixedMoePool MoeQuantRangeSource::allocate_expert(int expert) const {
             }
             storage->base=address;storage->bytes=layout.bytes;
             storage->device=device;storage->pinned=bool(block) || bool(pinned_fields[f]);
-            fields.emplace_back(storage,tb::make_contiguous_view(address,layout.shape,layout.dtype,device));
+            fields.emplace_back(storage,::tyloi::make_contiguous_view(address,layout.shape,layout.dtype,device));
         }
     }
 #else
     for(const auto& layout:field_layouts_.at(index))
-        fields.push_back(tb::empty(layout.shape,tb::TensorOptions().device(tb::kCPU).dtype(layout.dtype)));
+        fields.push_back(::tyloi::cuda::empty(layout.shape,::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(layout.dtype)));
 #endif
     auto pool=metadata_->pools.at(index);pool.local_experts=1;pool.expert_local={};
     if(pool.family==MixedMoeFamily::Nvq) {
@@ -197,7 +196,7 @@ MixedMoePool MoeQuantRangeSource::read_expert_canonical(int expert) const {
     const auto begin=profile?Clock::now():Clock::time_point{};
     const auto index=store_->expert_pool(expert);
     auto fields=!dense_groups_ && std::size_t(index)<metadata_->pools.size()?store_->read_nvq_fields(expert):std::nullopt;
-    const auto encoded=fields?mfq::MfeQuantExpert{}:store_->read_expert(expert);
+    const auto encoded=fields?tyloi::MfeQuantExpert{}:store_->read_expert(expert);
     const auto source_bytes=fields?fields->source_nbytes:encoded.payload.size();
     const auto read_done=profile?Clock::now():Clock::time_point{};
     if (preloaded_.load()) {
@@ -237,7 +236,7 @@ MixedMoePool MoeQuantRangeSource::read_expert_canonical(int expert) const {
     return result;
 }
 
-void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<tb::Tensor>& targets,bool touch_cache) const {
+void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<::tyloi::Tensor>& targets,bool touch_cache) const {
     const auto index=store_->expert_pool(expert);
     std::size_t bytes=0;
     for(const auto& target:targets) {
@@ -252,7 +251,7 @@ void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<tb::Te
             const auto size=fields[f].numel()*fields[f].element_size();
             if(size!=targets[f].numel()*targets[f].element_size())
                 throw std::invalid_argument("SSD field copy shape differs");
-            mfq::copy_host_range({targets[f].data_ptr(),fields[f].data_ptr(),size});
+            tyloi::copy_host_range({targets[f].data_ptr(),fields[f].data_ptr(),size});
         }
     };
     if(host_cache_)if(auto cached=host_cache_->find(host_key(expert),touch_cache)) {copy(cached->weights);return;}
@@ -269,7 +268,7 @@ void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<tb::Te
         using Clock=std::chrono::steady_clock;
         const bool profile=profile_ssd_ && preloaded_.load();
         const auto begin=profile?Clock::now():Clock::time_point{};
-        std::array<mfq::QuantFieldTarget,2> fields;
+        std::array<tyloi::QuantFieldTarget,2> fields;
         for(std::size_t f=0;f<2;++f)fields[f]={static_cast<std::uint8_t*>(targets[f].data_ptr()),
             std::size_t(targets[f].nbytes())};
         std::size_t source_bytes=0;
@@ -291,7 +290,7 @@ void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<tb::Te
         const auto rows=std::size_t(store_->out_per_expert());
         std::array<std::vector<std::uint16_t>,2> anchors;
         for(auto& anchor:anchors)anchor.resize(rows);
-        std::array<mfq::QuantFieldTarget,7> fields;
+        std::array<tyloi::QuantFieldTarget,7> fields;
         for(std::size_t f=0;f<5;++f)fields[f]={static_cast<std::uint8_t*>(targets[f].data_ptr()),
             std::size_t(targets[f].numel()*targets[f].element_size())};
         for(std::size_t f=5;f<7;++f) {
@@ -327,11 +326,11 @@ void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<tb::Te
         const auto begin=profile?Clock::now():Clock::time_point{};
         std::vector<std::uint16_t> anchors(store_->out_per_expert());
         const auto target=[&](std::size_t f) {
-            return mfq::NvqRows::FieldTarget{static_cast<std::uint8_t*>(targets[f].data_ptr()),
+            return tyloi::NvqRows::FieldTarget{static_cast<std::uint8_t*>(targets[f].data_ptr()),
                 std::size_t(targets[f].numel()*targets[f].element_size())};
         };
-        const std::array<mfq::NvqRows::FieldTarget,4> fields={
-            mfq::NvqRows::FieldTarget{reinterpret_cast<std::uint8_t*>(anchors.data()),anchors.size()*2},
+        const std::array<tyloi::NvqRows::FieldTarget,4> fields={
+            tyloi::NvqRows::FieldTarget{reinterpret_cast<std::uint8_t*>(anchors.data()),anchors.size()*2},
             target(2),target(0),target(1)};
         std::size_t source_bytes=0;
         if(store_->copy_nvq_fields(expert,fields,&source_bytes)) {
@@ -359,7 +358,7 @@ void MoeQuantRangeSource::copy_expert_fields(int expert,const std::vector<tb::Te
 }
 
 bool MoeQuantRangeSource::copy_nvq_expert_fields(const std::vector<int>& experts,
-        const std::array<tb::Tensor,4>& targets) const {
+        const std::array<::tyloi::Tensor,4>& targets) const {
     if(experts.size()<2 || dense_groups_)return false;
     if(disk_sealed_.load())throw std::runtime_error("bulk expert disk read forbidden after complete residency preload");
     const auto index=store_->expert_pool(experts.front());
@@ -374,10 +373,10 @@ bool MoeQuantRangeSource::copy_nvq_expert_fields(const std::vector<int>& experts
     if(targets[3].nbytes()!=rows*4)throw std::invalid_argument("bulk NVQ neuron target differs");
     std::vector<std::uint16_t> anchors(rows);
     const auto field=[&](std::size_t f) {
-        return mfq::NvqRows::FieldTarget{static_cast<std::uint8_t*>(targets[f].data_ptr()),std::size_t(targets[f].nbytes())};
+        return tyloi::NvqRows::FieldTarget{static_cast<std::uint8_t*>(targets[f].data_ptr()),std::size_t(targets[f].nbytes())};
     };
-    const std::array<mfq::NvqRows::FieldTarget,4> fields={
-        mfq::NvqRows::FieldTarget{reinterpret_cast<std::uint8_t*>(anchors.data()),rows*2},field(2),field(0),field(1)};
+    const std::array<tyloi::NvqRows::FieldTarget,4> fields={
+        tyloi::NvqRows::FieldTarget{reinterpret_cast<std::uint8_t*>(anchors.data()),rows*2},field(2),field(0),field(1)};
     std::size_t source_bytes=0;
     if(!store_->copy_nvq_fields(experts,fields,&source_bytes))return false;
     const auto read_done=profile?Clock::now():Clock::time_point{};
@@ -416,27 +415,27 @@ MoeQuantRangeSource::FormatIoStats MoeQuantRangeSource::format_io_stats() const 
     return result;
 }
 
-MixedMoePool MoeQuantRangeSource::decode_expert(int expert,const mfq::MfeQuantExpert& encoded) const {
+MixedMoePool MoeQuantRangeSource::decode_expert(int expert,const tyloi::MfeQuantExpert& encoded) const {
     const auto index=store_->expert_pool(expert);
     MixedMoePool pool;
     pool.local_experts=1;
     if (encoded.dtype=="NINT") {
         pool.family=MixedMoeFamily::Nint;
-        pool.nint=to_device_mfe_nint(mfq::nint::unpack(encoded.payload),1,store_->out_per_expert(),false);
+        pool.nint=to_device_mfe_nint(tyloi::nint::unpack(encoded.payload),1,store_->out_per_expert(),false);
         const auto stride=q_strides_.at(index);
         if (pool.nint.q_expert_stride>stride) throw std::runtime_error("NINT expert exceeded metadata stride");
         if (pool.nint.q_expert_stride!=stride) {
-            auto padded=tb::zeros({1,stride},tb::TensorOptions().dtype(tb::kUInt8));
+            auto padded=::tyloi::cuda::zeros({1,stride},::tyloi::TensorOptions().dtype(::tyloi::kUInt8));
             std::memcpy(padded.data_ptr(),pool.nint.q_packed.data_ptr(),pool.nint.q_packed.numel());
             pool.nint.q_packed=std::move(padded);
             pool.nint.q_expert_stride=stride;
         }
     } else if(encoded.dtype=="MXFP4") {
         pool.family=MixedMoeFamily::Mxfp4;
-        pool.mxfp4=to_device_mxfp4(mfq::mxfp4::unpack(encoded.payload),false);
+        pool.mxfp4=to_device_mxfp4(tyloi::mxfp4::unpack(encoded.payload),false);
     } else {
         pool.family=MixedMoeFamily::Nvq;
-        pool.nvq=to_device_nvq(mfq::nvq::unpack(encoded.payload,encoded.dtype), false);
+        pool.nvq=to_device_nvq(tyloi::nvq::unpack(encoded.payload,encoded.dtype), false);
         if(dense_groups_ && prepare_nvq_dense_groups(pool.nvq))++dense_materializations_;
         if (static_cast<std::size_t>(index)<metadata_->pools.size()) {
             pool.nvq.codebook=metadata_->pools[index].nvq.codebook;
@@ -453,7 +452,7 @@ void MoeQuantRangeSource::bind_host_cache(std::shared_ptr<MoeHostExpertCache> ca
     source_id_=source_id;
 }
 
-mfq::MoeCacheKey MoeQuantRangeSource::host_key(int expert) const {
+tyloi::MoeCacheKey MoeQuantRangeSource::host_key(int expert) const {
     return {source_id_,store_->expert_pool(expert),expert};
 }
 
@@ -496,17 +495,17 @@ void MoeQuantRangeSource::mark_gpu_resident(int expert,bool resident) {
     if (resident && host_cache_) host_cache_->promote(host_key(expert));
 }
 
-tb::Tensor MoeQuantRangeSource::forward_cpu(tb::Tensor input,
+::tyloi::Tensor MoeQuantRangeSource::forward_cpu(::tyloi::Tensor input,
         const MoeRoutePlan& route,const std::unordered_map<int,MoeHostExpertCache::Lease>* prepared) const {
     const int tokens=static_cast<int>(route.ids.size(0)),routes=static_cast<int>(route.ids.size(1));
     if (route.n_experts!=store_->num_experts() || input.size(0)!=tokens || input.size(-1)!=store_->neuron_len() ||
         (input.dim()!=2 && input.dim()!=3) || (input.dim()==3 && input.size(1)!=routes))
         throw std::runtime_error("CPU cold expert input/route shape mismatch");
     const auto device=input.device();
-    auto ids=route.ids.to(tb::kCPU).to(tb::kInt32).contiguous();
-    auto x=input.to(tb::kCPU).to(tb::kFloat32).contiguous();
+    auto ids=route.ids.to(::tyloi::kCPU).to(::tyloi::kInt32).contiguous();
+    auto x=input.to(::tyloi::kCPU).to(::tyloi::kFloat32).contiguous();
     const int width=store_->neuron_len(),output=store_->out_per_expert();
-    auto result=tb::empty({tokens,routes,output},tb::TensorOptions().dtype(tb::kFloat16));
+    auto result=::tyloi::cuda::empty({tokens,routes,output},::tyloi::TensorOptions().dtype(::tyloi::kFloat16));
     std::vector<std::vector<int>> selected(store_->num_experts());
     for (int position=0; position<tokens*routes; ++position) {
         const auto expert=ids.data_ptr<std::int32_t>()[position];
@@ -519,8 +518,8 @@ tb::Tensor MoeQuantRangeSource::forward_cpu(tb::Tensor input,
         int expert=0, offset=0, count=0;
     };
     std::vector<Job> jobs;
-    auto packed=tb::empty({tokens*routes,width},tb::TensorOptions().dtype(tb::kFloat32));
-    auto values=tb::empty({tokens*routes,output},tb::TensorOptions().dtype(tb::kFloat32));
+    auto packed=::tyloi::cuda::empty({tokens*routes,width},::tyloi::TensorOptions().dtype(::tyloi::kFloat32));
+    auto values=::tyloi::cuda::empty({tokens*routes,output},::tyloi::TensorOptions().dtype(::tyloi::kFloat32));
     int offset=0;
     for (int expert=0; expert<store_->num_experts(); ++expert) {
         const auto& positions=selected[expert];
@@ -537,7 +536,7 @@ tb::Tensor MoeQuantRangeSource::forward_cpu(tb::Tensor input,
         jobs.push_back({std::move(lease),std::move(projection),expert,offset,static_cast<int>(positions.size())});
         offset+=static_cast<int>(positions.size());
     }
-    mfq::cpu::expert_pool().rows(static_cast<int64_t>(jobs.size())*output,[&](int64_t begin,int64_t end) {
+    tyloi::cpu::expert_pool().rows(static_cast<int64_t>(jobs.size())*output,[&](int64_t begin,int64_t end) {
         while(begin<end) {
             const auto index=begin/output;
             const int first=static_cast<int>(begin%output);

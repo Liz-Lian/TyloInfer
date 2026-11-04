@@ -13,20 +13,20 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 
-using mfq_tensor_backend::indexing::Slice;
+using ::tyloi::indexing::Slice;
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 struct NativeAttentionInput {
-    mfq_tensor_backend::Tensor query, key, value, positions, write_positions;
-    MfqOptional<mfq_tensor_backend::Tensor> sequence_lengths, attention_mask;
+    ::tyloi::Tensor query, key, value, positions, write_positions;
+    MfqOptional<::tyloi::Tensor> sequence_lengths, attention_mask;
     std::int64_t cache_position, planned_kv_length, decode_attention_parts;
 };
 struct NativeKvView {
-    mfq_tensor_backend::Tensor visible_key, visible_value, physical_key, physical_value;
-    mfq_tensor_backend::Tensor key_chunk_ptrs, value_chunk_ptrs, page_table;
+    ::tyloi::Tensor visible_key, visible_value, physical_key, physical_value;
+    ::tyloi::Tensor key_chunk_ptrs, value_chunk_ptrs, page_table;
     KvQuantization quantization;
     std::int64_t page_size, pages_per_chunk, heads;
     bool paged() const noexcept { return page_size > 0; }
@@ -35,29 +35,29 @@ struct NativeKvView {
 using NativeAttentionInput = AttentionInput;
 #endif
 
-MfqOptional<mfq_tensor_backend::Tensor> minicpmo45_attention_mask(
+MfqOptional<::tyloi::Tensor> minicpmo45_attention_mask(
     const NativeAttentionInput& request, const AttentionConfig& config,
     std::int64_t batch, std::int64_t tokens, std::int64_t visible_len,
     bool explicit_causal) {
-    MfqOptional<mfq_tensor_backend::Tensor> result = mfq_nullopt;
+    MfqOptional<::tyloi::Tensor> result = mfq_nullopt;
     if (!config.official_bf16 ||
         (!explicit_causal && !request.sequence_lengths.has_value() &&
          !request.attention_mask.has_value())) {
         return result;
     }
-    auto options = mfq_tensor_backend::TensorOptions()
+    auto options = ::tyloi::TensorOptions()
                        .device(request.query.device())
-                       .dtype(mfq_tensor_backend::kInt64);
-    auto key_positions = mfq_tensor_backend::arange(visible_len, options);
+                       .dtype(::tyloi::kInt64);
+    auto key_positions = ::tyloi::cuda::arange(visible_len, options);
     auto query_positions = request.write_positions.to(
-        request.query.device(), mfq_tensor_backend::kInt64);
+        request.query.device(), ::tyloi::kInt64);
     if (query_positions.dim() == 1)
         query_positions = query_positions.reshape({1, tokens}).expand({batch, tokens});
     auto allowed = key_positions.reshape({1, 1, visible_len}) <=
                    query_positions.unsqueeze(-1);
     if (request.sequence_lengths.has_value()) {
         auto lengths = request.sequence_lengths.value()
-                           .to(request.query.device(), mfq_tensor_backend::kInt64)
+                           .to(request.query.device(), ::tyloi::kInt64)
                            .reshape({batch, 1, 1});
         allowed = allowed &
                   (key_positions.reshape({1, 1, visible_len}) < lengths);
@@ -71,15 +71,15 @@ MfqOptional<mfq_tensor_backend::Tensor> minicpmo45_attention_mask(
         valid = valid.narrow(1, 0, visible_len).ne(0);
         allowed = allowed & valid.unsqueeze(1);
         auto attended = allowed.any(-1, true);
-        allowed = mfq_tensor_backend::where(attended, allowed,
-                                            mfq_tensor_backend::ones_like(allowed));
+        allowed = ::tyloi::cuda::where(attended, allowed,
+                                            ::tyloi::cuda::ones_like(allowed));
     }
     const auto mask_dtype = config.official_bf16
-                                ? mfq_tensor_backend::kBFloat16
+                                ? ::tyloi::kBFloat16
                                 : request.query.scalar_type();
-    auto additive = mfq_tensor_backend::zeros(
+    auto additive = ::tyloi::cuda::zeros(
         {batch, 1, tokens, visible_len},
-        mfq_tensor_backend::TensorOptions().device(request.query.device()).dtype(mask_dtype));
+        ::tyloi::TensorOptions().device(request.query.device()).dtype(mask_dtype));
     const double mask_min =
         static_cast<double>(std::numeric_limits<mfq_bfloat16>::lowest());
     additive.masked_fill_(allowed.logical_not().unsqueeze(1), mask_min);
@@ -91,31 +91,31 @@ MfqOptional<mfq_tensor_backend::Tensor> minicpmo45_attention_mask(
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace {
-bool rope_kv_supported(const mfq::ops::AttentionInput& input,
-                               const mfq::state::KvView& kv, const mfq::ops::RopeTable& table) {
+bool rope_kv_supported(const tyloi::ops::AttentionInput& input,
+                               const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
     return input.query.defined() && input.key.defined() && input.positions.defined() &&
         input.write_positions.defined() && input.query.dim() == 4 && input.key.dim() == 4 &&
         input.query.device().is_cuda() &&
         input.write_positions.dim() == 1 && input.positions.dim() == 1 && input.query.size(2) == 1 &&
         !kv.paged() && !kv.ring && table.rotary_dim == 128 && table.sections.numel() == 0 &&
         input.query.size(1) == 32 && input.key.size(1) == 8 && input.query.size(3) == 128 &&
-        kv.dtype == mfq::ScalarType::bfloat16;
+        kv.dtype == tyloi::ScalarType::bfloat16;
 }
-void check_device(const mfq::Tensor& query, const mfq::Tensor& tensor) {
+void check_device(const tyloi::Tensor& query, const tyloi::Tensor& tensor) {
     if (tensor.defined() && tensor.numel() != 0 && tensor.device() != query.device())
         throw std::invalid_argument("fused attention tensor devices do not match");
 }
-void check_rope_kv_devices(const mfq::ops::AttentionInput& input,
-                           const mfq::state::KvView& kv, const mfq::ops::RopeTable& table) {
-    for (const mfq::Tensor* tensor : {&input.key, &input.value, &input.write_positions,
+void check_rope_kv_devices(const tyloi::ops::AttentionInput& input,
+                           const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
+    for (const tyloi::Tensor* tensor : {&input.key, &input.value, &input.write_positions,
                                       &table.cos, &table.sin, &kv.physical_key, &kv.physical_value})
         check_device(input.query, *tensor);
 }
 }
 
-std::optional<mfq::Tensor> ops::norm_rope_kv(const mfq::ops::AttentionInput& input,
-    const mfq::state::KvView& kv, const mfq::ops::RopeTable& table,
-    const mfq::Tensor& q_norm, const mfq::Tensor& k_norm, double eps, double offset) {
+std::optional<tyloi::Tensor> ops::norm_rope_kv(const tyloi::ops::AttentionInput& input,
+    const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table,
+    const tyloi::Tensor& q_norm, const tyloi::Tensor& k_norm, double eps, double offset) {
     if (!rope_kv_supported(input, kv, table) || kv.quantization.enabled() ||
         !q_norm.defined() || !k_norm.defined() ||
         !Executor::current().attention_options().fused_qk_rope_kv)
@@ -124,40 +124,40 @@ std::optional<mfq::Tensor> ops::norm_rope_kv(const mfq::ops::AttentionInput& inp
     check_device(input.query, q_norm);
     check_device(input.query, k_norm);
     MfqCudaGuard guard(input.query.device().index);
-    using T = mfq_tensor_backend::Tensor;
-    return mfq::ops::measure("full.qk_norm_rope_kv_write", [&]() -> mfq::Tensor {
+    using T = ::tyloi::Tensor;
+    return tyloi::ops::measure("full.qk_norm_rope_kv_write", [&]() -> tyloi::Tensor {
         auto q = T(input.query);
         return minicpm_qk_norm_rope_cache_write_bf16_cuda(
             q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(), T(q_norm), T(k_norm),
-            T(input.positions).contiguous().to(q.device(), mfq_tensor_backend::kInt64),
+            T(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
             T(input.write_positions), T(table.cos), T(table.sin), T(kv.physical_key), T(kv.physical_value),
             eps, offset);
     });
 }
 
-std::optional<mfq::Tensor> ops::rope_kv(const mfq::ops::AttentionInput& input,
-    const mfq::state::KvView& kv, const mfq::ops::RopeTable& table) {
+std::optional<tyloi::Tensor> ops::rope_kv(const tyloi::ops::AttentionInput& input,
+    const tyloi::state::KvView& kv, const tyloi::ops::RopeTable& table) {
     if (!rope_kv_supported(input, kv, table) ||
         !Executor::current().attention_options().fused_rope_kv)
         return std::nullopt;
     check_rope_kv_devices(input, kv, table);
     MfqCudaGuard guard(input.query.device().index);
-    using T = mfq_tensor_backend::Tensor;
-    return mfq::ops::measure("full.rope_kv_write", [&]() -> mfq::Tensor {
+    using T = ::tyloi::Tensor;
+    return tyloi::ops::measure("full.rope_kv_write", [&]() -> tyloi::Tensor {
         auto q = T(input.query);
         return minicpm_bf16_rope_cache_write_cuda(
             q.contiguous(), T(input.key).contiguous(), T(input.value).contiguous(),
-            T(input.positions).contiguous().to(q.device(), mfq_tensor_backend::kInt64),
+            T(input.positions).contiguous().to(q.device(), ::tyloi::kInt64),
             T(input.write_positions), T(table.cos), T(table.sin), T(kv.physical_key), T(kv.physical_value),
             table.rotary_dim);
     });
 }
 
-mfq::ops::AttentionResult ops::attention(const mfq::ops::AttentionInput& input,
-                                        const mfq::state::KvView& public_kv,
-                                        const mfq::ops::AttentionConfig& public_config) {
+tyloi::ops::AttentionResult ops::attention(const tyloi::ops::AttentionInput& input,
+                                        const tyloi::state::KvView& public_kv,
+                                        const tyloi::ops::AttentionConfig& public_config) {
     MfqCudaGuard guard(input.query.device().index);
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     const NativeAttentionInput request{
         Tensor(input.query), Tensor(input.key), Tensor(input.value), Tensor(input.positions),
         Tensor(input.write_positions),
@@ -188,7 +188,6 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                    CudaProfiler& profiler) {
     const auto pages = quantized_pages(kv);
 #endif
-    namespace tb = mfq_tensor_backend;
     const auto& q = request.query;
     const auto& k = request.key;
     const auto& v = request.value;
@@ -202,7 +201,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                   : 1.0 / std::sqrt(static_cast<double>(head_dim));
     bool attention_token_major = false;
 
-    auto attention = profiler.measure("full.attention", [&]() -> tb::Tensor {
+    auto attention = profiler.measure("full.attention", [&]() -> ::tyloi::Tensor {
         if (kv.quantization.enabled()) {
             attention_token_major = true;
             const auto capacity = request.planned_kv_length > 0
@@ -211,16 +210,16 @@ AttentionResult dispatch_attention(const AttentionInput& request,
             return cuda_kv_attention(
                 q, kv.physical_key, kv.physical_value, kv.quantization, {},
                 request.write_positions, request.cache_position, pages, capacity,
-                request.sequence_lengths.value_or(tb::Tensor{}),
-                request.attention_mask.value_or(tb::Tensor{}), attn_scale);
+                request.sequence_lengths.value_or(::tyloi::Tensor{}),
+                request.attention_mask.value_or(::tyloi::Tensor{}), attn_scale);
         }
 
         if (!q.is_cuda()) {
             TYLOINFER_RUNTIME_CHECK(
                 !config.sliding, "CPU dense offload does not support sliding attention");
             const auto cpu_attention_dtype = config.official_bf16
-                                                 ? tb::kBFloat16
-                                                 : tb::kFloat32;
+                                                 ? ::tyloi::kBFloat16
+                                                 : ::tyloi::kFloat32;
             auto qh = q.to(cpu_attention_dtype).contiguous();
             auto kh = kv.visible_key.to(cpu_attention_dtype).contiguous();
             auto vh = kv.visible_value.to(cpu_attention_dtype).contiguous();
@@ -231,30 +230,30 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 kh = kh.repeat_interleave(repeat, 1);
                 vh = vh.repeat_interleave(repeat, 1);
             }
-            MfqOptional<tb::Tensor> mask = mfq_nullopt;
+            MfqOptional<::tyloi::Tensor> mask = mfq_nullopt;
             if (config.official_bf16) {
                 mask = minicpmo45_attention_mask(request, config, batch, tokens,
                                                  kh.size(2), tokens > 1);
             } else if (tokens > 1 || request.sequence_lengths.has_value()) {
                 const std::int64_t visible = kh.size(2);
-                auto key_positions = tb::arange(
-                    visible, tb::TensorOptions().device(tb::kCPU).dtype(tb::kInt64));
-                tb::Tensor allowed;
+                auto key_positions = ::tyloi::cuda::arange(
+                    visible, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
+                ::tyloi::Tensor allowed;
                 if (tokens > 1) {
                     auto query_positions =
                         request.positions.dim() == 1
-                            ? request.positions.to(tb::kCPU, tb::kInt64)
-                            : request.positions.select(0, 0).to(tb::kCPU, tb::kInt64);
+                            ? request.positions.to(::tyloi::kCPU, ::tyloi::kInt64)
+                            : request.positions.select(0, 0).to(::tyloi::kCPU, ::tyloi::kInt64);
                     allowed = key_positions.unsqueeze(0) <= query_positions.unsqueeze(1);
                     allowed = allowed.unsqueeze(0).expand({batch, tokens, visible});
                 } else {
-                    allowed = tb::ones(
+                    allowed = ::tyloi::cuda::ones(
                         {batch, tokens, visible},
-                        tb::TensorOptions().device(tb::kCPU).dtype(tb::kBool));
+                        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kBool));
                 }
                 if (request.sequence_lengths.has_value()) {
                     auto lengths = request.sequence_lengths.value()
-                                       .to(tb::kCPU, tb::kInt64)
+                                       .to(::tyloi::kCPU, ::tyloi::kInt64)
                                        .reshape({batch, 1, 1});
                     allowed = allowed &
                               (key_positions.reshape({1, 1, visible}) < lengths);
@@ -265,7 +264,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                                                     attn_scale, false);
         }
 
-        const auto attention_dtype = config.official_bf16 ? tb::kBFloat16 : tb::kFloat16;
+        const auto attention_dtype = config.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16;
         auto qh = q.to(attention_dtype).contiguous();
         auto kh = k.to(attention_dtype).contiguous();
         auto vh = v.to(attention_dtype).contiguous();
@@ -279,13 +278,13 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                     const bool specialized_casts = config.kernels.flash128_casts;
                     auto flash_q = profiler.measure("full.flash128_q_cast", [&]() {
                         return specialized_casts ? minicpm_flash128_q_cast_cuda(qh)
-                                                 : qh.to(tb::kFloat32).contiguous();
+                                                 : qh.to(::tyloi::kFloat32).contiguous();
                     });
                     auto flash_kv = profiler.measure("full.flash128_kv_cast", [&]() {
                         if (specialized_casts)
                             return minicpm_flash128_kv_cast_cuda(kh, vh);
-                        return std::vector<tb::Tensor>{kh.to(tb::kFloat16).contiguous(),
-                                                       vh.to(tb::kFloat16).contiguous()};
+                        return std::vector<::tyloi::Tensor>{kh.to(::tyloi::kFloat16).contiguous(),
+                                                       vh.to(::tyloi::kFloat16).contiguous()};
                     });
                     auto output = profiler.measure("full.flash128_kernel", [&]() {
                         return mfq_attention_mma128_cuda(flash_q, flash_kv[0], flash_kv[1],
@@ -293,7 +292,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                     });
                     output = profiler.measure("full.flash128_output_cast", [&]() {
                         return specialized_casts ? minicpm_flash128_output_cast_cuda(output)
-                                                 : output.to(tb::kBFloat16).contiguous();
+                                                 : output.to(::tyloi::kBFloat16).contiguous();
                     });
                     attention_token_major = true;
                     return output;
@@ -318,19 +317,19 @@ AttentionResult dispatch_attention(const AttentionInput& request,
             if (!config.sliding && tokens % 256 == 0 && head_dim == 512 &&
                 heads == 8 * kv_heads && mma_attention_enabled) {
                 attention_token_major = true;
-                return mfq_attention_mma512_cuda(q.to(tb::kFloat32).contiguous(), kh, vh,
+                return mfq_attention_mma512_cuda(q.to(::tyloi::kFloat32).contiguous(), kh, vh,
                                                  attn_scale);
             }
             if (config.sliding && tokens >= 32 && head_dim == 256 && heads == 2 * kv_heads &&
                 mma_attention_enabled) {
                 attention_token_major = true;
-                return mfq_attention_mma256_swa_cuda(q.to(tb::kFloat32).contiguous(), kh, vh,
+                return mfq_attention_mma256_swa_cuda(q.to(::tyloi::kFloat32).contiguous(), kh, vh,
                                                      attn_scale, config.window);
             }
             if (!config.sliding && tokens >= 32 && head_dim == 256 &&
                 (heads == 4 * kv_heads || heads == 8 * kv_heads) && mma_attention_enabled) {
                 attention_token_major = true;
-                return mfq_attention_mma256_cuda(q.to(tb::kFloat32).contiguous(), kh, vh,
+                return mfq_attention_mma256_cuda(q.to(::tyloi::kFloat32).contiguous(), kh, vh,
                                                  attn_scale);
             }
             if (config.sliding)
@@ -395,7 +394,7 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 scratch.mma(batch, kv_heads, head_dim, visible_len, 64, q.device());
                 attention_token_major = true;
                 return mfq_attention_mma256_swa_decode_cuda(
-                    q.to(tb::kFloat32).contiguous(), kv.physical_key, kv.physical_value,
+                    q.to(::tyloi::kFloat32).contiguous(), kv.physical_key, kv.physical_value,
                     request.sequence_lengths.value(), attn_scale, visible_len, scratch.mask,
                     scratch.kv_max, scratch.meta);
             }
@@ -406,11 +405,11 @@ AttentionResult dispatch_attention(const AttentionInput& request,
                 attention_token_major = true;
                 return head_dim == 512
                            ? mfq_attention_mma512_decode_cuda(
-                                 q.to(tb::kFloat32).contiguous(), kv.physical_key,
+                                 q.to(::tyloi::kFloat32).contiguous(), kv.physical_key,
                                  kv.physical_value, request.sequence_lengths.value(), attn_scale,
                                  planned_len, scratch.mask, scratch.kv_max, scratch.meta)
                            : mfq_attention_mma256_decode_cuda(
-                                 q.to(tb::kFloat32).contiguous(), kv.physical_key,
+                                 q.to(::tyloi::kFloat32).contiguous(), kv.physical_key,
                                  kv.physical_value, request.sequence_lengths.value(), attn_scale,
                                  planned_len, scratch.mask, scratch.kv_max, scratch.meta);
             }
@@ -470,4 +469,4 @@ AttentionResult dispatch_attention(const AttentionInput& request,
     return AttentionResult{std::move(attention), attention_token_major};
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

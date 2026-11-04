@@ -16,14 +16,14 @@
 #include <stdexcept>
 #include <vector>
 
-using namespace mfq::cuda::quant_format;
+using namespace tyloi::cuda::quant_format;
 
 bool prepare_nvq_dense_groups(NvqWeight& w) {
     if(w.dense_groups)return true;
     if(!w.indices_packed.is_cpu() || w.gs!=24 || w.sub_bits!=4 ||
             w.out<=0 || w.out>std::numeric_limits<int>::max() ||
             w.neuron_len<=0 || w.neuron_len>std::numeric_limits<int>::max() ||
-            !mfq::cpu::nvq_dense_rows_dot_kernel(int(w.kernel_format)))return false;
+            !tyloi::cpu::nvq_dense_rows_dot_kernel(int(w.kernel_format)))return false;
     const int rows=int(w.out),pairs=int((w.neuron_len+7)/8),groups=int(w.ng);
     const bool d4=w.kernel_format==10 || w.kernel_format==11 || w.kernel_format==12 || w.kernel_format==15;
     if(d4 && (w.neuron_len+3)/4!=2*pairs)return false;
@@ -32,7 +32,7 @@ bool prepare_nvq_dense_groups(NvqWeight& w) {
     const int bits=w.kernel_format==12?9:(w.kernel_format==13 || w.kernel_format==15)?10:w.kernel_format==14?12:8;
     if((int64_t(rows)*(int64_t(pairs)*((d4?2:1)*bits+7)+int64_t(groups)*4))&7)return false;
     std::vector<uint8_t> compact;
-#define PACK(B,P) mfq::nvq::dense::pack<B,P>(w.indices_packed.data_ptr<uint8_t>(),w.indices_packed.numel(), \
+#define PACK(B,P) tyloi::nvq::dense::pack<B,P>(w.indices_packed.data_ptr<uint8_t>(),w.indices_packed.numel(), \
         w.aux_packed.data_ptr<uint8_t>(),w.aux_packed.numel(),w.sub_scale_packed.data_ptr<uint8_t>(), \
         w.sub_scale_packed.numel(),rows,pairs,groups)
     switch(w.kernel_format) {
@@ -43,18 +43,18 @@ bool prepare_nvq_dense_groups(NvqWeight& w) {
 #undef PACK
     if(compact.size()>size_t(w.indices_packed.numel()+w.aux_packed.numel()+w.sub_scale_packed.numel()))
         throw std::runtime_error("compact NVQ unexpectedly expanded weights");
-    w.indices_packed=mfq_tensor_backend::tensor(compact);
-    w.aux_packed=mfq_tensor_backend::empty({0},w.indices_packed.options());
-    w.sub_scale_packed=mfq_tensor_backend::empty({0},w.indices_packed.options());
+    w.indices_packed=::tyloi::cuda::tensor(compact);
+    w.aux_packed=::tyloi::cuda::empty({0},w.indices_packed.options());
+    w.sub_scale_packed=::tyloi::cuda::empty({0},w.indices_packed.options());
     w.dense_groups=true;
     return true;
 }
 
 void prepare_nvq_integer_codebook(NvqWeight& w) {
-    const auto enabled=mfq::cuda::runtime_options::nvq1_integer_delta();
+    const auto enabled=tyloi::cuda::runtime_options::nvq1_integer_delta();
     if(!enabled || !*enabled || w.integer_codebook.defined() ||
        (w.kernel_format!=1 && w.kernel_format!=8) || !w.codebook.is_cuda())return;
-    const auto canonical=w.codebook.to(mfq_tensor_backend::kCPU).contiguous();
+    const auto canonical=w.codebook.to(::tyloi::kCPU).contiguous();
     const bool small=w.kernel_format==8;
     const int bank_bytes=small?512*8:2048*8;
     if(canonical.numel()!=int64_t(small?2:1)*bank_bytes)
@@ -66,18 +66,18 @@ void prepare_nvq_integer_codebook(NvqWeight& w) {
         if(v<-1 || v>1)throw std::invalid_argument("NVQ1 integer decode digits require -1/0/1");
         digits[negative*bank_bytes+i]=int8_t((small?32:8)*v+(negative?-1:1)*(small?5:1));
     }
-    w.integer_codebook=mfq_tensor_backend::tensor(digits).to(w.codebook.device()).contiguous();
+    w.integer_codebook=::tyloi::cuda::tensor(digits).to(w.codebook.device()).contiguous();
 }
 void prepare_nvq_decode_records(NvqWeight& w) {
-    const auto enabled=mfq::cuda::runtime_options::nvq1_group_records();
+    const auto enabled=tyloi::cuda::runtime_options::nvq1_group_records();
     if(!enabled || !*enabled || w.decode_records.defined() ||
        (w.kernel_format!=1 && w.kernel_format!=8) || !w.indices_packed.is_cuda() || w.gs!=24 ||
        w.sub_bits!=(w.kernel_format==8?4:3))return;
     if(w.aux_packed.numel()==0){w.decode_records=w.indices_packed;return;}
-    const auto indices=w.indices_packed.to(mfq_tensor_backend::kCPU).contiguous();
-    const auto auxiliary=w.aux_packed.to(mfq_tensor_backend::kCPU).contiguous();
-    const auto states=w.sub_scale_packed.to(mfq_tensor_backend::kCPU).contiguous();
-    const auto bits=[](const mfq_tensor_backend::Tensor& data,int64_t bit,int width) {
+    const auto indices=w.indices_packed.to(::tyloi::kCPU).contiguous();
+    const auto auxiliary=w.aux_packed.to(::tyloi::kCPU).contiguous();
+    const auto states=w.sub_scale_packed.to(::tyloi::kCPU).contiguous();
+    const auto bits=[](const ::tyloi::Tensor& data,int64_t bit,int width) {
         uint32_t value=0;
         for(int i=0;i<width;++i)if((bit+i)/8<data.numel())
             value|=uint32_t((data.data_ptr<uint8_t>()[(bit+i)/8]>>((bit+i)&7))&1u)<<i;
@@ -95,10 +95,10 @@ void prepare_nvq_decode_records(NvqWeight& w) {
         record|=uint64_t(bits(auxiliary,linear,1))<<(3*index_bits+w.sub_bits);
         std::memcpy(records.data()+linear*record_bytes,&record,record_bytes);
     }
-    w.decode_records=mfq_tensor_backend::tensor(records).to(w.indices_packed.device()).contiguous();
+    w.decode_records=::tyloi::cuda::tensor(records).to(w.indices_packed.device()).contiguous();
     w.indices_packed=w.decode_records;
-    w.aux_packed=mfq_tensor_backend::empty({0},w.indices_packed.options());
-    w.sub_scale_packed=mfq_tensor_backend::empty({0},w.indices_packed.options());
+    w.aux_packed=::tyloi::cuda::empty({0},w.indices_packed.options());
+    w.sub_scale_packed=::tyloi::cuda::empty({0},w.indices_packed.options());
 }
 
 static bool nvq_delta_format(int format) {
@@ -229,19 +229,19 @@ static std::vector<uint8_t> slice_packed_rows(
     return destination;
 }
 
-mfq::nvq::Data slice_nvq_cpu(
-        const mfq::nvq::Data & source,
+tyloi::nvq::Data slice_nvq_cpu(
+        const tyloi::nvq::Data & source,
         TensorParallelAxis axis,
         int64_t begin,
         int64_t end) {
-    mfq::require_parallel_weight(
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NVQ");
     if (axis != TensorParallelAxis::Output &&
         axis != TensorParallelAxis::Input) {
         throw std::runtime_error("NVQ shard requires an output or input axis");
     }
-    mfq::nvq::Data result = source;
+    tyloi::nvq::Data result = source;
     int64_t row_begin = 0;
     int64_t row_end = source.out;
     int64_t group_begin = 0;
@@ -267,7 +267,7 @@ mfq::nvq::Data slice_nvq_cpu(
         result.neuron_len =
             static_cast<int>(element_end - element_begin);
         result.shape[1] = result.neuron_len;
-        const int vector_size = mfq::nvq::vector_size(source.format);
+        const int vector_size = tyloi::nvq::vector_size(source.format);
         if (element_begin % vector_size != 0 ||
             element_begin % 8 != 0) {
             throw std::runtime_error(
@@ -290,7 +290,7 @@ mfq::nvq::Data slice_nvq_cpu(
         group_begin, group_count,
         source.sub_bits);
 
-    const int vector_size = mfq::nvq::vector_size(source.format);
+    const int vector_size = tyloi::nvq::vector_size(source.format);
     const int64_t element_begin = group_begin * source.gs;
     const int64_t vector_begin = element_begin / vector_size;
     const int64_t vector_count =
@@ -302,7 +302,7 @@ mfq::nvq::Data slice_nvq_cpu(
         source.out, source.nvec,
         row_begin, row_end,
         vector_begin, vector_count,
-        mfq::nvq::index_bits(source.format));
+        tyloi::nvq::index_bits(source.format));
 
     if (nvq_delta_format(source.format)) {
         result.aux_packed = slice_packed_rows(
@@ -328,7 +328,7 @@ mfq::nvq::Data slice_nvq_cpu(
     }
     return result;
 }
-static std::vector<uint8_t> repack_nvq2_exec_metadata(const mfq::nvq::Data & c) {
+static std::vector<uint8_t> repack_nvq2_exec_metadata(const tyloi::nvq::Data & c) {
     if ((c.format != 2 && c.format != 5) || c.nvec != c.nsign) {
         throw std::runtime_error("NVQ2 execution metadata requires one sign record per vector");
     }
@@ -392,7 +392,7 @@ static uint32_t compact_parity7(uint32_t value) {
 // This replaces the two independently bit-packed streams on CUDA; it does not
 // keep a second execution copy of the model weights.
 static std::vector<uint8_t> repack_extended_jsc_group_metadata(
-        const mfq::nvq::Data & c,
+        const tyloi::nvq::Data & c,
         const std::array<uint8_t, 16> * state_remap = nullptr,
         const std::array<std::array<uint16_t, 4096>, 4> * index_remap = nullptr) {
     if (c.format != 14 && c.format != 15) {
@@ -471,7 +471,7 @@ static std::vector<uint8_t> repack_extended_jsc_group_metadata(
 
 
 static std::vector<int8_t> reorder_extended_e8_codebook_for_stage3(
-        const mfq::nvq::Data & c,
+        const tyloi::nvq::Data & c,
         std::array<uint8_t, 16> & state_remap,
         std::array<std::array<uint16_t, 4096>, 4> & index_remap) {
     constexpr size_t metadata_bytes = 64;
@@ -564,7 +564,7 @@ static std::vector<int8_t> reorder_extended_e8_codebook_for_stage3(
 }
 
 static std::vector<uint8_t> remap_extended_e8_sub_scale_states(
-        const mfq::nvq::Data & c,
+        const tyloi::nvq::Data & c,
         const std::array<uint8_t, 16> & state_remap) {
     if (c.format != 14 || c.sub_bits != 4) {
         throw std::runtime_error(
@@ -592,7 +592,7 @@ static std::vector<uint8_t> remap_extended_e8_sub_scale_states(
 }
 
 NvqWeight to_device_nvq(
-        const mfq::nvq::Data & c,
+        const tyloi::nvq::Data & c,
         bool cuda,
         bool nvq2, bool extended, int device) {
     NvqWeight w;
@@ -627,8 +627,8 @@ NvqWeight to_device_nvq(
             use_extended_e8 ? e8_index_remap.get() : nullptr);
         w.indices_packed = cpu_u8_tensor(
             metadata, {(int64_t)metadata.size()});
-        w.aux_packed = mfq_tensor_backend::empty(
-            {0}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8));
+        w.aux_packed = ::tyloi::cuda::empty(
+            {0}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8));
         w.kernel_format = c.format == 14
             ? kNvq2JscXlGroupExecKernelFormat
             : kNvq3JscLGroupExecKernelFormat;
@@ -637,8 +637,8 @@ NvqWeight to_device_nvq(
         auto metadata = repack_nvq2_exec_metadata(c);
         w.indices_packed = cpu_u8_tensor(
             metadata, {(int64_t)metadata.size()});
-        w.aux_packed = mfq_tensor_backend::empty(
-            {0}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8));
+        w.aux_packed = ::tyloi::cuda::empty(
+            {0}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8));
         w.kernel_format = c.format == 5 ? 6 : 4;
     } else if (
         c.format == 10 && c.codebook.size() >= 64 &&
@@ -672,7 +672,7 @@ NvqWeight to_device_nvq(
                 c.codebook, {(int64_t)c.codebook.size()});
         }
     } else {
-        const int dims = mfq::nvq::vector_size(c.format);
+        const int dims = tyloi::nvq::vector_size(c.format);
         const int entries = c.format == 1 ? 2048 : (c.format == 8 ? 1024 : 256);
         w.codebook = cpu_i8_tensor(c.codebook, {entries, dims});
     }
@@ -695,14 +695,14 @@ NvqWeight to_device_nvq(
         const int target_device = device >= 0
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
-        const auto target = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, target_device);
+        const auto target = ::tyloi::Device(
+            ::tyloi::kCUDA, target_device);
         w.indices_packed = w.indices_packed.to(target).contiguous();
         w.aux_packed = w.aux_packed.to(target).contiguous();
         w.sub_scale_packed =
             w.sub_scale_packed.to(target).contiguous();
         if(w.kernel_format==16 || w.kernel_format==17)
-            w.sub_scale_packed=mfq_tensor_backend::empty({0},w.indices_packed.options());
+            w.sub_scale_packed=::tyloi::cuda::empty({0},w.indices_packed.options());
         w.neuron_scale = w.neuron_scale.to(target).contiguous();
         w.codebook = w.codebook.to(target).contiguous();
         prepare_nvq_decode_records(w);
@@ -714,7 +714,7 @@ static size_t packed_nbytes(size_t count, int bits) {
     return bits == 0 ? 0 : (count * (size_t)bits + 7) / 8;
 }
 
-NepqWeight to_device_nepq(const mfq::nepq::Data & cpu, bool cuda) {
+NepqWeight to_device_nepq(const tyloi::nepq::Data & cpu, bool cuda) {
     NepqWeight value;
     value.format = cpu.format;
     value.state_bits = cpu.state_bits;
@@ -750,20 +750,20 @@ NepqWeight to_device_nepq(const mfq::nepq::Data & cpu, bool cuda) {
     if (cpu.residual) {
         value.residual_codebook = cpu_f16_tensor(
             cpu.residual_codebook_h, {1024, 8});
-        value.residual_first = mfq_tensor_backend::from_blob(
+        value.residual_first = ::tyloi::cuda::from_blob(
             (void *)cpu.residual_first.data(),
             {cpu.n_experts * cpu.out_per_expert,
              cpu.residual_blocks_per_row},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt16)).clone();
-        value.residual_second = mfq_tensor_backend::from_blob(
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt16)).clone();
+        value.residual_second = ::tyloi::cuda::from_blob(
             (void *)cpu.residual_second_dense.data(),
             {cpu.n_experts * cpu.out_per_expert,
              cpu.residual_blocks_per_row},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt16)).clone();
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt16)).clone();
     }
     if (cuda) {
-        const auto target = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA,
+        const auto target = ::tyloi::Device(
+            ::tyloi::kCUDA,
             mfq_current_cuda_device());
         value.indices_packed =
             value.indices_packed.to(target).contiguous();
@@ -793,8 +793,8 @@ NepqWeight to_device_nepq(const mfq::nepq::Data & cpu, bool cuda) {
     return value;
 }
 
-mfq::nvq::Data select_nvq_cpu_rows(
-        const mfq::nvq::Data & source,
+tyloi::nvq::Data select_nvq_cpu_rows(
+        const tyloi::nvq::Data & source,
         const std::vector<int64_t> & rows) {
     if (source.shape.size() != 2 ||
         source.axis != 0 ||
@@ -803,12 +803,12 @@ mfq::nvq::Data select_nvq_cpu_rows(
         throw std::runtime_error(
             "invalid NVQ MoE output shard source");
     }
-    mfq::nvq::Data result = source;
+    tyloi::nvq::Data result = source;
     result.out = static_cast<int>(rows.size());
     result.shape[0] = result.out;
     result.neuron_scale_h.resize(rows.size());
     const int index_bits =
-        mfq::nvq::index_bits(source.format);
+        tyloi::nvq::index_bits(source.format);
     const bool delta =
         nvq_delta_format(source.format);
     const bool no_aux =
@@ -879,8 +879,8 @@ mfq::nvq::Data select_nvq_cpu_rows(
     }
     return result;
 }
-mfq::nepq::Data select_nepq_cpu_rows(
-        const mfq::nepq::Data & source,
+tyloi::nepq::Data select_nepq_cpu_rows(
+        const tyloi::nepq::Data & source,
         const std::vector<int64_t> & rows,
         int output_per_expert,
         int selected_experts) {
@@ -899,7 +899,7 @@ mfq::nepq::Data select_nepq_cpu_rows(
         throw std::runtime_error(
             "invalid NEPQ MoE output shard");
     }
-    mfq::nepq::Data result = source;
+    tyloi::nepq::Data result = source;
     result.n_experts = destination_experts;
     result.out_per_expert = output_per_expert;
     result.neuron_scale_h.resize(rows.size());

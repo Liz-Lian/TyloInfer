@@ -6,7 +6,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 namespace {
 
 using json = nlohmann::json;
@@ -304,4 +304,4 @@ std::string TensorNames::predictor(
     return "predictor.stage." + std::to_string(index) + "." + std::string(suffix);
 }
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

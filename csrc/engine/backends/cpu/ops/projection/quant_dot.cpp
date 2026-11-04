@@ -1,7 +1,7 @@
 #include "quant_dot.h"
 #include "engine/backends/cpu/native/features.h"
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 float scaled_i8_dot_scalar(const std::int8_t* weights, const float* input, int count, float scale) {
     float result=0;
     for (int i=0; i<count; ++i) {
@@ -17,4 +17,4 @@ ScaledI8Dot scaled_i8_dot_kernel() {
 #endif
     return scaled_i8_dot_scalar;
 }
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

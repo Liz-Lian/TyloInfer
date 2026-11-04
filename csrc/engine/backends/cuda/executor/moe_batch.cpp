@@ -18,32 +18,31 @@
 #include <cstdio>
 #include <map>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 bool mfe_ffn_compact_transferred_fused(const MfeFfnBatch&,cudaStream_t,const int32_t*);
 }
 
 namespace {
-namespace tb=mfq_tensor_backend;
-using View=mfq::cuda::MfePackedProjection;
-template<class T>tb::Tensor upload(const std::vector<T>& values,tb::Device device) {
-    auto host=tb::empty({int64_t(values.size()*sizeof(T))},tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8));
+using View=tyloi::cuda::MfePackedProjection;
+template<class T>::tyloi::Tensor upload(const std::vector<T>& values,::tyloi::Device device) {
+    auto host=::tyloi::cuda::empty({int64_t(values.size()*sizeof(T))},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8));
     std::memcpy(host.data_ptr(),values.data(),values.size()*sizeof(T));return host.to(device);
 }
-View nint_view(const NintWeight& w,int rows,int experts,std::vector<tb::Tensor>& owners) {
+View nint_view(const NintWeight& w,int rows,int experts,std::vector<::tyloi::Tensor>& owners) {
     View result;result.family=1;result.output_rows=rows;result.local_experts=experts;
     result.input_width=int(w.neuron_len);result.groups=int(w.ng);result.group_size=int(w.gs);
     result.q_expert_stride=int(w.q_expert_stride);
-    const std::array<tb::Tensor,7> fields={w.q_packed,w.row_q_bits,w.row_q_bit_offsets,w.sub_scale,w.sub_min,w.neuron_scale,w.neuron_min};
+    const std::array<::tyloi::Tensor,7> fields={w.q_packed,w.row_q_bits,w.row_q_bit_offsets,w.sub_scale,w.sub_min,w.neuron_scale,w.neuron_min};
     for(int i=0;i<7;++i){result.fields[i]=fields[i].data_ptr();owners.push_back(fields[i]);}
     result.sizes[0]=w.q_packed.numel()*w.q_packed.element_size();
     return result;
 }
-View pool_view(const MixedMoePool& pool,int rows,std::vector<tb::Tensor>& owners) {
+View pool_view(const MixedMoePool& pool,int rows,std::vector<::tyloi::Tensor>& owners) {
     View result;
     if(pool.family==MixedMoeFamily::Nint)result=nint_view(pool.nint,rows,pool.local_experts,owners);
     else if(pool.family==MixedMoeFamily::Nvq) {
         const auto& w=pool.nvq;result.family=2;result.output_rows=rows;result.local_experts=pool.local_experts;
-        const auto word_signs=mfq::cuda::runtime_options::mfe_nvq_word_signs();
+        const auto word_signs=tyloi::cuda::runtime_options::mfe_nvq_word_signs();
         result.nvq_word_signs=!word_signs || *word_signs;
         result.input_width=int(w.neuron_len);result.groups=int(w.ng);result.group_size=int(w.gs);
         result.format=int(w.kernel_format);result.sub_bits=int(w.sub_bits);result.sign_mode=int(w.sign_mode);
@@ -51,7 +50,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<tb::Tensor>& owners
             result.format==12 || result.format==15 || result.format==17;
         result.e8_dense_groups=w.dense_groups && !d4;
         result.d4_dense_groups=w.dense_groups && d4;
-        const auto bank_map_option=mfq::cuda::runtime_options::mfe_nvq_bank_map();
+        const auto bank_map_option=tyloi::cuda::runtime_options::mfe_nvq_bank_map();
         result.nvq_bank_map=bank_map_option && !*bank_map_option?0:w.bank_map;
         if(d4 && result.nvq_bank_map) {
             static std::atomic<uint32_t> reported{0};
@@ -61,7 +60,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<tb::Tensor>& owners
                 result.format,result.nvq_bank_map);
         }
         result.nvec=(result.input_width+(d4?3:7))/(d4?4:8);result.nsign=(result.input_width+7)/8;
-        const std::array<tb::Tensor,5> fields={w.indices_packed,w.aux_packed,w.sub_scale_packed,w.neuron_scale,w.codebook};
+        const std::array<::tyloi::Tensor,5> fields={w.indices_packed,w.aux_packed,w.sub_scale_packed,w.neuron_scale,w.codebook};
         for(int i=0;i<5;++i){result.fields[i]=fields[i].data_ptr();owners.push_back(fields[i]);}
         for(int i=0;i<3;++i)result.sizes[i]=fields[i].numel()*fields[i].element_size();
         if(w.integer_codebook.defined()) {
@@ -75,7 +74,7 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<tb::Tensor>& owners
         const auto& w=pool.mxfp4;
         result.family=3;result.output_rows=rows;result.local_experts=pool.local_experts;
         result.input_width=int(w.neuron_len);result.group_size=32;result.groups=result.input_width/32;
-        const std::array<tb::Tensor,2> fields{w.values,w.scales};
+        const std::array<::tyloi::Tensor,2> fields{w.values,w.scales};
         for(int i=0;i<2;++i) {
             result.fields[i]=fields[i].data_ptr();result.sizes[i]=fields[i].nbytes();owners.push_back(fields[i]);
         }
@@ -87,11 +86,11 @@ View pool_view(const MixedMoePool& pool,int rows,std::vector<tb::Tensor>& owners
     result.expert_local=pool.expert_local.data_ptr<int32_t>();owners.push_back(pool.expert_local);return result;
 }
 }
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
-        const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights,const tb::Tensor& sigmoid,
-        const std::array<const NintWeight*,3>& shared,const tb::Tensor& shared_gate,
+        const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights,const ::tyloi::Tensor& sigmoid,
+        const std::array<const NintWeight*,3>& shared,const ::tyloi::Tensor& shared_gate,
         int output_columns,int intermediate_columns,const std::array<std::vector<int32_t>,3>* cohort_by_expert,bool output_pairs,
         bool combined_gate_up,int token_group_capacity_hint,double swiglu_limit,
         bool ungated_experts,bool ungated_shared)
@@ -101,12 +100,12 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
     ungated_experts_=ungated_experts;
     const int first_projection=ungated_experts?1:0;
     if((!projections[0] && !ungated_experts) || !projections[1] || !projections[2] || !input.is_cuda() || input.dim()!=2 ||
-        input.scalar_type()!=tb::kFloat16 || !input.is_contiguous() || ids.dim()!=2 || ids.scalar_type()!=tb::kInt32 ||
+        input.scalar_type()!=::tyloi::kFloat16 || !input.is_contiguous() || ids.dim()!=2 || ids.scalar_type()!=::tyloi::kInt32 ||
         !ids.is_cuda() || ids.get_device()!=input.get_device() || !weights.is_cuda() ||
         weights.get_device()!=input.get_device() || !ids.is_contiguous() || ids.size(0)!=input.size(0) || weights.sizes()!=ids.sizes() ||
-        weights.scalar_type()!=tb::kFloat32 || !weights.is_contiguous() || !sigmoid.is_cuda() ||
+        weights.scalar_type()!=::tyloi::kFloat32 || !weights.is_contiguous() || !sigmoid.is_cuda() ||
         sigmoid.get_device()!=input.get_device() || !sigmoid.is_contiguous() ||
-        sigmoid.scalar_type()!=tb::kFloat16 || sigmoid.dim()!=2 || sigmoid.size(0)!=2 || sigmoid.size(1)!=65536)
+        sigmoid.scalar_type()!=::tyloi::kFloat16 || sigmoid.dim()!=2 || sigmoid.size(0)!=2 || sigmoid.size(1)!=65536)
         throw std::invalid_argument("two-stage MFE tensor contract mismatch");
     const MfqCudaGuard guard(input.device());
     batch_.swiglu_limit=float(swiglu_limit);
@@ -114,7 +113,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
     batch_.shared_activation=ungated_shared?1:0;
     batch_.tokens=int(input.size(0));batch_.routes=int(ids.size(1));batch_.experts=projections[first_projection]->n_experts;
     batch_.input_width=int(input.size(1));
-    batch_.warp_multi_sum=mfq::cuda::runtime_options::warp_multi_sum();
+    batch_.warp_multi_sum=tyloi::cuda::runtime_options::warp_multi_sum();
     batch_.intermediate=intermediate_columns?intermediate_columns:projections[first_projection]->out_per_expert;
     batch_.output_width=output_columns?output_columns:projections[2]->out_per_expert;
     if(batch_.tokens<=0 || batch_.routes<=0 || batch_.experts<=0 || batch_.intermediate<=0 || batch_.output_width<=0 ||
@@ -126,22 +125,22 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
     // phase-1/2 cohort lookups remain at their original indices.
     if(ungated_experts)mapping.assign(batch_.experts,-1);
     batch_.nvq_format_mask=0;
-    const bool nint_whole=mfq::cuda::mfe_ffn_nint_whole_requested();
+    const bool nint_whole=tyloi::cuda::mfe_ffn_nint_whole_requested();
     auto& quantizers=input_quantizers_;
     const auto attach_input=[&](View& d) {
         const auto key=std::make_pair(d.groups,d.group_size);
         auto it=quantizers.find(key);
         if(it==quantizers.end()) {
-            auto q=tb::empty({batch_.tokens,d.groups*d.group_size},input.options().dtype(tb::kInt8));
-            auto s=tb::empty({batch_.tokens,d.groups},input.options().dtype(tb::kFloat32));
+            auto q=::tyloi::cuda::empty({batch_.tokens,d.groups*d.group_size},input.options().dtype(::tyloi::kInt8));
+            auto s=::tyloi::cuda::empty({batch_.tokens,d.groups},input.options().dtype(::tyloi::kFloat32));
             it=quantizers.emplace(key,std::make_pair(q,s)).first;
         }
         d.fields[7]=it->second.first.data_ptr();d.fields[8]=it->second.second.data_ptr();
     };
-    const auto late_option=mfq::cuda::runtime_options::mfe_nint_late_scale();
-    const auto grouped_option=mfq::cuda::runtime_options::nint_group_dot();
-    const auto hint_option=mfq::cuda::runtime_options::nint_route_hint();
-    const auto warp_option=mfq::cuda::runtime_options::nint_route_warps();
+    const auto late_option=tyloi::cuda::runtime_options::mfe_nint_late_scale();
+    const auto grouped_option=tyloi::cuda::runtime_options::nint_group_dot();
+    const auto hint_option=tyloi::cuda::runtime_options::nint_route_hint();
+    const auto warp_option=tyloi::cuda::runtime_options::nint_route_warps();
     const bool align_late=late_option && *late_option && batch_.tokens<=8 &&
         (!grouped_option || *grouped_option) && (!hint_option || *hint_option) &&
         (!warp_option || *warp_option!=4);
@@ -165,7 +164,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
                 d.nint_late_bits=-1; // The ordinary routed kernel uses four-value chunks here.
             else if(align_late && d.family==1 && nint_pools==1 && (d.group_size==24 || d.group_size==28)) {
                 const auto& w=runtime.pools[p].nint;
-                const auto direct_option=mfq::cuda::runtime_options::nint_direct_pool();
+                const auto direct_option=tyloi::cuda::runtime_options::nint_direct_pool();
                 const int width=direct_option && !*direct_option?d.input_width:d.groups*d.group_size;
                 if(w.bits>=4 && w.bits<=6 && nint_late_scale_enabled(width,int(w.bits),input.get_device()))
                     d.nint_late_bits=int(w.bits);
@@ -179,7 +178,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
                 batch_.scale_stride=std::max(batch_.scale_stride,d.groups);
             }
             if(!cohort_by_expert) {
-                const auto local=runtime.pools[p].expert_local.to(tb::kCPU).contiguous();
+                const auto local=runtime.pools[p].expert_local.to(::tyloi::kCPU).contiguous();
                 const auto* values=local.data_ptr<int32_t>();
                 for(int e=0;e<batch_.experts;++e)if(values[e]>=0) {
                     if(indices[e]>=0)throw std::invalid_argument("two-stage MFE expert has overlapping pools");
@@ -193,7 +192,7 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         mapping.insert(mapping.end(),indices.begin(),indices.end());
     }
     if(shared[0] || shared[1] || shared[2]) {
-        const auto dense_math_option=mfq::cuda::runtime_options::mfe_shared_dense_math();
+        const auto dense_math_option=tyloi::cuda::runtime_options::mfe_shared_dense_math();
         batch_.shared_dense_math=dense_math_option && *dense_math_option;
         const int shared_input_projection=ungated_shared?1:0;
         if(!shared[shared_input_projection] || !shared[1] || !shared[2] ||
@@ -212,15 +211,15 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
             // packed layout stays three slots while the kernel reads one bank.
             const NintWeight& source=*shared[p?p:(ungated_shared?1:0)];
             auto d=nint_view(source,int(source.out),1,owners_);d.expert_local=nullptr;
-            const auto small_whole=mfq::cuda::runtime_options::mfe_shared_small_whole();
+            const auto small_whole=tyloi::cuda::runtime_options::mfe_shared_small_whole();
             const bool small_down=p==2 && d.group_size==24 && d.groups<=32 &&
                 (small_whole?*small_whole:(batch_.tokens==1 || batch_.tokens==5 || batch_.tokens==6));
             d.nint_whole=nint_whole && (d.group_size==28 || (p<2 && d.group_size==24) || small_down);
-            const auto grouped=mfq::cuda::runtime_options::nint_group_dot();
+            const auto grouped=tyloi::cuda::runtime_options::nint_group_dot();
             if(batch_.shared_dense_math && source.aligned_q8)
                 d.dense_reduction_warps=-1; // Dense q8 uses four-value chunk accumulation.
             else if(batch_.shared_dense_math && (!grouped || *grouped) &&
-                !mfq::cuda::runtime_options::nint_dense_reference() && !source.aligned_q8 &&
+                !tyloi::cuda::runtime_options::nint_dense_reference() && !source.aligned_q8 &&
                 (d.group_size==24 || d.group_size==28) &&
                 (reinterpret_cast<std::uintptr_t>(d.fields[0])&3u)==0)
                 d.dense_reduction_warps=d.groups<=32?1:4;
@@ -232,11 +231,11 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
             views.push_back(d);
         }
         if(!shared_gate.is_cuda() || shared_gate.get_device()!=input.get_device() || shared_gate.numel()!=batch_.tokens ||
-            (shared_gate.scalar_type()!=tb::kFloat16 && shared_gate.scalar_type()!=tb::kBFloat16 && shared_gate.scalar_type()!=tb::kFloat32))
+            (shared_gate.scalar_type()!=::tyloi::kFloat16 && shared_gate.scalar_type()!=::tyloi::kBFloat16 && shared_gate.scalar_type()!=::tyloi::kFloat32))
             throw std::invalid_argument("two-stage MFE shared gate device/dtype unsupported");
         shared_gate_=shared_gate.contiguous();
-        batch_.shared_product_half=shared_gate.scalar_type()==tb::kFloat16;
-        batch_.shared_gate_bfloat=shared_gate.scalar_type()==tb::kBFloat16;
+        batch_.shared_product_half=shared_gate.scalar_type()==::tyloi::kFloat16;
+        batch_.shared_gate_bfloat=shared_gate.scalar_type()==::tyloi::kBFloat16;
         batch_.output_float=!batch_.shared_product_half;
     }
     if(batch_.routes+(batch_.shared_intermediate?1:0)>32)
@@ -248,11 +247,11 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
     batch_.compact_nvq=(batch_.nvq_format_mask&compact_formats) &&
         std::all_of(views.begin(),views.end(),[](const View& d) {
             if(d.family!=2 || !(compact_formats&(1u<<d.format)))return true;
-            return mfq::cuda::mfe_nvq_dense_narrow_eligible(d);
+            return tyloi::cuda::mfe_nvq_dense_narrow_eligible(d);
         });
     batch_.e8_narrow=(batch_.nvq_format_mask&((1u<<5)|(1u<<13)|(1u<<14))) &&
         std::all_of(views.begin(),views.end(),[](const View& d) {
-            return mfq::cuda::mfe_e8_narrow_view_eligible(d);
+            return tyloi::cuda::mfe_e8_narrow_view_eligible(d);
         });
     host_views_=views;host_cohorts_=mapping;
     if(combined_gate_up_) {
@@ -276,8 +275,8 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         });
     batch_.token_group_compact=grouped_math &&
         (!(batch_.nvq_format_mask&compact_formats) || batch_.compact_nvq);
-    descriptors_=upload(views,input_.device());cohorts_=tb::tensor(mapping).to(input_.device());
-    std::vector<mfq::cuda::MfeInputQuantization> quantization;
+    descriptors_=upload(views,input_.device());cohorts_=::tyloi::cuda::tensor(mapping).to(input_.device());
+    std::vector<tyloi::cuda::MfeInputQuantization> quantization;
     for(const auto& entry:quantizers) {
         const auto& q=entry.second.first;const auto& s=entry.second.second;
         quantization.push_back({q.data_ptr<int8_t>(),s.data_ptr<float>(),entry.first.first,entry.first.second});
@@ -286,14 +285,14 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
     quantization_count_=int(quantization.size());quantization_=upload(quantization,input_.device());
     batch_.hidden_stride=std::max(batch_.intermediate,batch_.shared_intermediate);
     const int slots=batch_.tokens*(batch_.routes+(shared[0]?1:0));
-    hidden_=tb::empty({slots,batch_.hidden_stride},input.options());
-    quantized_=tb::empty({slots,batch_.quantized_stride},input.options().dtype(tb::kInt8));
-    scales_=tb::empty({slots,batch_.scale_stride},input.options().dtype(tb::kFloat32));
-    completion_=tb::empty({slots,batch_.scale_stride},input.options().dtype(tb::kInt32));
+    hidden_=::tyloi::cuda::empty({slots,batch_.hidden_stride},input.options());
+    quantized_=::tyloi::cuda::empty({slots,batch_.quantized_stride},input.options().dtype(::tyloi::kInt8));
+    scales_=::tyloi::cuda::empty({slots,batch_.scale_stride},input.options().dtype(::tyloi::kFloat32));
+    completion_=::tyloi::cuda::empty({slots,batch_.scale_stride},input.options().dtype(::tyloi::kInt32));
     if(output_pairs && shared[0])throw std::invalid_argument("two-stage MFE pair output cannot contain shared experts");
     batch_.output_pairs=output_pairs;
-    output_=tb::empty(output_pairs?std::vector<int64_t>{batch_.tokens,batch_.routes,batch_.output_width}:
-        std::vector<int64_t>{batch_.tokens,batch_.output_width},input.options().dtype(batch_.output_float?tb::kFloat32:tb::kFloat16));
+    output_=::tyloi::cuda::empty(output_pairs?std::vector<int64_t>{batch_.tokens,batch_.routes,batch_.output_width}:
+        std::vector<int64_t>{batch_.tokens,batch_.output_width},input.options().dtype(batch_.output_float?::tyloi::kFloat32: ::tyloi::kFloat16));
     batch_.projections=reinterpret_cast<const View*>(descriptors_.data_ptr());
     batch_.cohort_by_expert=cohorts_.data_ptr<int32_t>();
     if(shared[0])batch_.shared=batch_.projections+views.size()-3;
@@ -310,31 +309,31 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
        (batch_.nvq_format_mask || has_mxfp4 || batch_.tokens>8 || token_group_capacity_hint>=4)) {
         // Three/four-row compact batches reuse decoded weights across the
         // complete small window. Other shapes retain their previous capacity.
-        const auto* wide_compact=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_WIDE_COMPACT");
+        const auto* wide_compact=tyloi::cuda::env_lookup("TYLOINFER_MFE_TOKEN_WIDE_COMPACT");
         const bool wide_default=(!wide_compact || wide_compact[0]!='0') && grouped_math &&
             (batch_.tokens==3 || batch_.tokens==4);
         batch_.token_group_capacity=batch_.tokens<=8?(wide_default?4:2):8;
         if(token_group_capacity_hint==4 || token_group_capacity_hint==8)
             batch_.token_group_capacity=token_group_capacity_hint;
-        if(const auto capacity=mfq::cuda::runtime_options::mfe_token_group_capacity()) {
-            if(*capacity>mfq::cuda::kMfeSharedGroupEncoding)
+        if(const auto capacity=tyloi::cuda::runtime_options::mfe_token_group_capacity()) {
+            if(*capacity>tyloi::cuda::kMfeSharedGroupEncoding)
                 batch_.token_group_capacity=shared[0] && batch_.tokens>=3 && batch_.tokens<=8?*capacity:2;
             else if(*capacity>0)batch_.token_group_capacity=*capacity;
             else if(batch_.tokens>=3 && batch_.tokens<=6)
                 batch_.token_group_capacity=batch_.tokens<=4?4:8;
         }
-        const auto* split_shared=mfq::cuda::env_lookup("TYLOINFER_MFE_SPLIT_SHARED_GROUPS");
+        const auto* split_shared=tyloi::cuda::env_lookup("TYLOINFER_MFE_SPLIT_SHARED_GROUPS");
         split_shared_groups_=shared[0] && batch_.token_group_capacity==4 && batch_.tokens<=8 &&
             split_shared && split_shared[0]!='0';
-        const int plan_capacity=split_shared_groups_ || batch_.token_group_capacity>mfq::cuda::kMfeSharedGroupEncoding?
+        const int plan_capacity=split_shared_groups_ || batch_.token_group_capacity>tyloi::cuda::kMfeSharedGroupEncoding?
             2:batch_.token_group_capacity;
         batch_.token_groups=batch_.tokens*batch_.routes+
             (shared[0]?(batch_.tokens+plan_capacity-1)/plan_capacity:0);
-        token_group_counts_=tb::empty({batch_.token_groups},input.options().dtype(tb::kInt32));
-        token_group_slots_=tb::empty({batch_.token_groups,8},input.options().dtype(tb::kInt32));
+        token_group_counts_=::tyloi::cuda::empty({batch_.token_groups},input.options().dtype(::tyloi::kInt32));
+        token_group_slots_=::tyloi::cuda::empty({batch_.token_groups,8},input.options().dtype(::tyloi::kInt32));
         batch_.token_group_counts=token_group_counts_.data_ptr<int32_t>();
         batch_.token_group_slots=token_group_slots_.data_ptr<int32_t>();
-        const auto aligned_gu=mfq::cuda::runtime_options::mfe_token_aligned_gu();
+        const auto aligned_gu=tyloi::cuda::runtime_options::mfe_token_aligned_gu();
         // Short grouped mixed batches are dominated by singleton/pair groups.
         // Their smaller independent Gate/Up CTAs outperform the aligned CTA,
         // including its fused quantizer. Keep the existing explicit override.
@@ -355,23 +354,23 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         if(shared[0])batch_.token_group_aligned_gu &= aligned_down(views.back());
         // Shared-only wide kernels use the separate hidden quantizer. Their
         // CTAs own individual outputs rather than complete quantization groups.
-        batch_.token_group_aligned_gu &= batch_.token_group_capacity<=mfq::cuda::kMfeSharedGroupEncoding;
-        if(batch_.token_group_capacity>mfq::cuda::kMfeSharedGroupEncoding) {
+        batch_.token_group_aligned_gu &= batch_.token_group_capacity<=tyloi::cuda::kMfeSharedGroupEncoding;
+        if(batch_.token_group_capacity>tyloi::cuda::kMfeSharedGroupEncoding) {
             static std::atomic<bool> reported{false};
             if(!reported.exchange(true,std::memory_order_relaxed))std::fprintf(stderr,
                 "mfe_shared_group_dispatch scope=first_encoded_batch enabled=1 tokens=%d routed_capacity=2 shared_capacity=%d\n",
-                batch_.tokens,batch_.token_group_capacity-mfq::cuda::kMfeSharedGroupEncoding);
+                batch_.tokens,batch_.token_group_capacity-tyloi::cuda::kMfeSharedGroupEncoding);
         }
-        const auto compact_plan=mfq::cuda::runtime_options::mfe_token_compact_plan();
+        const auto compact_plan=tyloi::cuda::runtime_options::mfe_token_compact_plan();
         if(!compact_plan || *compact_plan) {
-            token_group_buckets_=tb::empty({4,batch_.token_groups+1},input.options().dtype(tb::kInt32));
+            token_group_buckets_=::tyloi::cuda::empty({4,batch_.token_groups+1},input.options().dtype(::tyloi::kInt32));
             batch_.token_group_buckets=token_group_buckets_.data_ptr<int32_t>();
         }
-        resident_pairs_=tb::empty({batch_.tokens,batch_.routes+(shared[0]?1:0),batch_.output_width},input.options());
+        resident_pairs_=::tyloi::cuda::empty({batch_.tokens,batch_.routes+(shared[0]?1:0),batch_.output_width},input.options());
         batch_.resident_pairs=reinterpret_cast<__half*>(resident_pairs_.data_ptr());
-        const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
-        const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS");
-        const auto* group_dot=mfq::cuda::env_lookup("TYLOINFER_MFE_GROUP_DOT");
+        const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
+        const auto* enabled=tyloi::cuda::env_lookup("TYLOINFER_MFE_TOKEN_GROUPS");
+        const auto* group_dot=tyloi::cuda::env_lookup("TYLOINFER_MFE_GROUP_DOT");
         if(profile && profile[0]=='1' && grouped_math && (!enabled || enabled[0]!='0') &&
                 (!group_dot || group_dot[0]!='0') && std::any_of(views.begin(),views.end(),[](const View& d) {
                     return d.family==2 && (compact_formats&(1u<<d.format)) &&
@@ -384,19 +383,19 @@ MoeBatch::MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
         }
     }
 }
-void MoeBatch::cpu_results(const tb::Tensor& kinds,const tb::Tensor& pairs,const uint32_t* ready) {
+void MoeBatch::cpu_results(const ::tyloi::Tensor& kinds,const ::tyloi::Tensor& pairs,const uint32_t* ready) {
     if(!kinds.is_cuda() || !pairs.is_cuda() || kinds.get_device()!=input_.get_device() ||
-        pairs.get_device()!=input_.get_device() || kinds.numel()!=batch_.experts || kinds.scalar_type()!=tb::kInt32 || !kinds.is_contiguous() ||
+        pairs.get_device()!=input_.get_device() || kinds.numel()!=batch_.experts || kinds.scalar_type()!=::tyloi::kInt32 || !kinds.is_contiguous() ||
         pairs.dim()!=3 || pairs.size(0)!=batch_.tokens || pairs.size(1)!=batch_.routes || pairs.size(2)!=batch_.output_width ||
-        pairs.scalar_type()!=tb::kFloat16 || !pairs.is_contiguous())throw std::invalid_argument("two-stage MFE CPU result contract mismatch");
+        pairs.scalar_type()!=::tyloi::kFloat16 || !pairs.is_contiguous())throw std::invalid_argument("two-stage MFE CPU result contract mismatch");
     kinds_=kinds;cpu_=pairs;batch_.kinds=kinds.data_ptr<int32_t>();batch_.cpu_pairs=reinterpret_cast<const __half*>(pairs.data_ptr());batch_.cpu_ready=ready;
 }
-void MoeBatch::bind_window_inputs(const tb::Tensor& input,const tb::Tensor& ids,const tb::Tensor& weights) {
-    if(!mfq::cuda::DecodeWindow::recording() ||
+void MoeBatch::bind_window_inputs(const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights) {
+    if(!tyloi::cuda::DecodeWindow::recording() ||
         input.sizes()!=input_.sizes() || ids.sizes()!=ids_.sizes() || weights.sizes()!=weights_.sizes() ||
         !input.is_cuda() || !ids.is_cuda() || !weights.is_cuda() ||
         input.device()!=input_.device() || ids.device()!=ids_.device() || weights.device()!=weights_.device() ||
-        input.scalar_type()!=tb::kFloat16 || ids.scalar_type()!=tb::kInt32 || weights.scalar_type()!=tb::kFloat32 ||
+        input.scalar_type()!=::tyloi::kFloat16 || ids.scalar_type()!=::tyloi::kInt32 || weights.scalar_type()!=::tyloi::kFloat32 ||
         !input.is_contiguous() || !ids.is_contiguous() || !weights.is_contiguous())
         throw std::invalid_argument("two-stage MFE window input view contract mismatch");
     // Graph capture records the producer's addresses. Do not retain its Tensor
@@ -409,7 +408,7 @@ void MoeBatch::use_staged_inputs() {
     batch_.input=reinterpret_cast<const __half*>(input_.data_ptr());
     batch_.ids=ids_.data_ptr<int32_t>();batch_.route_weights=weights_.data_ptr<float>();
 }
-void MoeBatch::bind_shared_gate(const tb::Tensor& gate) {
+void MoeBatch::bind_shared_gate(const ::tyloi::Tensor& gate) {
     if(!gate.defined()) {
         bound_shared_gate_={};batch_.shared_gate=shared_gate_.defined()?shared_gate_.data_ptr():nullptr;
         return;
@@ -425,11 +424,11 @@ void MoeBatch::asynchronous(const int32_t* kinds,const uint32_t* plan,const uint
         const uint32_t* cpu_ready,const uint32_t* abort,const int32_t* indices,const void* cpu_pairs) {
     if(!kinds || !plan || !transfer || !cpu_ready || !abort || !indices || !cpu_pairs)
         throw std::invalid_argument("two-stage MFE asynchronous resources incomplete");
-    transferred_=tb::empty({int64_t(batch_.tokens)*batch_.routes*3*int64_t(sizeof(View))},input_.options().dtype(tb::kUInt8));
-    kinds_=tb::empty({batch_.experts},input_.options().dtype(tb::kInt32));
-    transfer_indices_=tb::empty({batch_.experts},kinds_.options());
-    aborted_=tb::empty({1},kinds_.options());
-    resident_pairs_=tb::empty({batch_.tokens,batch_.routes+(batch_.shared?1:0),batch_.output_width},input_.options());
+    transferred_=::tyloi::cuda::empty({int64_t(batch_.tokens)*batch_.routes*3*int64_t(sizeof(View))},input_.options().dtype(::tyloi::kUInt8));
+    kinds_=::tyloi::cuda::empty({batch_.experts},input_.options().dtype(::tyloi::kInt32));
+    transfer_indices_=::tyloi::cuda::empty({batch_.experts},kinds_.options());
+    aborted_=::tyloi::cuda::empty({1},kinds_.options());
+    resident_pairs_=::tyloi::cuda::empty({batch_.tokens,batch_.routes+(batch_.shared?1:0),batch_.output_width},input_.options());
     batch_.resident_pairs=reinterpret_cast<__half*>(resident_pairs_.data_ptr());
     batch_.transferred=reinterpret_cast<const View*>(transferred_.data_ptr());
     batch_.transfer_index=transfer_indices_.data_ptr<int32_t>();batch_.host_transfer_index=indices;
@@ -437,9 +436,9 @@ void MoeBatch::asynchronous(const int32_t* kinds,const uint32_t* plan,const uint
     batch_.plan_ready=plan;batch_.transfer_ready=transfer;batch_.cpu_ready=cpu_ready;
     batch_.aborted=reinterpret_cast<uint32_t*>(aborted_.data_ptr<int32_t>());batch_.host_aborted=abort;
     batch_.cpu_pairs=reinterpret_cast<const __half*>(cpu_pairs);
-    batch_.resident_plan_overlap=mfq::cuda::runtime_options::resident_plan_overlap();
+    batch_.resident_plan_overlap=tyloi::cuda::runtime_options::resident_plan_overlap();
 }
-mfq::cuda::MfePackedProjection MoeBatch::projection_view(int p,View view)const {
+tyloi::cuda::MfePackedProjection MoeBatch::projection_view(int p,View view)const {
     if(!combined_gate_up_ || p!=1)return view;
     const auto shift=[&](int field,int64_t bytes) {
         if(view.fields[field])view.fields[field]=static_cast<const uint8_t*>(view.fields[field])+bytes;
@@ -461,7 +460,7 @@ mfq::cuda::MfePackedProjection MoeBatch::projection_view(int p,View view)const {
     }
     return view;
 }
-mfq::cuda::MfePackedProjection MoeBatch::expert_view(int p,int expert,
+tyloi::cuda::MfePackedProjection MoeBatch::expert_view(int p,int expert,
         const std::vector<int64_t>& bytes,int slot)const {
     if(p<0 || p>2 || expert<0 || expert>=batch_.experts)throw std::invalid_argument("MFE transfer projection/expert invalid");
     // Ungated banks have no Gate descriptor; Gate transfers alias Up.
@@ -486,48 +485,48 @@ mfq::cuda::MfePackedProjection MoeBatch::expert_view(int p,int expert,
     // copies have a different row origin and stay out of this transfer view.
     if(view.family==2){view.fields[6]=nullptr;view.decode_record_bytes=0;}
     view.expert_local=nullptr;view.local_experts=1;view.fallback=-1;
-    if(batch_.e8_narrow && !mfq::cuda::mfe_e8_narrow_view_eligible(view,false))
+    if(batch_.e8_narrow && !tyloi::cuda::mfe_e8_narrow_view_eligible(view,false))
         throw std::invalid_argument("MFE transferred E8 buffers violate narrow metadata contract");
     if(batch_.compact_nvq && view.family==2 &&
             ((1u<<view.format)&((1u<<5)|(1u<<10)|(1u<<11)|(1u<<12)|(1u<<13)|(1u<<14)|(1u<<15))) &&
-            !mfq::cuda::mfe_nvq_dense_narrow_eligible(view,false))
+            !tyloi::cuda::mfe_nvq_dense_narrow_eligible(view,false))
         throw std::invalid_argument("MFE transferred compact buffers violate local decoder contract");
     return view;
 }
 void MoeBatch::trace_dispatch() {
     if(dispatch_trace_reported_)return;
     dispatch_trace_reported_=true;
-    const auto trace=mfq::cuda::runtime_options::trace_mfe_dispatch_requested();
+    const auto trace=tyloi::cuda::runtime_options::trace_mfe_dispatch_requested();
     if(!trace || !*trace)return;
-    const auto grouped=mfq::cuda::runtime_options::mfe_group_dot();
+    const auto grouped=tyloi::cuda::runtime_options::mfe_group_dot();
     const bool group_dot=!grouped || *grouped;
-    const bool gu_requested=mfq::cuda::mfe_ffn_e8_narrow_requested(batch_,false);
-    const bool down_requested=mfq::cuda::mfe_ffn_e8_narrow_requested(batch_,true);
+    const bool gu_requested=tyloi::cuda::mfe_ffn_e8_narrow_requested(batch_,false);
+    const bool down_requested=tyloi::cuda::mfe_ffn_e8_narrow_requested(batch_,true);
     const bool eligible=batch_.e8_narrow && batch_.default_math && group_dot;
     std::fprintf(stderr,"mfe_compact_dispatch runtime=%p scope=first_prepare bounds=%d gu_requested=%d down_requested=%d mask=%u async=%d tokens=%d token_capacity=%d\n",
         static_cast<void*>(this),int(batch_.compact_nvq),
-        int(mfq::cuda::mfe_ffn_compact_requested(batch_,false)),
-        int(mfq::cuda::mfe_ffn_compact_requested(batch_,true)),batch_.nvq_format_mask,int(batch_.plan_ready!=nullptr),
+        int(tyloi::cuda::mfe_ffn_compact_requested(batch_,false)),
+        int(tyloi::cuda::mfe_ffn_compact_requested(batch_,true)),batch_.nvq_format_mask,int(batch_.plan_ready!=nullptr),
         batch_.tokens,batch_.token_group_capacity);
     // Report the host launch decision after all asynchronous resources have
     // been bound. One record describes a runtime, not token/route execution
     // counts; graph replay does not call this method again.
     std::fprintf(stderr,"mfe_e8_dispatch runtime=%p scope=first_prepare tokens=%d routes=%d async=%d capture=%d mask=%u bounds=%d default_math=%d grouped=%d gu_requested=%d down_requested=%d gu_selected=%d down_selected=%d\n",
         static_cast<void*>(this),batch_.tokens,batch_.routes,int(batch_.plan_ready!=nullptr),
-        int(mfq::cuda::DecodeWindow::recording()!=nullptr),batch_.nvq_format_mask,int(batch_.e8_narrow),
+        int(tyloi::cuda::DecodeWindow::recording()!=nullptr),batch_.nvq_format_mask,int(batch_.e8_narrow),
         int(batch_.default_math),int(group_dot),int(gu_requested),int(down_requested),
         int(eligible && gu_requested),int(eligible && down_requested));
     for(int format:{5,13,14}) {
         int count=0,rejected=0,max_experts=0;
         for(const auto& d:host_views_)if(d.family==2 && d.format==format) {
-            ++count;rejected+=!mfq::cuda::mfe_e8_narrow_view_eligible(d);
+            ++count;rejected+=!tyloi::cuda::mfe_e8_narrow_view_eligible(d);
             max_experts=std::max(max_experts,d.local_experts);
         }
         if(count)std::fprintf(stderr,"mfe_e8_pool_proof runtime=%p format=%d views=%d rejected=%d max_experts=%d\n",
             static_cast<void*>(this),format,count,rejected,max_experts);
     }
 }
-void MoeBatch::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
+void MoeBatch::enable_cached_dispatch(const tyloi::cuda::MfeCachedExpert* mapped,
         const std::array<std::vector<std::vector<int64_t>>,3>& bytes,uint32_t* snapshot_ready) {
     const MfqCudaGuard guard(input_.device());
     if(!mapped || !snapshot_ready || cached_dispatch_.mapped || !batch_.resident_plan_overlap || batch_.tokens*batch_.routes>256)
@@ -556,7 +555,7 @@ void MoeBatch::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
     const int shared_offset=int(views.size());
     if(batch_.shared)views.insert(views.end(),host_views_.end()-3,host_views_.end());
     descriptors_=upload(views,input_.device());primary_cohorts_=cohorts_;
-    cohorts_=tb::tensor(host_cohorts_).to(input_.device());
+    cohorts_=::tyloi::cuda::tensor(host_cohorts_).to(input_.device());
     for(int p=0;p<3;++p){batch_.projection_offsets[p]=offsets[p];batch_.projection_counts[p]=counts[p];}
     batch_.projections=reinterpret_cast<const View*>(descriptors_.data_ptr());
     batch_.cohort_by_expert=cohorts_.data_ptr<int32_t>();
@@ -570,26 +569,26 @@ void MoeBatch::enable_cached_dispatch(const mfq::cuda::MfeCachedExpert* mapped,
     host_views_=std::move(views);
     cached_dispatch_.mapped=mapped;cached_dispatch_.primary_cohorts=primary_cohorts_.data_ptr<int32_t>();
     cached_dispatch_.projections=reinterpret_cast<View*>(descriptors_.data_ptr());
-    cached_snapshot_tags_=tb::zeros({batch_.experts},input_.options().dtype(tb::kInt64));
+    cached_snapshot_tags_=::tyloi::cuda::zeros({batch_.experts},input_.options().dtype(::tyloi::kInt64));
     cached_dispatch_.snapshot_tags=reinterpret_cast<uint64_t*>(cached_snapshot_tags_.data_ptr<int64_t>());
     cached_dispatch_.snapshot_ready=snapshot_ready;
     if(batch_.tokens==1 && batch_.routes<=32)
-        cached_transfer_routes_=tb::empty({batch_.routes+2},input_.options().dtype(tb::kInt32));
+        cached_transfer_routes_=::tyloi::cuda::empty({batch_.routes+2},input_.options().dtype(::tyloi::kInt32));
 }
-bool MoeBatch::try_fuse_prepare_shared_gate(const NintWeight& w,const tb::Tensor& output) {
+bool MoeBatch::try_fuse_prepare_shared_gate(const NintWeight& w,const ::tyloi::Tensor& output) {
     if(!cached_dispatch_.mapped || !batch_.shared || batch_.tokens<1 || batch_.tokens>6 ||
         !w.aligned_q8 || w.q8_zero || w.out!=1 || w.gs!=48 || w.ng<1 || w.ng>64 ||
         w.neuron_len!=batch_.input_width || w.neuron_len>w.ng*48 || !output.is_cuda() ||
-        output.scalar_type()!=tb::kFloat16 || !output.is_contiguous() || output.numel()!=batch_.tokens ||
+        output.scalar_type()!=::tyloi::kFloat16 || !output.is_contiguous() || output.numel()!=batch_.tokens ||
         output.device()!=input_.device())return false;
-    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_SHARED_GATE_PREPARE");option && option[0]=='0')return false;
-    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");option && std::atoi(option)!=2)return false;
-    if(const auto* option=mfq::cuda::env_lookup(batch_.tokens==1?"TYLOINFER_NINT_Q8_ORDERED":"TYLOINFER_NINT_Q8_SMALL_WARPS");option && option[0]=='0')return false;
+    if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_SHARED_GATE_PREPARE");option && option[0]=='0')return false;
+    if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE");option && std::atoi(option)!=2)return false;
+    if(const auto* option=tyloi::cuda::env_lookup(batch_.tokens==1?"TYLOINFER_NINT_Q8_ORDERED":"TYLOINFER_NINT_Q8_SMALL_WARPS");option && option[0]=='0')return false;
     for(const auto* field:{&w.q_packed,&w.row_q_bit_offsets,&w.sub_scale,&w.sub_min,&w.neuron_scale,&w.neuron_min})
         if(!field->is_cuda() || !field->is_contiguous() || field->device()!=input_.device())return false;
     const auto [qx,xs]=reserve_input_quantization(int(w.ng),48);
-    prepared_gate_terms_=tb::empty({batch_.tokens,w.ng,batch_.tokens==1?12:1},input_.options().dtype(tb::kFloat32));
-    prepared_gate_completed_=tb::zeros({batch_.tokens},input_.options().dtype(tb::kInt32));
+    prepared_gate_terms_=::tyloi::cuda::empty({batch_.tokens,w.ng,batch_.tokens==1?12:1},input_.options().dtype(::tyloi::kFloat32));
+    prepared_gate_completed_=::tyloi::cuda::zeros({batch_.tokens},input_.options().dtype(::tyloi::kInt32));
     auto& gate=cached_dispatch_.gate;
     gate.activation=qx.data_ptr<int8_t>();gate.activation_scales=xs.data_ptr<float>();
     gate.packed=w.q_packed.data_ptr<uint8_t>();gate.offset=w.row_q_bit_offsets.data_ptr<int64_t>();
@@ -611,33 +610,33 @@ void MoeBatch::prepare(int32_t* published_ids,uint32_t* ready){
     trace_dispatch();
     if(ready && published_ids)start_shared(true);
     auto prepared=batch_;
-    const bool shared_plan=batch_.token_group_capacity>mfq::cuda::kMfeSharedGroupEncoding;
+    const bool shared_plan=batch_.token_group_capacity>tyloi::cuda::kMfeSharedGroupEncoding;
     if(shared_plan)prepared.token_group_capacity=2;
-    if(const auto setting=mfq::cuda::runtime_options::mfe_token_groups())
+    if(const auto setting=tyloi::cuda::runtime_options::mfe_token_groups())
         if(!*setting)prepared.token_group_counts=nullptr;
-    const auto* warp_prepare=mfq::cuda::env_lookup("TYLOINFER_MFE_PREPARE_WARP");
-    const auto prepare=!warp_prepare || warp_prepare[0]!='0'?mfq::cuda::mfe_ffn_prepare_warp:mfq::cuda::mfe_ffn_prepare;
-    const auto* quantization=reinterpret_cast<const mfq::cuda::MfeInputQuantization*>(quantization_.data_ptr());
+    const auto* warp_prepare=tyloi::cuda::env_lookup("TYLOINFER_MFE_PREPARE_WARP");
+    const auto prepare=!warp_prepare || warp_prepare[0]!='0'?tyloi::cuda::mfe_ffn_prepare_warp:tyloi::cuda::mfe_ffn_prepare;
+    const auto* quantization=reinterpret_cast<const tyloi::cuda::MfeInputQuantization*>(quantization_.data_ptr());
     if(ready && cached_dispatch_.mapped) {
         auto cache=cached_dispatch_;
         // The existing shared event also protects its scalar gate. Its
         // ordered readout is needed at final combination, after join_shared().
         if(shared_in_flight_ && early_shared_gate_.activation)cache.gate={};
-        mfq::cuda::mfe_ffn_prepare_publish_cached(prepared,quantization,quantization_count_,quantization_groups_,
+        tyloi::cuda::mfe_ffn_prepare_publish_cached(prepared,quantization,quantization_count_,quantization_groups_,
             published_ids,ready,cache,mfq_current_cuda_stream());
     }
-    else if(ready)mfq::cuda::mfe_ffn_prepare_publish(prepared,quantization,quantization_count_,quantization_groups_,
+    else if(ready)tyloi::cuda::mfe_ffn_prepare_publish(prepared,quantization,quantization_count_,quantization_groups_,
         published_ids,ready,mfq_current_cuda_stream());
     else prepare(prepared,quantization,quantization_count_,quantization_groups_,mfq_current_cuda_stream());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     if((shared_plan || split_shared_groups_) && prepared.token_group_counts) {
         auto shared_batch=batch_;
-        if(split_shared_groups_)shared_batch.token_group_capacity=mfq::cuda::kMfeSharedGroupEncoding+2;
-        mfq::cuda::mfe_ffn_token_group_shared_plan(shared_batch,mfq_current_cuda_stream());
+        if(split_shared_groups_)shared_batch.token_group_capacity=tyloi::cuda::kMfeSharedGroupEncoding+2;
+        tyloi::cuda::mfe_ffn_token_group_shared_plan(shared_batch,mfq_current_cuda_stream());
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     }
 }
-std::pair<tb::Tensor,tb::Tensor> MoeBatch::reserve_input_quantization(int groups,int group_size) {
+std::pair<::tyloi::Tensor,::tyloi::Tensor> MoeBatch::reserve_input_quantization(int groups,int group_size) {
     const MfqCudaGuard guard(input_.device());
     if(group_size<4 || group_size>64 || groups!=(batch_.input_width+group_size-1)/group_size)
         throw std::invalid_argument("MFE additional input quantization geometry is invalid");
@@ -646,10 +645,10 @@ std::pair<tb::Tensor,tb::Tensor> MoeBatch::reserve_input_quantization(int groups
     cudaStreamCaptureStatus capture;
     TYLOINFER_CUDA_CHECK(cudaStreamIsCapturing(mfq_current_cuda_stream(),&capture));
     if(capture!=cudaStreamCaptureStatusNone)throw std::logic_error("MFE input quantization must be reserved before capture");
-    const auto q=tb::empty({batch_.tokens,groups*group_size},input_.options().dtype(tb::kInt8));
-    const auto s=tb::empty({batch_.tokens,groups},input_.options().dtype(tb::kFloat32));
+    const auto q=::tyloi::cuda::empty({batch_.tokens,groups*group_size},input_.options().dtype(::tyloi::kInt8));
+    const auto s=::tyloi::cuda::empty({batch_.tokens,groups},input_.options().dtype(::tyloi::kFloat32));
     input_quantizers_.emplace(key,std::make_pair(q,s));
-    std::vector<mfq::cuda::MfeInputQuantization> views;
+    std::vector<tyloi::cuda::MfeInputQuantization> views;
     quantization_groups_=0;
     for(const auto& [geometry,tensors]:input_quantizers_) {
         views.push_back({tensors.first.data_ptr<int8_t>(),tensors.second.data_ptr<float>(),geometry.first,geometry.second});
@@ -658,24 +657,24 @@ std::pair<tb::Tensor,tb::Tensor> MoeBatch::reserve_input_quantization(int groups
     quantization_=upload(views,input_.device());quantization_count_=int(views.size());
     return {q,s};
 }
-void MoeBatch::gate_up(){mfq::cuda::mfe_ffn_gate_up(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
+void MoeBatch::gate_up(){tyloi::cuda::mfe_ffn_gate_up(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
 void MoeBatch::resident(){
     start_shared(false);
-    mfq::cuda::mfe_ffn_resident(arithmetic_batch(),mfq_current_cuda_stream());
+    tyloi::cuda::mfe_ffn_resident(arithmetic_batch(),mfq_current_cuda_stream());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void MoeBatch::start_shared(bool early){
     const MfqCudaGuard guard(input_.device());
     if(shared_in_flight_)return;
     if(early) {
-        const auto* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_EARLY");
+        const auto* setting=tyloi::cuda::env_lookup("TYLOINFER_MFE_SHARED_EARLY");
         if(batch_.tokens!=1 || !batch_.plan_ready || (setting && setting[0]=='0'))return;
     }
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_SHARED_STREAM");
-    const auto grouped=mfq::cuda::runtime_options::mfe_group_dot();
-    const auto token_groups=mfq::cuda::runtime_options::mfe_token_groups();
-    const int shared_capacity=split_shared_groups_?2:batch_.token_group_capacity>mfq::cuda::kMfeSharedGroupEncoding?
-        batch_.token_group_capacity-mfq::cuda::kMfeSharedGroupEncoding:batch_.token_group_capacity;
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_SHARED_STREAM");
+    const auto grouped=tyloi::cuda::runtime_options::mfe_group_dot();
+    const auto token_groups=tyloi::cuda::runtime_options::mfe_token_groups();
+    const int shared_capacity=split_shared_groups_?2:batch_.token_group_capacity>tyloi::cuda::kMfeSharedGroupEncoding?
+        batch_.token_group_capacity-tyloi::cuda::kMfeSharedGroupEncoding:batch_.token_group_capacity;
     const bool grouped_shared=batch_.token_group_counts && shared_capacity>0 && shared_capacity<=8 &&
         (!token_groups || *token_groups);
     if((batch_.tokens==1 || grouped_shared) && batch_.shared && batch_.resident_pairs && batch_.default_math && (!grouped || *grouped) &&
@@ -686,14 +685,14 @@ void MoeBatch::start_shared(bool early){
             if(capture!=cudaStreamCaptureStatusNone)return;
             std::array<View,3> views;
             std::copy_n(host_views_.end()-3,3,views.begin());
-            std::map<std::pair<int,int>,std::pair<tb::Tensor,tb::Tensor>> inputs;
-            std::vector<mfq::cuda::MfeInputQuantization> quantizers;
+            std::map<std::pair<int,int>,std::pair<::tyloi::Tensor,::tyloi::Tensor>> inputs;
+            std::vector<tyloi::cuda::MfeInputQuantization> quantizers;
             for(int p=0;p<2;++p) {
                 auto& d=views[p];const auto key=std::make_pair(d.groups,d.group_size);
                 auto found=inputs.find(key);
                 if(found==inputs.end()) {
-                    auto q=tb::empty({d.groups*d.group_size},input_.options().dtype(tb::kInt8));
-                    auto s=tb::empty({d.groups},input_.options().dtype(tb::kFloat32));
+                    auto q=::tyloi::cuda::empty({d.groups*d.group_size},input_.options().dtype(::tyloi::kInt8));
+                    auto s=::tyloi::cuda::empty({d.groups},input_.options().dtype(::tyloi::kFloat32));
                     found=inputs.emplace(key,std::make_pair(q,s)).first;
                     early_shared_inputs_.push_back(q);early_shared_inputs_.push_back(s);
                     quantizers.push_back({q.data_ptr<int8_t>(),s.data_ptr<float>(),d.groups,d.group_size});
@@ -706,8 +705,8 @@ void MoeBatch::start_shared(bool early){
                 const auto key=std::make_pair(early_shared_gate_.groups,48);
                 auto found=inputs.find(key);
                 if(found==inputs.end()) {
-                    auto q=tb::empty({early_shared_gate_.groups*48},input_.options().dtype(tb::kInt8));
-                    auto s=tb::empty({early_shared_gate_.groups},input_.options().dtype(tb::kFloat32));
+                    auto q=::tyloi::cuda::empty({early_shared_gate_.groups*48},input_.options().dtype(::tyloi::kInt8));
+                    auto s=::tyloi::cuda::empty({early_shared_gate_.groups},input_.options().dtype(::tyloi::kFloat32));
                     found=inputs.emplace(key,std::make_pair(q,s)).first;
                     early_shared_inputs_.push_back(q);early_shared_inputs_.push_back(s);
                     quantizers.push_back({q.data_ptr<int8_t>(),s.data_ptr<float>(),early_shared_gate_.groups,48});
@@ -722,26 +721,26 @@ void MoeBatch::start_shared(bool early){
         if(!shared_stream_) {
             // Initialization is outside graph capture: pipeline warmup owns
             // these resources before recording the steady decode graph.
-            shared_stream_=std::make_unique<mfq::cuda::Stream>(input_.get_device());
-            shared_fork_=std::make_unique<mfq::cuda::Event>(cudaEventDisableTiming);
-            shared_done_=std::make_unique<mfq::cuda::Event>(cudaEventDisableTiming);
+            shared_stream_=std::make_unique<tyloi::cuda::Stream>(input_.get_device());
+            shared_fork_=std::make_unique<tyloi::cuda::Event>(cudaEventDisableTiming);
+            shared_done_=std::make_unique<tyloi::cuda::Event>(cudaEventDisableTiming);
         }
         TYLOINFER_CUDA_CHECK(cudaEventRecord(shared_fork_->get(),mfq_current_cuda_stream()));
         TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(shared_stream_->get(),shared_fork_->get(),0));
         auto shared_batch=batch_;
         if(early) {
             shared_batch.shared=reinterpret_cast<const View*>(early_shared_descriptors_.data_ptr());
-            mfq::cuda::mfe_ffn_shared_prepare_input(batch_.input,batch_.input_width,
-                reinterpret_cast<const mfq::cuda::MfeInputQuantization*>(early_shared_quantizers_.data_ptr()),
+            tyloi::cuda::mfe_ffn_shared_prepare_input(batch_.input,batch_.input_width,
+                reinterpret_cast<const tyloi::cuda::MfeInputQuantization*>(early_shared_quantizers_.data_ptr()),
                 early_shared_quantizer_count_,early_shared_groups_,shared_stream_->get());
         }
-        if(split_shared_groups_)shared_batch.token_group_capacity=mfq::cuda::kMfeSharedGroupEncoding+2;
-        const auto* short_option=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_SHORT");
+        if(split_shared_groups_)shared_batch.token_group_capacity=tyloi::cuda::kMfeSharedGroupEncoding+2;
+        const auto* short_option=tyloi::cuda::env_lookup("TYLOINFER_MFE_SHARED_SHORT");
         const bool scalar_gate=early && early_shared_gate_.activation;
         const bool short_shared=!scalar_gate && shared_short_encoding_ && (!short_option || short_option[0]!='0') &&
-            mfq::cuda::mfe_ffn_shared_short_resident(shared_batch,shared_stream_->get());
-        if(scalar_gate)mfq::cuda::mfe_ffn_shared_resident_with_gate(shared_batch,early_shared_gate_,shared_stream_->get());
-        else if(!short_shared)mfq::cuda::mfe_ffn_shared_resident(shared_batch,shared_stream_->get());
+            tyloi::cuda::mfe_ffn_shared_short_resident(shared_batch,shared_stream_->get());
+        if(scalar_gate)tyloi::cuda::mfe_ffn_shared_resident_with_gate(shared_batch,early_shared_gate_,shared_stream_->get());
+        else if(!short_shared)tyloi::cuda::mfe_ffn_shared_resident(shared_batch,shared_stream_->get());
         if(short_shared && !shared_short_reported_) {
             shared_short_reported_=true;
             std::fprintf(stderr,"mfe_shared_short_dispatch scope=first_short_shared enabled=1 tokens=%d capacity=%d groups=%d\n",
@@ -767,39 +766,39 @@ void MoeBatch::join_shared(){
 }
 void MoeBatch::wait_transfer(const void* mapped_table,void* snapshot,uint64_t capacity,
         const void* mapped_descriptors,uint64_t descriptor_capacity_words){
-    const auto* route_list=mfq::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_ROUTE_LIST");
-    const auto* fused_hidden=mfq::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_HIDDEN_FUSED");
+    const auto* route_list=tyloi::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_ROUTE_LIST");
+    const auto* fused_hidden=tyloi::cuda::env_lookup("TYLOINFER_MFE_TRANSFER_HIDDEN_FUSED");
     cached_transfer_routes_ready_=cached_transfer_routes_.defined() && snapshot && mapped_table &&
         transfer_route_plan_ && mapped_descriptors && (!route_list || route_list[0]!='0') &&
         (!fused_hidden || fused_hidden[0]!='0');
     if(snapshot && (!transfer_route_plan_ || !mapped_table))
         throw std::invalid_argument("MFE transfer snapshot requires its mapped route packet and table");
-    if(snapshot && transfer_route_plan_)mfq::cuda::mfe_ffn_wait_transfer_packet_snapshot(batch_,transfer_route_plan_,
+    if(snapshot && transfer_route_plan_)tyloi::cuda::mfe_ffn_wait_transfer_packet_snapshot(batch_,transfer_route_plan_,
         mapped_table,snapshot,capacity,mfq_current_cuda_stream(),mapped_descriptors,
         mapped_descriptors?transfer_buffer().data_ptr():nullptr,descriptor_capacity_words,cached_dispatch_.mapped!=nullptr,
         cached_transfer_routes_ready_?cached_transfer_routes_.data_ptr<int32_t>():nullptr);
-    else if(transfer_route_plan_)mfq::cuda::mfe_ffn_wait_transfer_packet(batch_,transfer_route_plan_,mfq_current_cuda_stream());
-    else mfq::cuda::mfe_ffn_wait_transfer(batch_,mfq_current_cuda_stream());
+    else if(transfer_route_plan_)tyloi::cuda::mfe_ffn_wait_transfer_packet(batch_,transfer_route_plan_,mfq_current_cuda_stream());
+    else tyloi::cuda::mfe_ffn_wait_transfer(batch_,mfq_current_cuda_stream());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void MoeBatch::transferred(){
     const auto stream=mfq_current_cuda_stream();
     const auto b=arithmetic_batch();
-    if(!cached_dispatch_.mapped || !mfq::cuda::mfe_ffn_compact_transferred_fused(b,stream,
+    if(!cached_dispatch_.mapped || !tyloi::cuda::mfe_ffn_compact_transferred_fused(b,stream,
             cached_transfer_routes_ready_?cached_transfer_routes_.data_ptr<int32_t>():nullptr))
-        mfq::cuda::mfe_ffn_transferred(b,stream);
+        tyloi::cuda::mfe_ffn_transferred(b,stream);
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
-void MoeBatch::wait_cpu(){mfq::cuda::mfe_ffn_wait_cpu(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
+void MoeBatch::wait_cpu(){tyloi::cuda::mfe_ffn_wait_cpu(batch_,mfq_current_cuda_stream());TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();}
 void MoeBatch::down_reduce_compute(){
     join_shared();
     const auto b=arithmetic_batch();const auto stream=mfq_current_cuda_stream();
     const auto* cached=cached_transfer_routes_ready_?
         reinterpret_cast<const uint32_t*>(cached_transfer_routes_.data_ptr<int32_t>()+batch_.routes+1):nullptr;
-    if(!cached || !mfq::cuda::mfe_ffn_compact_cached_down(b,cached,stream))
-        mfq::cuda::mfe_ffn_down_reduce_compute(b,stream);
+    if(!cached || !tyloi::cuda::mfe_ffn_compact_cached_down(b,cached,stream))
+        tyloi::cuda::mfe_ffn_down_reduce_compute(b,stream);
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();shared_in_flight_=false;
 }
 void MoeBatch::down_reduce(){wait_cpu();down_reduce_compute();}
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

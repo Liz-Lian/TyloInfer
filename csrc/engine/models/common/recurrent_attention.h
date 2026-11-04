@@ -2,7 +2,7 @@
 #include "causal_forward.h"
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 // Verification keeps the confirmed prefix and checkpoints only the draft suffix.
 // Slice/concat and checkpoint storage are supplied by the tensor backend.
@@ -64,4 +64,4 @@ Tensor selective_state_attention(bool cache, Project project, Convolve convolve,
     return result;
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

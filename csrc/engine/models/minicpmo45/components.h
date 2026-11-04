@@ -8,7 +8,7 @@
 #include <memory>
 
 struct CudaExecutionContext;
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class Executor;
 namespace weight_loader { struct Loader; }
 namespace minicpmo45 {
@@ -21,7 +21,7 @@ class Components {
                CudaExecutionContext& execution);
     ~Components();
 
-    mfq::StepSequence<PreparedPrompt> prepare(const std::vector<int64_t>& prompt,
+    tyloi::StepSequence<PreparedPrompt> prepare(const std::vector<int64_t>& prompt,
                                                const MfqMultimodalInput& media);
     void start(const MfqDuplexSessionParams& parameters);
     MfqDuplexStepResult step(const MfqDuplexStepInput& input);
@@ -32,4 +32,4 @@ class Components {
     std::unique_ptr<State> state_;
 };
 } // namespace minicpmo45
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

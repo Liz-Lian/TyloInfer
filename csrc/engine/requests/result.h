@@ -39,7 +39,7 @@ struct MfqPrefillTiming {
     double model_ms = 0.0;
 };
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 struct InferenceMetrics {
     using Clock = std::chrono::steady_clock;
@@ -129,4 +129,4 @@ using ControlResult = std::variant<std::monostate,
     std::string, MfqDuplexSessionParams, MfqDuplexStepInput, MfqDuplexStepResult,
     Metrics, TokenCount, LikelihoodResult>;
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

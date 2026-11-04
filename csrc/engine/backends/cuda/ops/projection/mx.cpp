@@ -31,12 +31,12 @@ CpuProjectionRows make_cpu_projection_rows(const Mxfp4Weight& w) {
     return plan;
 }
 
-using mfq_tensor_backend::indexing::Slice;
-mfq_tensor_backend::Tensor mxfp8_matmul(
+using ::tyloi::indexing::Slice;
+::tyloi::Tensor mxfp8_matmul(
         CudaProfiler& profiler,
         const Mxfp8Weight & weight,
-        mfq_tensor_backend::Tensor x) {
-    x = x.contiguous().to(mfq_tensor_backend::kFloat16);
+        ::tyloi::Tensor x) {
+    x = x.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         x.dim() == 2 && x.size(1) == weight.neuron_len,
         "MXFP8 activation width mismatch");
@@ -53,9 +53,9 @@ mfq_tensor_backend::Tensor mxfp8_matmul(
         const auto * input = x.data_ptr<mfq_half>();
         const auto * values = weight.values.data_ptr<uint8_t>();
         const auto * scales = weight.scales.data_ptr<uint8_t>();
-        auto result = mfq_tensor_backend::empty(
+        auto result = ::tyloi::cuda::empty(
             {rows, outputs},
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat16));
+            ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat16));
         auto * output = result.data_ptr<mfq_half>();
         mfq_parallel_for(0, outputs, 1, [&](int64_t begin, int64_t end) {
             std::vector<float> accumulators(static_cast<size_t>(rows));
@@ -103,11 +103,11 @@ mfq_tensor_backend::Tensor mxfp8_matmul(
     });
 }
 
-mfq_tensor_backend::Tensor mxfp8_matmul_f32(
+::tyloi::Tensor mxfp8_matmul_f32(
         CudaProfiler& profiler,
         const Mxfp8Weight & weight,
-        mfq_tensor_backend::Tensor x) {
-    x = x.contiguous().to(mfq_tensor_backend::kFloat16);
+        ::tyloi::Tensor x) {
+    x = x.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         x.dim() == 2 && x.size(1) == weight.neuron_len,
         "MXFP8 FP32-output activation width mismatch");
@@ -123,10 +123,10 @@ mfq_tensor_backend::Tensor mxfp8_matmul_f32(
     });
 }
 
-mfq_tensor_backend::Tensor mxfp8_cpu_reference(
+::tyloi::Tensor mxfp8_cpu_reference(
         const Mxfp8Weight & weight) {
-    auto values = weight.values.to(mfq_tensor_backend::kCPU).contiguous();
-    auto scales = weight.scales.to(mfq_tensor_backend::kCPU).contiguous();
+    auto values = weight.values.to(::tyloi::kCPU).contiguous();
+    auto scales = weight.scales.to(::tyloi::kCPU).contiguous();
     const auto * value_bytes = values.data_ptr<uint8_t>();
     const auto * scale_bytes = scales.data_ptr<uint8_t>();
     const int64_t scale_columns = scales.size(1);
@@ -164,19 +164,19 @@ mfq_tensor_backend::Tensor mxfp8_cpu_reference(
                 row * weight.neuron_len + column)] = value * scale;
         }
     }
-    return mfq_tensor_backend::from_blob(
+    return ::tyloi::cuda::from_blob(
         dense.data(), {weight.out, weight.neuron_len},
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32))
+        ::tyloi::TensorOptions().dtype(::tyloi::kFloat32))
         .clone().to(weight.values.device())
-        .to(mfq_tensor_backend::kFloat16).contiguous();
+        .to(::tyloi::kFloat16).contiguous();
 }
 
-mfq_tensor_backend::Tensor mxfp8_groupwise_matmul(
+::tyloi::Tensor mxfp8_groupwise_matmul(
         CudaProfiler& profiler,
         const Mxfp8Weight & weight,
-        mfq_tensor_backend::Tensor grouped,
+        ::tyloi::Tensor grouped,
         int64_t groups) {
-    grouped = grouped.contiguous().to(mfq_tensor_backend::kFloat16);
+    grouped = grouped.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         grouped.dim() == 3 && grouped.size(1) == groups &&
             grouped.size(2) == weight.neuron_len &&
@@ -187,7 +187,7 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_matmul(
         outputs_per_group % (weight.scales.size(0)==weight.out?1:weight.neuron_len/weight.scales.size(1)) == 0,
         "MXFP8 groupwise output width must preserve scale blocks");
     if(!grouped.is_cuda()) {
-        std::vector<mfq_tensor_backend::Tensor> outputs;
+        std::vector<::tyloi::Tensor> outputs;
         outputs.reserve(static_cast<size_t>(groups));
         const auto block_rows=weight.scales.size(0)==weight.out?1:
             weight.neuron_len/weight.scales.size(1);
@@ -198,7 +198,7 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_matmul(
                 weight.scales.narrow(0,group*scale_rows,scale_rows),outputs_per_group,weight.neuron_len};
             outputs.push_back(mxfp8_matmul(profiler,shard,grouped.select(1,group).contiguous()));
         }
-        return mfq_tensor_backend::cat(outputs,-1).contiguous();
+        return ::tyloi::cuda::cat(outputs,-1).contiguous();
     }
     if (grouped.size(0) <= 8) {
         return profiler.measure("mxfp8.groupwise_small_m", [&]() {
@@ -211,12 +211,12 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_matmul(
     });
 }
 
-mfq_tensor_backend::Tensor mxfp8_groupwise_matmul_f32(
+::tyloi::Tensor mxfp8_groupwise_matmul_f32(
         CudaProfiler& profiler,
         const Mxfp8Weight & weight,
-        mfq_tensor_backend::Tensor grouped,
+        ::tyloi::Tensor grouped,
         int64_t groups) {
-    grouped = grouped.contiguous().to(mfq_tensor_backend::kFloat16);
+    grouped = grouped.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         grouped.dim() == 3 && grouped.size(1) == groups &&
             grouped.size(2) == weight.neuron_len &&
@@ -238,10 +238,10 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_matmul_f32(
     });
 }
 
-mfq_tensor_backend::Tensor mxfp4_matmul(
+::tyloi::Tensor mxfp4_matmul(
         const Mxfp4Weight & weight,
-        mfq_tensor_backend::Tensor x) {
-    x = x.contiguous().to(mfq_tensor_backend::kFloat16);
+        ::tyloi::Tensor x) {
+    x = x.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(
         x.dim() == 2 && x.size(1) == weight.neuron_len,
         "MXFP4 activation width mismatch");
@@ -263,9 +263,9 @@ mfq_tensor_backend::Tensor mxfp4_matmul(
     const auto * input = x.data_ptr<mfq_half>();
     const auto * values = weight.values.data_ptr<uint8_t>();
     const auto * scales = weight.scales.data_ptr<uint8_t>();
-    auto result = mfq_tensor_backend::empty(
+    auto result = ::tyloi::cuda::empty(
         {rows, outputs},
-        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat16));
+        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat16));
     auto * output = result.data_ptr<mfq_half>();
     static constexpr float magnitude[8] = {
         0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,

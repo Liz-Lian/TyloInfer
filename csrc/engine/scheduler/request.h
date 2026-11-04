@@ -6,7 +6,7 @@
 
 #include <memory>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 class TextProcessor;
 
@@ -16,7 +16,7 @@ struct Request {
     std::shared_ptr<Output> outbox;
     InferenceRequest input;
     std::optional<InferenceOutput> output;
-    std::unique_ptr<mfq::models::State> state;
+    std::unique_ptr<tyloi::models::State> state;
     Generation generation;
     std::exception_ptr error;
     bool started = false, batched = false, done = false;
@@ -41,4 +41,4 @@ struct Request {
 void prepare_request(Request &current, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available);
 void finish_request(const RequestId &id, Request &request, bool &healthy, std::vector<EngineEvent> &events);
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

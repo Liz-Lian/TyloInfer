@@ -4,7 +4,7 @@
 #include "engine/models/common/full_block.h"
 #include "engine/models/session.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template <typename Model>
 TextSessionStateKind CudaSessionCodec<Model>::kind(const CausalLm<Model> &) {
@@ -91,10 +91,10 @@ void FullAttentionSessionCodec<Model>::restore(
             throw CudaSessionStateError("full-attention session layer changed");
         }
         restore_kv(full->cache, (*layers)[index], full->attention_head_dim,
-            full->official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+            full->official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
             full->kv_quantization);
     }
     model.cache_pos = state.cache_pos;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

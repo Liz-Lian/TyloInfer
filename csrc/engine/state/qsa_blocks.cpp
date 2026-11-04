@@ -30,7 +30,7 @@
 #include <fcntl.h>
 #endif
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 namespace {
 int open_temporary(const std::filesystem::path& directory) {
@@ -333,4 +333,4 @@ std::size_t QsaKvStore::block_bytes(const BlockPtr& block) {
     return block->bytes;
 }
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

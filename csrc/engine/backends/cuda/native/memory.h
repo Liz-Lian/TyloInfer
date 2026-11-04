@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <memory>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Context;
 
@@ -65,4 +65,4 @@ private:
     std::size_t bytes_ = 0;
 };
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 std::vector<Task> Predictor::tasks() const {
     const auto eps = config.rms_norm_eps;
@@ -32,4 +32,4 @@ std::vector<Task> Predictor::tasks() const {
     return result;
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

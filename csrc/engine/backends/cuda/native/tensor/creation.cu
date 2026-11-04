@@ -7,11 +7,11 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cuda::native_ops_detail {
+namespace tyloi::cuda::native_ops_detail {
 std::atomic<std::int64_t> native_random_seed{0};
 }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 template <typename Value>
@@ -248,4 +248,4 @@ Tensor where(const Tensor& condition, double yes, const Tensor& no) {
     return where(condition, full_like(no, yes), no);
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

@@ -16,7 +16,7 @@
 #include <string>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 
 bool is_memory_pressure(const std::exception& error) {
@@ -25,10 +25,10 @@ bool is_memory_pressure(const std::exception& error) {
         message.find("out of memory") != std::string::npos;
 }
 
-mfq_tensor_backend::Tensor make_storage(std::size_t bytes) {
-    return mfq_tensor_backend::empty({static_cast<std::int64_t>(bytes)},
-        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA)
-            .dtype(mfq_tensor_backend::kUInt8));
+::tyloi::Tensor make_storage(std::size_t bytes) {
+    return ::tyloi::cuda::empty({static_cast<std::int64_t>(bytes)},
+        ::tyloi::TensorOptions().device(::tyloi::kCUDA)
+            .dtype(::tyloi::kUInt8));
 }
 
 } // namespace
@@ -107,7 +107,7 @@ std::size_t ExpertSpace::lend_decode(std::size_t maximum_minus_active) {
     return bytes;
 }
 
-void ExpertSpace::restore(std::size_t reserve_bytes, const mfq::source::Source* source) {
+void ExpertSpace::restore(std::size_t reserve_bytes, const tyloi::source::Source* source) {
     if (!loan_) return;
 
     bool ssd = false;
@@ -156,7 +156,7 @@ void ExpertSpace::restore(std::size_t reserve_bytes, const mfq::source::Source* 
     ResidentAllocationScope resident;
     while (bytes) {
         const auto chunk = std::min(bytes, std::size_t(256) << 20);
-        mfq_tensor_backend::Tensor storage;
+        ::tyloi::Tensor storage;
         try {
             storage = make_storage(chunk);
         } catch (const std::exception& error) {
@@ -189,9 +189,9 @@ ExpertSpace::Metrics ExpertSpace::metrics() const {
     return result;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-mfq_tensor_backend::Tensor mfq::cuda::WeightLoan::finish(mfq_tensor_backend::Tensor output) {
+::tyloi::Tensor tyloi::cuda::WeightLoan::finish(::tyloi::Tensor output) {
     if (active_) {
         suspend();
         output = output.clone();

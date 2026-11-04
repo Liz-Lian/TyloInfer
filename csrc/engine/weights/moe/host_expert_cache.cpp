@@ -42,16 +42,16 @@ struct MoeHostExpertReservation {
 
 struct MoeHostExpertCache::DeviceCacheHints::Impl {
     std::mutex mutex;
-    std::vector<mfq::MoeCacheKey> keys;
+    std::vector<tyloi::MoeCacheKey> keys;
     std::vector<std::uint8_t> flags;
     std::vector<std::size_t> pending;
     const bool confirmed_reuse;
-    explicit Impl(std::vector<mfq::MoeCacheKey> value,bool reuse)
+    explicit Impl(std::vector<tyloi::MoeCacheKey> value,bool reuse)
         :keys(std::move(value)),flags(keys.size()),confirmed_reuse(reuse) {
         pending.reserve(keys.size());
     }
 };
-MoeHostExpertCache::DeviceCacheHints::DeviceCacheHints(std::vector<mfq::MoeCacheKey> keys,bool confirmed_reuse)
+MoeHostExpertCache::DeviceCacheHints::DeviceCacheHints(std::vector<tyloi::MoeCacheKey> keys,bool confirmed_reuse)
     :impl_(std::make_unique<Impl>(std::move(keys),confirmed_reuse)) {}
 MoeHostExpertCache::DeviceCacheHints::~DeviceCacheHints()=default;
 void MoeHostExpertCache::DeviceCacheHints::publish(std::size_t index,bool resident) {
@@ -64,7 +64,7 @@ void MoeHostExpertCache::DeviceCacheHints::publish(std::size_t index,bool reside
 
 struct MoeHostExpertCache::Impl {
     struct Entry {
-        Lease value;std::list<mfq::MoeCacheKey>::iterator position;bool reused=false;
+        Lease value;std::list<tyloi::MoeCacheKey>::iterator position;bool reused=false;
         Entry *device_prev=nullptr,*device_next=nullptr;bool device_duplicate=false;
         std::uint64_t birth_epoch=0;
         std::uint8_t reuse_credit=0;
@@ -81,37 +81,37 @@ struct MoeHostExpertCache::Impl {
     const std::size_t budget;
     std::shared_ptr<Ledger> ledger=std::make_shared<Ledger>();
     mutable std::mutex mutex;
-    std::list<mfq::MoeCacheKey> lru;
-    std::list<mfq::MoeCacheKey> reused;
-    std::unordered_map<mfq::MoeCacheKey,Entry,mfq::MoeCacheKeyHash> entries;
-    struct Ghost {std::size_t bytes;std::list<mfq::MoeCacheKey>::iterator position;};
-    std::list<mfq::MoeCacheKey> ghost_lru;
-    std::unordered_map<mfq::MoeCacheKey,Ghost,mfq::MoeCacheKeyHash> ghosts;
+    std::list<tyloi::MoeCacheKey> lru;
+    std::list<tyloi::MoeCacheKey> reused;
+    std::unordered_map<tyloi::MoeCacheKey,Entry,tyloi::MoeCacheKeyHash> entries;
+    struct Ghost {std::size_t bytes;std::list<tyloi::MoeCacheKey>::iterator position;};
+    std::list<tyloi::MoeCacheKey> ghost_lru;
+    std::unordered_map<tyloi::MoeCacheKey,Ghost,tyloi::MoeCacheKeyHash> ghosts;
     std::size_t ghost_bytes=0;
-    std::unordered_map<mfq::MoeCacheKey,std::shared_ptr<Flight>,mfq::MoeCacheKeyHash> flights;
+    std::unordered_map<tyloi::MoeCacheKey,std::shared_ptr<Flight>,tyloi::MoeCacheKeyHash> flights;
     // Bypassed payloads still have an active consumer. Reuse that immutable
     // lease even when the RAM budget cannot retain it in the LRU.
-    std::unordered_map<mfq::MoeCacheKey,std::weak_ptr<const MoeHostExpert>,mfq::MoeCacheKeyHash> transient;
-    std::unordered_set<mfq::MoeCacheKey,mfq::MoeCacheKeyHash> exchanging;
+    std::unordered_map<tyloi::MoeCacheKey,std::weak_ptr<const MoeHostExpert>,tyloi::MoeCacheKeyHash> transient;
+    std::unordered_set<tyloi::MoeCacheKey,tyloi::MoeCacheKeyHash> exchanging;
     std::condition_variable exchange_complete;
     std::size_t exchange_placeholders=0;
     MoeHostExpertCacheStats counters;
     std::vector<int> scan_low_priority_sources;
-    std::vector<mfq::MoeCacheKey> scan_victims;
+    std::vector<tyloi::MoeCacheKey> scan_victims;
     std::size_t scan_victim_cursor=0;
     bool preserve=false,reuse_learning=true;
     bool speculative_learning=false;
     std::uint64_t learning_epoch=0;
     std::shared_ptr<DeviceCacheHints> device_hints;
-    std::unordered_set<mfq::MoeCacheKey,mfq::MoeCacheKeyHash> device_cached;
+    std::unordered_set<tyloi::MoeCacheKey,tyloi::MoeCacheKeyHash> device_cached;
     Entry *device_head=nullptr,*device_tail=nullptr;
 
     explicit Impl(std::size_t bytes):budget(bytes) {}
-    void forget_ghost(mfq::MoeCacheKey key) {
+    void forget_ghost(tyloi::MoeCacheKey key) {
         const auto found=ghosts.find(key);if(found==ghosts.end())return;
         ghost_bytes-=found->second.bytes;ghost_lru.erase(found->second.position);ghosts.erase(found);
     }
-    void remember_eviction(mfq::MoeCacheKey key,const Entry& entry) {
+    void remember_eviction(tyloi::MoeCacheKey key,const Entry& entry) {
         // GPU duplicates and unconsumed predictions are not evidence that a
         // unique RAM expert will be needed again. Remember only probation
         // payloads actually acquired by a consumer, without keeping data.
@@ -128,7 +128,7 @@ struct MoeHostExpertCache::Impl {
         value->reservation->unconsumed_prediction=false;
         ++counters.prediction_used_jobs;counters.prediction_used_bytes+=value->bytes;
     }
-    void wait_exchange(std::unique_lock<std::mutex>& lock,mfq::MoeCacheKey key) {
+    void wait_exchange(std::unique_lock<std::mutex>& lock,tyloi::MoeCacheKey key) {
         if(exchanging.contains(key))exchange_complete.wait(lock,[&]{return !exchanging.contains(key);});
     }
     void device_duplicate(Entry& entry,bool valid) noexcept {
@@ -176,7 +176,7 @@ struct MoeHostExpertCache::Impl {
             "moe_ram_prediction_first_use scope=first_confirmation enabled=1 reused=0\n");
         return true;
     }
-    void touch(mfq::MoeCacheKey key,Entry& entry) {
+    void touch(tyloi::MoeCacheKey key,Entry& entry) {
         if(!reuse_learning || speculative_learning)return;
         entry.ghost_eligible=true;
         const bool refault=ghosts.contains(key);
@@ -220,7 +220,7 @@ struct MoeHostExpertCache::Impl {
             device_duplicate(old,device_cached.contains(*old.position));
         }
     }
-    void learn_device_reuse(mfq::MoeCacheKey key,Entry& entry) {
+    void learn_device_reuse(tyloi::MoeCacheKey key,Entry& entry) {
         if(!counters.reuse_priority || entry.reused || !device_hints || !device_hints->impl_->confirmed_reuse)return;
         if(!reuse_learning || speculative_learning)return;
         // Repeated GPU hits must not leave a hot expert's revocable RAM
@@ -232,7 +232,7 @@ struct MoeHostExpertCache::Impl {
         if(counters.reuse_promotions!=before && ++counters.device_reuse_promotions==1)
             std::fprintf(stderr,"moe_ram_gpu_reuse_dispatch scope=first_promotion enabled=1\n");
     }
-    bool make_scan_room(mfq::MoeCacheKey incoming,std::size_t bytes) {
+    bool make_scan_room(tyloi::MoeCacheKey incoming,std::size_t bytes) {
         if(!bytes || bytes>budget)return false;
         if(ledger->managed.load()<=budget-bytes)return true;
         if(preserve || std::binary_search(scan_low_priority_sources.begin(),
@@ -292,7 +292,7 @@ struct MoeHostExpertCache::Impl {
         }
         return false;
     }
-    void publish(mfq::MoeCacheKey key,Lease value) {
+    void publish(tyloi::MoeCacheKey key,Lease value) {
         lru.push_front(key);
         try {
             const auto [found,inserted]=entries.emplace(key,Entry{value,lru.begin()});
@@ -308,7 +308,7 @@ struct MoeHostExpertCache::Impl {
         if(key.source<0)counters.optional_bytes+=value->bytes;
         if(device_cached.contains(key))learn_device_reuse(key,entries.at(key));
     }
-    void admit_prediction(mfq::MoeCacheKey key,const Lease& value) {
+    void admit_prediction(tyloi::MoeCacheKey key,const Lease& value) {
         if(const auto found=entries.find(key);found!=entries.end()) {
             touch(key,found->second);return;
         }
@@ -340,7 +340,7 @@ std::vector<int> MoeHostExpertCache::set_scan_low_priority_sources(std::vector<i
     std::sort(sources.begin(),sources.end());
     sources.erase(std::unique(sources.begin(),sources.end()),sources.end());
     auto& state=*impl_;std::lock_guard lock(state.mutex);
-    std::vector<mfq::MoeCacheKey> victims;
+    std::vector<tyloi::MoeCacheKey> victims;
     if(!sources.empty()) {
         victims.reserve(state.entries.size());
         for(auto* queue:{&state.lru,&state.reused})
@@ -361,7 +361,7 @@ void MoeHostExpertCache::begin_speculative_learning() {
     }
     state.speculative_learning=true;
 }
-void MoeHostExpertCache::commit_speculative_learning(const std::vector<mfq::MoeCacheKey>& accepted) {
+void MoeHostExpertCache::commit_speculative_learning(const std::vector<tyloi::MoeCacheKey>& accepted) {
     auto& state=*impl_;std::lock_guard lock(state.mutex);
     if(!state.speculative_learning)return;
     state.speculative_learning=false;
@@ -396,7 +396,7 @@ void MoeHostExpertCache::set_device_cache_hints(std::shared_ptr<DeviceCacheHints
     state.device_cached.clear();state.device_hints=std::move(hints);
 }
 
-MoeHostExpertCache::Lease MoeHostExpertCache::find(mfq::MoeCacheKey key,bool touch) {
+MoeHostExpertCache::Lease MoeHostExpertCache::find(tyloi::MoeCacheKey key,bool touch) {
     std::unique_lock lock(impl_->mutex);impl_->wait_exchange(lock,key);
     const auto found=impl_->entries.find(key);
     if(found==impl_->entries.end())return {};
@@ -406,7 +406,7 @@ MoeHostExpertCache::Lease MoeHostExpertCache::find(mfq::MoeCacheKey key,bool tou
     return found->second.value;
 }
 
-MoeHostExpertCache::Lease MoeHostExpertCache::try_find(mfq::MoeCacheKey key,bool touch,bool consume) {
+MoeHostExpertCache::Lease MoeHostExpertCache::try_find(tyloi::MoeCacheKey key,bool touch,bool consume) {
     std::unique_lock lock(impl_->mutex,std::try_to_lock);
     if(!lock.owns_lock() || impl_->exchanging.contains(key))return {};
     const auto found=impl_->entries.find(key);
@@ -422,17 +422,17 @@ void MoeHostExpertCache::preserve_resident_experts() {
     impl_->preserve=true;
 }
 
-MoeHostExpertCache::Lease MoeHostExpertCache::acquire(mfq::MoeCacheKey key,std::size_t bytes,
+MoeHostExpertCache::Lease MoeHostExpertCache::acquire(tyloi::MoeCacheKey key,std::size_t bytes,
         const Load& load,bool retain,bool touch) {
     return this->load(key,bytes,load,retain,false,touch);
 }
 
-MoeHostExpertCache::Lease MoeHostExpertCache::acquire_scan(mfq::MoeCacheKey key,std::size_t bytes,
+MoeHostExpertCache::Lease MoeHostExpertCache::acquire_scan(tyloi::MoeCacheKey key,std::size_t bytes,
         const Load& load) {
     return this->load(key,bytes,load,true,true,false);
 }
 
-MoeHostExpertCache::Lease MoeHostExpertCache::load(mfq::MoeCacheKey key,std::size_t bytes,
+MoeHostExpertCache::Lease MoeHostExpertCache::load(tyloi::MoeCacheKey key,std::size_t bytes,
         const Load& load,bool retain,bool scan,bool touch) {
     if (!load || !bytes) throw std::invalid_argument("host expert needs a loader and exact byte size");
     auto& state=*impl_;
@@ -518,7 +518,7 @@ MoeHostExpertCache::Lease MoeHostExpertCache::load(mfq::MoeCacheKey key,std::siz
     }
 }
 
-bool MoeHostExpertCache::demote(mfq::MoeCacheKey key,std::size_t bytes,const Load& copy) {
+bool MoeHostExpertCache::demote(tyloi::MoeCacheKey key,std::size_t bytes,const Load& copy) {
     if (!copy || !bytes) throw std::invalid_argument("GPU expert demotion needs exact fields");
     auto& state=*impl_;
     std::shared_ptr<MoeHostExpertReservation> reservation;
@@ -556,7 +556,7 @@ bool MoeHostExpertCache::demote(mfq::MoeCacheKey key,std::size_t bytes,const Loa
     }
 }
 
-void MoeHostExpertCache::promote(mfq::MoeCacheKey key) {
+void MoeHostExpertCache::promote(tyloi::MoeCacheKey key) {
     auto& state=*impl_;
     std::unique_lock lock(state.mutex);state.wait_exchange(lock,key);
     const auto found=state.entries.find(key);
@@ -565,7 +565,7 @@ void MoeHostExpertCache::promote(mfq::MoeCacheKey key) {
     if (flight!=state.flights.end()) flight->second->retain=false;
 }
 
-void MoeHostExpertCache::erase(mfq::MoeCacheKey key) {
+void MoeHostExpertCache::erase(tyloi::MoeCacheKey key) {
     auto& state=*impl_;
     std::unique_lock lock(state.mutex);state.wait_exchange(lock,key);
     const auto found=state.entries.find(key);
@@ -574,7 +574,7 @@ void MoeHostExpertCache::erase(mfq::MoeCacheKey key) {
     if (flight!=state.flights.end()) flight->second->retain=false;
 }
 
-bool MoeHostExpertCache::contains(mfq::MoeCacheKey key) const {
+bool MoeHostExpertCache::contains(tyloi::MoeCacheKey key) const {
     std::unique_lock lock(impl_->mutex);impl_->wait_exchange(lock,key);
     return impl_->entries.contains(key);
 }
@@ -600,7 +600,7 @@ std::size_t MoeHostExpertCache::reclaim_optional(std::size_t bytes) {
     state.counters.optional_reclaimed_bytes+=released;
     return released;
 }
-bool MoeHostExpertCache::exchange(mfq::MoeCacheKey incoming,mfq::MoeCacheKey outgoing,
+bool MoeHostExpertCache::exchange(tyloi::MoeCacheKey incoming,tyloi::MoeCacheKey outgoing,
         const Lease& expected,const std::function<MixedMoePool(const MixedMoePool&)>& copy) {
     if(!expected || !copy || incoming==outgoing)return false;
     auto& state=*impl_;std::unique_lock lock(state.mutex);
@@ -632,10 +632,10 @@ bool MoeHostExpertCache::exchange_batch(const std::vector<Exchange>& changes,
         const std::function<void()>& publish,const std::function<void()>& prepare,bool independent_readers) {
     if(changes.empty())return false;
     auto& state=*impl_;std::unique_lock lock(state.mutex);
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
     const bool keyed=option?option[0]=='1':independent_readers;
-    std::unordered_set<mfq::MoeCacheKey,mfq::MoeCacheKeyHash> keys;
-    struct Prepared {std::shared_ptr<MoeHostExpert> value;std::list<mfq::MoeCacheKey>::iterator position;bool reused;};
+    std::unordered_set<tyloi::MoeCacheKey,tyloi::MoeCacheKeyHash> keys;
+    struct Prepared {std::shared_ptr<MoeHostExpert> value;std::list<tyloi::MoeCacheKey>::iterator position;bool reused;};
     std::vector<Prepared> prepared;prepared.reserve(changes.size());
     for(const auto& change:changes) {
         if(!change.expected || !*change.expected || !change.copy || !change.restore ||

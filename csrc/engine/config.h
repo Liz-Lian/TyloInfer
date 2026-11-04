@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 struct SessionCacheConfig {
     SessionSnapshotCacheConfig snapshots;
@@ -40,4 +40,4 @@ bool environment_enabled(const char* name, bool fallback = true);
 RuntimeConfig resolve_runtime_config(std::int64_t prefill_chunk_size);
 ContinuousBatchConfig resolve_batch_config(int capacity, std::int64_t prefill_chunk_size);
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

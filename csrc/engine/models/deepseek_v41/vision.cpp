@@ -7,7 +7,7 @@
 #include "engine/ops.h"
 #endif
 
-namespace mfq::cuda::deepseek_v41_runtime {
+namespace tyloi::cuda::deepseek_v41_runtime {
 namespace {
 
 Tensor vector_weight(const weight_loader::Loader& weights,
@@ -54,7 +54,7 @@ std::vector<Span> validate_media(const CommonConfig& config,const std::vector<in
 }
 } // namespace
 
-Vision Vision::load(std::shared_ptr<const mfq::ModelSource> source,weight_loader::Loader weights,const CommonConfig& config) {
+Vision Vision::load(std::shared_ptr<const tyloi::ModelSource> source,weight_loader::Loader weights,const CommonConfig& config) {
     TYLOINFER_RUNTIME_CHECK(source && config.has_vision() && config.image_token_id>=0 &&
         config.image_token_id<config.vocab && config.vision.hidden%config.vision.n_heads==0 &&
         (config.vision.hidden/config.vision.n_heads)%4==0,"invalid DeepSeek-V4.1 CUDA vision config");
@@ -65,16 +65,16 @@ Vision Vision::load(std::shared_ptr<const mfq::ModelSource> source,weight_loader
     return Vision(std::move(source),std::move(weights),config);
 }
 
-mfq::StepSequence<Vision::Tensor> Vision::encode(
+tyloi::StepSequence<Vision::Tensor> Vision::encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
         Tensor patches,int height,int width) const {
     const auto& v=config_.vision;
-    const mfq::models::axial_patch_vision::Config config{
+    const tyloi::models::axial_patch_vision::Config config{
         v.hidden,v.n_layers,v.n_heads,v.intermediate,v.patch_size,
         v.downsample_ratio,config_.hidden,v.rope_theta,1e-6};
-    auto tower=mfq::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,config);
+    auto tower=tyloi::cuda::axial_patch_vision::CudaAxialPatchVisionTower::load(weights_,config);
     auto steps=tower.encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         projector,
@@ -86,18 +86,18 @@ mfq::StepSequence<Vision::Tensor> Vision::encode(
     }
 }
 
-mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language, MediaCache& images,
+tyloi::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
         const std::vector<int64_t>& tokens,const MfqMultimodalInput& media) const {
     auto spans=validate_media(config_,tokens,media);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto ids=mfq::ops::reshape(mfq::ops::tensor(tokens,mfq::Device{mfq::DeviceType::cuda,0}),{1,-1});
-    auto embeddings=mfq::ops::contiguous(language.embed_forward(mfq_tensor_backend::Tensor(ids)));
+    auto ids=tyloi::ops::reshape(tyloi::ops::tensor(tokens,tyloi::Device{tyloi::DeviceType::cuda,0}),{1,-1});
+    auto embeddings=tyloi::ops::contiguous(language.embed_forward(ids));
 #else
-    auto options=mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA);
-    auto ids=mfq_tensor_backend::tensor(tokens,options).reshape({1,-1});
+    auto options=::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
+    auto ids=::tyloi::cuda::tensor(tokens,options).reshape({1,-1});
     auto embeddings=language.embed_forward(ids).contiguous();
 #endif
     std::vector<uint8_t> mask(tokens.size(),0);
@@ -106,20 +106,20 @@ mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
         const auto& span=spans[i];
         const auto patch_width=media.pixel_shape[2];
         const auto* first=media.pixel_values.data()+int64_t(i)*media.pixel_shape[1]*patch_width;
-        auto key=mfq::cache::block_hash_hex(mfq::cache::sha256(first,
+        auto key=tyloi::cache::block_hash_hex(tyloi::cache::sha256(first,
             std::size_t(span.height*span.width*patch_width)*sizeof(float)))+"|"+
             std::to_string(span.height)+"|"+std::to_string(span.width);
         Tensor visual(images.find(key));
         if(!visual.defined()) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            Tensor patches=mfq::ops::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
-                mfq::TensorOptions().dtype(mfq::ScalarType::float32).device(mfq::DeviceType::cpu));
-            patches=mfq::ops::cast(std::move(patches),mfq::ScalarType::float32,mfq::Device{mfq::DeviceType::cuda,0});
-            patches=mfq::ops::cast(std::move(patches),mfq::ScalarType::float16);
+            Tensor patches=tyloi::ops::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
+                tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
+            patches=tyloi::ops::cast(std::move(patches),tyloi::ScalarType::float32,tyloi::Device{tyloi::DeviceType::cuda,0});
+            patches=tyloi::ops::cast(std::move(patches),tyloi::ScalarType::float16);
 #else
-            auto patches=mfq_tensor_backend::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
-                mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32).device(mfq_tensor_backend::kCPU))
-                .to(mfq_tensor_backend::kCUDA).to(mfq_tensor_backend::kFloat16);
+            auto patches=::tyloi::cuda::from_blob(const_cast<float*>(first),{span.height*span.width,patch_width},
+                ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCPU))
+                .to(::tyloi::kCUDA).to(::tyloi::kFloat16);
 #endif
             auto encoding=encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -135,29 +135,29 @@ mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
         {const auto host=weights_.for_layer(weights_.placement.device,true);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             start=vector_weight(host,"vision.special_token.start",config_.hidden);
-            start=mfq::ops::cast(start,start.scalar_type(),mfq::Device{mfq::DeviceType::cuda,0});
+            start=tyloi::ops::cast(start,start.scalar_type(),tyloi::Device{tyloi::DeviceType::cuda,0});
             newline=vector_weight(host,"vision.special_token.newline",config_.hidden);
-            newline=mfq::ops::cast(newline,newline.scalar_type(),mfq::Device{mfq::DeviceType::cuda,0});
+            newline=tyloi::ops::cast(newline,newline.scalar_type(),tyloi::Device{tyloi::DeviceType::cuda,0});
             end=vector_weight(host,"vision.special_token.end",config_.hidden);
-            end=mfq::ops::cast(end,end.scalar_type(),mfq::Device{mfq::DeviceType::cuda,0});
+            end=tyloi::ops::cast(end,end.scalar_type(),tyloi::Device{tyloi::DeviceType::cuda,0});
 #else
-            start=vector_weight(host,"vision.special_token.start",config_.hidden).to(mfq_tensor_backend::kCUDA);
-            newline=vector_weight(host,"vision.special_token.newline",config_.hidden).to(mfq_tensor_backend::kCUDA);
-            end=vector_weight(host,"vision.special_token.end",config_.hidden).to(mfq_tensor_backend::kCUDA);
+            start=vector_weight(host,"vision.special_token.start",config_.hidden).to(::tyloi::kCUDA);
+            newline=vector_weight(host,"vision.special_token.newline",config_.hidden).to(::tyloi::kCUDA);
+            end=vector_weight(host,"vision.special_token.end",config_.hidden).to(::tyloi::kCUDA);
 #endif
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        std::vector<Tensor> rows{mfq::ops::cast(mfq::ops::reshape(start,{1,-1}),visual.scalar_type())};
+        std::vector<Tensor> rows{tyloi::ops::cast(tyloi::ops::reshape(start,{1,-1}),visual.scalar_type())};
         for(int64_t row=0;row<span.rows;++row) {
-            rows.push_back(mfq::ops::slice(visual,0,row*span.columns,(row+1)*span.columns));
-            rows.push_back(mfq::ops::cast(mfq::ops::reshape(newline,{1,-1}),visual.scalar_type()));
+            rows.push_back(tyloi::ops::slice(visual,0,row*span.columns,(row+1)*span.columns));
+            rows.push_back(tyloi::ops::cast(tyloi::ops::reshape(newline,{1,-1}),visual.scalar_type()));
         }
-        rows.push_back(mfq::ops::cast(mfq::ops::reshape(end,{1,-1}),visual.scalar_type()));
+        rows.push_back(tyloi::ops::cast(tyloi::ops::reshape(end,{1,-1}),visual.scalar_type()));
         {
-            auto destination=mfq::ops::slice(embeddings,1,span.begin,span.end);
-            auto joined=mfq::ops::unsqueeze(mfq::ops::cat(rows,0),0);
-            joined=mfq::ops::cast(std::move(joined),embeddings.scalar_type());
-            mfq::ops::copy_into(std::move(destination),std::move(joined));
+            auto destination=tyloi::ops::slice(embeddings,1,span.begin,span.end);
+            auto joined=tyloi::ops::unsqueeze(tyloi::ops::cat(rows,0),0);
+            joined=tyloi::ops::cast(std::move(joined),embeddings.scalar_type());
+            tyloi::ops::copy_into(std::move(destination),std::move(joined));
         }
 #else
         std::vector<Tensor> rows{start.reshape({1,-1}).to(visual.scalar_type())};
@@ -167,21 +167,21 @@ mfq::StepSequence<PreparedPrompt> Vision::prepare(DeepseekV41CausalLm& language,
         }
         rows.push_back(end.reshape({1,-1}).to(visual.scalar_type()));
         embeddings.narrow(1,span.begin,span.end-span.begin).copy_(
-            mfq_tensor_backend::cat(rows,0).unsqueeze(0).to(embeddings.scalar_type()));
+            ::tyloi::cuda::cat(rows,0).unsqueeze(0).to(embeddings.scalar_type()));
 #endif
         std::fill(mask.begin()+span.begin,mask.begin()+span.end,1);
         request_key+=key+"|"+std::to_string(span.begin)+"|"+std::to_string(span.end)+";";
-        co_yield mfq::StepState::advanced;
+        co_yield tyloi::StepState::advanced;
     }
     PreparedPrompt prepared{tokens,std::move(embeddings),{},0,std::move(request_key)};
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    prepared.image_mask=mfq::ops::reshape(mfq::ops::tensor(mask,mfq::Device{mfq::DeviceType::cpu,0}),{1,-1});
+    prepared.image_mask=tyloi::ops::reshape(tyloi::ops::tensor(mask,tyloi::Device{tyloi::DeviceType::cpu,0}),{1,-1});
 #else
-    prepared.image_mask=mfq_tensor_backend::tensor(mask,mfq_tensor_backend::TensorOptions()
-        .dtype(mfq_tensor_backend::kUInt8).device(mfq_tensor_backend::kCPU)).reshape({1,-1});
+    prepared.image_mask=::tyloi::cuda::tensor(mask,::tyloi::TensorOptions()
+        .dtype(::tyloi::kUInt8).device(::tyloi::kCPU)).reshape({1,-1});
 #endif
     static std::atomic_flag reported=ATOMIC_FLAG_INIT;
     if(!reported.test_and_set())std::fprintf(stderr,"deepseek_v41_vision_dispatch enabled=1 images=%zu weights=streamed engram=text_only router=modality_bias\n",spans.size());
     co_yield std::move(prepared);
 }
-} // namespace mfq::cuda::deepseek_v41_runtime
+} // namespace tyloi::cuda::deepseek_v41_runtime

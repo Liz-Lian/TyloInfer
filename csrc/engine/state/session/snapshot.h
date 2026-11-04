@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 struct SessionSnapshotCacheConfig {
     std::size_t max_sessions = 4;
@@ -372,4 +372,4 @@ private:
     std::atomic<std::size_t> metric_bytes_{0};
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

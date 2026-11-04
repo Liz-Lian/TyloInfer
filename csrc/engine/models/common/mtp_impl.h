@@ -38,65 +38,65 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-using mfq::cuda::internal::PrefillCudaTimer;
+using tyloi::cuda::internal::PrefillCudaTimer;
 
-using namespace mfq::engine;
+using namespace tyloi::engine;
 
 namespace mtp_detail {
-using mfq::cuda::generation_workspace;
-using mfq::cuda::mtp_stream_prompt_history;
-using mfq::cuda::mtp_host_prompt_history;
-using mfq::cuda::mtp_bootstrap_before_publication;
-using mfq::cuda::mtp_retains_partial_target_prefix;
-using mfq::cuda::mtp_history_merge_limit;
-using mfq::cuda::mtp_history_flush_threshold;
-using mfq::cuda::mtp_parked_history_flush_threshold;
-using mfq::cuda::mtp_predictor_prefill_chunk_size;
-using mfq::cuda::mtp_cache_only_prompt_history;
-using mfq::cuda::mtp_initialize;
-using mfq::cuda::mtp_target_forward;
-using mfq::cuda::mtp_prefill;
-using mfq::cuda::mtp_predictor_step;
-using mfq::cuda::mtp_predictor_compact;
-using mfq::cuda::mtp_predictor_history_step;
-using mfq::cuda::mtp_begin_predictor_prefill;
-using mfq::cuda::mtp_predictor_prefill_begin;
-using mfq::cuda::mtp_predictor_prefill;
+using tyloi::cuda::generation_workspace;
+using tyloi::cuda::mtp_stream_prompt_history;
+using tyloi::cuda::mtp_host_prompt_history;
+using tyloi::cuda::mtp_bootstrap_before_publication;
+using tyloi::cuda::mtp_retains_partial_target_prefix;
+using tyloi::cuda::mtp_history_merge_limit;
+using tyloi::cuda::mtp_history_flush_threshold;
+using tyloi::cuda::mtp_parked_history_flush_threshold;
+using tyloi::cuda::mtp_predictor_prefill_chunk_size;
+using tyloi::cuda::mtp_cache_only_prompt_history;
+using tyloi::cuda::mtp_initialize;
+using tyloi::cuda::mtp_target_forward;
+using tyloi::cuda::mtp_prefill;
+using tyloi::cuda::mtp_predictor_step;
+using tyloi::cuda::mtp_predictor_compact;
+using tyloi::cuda::mtp_predictor_history_step;
+using tyloi::cuda::mtp_begin_predictor_prefill;
+using tyloi::cuda::mtp_predictor_prefill_begin;
+using tyloi::cuda::mtp_predictor_prefill;
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 template <typename Model, typename State>
 constexpr bool has_forward =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-  requires(Model& model, State& state, mfq::cuda::Input input,
-           const mfq::models::ForwardOptions& options) {
-    static_cast<const mfq::models::CausalModel&>(model).forward(std::move(input), state, options);
+  requires(Model& model, State& state, tyloi::cuda::Input input,
+           const tyloi::models::ForwardOptions& options) {
+    static_cast<const tyloi::models::CausalModel&>(model).forward(std::move(input), state, options);
   } ||
 #endif
   requires(
-    Model& model, State& state, mfq::cuda::Executor& executor,
-    mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
-    mfq::cuda::Input input) {
+    Model& model, State& state, tyloi::cuda::Executor& executor,
+    tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
+    tyloi::cuda::Input input) {
   forward(model, state, executor, collectives, mode, std::move(input));
 };
 
 template <typename Model, typename State>
 constexpr bool has_replay = requires(
-    Model& model, State& state, mfq::cuda::Executor& executor) {
+    Model& model, State& state, tyloi::cuda::Executor& executor) {
   replay(model, state, executor, std::int64_t{});
 };
 
 template <typename Model, typename State>
-Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
-              mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
-              mfq::cuda::Input input) {
+Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
+              tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
+              tyloi::cuda::Input input) {
   static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-  if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).forward(
-                             std::move(input), state, mfq::cuda::forward_options(mode)); }) {
-    const mfq::models::CausalModel& causal = model;
-    auto scope = mfq::cuda::Executor::current().enter(mode.ffn);
-    return Tensor(causal.forward(std::move(input), state, mfq::cuda::forward_options(mode)));
+  if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).forward(
+                             std::move(input), state, tyloi::cuda::forward_options(mode)); }) {
+    const tyloi::models::CausalModel& causal = model;
+    auto scope = tyloi::cuda::Executor::current().enter(mode.ffn);
+    return Tensor(causal.forward(std::move(input), state, tyloi::cuda::forward_options(mode)));
   } else
 #endif
   {
@@ -106,7 +106,7 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
   }
 }
 template <typename Model, typename State>
-void replay_target(Model& model, State& state, mfq::cuda::Executor* executor,
+void replay_target(Model& model, State& state, tyloi::cuda::Executor* executor,
                    std::int64_t accepted) {
   static_assert(has_replay<Model, State>);
   TYLOINFER_RUNTIME_CHECK(executor != nullptr,
@@ -115,29 +115,29 @@ void replay_target(Model& model, State& state, mfq::cuda::Executor* executor,
 }
 
 template <class Model, class State> struct CudaMtpOps {
-  using Tensor = mfq_tensor_backend::Tensor;
+  using Tensor = ::tyloi::Tensor;
   Model &model;
   State &state;
-  mfq::cuda::Executor* executor;
-  mfq::cuda::Collectives& collectives;
-  const mfq::cuda::Executor::Mode mode;
-  mfq::cuda::RoutedCache& weights;
-  const mfq::models::Info &info;
-  const mfq::ModelSource* source;
+  tyloi::cuda::Executor* executor;
+  tyloi::cuda::Collectives& collectives;
+  const tyloi::cuda::Executor::Mode mode;
+  tyloi::cuda::RoutedCache& weights;
+  const tyloi::models::Info &info;
+  const tyloi::ModelSource* source;
   MtpModule &mtp;
-  mfq::engine::mtp::State &mtp_state;
-  const mfq::cuda::PreparedPrompt *prepared;
+  tyloi::engine::mtp::State &mtp_state;
+  const tyloi::cuda::PreparedPrompt *prepared;
   bool transformed_prompt;
   int position_axes;
   int64_t prefill_compute_chunk;
   InferenceOutput* output;
   std::function<void()> restore;
   // Destroy after local/result tensors, including cancellation of priming.
-  std::unique_ptr<mfq::cuda::WeightLoan> predictor_loan;
-  const mfq_tensor_backend::TensorOptions options =
-      mfq_tensor_backend::TensorOptions()
-          .device(mfq_tensor_backend::kCUDA)
-          .dtype(mfq_tensor_backend::kInt64);
+  std::unique_ptr<tyloi::cuda::WeightLoan> predictor_loan;
+  const ::tyloi::TensorOptions options =
+      ::tyloi::TensorOptions()
+          .device(::tyloi::kCUDA)
+          .dtype(::tyloi::kInt64);
   Tensor input_ids, counts;
   Tensor known_ids_host, known_ids_device;
   Tensor early_ple_ids_host;
@@ -147,7 +147,7 @@ template <class Model, class State> struct CudaMtpOps {
   int graph_sampling_reuses=0;
   int32_t projected_predictor_greedy=-1;
   std::vector<int32_t> projected_target_greedy;
-  std::optional<mfq::cuda::Sampler> sampler_;
+  std::optional<tyloi::cuda::Sampler> sampler_;
   bool penalties = false;
   bool target_maintenance = false;
   std::uint64_t target_graph_captures = 0;
@@ -156,7 +156,7 @@ template <class Model, class State> struct CudaMtpOps {
   std::shared_ptr<MoeExpertCache> target_route_cache;
   static bool profile_target() {
     static const bool enabled=[] {
-      const auto* option=mfq::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
+      const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
       return option && option[0]=='1';
     }();
     return enabled;
@@ -198,14 +198,14 @@ template <class Model, class State> struct CudaMtpOps {
   }
   bool prefetch_target_ids(int32_t token,const std::vector<int32_t>& drafts) {
     if constexpr(requires {model.adapter_prefetch_token_rows(model,early_ple_ids_host);}) {
-      const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_EARLY_PLE");
+      const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_EARLY_PLE");
       if(option && option[0]=='0')return false;
       const int tokens=mtp.split_target_verification()?1:1+int(drafts.size());
       if(!early_ple_ids_host.defined() || early_ple_ids_host.size(1)<tokens)
-        early_ple_ids_host=mfq_tensor_backend::empty({1,tokens},options.device(mfq_tensor_backend::kCPU));
+        early_ple_ids_host=::tyloi::cuda::empty({1,tokens},options.device(::tyloi::kCPU));
       auto* ids=early_ple_ids_host.template data_ptr<int64_t>();ids[0]=token;
       for(int i=1;i<tokens;++i)ids[i]=drafts[std::size_t(i-1)];
-      if(mfq::cuda::internal::prefetch_token_rows(model,early_ple_ids_host.narrow(1,0,tokens))) {
+      if(tyloi::cuda::internal::prefetch_token_rows(model,early_ple_ids_host.narrow(1,0,tokens))) {
         static bool reported=false;
         if(!reported) {
           reported=true;std::cerr<<"runtime_mtp_early_token_rows enabled=1 prefix_tokens=1\n";
@@ -224,11 +224,11 @@ template <class Model, class State> struct CudaMtpOps {
   }
   void prefetch_target_first(int32_t token) {prefetch_target_ids(token,{});}
   void prefetch_target_prefix(int32_t token,const std::vector<int32_t>& drafts) {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_PLE_DRAFT_PREFIX");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_PLE_DRAFT_PREFIX");
     if(!option || option[0]!='0')prefetch_target_ids(token,drafts);
   }
   void prefetch_committed_token(int32_t token) {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_PLE_PUBLICATION");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_PLE_PUBLICATION");
     if(option && option[0]=='0')return;
     if(prefetch_target_ids(token,{})) {
       static bool reported=false;
@@ -238,7 +238,7 @@ template <class Model, class State> struct CudaMtpOps {
     }
   }
   bool stream_prompt_history(int64_t tokens) const {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_STREAM_PROMPT_HISTORY");
     return mtp_stream_prompt_history(model,tokens,option);
   }
   bool host_prompt_history(int64_t tokens) const {
@@ -253,7 +253,7 @@ template <class Model, class State> struct CudaMtpOps {
         <<" predictor_workspace_ms="<<workspace_ms<<" streamed="<<stream_prompt_history(input_ids.size(1))<<std::endl;
   }
   bool bootstrap_before_publication() const {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_EARLY_BOOTSTRAP");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_EARLY_BOOTSTRAP");
     return mtp_bootstrap_before_publication(model,option);
   }
   bool retains_partial_target_prefix(int accepted) const {
@@ -263,15 +263,15 @@ template <class Model, class State> struct CudaMtpOps {
     return mtp_history_merge_limit(model);
   }
   std::size_t predictor_history_flush_threshold() const {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
     return mtp_history_flush_threshold(model,option);
   }
   std::size_t predictor_parked_history_flush_threshold() const {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_EARLY_FLUSH");
     return mtp_parked_history_flush_threshold(model,option);
   }
   void trace_cycle(uint64_t cycle,int depth,int accepted,double draft_ms,double verify_ms,double commit_ms) {
-      const auto* option=mfq::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
+      const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_MTP");
       const bool profile=option && option[0]=='1';
       if(profile || (cycle<=32 && draft_ms+verify_ms+commit_ms>=55.0)) {
         std::cerr<<(profile?"runtime_mtp_cycle_profile cycle=":"runtime_mtp_slow_cycle cycle=")<<cycle<<" depth="<<depth<<" accepted="<<accepted
@@ -285,12 +285,12 @@ template <class Model, class State> struct CudaMtpOps {
       }
   }
 
-  CudaMtpOps(Model &model, State &state, mfq::cuda::Executor* executor,
-             mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
-             mfq::cuda::RoutedCache& weights,
-             const mfq::models::Info &info, const mfq::ModelSource* source,
-             MtpModule &mtp, mfq::engine::mtp::State &mtp_state,
-             const mfq::cuda::PreparedPrompt *prepared,
+  CudaMtpOps(Model &model, State &state, tyloi::cuda::Executor* executor,
+             tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
+             tyloi::cuda::RoutedCache& weights,
+             const tyloi::models::Info &info, const tyloi::ModelSource* source,
+             MtpModule &mtp, tyloi::engine::mtp::State &mtp_state,
+             const tyloi::cuda::PreparedPrompt *prepared,
              int64_t compute_chunk, InferenceOutput* output,
              std::function<void()> restore = {})
       : model(model), state(state), executor(executor), collectives(collectives), mode(mode),
@@ -316,12 +316,12 @@ template <class Model, class State> struct CudaMtpOps {
     penalties = sampler().has_penalties();
     mtp_initialize(model,*this);
     if (penalties) {
-      counts = mfq::cuda::SamplingOps::token_counts(input_ids, info.vocab_size);
+      counts = tyloi::cuda::SamplingOps::token_counts(input_ids, info.vocab_size);
     }
   }
   auto &sampler() { return *sampler_; }
   bool captured_compact_requested() const {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MTP_CONDITIONAL_TOPK");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MTP_CONDITIONAL_TOPK");
     if(option && option[0]=='0')return true;
     const auto& parameters=sampler_->params();
     return !sampler_->greedy() && !penalties && parameters.top_k>0 && parameters.top_k<=64;
@@ -335,7 +335,7 @@ template <class Model, class State> struct CudaMtpOps {
   }
   static int rank(const Tensor &value) { return value.dim(); }
   static Tensor clone(const Tensor &value) {
-    return value.is_cuda()?value.clone():value.to(mfq_tensor_backend::kCUDA);
+    return value.is_cuda()?value.clone():value.to(::tyloi::kCUDA);
   }
   static Tensor slice(const Tensor &value, int axis, int64_t offset,
                       int64_t length) {
@@ -347,10 +347,10 @@ template <class Model, class State> struct CudaMtpOps {
   static Tensor concatenate(const std::vector<Tensor> &values, int axis) {
     if(std::any_of(values.begin(),values.end(),[](const auto& value){return !value.is_cuda();})) {
       auto host=values;
-      for(auto& value:host)value=value.to(mfq_tensor_backend::kCPU);
-      return mfq_tensor_backend::cat(host,axis).contiguous();
+      for(auto& value:host)value=value.to(::tyloi::kCPU);
+      return ::tyloi::cuda::cat(host,axis).contiguous();
     }
-    return mfq_tensor_backend::cat(values, axis).contiguous();
+    return ::tyloi::cuda::cat(values, axis).contiguous();
   }
   Tensor target_forward(Tensor ids, Tensor *raw = nullptr,
                         int64_t confirmed = 0) {
@@ -369,7 +369,7 @@ template <class Model, class State> struct CudaMtpOps {
       return std::move(*result);
     Tensor hidden;
     if constexpr (has_forward<Model, State>) {
-      mfq::cuda::Input input;
+      tyloi::cuda::Input input;
       input.ids = std::move(ids);
       input.raw_hidden = raw;
       input.confirmed = confirmed;
@@ -420,7 +420,7 @@ template <class Model, class State> struct CudaMtpOps {
     TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
     return timer.elapsed_ms();
   }
-  PrefillResult prefill(mfq::engine::PrefillChunk chunk) {
+  PrefillResult prefill(tyloi::engine::PrefillChunk chunk) {
     PrefillCudaTimer timer;
     bool prefill_finished=false;
     const auto finish_prefill=[&] {
@@ -430,10 +430,10 @@ template <class Model, class State> struct CudaMtpOps {
     };
     Tensor raw;
     auto ids = input_ids.narrow(1, chunk.offset, chunk.count).contiguous();
-    mfq::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
+    tyloi::cuda::ImageMaskScope image_scope(model,prepared,chunk.offset,chunk.count);
     if(auto result=mtp_prefill(model,*this,chunk,ids,raw,timer,finish_prefill))
       return std::move(*result);
-    mfq::cuda::WeightLoan workspace(weights.moe);
+    tyloi::cuda::WeightLoan workspace(weights.moe);
     const bool host_history=host_prompt_history(chunk.count);
     const bool borrowed=transformed_prompt && generation_workspace(model,workspace,chunk.count);
     Tensor hidden;
@@ -445,7 +445,7 @@ template <class Model, class State> struct CudaMtpOps {
                                  -1, chunk.offset, chunk.count).contiguous())
                            : mfq_nullopt;
       if constexpr (has_forward<Model, State>) {
-        mfq::cuda::Input input;
+        tyloi::cuda::Input input;
         input.ids = std::move(ids);
         input.embeddings = std::move(embeddings);
         if (positions) input.positions = std::move(*positions);
@@ -460,7 +460,7 @@ template <class Model, class State> struct CudaMtpOps {
     } else {
       hidden = target_forward(std::move(ids), &raw);
     }
-    if(host_history)raw=raw.to(mfq_tensor_backend::kCPU);
+    if(host_history)raw=raw.to(::tyloi::kCPU);
     finish_prefill();
     if(borrowed) {
       workspace.suspend();
@@ -471,9 +471,9 @@ template <class Model, class State> struct CudaMtpOps {
     return {std::move(hidden), std::move(raw), timer.elapsed_ms()};
   }
   Tensor ids_for(std::vector<int64_t> tokens) {
-    known_ids_host = mfq_tensor_backend::tensor(tokens, options.device(mfq_tensor_backend::kCPU))
+    known_ids_host = ::tyloi::cuda::tensor(tokens, options.device(::tyloi::kCPU))
         .reshape({1, -1}).contiguous();
-    known_ids_device = known_ids_host.to(mfq_tensor_backend::kCUDA);
+    known_ids_device = known_ids_host.to(::tyloi::kCUDA);
     return known_ids_device;
   }
   Tensor decode_positions(int64_t cache_start, int64_t tokens) {
@@ -484,7 +484,7 @@ template <class Model, class State> struct CudaMtpOps {
     TYLOINFER_RUNTIME_CHECK(logical_start >= 0 && logical_start + tokens <=
                                                 info.max_context,
                       "CUDA MTP position span exceeds context capacity");
-    auto result = mfq_tensor_backend::arange(logical_start,
+    auto result = ::tyloi::cuda::arange(logical_start,
                                              logical_start + tokens, options);
     return position_axes == 3
                ? result.reshape({1, tokens}).expand({3, tokens}).contiguous()
@@ -532,7 +532,7 @@ template <class Model, class State> struct CudaMtpOps {
     mtp_predictor_prefill_begin(model,*this,ids);
     PrefillCudaTimer timer;
     bool prefill_finished=false;
-    if(!cache_only_prompt_history())hidden=hidden.to(mfq_tensor_backend::kCUDA);
+    if(!cache_only_prompt_history())hidden=hidden.to(::tyloi::kCUDA);
     mtp_predictor_prefill(model,*this,hidden,ids,positions,timer,prefill_finished);
     if(!prefill_finished)
       TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
@@ -550,7 +550,7 @@ template <class Model, class State> struct CudaMtpOps {
     if (penalties)
       logits = logits.clone();
     return static_cast<int32_t>(
-        mfq::engine::sample_logits(sampler(), std::move(logits), token_counts)
+        tyloi::engine::sample_logits(sampler(), std::move(logits), token_counts)
             .template item<int64_t>());
   }
   std::vector<int32_t> greedy_tokens(Tensor logits) {
@@ -571,7 +571,7 @@ template <class Model, class State> struct CudaMtpOps {
     auto sampler_constraint =
         constraint ? constraint->clone() : MfqTokenConstraintPtr{};
     return static_cast<int32_t>(
-        mfq::engine::sample_logits(sampler(), std::move(logits), token_counts,
+        tyloi::engine::sample_logits(sampler(), std::move(logits), token_counts,
                                  sampler_constraint)
             .template item<int64_t>());
   }
@@ -584,7 +584,7 @@ template <class Model, class State> struct CudaMtpOps {
           logits, token_counts, parameters.presence_penalty,
           parameters.frequency_penalty, parameters.repetition_penalty);
     }
-    return mfq::cuda::SamplingOps::probabilities(std::move(logits), parameters);
+    return tyloi::cuda::SamplingOps::probabilities(std::move(logits), parameters);
   }
   Tensor captured_compact(const Tensor& logits,const MfqSamplingParams& parameters) {
     for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
@@ -595,8 +595,8 @@ template <class Model, class State> struct CudaMtpOps {
 #ifdef TYLOINFER_MTP_VERIFY_GRAPH_TOPK
         static thread_local std::array<bool,33> checked{};
         if(!checked[logits.size(0)]) {
-            auto expected=mfq::cuda::SamplingOps::compact_radix_rows(logits,parameters);
-            auto actual=mfq::cuda::SamplingOps::compact_rows_from_host(pair.second,parameters);
+            auto expected=tyloi::cuda::SamplingOps::compact_radix_rows(logits,parameters);
+            auto actual=tyloi::cuda::SamplingOps::compact_rows_from_host(pair.second,parameters);
             TYLOINFER_RUNTIME_CHECK(expected.size()==actual.size(),"captured MTP top-k row count differs");
             for(std::size_t row=0;row<actual.size();++row) {
                 TYLOINFER_RUNTIME_CHECK(expected[row].tokens==actual[row].tokens,"captured MTP top-k token IDs differ");
@@ -612,7 +612,7 @@ template <class Model, class State> struct CudaMtpOps {
       }
     return {};
   }
-  mfq::engine::mtp::CompactDistribution
+  tyloi::engine::mtp::CompactDistribution
   compact_probabilities(Tensor logits, Tensor token_counts,
                         const MfqSamplingParams &parameters) {
     TYLOINFER_RUNTIME_CHECK(parameters.top_k > 0 && parameters.top_k <= 64 &&
@@ -620,24 +620,24 @@ template <class Model, class State> struct CudaMtpOps {
                       "compact CUDA MTP sampling requires top-k 1-64");
     logits = logits.contiguous().reshape({1, -1});
     if(!penalties)if(auto host=captured_compact(logits,parameters);host.defined())
-        return std::move(mfq::cuda::SamplingOps::compact_rows_from_host(host,parameters).front());
+        return std::move(tyloi::cuda::SamplingOps::compact_rows_from_host(host,parameters).front());
     if (penalties) {
       logits = logits.clone();
       sample_apply_penalties_cuda(
           logits, token_counts, parameters.presence_penalty,
           parameters.frequency_penalty, parameters.repetition_penalty);
     }
-    return mfq::cuda::SamplingOps::compact_probabilities(std::move(logits), parameters);
+    return tyloi::cuda::SamplingOps::compact_probabilities(std::move(logits), parameters);
   }
-  std::vector<mfq::engine::mtp::CompactDistribution>
+  std::vector<tyloi::engine::mtp::CompactDistribution>
   compact_probability_rows(Tensor logits, const MfqSamplingParams &parameters) {
     TYLOINFER_RUNTIME_CHECK(!penalties && logits.dim() == 2 && parameters.top_k > 0 &&
                           parameters.top_k <= 64 &&
                           parameters.temperature > 0.0,
                       "batched compact CUDA MTP sampling geometry is invalid");
     logits = logits.contiguous();
-    if(auto host=captured_compact(logits,parameters);host.defined())return mfq::cuda::SamplingOps::compact_rows_from_host(host,parameters);
-    return mfq::cuda::SamplingOps::compact_probability_rows(std::move(logits), parameters);
+    if(auto host=captured_compact(logits,parameters);host.defined())return tyloi::cuda::SamplingOps::compact_rows_from_host(host,parameters);
+    return tyloi::cuda::SamplingOps::compact_probability_rows(std::move(logits), parameters);
   }
   Tensor logits_for(Tensor normalized) {
     const auto matches = [&](const Tensor& hidden) {
@@ -647,31 +647,31 @@ template <class Model, class State> struct CudaMtpOps {
     if(matches(projected_target_hidden)) return projected_target_logits;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if constexpr (requires(Model& value, Tensor value_hidden) {
-                    static_cast<const mfq::models::CausalModel&>(value).logits(std::move(value_hidden), true);
+                    static_cast<const tyloi::models::CausalModel&>(value).logits(std::move(value_hidden), true);
                   }) {
       auto input = (mtp.preserve_output_dtype()
                         ? normalized
-                        : normalized.to(mfq_tensor_backend::kFloat16))
+                        : normalized.to(::tyloi::kFloat16))
                        .contiguous();
-      const mfq::models::CausalModel& causal = model;
-      auto scope = mfq::cuda::Executor::current().enter(mfq::cuda::Ffn::Mode{});
+      const tyloi::models::CausalModel& causal = model;
+      auto scope = tyloi::cuda::Executor::current().enter(tyloi::cuda::Ffn::Mode{});
       return Tensor(causal.logits(std::move(input), true));
     } else
 #endif
-    if constexpr (requires(Model& value, mfq::cuda::Executor& value_executor, Tensor value_hidden) {
+    if constexpr (requires(Model& value, tyloi::cuda::Executor& value_executor, Tensor value_hidden) {
                     logits(value, value_executor, std::move(value_hidden), true);
                   }) {
       TYLOINFER_RUNTIME_CHECK(executor != nullptr,
                               "CUDA model logits requires an executor");
       auto input = (mtp.preserve_output_dtype()
                         ? normalized
-                        : normalized.to(mfq_tensor_backend::kFloat16))
+                        : normalized.to(::tyloi::kFloat16))
                        .contiguous();
       return logits(model, *executor, std::move(input), true);
     } else {
       auto input = (mtp.preserve_output_dtype()
                         ? normalized
-                        : normalized.to(mfq_tensor_backend::kFloat16))
+                        : normalized.to(::tyloi::kFloat16))
                        .contiguous();
       return model.logits_from_hidden(std::move(input));
     }

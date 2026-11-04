@@ -5,12 +5,12 @@
 
 #include <cstdint>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct BatchSample {
-    mfq_tensor_backend::Tensor next;
+    ::tyloi::Tensor next;
     int64_t token = 0;
     MfqPrefillTiming timing;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::nemotron_h {
+namespace tyloi::models::nemotron_h {
 
 // Every Nemotron-H block is exactly one pre-normed mixer, so the block
 // schedule alone decides the graph topology of a layer.
@@ -61,4 +61,4 @@ struct Config : ModelConfig {
     static Config from_json(std::string_view payload, const ModelGraph& graph);
 };
 
-} // namespace mfq::models::nemotron_h
+} // namespace tyloi::models::nemotron_h

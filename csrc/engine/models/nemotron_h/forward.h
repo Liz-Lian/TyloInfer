@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace mfq::cuda::nemotron_h {
+namespace tyloi::cuda::nemotron_h {
 
 Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids,
              const Executor::Mode& = {});
@@ -22,4 +22,4 @@ Tensor forward_layer(const Layer&, LayerState&, Executor&, std::size_t scratch_i
 bool supports_speculation(const Model&) noexcept;
 void replay(const Model&, State&, Executor&, std::int64_t accepted = 0);
 
-} // namespace mfq::cuda::nemotron_h
+} // namespace tyloi::cuda::nemotron_h

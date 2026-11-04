@@ -4,7 +4,7 @@
 #include "engine/weights/tq/cache.h"
 #include "engine/weights/workspace.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 std::shared_ptr<TqCache> RoutedCache::ensure_tq(const std::shared_ptr<TqExec>& exec) {
     if (!tq) {
@@ -42,4 +42,4 @@ void RoutedCache::reset() noexcept {
     device_bytes.reset();
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

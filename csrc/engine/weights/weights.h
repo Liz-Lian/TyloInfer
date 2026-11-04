@@ -7,7 +7,7 @@
 #include <optional>
 #include <vector>
 
-namespace mfq::weights {
+namespace tyloi::weights {
 
 enum class Layout { matrix, group, experts };
 struct Shape { std::int64_t rows, cols; };
@@ -29,4 +29,4 @@ public:
     virtual Placement placement(std::size_t index = 0) const = 0;
 };
 
-} // namespace mfq::weights
+} // namespace tyloi::weights

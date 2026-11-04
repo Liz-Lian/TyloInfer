@@ -13,15 +13,15 @@ class MoePinnedExpertArena {
     using Free=std::map<std::size_t,std::size_t>;
     using Fits=std::set<std::pair<std::size_t,std::size_t>>;
     struct State {
-        mfq::cuda::HostBuffer storage;
+        tyloi::cuda::HostBuffer storage;
         std::mutex mutex;
         Free free;
         Fits fits;
         std::size_t used=0;
         explicit State(std::size_t bytes):storage(bytes,true) {
-            free.emplace(0,bytes);fits.emplace(bytes,0);mfq::cuda::charge_tensor_host_bytes(bytes);
+            free.emplace(0,bytes);fits.emplace(bytes,0);tyloi::cuda::charge_tensor_host_bytes(bytes);
         }
-        ~State(){mfq::cuda::tensor_host_bytes.fetch_sub(storage.size());}
+        ~State(){tyloi::cuda::tensor_host_bytes.fetch_sub(storage.size());}
     };
 public:
     struct Block {
@@ -77,12 +77,12 @@ public:
     void* data() const {return state_->storage.data();}
     std::size_t bytes() const {return state_->storage.size();}
     std::size_t used_bytes() const {std::lock_guard lock(state_->mutex);return state_->used;}
-    mfq::cuda::Tensor tensor() const {
-        auto storage=std::make_shared<mfq::cuda::TensorStorage>();
-        const auto device=mfq::cuda::Device{mfq::cuda::DeviceType::cpu,0};
+    ::tyloi::Tensor tensor() const {
+        auto storage=std::make_shared<::tyloi::TensorStorage>();
+        const auto device=::tyloi::Device{::tyloi::DeviceType::cpu,0};
         storage->owner=state_;storage->base=data();storage->bytes=bytes();storage->device=device;storage->pinned=true;
         const std::array<std::int64_t,1> shape{std::int64_t(bytes())};
-        return mfq::cuda::Tensor(storage,mfq::cuda::make_contiguous_view(data(),shape,mfq::cuda::ScalarType::uint8,device));
+        return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(data(),shape,::tyloi::ScalarType::uint8,device));
     }
 private:
     std::shared_ptr<State> state_;

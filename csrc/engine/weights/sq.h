@@ -7,9 +7,9 @@
 
 struct Fp8SqWeight {
     std::string dtype;
-    mfq_tensor_backend::Tensor blob;
-    mfq_tensor_backend::Tensor row_q;
-    mfq_tensor_backend::Tensor row_symbol_byte_offsets;
+    ::tyloi::Tensor blob;
+    ::tyloi::Tensor row_q;
+    ::tyloi::Tensor row_symbol_byte_offsets;
     int64_t out = 0;
     int64_t neuron_len = 0;
     int64_t block_rows = 0;
@@ -26,10 +26,10 @@ struct Fp8SqWeight {
 };
 
 struct Mxfp4SqWeight {
-    mfq_tensor_backend::Tensor blob;
-    mfq_tensor_backend::Tensor row_q;
-    mfq_tensor_backend::Tensor row_symbol_byte_offsets;
-    mfq_tensor_backend::Tensor row_auxiliary;
+    ::tyloi::Tensor blob;
+    ::tyloi::Tensor row_q;
+    ::tyloi::Tensor row_symbol_byte_offsets;
+    ::tyloi::Tensor row_auxiliary;
     int64_t bits = 0;
     int64_t out = 0;
     int64_t neuron_len = 0;

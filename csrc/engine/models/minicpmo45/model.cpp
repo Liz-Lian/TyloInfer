@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::minicpmo45 {
+namespace tyloi::cuda::minicpmo45 {
 
 std::array<Task, 2> Layer::tasks() const {
     return {{
@@ -17,16 +17,16 @@ std::array<Task, 2> Layer::tasks() const {
     }};
 }
 
-Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition, int64_t context) {
+Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition, int64_t context) {
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = mfq::models::graph(*model.source);
+    model.graph = tyloi::models::graph(*model.source);
     if (model.graph.backbone != "minicpmo_tts")
         throw std::runtime_error("MiniCPM TTS loading requires the minicpmo_tts backbone");
     model.plan = cuda_model_plan(model.graph);
     auto& config = model.config;
-    config = mfq::models::ModelConfig::from_json(definition);
+    config = tyloi::models::ModelConfig::from_json(definition);
     if (config.num_hidden_layers != model.graph.topology.text_layers)
         throw std::runtime_error("model graph/config text-layer topology mismatch");
     if (context > 0) {
@@ -55,20 +55,19 @@ Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view defi
 }
 
 void load(Model& model, const weight_loader::Loader& weights, const LayerPlacementConfig& placement,
-          int cpu_layers, const mfq::ops::YarnScaling& yarn) {
-    namespace tb = mfq_tensor_backend;
+          int cpu_layers, const tyloi::ops::YarnScaling& yarn) {
     const auto& config = model.config;
     MfqCudaGuard guard(weights.placement.device);
-    const auto make_rope = [&](tb::Device device) {
+    const auto make_rope = [&](::tyloi::Device device) {
         return RopeCache(config.max_position_embeddings, config.rotary_dim, config.rope_base,
             0, -1, device, false, yarn);
     };
-    model.rope = make_rope(tb::Device(tb::kCUDA, weights.placement.device));
-    if (cpu_layers > 0) model.cpu_rope = make_rope(tb::Device(tb::kCPU));
+    model.rope = make_rope(::tyloi::Device(::tyloi::kCUDA, weights.placement.device));
+    if (cpu_layers > 0) model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
     if (placement.enabled())
         for (int device : placement.devices) {
             MfqCudaGuard device_guard(device);
-            model.device_ropes.emplace(device, make_rope(tb::Device(tb::kCUDA, device)));
+            model.device_ropes.emplace(device, make_rope(::tyloi::Device(::tyloi::kCUDA, device)));
         }
     const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
     model.embed = weights.build_embedding("model.token_embedding.weight", separate);
@@ -86,10 +85,10 @@ void load(Model& model, const weight_loader::Loader& weights, const LayerPlaceme
         const auto placed = weights.for_layer(layer.device, layer.cpu);
         TransformerWeightLoader loader{placed};
         const auto prefix = "model.block." + std::to_string(index) + ".";
-        mfq::models::load_attention_mixer(layer.attention, loader, config, index, prefix, 1.0);
+        tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix, 1.0);
         layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-        layer.ffn = mfq::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
+        layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
     }
 }
 
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

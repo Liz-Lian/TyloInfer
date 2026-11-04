@@ -18,14 +18,14 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
-using mfq::cuda::internal::PrefillCudaTimer;
-using Tensor = mfq_tensor_backend::Tensor;
+using tyloi::cuda::internal::PrefillCudaTimer;
+using Tensor = ::tyloi::Tensor;
 
-mfq::engine::PrefillChunk BatchOps::prefill_chunk(
-        const std::shared_ptr<Request>&, mfq::engine::PrefillChunk chunk) {
-    return mfq::cuda::budget_batch_prefill(
+tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
+        const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk chunk) {
+    return tyloi::cuda::budget_batch_prefill(
         model_->metadata.hidden_size, model_->metadata.hc_mult, mode_.primary, moe_cache_, chunk);
 }
 
@@ -89,16 +89,16 @@ void BatchOps::initialize_sampling(Request& request, const Tensor& prompt_ids) {
 void BatchOps::suspend_decode() { invalidate_decode_graph(); }
 
 BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
-                                   mfq::engine::PrefillChunk chunk) {
+                                   tyloi::engine::PrefillChunk chunk) {
     const int primary = mode_.primary;
     state_.prepare_prefill(request->cache, chunk.offset, request->prompt.size());
     if (chunk.offset == 0) {
         request->prefill_ids =
-            mfq_tensor_backend::tensor(
+            ::tyloi::cuda::tensor(
                 request->prompt,
-                mfq_tensor_backend::TensorOptions()
-                    .dtype(mfq_tensor_backend::kInt64)
-                    .device(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary)))
+                ::tyloi::TensorOptions()
+                    .dtype(::tyloi::kInt64)
+                    .device(::tyloi::Device(::tyloi::kCUDA, primary)))
                 .reshape({1, -1})
                 .contiguous();
         initialize_sampling(*request, request->prefill_ids);
@@ -109,7 +109,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     MfqOptional<Tensor> length = mfq_nullopt;
     if (chunk.offset > 0 && chunk.count == 1)
         length =
-            mfq_tensor_backend::full({1}, chunk.offset + 1, request->prefill_ids.options());
+            ::tyloi::cuda::full({1}, chunk.offset + 1, request->prefill_ids.options());
     Input input;
     input.ids = request->prefill_ids.narrow(1, chunk.offset, chunk.count).contiguous();
     input.lengths = std::move(length);
@@ -130,7 +130,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
     TYLOINFER_CUDA_CHECK(
         cudaEventRecord(final_timer->finished_event(), mfq_get_current_cuda_stream()));
     request->prefill_timers.push_back(std::move(final_timer));
-    auto next = mfq::engine::sample_logits(*request->sampler, std::move(logits), request->counts,
+    auto next = tyloi::engine::sample_logits(*request->sampler, std::move(logits), request->counts,
                                          request->token_constraint);
     const int64_t token = next.item<int64_t>();
     double prefill_ms = 0.0;
@@ -171,14 +171,14 @@ void BatchOps::ensure_decode_metadata_buffers(int primary) {
         return;
     const int64_t capacity = 3 * static_cast<int64_t>(max_sequences_);
     decode_metadata_host_ =
-        mfq_tensor_backend::empty({capacity}, mfq_tensor_backend::TensorOptions()
-                                                  .dtype(mfq_tensor_backend::kInt64)
-                                                  .device(mfq_tensor_backend::kCPU)
+        ::tyloi::cuda::empty({capacity}, ::tyloi::TensorOptions()
+                                                  .dtype(::tyloi::kInt64)
+                                                  .device(::tyloi::kCPU)
                                                   .pinned_memory(true));
-    decode_metadata_cuda_ = mfq_tensor_backend::empty(
-        {capacity}, mfq_tensor_backend::TensorOptions()
-                        .dtype(mfq_tensor_backend::kInt64)
-                        .device(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary)));
+    decode_metadata_cuda_ = ::tyloi::cuda::empty(
+        {capacity}, ::tyloi::TensorOptions()
+                        .dtype(::tyloi::kInt64)
+                        .device(::tyloi::Device(::tyloi::kCUDA, primary)));
 }
 
 void BatchOps::invalidate_decode_graph() {
@@ -225,7 +225,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
         graph_cache_hit = found != decode_graphs_.end();
         graph_decode = graph_cache_hit || minimum_remaining >= config_.cuda_graph_minimum_tokens;
     }
-    mfq::cuda::BatchGraph* decode_graph = nullptr;
+    tyloi::cuda::BatchGraph* decode_graph = nullptr;
     if (graph_cache_hit) {
         decode_graph =
             std::find_if(decode_graphs_.begin(), decode_graphs_.end(), [&](const auto& graph) {
@@ -234,7 +234,7 @@ BatchOps::Decoded BatchOps::decode(State& state) {
     } else if (graph_decode) {
         if (decode_graphs_.size() >= 8)
             invalidate_decode_graph();
-        decode_graphs_.push_back(std::make_unique<mfq::cuda::BatchGraph>());
+        decode_graphs_.push_back(std::make_unique<tyloi::cuda::BatchGraph>());
         decode_graph = decode_graphs_.back().get();
     }
     std::unique_ptr<MfqCudaStreamGuard> graph_stream_guard;
@@ -345,19 +345,19 @@ BatchOps::Decoded BatchOps::decode(State& state) {
                                     [](const auto& request) { return request->eligible; });
     Tensor batched_greedy_tokens;
     if (graph_tokens.defined()) {
-        batched_greedy_tokens = graph_tokens.to(mfq_tensor_backend::kCPU).contiguous();
+        batched_greedy_tokens = graph_tokens.to(::tyloi::kCPU).contiguous();
         TYLOINFER_RUNTIME_CHECK(
-            batched_greedy_tokens.scalar_type() == mfq_tensor_backend::kInt64 &&
+            batched_greedy_tokens.scalar_type() == ::tyloi::kInt64 &&
                 batched_greedy_tokens.numel() == batch,
             "continuous batching CUDA Graph sampler returned the wrong shape");
         ++batched_greedy_batches_;
     } else if (config_.greedy && batch_greedy) {
         batched_greedy_tokens =
             sample_greedy_cuda(logits.contiguous().view({batch, -1}))
-                .to(mfq_tensor_backend::kCPU)
+                .to(::tyloi::kCPU)
                 .contiguous();
         TYLOINFER_RUNTIME_CHECK(
-            batched_greedy_tokens.scalar_type() == mfq_tensor_backend::kInt64 &&
+            batched_greedy_tokens.scalar_type() == ::tyloi::kInt64 &&
                 batched_greedy_tokens.numel() == batch,
             "continuous batching greedy sampler returned the wrong shape");
         ++batched_greedy_batches_;
@@ -370,7 +370,7 @@ BatchOps::Sample BatchOps::sample(const std::shared_ptr<Request>& request,
     const auto slot = static_cast<int64_t>(request->cache.slot());
     if (decoded.greedy_tokens.defined())
         return {{}, decoded.greedy_tokens.data_ptr<int64_t>()[slot], {}};
-    auto next = mfq::engine::sample_logits(*request->sampler, decoded.logits.narrow(0, slot, 1),
+    auto next = tyloi::engine::sample_logits(*request->sampler, decoded.logits.narrow(0, slot, 1),
                                          request->counts, request->token_constraint);
     const auto token = next.item<int64_t>();
     return {std::move(next), token, {}};
@@ -394,11 +394,11 @@ void BatchOps::recover(State& state) {
     invalidate_decode_graph();
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-std::unique_ptr<mfq::engine::Batch> make_batch(
+std::unique_ptr<tyloi::engine::Batch> make_batch(
     std::shared_ptr<const qwen35::Model> model, qwen35::State* serial,
     std::unique_ptr<Executor> executor, Collectives& copies, Executor::Mode mode,
     std::shared_ptr<MoeExpertCache> cache, CudaContinuousBatchConfig config,
@@ -410,9 +410,9 @@ std::unique_ptr<mfq::engine::Batch> make_batch(
     const qwen35::Batch::Options options{config.max_sequences, config.paged_kv, preallocate,
                                          cpu_offload, cached_slots};
     const auto token_budget = config.prefill_token_budget;
-    return std::make_unique<mfq::engine::ContinuousBatch<qwen35::BatchOps>>(
+    return std::make_unique<tyloi::engine::ContinuousBatch<qwen35::BatchOps>>(
         chunk_size, token_budget, std::move(model), std::move(executor), copies, mode, options,
         std::move(cache), std::move(config));
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

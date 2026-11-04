@@ -99,16 +99,16 @@ __global__ void nepq_hadamard_adjoint_kernel(
 }  // namespace
 
 
-mfq_tensor_backend::Tensor nepq_hadamard_input_cuda(
-    mfq_tensor_backend::Tensor input,
-    mfq_tensor_backend::Tensor signs,
+::tyloi::Tensor nepq_hadamard_input_cuda(
+    ::tyloi::Tensor input,
+    ::tyloi::Tensor signs,
     int64_t block_size) {
     TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
         input.is_contiguous() && input.dim() == 2,
         "NEPQ Hadamard input must be CUDA contiguous fp16 rank-2");
     TYLOINFER_RUNTIME_CHECK(
-        signs.is_cuda() && signs.scalar_type() == mfq_tensor_backend::kInt8 &&
+        signs.is_cuda() && signs.scalar_type() == ::tyloi::kInt8 &&
         signs.is_contiguous() && signs.dim() == 1,
         "NEPQ Hadamard signs must be CUDA contiguous int8 rank-1");
     TYLOINFER_RUNTIME_CHECK(
@@ -120,7 +120,7 @@ mfq_tensor_backend::Tensor nepq_hadamard_input_cuda(
     TYLOINFER_RUNTIME_CHECK(signs.numel() == width, "NEPQ Hadamard sign width mismatch");
     TYLOINFER_RUNTIME_CHECK(width % block_size == 0, "NEPQ Hadamard block must divide K");
     MfqCudaGuard guard(input.device());
-    auto output = mfq_tensor_backend::empty_like(input);
+    auto output = ::tyloi::cuda::empty_like(input);
     cudaStream_t stream = mfq_current_cuda_stream();
     nepq_hadamard_input_kernel<<<
         dim3(width / block_size, rows),
@@ -139,16 +139,16 @@ mfq_tensor_backend::Tensor nepq_hadamard_input_cuda(
 }
 
 
-mfq_tensor_backend::Tensor nepq_hadamard_adjoint_cuda(
-    mfq_tensor_backend::Tensor input,
-    mfq_tensor_backend::Tensor signs,
+::tyloi::Tensor nepq_hadamard_adjoint_cuda(
+    ::tyloi::Tensor input,
+    ::tyloi::Tensor signs,
     int64_t block_size) {
     TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
         input.is_contiguous() && input.dim() == 2,
         "NEPQ Hadamard adjoint input must be CUDA contiguous fp16 rank-2");
     TYLOINFER_RUNTIME_CHECK(
-        signs.is_cuda() && signs.scalar_type() == mfq_tensor_backend::kInt8 &&
+        signs.is_cuda() && signs.scalar_type() == ::tyloi::kInt8 &&
         signs.is_contiguous() && signs.dim() == 1,
         "NEPQ Hadamard adjoint signs must be CUDA contiguous int8 rank-1");
     TYLOINFER_RUNTIME_CHECK(
@@ -164,7 +164,7 @@ mfq_tensor_backend::Tensor nepq_hadamard_adjoint_cuda(
         input.device() == signs.device(),
         "NEPQ Hadamard adjoint tensors must share one CUDA device");
     MfqCudaGuard guard(input.device());
-    auto output = mfq_tensor_backend::empty_like(input);
+    auto output = ::tyloi::cuda::empty_like(input);
     if (rows == 0) {
         return output;
     }

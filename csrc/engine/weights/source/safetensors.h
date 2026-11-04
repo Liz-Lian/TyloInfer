@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 struct HfTensorLocation {
     std::size_t shard = 0;
@@ -52,4 +52,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq
+} // namespace tyloi

@@ -3,7 +3,7 @@
 #include "engine/backends/cuda/kernels/async_copy.cuh"
 
 namespace {
-bool gr_prefill_pipeline_supported(const mfq_tensor_backend::Tensor& input) {
+bool gr_prefill_pipeline_supported(const ::tyloi::Tensor& input) {
     thread_local std::map<int,std::pair<int,int>> capabilities;
     auto found=capabilities.find(input.get_device());
     if(found==capabilities.end()) {
@@ -12,7 +12,7 @@ bool gr_prefill_pipeline_supported(const mfq_tensor_backend::Tensor& input) {
         TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&shared,cudaDevAttrMaxSharedMemoryPerBlockOptin,input.get_device()));
         found=capabilities.emplace(input.get_device(),std::pair<int,int>{major,shared}).first;
     }
-    const int bytes=input.scalar_type()==mfq_tensor_backend::kFloat16?50176:82944;
+    const int bytes=input.scalar_type()==::tyloi::kFloat16?50176:82944;
     return found->second.first>=8 && found->second.second>=bytes;
 }
 template<class Input,int BM,int BN,int BK,bool Packed=false> union GrPrefillPipelineShared {
@@ -39,7 +39,7 @@ __global__ __launch_bounds__(BM*TileN/(RN*RM),1) void gr_prefill_pipeline_kernel
             const int r=i/(BK/Vector),c=(i%(BK/Vector))*Vector;
             auto* destination=&shared.tile.a[buffer][r][c];
             if(row0+r<rows && k0+c+Vector-1<width && width%Vector==0) {
-                mfq::cuda_detail::copy_16_async(reinterpret_cast<__half*>(destination),
+                tyloi::cuda_detail::copy_16_async(reinterpret_cast<__half*>(destination),
                     reinterpret_cast<const __half*>(input+int64_t(row0+r)*width+k0+c));
             } else {
                 #pragma unroll
@@ -47,7 +47,7 @@ __global__ __launch_bounds__(BM*TileN/(RN*RM),1) void gr_prefill_pipeline_kernel
                     input[int64_t(row0+r)*width+k0+c+j]:Input(0.f);
             }
         }
-        mfq::cuda_detail::copy_async_commit();
+        tyloi::cuda_detail::copy_async_commit();
         for(int i=tid;i<BN*(BK/4);i+=Threads) {
             const int r=i/(BK/4),c=(i%(BK/4))*4;
             const int hcol=col0+r%HiddenN;
@@ -60,7 +60,7 @@ __global__ __launch_bounds__(BM*TileN/(RN*RM),1) void gr_prefill_pipeline_kernel
             for(int j=0;j<4;++j)shared.tile.w[buffer][weight_row(r)][c+j]=values[j];
         }
     };
-    load(0,0);mfq::cuda_detail::copy_async_wait();__syncthreads();
+    load(0,0);tyloi::cuda_detail::copy_async_wait();__syncthreads();
     for(int k0=0;k0<width;k0+=BK) {
         const int buffer=(k0/BK)&1;
         if(k0+BK<width)load(buffer^1,k0+BK);
@@ -101,7 +101,7 @@ __global__ __launch_bounds__(BM*TileN/(RN*RM),1) void gr_prefill_pipeline_kernel
                 accumulate(k+3,std::integral_constant<int,3>{});
             }
         }
-        mfq::cuda_detail::copy_async_wait();__syncthreads();
+        tyloi::cuda_detail::copy_async_wait();__syncthreads();
     }
     #pragma unroll
     for(int r=0;r<RM;++r) {
@@ -136,9 +136,8 @@ __global__ __launch_bounds__(BM*TileN/(RN*RM),1) void gr_prefill_pipeline_kernel
     }
 }
 template<bool Mix,class Input,class Value,bool Aligned,bool Zero>
-void launch_gr_prefill_pipeline(const NintWeight& weight,const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& normalized,mfq_tensor_backend::Tensor& output) {
-    namespace tb=mfq_tensor_backend;
+void launch_gr_prefill_pipeline(const NintWeight& weight,const ::tyloi::Tensor& input,
+        const ::tyloi::Tensor& normalized,::tyloi::Tensor& output) {
     using Output=std::conditional_t<!Mix || std::is_same<Input,float>::value || std::is_same_v<Value,float>,float,__half>;
     const auto rows=input.numel()/weight.neuron_len;
     const auto launch=[&](auto rn_tag,auto rm_tag,auto bm_tag,auto bn_tag,auto bk_tag,auto packed_tag) {
@@ -162,7 +161,7 @@ void launch_gr_prefill_pipeline(const NintWeight& weight,const mfq_tensor_backen
             Zero?weight.q8_zero_scale.data_ptr<__half>():nullptr,Mix?normalized.data_ptr<Value>():nullptr,
             output.data_ptr<Output>(),int(rows),int(weight.neuron_len),int(weight.out),int(weight.ng),int(weight.gs));
     };
-    const auto* option=mfq::cuda::env_lookup(Mix?"TYLOINFER_GR_PREFILL_FUSED_MIX":"TYLOINFER_GR_PREFILL_MATMUL");
+    const auto* option=tyloi::cuda::env_lookup(Mix?"TYLOINFER_GR_PREFILL_FUSED_MIX":"TYLOINFER_GR_PREFILL_MATMUL");
     int mode=option?std::atoi(option):(Mix?(std::is_same<Input,__half>::value?12:10):31);
     if constexpr(!Mix)if(mode==32)mode=31;
     if constexpr(!Mix) {

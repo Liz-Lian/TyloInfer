@@ -5,7 +5,7 @@
 #include <optional>
 #include <utility>
 
-namespace mfq {
+namespace tyloi {
 
 enum class StepState { waiting, advanced, complete };
 
@@ -74,4 +74,4 @@ template <class T> T finish_steps(StepSequence<T> sequence) {
     return std::move(result.value());
 }
 
-} // namespace mfq
+} // namespace tyloi

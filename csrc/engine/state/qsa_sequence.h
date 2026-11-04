@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 struct QsaKvSequenceSnapshot {
     std::shared_ptr<QsaKvStore> store;
@@ -43,4 +43,4 @@ private:
     QsaKvSequenceSnapshot state_;
 };
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

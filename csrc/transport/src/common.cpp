@@ -40,7 +40,7 @@
 #include <unistd.h>
 #endif
 
-namespace mfq::transport_detail {
+namespace tyloi::transport_detail {
 
 
 int64_t unix_time_seconds() {
@@ -180,7 +180,7 @@ static std::string request_json_schema(const json & body) {
 static std::optional<std::string> request_preformatted_prompt(
     const json & body);
 
-static mfq::engine::ChatInput parse_chat_input(
+static tyloi::engine::ChatInput parse_chat_input(
         const json & body,
         bool enable_thinking_default) {
     if (!body.contains("messages") || !body["messages"].is_array() ||
@@ -190,7 +190,7 @@ static mfq::engine::ChatInput parse_chat_input(
             "messages must be a non-empty array", "messages");
     }
 
-    mfq::engine::ChatInput result;
+    tyloi::engine::ChatInput result;
     auto & inputs = result.template_inputs;
     result.preformatted_prompt = request_preformatted_prompt(body);
     result.reasoning_format = request_reasoning_format(body);
@@ -765,7 +765,7 @@ json tts_profile_json(const MfqTtsSamplingProfile & value) {
 }
 
 json chat_template_capabilities_json(
-        const mfq::engine::ChatTemplateCapabilities & capabilities) {
+        const tyloi::engine::ChatTemplateCapabilities & capabilities) {
     return {
         {"thinking", {
             {"supported", capabilities.thinking},
@@ -813,7 +813,7 @@ bool valid_mfq_session_id(const std::string & session_id) {
             });
 }
 
-mfq::engine::CountTokens parse_token_count_request(const json& body) {
+tyloi::engine::CountTokens parse_token_count_request(const json& body) {
     if (!body.is_object() || body.size() != 1 || !body.contains("prompt") ||
         !body["prompt"].is_string() || body["prompt"].get_ref<const std::string&>().empty() ||
         body["prompt"].get_ref<const std::string&>().size() > 262144)
@@ -821,12 +821,12 @@ mfq::engine::CountTokens parse_token_count_request(const json& body) {
     return {body["prompt"].get<std::string>()};
 }
 
-json token_count_json(const mfq::engine::TokenCount& result) {
+json token_count_json(const tyloi::engine::TokenCount& result) {
     return {{"prompt_tokens", result.prompt_tokens}, {"context_size", result.context_size},
         {"tokenization", "raw-no-special-tokens"}};
 }
 
-mfq::engine::ScoreText parse_score_request(const json& body) {
+tyloi::engine::ScoreText parse_score_request(const json& body) {
     if (!body.is_object() || !body.contains("prompt") || !body["prompt"].is_string() ||
         body["prompt"].get_ref<const std::string&>().empty() || body["prompt"].get_ref<const std::string&>().size() > 262144 ||
         !body.contains("continuations") || !body["continuations"].is_array() || body["continuations"].empty() || body["continuations"].size() > 64)
@@ -839,7 +839,7 @@ mfq::engine::ScoreText parse_score_request(const json& body) {
     const auto mode = body.value("mode", std::string("continuation"));
     if (mode != "continuation" && mode != "next_token")
         throw ApiError(400, "invalid_request_error", "score mode must be continuation or next_token", "mode");
-    mfq::engine::ScoreText request;
+    tyloi::engine::ScoreText request;
     request.prompt = body["prompt"].get<std::string>();
     request.next_token = mode == "next_token";
     for (const auto& item : body["continuations"]) {
@@ -850,7 +850,7 @@ mfq::engine::ScoreText parse_score_request(const json& body) {
     return request;
 }
 
-json likelihood_result_json(const mfq::engine::LikelihoodResult& result) {
+json likelihood_result_json(const tyloi::engine::LikelihoodResult& result) {
     json scores = json::array();
     for (const auto& score : result.scores)
         scores.push_back({{"token_ids", score.token_ids}, {"token_logprobs", score.token_logprobs}, {"log_likelihood", score.log_likelihood}});
@@ -1120,8 +1120,8 @@ json request_metric_values_json(
 void add_request_runtime_metrics(json& value, const RequestMetrics& metrics) {
     value["mtp_available"] = metrics.mtp.available ? 1.0 : 0.0;
     if (!metrics.mtp.available) return;
-    mfq::engine::Metrics values;
-    mfq::engine::mtp::append_generation_metrics(values, metrics.mtp);
+    tyloi::engine::Metrics values;
+    tyloi::engine::mtp::append_generation_metrics(values, metrics.mtp);
     for (const auto& [name, number] : values) value[name] = number;
 }
 
@@ -2240,7 +2240,7 @@ std::vector<float> decode_audio_features(
     return features;
 }
 
-} // namespace mfq::transport_detail
+} // namespace tyloi::transport_detail
 
 MfqRuntimeProfile resolve_mfq_runtime_profile(
         const std::string & mfq_path,
@@ -2250,7 +2250,7 @@ MfqRuntimeProfile resolve_mfq_runtime_profile(
         const std::string & embedded_profile_json,
         const std::string & model_config_json,
         const std::string & explicit_profile_path) {
-    using namespace mfq::transport_detail;
+    using namespace tyloi::transport_detail;
     std::vector<std::string> identities{
         model_architecture, model_type, model_name,
     };
@@ -2295,10 +2295,10 @@ MfqRuntimeProfile resolve_mfq_runtime_profile(
     return result;
 }
 
-namespace mfq::transport_detail {
-CompletionStream::CompletionStream(const mfq::engine::Engine& engine, const RequestWork& work, std::string id)
+namespace tyloi::transport_detail {
+CompletionStream::CompletionStream(const tyloi::engine::Engine& engine, const RequestWork& work, std::string id)
     : engine_(engine), id_(std::move(id)),
-      request_(engine_.submit(mfq::engine::EngineRequest{id_, work})) {}
+      request_(engine_.submit(tyloi::engine::EngineRequest{id_, work})) {}
 CompletionStream::~CompletionStream() {
     if (!terminal_) try { cancel(); } catch (...) {}
 }
@@ -2312,7 +2312,7 @@ std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {
     for (auto& event : request_->wait()) {
         std::visit([&](auto& data) {
             using T = std::decay_t<decltype(data)>;
-            if constexpr (std::is_same_v<T, mfq::engine::OutputDelta>) {
+            if constexpr (std::is_same_v<T, tyloi::engine::OutputDelta>) {
                 if (!data.token_ids.empty()) {
                     if (!generated_tokens_) first_token_ = std::chrono::steady_clock::now();
                     generated_tokens_ += data.token_ids.size();
@@ -2330,22 +2330,22 @@ std::optional<std::vector<common_chat_msg_diff>> CompletionStream::next() {
                 }
                 diffs.insert(diffs.end(), std::make_move_iterator(data.diffs.begin()),
                              std::make_move_iterator(data.diffs.end()));
-            } else if constexpr (std::is_same_v<T, mfq::engine::PrefillProgress>) {
+            } else if constexpr (std::is_same_v<T, tyloi::engine::PrefillProgress>) {
                 const auto & timing = data.timing;
                 const double interval = timing.llm_ms - prefill_ms_;
                 if (interval > 0 && timing.prompt_tokens >= processed_tokens_)
                     prefill_tps_ = 1000.0 * (timing.prompt_tokens - processed_tokens_) / interval;
                 processed_tokens_ = timing.prompt_tokens;
                 prefill_ms_ = timing.llm_ms;
-            } else if constexpr (std::is_same_v<T, mfq::engine::Completed> ||
-                                 std::is_same_v<T, mfq::engine::Cancelled>) {
+            } else if constexpr (std::is_same_v<T, tyloi::engine::Completed> ||
+                                 std::is_same_v<T, tyloi::engine::Cancelled>) {
                 result.completion_tokens = static_cast<std::int32_t>(data.usage.completion_tokens);
                 prompt_tokens = data.usage.prompt_tokens;
-                result.cancelled = std::is_same_v<T, mfq::engine::Cancelled>;
-                if constexpr (std::is_same_v<T, mfq::engine::Completed>) result.finish_reason = std::move(data.finish_reason);
+                result.cancelled = std::is_same_v<T, tyloi::engine::Cancelled>;
+                if constexpr (std::is_same_v<T, tyloi::engine::Completed>) result.finish_reason = std::move(data.finish_reason);
                 else result.finish_reason = "cancelled";
                 metrics = data.metrics; terminal_ = true;
-            } else if constexpr (std::is_same_v<T, mfq::engine::Failed>) {
+            } else if constexpr (std::is_same_v<T, tyloi::engine::Failed>) {
                 terminal_ = true;
                 if (data.code == "invalid_request") throw ApiError(400, "invalid_request_error", data.message);
                 if (data.code == "unsupported_input") throw ApiError(501, "unsupported_parameter", data.message);
@@ -2368,4 +2368,4 @@ json CompletionStream::progress() const {
         {"updated_at", unix_time_seconds()}};
 }
 
-} // namespace mfq::transport_detail
+} // namespace tyloi::transport_detail

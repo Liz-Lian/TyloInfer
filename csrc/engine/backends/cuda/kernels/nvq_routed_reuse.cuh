@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 struct NvqRoutedReuseParams {
     packed_nvq::NvqDeviceWeight weight{};
     const int64_t* pointers=nullptr;

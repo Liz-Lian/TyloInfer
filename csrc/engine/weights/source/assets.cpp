@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::source {
+namespace tyloi::source {
 namespace {
 
 constexpr std::string_view kAssetPrefix = "__mfq_asset__/";
@@ -105,4 +105,4 @@ std::vector<std::string> Assets::names() const {
     return result;
 }
 
-} // namespace mfq::source
+} // namespace tyloi::source

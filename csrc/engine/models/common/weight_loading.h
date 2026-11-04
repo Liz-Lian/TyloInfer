@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 enum class ExpertProjection { gate, up, gate_up, down };
 
@@ -50,8 +50,8 @@ Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
             throw std::runtime_error(
                 "this FFN type does not support ungated routed experts at layer " +
                 std::to_string(layer));
-        if constexpr (requires { result.activation = mfq::ops::MlpActivation::relu_squared; })
-            result.activation = mfq::ops::MlpActivation::relu_squared;
+        if constexpr (requires { result.activation = tyloi::ops::MlpActivation::relu_squared; })
+            result.activation = tyloi::ops::MlpActivation::relu_squared;
         ops.experts(result, ExpertProjection::up, up, layer);
     } else {
         const bool split = has_gate, fused = has_gate_up;
@@ -98,8 +98,8 @@ Ffn load_moe_weights(Loader& ops, const std::string& prefix, int layer,
             throw std::runtime_error(
                 "ungated shared expert requires Up without a Gate at layer " +
                 std::to_string(layer));
-        if constexpr (requires { result.shared->activation = mfq::ops::MlpActivation::relu_squared; })
-            result.shared->activation = mfq::ops::MlpActivation::relu_squared;
+        if constexpr (requires { result.shared->activation = tyloi::ops::MlpActivation::relu_squared; })
+            result.shared->activation = tyloi::ops::MlpActivation::relu_squared;
         result.shared->gate_up = ops.gate_up({shared_up}, result.shared->down);
     } else {
         result.shared->gate_up = ops.gate_up({shared_gate, shared_up}, result.shared->down);
@@ -140,4 +140,4 @@ void load_full_attention(Block& block, Loader& ops, const ModelConfig& config, i
     block.ffn_norm = ops.dense(prefix + "mlp.norm.weight");
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

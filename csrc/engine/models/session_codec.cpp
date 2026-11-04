@@ -12,17 +12,17 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 std::string cuda_prefix_cache_compatibility_key(
-    const mfq::ModelSource &source, int64_t max_position_embeddings) {
+    const tyloi::ModelSource &source, int64_t max_position_embeddings) {
     std::ostringstream key;
     key << "mfq-cuda-prefix-v1\n"
         << "codec=" << (source.architecture()=="qwen4_exp" ? "cuda-qwen4-session-v1" :
             source.architecture()=="deepseek_v41" ? "cuda-deepseek-v41-session-v1" : "cuda-full-attention-kv-v1") << '\n'
         << "context=" << max_position_embeddings << '\n'
         << "architecture=" << source.architecture() << '\n';
-    const auto quantization=mfq::cuda::cuda_kv_quantization_tag();
+    const auto quantization=tyloi::cuda::cuda_kv_quantization_tag();
     if(!quantization.empty())key<<"kv="<<quantization<<'\n';
     for (std::size_t index = 0; index < source.source_paths().size(); ++index) {
         const auto &path = source.source_paths()[index];
@@ -53,18 +53,18 @@ TextSessionState CudaSessionOps::decode(
     const std::vector<std::int64_t>& tokens,
     std::size_t block_size) {
     if (payloads.front() && payloads.front()->size() > 6 && (*payloads.front())[6] == '2')
-        return mfq::models::qwen4_exp::decode_session(payloads, tokens, block_size);
+        return tyloi::models::qwen4_exp::decode_session(payloads, tokens, block_size);
     if (payloads.front() && payloads.front()->size() > 6 && (*payloads.front())[6] == '3')
-        return mfq::models::deepseek_v41::decode_session(payloads, tokens, block_size);
+        return tyloi::models::deepseek_v41::decode_session(payloads, tokens, block_size);
     return decode_cuda_paged_session(payloads, tokens, block_size);
 }
 
 CudaPagedPayload CudaSessionOps::encode(
     const Snapshot& state, std::size_t block_size, std::size_t index) {
     if (state.kind() == TextSessionStateKind::Qwen4)
-        return mfq::models::qwen4_exp::encode_block(state, block_size, index);
+        return tyloi::models::qwen4_exp::encode_block(state, block_size, index);
     if (state.kind() == TextSessionStateKind::DeepseekV41)
-        return mfq::models::deepseek_v41::encode_block(state, block_size, index);
+        return tyloi::models::deepseek_v41::encode_block(state, block_size, index);
     return encode_cuda_paged_block(state, block_size, index);
 }
 
@@ -84,7 +84,7 @@ bool CudaSessionOps::paged_media(const Snapshot& state) {
 bool CudaSessionOps::checkpoint_needs_update(
     const CudaPagedPayload& payload, const Snapshot& state) {
     if (state.kind() != TextSessionStateKind::DeepseekV41) return false;
-    return mfq::models::deepseek_v41::checkpoint_needs_update(payload, state);
+    return tyloi::models::deepseek_v41::checkpoint_needs_update(payload, state);
 }
 
 std::size_t CudaSessionOps::decodable_blocks(
@@ -96,7 +96,7 @@ std::size_t CudaSessionOps::token_count(const CudaPagedPayload& payload) {
     return cuda_paged_payload_tokens(payload);
 }
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
 size_t cuda_paged_payload_tokens(const CudaPagedPayload& payload) {
     if(!payload)throw CudaSessionStateError("null CUDA prefix block");
@@ -114,10 +114,10 @@ size_t cuda_paged_decodable_blocks(const std::vector<CudaPagedPayload>& payloads
         (void)cuda_paged_payload_tokens(payload);
         if((*payload)[6]=='1')return count;
         if((*payload)[6]=='3') {
-            if(mfq::models::deepseek_v41::exact(payload))return count;
+            if(tyloi::models::deepseek_v41::exact(payload))return count;
             continue;
         }
-        if(mfq::models::qwen4_exp::exact(payload))return count;
+        if(tyloi::models::qwen4_exp::exact(payload))return count;
     }
     return 0;
 }

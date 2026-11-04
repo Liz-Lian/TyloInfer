@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 void record_gpu_timestamp(uint64_t* timestamps, std::size_t index, cudaStream_t stream);
 
@@ -156,4 +156,4 @@ private:
 
 std::shared_ptr<Context> default_context(int device = 0);
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

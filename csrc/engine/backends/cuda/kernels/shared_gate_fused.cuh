@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <type_traits>
 
-namespace mfq::cuda::shared_gate_detail {
+namespace tyloi::cuda::shared_gate_detail {
 // Scalar dot/sigmoid fusion follows Strata's shared_expert.cu design.
 // Input and dot are rounded to BF16 before the runtime's FP32 sigmoid.
 template<int Threads,bool Pairs,bool Double>

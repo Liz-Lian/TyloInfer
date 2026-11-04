@@ -62,7 +62,7 @@ struct MoeSsdPrefillReader {
 };
 
 std::optional<std::size_t> MoeExpertCache::available_host_ram() const {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_PRESSURE");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_PRESSURE");
     if(option && option[0]=='0')return std::nullopt;
     try {
         const auto memory=MoeResidencyManager::sample_host_memory();
@@ -107,7 +107,7 @@ std::shared_ptr<MoeCachedSource> MoeExpertCache::register_source(
 std::shared_ptr<MoeCachedSource> MoeExpertCache::register_range_source(
         const std::string & name,
         std::shared_ptr<MixedMoeRuntime> metadata,
-        std::shared_ptr<mfq::cuda::MfeMxfp4ExpertStore> store,
+        std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> store,
         int minimum_slots,
         int layer_id,
         std::string projection_role) {
@@ -142,14 +142,14 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
         throw std::runtime_error(
             "MoE cache has no registered expert sources");
     }
-    const auto cuda_context=mfq::cuda::default_context();
+    const auto cuda_context=tyloi::cuda::default_context();
     cuda_context->stream().synchronize();
     // The server's file-size estimate cannot account for decoded dense weights
     // or other workers. Price expert arenas against physical VRAM after loading
     // those weights, retaining room for prefill, graph warmup and growing KV.
     size_t device_free=0,device_total=0;
     TYLOINFER_CUDA_CHECK(cudaMemGetInfo(&device_free,&device_total));
-    const auto* ssd_option=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");
+    const auto* ssd_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");
     if(options_.pipeline && options_.preload && ssd_option && ssd_option[0]=='1' &&
             std::all_of(sources_.begin(),sources_.end(),[](const auto& s){return bool(s->quant_source_);})) {
         std::size_t fields=0;
@@ -198,11 +198,11 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
     // graph construction's temporary overlap and allocator page rounding.
     const auto decode_reserve=other_decode_reserve+transfer_reserve+
         (std::size_t(256)<<20);
-    const auto* borrow_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
+    const auto* borrow_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     const bool borrowed_prefill=options_.pipeline && options_.preload &&
-        mfq::cuda::runtime_options::moe_prefill_layer().value_or(0)!=0 && (!borrow_option || borrow_option[0]!='0');
-    const auto reserve=(borrowed_prefill && !mfq::cuda::env_lookup("TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB")
-        ?decode_reserve:mfq::cuda::runtime_options::workspace_reserve_bytes())+kv_growth_reserve;
+        tyloi::cuda::runtime_options::moe_prefill_layer().value_or(0)!=0 && (!borrow_option || borrow_option[0]!='0');
+    const auto reserve=(borrowed_prefill && !tyloi::cuda::env_lookup("TYLOINFER_CUDA_WORKSPACE_RESERVE_GIB")
+        ?decode_reserve:tyloi::cuda::runtime_options::workspace_reserve_bytes())+kv_growth_reserve;
     if(device_free<=reserve)
         throw std::runtime_error("CUDA VRAM leaves no workspace for expert streaming");
     const auto requested_physical=budget_bytes_;
@@ -229,7 +229,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
             <<" workspace_reserve_bytes="<<reserve<<" requested_expert_bytes="<<requested
             <<" expert_budget_bytes="<<budget_bytes_<<std::endl;
     }
-    std::vector<mfq::MoeArenaDemand> demands;
+    std::vector<tyloi::MoeArenaDemand> demands;
     demands.reserve(arenas_.size());
     for (const auto & item : arenas_) {
         const auto & arena = *item.second;
@@ -246,7 +246,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
     // the default: high-precision predictors can displace too much backbone.
     // These are planning preferences, not rigid minima: prefill can still
     // borrow their storage and context growth can shrink the expert cache.
-    const auto* predictor_option=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
+    const auto* predictor_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
     if(options_.preload && options_.two_stage &&
             predictor_option && predictor_option[0]=='1') {
         std::map<MoeGpuArena*,int> predictor_slots;
@@ -297,7 +297,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
             }
             layer_sources[source->layer_id()].push_back(source);
         }
-        mfq::validate_moe_cache_profile(
+        tyloi::validate_moe_cache_profile(
             *profile_, layer_experts);
 
         std::unordered_map<std::string, int> required_slots;
@@ -331,7 +331,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
         };
 
         auto select_candidate = [&](
-                const mfq::MoeProfileCandidate & candidate,
+                const tyloi::MoeProfileCandidate & candidate,
                 int64_t layer_limit,
                 std::unordered_map<int, int64_t> * layer_used) {
             const auto source_it =
@@ -394,7 +394,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
         };
 
         const auto candidates =
-            mfq::order_moe_profile_candidates(
+            tyloi::order_moe_profile_candidates(
                 *profile_, false);
         int64_t frequency_bytes = 0;
         std::unordered_set<int> ranking_layers;
@@ -457,7 +457,7 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
         }
     }
     const auto plan =
-        mfq::plan_moe_arena_slots(budget_bytes_, demands);
+        tyloi::plan_moe_arena_slots(budget_bytes_, demands);
     for (auto & item : arenas_) {
         auto & arena = *item.second;
         arena.slots = plan.at(arena.signature);
@@ -472,14 +472,14 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
             }
             auto shape = layout.slot_shape;
             shape[0] *= arena.slots;
-            arena.fields.push_back(mfq_tensor_backend::empty(
+            arena.fields.push_back(::tyloi::cuda::empty(
                 shape,
-                mfq_tensor_backend::TensorOptions()
+                ::tyloi::TensorOptions()
                     .device(device())
                     .dtype(layout.scalar_type)));
         }
         arena.book =
-            std::make_unique<mfq::MoeCacheSlotBook>(
+            std::make_unique<tyloi::MoeCacheSlotBook>(
                 arena.slots);
         allocated_bytes_ +=
             static_cast<int64_t>(arena.slots) *
@@ -517,8 +517,8 @@ void MoeExpertCache::finalize(std::size_t kv_growth_reserve, std::size_t kv_budg
 }
 
 void MoeExpertCache::initialize_ssd_readers() {
-    if(!ssd_read_pool_)ssd_read_pool_=std::make_unique<mfq::HostParallelPool>(std::function<void(std::size_t)>{},false);
-    if(!ssd_background_read_pool_)ssd_background_read_pool_=std::make_unique<mfq::HostParallelPool>(std::function<void(std::size_t)>{},false);
+    if(!ssd_read_pool_)ssd_read_pool_=std::make_unique<tyloi::HostParallelPool>(std::function<void(std::size_t)>{},false);
+    if(!ssd_background_read_pool_)ssd_background_read_pool_=std::make_unique<tyloi::HostParallelPool>(std::function<void(std::size_t)>{},false);
     if(!ssd_prefill_reader_)ssd_prefill_reader_=std::make_shared<MoeSsdPrefillReader>();
 }
 
@@ -546,7 +546,7 @@ void MoeExpertCache::prepare_ssd_placement(MoeCachedSource& source,const std::ve
 void MoeExpertCache::initialize_ssd_residency() {
     const MfqCudaGuard guard(owner_device_);
     if(!finalized_)throw std::logic_error("SSD expert cache requires finalized GPU arenas");
-    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");option && option[0]=='0')
+    if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");option && option[0]=='0')
         throw std::runtime_error("RAM expert preloading is required when SSD expert streaming is disabled");
     initialize_ssd_readers();
     // The checkpoint remains the immutable third tier. Only the current GPU
@@ -577,7 +577,7 @@ void MoeExpertCache::initialize_ssd_residency() {
         <<" batches="<<placement.batches<<" peak_read_bytes="<<placement.peak
         <<" io_workers="<<options_.io_workers<<" ms="
         <<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-placement_started).count()<<'\n';
-    const auto trimmed=mfq::release_mapped_tensor_pages();
+    const auto trimmed=tyloi::release_mapped_tensor_pages();
     std::cerr<<"moe_ssd_source_pages_released views="<<trimmed<<'\n';
     for(auto& stage:stages_) {
         if(stage.pending)TYLOINFER_CUDA_CHECK(cudaEventSynchronize(stage.done));
@@ -587,13 +587,13 @@ void MoeExpertCache::initialize_ssd_residency() {
     // The file tier supplies a bounded LRU, rather than an all-expert image.
     // Give its entries stable pinned intervals so demand reads go straight to
     // DMA-ready storage and reuse the existing direct-RAM decode machinery.
-    pipeline_ram_complement_=std::make_shared<mfq_tensor_backend::Tensor>(mfq_tensor_backend::empty(
-        {0},mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kUInt8)));
+    pipeline_ram_complement_=std::make_shared<::tyloi::Tensor>(::tyloi::cuda::empty(
+        {0},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8)));
     pipeline_ram_registered_bytes_=0;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if(options_.direct_ram) {
         std::size_t pinned=host_experts_->stats().budget_bytes;
-        if(const auto available=mfq::cuda::shared_memory_available(mfq_current_cuda_device())) {
+        if(const auto available=tyloi::cuda::shared_memory_available(mfq_current_cuda_device())) {
             // Pinned expert storage and transfer packets share WDDM's
             // non-local budget. Price the model's largest FFN bundle before
             // committing the cache; these transient packets cannot be paged.
@@ -608,8 +608,8 @@ void MoeExpertCache::initialize_ssd_residency() {
                 layer_bytes[source->layer_id_]+=largest;
             }
             std::size_t bundle=0;for(const auto& [layer,bytes]:layer_bytes)bundle=std::max(bundle,bytes);
-            const auto groups=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE")?
-                std::clamp(mfq::cuda::runtime_options::moe_prefill_group_size(),1,96):64;
+            const auto groups=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE")?
+                std::clamp(tyloi::cuda::runtime_options::moe_prefill_group_size(),1,96):64;
             // Backup/upload storage survives across phases. Prefill and
             // decode packets are released at their reader fences and share
             // the remaining headroom instead of consuming it together.
@@ -617,13 +617,13 @@ void MoeExpertCache::initialize_ssd_residency() {
                 moe_ssd_residency_stage_limit_bytes);
             const auto transient=bundle*std::max(2*groups,moe_decode_transfer_slots(8,10))+
                 exchange+(std::size_t(256)<<20);
-            const auto reserve=std::size_t(mfq::cuda::runtime_options::moe_ram_pin_reserve_bytes().value_or(
+            const auto reserve=std::size_t(tyloi::cuda::runtime_options::moe_ram_pin_reserve_bytes().value_or(
                 std::int64_t(std::max(std::size_t(1)<<30,transient))));
             pinned=std::min(pinned,*available>reserve?*available-reserve:0);
             std::cerr<<"moe_ssd_pinned_budget available_bytes="<<*available<<" transient_reserve_bytes="<<reserve
                 <<" expert_pinned_bytes="<<pinned<<'\n';
         }
-        if(const auto limit=mfq::cuda::runtime_options::moe_ram_pin_bytes();limit && *limit>0)
+        if(const auto limit=tyloi::cuda::runtime_options::moe_ram_pin_bytes();limit && *limit>0)
             pinned=std::min(pinned,std::size_t(*limit));
         pinned=pinned/4096*4096;
         while(pinned) {
@@ -631,7 +631,7 @@ void MoeExpertCache::initialize_ssd_residency() {
             catch(const MfqResourceExhausted&) {pinned=pinned/2/4096*4096;}
         }
         if(pinned_expert_arena_) {
-            pipeline_ram_complement_=std::make_shared<mfq_tensor_backend::Tensor>(pinned_expert_arena_->tensor());
+            pipeline_ram_complement_=std::make_shared<::tyloi::Tensor>(pinned_expert_arena_->tensor());
             pipeline_ram_registered_bytes_=pinned_expert_arena_->bytes();
             for(const auto& source:sources_)source->quant_source_->bind_pinned_arena(pinned_expert_arena_);
         }
@@ -685,13 +685,13 @@ void MoeExpertCache::execute_ssd_expert_reads(SsdExpertReads& reads,bool backgro
         reads.demand?&*reads.demand:demand?&*demand:nullptr);
 }
 
-void MoeExpertCache::execute_ssd_expert_reads(SsdExpertReads& reads,mfq::HostParallelPool& pool,int workers,bool touch,
+void MoeExpertCache::execute_ssd_expert_reads(SsdExpertReads& reads,tyloi::HostParallelPool& pool,int workers,bool touch,
         SsdReadPriority::Demand* demand) {
     if(reads.missing.empty())return;
     ssd_scheduled_read_jobs_.fetch_add(reads.missing.size(),std::memory_order_relaxed);
     pool.run(0,int64_t(reads.missing.size()),1,workers,
         [&](int64_t begin,int64_t end) {
-            const mfq::MappedPrefetchScope copied(false,true);
+            const tyloi::MappedPrefetchScope copied(false,true);
             for(auto i=begin;i<end;++i) {
                 struct FinishField {
                     SsdReadPriority::Demand* demand;
@@ -780,7 +780,7 @@ void MoeExpertCache::queue_ssd_prediction(std::vector<SsdExpertRequest> requests
     reads->prioritize_prediction_experts(selected);
     reads->initialize_predictions();
     if(!ssd_prediction_reader_)ssd_prediction_reader_=std::make_shared<MoeSsdPrefillReader>();
-    if(!ssd_prediction_pool_)ssd_prediction_pool_=std::make_unique<mfq::HostParallelPool>(std::function<void(std::size_t)>{},false);
+    if(!ssd_prediction_pool_)ssd_prediction_pool_=std::make_unique<tyloi::HostParallelPool>(std::function<void(std::size_t)>{},false);
     std::uint64_t bytes=0;
     for(const auto i:reads->missing)bytes+=reads->requests[i].first->expert_field_bytes(reads->requests[i].second);
     ssd_prediction_jobs_+=reads->missing.size();ssd_prediction_bytes_+=bytes;
@@ -903,7 +903,7 @@ void MoeExpertCache::copy_ssd_experts(const std::vector<SsdExpertCopy>& requests
     }
     ssd_read_pool_->run(0,int64_t(jobs.size()),1,workers,
         [&](int64_t begin,int64_t end) {
-            const mfq::MappedPrefetchScope prefetch(true,true);
+            const tyloi::MappedPrefetchScope prefetch(true,true);
             // A prompt scans most experts once. Reuse decoded images without
             // promoting that scan above the preceding decode's working set.
             for(auto job=begin;job<end;++job) {
@@ -911,8 +911,8 @@ void MoeExpertCache::copy_ssd_experts(const std::vector<SsdExpertCopy>& requests
                 if(last-first>1) {
                     std::vector<int> experts;experts.reserve(last-first);
                     for(auto i=first;i<last;++i)experts.push_back(requests[order[i].index].expert);
-                    std::array<mfq_tensor_backend::Tensor,4> fields;
-                    for(int f=0;f<4;++f)fields[f]=initial.fields[f].nbytes()?mfq_tensor_backend::from_blob(
+                    std::array<::tyloi::Tensor,4> fields;
+                    for(int f=0;f<4;++f)fields[f]=initial.fields[f].nbytes()?::tyloi::cuda::from_blob(
                         initial.fields[f].data_ptr(),{initial.fields[f].numel()*int64_t(last-first)},initial.fields[f].options()):initial.fields[f];
                     if(initial.source->copy_nvq_expert_fields(experts,fields))continue;
                 }
@@ -939,7 +939,7 @@ std::size_t MoeExpertCache::prefill_transfer_bytes(bool predictor) const {
 
 MoePrefillWorkspaceBudget MoeExpertCache::prefill_workspace_budget(bool allow_borrow) const {
     MoePrefillWorkspaceBudget budget;
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     allow_borrow=allow_borrow && (!option || option[0]!='0') &&
         complete_residency_ && layer_prefill_ready() && !prefill_loan_;
     if(allow_borrow)for(const auto& [key,arena]:arenas_)
@@ -962,8 +962,8 @@ MoePrefillWorkspaceBudget MoeExpertCache::prefill_workspace_budget(bool allow_bo
         }
         std::size_t largest=1;
         for(const auto& [id,layer]:layers)largest=std::max(largest,layer.largest);
-        auto slots=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE")
-            ? mfq::cuda::runtime_options::moe_prefill_group_size() : 64;
+        auto slots=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_GROUP_SIZE")
+            ? tyloi::cuda::runtime_options::moe_prefill_group_size() : 64;
         slots=std::min<std::size_t>(std::clamp(slots,1,96),
             std::max<std::size_t>(1,host_experts_->stats().budget_bytes/2/largest));
         for(const auto& [id,layer]:layers)
@@ -996,9 +996,9 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     const MfqCudaGuard guard(owner_device_);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if(prefill_loan_)throw std::logic_error("prefill workspace loan is already active");
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BORROW");
     const bool force=option && std::string_view(option)=="force";
-    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     // Reclaim revocable expert overflow before backing up and borrowing the
     // primary expert arrays. Both consumers use the same physical headroom.
     if(reserve_workspace_ && context->available_memory()<workspace_bytes)reserve_workspace_(workspace_bytes);
@@ -1015,10 +1015,10 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     const auto needed=workspace_bytes>available?workspace_bytes-available:std::size_t(1);
     const auto desired=force?std::size_t(allocated_bytes_)/3:needed+needed/8+(std::size_t(64)<<20);
     auto loan=std::make_unique<PrefillLoan>();
-    const auto* cache_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_CACHE");
+    const auto* cache_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_CACHE");
     const bool cache_backups=!cache_option || cache_option[0]!='0';
-    const auto* backup_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_PINNED");
-    auto backup_budget=mfq::cuda::shared_memory_available(mfq_current_cuda_device()).value_or(0);
+    const auto* backup_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_BACKUP_PINNED");
+    auto backup_budget=tyloi::cuda::shared_memory_available(mfq_current_cuda_device()).value_or(0);
     backup_budget=backup_budget>(std::size_t(512)<<20)?backup_budget-(std::size_t(512)<<20):0;
     if(backup_option && backup_option[0]=='0')backup_budget=0;
     std::size_t backup_pinned_bytes=0,backup_bytes=0,reused_bytes=0,cached_arenas=0;
@@ -1034,7 +1034,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
             (desired-loan->bytes+arena->slot_bytes-1)/arena->slot_bytes);
         if(!slots)continue;
         PrefillLoan::Arena saved{arena,arena->slots-int(slots),{},{},{},{}};
-        mfq::MoeCacheKey backup_key{};
+        tyloi::MoeCacheKey backup_key{};
         MixedMoePool prototype;
         bool found_owner=false;
         for(const auto& source:sources_) {
@@ -1055,27 +1055,27 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
             created=true;
             if(reserve_ram_workspace_)reserve_ram_workspace_(image_bytes);
             reclaim_optional_host(image_bytes);
-            std::vector<mfq_tensor_backend::Tensor> fields;
+            std::vector<::tyloi::Tensor> fields;
             for(std::size_t f=0;f<arena->fields.size();++f) {
                 const auto rows=arena->layouts[f].slot_shape[0];
                 const auto tail=arena->fields[f].narrow(0,(arena->slots-int64_t(image_slots))*rows,int64_t(image_slots)*rows);
-                auto options=tail.options().device(mfq_tensor_backend::kCPU).pinned_memory(false);
-                mfq_tensor_backend::Tensor backup;
+                auto options=tail.options().device(::tyloi::kCPU).pinned_memory(false);
+                ::tyloi::Tensor backup;
                 if(tail.nbytes()<=backup_budget) {
                     try {
-                        backup=mfq_tensor_backend::empty(tail.sizes(),options.pinned_memory(true));
+                        backup=::tyloi::cuda::empty(tail.sizes(),options.pinned_memory(true));
                         backup_budget-=tail.nbytes();
-                    } catch(const mfq::cuda::Error& error) {
+                    } catch(const tyloi::cuda::Error& error) {
                         if(!std::string_view(error.what()).starts_with("CUDA pinned allocation failed:"))throw;
                         backup_budget=0;
                     }
                 }
-                if(!backup.defined())backup=mfq_tensor_backend::empty(tail.sizes(),options);
+                if(!backup.defined())backup=::tyloi::cuda::empty(tail.sizes(),options);
                 fields.push_back(std::move(backup));
             }
             auto image=moe_replace_quant_fields(prototype,fields);
-            image.expert_local=mfq_tensor_backend::empty({int64_t(image_slots),3},
-                mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kInt32));
+            image.expert_local=::tyloi::cuda::empty({int64_t(image_slots),3},
+                ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt32));
             std::fill_n(image.expert_local.data_ptr<int32_t>(),image_slots*3,-1);
             return image;
         };
@@ -1177,8 +1177,8 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     std::size_t largest=0;
     for(const auto& [id,bytes]:sizes){loan->layers[id].bytes=bytes;largest=std::max(largest,bytes);}
     if(reserve_ram_workspace_)reserve_ram_workspace_(largest*2);
-    for(auto& stage:loan->stages)stage.host=mfq_tensor_backend::empty(
-        {int64_t(largest)},mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kUInt8));
+    for(auto& stage:loan->stages)stage.host=::tyloi::cuda::empty(
+        {int64_t(largest)},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8));
     for(const auto& source:sources_)for(const auto& cohort:source->cohorts_) {
         const auto found=loan->cohorts.find({source->id_,cohort.index});
         if(found==loan->cohorts.end() || found->second.experts.empty())continue;
@@ -1197,7 +1197,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
     }
     // Pin only within the current host-registration budget, retaining room
     // for graph plans and concurrent host activity. Pageable copies remain valid.
-    auto pin_budget=mfq::cuda::shared_memory_available(mfq_current_cuda_device()).value_or(loan->bytes);
+    auto pin_budget=tyloi::cuda::shared_memory_available(mfq_current_cuda_device()).value_or(loan->bytes);
     pin_budget=pin_budget> (std::size_t(512)<<20)?pin_budget-(std::size_t(512)<<20):0;
     for(auto& stage:loan->stages)if(stage.host.nbytes() && stage.host.nbytes()<=pin_budget) {
         if(cudaHostRegister(stage.host.data_ptr(),stage.host.nbytes(),cudaHostRegisterDefault)==cudaSuccess) {
@@ -1224,7 +1224,7 @@ std::size_t MoeExpertCache::begin_prefill_loan(std::size_t workspace_bytes) {
 void MoeExpertCache::suspend_prefill_loan() {
     const MfqCudaGuard guard(owner_device_);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if(prefill_loan_)mfq::cuda::default_context(mfq_current_cuda_device())->suspend_workspace_loan();
+    if(prefill_loan_)tyloi::cuda::default_context(mfq_current_cuda_device())->suspend_workspace_loan();
 #endif
 }
 void MoeExpertCache::end_prefill_loan() {
@@ -1235,9 +1235,9 @@ void MoeExpertCache::end_prefill_loan() {
     suspend_prefill_loan();
     release_moe_prefill_buffers(this);
     TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
-    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     std::vector<std::pair<void*,std::size_t>> touched;
-    const auto* restore_all_option=mfq::cuda::env_lookup("TYLOINFER_PREFILL_RESTORE_ALL");
+    const auto* restore_all_option=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_RESTORE_ALL");
     bool restore_all=restore_all_option && restore_all_option[0]=='1';
     if(!restore_all)try {touched=context->workspace_touched_regions();}
         catch(const std::bad_alloc&) {restore_all=true;}
@@ -1273,16 +1273,16 @@ void MoeExpertCache::end_prefill_loan() {
 #endif
 }
 
-mfq::cuda::WeightLoan::~WeightLoan() {
+tyloi::cuda::WeightLoan::~WeightLoan() {
     if(active_)try{finish();}catch(const std::exception& e) {
         std::cerr<<"runtime_prefill_loan cleanup_error="<<e.what()<<'\n';
     }
 }
-std::size_t mfq::cuda::WeightLoan::begin(std::size_t bytes) {
+std::size_t tyloi::cuda::WeightLoan::begin(std::size_t bytes) {
     const auto borrowed=cache_?cache_->begin_prefill_loan(bytes):0;active_=borrowed>0;return borrowed;
 }
-void mfq::cuda::WeightLoan::suspend(){if(active_)cache_->suspend_prefill_loan();}
-void mfq::cuda::WeightLoan::finish(){if(active_){cache_->end_prefill_loan();active_=false;}}
+void tyloi::cuda::WeightLoan::suspend(){if(active_)cache_->suspend_prefill_loan();}
+void tyloi::cuda::WeightLoan::finish(){if(active_){cache_->end_prefill_loan();active_=false;}}
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache,bool predictor) {
     return cache?cache->prefill_transfer_bytes(predictor):0;
 }
@@ -1295,10 +1295,10 @@ void MoeExpertCache::resize(std::size_t bytes) {
     const MfqCudaGuard guard(owner_device_);
     if(prefill_loan_)throw std::logic_error("cannot resize expert arenas during prefill workspace loan");
     if (!finalized_ || bytes == std::size_t(budget_bytes_)) return;
-    std::vector<mfq::MoeArenaDemand> demands;
+    std::vector<tyloi::MoeArenaDemand> demands;
     for (const auto& [signature, arena] : arenas_)
         demands.push_back({signature, arena->slot_bytes, arena->minimum_slots, arena->registered_experts});
-    const auto plan=mfq::plan_moe_arena_slots(static_cast<int64_t>(bytes),demands);
+    const auto plan=tyloi::plan_moe_arena_slots(static_cast<int64_t>(bytes),demands);
     for(const auto& [signature,arena]:arenas_)arena->book->prepare_resize(plan.at(signature));
     std::size_t demoted=0;
     for(const auto& [signature,arena]:arenas_)
@@ -1310,15 +1310,15 @@ void MoeExpertCache::resize(std::size_t bytes) {
         throw std::runtime_error("expert budget reduction exceeds available RAM expert storage");
     // Each field remains compressed. Temporary host copies permit replacing the
     // arenas without needing both old and new GPU allocations at once.
-    struct SavedArena { MoeGpuArena* arena; int slots; std::vector<mfq_tensor_backend::Tensor> fields; };
+    struct SavedArena { MoeGpuArena* arena; int slots; std::vector<::tyloi::Tensor> fields; };
     std::vector<SavedArena> saved;
     for(auto& [signature,arena]:arenas_)if(plan.at(signature)!=arena->slots) {
         SavedArena entry{arena.get(),arena->slots,{}};
-        for(const auto& field:arena->fields)entry.fields.push_back(field.to(mfq_tensor_backend::kCPU));
+        for(const auto& field:arena->fields)entry.fields.push_back(field.to(::tyloi::kCPU));
         saved.push_back(std::move(entry));
     }
     if(saved.empty()) { budget_bytes_=static_cast<int64_t>(bytes); return; }
-    std::vector<mfq::MoeCacheKey> demotions;
+    std::vector<tyloi::MoeCacheKey> demotions;
     try {
         for(auto& entry:saved)for(int slot=plan.at(entry.arena->signature);slot<entry.slots;++slot)
             if(const auto& key=entry.arena->book->key_for(slot);key && sources_[key->source]->quant_source_) {
@@ -1326,7 +1326,7 @@ void MoeExpertCache::resize(std::size_t bytes) {
                 auto pool=*source.cohorts_.at(key->cohort).cpu;
                 pool.local_experts=1;pool.expert_local={};
                 const auto retain=[&] {
-                    std::vector<mfq_tensor_backend::Tensor> fields;
+                    std::vector<::tyloi::Tensor> fields;
                     for(std::size_t i=0;i<entry.fields.size();++i) {
                         auto rows=entry.arena->layouts[i].slot_shape[0];
                         fields.push_back(entry.fields[i].narrow(0,slot*rows,rows).clone());
@@ -1341,14 +1341,14 @@ void MoeExpertCache::resize(std::size_t bytes) {
         for(const auto& key:demotions)host_experts_->promote(key);
         throw;
     }
-    const auto context=mfq::cuda::default_context();
+    const auto context=tyloi::cuda::default_context();
     const auto rebuild_sources=[&] {
         for(auto& source:sources_) {
             auto previous=std::move(source->active_);
             source->finalize();
             if(previous) { *previous=std::move(*source->active_); source->active_=std::move(previous); }
             for(auto& cohort:source->cohorts_) {
-                auto map=mfq_tensor_backend::tensor(cohort.host_map).to(device());
+                auto map=::tyloi::cuda::tensor(cohort.host_map).to(device());
                 cohort.active.expert_local.copy_(map);
                 cohort.map_dirty=false;
             }
@@ -1368,7 +1368,7 @@ void MoeExpertCache::resize(std::size_t bytes) {
             arena.fields.clear();context->reclaim_idle_memory();
             for(std::size_t i=0;i<entry.fields.size();++i) {
                 auto shape=arena.layouts[i].slot_shape;shape[0]*=slots;
-                auto field=mfq_tensor_backend::empty(shape,entry.fields[i].options().device(device()));
+                auto field=::tyloi::cuda::empty(shape,entry.fields[i].options().device(device()));
                 const auto rows=arena.layouts[i].slot_shape[0]*std::min(slots,entry.slots);
                 field.narrow(0,0,rows).copy_(entry.fields[i].narrow(0,0,rows));
                 arena.fields.push_back(std::move(field));
@@ -1426,7 +1426,7 @@ void MoeExpertCache::preload_complete_residency() {
         << " host_required_bytes=" << host_required_bytes
         << " host_field_budget_bytes=" << host_budget << std::endl;
     if(host_required_bytes>host_budget) {
-        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");
+        const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_SSD_EXPERTS");
         if(options_.pipeline && option && option[0]=='1') {
             options_.preload=false;options_.assert_resident=false;
             initialize_ssd_residency();return;
@@ -1446,7 +1446,7 @@ void MoeExpertCache::preload_complete_residency() {
     std::unordered_map<MoeGpuArena*,int> predictor_slots;
     for(const auto& source:sources_)if(source->layer_id_<0)for(const auto& cohort:source->cohorts_)
         predictor_slots[cohort.arena]+=cohort.cpu->local_experts;
-    const auto* predictor_option=mfq::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
+    const auto* predictor_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_RESIDENT_EXPERTS");
     const bool resident_predictor=options_.two_stage && predictor_option && predictor_option[0]=='1' &&
         std::all_of(predictor_slots.begin(),predictor_slots.end(),[&](const auto& item){return remaining[item.first]>=item.second;});
     if(resident_predictor)for(const auto& source:sources_)if(source->layer_id_<0)
@@ -1473,7 +1473,7 @@ void MoeExpertCache::preload_complete_residency() {
         if(pipeline_sources[source->id_])layer_sources[source->layer_id_].push_back(source.get());
     }
     int64_t ram_allocated=0;
-    const auto layer_option=mfq::cuda::runtime_options::moe_prefill_layer();
+    const auto layer_option=tyloi::cuda::runtime_options::moe_prefill_layer();
     pipeline_prefill_layer_layout_=layer_option && *layer_option!=0;
     std::vector<std::vector<std::vector<int64_t>>> ram_field_offsets;
     if(pipeline_prefill_layer_layout_) {
@@ -1540,22 +1540,22 @@ void MoeExpertCache::preload_complete_residency() {
             }
         }
     }
-    pipeline_ram_complement_=std::make_shared<mfq_tensor_backend::Tensor>(mfq_tensor_backend::empty(
-        {ram_allocated},mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kUInt8)));
+    pipeline_ram_complement_=std::make_shared<::tyloi::Tensor>(::tyloi::cuda::empty(
+        {ram_allocated},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8)));
     host_experts_->preserve_resident_experts();
     measuring_preload_h2d_=true;
     std::uint64_t completed=0;
-    const auto* preload_threads_option=mfq::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_THREADS");
+    const auto* preload_threads_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_PRELOAD_THREADS");
     const int preload_threads=preload_threads_option?std::clamp(std::atoi(preload_threads_option),1,32):
         int(std::min(8u,std::max(1u,std::thread::hardware_concurrency())));
-    std::unique_ptr<mfq::HostParallelPool> preload_workers;
-    if(preload_threads>1)preload_workers=std::make_unique<mfq::HostParallelPool>(std::function<void(std::size_t)>{},false);
+    std::unique_ptr<tyloi::HostParallelPool> preload_workers;
+    if(preload_threads>1)preload_workers=std::make_unique<tyloi::HostParallelPool>(std::function<void(std::size_t)>{},false);
     std::cerr<<"moe_preload_cpu threads="<<preload_threads<<" gpu_upload_order=serial\n";
     for (const auto& source:sources_) {
         auto& quant=*source->quant_source_;
         for (std::size_t pool=0; pool<quant.store().pool_count(); ++pool) {
             std::vector<std::int32_t> upload;
-            quant.store().visit_pool_experts(pool,[&](int expert,mfq::MfeQuantExpert encoded) {
+            quant.store().visit_pool_experts(pool,[&](int expert,tyloi::MfeQuantExpert encoded) {
                 if (quant.gpu_resident(expert)) return;
                 const auto key=quant.host_key(expert);
                 auto held=host_experts_->acquire(key,quant.expert_field_bytes(expert),[&] {
@@ -1600,7 +1600,7 @@ void MoeExpertCache::preload_complete_residency() {
         stage.device={};stage.host={};stage.pending=false;
     }
     next_stage_=0;
-    mfq::cuda::default_context()->reclaim_idle_memory();
+    tyloi::cuda::default_context()->reclaim_idle_memory();
     std::cerr<<"moe_preload_staging_release device_bytes="<<released_device
         <<" host_bytes="<<released_host<<'\n';
     std::uint64_t gpu_experts=0,ram_experts=0;
@@ -1631,14 +1631,14 @@ void MoeExpertCache::preload_complete_residency() {
         // Include predictor images when the measured WDDM budget allows it.
         // The shared-memory reserve and registration fallback below still
         // protect decode plans and leave an oversized complement pageable.
-        if(const auto available=mfq::cuda::shared_memory_available(mfq_current_cuda_device())) {
+        if(const auto available=tyloi::cuda::shared_memory_available(mfq_current_cuda_device())) {
             // Decode stages are bounded; prefill backup registration separately
             // checks current headroom and leaves excess backups pageable.
-            const auto scratch=std::size_t(mfq::cuda::runtime_options::moe_ram_pin_reserve_bytes().value_or(1LL<<30));
+            const auto scratch=std::size_t(tyloi::cuda::runtime_options::moe_ram_pin_reserve_bytes().value_or(1LL<<30));
             registered=std::min<int64_t>(registered,*available>scratch?*available-scratch:0);
         }
 #endif
-        if(const auto limit=mfq::cuda::runtime_options::moe_ram_pin_bytes()) {
+        if(const auto limit=tyloi::cuda::runtime_options::moe_ram_pin_bytes()) {
             if(*limit>0)registered=std::min(registered,*limit);
         }
 #ifdef _WIN32
@@ -1729,7 +1729,7 @@ std::array<std::uint64_t,4> MoeExpertCache::expert_disk_timings() const {
 }
 
 void MoeExpertCache::append_expert_format_metrics(std::vector<std::pair<std::string,double>>& metrics) const {
-    const auto mapped=mfq::mapped_tensor_read_profile();
+    const auto mapped=tyloi::mapped_tensor_read_profile();
     if(mapped[3]) {
         metrics.emplace_back("ssd_mapped_prefetch_ms",double(mapped[0])/1e6);
         metrics.emplace_back("ssd_mapped_copy_ms",double(mapped[1])/1e6);
@@ -1765,14 +1765,13 @@ void MoeExpertCache::calibrate_pipeline_pcie() {
         const auto fraction=*options_.ram_fraction;
         ram_pcie_fraction_=fraction;std::cerr<<"moe_ram_pcie_override fraction="<<fraction<<std::endl;return;
     }
-    namespace tb=mfq_tensor_backend;
-    tb::Tensor target;
+    ::tyloi::Tensor target;
     for(const auto& [signature,arena]:arenas_)for(const auto& field:arena->fields)
         if(!target.defined() || tensor_nbytes(field)>tensor_nbytes(target))target=field;
     const auto bytes=std::min<int64_t>(256ll<<20,tensor_nbytes(target));
     if(!bytes)throw std::runtime_error("MFQ PCIe calibration has no allocated expert arena");
     const MfqCudaGuard guard(target.device());
-    auto host=tb::empty({bytes},tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true));
+    auto host=::tyloi::cuda::empty({bytes},::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8).pinned_memory(true));
     std::memset(host.data_ptr(),0,static_cast<std::size_t>(bytes));
     const auto stream=weight_stream_;
     struct Events {
@@ -1794,7 +1793,7 @@ void MoeExpertCache::calibrate_pipeline_pcie() {
         const auto gbps=bytes/milliseconds/1e6;pipeline_pcie_gbps_=std::max(pipeline_pcie_gbps_,gbps);
         std::cerr<<(burst ? "," : "")<<gbps;
     }
-    ram_pcie_fraction_=mfq::measured_pcie_share(pipeline_pcie_gbps_);
+    ram_pcie_fraction_=tyloi::measured_pcie_share(pipeline_pcie_gbps_);
     std::cerr<<" best_gbps="<<pipeline_pcie_gbps_<<" fraction="<<ram_pcie_fraction_<<std::endl;
 }
 
@@ -1888,7 +1887,7 @@ void MoeExpertCache::prewarm() {
 }
 
 void MoeExpertCache::invalidate(
-        const mfq::MoeCacheKey & key,
+        const tyloi::MoeCacheKey & key,
         int slot,bool retain_cold) {
     if (key.source < 0 ||
         key.source >= static_cast<int>(sources_.size())) {
@@ -1912,10 +1911,10 @@ void MoeExpertCache::invalidate(
         auto pool=*cohort.cpu;
         pool.local_experts=1;
         pool.expert_local={};
-        std::vector<mfq_tensor_backend::Tensor> fields;
+        std::vector<::tyloi::Tensor> fields;
         for (std::size_t i=0; i<arena.fields.size(); ++i) {
             const auto rows=arena.layouts[i].slot_shape[0];
-            fields.push_back(arena.fields[i].narrow(0,slot*rows,rows).to(mfq_tensor_backend::kCPU).contiguous());
+            fields.push_back(arena.fields[i].narrow(0,slot*rows,rows).to(::tyloi::kCPU).contiguous());
         }
         pool=moe_replace_quant_fields(std::move(pool),fields);
         copied=true;
@@ -1938,7 +1937,7 @@ void MoeExpertCache::append_source_transfers(
         bool prefetch,
         std::vector<MoeCacheTransfer> & transfers,
         bool & replaced_occupied,
-        std::vector<std::pair<mfq::MoeCacheSlotBook *, int>> * held_slots,
+        std::vector<std::pair<tyloi::MoeCacheSlotBook *, int>> * held_slots,
         std::vector<MoeCacheNewLease> * new_leases) {
     for (int expert : experts) {
         const int cohort_index =
@@ -1951,7 +1950,7 @@ void MoeExpertCache::append_source_transfers(
             source.cohorts_.at(
                 static_cast<size_t>(cohort_index));
         auto & arena = *cohort.arena;
-        const mfq::MoeCacheKey key{
+        const tyloi::MoeCacheKey key{
             source.id_, cohort_index, expert};
         auto lease = arena.book->acquire(key);
         if (held_slots != nullptr &&
@@ -1984,7 +1983,7 @@ void MoeExpertCache::append_source_transfers(
                 replaced_occupied = true;
                 invalidate(*lease.replaced, lease.slot);
             }
-            std::vector<mfq_tensor_backend::Tensor> quant_fields;
+            std::vector<::tyloi::Tensor> quant_fields;
             MoeHostExpertCache::Lease quant_owner;
             if (source.quant_source_) {
                 quant_owner=source.quant_source_->acquire_expert(expert);
@@ -2073,7 +2072,7 @@ void MoeExpertCache::append_source_transfers(
 void MoeExpertCache::rollback_preparation(
         const std::vector<MoeCacheNewLease> & new_leases,
         const std::vector<
-            std::pair<mfq::MoeCacheSlotBook *, int>> & held_slots) noexcept {
+            std::pair<tyloi::MoeCacheSlotBook *, int>> & held_slots) noexcept {
     (void)cudaStreamSynchronize(weight_stream_);
     for (auto lease = new_leases.rbegin();
          lease != new_leases.rend();
@@ -2104,7 +2103,7 @@ bool MoeExpertCache::begin_deferred_range_read(
 
     std::unordered_map<
         MoeGpuArena *,
-        std::unordered_set<mfq::MoeCacheKey, mfq::MoeCacheKeyHash>>
+        std::unordered_set<tyloi::MoeCacheKey, tyloi::MoeCacheKeyHash>>
         arena_demands;
     for (int expert : experts) {
         if (expert < 0 || expert >= source.n_experts()) return false;
@@ -2168,14 +2167,14 @@ bool MoeExpertCache::begin_deferred_range_read(
             return true;
         }
 
-        pending->host = mfq_tensor_backend::empty(
+        pending->host = ::tyloi::cuda::empty(
             {range_bytes},
-            mfq_tensor_backend::TensorOptions()
-                .device(mfq_tensor_backend::kCPU)
-                .dtype(mfq_tensor_backend::kUInt8)
+            ::tyloi::TensorOptions()
+                .device(::tyloi::kCPU)
+                .dtype(::tyloi::kUInt8)
                 .pinned_memory(true));
         auto * staging = pending->host.data_ptr<uint8_t>();
-        std::vector<mfq::cuda::MfeMxfp4ReadRequest> requests;
+        std::vector<tyloi::cuda::MfeMxfp4ReadRequest> requests;
         requests.reserve(range_count);
         int64_t offset = 0;
         for (auto & transfer : pending->transfers) {
@@ -2253,7 +2252,7 @@ bool MoeExpertCache::prepare(
 
     std::unordered_map<
         MoeGpuArena *,
-        std::unordered_set<mfq::MoeCacheKey, mfq::MoeCacheKeyHash>>
+        std::unordered_set<tyloi::MoeCacheKey, tyloi::MoeCacheKeyHash>>
         arena_demands;
     for (int expert : experts) {
         if (expert < 0 || expert >= source.n_experts()) return false;
@@ -2271,7 +2270,7 @@ bool MoeExpertCache::prepare(
         }
     }
 
-    std::vector<std::pair<mfq::MoeCacheSlotBook *, int>> held_slots;
+    std::vector<std::pair<tyloi::MoeCacheSlotBook *, int>> held_slots;
     for (const auto & item : arena_demands) {
         auto * book = item.first->book.get();
         for (const auto & key : item.second) {
@@ -2321,7 +2320,7 @@ bool MoeExpertCache::prepare_bundle(
 
     std::unordered_map<
         MoeGpuArena *,
-        std::unordered_set<mfq::MoeCacheKey, mfq::MoeCacheKeyHash>>
+        std::unordered_set<tyloi::MoeCacheKey, tyloi::MoeCacheKeyHash>>
         arena_demands;
     for (auto * source : sources) {
         if (source == nullptr || source->cache_ != this) return false;
@@ -2342,7 +2341,7 @@ bool MoeExpertCache::prepare_bundle(
         }
     }
 
-    std::vector<std::pair<mfq::MoeCacheSlotBook *, int>> held_slots;
+    std::vector<std::pair<tyloi::MoeCacheSlotBook *, int>> held_slots;
     for (const auto & item : arena_demands) {
         auto * book = item.first->book.get();
         for (const auto & key : item.second) {
@@ -2389,20 +2388,20 @@ bool MoeExpertCache::prepare_bundle_deferred(
     return begin_deferred_range_read(deferred_source, experts);
 }
 
-static mfq::cuda::Experts wrap_cached_moe_source(
+static tyloi::cuda::Experts wrap_cached_moe_source(
         const std::shared_ptr<MoeCachedSource> & source,
         const std::shared_ptr<MixedMoeRuntime> & cpu) {
-    mfq::cuda::Experts result =
+    tyloi::cuda::Experts result =
         cpu_mixed_moe_metadata(cpu);
     result.mixed_weight_bytes = source->logical_weight_bytes();
     result.cached_source = source;
     return result;
 }
 
-bool mfq::cuda::prefetch_cached_moe_projection_bundle(
-        const mfq::cuda::Experts & gate,
-        const mfq::cuda::Experts & up,
-        const mfq::cuda::Experts & down,
+bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
+        const tyloi::cuda::Experts & gate,
+        const tyloi::cuda::Experts & up,
+        const tyloi::cuda::Experts & down,
         const MoeRoutePlan & route) {
     if (!gate.cached_source ||
             !up.cached_source ||
@@ -2414,9 +2413,9 @@ bool mfq::cuda::prefetch_cached_moe_projection_bundle(
         route);
 }
 
-bool mfq::cuda::prefetch_cached_moe_projection_bundle(
-        const mfq::cuda::Experts & gate_up,
-        const mfq::cuda::Experts & down,
+bool tyloi::cuda::prefetch_cached_moe_projection_bundle(
+        const tyloi::cuda::Experts & gate_up,
+        const tyloi::cuda::Experts & down,
         const MoeRoutePlan & route) {
     if (!gate_up.cached_source || !down.cached_source) {
         return false;
@@ -2425,14 +2424,14 @@ bool mfq::cuda::prefetch_cached_moe_projection_bundle(
         {gate_up.cached_source, down.cached_source}, route);
 }
 
-mfq::cuda::Experts cache_moe_weight(
+tyloi::cuda::Experts cache_moe_weight(
         const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,
         const std::shared_ptr<MixedMoeRuntime>& runtime,
         int minimum_slots,
         int layer_id,
         const std::string& projection_role,
-        std::shared_ptr<mfq::cuda::MfeMxfp4ExpertStore> range_store) {
+        std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> range_store) {
     auto source = range_store
         ? cache->register_range_source(name, runtime, std::move(range_store),
                                        minimum_slots, layer_id, projection_role)
@@ -2449,7 +2448,7 @@ std::shared_ptr<MoeExpertCache> make_moe_expert_cache(
     return std::make_shared<MoeExpertCache>(bytes, options);
 }
 
-mfq::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
+tyloi::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
         const std::string& name,std::shared_ptr<MoeQuantRangeSource> range,
         int minimum_slots,int layer_id,const std::string& role) {
     auto runtime=range->metadata();
@@ -2489,7 +2488,7 @@ bool moe_expert_cache_ssd_experts(const std::shared_ptr<MoeExpertCache>& cache) 
 }
 bool moe_expert_cache_ssd_router_prefetch(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache && cache->ssd_experts() && cache->reuse_learning() &&
-        mfq::cuda::runtime_options::router_lookahead_override().value_or(cache->ssd_router_prefetch());
+        tyloi::cuda::runtime_options::router_lookahead_override().value_or(cache->ssd_router_prefetch());
 }
 std::size_t moe_expert_cache_budget_bytes(const std::shared_ptr<MoeExpertCache>& cache) {
     return cache ? std::size_t(cache->budget_bytes()) : 0;
@@ -2628,17 +2627,17 @@ void MoeExpertCache::prepare_direct_transfer_cache() {
         charge(std::size_t(tensor_nbytes(arena->packed)));
         for(const auto& field:arena->fields)charge(std::size_t(tensor_nbytes(field)));
     }
-    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_DIRECT_EXPERT_CACHE_BYTES")) {
+    if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_DIRECT_EXPERT_CACHE_BYTES")) {
         const auto parsed=std::stoll(option);
         if(parsed<0)throw std::invalid_argument("direct expert cache bytes must be nonnegative");
         bytes=std::min(bytes,std::size_t(parsed));
     }
-    bytes=bytes/mfq::cuda::KvExpertLoan::page*mfq::cuda::KvExpertLoan::page;
+    bytes=bytes/tyloi::cuda::KvExpertLoan::page*tyloi::cuda::KvExpertLoan::page;
     if(!bytes)return;
     reserve_workspace(bytes+(std::size_t(64)<<20));
-    mfq::cuda::ResidentAllocationScope resident;
-    pipeline_direct_cache_storage_=mfq_tensor_backend::empty({int64_t(bytes)},
-        mfq_tensor_backend::TensorOptions().device(device()).dtype(mfq_tensor_backend::kUInt8));
+    tyloi::cuda::ResidentAllocationScope resident;
+    pipeline_direct_cache_storage_=::tyloi::cuda::empty({int64_t(bytes)},
+        ::tyloi::TensorOptions().device(device()).dtype(::tyloi::kUInt8));
     try {
         // The existing decode-stage reserve now supplies one variable-format
         // cache. Wire storage remains the bounded fallback for every route.
@@ -2657,7 +2656,7 @@ void MoeExpertCache::release_direct_transfer_cache() {
 }
 void MoeExpertCache::bind_host_device_cache_hints() {
     if(!ssd_experts_ || !kv_expert_loan_){host_experts_->set_device_cache_hints({});return;}
-    std::vector<mfq::MoeCacheKey> keys;std::vector<std::pair<int,std::size_t>> sources;
+    std::vector<tyloi::MoeCacheKey> keys;std::vector<std::pair<int,std::size_t>> sources;
     for(const auto& source:sources_)if(source->quant_source_) {
         sources.emplace_back(source->id_,keys.size());
         for(int e=0;e<source->n_experts();++e)keys.push_back(source->quant_source_->host_key(e));
@@ -2669,7 +2668,7 @@ void MoeExpertCache::bind_host_device_cache_hints() {
             if(const auto hints=weak.lock())hints->publish(offset+std::size_t(expert),base!=nullptr);
         },hints,true);
 }
-void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<mfq::cuda::KvExpertLoan> loan) {
+void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<tyloi::cuda::KvExpertLoan> loan) {
     if(cache) {
         const bool changed=cache->kv_expert_loan_!=loan;
         // Cached-dispatch observers belong to the loan object. Retire their
@@ -2712,10 +2711,10 @@ bool set_moe_reuse_learning(const std::shared_ptr<MoeExpertCache>& cache,bool en
     return cache?cache->set_reuse_learning(enabled):true;
 }
 void begin_moe_speculative_routes(const std::shared_ptr<MoeExpertCache>& cache,int rows) {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_COMMITTED_HEAT");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_MTP_COMMITTED_HEAT");
     if(cache && cache->moe_residency_ && (!option || option[0]!='0'))
         cache->moe_residency_->begin_speculative_routes(rows);
-    const auto* kv_lru=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_KV_LRU");
+    const auto* kv_lru=tyloi::cuda::env_lookup("TYLOINFER_MOE_MTP_KV_LRU");
     if(cache && cache->kv_expert_loan_ && (!kv_lru || kv_lru[0]!='0'))
         cache->kv_expert_loan_->begin_speculative(rows);
 }
@@ -2751,7 +2750,7 @@ bool lend_moe_decode_cache_for_prefill(const std::shared_ptr<MoeExpertCache>& ca
     // DMA batches. Their next host serve reads this storage from the cache.
     cache->pipeline_host_stage_={};cache->pipeline_host_stage_alias_=nullptr;
     cache->transfer_ready_recorded_=false;
-    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     context->reclaim_idle_memory();
     cache->reserve_workspace(workspace_bytes);
     const bool retained=context->available_memory()+context->workspace_available()>=workspace_bytes;
@@ -2795,7 +2794,7 @@ bool prepare_moe_graph_pool(const std::shared_ptr<MoeExpertCache>& cache) {
     const MfqCudaGuard guard(cache->device());
     const auto stream = mfq_current_cuda_stream();
     if (!cache->pipeline_pool_context_) {
-        cache->pipeline_pool_context_ = mfq::cuda::default_context(mfq_current_cuda_device());
+        cache->pipeline_pool_context_ = tyloi::cuda::default_context(mfq_current_cuda_device());
         cache->pipeline_pool_stream_ = stream;
         cache->pipeline_pool_context_->begin_graph_pool(stream);
     } else if (cache->pipeline_pool_stream_ != stream)
@@ -2827,7 +2826,7 @@ void prepare_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>& cach
     cache->pipeline_transfer_slots_.clear();
     cache->pipeline_prefetched_keys_.clear();
     for(auto& [key,arena]:cache->pipeline_stages_)
-        if(arena->book)arena->book=std::make_unique<mfq::MoeCacheSlotBook>(arena->slots);
+        if(arena->book)arena->book=std::make_unique<tyloi::MoeCacheSlotBook>(arena->slots);
     if(cache->pipeline_wire_gpu_.defined()) {
         TYLOINFER_CUDA_CHECK(cudaMemsetAsync(cache->pipeline_wire_gpu_.data_ptr(),0,32,cache->weight_stream_));
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(cache->weight_stream_));
@@ -2853,7 +2852,7 @@ void prepare_moe_cpu_budget_comparison(const std::shared_ptr<MoeExpertCache>& ca
 }
 void prepare_moe_cpu_calibration_comparison(const std::shared_ptr<MoeExpertCache>& cache,bool replay) {
     prepare_moe_cpu_budget_comparison(cache,replay,true);
-    mfq::reset_moe_cpu_calibration(
+    tyloi::reset_moe_cpu_calibration(
         cache->pipeline_cpu_calibration_, cache->pipeline_cpu_cost_);
     cache->pipeline_cpu_cost_={};
 }
@@ -2883,7 +2882,7 @@ std::size_t finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>
 
 void set_moe_expert_cache_profile(
         MoeExpertCache& cache,
-        mfq::MoeCacheProfile profile) {
+        tyloi::MoeCacheProfile profile) {
     cache.set_profile(std::move(profile));
 }
 

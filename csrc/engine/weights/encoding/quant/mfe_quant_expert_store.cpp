@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 template<class T> T value(const std::vector<std::uint8_t>& data,std::size_t offset) {
     if (offset>data.size() || sizeof(T)>data.size()-offset)
@@ -275,10 +275,10 @@ MfeQuantExpertStore::MfeQuantExpertStore(std::size_t bytes,Read reader,NintRows:
         };
         int rows=0,columns=0;
         if (pool.dtype=="NINT") {
-            pool.nint=std::make_shared<mfq::NintRows>(static_cast<std::size_t>(bytes),body,false,body_batch);
+            pool.nint=std::make_shared<tyloi::NintRows>(static_cast<std::size_t>(bytes),body,false,body_batch);
             rows=pool.nint->rows(); columns=pool.nint->width();
         } else if (pool.dtype=="NVQ" || pool.dtype=="NPQ") {
-            pool.nvq=std::make_shared<mfq::NvqRows>(static_cast<std::size_t>(bytes),body,body_batch);
+            pool.nvq=std::make_shared<tyloi::NvqRows>(static_cast<std::size_t>(bytes),body,body_batch);
             rows=pool.nvq->rows(); columns=pool.nvq->width();
         } else if (pool.dtype=="MXFP4") {
             const auto mx=read(cursor,56);
@@ -463,4 +463,4 @@ std::uint64_t MfeQuantExpertStore::expert_values_bits(int expert) const {
     const auto begin=std::int64_t(owner.local)*output_;
     return pool.nint->row_values_bits(begin,begin+output_);
 }
-} // namespace mfq
+} // namespace tyloi

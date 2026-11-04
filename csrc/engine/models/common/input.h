@@ -6,13 +6,13 @@
 #include "engine/backends/cuda/native/tensor/backend.h"
 #endif
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Input = mfq::models::Input;
+using Input = tyloi::models::Input;
 #else
 struct Input {
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     using Trace = std::vector<Tensor>;
 
     Tensor ids;
@@ -30,4 +30,4 @@ struct Input {
 };
 #endif
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

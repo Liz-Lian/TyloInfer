@@ -28,17 +28,17 @@
 
 namespace {
 
-using namespace mfq::transport_detail;
+using namespace tyloi::transport_detail;
 
 std::mutex stdio_protocol_mutex;
 int stdio_protocol_fd = -1;
 
 static const char * input_error_type(
-        mfq::engine::InferenceInputErrorCode code) {
-    if (code == mfq::engine::InferenceInputErrorCode::Unsupported) {
+        tyloi::engine::InferenceInputErrorCode code) {
+    if (code == tyloi::engine::InferenceInputErrorCode::Unsupported) {
         return "unsupported_parameter";
     }
-    if (code == mfq::engine::InferenceInputErrorCode::ContextLength) {
+    if (code == tyloi::engine::InferenceInputErrorCode::ContextLength) {
         return "context_length_exceeded";
     }
     return "invalid_request_error";
@@ -74,7 +74,7 @@ public:
     explicit MfqStdioTransport(MfqRuntimeTransportConfig config)
         : config_(std::move(config)) {}
 
-    int run(const mfq::engine::Engine & engine) override {
+    int run(const tyloi::engine::Engine & engine) override {
         const bool duplex = engine.info().duplex;
         if (stdio_protocol_fd < 0) {
             throw std::runtime_error(
@@ -167,7 +167,7 @@ public:
             const auto snapshot = engine.snapshot();
             const auto& metrics = snapshot.runtime;
             value["runtime_metrics_age_ms"] = std::chrono::duration<double, std::milli>(
-                mfq::engine::Clock::now() - snapshot.captured).count();
+                tyloi::engine::Clock::now() - snapshot.captured).count();
 
             for (const auto& item : metrics) {
                 value[item.first] = item.second;
@@ -253,7 +253,7 @@ public:
                 stop_backend = realtime.backend_started;
                 realtime = {};
             }
-            if (stop_backend) (void)engine.control(mfq::engine::StopDuplex{});
+            if (stop_backend) (void)engine.control(tyloi::engine::StopDuplex{});
             return true;
         };
         const auto emit_realtime = [&](json event) {
@@ -383,7 +383,7 @@ public:
                     }
                     send_result(id, {
                         {"status", "ok"},
-                        {"copied_snapshots", engine.session({mfq::engine::SessionCommand::Kind::fork, source, target}).count},
+                        {"copied_snapshots", engine.session({tyloi::engine::SessionCommand::Kind::fork, source, target}).count},
                     });
                     continue;
                 }
@@ -398,7 +398,7 @@ public:
                     }
                     send_result(id, {
                         {"status", "ok"},
-                        {"released_snapshots", engine.session({mfq::engine::SessionCommand::Kind::close, session_id}).count},
+                        {"released_snapshots", engine.session({tyloi::engine::SessionCommand::Kind::close, session_id}).count},
                     });
                     continue;
                 }
@@ -408,7 +408,7 @@ public:
                     try {
                         json result = {
                             {"status", "ok"},
-                            {"released_snapshots", engine.session({mfq::engine::SessionCommand::Kind::clear}).count},
+                            {"released_snapshots", engine.session({tyloi::engine::SessionCommand::Kind::clear}).count},
                         };
                         add_session_metrics(result);
                         reloading.store(false);
@@ -422,7 +422,7 @@ public:
                 if (op == "memory.budget") {
                     const auto bytes = integer_field(params, "target_bytes", 0);
                     if (bytes < 0) throw ApiError(400, "invalid_request_error", "target_bytes must be non-negative");
-                    mfq::engine::SessionCommand command{mfq::engine::SessionCommand::Kind::memory_budget, {}, {}, static_cast<uint64_t>(bytes)};
+                    tyloi::engine::SessionCommand command{tyloi::engine::SessionCommand::Kind::memory_budget, {}, {}, static_cast<uint64_t>(bytes)};
                     if (params.contains("weight_target_bytes")) {
                         const auto weight = integer_field(params, "weight_target_bytes", 0);
                         if (weight < 0) throw ApiError(400, "invalid_request_error", "weight_target_bytes must be non-negative");
@@ -435,7 +435,7 @@ public:
                 }
                 if (op == "cache.refresh") {
                     json result = {{"status", "ok"},
-                        {"removed_blocks", engine.session({mfq::engine::SessionCommand::Kind::refresh}).count}};
+                        {"removed_blocks", engine.session({tyloi::engine::SessionCommand::Kind::refresh}).count}};
                     add_session_metrics(result);
                     send_result(id, std::move(result));
                     continue;
@@ -449,7 +449,7 @@ public:
                             400, "invalid_request_error",
                             "target_bytes must be non-negative");
                     }
-                    mfq::engine::SessionCommand command{op == "cache.trim" ? mfq::engine::SessionCommand::Kind::trim : mfq::engine::SessionCommand::Kind::budget, {}, {}, static_cast<uint64_t>(target)};
+                    tyloi::engine::SessionCommand command{op == "cache.trim" ? tyloi::engine::SessionCommand::Kind::trim : tyloi::engine::SessionCommand::Kind::budget, {}, {}, static_cast<uint64_t>(target)};
                     if (op == "cache.budget" && params.contains("disk_target_bytes")) {
                         const auto disk = integer_field(params, "disk_target_bytes", 0);
                         if (disk < 0) throw ApiError(400, "invalid_request_error", "disk_target_bytes must be non-negative");
@@ -824,14 +824,14 @@ public:
                     continue;
                 }
                 if (op == "count_tokens") {
-                    send_result(id, token_count_json(std::get<mfq::engine::TokenCount>(
+                    send_result(id, token_count_json(std::get<tyloi::engine::TokenCount>(
                         engine.control(parse_token_count_request(params)))));
                     continue;
                 }
                 if (op == "score") {
                     if (!engine.info().probability)
                         throw ApiError(501, "probability_unavailable", "probability scoring is unavailable for this model");
-                    send_result(id, likelihood_result_json(std::get<mfq::engine::LikelihoodResult>(
+                    send_result(id, likelihood_result_json(std::get<tyloi::engine::LikelihoodResult>(
                         engine.control(parse_score_request(params)))));
                     continue;
                 }
@@ -933,7 +933,7 @@ public:
                         } catch (const ApiError & error) {
                             send_error(
                                 id, error.status, error.type, error.what());
-                        } catch (const mfq::engine::InferenceInputError & error) {
+                        } catch (const tyloi::engine::InferenceInputError & error) {
                             send_error(
                                 id, 400, input_error_type(error.code),
                                 error.what());
@@ -953,7 +953,7 @@ public:
                 });
             } catch (const ApiError & error) {
                 send_error(id, error.status, error.type, error.what());
-            } catch (const mfq::engine::InferenceInputError & error) {
+            } catch (const tyloi::engine::InferenceInputError & error) {
                 send_error(
                     id, 400, input_error_type(error.code), error.what());
             } catch (const MfqResourceExhausted & error) {

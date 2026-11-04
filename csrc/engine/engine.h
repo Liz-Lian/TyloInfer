@@ -16,16 +16,16 @@
 #include <utility>
 #include <variant>
 
-namespace mfq::models { class CausalModel; class State; }
-namespace mfq::engine { class Engine; }
-namespace mfq::cuda {
+namespace tyloi::models { class CausalModel; class State; }
+namespace tyloi::engine { class Engine; }
+namespace tyloi::cuda {
 struct CudaEngineOptions;
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions);
 void reload_cuda_engine(engine::Engine&, CudaEngineOptions);
 namespace internal { void assemble_engine(engine::Engine&, CudaEngineOptions); }
 }
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 class Scheduler;
 class InferenceOutput;
@@ -89,17 +89,17 @@ protected:
     virtual bool ready() const;
     virtual bool can_batch(const EngineRequest& request) const;
     virtual bool exclusive() const;
-    virtual std::unique_ptr<mfq::Executor::Scope> enter();
+    virtual std::unique_ptr<tyloi::Executor::Scope> enter();
     virtual void prepare_request(Request& request, bool batched);
-    virtual mfq::StepSequence<EventData> generate(const RequestId& id, Request& request);
+    virtual tyloi::StepSequence<EventData> generate(const RequestId& id, Request& request);
 #else
     virtual EngineInfo describe() const = 0;
     virtual bool ready() const = 0;
     virtual bool can_batch(const EngineRequest& request) const = 0;
     virtual bool exclusive() const = 0;
-    virtual std::unique_ptr<mfq::Executor::Scope> enter() = 0;
+    virtual std::unique_ptr<tyloi::Executor::Scope> enter() = 0;
     virtual void prepare_request(Request& request, bool batched) = 0;
-    virtual mfq::StepSequence<EventData> generate(const RequestId& id, Request& request) = 0;
+    virtual tyloi::StepSequence<EventData> generate(const RequestId& id, Request& request) = 0;
 #endif
     virtual void retire_request(Request& request) noexcept;
     void reset_states(std::int64_t batch);
@@ -118,16 +118,16 @@ protected:
 private:
     friend class Scheduler;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    friend std::unique_ptr<Engine> mfq::cuda::load_cuda_engine(mfq::cuda::CudaEngineOptions);
-    friend void mfq::cuda::reload_cuda_engine(Engine&, mfq::cuda::CudaEngineOptions);
-    friend void mfq::cuda::internal::assemble_engine(Engine&, mfq::cuda::CudaEngineOptions);
+    friend std::unique_ptr<Engine> tyloi::cuda::load_cuda_engine(tyloi::cuda::CudaEngineOptions);
+    friend void tyloi::cuda::reload_cuda_engine(Engine&, tyloi::cuda::CudaEngineOptions);
+    friend void tyloi::cuda::internal::assemble_engine(Engine&, tyloi::cuda::CudaEngineOptions);
     template <class Ops, class State>
-    friend mfq::StepSequence<EventData> generate_prepared(Ops&, State&, InferenceRequest&, InferenceOutput&,
+    friend tyloi::StepSequence<EventData> generate_prepared(Ops&, State&, InferenceRequest&, InferenceOutput&,
         const RequestId&, bool);
     using Prepared = models::Prepared;
-    mfq::StepSequence<Prepared> prepare(InferenceRequest&, models::State&);
-    std::pair<mfq::StepResult<Prepared>, double> advance_preparation(mfq::StepSequence<Prepared>&);
-    mfq::StepSequence<EventData> generate_text(InferenceRequest&, InferenceOutput&, models::State&,
+    tyloi::StepSequence<Prepared> prepare(InferenceRequest&, models::State&);
+    std::pair<tyloi::StepResult<Prepared>, double> advance_preparation(tyloi::StepSequence<Prepared>&);
+    tyloi::StepSequence<EventData> generate_text(InferenceRequest&, InferenceOutput&, models::State&,
         std::optional<Prepared>, const RequestId&, bool);
     SessionResult set_budget(const SessionCommand&);
     void restore_graph_expert_space();
@@ -135,10 +135,10 @@ private:
     template <class F> decltype(auto) with_cuda(F&& work);
     struct Impl;
     std::shared_ptr<models::CausalModel> model_;
-    std::unique_ptr<mfq::Executor> executor_;
+    std::unique_ptr<tyloi::Executor> executor_;
     std::unique_ptr<Impl> impl_;
 #endif
     std::unique_ptr<Scheduler> scheduler_;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

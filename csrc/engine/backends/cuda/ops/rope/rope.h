@@ -9,19 +9,19 @@
 #include <vector>
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::cuda::ops {
-mfq::Tensor rope(mfq::Tensor input, mfq::Tensor positions, const mfq::ops::RopeTable& table,
+namespace tyloi::cuda::ops {
+tyloi::Tensor rope(tyloi::Tensor input, tyloi::Tensor positions, const tyloi::ops::RopeTable& table,
                  bool bf16, bool grid_mrope_positions);
 }
 #endif
 
 struct RopeCache {
-    mfq_tensor_backend::Tensor cos;
-    mfq_tensor_backend::Tensor sin;
-    mfq_tensor_backend::Tensor sections;
-    mfq_tensor_backend::Tensor empty_sections;
-    mfq_tensor_backend::Tensor interleaved_order;
-    mfq_tensor_backend::Tensor interleaved_inverse;
+    ::tyloi::Tensor cos;
+    ::tyloi::Tensor sin;
+    ::tyloi::Tensor sections;
+    ::tyloi::Tensor empty_sections;
+    ::tyloi::Tensor interleaved_order;
+    ::tyloi::Tensor interleaved_inverse;
     int64_t rotary_dim = 0;
 
     RopeCache() = default;
@@ -31,30 +31,30 @@ struct RopeCache {
         double base,
         int64_t frequency_dim = 0,
         int64_t active_pairs = -1,
-        mfq_tensor_backend::Device device =
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA),
+        ::tyloi::Device device =
+            ::tyloi::Device(::tyloi::kCUDA),
         bool official_reciprocal_frequencies = false,
-        mfq::ops::YarnScaling yarn = {});
+        tyloi::ops::YarnScaling yarn = {});
 
     void configure_mrope(
         const std::vector<int64_t>& configured_sections,
         bool interleaved,
         int64_t configured_rotary_dim,
-        mfq_tensor_backend::Device device);
+        ::tyloi::Device device);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::ops::RopeTable view() const;
+    tyloi::ops::RopeTable view() const;
 #endif
-    mfq_tensor_backend::Tensor apply(
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor pos,
+    ::tyloi::Tensor apply(
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor pos,
         bool grid_mrope_positions = false) const;
-    mfq_tensor_backend::Tensor apply_bf16(
+    ::tyloi::Tensor apply_bf16(
         bool fused,
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor pos) const;
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor pos) const;
 };
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Computes rotate-half frequencies for logical [axis,batch,token] positions.
 // Uses FP32 for F32 inputs and FP16 otherwise, without a resident table.
@@ -62,42 +62,42 @@ class RotaryEmbedding {
 public:
     RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
                     std::vector<int64_t> sections, bool interleaved,
-                    bool fused, mfq::ops::YarnScaling yarn = {});
-    mfq_tensor_backend::Tensor forward(const mfq_tensor_backend::Tensor& value,
-                                       const mfq_tensor_backend::Tensor& positions) const;
+                    bool fused, tyloi::ops::YarnScaling yarn = {});
+    ::tyloi::Tensor forward(const ::tyloi::Tensor& value,
+                                       const ::tyloi::Tensor& positions) const;
     // Switch only after execution and captured graphs using this module finish.
     void set_fused(bool enabled) { fused_ = enabled && !yarn_.enabled(); }
     bool fused() const { return fused_; }
-    bool pool_normalized_into(const mfq_tensor_backend::Tensor& index,
-        const mfq_tensor_backend::Tensor& weight,const mfq_tensor_backend::Tensor& positions,
-        const mfq_tensor_backend::Tensor& cache_positions,const mfq_tensor_backend::Tensor& output,
+    bool pool_normalized_into(const ::tyloi::Tensor& index,
+        const ::tyloi::Tensor& weight,const ::tyloi::Tensor& positions,
+        const ::tyloi::Tensor& cache_positions,const ::tyloi::Tensor& output,
         int64_t pool,int64_t maximum,double eps) const;
-    mfq_tensor_backend::Tensor forward_normalized(
-        const mfq_tensor_backend::Tensor& value, const mfq_tensor_backend::Tensor& weight,
-        const mfq_tensor_backend::Tensor& positions, double eps,
-        const mfq_tensor_backend::Tensor& key_cache = {},
-        const mfq_tensor_backend::Tensor& cache_positions = {},
-        const mfq_tensor_backend::Tensor& projected_value = {},
-        const mfq_tensor_backend::Tensor& value_cache = {}) const;
-    std::vector<mfq_tensor_backend::Tensor> forward_normalized_grouped(
-        const std::vector<mfq_tensor_backend::Tensor>& values,
-        const std::vector<mfq_tensor_backend::Tensor>& weights,
-        const mfq_tensor_backend::Tensor& positions,double eps,int cache_entry=1,
-        const mfq_tensor_backend::Tensor& key_cache={},
-        const mfq_tensor_backend::Tensor& cache_positions={},
-        const mfq_tensor_backend::Tensor& projected_value={},
-        const mfq_tensor_backend::Tensor& value_cache={}) const;
+    ::tyloi::Tensor forward_normalized(
+        const ::tyloi::Tensor& value, const ::tyloi::Tensor& weight,
+        const ::tyloi::Tensor& positions, double eps,
+        const ::tyloi::Tensor& key_cache = {},
+        const ::tyloi::Tensor& cache_positions = {},
+        const ::tyloi::Tensor& projected_value = {},
+        const ::tyloi::Tensor& value_cache = {}) const;
+    std::vector<::tyloi::Tensor> forward_normalized_grouped(
+        const std::vector<::tyloi::Tensor>& values,
+        const std::vector<::tyloi::Tensor>& weights,
+        const ::tyloi::Tensor& positions,double eps,int cache_entry=1,
+        const ::tyloi::Tensor& key_cache={},
+        const ::tyloi::Tensor& cache_positions={},
+        const ::tyloi::Tensor& projected_value={},
+        const ::tyloi::Tensor& value_cache={}) const;
 private:
     int64_t dimension_, maximum_;
     double base_;
     std::vector<int64_t> sections_;
     bool interleaved_;
     bool fused_;
-    mfq::ops::YarnScaling yarn_;
-    struct Prepared { mfq_tensor_backend::Tensor frequencies, axes; };
-    Prepared prepare_parameters(const mfq_tensor_backend::Tensor& value) const;
+    tyloi::ops::YarnScaling yarn_;
+    struct Prepared { ::tyloi::Tensor frequencies, axes; };
+    Prepared prepare_parameters(const ::tyloi::Tensor& value) const;
     mutable std::mutex prepared_mutex_;
     mutable std::unordered_map<int,Prepared> prepared_;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

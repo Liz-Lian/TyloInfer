@@ -7,7 +7,7 @@
 #include <vector>
 #include "components/io/read_span.h"
 
-namespace mfq {
+namespace tyloi {
 
 // Portable selected-row wire protocol shared by Metal and CUDA. Six uint32
 // words per row: q/scale/min byte offsets, q/k widths and bit shifts, group
@@ -88,4 +88,4 @@ private:
     bool adaptive_ = false;
     bool parallel_reads_ = false;
 };
-} // namespace mfq
+} // namespace tyloi

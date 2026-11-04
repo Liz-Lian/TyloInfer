@@ -68,27 +68,27 @@ __global__ void __launch_bounds__(128) nint_q8_small_kernel(NintWholeArgs a) {
 }
 
 void nint_launch_grouped_q8(NintWholeArgs a,cudaStream_t stream) {
-    const auto* vector_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_VECTOR");
+    const auto* vector_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_VECTOR");
     const bool head_vector_default=a.rows>=65536 && a.groups==54 &&
         a.activation_rows>=4 && a.activation_rows<=6;
     const bool vectors=vector_setting?vector_setting[0]=='1':head_vector_default;
-    const auto* exact_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_EXACT_ROWS");
+    const auto* exact_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_EXACT_ROWS");
     const bool projection_exact_default=a.groups==54 && a.rows>=512 && a.rows<=16384 &&
         a.activation_rows>=2 && a.activation_rows<=6 && !a.activation_sum;
     const bool exact_rows=(exact_setting?exact_setting[0]=='1':
         (head_vector_default || projection_exact_default)) && a.activation_rows<=6;
-    const bool tracing=mfq::cuda::dispatch_trace::enabled();
-    const auto* unsigned_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_U8S8");
+    const bool tracing=tyloi::cuda::dispatch_trace::enabled();
+    const auto* unsigned_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_U8S8");
     const bool unsigned_default=a.rows>=65536 && a.groups==54 &&
         (a.activation_rows==1 || a.activation_rows==4 || a.activation_rows==6);
     const bool unsigned_weights=unsigned_setting?unsigned_setting[0]=='1':unsigned_default;
-    const auto* small_setting=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_SMALL_WARPS");
+    const auto* small_setting=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_SMALL_WARPS");
     const bool small=(!small_setting || small_setting[0]!='0') && a.rows<=128 &&
         a.groups<=64 && a.activation_rows>=2 && a.activation_rows<=6;
     const auto launch=[&](auto rows) {
         if(small) {
             nint_q8_small_kernel<decltype(rows)::value><<<a.rows,dim3(32,4),0,stream>>>(a);
-            if(tracing)mfq::cuda::dispatch_trace::record(stream,"nint_q8_small_groups",
+            if(tracing)tyloi::cuda::dispatch_trace::record(stream,"nint_q8_small_groups",
                 reinterpret_cast<const void*>(nint_q8_small_kernel<decltype(rows)::value>),
                 "M="+std::to_string(a.activation_rows)+" N="+std::to_string(a.rows)+" groups="+std::to_string(a.groups));
             return;
@@ -101,7 +101,7 @@ void nint_launch_grouped_q8(NintWholeArgs a,cudaStream_t stream) {
                     (a.rows+3)/4,dim3(32,4),0,stream>>>(a.weights,a.offsets,a.scale,a.minimum,
                     a.outer_scale,a.outer_minimum,a.activation,a.activation_scale,a.output,
                     a.activation_rows,a.rows,a.groups,a.activation_sum);
-                if(tracing)mfq::cuda::dispatch_trace::record(stream,decltype(cached)::value?
+                if(tracing)tyloi::cuda::dispatch_trace::record(stream,decltype(cached)::value?
                     (decltype(packed)::value?"nint_q8_grouped_sum_vector":"nint_q8_grouped_sum"):
                     (decltype(packed)::value?"nint_q8_grouped_vector":"nint_q8_grouped"),
                     reinterpret_cast<const void*>(nint_q8_grouped_kernel<decltype(rows)::value,decltype(cached)::value,decltype(packed)::value,decltype(shape)::value,decltype(native)::value>),

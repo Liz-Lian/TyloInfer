@@ -5,9 +5,9 @@
 #include "ops.h"
 #include "engine/models/common/session_codec.h"
 
-namespace mfq::cuda::deepseek_v41_runtime {
+namespace tyloi::cuda::deepseek_v41_runtime {
 
-mfq::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k) {
     auto result = load_moe_weights(weights, prefix,
@@ -44,35 +44,35 @@ std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::L
         shared->engram_prefetch.push_back(result->engram.get());
     }
     result->attention_norm = weights.tensor(prefix + "attention.norm.weight")
-                                 .to(mfq_tensor_backend::kFloat32).contiguous();
+                                 .to(::tyloi::kFloat32).contiguous();
     result->mlp_norm = weights.tensor(prefix + "mlp.norm.weight")
-                           .to(mfq_tensor_backend::kFloat32).contiguous();
+                           .to(::tyloi::kFloat32).contiguous();
     result->query_a_norm =
         weights.tensor(prefix + "attention.query_a_norm.weight");
     result->key_value_norm =
         weights.tensor(prefix + "attention.key_value_norm.weight");
     result->sinks = weights.tensor(prefix + "attention.sink")
-                        .to(mfq_tensor_backend::kFloat32)
+                        .to(::tyloi::kFloat32)
                         .contiguous();
     result->attention_mhc_function =
         weights.tensor(prefix + "attention.mhc.pre.function")
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous();
     result->attention_mhc_scale =
         weights.tensor(prefix + "attention.mhc.pre.scale")
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous();
     result->attention_mhc_base = weights.tensor(prefix + "attention.mhc.pre.base")
-                                     .to(mfq_tensor_backend::kFloat32)
+                                     .to(::tyloi::kFloat32)
                                      .contiguous();
     result->mlp_mhc_function = weights.tensor(prefix + "mlp.mhc.pre.function")
-                                   .to(mfq_tensor_backend::kFloat32)
+                                   .to(::tyloi::kFloat32)
                                    .contiguous();
     result->mlp_mhc_scale = weights.tensor(prefix + "mlp.mhc.pre.scale")
-                                .to(mfq_tensor_backend::kFloat32)
+                                .to(::tyloi::kFloat32)
                                 .contiguous();
     result->mlp_mhc_base = weights.tensor(prefix + "mlp.mhc.pre.base")
-                               .to(mfq_tensor_backend::kFloat32)
+                               .to(::tyloi::kFloat32)
                                .contiguous();
     result->query_a = weights.projection(prefix + "attention.query_a.weight");
     result->query_b = weights.projection(prefix + "attention.query_b.weight");
@@ -102,7 +102,7 @@ std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::L
     result->mlp = load_moe_at(pipelines, weights, config, prefix + "mlp.", layer, config.top_k);
     if(weights.has(prefix+"mlp.router.vision_bias")) {
         result->vision_router_bias=weights.tensor(prefix+"mlp.router.vision_bias")
-            .to(mfq_tensor_backend::kFloat32).contiguous();
+            .to(::tyloi::kFloat32).contiguous();
         TYLOINFER_RUNTIME_CHECK(result->vision_router_bias.dim()==1 && result->vision_router_bias.size(0)==config.n_experts,
                           "DeepSeek-V4.1 vision router bias shape mismatch");
     }
@@ -169,7 +169,7 @@ void validate_load_options(const CudaExecutionContext &execution) {
     }
 }
 
-std::shared_ptr<SharedState> load_shared_state(const mfq::source::Source &source,
+std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &source,
                                                const CommonConfig &config) {
     auto state = std::make_shared<SharedState>();
     state->config = config;
@@ -185,11 +185,11 @@ Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &
     });
 }
 
-} // namespace mfq::cuda::deepseek_v41_runtime
+} // namespace tyloi::cuda::deepseek_v41_runtime
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-mfq::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const MtpModule* mtp) {
+tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm& model,const MtpModule* mtp) {
     std::size_t incoming=256; // Rolling Engram history and scalar metadata.
     const auto prefix_bytes=[](const auto& tensor,int64_t rows) -> std::size_t {
         return tensor.defined()?std::size_t(tensor.size(0))*rows*tensor.size(2)*tensor.element_size():0;
@@ -212,27 +212,27 @@ void DeepseekV41Model::adapter_validate_load_options() const {
     deepseek_v41_runtime::validate_load_options(*execution);
 }
 
-void DeepseekV41Model::adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
-                                                mfq_tensor_backend::Tensor &output_norm) {
+void DeepseekV41Model::adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+                                                ::tyloi::Tensor &output_norm) {
     CausalResources::adapter_load_final_state(weights, output_norm);
 }
 
-void DeepseekV41Model::adapter_prepare_blocks(const mfq::cuda::weight_loader::Loader& weights) {
+void DeepseekV41Model::adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights) {
     shared = deepseek_v41_runtime::load_shared_state(weights.source, config);
 }
 
 bool DeepseekV41Model::adapter_prefetch_token_rows(DeepseekV41CausalLm& model,
-        const mfq_tensor_backend::Tensor& ids) {
+        const ::tyloi::Tensor& ids) {
     if(!shared || shared->batch!=1 || !shared->engram_hash || shared->engram_prefetch.empty())return false;
     if(!ids.is_cpu() || ids.dim()!=2 || ids.size(0)!=1 || ids.size(1)<=0 ||
-            ids.size(1)>std::numeric_limits<int>::max() || ids.scalar_type()!=mfq_tensor_backend::kInt64 ||
+            ids.size(1)>std::numeric_limits<int>::max() || ids.scalar_type()!=::tyloi::kInt64 ||
             !ids.is_contiguous())throw std::invalid_argument("Engram prefetch needs contiguous host token IDs");
     const auto hashes=shared->engram_hash->preview(ids.data_ptr<int64_t>(),1,int(ids.size(1)),model.cache_pos);
     for(const auto* memory:shared->engram_prefetch)memory->prefetch(hashes);
     return true;
 }
 
-std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const mfq::cuda::weight_loader::Loader& weights,
+std::unique_ptr<Block> DeepseekV41Model::adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights,
                                                             int layer, int,
                                                             const std::string &type) {
     TYLOINFER_RUNTIME_CHECK(type == "deepseek_v41" && shared, "invalid DeepSeek-V4.1 block loader state");
@@ -245,26 +245,26 @@ void DeepseekV41Model::adapter_begin_forward(bool capture_raw_hidden) {
     shared->begin_forward(capture_raw_hidden, shared->config.dspark_target_layer_ids.size());
 }
 
-mfq_tensor_backend::Tensor DeepseekV41Model::collapse_hidden(mfq_tensor_backend::Tensor hidden,
+::tyloi::Tensor DeepseekV41Model::collapse_hidden(::tyloi::Tensor hidden,
                                                              int64_t batch, int64_t tokens) const {
     return deepseek_v41_runtime::finalize_hidden(shared, hidden, execution->executor().profiler());
 }
 
-mfq_tensor_backend::Tensor
-DeepseekV41Model::normalize_hidden(mfq_tensor_backend::Tensor hidden,
-                                   const mfq_tensor_backend::Tensor &output_norm, int64_t batch,
+::tyloi::Tensor
+DeepseekV41Model::normalize_hidden(::tyloi::Tensor hidden,
+                                   const ::tyloi::Tensor &output_norm, int64_t batch,
                                    int64_t tokens) const {
     return execution->executor().profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, metadata.hidden_size})
-                                 .to(mfq_tensor_backend::kFloat32),
+                                 .to(::tyloi::kFloat32),
                              output_norm, metadata.rms_norm_eps, metadata.norm_weight_offset)
             .reshape({batch, tokens, metadata.hidden_size});
     });
 }
 
-mfq_tensor_backend::Tensor
-DeepseekV41Model::adapter_raw_hidden(const mfq_tensor_backend::Tensor &,
-                                     const mfq_tensor_backend::Tensor &) const {
+::tyloi::Tensor
+DeepseekV41Model::adapter_raw_hidden(const ::tyloi::Tensor &,
+                                     const ::tyloi::Tensor &) const {
     return shared->dspark_target_hidden();
 }
 
@@ -283,8 +283,8 @@ void DeepseekV41Model::adapter_rollback_speculative(int64_t position) {
     shared->rollback_speculative(position);
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::models {
+namespace tyloi::models {
 template struct deepseek_v41::CausalLm<cuda::CudaCausalOps<cuda::DeepseekV41Model>>;
-} // namespace mfq::models
+} // namespace tyloi::models

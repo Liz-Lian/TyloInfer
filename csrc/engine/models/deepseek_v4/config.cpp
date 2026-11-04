@@ -5,7 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace mfq::models::deepseek_v4 {
+namespace tyloi::models::deepseek_v4 {
 
 Config Config::from_json(std::string_view payload) {
     const auto root = nlohmann::json::parse(
@@ -84,4 +84,4 @@ Config Config::from_json(std::string_view payload) {
     return config;
 }
 
-} // namespace mfq::models::deepseek_v4
+} // namespace tyloi::models::deepseek_v4

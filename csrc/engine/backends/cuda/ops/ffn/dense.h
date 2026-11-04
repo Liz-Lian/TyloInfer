@@ -4,7 +4,7 @@
 
 #include <optional>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Branches;
 
@@ -21,17 +21,17 @@ struct Dense {
 
     Mlp mlp;
     std::optional<Mlp> important;
-    mfq_tensor_backend::Tensor norm;
+    ::tyloi::Tensor norm;
     double eps, offset;
     bool bf16 = false;
     bool trace = false;
     bool linear = false;
 
-    mfq_tensor_backend::Tensor forward(
+    ::tyloi::Tensor forward(
         const Projector& project, CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq,
         Branches& branches, Collectives& collectives, const Projector::Options& parallel,
-        const Options& options, bool serial, mfq_tensor_backend::Tensor residual,
-        mfq_tensor_backend::Tensor input, Trace* trace_output = nullptr) const;
+        const Options& options, bool serial, ::tyloi::Tensor residual,
+        ::tyloi::Tensor input, Trace* trace_output = nullptr) const;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

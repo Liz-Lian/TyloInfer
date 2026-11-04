@@ -4,7 +4,7 @@
 #include <atomic>
 #include <cstdio>
 
-namespace mfq::cuda { namespace {
+namespace tyloi::cuda { namespace {
 template<uint32_t Formats>
 void launch_cached(const MfeFfnBatch& b,const uint32_t* cached,cudaStream_t stream) {
     if(b.shared) {

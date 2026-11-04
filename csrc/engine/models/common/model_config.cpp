@@ -8,7 +8,7 @@
 #include <iterator>
 #include <stdexcept>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 std::string config_json(
         const ModelSource& source,
@@ -161,4 +161,4 @@ ModelConfig ModelConfig::from_json(std::string_view payload) {
     return config;
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

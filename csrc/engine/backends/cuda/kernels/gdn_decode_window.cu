@@ -7,7 +7,6 @@
 #include "reduce.cuh"
 #include <atomic>
 #include <limits>
-namespace tb=mfq_tensor_backend;
 // A warp retains four state rows for each of its sixteen value columns.
 // Time steps reuse those registers; only rollback prefixes and the final
 // state are written. Convolution history remains read-only until completion.
@@ -153,11 +152,11 @@ __global__ __launch_bounds__(256,1) void gdn_decode_window_kernel(
  }
 }
 
-std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::Tensor& gate,
- const tb::Tensor& alpha,const tb::Tensor& beta,const tb::Tensor& conv,const tb::Tensor& state,
- const tb::Tensor& weights,const tb::Tensor& bias,const tb::Tensor& a_log,const tb::Tensor& norm,
+std::vector<::tyloi::Tensor> gdn_decode_window_cuda(const ::tyloi::Tensor& qkv,const ::tyloi::Tensor& gate,
+ const ::tyloi::Tensor& alpha,const ::tyloi::Tensor& beta,const ::tyloi::Tensor& conv,const ::tyloi::Tensor& state,
+ const ::tyloi::Tensor& weights,const ::tyloi::Tensor& bias,const ::tyloi::Tensor& a_log,const ::tyloi::Tensor& norm,
  int nk,int nv,int confirmed,double conv_eps,double norm_eps,bool silu,bool half,bool transposed,
- const std::vector<tb::Tensor>& checkpoint_conv,const std::vector<tb::Tensor>& checkpoint_state) {
+ const std::vector<::tyloi::Tensor>& checkpoint_conv,const std::vector<::tyloi::Tensor>& checkpoint_state) {
  TYLOINFER_RUNTIME_CHECK(qkv.dim()==3 && qkv.size(0)==1 && qkv.size(1)>=2 && qkv.size(1)<=8 &&
   nk>0 && nv>0 && nv<=65535 && nv%nk==0 && int64_t(2)*nk+nv<=std::numeric_limits<int>::max()/128,
   "GDN window heads/sequence invalid");
@@ -165,8 +164,8 @@ std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::T
  TYLOINFER_RUNTIME_CHECK(confirmed>=1 && confirmed<=tokens &&
   checkpoint_conv.size()==size_t(tokens-confirmed) && checkpoint_state.size()==checkpoint_conv.size(),"GDN window geometry invalid");
  const auto device=qkv.device();
- const auto real=[&](const tb::Tensor& x){return x.is_cuda() && x.device()==device && x.is_contiguous() && x.scalar_type()==tb::kFloat32;};
- TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.scalar_type()==tb::kFloat16 && qkv.size(2)==channels &&
+ const auto real=[&](const ::tyloi::Tensor& x){return x.is_cuda() && x.device()==device && x.is_contiguous() && x.scalar_type()==::tyloi::kFloat32;};
+ TYLOINFER_RUNTIME_CHECK(qkv.is_cuda() && qkv.scalar_type()==::tyloi::kFloat16 && qkv.size(2)==channels &&
   qkv.stride(2)==1 && qkv.stride(1)>=channels && std::isfinite(conv_eps) && conv_eps>0 && std::isfinite(norm_eps) && norm_eps>0,
   "GDN window QKV/epsilon invalid");
  TYLOINFER_RUNTIME_CHECK(real(conv) && real(state) && real(weights) && real(bias) && real(a_log) && real(norm) &&
@@ -174,11 +173,11 @@ std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::T
   (weights.sizes().vec()==std::vector<int64_t>({channels,1,4}) || weights.sizes().vec()==std::vector<int64_t>({4,channels})) &&
   bias.numel()==nv && a_log.numel()==nv && norm.numel()==128,"GDN window state/weights invalid");
  const auto gate_type=gate.scalar_type();
- const auto projection=[&](const tb::Tensor& x,const std::vector<int64_t>& shape) {
+ const auto projection=[&](const ::tyloi::Tensor& x,const std::vector<int64_t>& shape) {
   return x.is_cuda() && x.device()==device && x.scalar_type()==gate_type && x.sizes().vec()==shape &&
    x.stride(1)>0 && x.stride(2)>0;
  };
- TYLOINFER_RUNTIME_CHECK((gate_type==tb::kFloat16 || gate_type==tb::kFloat32) && gate.stride(2)==1 &&
+ TYLOINFER_RUNTIME_CHECK((gate_type==::tyloi::kFloat16 || gate_type==::tyloi::kFloat32) && gate.stride(2)==1 &&
   projection(gate,{1,tokens,nv*128}) && projection(alpha,{1,tokens,nv}) && projection(beta,{1,tokens,nv}),
   "GDN window gate projections invalid");
  for(int i=0;i<tokens-confirmed;++i) {
@@ -188,8 +187,8 @@ std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::T
    "GDN window checkpoint storage invalid");
  }
  const MfqCudaGuard guard(device);
- auto output=tb::empty({1,tokens,nv*128},qkv.options().dtype(half?tb::kFloat16:tb::kFloat32));
- auto next_conv=tb::empty_like(conv);GdnWindowSnapshots snapshots;snapshots.confirmed=confirmed;
+ auto output=::tyloi::cuda::empty({1,tokens,nv*128},qkv.options().dtype(half?::tyloi::kFloat16: ::tyloi::kFloat32));
+ auto next_conv=::tyloi::cuda::empty_like(conv);GdnWindowSnapshots snapshots;snapshots.confirmed=confirmed;
  for(int i=0;i<tokens-confirmed;++i) {
   snapshots.conv[i]=checkpoint_conv[i].data_ptr<float>();snapshots.state[i]=checkpoint_state[i].data_ptr<float>();
  }
@@ -197,7 +196,7 @@ std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::T
   using Gate=decltype(g);using Output=decltype(o);
   const auto kernel=gdn_decode_window_kernel<Gate,Output>;
   static bool reported=false;
-  if(!reported && mfq::cuda::env_lookup("TYLOINFER_GDN_PROBE_RESOURCES")) {
+  if(!reported && tyloi::cuda::env_lookup("TYLOINFER_GDN_PROBE_RESOURCES")) {
    cudaFuncAttributes a;TYLOINFER_CUDA_CHECK(cudaFuncGetAttributes(&a,kernel));reported=true;
    std::fprintf(stderr,"gdn_register_resources registers=%d local=%zu shared=%zu\n",a.numRegs,a.localSizeBytes,a.sharedSizeBytes);
   }
@@ -206,7 +205,7 @@ std::vector<tb::Tensor> gdn_decode_window_cuda(const tb::Tensor& qkv,const tb::T
    output.data_ptr<Output>(),next_conv.data_ptr<float>(),nk,nv,tokens,weights.dim()==3?0:1,transposed,silu,float(conv_eps),norm_eps,
    qkv.stride(1),gate.stride(1),alpha.stride(1),alpha.stride(2),beta.stride(1),beta.stride(2),snapshots);
  };
- if(gate.scalar_type()==tb::kFloat16){if(half)launch(__half{},__half{});else launch(__half{},float{});}
+ if(gate.scalar_type()==::tyloi::kFloat16){if(half)launch(__half{},__half{});else launch(__half{},float{});}
  else {if(half)launch(float{},__half{});else launch(float{},float{});}
  TYLOINFER_CUDA_CHECK(cudaGetLastError());
  static std::atomic<unsigned> seen{0};const unsigned bit=1u<<tokens;

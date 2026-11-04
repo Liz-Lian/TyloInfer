@@ -22,7 +22,6 @@
 #include <string>
 #include <unordered_map>
 
-namespace tb = mfq_tensor_backend;
 
 bool tq_graph_supports_tokens(std::int64_t tokens)noexcept {
 #if CUDART_VERSION >= 11060
@@ -40,10 +39,10 @@ struct TqMoeGraphStage {
     std::array<std::shared_ptr<TqRoutedWeight>,3> banks;
     std::shared_ptr<TqGraphLease> lease;
     MfqCudaStream stream;
-    std::unique_ptr<mfq::cuda::HostBuffer> host_ids;
-    std::array<tb::Tensor,3> views;
-    tb::Tensor input,ids,weights,hidden,pairs,result,plan,route_snapshot;
-    tb::ScalarType route_dtype;
+    std::unique_ptr<tyloi::cuda::HostBuffer> host_ids;
+    std::array<::tyloi::Tensor,3> views;
+    ::tyloi::Tensor input,ids,weights,hidden,pairs,result,plan,route_snapshot;
+    ::tyloi::ScalarType route_dtype;
     void* mapped_routes=nullptr;
     std::vector<int64_t> widened_routes;
     int routes,type,tokens;
@@ -53,7 +52,7 @@ struct TqMoeGraphStage {
     std::array<Plane,13> planes{};
     struct KernelChunk {int plane;std::size_t first,segment;unsigned capacity;cudaGraphNode_t node;};
     std::vector<KernelChunk> kernels;
-    TqMoeGraphStage(TqExec& exec,const TqMoeBanks& b,const tb::Tensor& source,int count,tb::ScalarType route_type,
+    TqMoeGraphStage(TqExec& exec,const TqMoeBanks& b,const ::tyloi::Tensor& source,int count,::tyloi::ScalarType route_type,
                    std::shared_ptr<TqGraphLease> l)
         :banks{b.gate,b.up,b.down},lease(std::move(l)),stream(mfq_get_current_cuda_stream(source.get_device())),
          route_dtype(route_type),
@@ -78,31 +77,31 @@ struct TqMoeGraphStage {
                     throw std::overflow_error("TQ graph plan size exceeds tensor limits");
                 plan_bytes+=plane.capacity*bytes;
             }
-            plan=tb::empty({static_cast<int64_t>(plan_bytes)},source.options().dtype(tb::kUInt8));
+            plan=::tyloi::cuda::empty({static_cast<int64_t>(plan_bytes)},source.options().dtype(::tyloi::kUInt8));
             kernels.reserve(planes.size()*((slots+65534)/65535));
         }
         int can_map=0;TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&can_map,cudaDevAttrCanMapHostMemory,source.get_device()));
-        const auto* mapped_option=mfq::cuda::env_lookup("TYLOINFER_TQ_GRAPH_MAPPED_ROUTES");
-        const bool integral=route_dtype==tb::kInt32 || route_dtype==tb::kInt64;
-        const auto words=slots*(route_dtype==tb::kInt64?2:1);
+        const auto* mapped_option=tyloi::cuda::env_lookup("TYLOINFER_TQ_GRAPH_MAPPED_ROUTES");
+        const bool integral=route_dtype==::tyloi::kInt32 || route_dtype==::tyloi::kInt64;
+        const auto words=slots*(route_dtype==::tyloi::kInt64?2:1);
         const bool map=can_map && integral && words<=INT_MAX && (!mapped_option || mapped_option[0]!='0');
         // The first cache line is the publication flag. Int64 IDs are copied
         // as two int32 words, preserving their full range without narrowing.
-        host_ids=std::make_unique<mfq::cuda::HostBuffer>(64+route_bytes+plan_bytes,map);
+        host_ids=std::make_unique<tyloi::cuda::HostBuffer>(64+route_bytes+plan_bytes,map);
         if(map)TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&mapped_routes,host_ids->data(),0));
         if(mapped_routes) {
-            route_snapshot=tb::empty({tokens,count},source.options().dtype(route_dtype));
-            if(route_dtype==tb::kInt32)widened_routes.resize(slots);
+            route_snapshot=::tyloi::cuda::empty({tokens,count},source.options().dtype(route_dtype));
+            if(route_dtype==::tyloi::kInt32)widened_routes.resize(slots);
         }
-        input=tb::empty_like(source);
-        ids=tb::empty({tokens,count},source.options().dtype(tb::kInt64));
-        weights=tb::empty({tokens,count},source.options().dtype(tb::kFloat32));
-        hidden=tb::empty({int64_t(slots),b.up->out},source.options());
-        pairs=tb::empty({tokens,count,b.down->out},source.options());
-        result=tb::empty({tokens,b.down->out},source.options());
+        input=::tyloi::cuda::empty_like(source);
+        ids=::tyloi::cuda::empty({tokens,count},source.options().dtype(::tyloi::kInt64));
+        weights=::tyloi::cuda::empty({tokens,count},source.options().dtype(::tyloi::kFloat32));
+        hidden=::tyloi::cuda::empty({int64_t(slots),b.up->out},source.options());
+        pairs=::tyloi::cuda::empty({tokens,count,b.down->out},source.options());
+        result=::tyloi::cuda::empty({tokens,b.down->out},source.options());
         if(tokens==1)for(int role=0;role<3;++role)views[role]=banks[role]->cache->views(
             banks[role]->source_id,nullptr,{},source.get_device());
-        mfq::cuda::charge_tensor_host_bytes(host_ids->size());
+        tyloi::cuda::charge_tensor_host_bytes(host_ids->size());
     }
     void reset_routes() {
         if(!mapped_routes)return;
@@ -110,7 +109,7 @@ struct TqMoeGraphStage {
         std::atomic_thread_fence(std::memory_order_seq_cst);
     }
     void* route_data()const {return static_cast<uint8_t*>(host_ids->data())+64;}
-    void publish_routes(const tb::Tensor& current,bool views,const int64_t* device_ids) {
+    void publish_routes(const ::tyloi::Tensor& current,bool views,const int64_t* device_ids) {
         if(!mapped_routes) {
             TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(route_data(),device_ids,route_bytes,cudaMemcpyDeviceToHost,stream.stream()));
             return;
@@ -118,9 +117,9 @@ struct TqMoeGraphStage {
         reset_routes();
         const auto* source=&current;
         if(!views || !current.is_contiguous()){route_snapshot.copy_(current);source=&route_snapshot;}
-        mfq::cuda::moe_publish_routes(nullptr,reinterpret_cast<const int32_t*>(source->data_ptr()),nullptr,
+        tyloi::cuda::moe_publish_routes(nullptr,reinterpret_cast<const int32_t*>(source->data_ptr()),nullptr,
             reinterpret_cast<int32_t*>(static_cast<uint8_t*>(mapped_routes)+64),
-            static_cast<uint32_t*>(mapped_routes),0,int(slots*(route_dtype==tb::kInt64?2:1)),stream.stream());
+            static_cast<uint32_t*>(mapped_routes),0,int(slots*(route_dtype==::tyloi::kInt64?2:1)),stream.stream());
         TYLOINFER_CUDA_CHECK(cudaGetLastError());
     }
     ~TqMoeGraphStage() {
@@ -128,13 +127,13 @@ struct TqMoeGraphStage {
         // allocator. A window destroys its graphs before releasing the stage.
         int previous=0;const bool restore=cudaGetDevice(&previous)==cudaSuccess;
         (void)cudaSetDevice(stream.device());(void)cudaStreamSynchronize(stream.stream());
-        mfq::cuda::tensor_host_bytes.fetch_sub(host_ids->size());
+        tyloi::cuda::tensor_host_bytes.fetch_sub(host_ids->size());
         if(restore)(void)cudaSetDevice(previous);
     }
-    void load(mfq::cuda::DecodeWindow* window=nullptr) {
+    void load(tyloi::cuda::DecodeWindow* window=nullptr) {
         const MfqCudaStreamGuard guard(stream);
         const auto* selected=static_cast<const int64_t*>(route_data());
-        if(mapped_routes && route_dtype==tb::kInt32) {
+        if(mapped_routes && route_dtype==::tyloi::kInt32) {
             std::copy_n(static_cast<const int32_t*>(route_data()),slots,widened_routes.data());
             selected=widened_routes.data();
         }
@@ -187,7 +186,7 @@ struct TqMoeGraphStage {
                 unsigned(std::min<std::size_t>(kernel.capacity,planes[kernel.plane].count-kernel.first));
             window->set_kernel_rows(kernel.segment,kernel.node,count);
         }
-        if(window && wide && mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
+        if(window && wide && tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
             unsigned mask=0,jobs=0;
             for(int i=9;i<int(planes.size());++i)if(planes[i].count){mask|=1u<<planes[i].tile;jobs+=planes[i].count;}
             if(planes[4].count)mask|=1u<<16;
@@ -197,7 +196,7 @@ struct TqMoeGraphStage {
                     type,tokens,jobs,planes[4].count,mask,plan_bytes);
         }
     }
-    void indexed(float limit,mfq::cuda::DecodeWindow& window,bool recording,const void* input_values) {
+    void indexed(float limit,tyloi::cuda::DecodeWindow& window,bool recording,const void* input_values) {
 #if CUDART_VERSION >= 11060
         if(recording)kernels.clear();
         for(int i=0;i<int(planes.size());++i) {
@@ -239,8 +238,8 @@ struct TqMoeGraphStage {
 #endif
     }
 };
-tb::Tensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const tb::Tensor& source,const tb::Tensor& ids,
-        const tb::Tensor& weights,float limit,mfq::cuda::DecodeWindow& window) {
+::tyloi::Tensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const ::tyloi::Tensor& source,const ::tyloi::Tensor& ids,
+        const ::tyloi::Tensor& weights,float limit,tyloi::cuda::DecodeWindow& window) {
     window.mark_current("expert_begin");
     auto lease=window.workspace<TqGraphLease>(&tq_graph_lease_identity,[]{return std::make_shared<TqGraphLease>();});
     auto stage=window.workspace<TqMoeGraphStage>(&banks,[&] {
@@ -249,18 +248,18 @@ tb::Tensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const tb::Tenso
     if(stage->routes!=ids.size(1) || stage->input.sizes()!=source.sizes() || stage->input.scalar_type()!=source.scalar_type() ||
        stage->route_dtype!=ids.scalar_type())
         throw std::invalid_argument("TQ graph stage geometry changed");
-    const bool views=mfq::cuda::runtime_options::window_input_views() && source.is_contiguous() &&
-        ids.is_contiguous() && weights.is_contiguous() && weights.scalar_type()==tb::kFloat32;
-    if(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
-        const unsigned mode=(stage->mapped_routes?(stage->route_dtype==tb::kInt32?1u:2u):4u)|(views?8u:0u);
+    const bool views=tyloi::cuda::runtime_options::window_input_views() && source.is_contiguous() &&
+        ids.is_contiguous() && weights.is_contiguous() && weights.scalar_type()==::tyloi::kFloat32;
+    if(tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")) {
+        const unsigned mode=(stage->mapped_routes?(stage->route_dtype==::tyloi::kInt32?1u:2u):4u)|(views?8u:0u);
         static std::atomic<unsigned> seen{0};const unsigned bit=1u<<mode;
         if(!(seen.fetch_or(bit,std::memory_order_relaxed)&bit))
             std::fprintf(stderr,"tq_graph_handoff mapped_routes=%d route_bits=%d input_views=%d\n",
-                int(stage->mapped_routes!=nullptr),stage->route_dtype==tb::kInt32?32:64,int(views));
+                int(stage->mapped_routes!=nullptr),stage->route_dtype==::tyloi::kInt32?32:64,int(views));
     }
     if(!views){stage->input.copy_(source);stage->weights.copy_(weights);}
     const int64_t* device_ids=nullptr;
-    if(views && ids.scalar_type()==tb::kInt64)device_ids=ids.data_ptr<int64_t>();
+    if(views && ids.scalar_type()==::tyloi::kInt64)device_ids=ids.data_ptr<int64_t>();
     else if(stage->tokens==1 || !stage->mapped_routes || !views) {
         stage->ids.copy_(ids);device_ids=stage->ids.data_ptr<int64_t>();
     }
@@ -271,13 +270,13 @@ tb::Tensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const tb::Tenso
     if(capture==cudaStreamCaptureStatusNone) {
         // DecodeWindow also calls the body during preparation/warmup. Execute
         // real transfers there; host_barrier itself only records a callback.
-        if(stage->mapped_routes)mfq::cuda::wait_route_publication(static_cast<const uint32_t*>(stage->host_ids->data()),stage->stream.stream());
+        if(stage->mapped_routes)tyloi::cuda::wait_route_publication(static_cast<const uint32_t*>(stage->host_ids->data()),stage->stream.stream());
         else TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(stage->stream.stream()));
         stage->load();
     }
     window.enroll({stage.get(),[stage]{stage->reset_routes();},[stage,&window] {
         if(!stage->mapped_routes)return;
-        mfq::cuda::wait_route_publication(static_cast<const uint32_t*>(stage->host_ids->data()),stage->stream.stream());
+        tyloi::cuda::wait_route_publication(static_cast<const uint32_t*>(stage->host_ids->data()),stage->stream.stream());
         stage->load(&window);
     },[lease]{lease->clear();},[]{},[lease]{lease->clear();},{}});
     window.host_barrier([stage,&window]{if(!stage->mapped_routes)stage->load(&window);});
@@ -301,8 +300,8 @@ tb::Tensor tq_graph_forward(TqExec& exec,const TqMoeBanks& banks,const tb::Tenso
 }
 }
 
-tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor ids,
-        tb::Tensor weights,float limit,CudaProfiler* profiler,std::int64_t expert_begin,std::int64_t expert_end)const {
+::tyloi::Tensor TqMoeBanks::forward(TqExec& exec,::tyloi::Tensor input_value,::tyloi::Tensor ids,
+        ::tyloi::Tensor weights,float limit,CudaProfiler* profiler,std::int64_t expert_begin,std::int64_t expert_end)const {
     const auto phase=[&](const char* name,auto&& operation) {
         return profiler?profiler->measure(name,operation):operation();
     };
@@ -324,12 +323,12 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
         throw std::overflow_error("TQ MoE activation dimensions exceed CUDA limits");
     const auto source=input_value.contiguous();
     const MfqCudaGuard guard(source.get_device());
-    if(auto* window=mfq::cuda::DecodeWindow::recording();!partitioned && window && tq_graph_supports_tokens(tokens) && ids.device()==source.device())
+    if(auto* window=tyloi::cuda::DecodeWindow::recording();!partitioned && window && tq_graph_supports_tokens(tokens) && ids.device()==source.device())
         return tq_graph_forward(exec,*this,source,ids,weights,limit,*window);
-    auto result=tb::empty({tokens,width},source.options());
+    auto result=::tyloi::cuda::empty({tokens,width},source.options());
     if(!tokens)return result;
     const auto type=tq_detail::dtype(source.scalar_type());
-    const auto coefficients=weights.to(tb::kFloat32).contiguous();
+    const auto coefficients=weights.to(::tyloi::kFloat32).contiguous();
     // Exactly one route readback for all three banks, independent of the
     // number of selected tokens and their expert reuse pattern.
     // Router output is normally int32. Widen this tiny ID list on CPU after
@@ -366,7 +365,7 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
             slots[position->second].push_back(i);
         }
     }
-    if(unique.empty())return tb::zeros({tokens,width},source.options());
+    if(unique.empty())return ::tyloi::cuda::zeros({tokens,width},source.options());
     // Choose GEMM by each expert's actual token count. A long prompt can
     // still have many sparsely selected experts that belong in indexed jobs.
     std::size_t long_groups=0;
@@ -383,7 +382,7 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
             std::swap(unique[i],unique[prefill_groups]);std::swap(slots[i],slots[prefill_groups]);++prefill_groups;
         }
     }
-    auto pairs=partitioned?tb::zeros({tokens,routes,width},source.options()):tb::empty({tokens,routes,width},source.options());
+    auto pairs=partitioned?::tyloi::cuda::zeros({tokens,routes,width},source.options()): ::tyloi::cuda::empty({tokens,routes,width},source.options());
     auto flat_pairs=pairs.reshape({tokens*routes,width});
     if(prefill_groups) {
         // Similar token counts share a compute tile. A frequently selected
@@ -431,14 +430,14 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
         }
         const auto activation_budget=std::max<std::uint64_t>(minimum_activations,
             std::min<std::uint64_t>({std::uint64_t(gemm_groups?64:16)<<20,available/16,useful_activations}));
-        auto activations=tb::empty({static_cast<int64_t>(activation_budget)},source.options().dtype(tb::kUInt8));
-        tb::Tensor decoded;
+        auto activations=::tyloi::cuda::empty({static_cast<int64_t>(activation_budget)},source.options().dtype(::tyloi::kUInt8));
+        ::tyloi::Tensor decoded;
         cublasHandle_t blas=nullptr;
         if(gemm_groups) {
             const auto useful=4*std::uint64_t(up->input)*hidden*std::min<std::size_t>(16,gemm_groups);
             const auto bytes=std::max<std::uint64_t>(max_width*2,
                 std::min<std::uint64_t>({std::uint64_t(128)<<20,available/16,useful}));
-            decoded=tb::empty({static_cast<int64_t>(bytes)},source.options().dtype(tb::kUInt8));
+            decoded=::tyloi::cuda::empty({static_cast<int64_t>(bytes)},source.options().dtype(::tyloi::kUInt8));
             blas=resources->get();
         }
         const auto image_bound=[](const TqRoutedWeight& w) {
@@ -449,7 +448,7 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
         // Account for allocated scratch before admitting compressed misses.
         const auto image_batch=std::min<std::size_t>(prefill_groups,
             std::max<std::uint64_t>(1,(free_bytes()/2)/image_per_expert));
-        if(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE"))std::fprintf(stderr,
+        if(tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE"))std::fprintf(stderr,
             "tq_prefill_moe jobs=%zu gemm_jobs=%zu scratch=%lld decoded=%lld image_batch=%zu\n",
             prefill_groups,gemm_groups,static_cast<long long>(activations.numel()),
             static_cast<long long>(decoded.defined()?decoded.numel():0),image_batch);
@@ -513,7 +512,7 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
         }
     }
     if(long_groups<unique.size()) {
-        auto activated=tb::empty({tokens,routes,hidden},source.options());
+        auto activated=::tyloi::cuda::empty({tokens,routes,hidden},source.options());
         // The live batch is bounded by current free VRAM, not a device or
         // model whitelist. FP16-sized images conservatively bound every
         // supported 1..8-bit compressed row plus metadata and scale data.
@@ -538,13 +537,13 @@ tb::Tensor TqMoeBanks::forward(TqExec& exec,tb::Tensor input_value,tb::Tensor id
                 // Preserve the tuned single-vector geometry. Each selected
                 // expert gets one slot, with no multi-token dummy work.
                 const auto tables=phase("tq.moe.views",[&] {
-                    return std::array<tb::Tensor,3>{
+                    return std::array<::tyloi::Tensor,3>{
                         gate->cache->views(gate->source_id,unique.data()+begin,g,source.get_device()),
                         up->cache->views(up->source_id,unique.data()+begin,u,source.get_device()),
                         down->cache->views(down->source_id,unique.data()+begin,d,source.get_device())};
                 });
                 const auto& gp=tables[0];const auto& upp=tables[1];const auto& dp=tables[2];
-                const auto route_ids=ids.to(source.device()).to(tb::kInt64).contiguous();
+                const auto route_ids=ids.to(source.device()).to(::tyloi::kInt64).contiguous();
                 const auto element=source.element_size();
                 auto* h=static_cast<std::uint8_t*>(activated.data_ptr())+begin*hidden*element;
                 auto* p=static_cast<std::uint8_t*>(pairs.data_ptr())+begin*width*element;

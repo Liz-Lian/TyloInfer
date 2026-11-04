@@ -5,7 +5,7 @@
 #include "glu.cuh"
 #include "warp_multi_sum.cuh"
 
-namespace mfq::cuda::packed_nint {
+namespace tyloi::cuda::packed_nint {
 __device__ __forceinline__ uint8_t unpack_nint_code(
         const uint8_t * stream,
         uint64_t row_bit_offset,

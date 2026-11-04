@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::commands {
+namespace tyloi::cuda::commands {
 namespace {
 
 class Reload {
@@ -100,7 +100,7 @@ struct RuntimeOptions : CudaEngineOptions {
 
 struct RuntimeCommandOptions
     : RuntimeOptions,
-      mfq::cuda::minicpmo45::CommandOptions {};
+      tyloi::cuda::minicpmo45::CommandOptions {};
 
 RuntimeCommandOptions parse_runtime(ArgCursor& args) {
     RuntimeCommandOptions result;
@@ -112,7 +112,7 @@ RuntimeCommandOptions parse_runtime(ArgCursor& args) {
             throw HelpRequested{};
         }
         if (parse_cuda_load_option(option, args, result)) continue;
-        if (mfq::cuda::minicpmo45::parse_command_option(
+        if (tyloi::cuda::minicpmo45::parse_command_option(
                 option, args, result)) {
             continue;
         }
@@ -169,7 +169,7 @@ RuntimeCommandOptions parse_runtime(ArgCursor& args) {
     }
 
     if (result.model_path.empty()) usage_error("--model is required");
-    mfq::cuda::minicpmo45::validate_command_options(result);
+    tyloi::cuda::minicpmo45::validate_command_options(result);
     const int modes = static_cast<int>(result.transport_mode) +
         static_cast<int>(!result.input_prefix.empty()) +
         static_cast<int>(!result.duplex_input_prefix.empty());
@@ -187,7 +187,7 @@ RuntimeCommandOptions parse_runtime(ArgCursor& args) {
 }
 
 std::string read_runtime_asset_text(
-        const mfq::ModelSource& source,
+        const tyloi::ModelSource& source,
         std::string_view name) {
     const auto bytes = source.read_asset(name);
     if (bytes.empty()) return {};
@@ -196,13 +196,13 @@ std::string read_runtime_asset_text(
 }
 
 int run_transport_runtime(RuntimeOptions& options) {
-    auto source = mfq::open_model_source(options.model_path);
+    auto source = tyloi::open_model_source(options.model_path);
     if (!options.config_path.empty()) {
         throw std::runtime_error(
             "model runtime does not accept an external model config");
     }
-    if (!source->has_asset(mfq::kModelConfigAsset) ||
-            (!source->has_asset(mfq::kTokenizerGgufAsset) &&
+    if (!source->has_asset(tyloi::kModelConfigAsset) ||
+            (!source->has_asset(tyloi::kTokenizerGgufAsset) &&
              options.tokenizer_model.empty())) {
         throw std::runtime_error(
             "model runtime requires model config and tokenizer GGUF");
@@ -211,7 +211,7 @@ int run_transport_runtime(RuntimeOptions& options) {
     auto engine = load_cuda_engine(options);
     const auto info = engine->info();
     if (options.transport_api_key.empty()) {
-        const char* env_key = mfq::cuda::env_lookup("TYLOINFER_API_KEY");
+        const char* env_key = tyloi::cuda::env_lookup("TYLOINFER_API_KEY");
         if (env_key != nullptr) options.transport_api_key = env_key;
     }
 
@@ -235,7 +235,7 @@ int run_transport_runtime(RuntimeOptions& options) {
         embedded_profile == runtime_assets.metadata().end()
             ? std::string()
             : embedded_profile->second,
-        read_runtime_asset_text(runtime_assets, mfq::kModelConfigAsset),
+        read_runtime_asset_text(runtime_assets, tyloi::kModelConfigAsset),
         options.runtime_sampling_profile);
 
     auto transport = options.stdio_mode
@@ -246,23 +246,23 @@ int run_transport_runtime(RuntimeOptions& options) {
 }
 
 int execute_runtime(RuntimeCommandOptions options) {
-    return mfq::cuda::internal::with_command_errors([&]() -> int {
+    return tyloi::cuda::internal::with_command_errors([&]() -> int {
         if (options.stdio_mode) prepare_mfq_stdio_transport();
         if (options.duplex_input_prefix.empty() &&
                 options.input_prefix.empty()) {
             return run_transport_runtime(options);
         }
-        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
-        mfq::cuda::RoutedCache weights;
-        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
-        auto executor = std::make_unique<mfq::cuda::Executor>(std::move(numeric_options), 0);
+        std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
+        tyloi::cuda::RoutedCache weights;
+        std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
+        auto [execution_config, numeric_options] = tyloi::cuda::load_cuda_execution_config();
+        auto executor = std::make_unique<tyloi::cuda::Executor>(std::move(numeric_options), 0);
         CudaExecutionContext execution(*executor, std::move(execution_config), weights, kv, offload);
         CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
-        mfq::cuda::internal::setup_cuda_load(options, execution.config, *executor, weights, kv, offload);
+        tyloi::cuda::internal::setup_cuda_load(options, execution.config, *executor, weights, kv, offload);
         return !options.duplex_input_prefix.empty()
-            ? mfq::cuda::minicpmo45::run_duplex(execution, options, options)
-            : mfq::cuda::minicpmo45::run_composite(execution, options, options);
+            ? tyloi::cuda::minicpmo45::run_duplex(execution, options, options)
+            : tyloi::cuda::minicpmo45::run_composite(execution, options, options);
     });
 }
 
@@ -280,4 +280,4 @@ int run_runtime(int argc, char** argv) {
     }
 }
 
-} // namespace mfq::cuda::commands
+} // namespace tyloi::cuda::commands

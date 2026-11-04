@@ -11,18 +11,18 @@
 #include <cstdint>
 #include <memory>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class Projector;
 namespace weight_loader { struct Loader; }
 }
 
-namespace mfq::cuda::axial_patch_vision {
+namespace tyloi::cuda::axial_patch_vision {
 
-using Config = mfq::models::axial_patch_vision::Config;
+using Config = tyloi::models::axial_patch_vision::Config;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Tensor = mfq::Tensor;
+using Tensor = tyloi::Tensor;
 #else
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 #endif
 
 // CUDA implementation of the backend-neutral axial patch ViT contract shared
@@ -55,7 +55,7 @@ class CudaAxialPatchVisionTower {
 
     // Load one block at a time and restore borrowed expert storage before
     // yielding, so image preparation can share the request scheduler.
-    mfq::StepSequence<Tensor> encode_steps(
+    tyloi::StepSequence<Tensor> encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector,
 #endif
@@ -71,4 +71,4 @@ class CudaAxialPatchVisionTower {
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq::cuda::axial_patch_vision
+} // namespace tyloi::cuda::axial_patch_vision

@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 namespace {
 constexpr std::size_t terminal_reserve = sizeof(EngineEvent) + 128 + 64 + 512;
@@ -590,4 +590,4 @@ void Scheduler::loop() noexcept {
     }
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

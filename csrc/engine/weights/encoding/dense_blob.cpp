@@ -2,7 +2,7 @@
 
 #include "bytes.h"
 
-namespace mfq::dense {
+namespace tyloi::dense {
 
 std::vector<std::byte> prefix(
     const std::vector<std::int64_t>& shape) {
@@ -16,4 +16,4 @@ std::vector<std::byte> prefix(
     return result;
 }
 
-} // namespace mfq::dense
+} // namespace tyloi::dense

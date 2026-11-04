@@ -1,7 +1,7 @@
 #pragma once
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 // DeepSeek HC/MHC uses a separate residual stream and branch preparation for
 // attention and FFN. MHC's next_pre travels from attention to the FFN branch.
@@ -35,4 +35,4 @@ Tensor pre_norm_layer(Tensor hidden, Norm norm, Attention attention, FeedForward
     return add(std::move(hidden), std::move(branch));
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

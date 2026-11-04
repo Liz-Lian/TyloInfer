@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 // Compatibility groups are fixed by the loaded formats and field layouts.
 // Only heat and residency change between completed inference windows.
 class MoeResidencyRanker {
@@ -64,4 +64,4 @@ public:
         return pairs_;
     }
 };
-} // namespace mfq
+} // namespace tyloi

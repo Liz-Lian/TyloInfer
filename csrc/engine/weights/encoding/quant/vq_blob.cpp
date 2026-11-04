@@ -7,7 +7,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 template<class T>
@@ -508,16 +508,16 @@ Data unpack(const std::vector<uint8_t> & blob, const std::string & dtype) {
         t.codebook = expand_codebook(t.format, words.data(), words.size());
     } else if (t.format == 1) {
         t.codebook = expand_codebook(
-            1, mfq::nvq_codebooks::kNvq1LCodebookPacked,
-            sizeof(mfq::nvq_codebooks::kNvq1LCodebookPacked) / sizeof(uint16_t));
+            1, tyloi::nvq_codebooks::kNvq1LCodebookPacked,
+            sizeof(tyloi::nvq_codebooks::kNvq1LCodebookPacked) / sizeof(uint16_t));
     } else if (t.format == 2) {
         t.codebook = expand_codebook(
-            2, mfq::nvq_codebooks::kNvq2CodebookPacked,
-            sizeof(mfq::nvq_codebooks::kNvq2CodebookPacked) / sizeof(uint16_t));
+            2, tyloi::nvq_codebooks::kNvq2CodebookPacked,
+            sizeof(tyloi::nvq_codebooks::kNvq2CodebookPacked) / sizeof(uint16_t));
     } else {
         t.codebook = expand_codebook(
-            3, mfq::nvq_codebooks::kNvq3CodebookPacked,
-            sizeof(mfq::nvq_codebooks::kNvq3CodebookPacked) / sizeof(uint16_t));
+            3, tyloi::nvq_codebooks::kNvq3CodebookPacked,
+            sizeof(tyloi::nvq_codebooks::kNvq3CodebookPacked) / sizeof(uint16_t));
     }
 
     t.ng = 1 + (t.neuron_len - 1) / t.gs;
@@ -883,4 +883,4 @@ Data unpack(
 }
 
 } // namespace nepq
-} // namespace mfq
+} // namespace tyloi

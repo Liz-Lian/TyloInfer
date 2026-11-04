@@ -21,7 +21,7 @@
 #include <sys/sysctl.h>
 #endif
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 namespace {
 struct Core { int first = -1, threads = 0, performance = 0; };
 std::vector<Core> os_cores() {
@@ -171,4 +171,4 @@ void restore_thread_affinity(const ThreadAffinity& previous) {
         reinterpret_cast<const cpu_set_t*>(previous.native.data()));
 #endif
 }
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

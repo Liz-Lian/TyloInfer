@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <unordered_set>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 using json = nlohmann::json;
@@ -277,4 +277,4 @@ bool ModelGraph::has_capability(std::string_view capability) const noexcept {
         capabilities.end();
 }
 
-} // namespace mfq
+} // namespace tyloi

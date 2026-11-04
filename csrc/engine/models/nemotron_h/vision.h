@@ -4,7 +4,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::nemotron_h {
+namespace tyloi::models::nemotron_h {
 
 // RADIO (C-RADIO) vision tower geometry and the projection into the language
 // model.  Every field comes from the released omni config: the tower from
@@ -61,4 +61,4 @@ struct RadioPositionInterpolation {
 RadioPositionInterpolation make_radio_position_interpolation(
         std::int32_t rows, std::int32_t columns, std::int32_t position_side);
 
-} // namespace mfq::models::nemotron_h
+} // namespace tyloi::models::nemotron_h

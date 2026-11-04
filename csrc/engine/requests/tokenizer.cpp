@@ -8,7 +8,7 @@
 #include <memory>
 #include <stdexcept>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 namespace {
 
 void quiet_text_log(ggml_log_level level, const char* text, void*) {
@@ -155,12 +155,12 @@ void MfqTokenizer::finish_init() {
     }
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine
 
 namespace {
 
 MfqTokenizerProbe probe(
-        std::unique_ptr<mfq::engine::MfqTokenizer> tokenizer,
+        std::unique_ptr<tyloi::engine::MfqTokenizer> tokenizer,
         const std::string & text,
         bool add_special,
         bool parse_special) {
@@ -185,7 +185,7 @@ MfqTokenizerProbe probe_mfq_tokenizer(
         bool add_special,
         bool parse_special) {
     return probe(
-        std::make_unique<mfq::engine::MfqTokenizer>(tokenizer_gguf),
+        std::make_unique<tyloi::engine::MfqTokenizer>(tokenizer_gguf),
         text, add_special, parse_special);
 }
 
@@ -195,6 +195,6 @@ MfqTokenizerProbe probe_mfq_tokenizer(
         bool add_special,
         bool parse_special) {
     return probe(
-        std::make_unique<mfq::engine::MfqTokenizer>(tokenizer_model),
+        std::make_unique<tyloi::engine::MfqTokenizer>(tokenizer_model),
         text, add_special, parse_special);
 }

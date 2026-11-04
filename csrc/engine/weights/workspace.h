@@ -12,7 +12,7 @@
 
 class MoeExpertCache;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class WeightLoan {
 public:
@@ -28,15 +28,15 @@ public:
     void suspend();
     void finish();
     // Move the output out of borrowed storage before returning it to the cache.
-    mfq_tensor_backend::Tensor finish(mfq_tensor_backend::Tensor output);
+    ::tyloi::Tensor finish(::tyloi::Tensor output);
 private:
     std::shared_ptr<MoeExpertCache> cache_;
     bool active_=false;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq {
+namespace tyloi {
 namespace source { class Source; }
 
 namespace cuda {
@@ -68,12 +68,12 @@ public:
     bool empty() const noexcept;
     bool has_decode() const noexcept { return decode_region_.has_value(); }
     std::size_t lend_decode(std::size_t maximum_minus_active);
-    void restore(std::size_t reserve_bytes, const mfq::source::Source* source);
+    void restore(std::size_t reserve_bytes, const tyloi::source::Source* source);
     Metrics metrics() const;
 
 private:
     struct PrefillRegion {
-        mfq_tensor_backend::Tensor storage;
+        ::tyloi::Tensor storage;
         std::size_t region = 0;
     };
 
@@ -86,11 +86,11 @@ private:
     RoutedCache& weights_;
     int device_;
     std::shared_ptr<KvExpertLoan> loan_;
-    mfq_tensor_backend::Tensor decode_storage_;
+    ::tyloi::Tensor decode_storage_;
     std::optional<std::size_t> decode_region_;
     std::vector<PrefillRegion> prefill_regions_;
     std::uint64_t prefill_reclaimed_used_bytes_ = 0;
 };
 
 } // namespace cuda
-} // namespace mfq
+} // namespace tyloi

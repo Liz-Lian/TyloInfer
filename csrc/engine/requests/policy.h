@@ -5,7 +5,7 @@
 #include <span>
 #include <stdexcept>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 struct GenerationConfig {
     std::int64_t prefill_chunk_size = 2048;
@@ -59,4 +59,4 @@ TokenGenerationResult generate_tokens(std::int64_t limit, Sample sample, Accept 
     return {limit, false};
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

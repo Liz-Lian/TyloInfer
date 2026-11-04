@@ -122,8 +122,8 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
     layers.reserve(layer_count);
     for (size_t layer_index = 0; layer_index < layer_count; ++layer_index) {
         const auto &final = blocks.back().layers[layer_index];
-        std::vector<mfq_tensor_backend::Tensor> keys;
-        std::vector<mfq_tensor_backend::Tensor> values;
+        std::vector<::tyloi::Tensor> keys;
+        std::vector<::tyloi::Tensor> values;
         keys.reserve(blocks.size());
         values.reserve(blocks.size());
         for (const auto &block : blocks) {
@@ -137,11 +137,11 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
             keys.push_back(layer.k);
             values.push_back(layer.v);
         }
-        auto key = mfq_tensor_backend::cat(keys, 2).contiguous();
-        auto value = mfq_tensor_backend::cat(values, 2).contiguous();
+        auto key = ::tyloi::cuda::cat(keys, 2).contiguous();
+        auto value = ::tyloi::cuda::cat(values, 2).contiguous();
         MfqCudaGuard guard(final.device);
         const auto options = key.options().device(
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, final.device));
+            ::tyloi::Device(::tyloi::kCUDA, final.device));
         key = key.to(options, true, false).contiguous();
         value = value.to(options, true, false).contiguous();
         state.bytes += static_cast<size_t>(key.numel() * key.element_size() +
@@ -156,32 +156,32 @@ TextSessionState decode_cuda_paged_session(const std::vector<CudaPagedPayload> &
     return state;
 }
 
-size_t session_tensor_bytes(const mfq_tensor_backend::Tensor &tensor) {
+size_t session_tensor_bytes(const ::tyloi::Tensor &tensor) {
     if (!tensor.defined())
         return 0;
     return static_cast<size_t>(tensor.numel()) * tensor.element_size();
 }
 
-bool session_tensor_layout_matches(const mfq_tensor_backend::Tensor &target,
-                                   const mfq_tensor_backend::Tensor &source) {
+bool session_tensor_layout_matches(const ::tyloi::Tensor &target,
+                                   const ::tyloi::Tensor &source) {
     return target.defined() && source.defined() && target.sizes() == source.sizes() &&
            target.scalar_type() == source.scalar_type() && target.device() == source.device();
 }
 
-void restore_session_tensor(mfq_tensor_backend::Tensor &target,
-                            const mfq_tensor_backend::Tensor &source) {
+void restore_session_tensor(::tyloi::Tensor &target,
+                            const ::tyloi::Tensor &source) {
     if (!source.defined()) {
-        target = mfq_tensor_backend::Tensor();
+        target = ::tyloi::Tensor();
         return;
     }
     if (!session_tensor_layout_matches(target, source)) {
-        target = mfq_tensor_backend::empty(source.sizes(), source.options());
+        target = ::tyloi::cuda::empty(source.sizes(), source.options());
     }
     target.copy_(source);
 }
 
-void restore_session_prefix_tensor(mfq_tensor_backend::Tensor &target,
-                                   const mfq_tensor_backend::Tensor &source, int64_t dimension,
+void restore_session_prefix_tensor(::tyloi::Tensor &target,
+                                   const ::tyloi::Tensor &source, int64_t dimension,
                                    int64_t capacity) {
     if (!source.defined() || dimension < 0 || dimension >= source.dim() || capacity <= 0 ||
         source.size(dimension) > capacity) {
@@ -190,10 +190,10 @@ void restore_session_prefix_tensor(mfq_tensor_backend::Tensor &target,
     auto target_shape = source.sizes().vec();
     target_shape.at(static_cast<size_t>(dimension)) = capacity;
     const bool compatible =
-        target.defined() && target.sizes() == mfq_tensor_backend::IntArrayRef(target_shape) &&
+        target.defined() && target.sizes() == ::tyloi::IntArrayRef(target_shape) &&
         target.scalar_type() == source.scalar_type() && target.device() == source.device();
     if (!compatible) {
-        target = mfq_tensor_backend::empty(target_shape, source.options());
+        target = ::tyloi::cuda::empty(target_shape, source.options());
     }
     if (source.size(dimension) > 0) {
         target.narrow(dimension, 0, source.size(dimension)).copy_(source);
@@ -226,7 +226,7 @@ void validate_kv(const KvSnapshot& state) {
 }
 
 void restore_kv(KVCache &cache, const KvSnapshot &state, int64_t head_dim,
-                mfq_tensor_backend::ScalarType dtype, mfq::cuda::KvQuantization quantization) {
+                ::tyloi::ScalarType dtype, tyloi::cuda::KvQuantization quantization) {
     validate_kv(state);
     restore_session_prefix_tensor(cache.k, state.k, 2, state.capacity);
     restore_session_prefix_tensor(cache.v, state.v, 2, state.capacity);

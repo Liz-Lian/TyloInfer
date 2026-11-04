@@ -5,8 +5,8 @@
 #include <map>
 #include <vector>
 
-namespace mfq::cuda::glm_dsa {
-using Tensor = mfq_tensor_backend::Tensor;
+namespace tyloi::cuda::glm_dsa {
+using Tensor = ::tyloi::Tensor;
 struct Model;
 
 struct LayerState { Tensor kv_cache, index_cache; };
@@ -40,4 +40,4 @@ private:
     struct Layout { int device; bool full_indexer; };
     std::vector<Layout> layout_;
 };
-} // namespace mfq::cuda::glm_dsa
+} // namespace tyloi::cuda::glm_dsa

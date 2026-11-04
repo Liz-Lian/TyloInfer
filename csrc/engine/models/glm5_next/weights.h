@@ -5,7 +5,7 @@
 #include "../common/recurrent_attention.h"
 #include "../common/transformer_layer.h"
 
-namespace mfq::models::glm5_next {
+namespace tyloi::models::glm5_next {
 
 template <class Loader>
 auto load_dense_ffn(Loader &ops, const std::string &p, double limit) {
@@ -170,4 +170,4 @@ inline void load_config(std::string_view payload, Config& config, models::Causal
     metadata.layer_types = config.layer_types;
 }
 
-} // namespace mfq::models::glm5_next
+} // namespace tyloi::models::glm5_next

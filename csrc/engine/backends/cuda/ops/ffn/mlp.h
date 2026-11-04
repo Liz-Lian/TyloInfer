@@ -12,22 +12,22 @@ inline constexpr std::size_t kDenseRoutedGatherBudgetBytes = std::size_t(512) <<
 // `input` is [tokens,in] or [tokens,routes,in]; `ids` is [tokens,routes]. The
 // bank keeps its source precision. Each route gathers its whole expert matrix,
 // so tokens run in chunks whose gathered matrices fit `gather_budget_bytes`.
-mfq_tensor_backend::Tensor dense_routed_projection(
-    const mfq_tensor_backend::Tensor &bank, const mfq_tensor_backend::Tensor &input,
-    const mfq_tensor_backend::Tensor &ids,
+::tyloi::Tensor dense_routed_projection(
+    const ::tyloi::Tensor &bank, const ::tyloi::Tensor &input,
+    const ::tyloi::Tensor &ids,
     std::size_t gather_budget_bytes = kDenseRoutedGatherBudgetBytes);
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-mfq_tensor_backend::Tensor expert_activation(
-    mfq::ops::MlpActivation activation, mfq_tensor_backend::Tensor gate,
-    mfq_tensor_backend::Tensor up, double limit);
+::tyloi::Tensor expert_activation(
+    tyloi::ops::MlpActivation activation, ::tyloi::Tensor gate,
+    ::tyloi::Tensor up, double limit);
 
 // Read-only projection view; routing, cache leases and branch scheduling stay with the caller.
 struct Mlp {
     const QuantLinearGroup& gate_up;
     const QuantLinear& down;
-    mfq::ops::MlpActivation activation;
+    tyloi::ops::MlpActivation activation;
     bool geglu;
     double swiglu_limit;
 
@@ -37,26 +37,26 @@ struct Mlp {
         bool silu_fusion = true;
     };
 
-    void check(const mfq_tensor_backend::Tensor& input, int primary) const;
+    void check(const ::tyloi::Tensor& input, int primary) const;
     bool parallel() const;
-    mfq_tensor_backend::Tensor sharded(
+    ::tyloi::Tensor sharded(
         CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq, Collectives& collectives,
         int primary, bool peer_first, bool reduce_to_primary, bool fp16_reduce,
-        mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor forward(
+        ::tyloi::Tensor input) const;
+    ::tyloi::Tensor forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor bf16(
+        ::tyloi::Tensor input) const;
+    ::tyloi::Tensor bf16(
         const Projector& project, CudaProfiler& profiler, bool fused,
-        mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor kld(
+        ::tyloi::Tensor input) const;
+    ::tyloi::Tensor kld(
         const Projector& project, CudaProfiler& profiler, KlMmqState& mmq,
-        mfq_tensor_backend::Tensor input) const;
-    bool can_fuse(const mfq_tensor_backend::Tensor& input,
-                  const mfq_tensor_backend::Tensor& residual) const;
-    mfq_tensor_backend::Tensor fused(
-        CudaProfiler& profiler, mfq_tensor_backend::Tensor input,
-        mfq_tensor_backend::Tensor residual) const;
+        ::tyloi::Tensor input) const;
+    bool can_fuse(const ::tyloi::Tensor& input,
+                  const ::tyloi::Tensor& residual) const;
+    ::tyloi::Tensor fused(
+        CudaProfiler& profiler, ::tyloi::Tensor input,
+        ::tyloi::Tensor residual) const;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace mfq::models::glm_dsa {
+namespace tyloi::models::glm_dsa {
 
 Config Config::from_json(std::string_view payload) {
     const auto root = nlohmann::json::parse(
@@ -118,4 +118,4 @@ Config Config::from_json(std::string_view payload) {
     return config;
 }
 
-} // namespace mfq::models::glm_dsa
+} // namespace tyloi::models::glm_dsa

@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 PagedPrefixCache::PagedPrefixCache(PrefixBlockStoreConfig config)
     : blocks(std::move(config)) {}
@@ -110,4 +110,4 @@ PagedPrefixCacheMetrics PagedPrefixCache::metrics() const {
     return result;
 }
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

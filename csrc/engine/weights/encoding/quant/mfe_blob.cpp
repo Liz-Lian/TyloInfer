@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::mfe {
+namespace tyloi::mfe {
 
 std::vector<std::byte> header(
     std::uint32_t experts,
@@ -46,7 +46,7 @@ std::vector<std::byte> expert_prefix(
 }
 
 Data unpack(const std::vector<uint8_t>& blob) {
-    auto index = mfq::mfe::parse(blob.size(), [&](std::size_t offset, std::uint8_t* data,
+    auto index = tyloi::mfe::parse(blob.size(), [&](std::size_t offset, std::uint8_t* data,
                                                 std::size_t size) {
         std::memcpy(data, blob.data() + offset, size);
     });
@@ -64,12 +64,12 @@ Data unpack(const std::vector<uint8_t>& blob) {
                                     blob.begin() + entry.runtime.offset + entry.runtime.bytes);
         pool.payload.assign(blob.begin() + entry.payload.offset,
                             blob.begin() + entry.payload.offset + entry.payload.bytes);
-        if (mfq::fp8sq::is_dtype(pool.dtype)) {
+        if (tyloi::fp8sq::is_dtype(pool.dtype)) {
             if (!pool.runtime_payload.empty()) {
                 throw std::runtime_error(
                     "unexpected MFE FP8-SQ runtime metadata");
             }
-            const auto layout = mfq::fp8sq::parse(
+            const auto layout = tyloi::fp8sq::parse(
                 pool.dtype, pool.payload.data(), pool.payload.size());
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
@@ -83,7 +83,7 @@ Data unpack(const std::vector<uint8_t>& blob) {
                 throw std::runtime_error(
                     "unexpected MFE MXFP4-SQ runtime metadata");
             }
-            const auto layout = mfq::sq::parse(
+            const auto layout = tyloi::sq::parse(
                 pool.payload.data(), pool.payload.size());
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
@@ -93,7 +93,7 @@ Data unpack(const std::vector<uint8_t>& blob) {
                     "MFE MXFP4-SQ pool weight shape mismatch");
             }
         } else if (pool.dtype == "MXFP4") {
-            pool.mxfp4 = mfq::mxfp4::unpack(pool.payload);
+            pool.mxfp4 = tyloi::mxfp4::unpack(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
             if (pool.mxfp4.out != expected_rows ||
@@ -102,7 +102,7 @@ Data unpack(const std::vector<uint8_t>& blob) {
                     "MFE MXFP4 pool weight shape mismatch");
             }
         } else if (pool.dtype == "NINT8-0") {
-            pool.q8_zero = mfq::nint8::unpack(pool.payload);
+            pool.q8_zero = tyloi::nint8::unpack(pool.payload);
             const int expected_rows =
                 static_cast<int>(expert_count) * result.out_per_expert;
             if (pool.q8_zero.axis != 0 ||
@@ -115,7 +115,7 @@ Data unpack(const std::vector<uint8_t>& blob) {
                     "MFE NINT8-0 pool weight shape mismatch");
             }
         } else if (pool.dtype == "NINT") {
-            pool.weight = mfq::nint::unpack(pool.payload);
+            pool.weight = tyloi::nint::unpack(pool.payload);
             int expected_rows = (int)expert_count * result.out_per_expert;
             if (pool.weight.axis != 0 || pool.weight.out != expected_rows ||
                 pool.weight.neuron_len != result.neuron_len ||
@@ -130,4 +130,4 @@ Data unpack(const std::vector<uint8_t>& blob) {
     return result;
 }
 
-} // namespace mfq::mfe
+} // namespace tyloi::mfe

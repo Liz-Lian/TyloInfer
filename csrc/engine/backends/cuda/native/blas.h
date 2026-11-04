@@ -7,7 +7,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Per-device, per-stream cuBLAS handles. The owner retains each stream until
 // its handle can no longer be used; callers only borrow this resource.
@@ -49,4 +49,4 @@ private:
     std::unordered_map<cudaStream_t, Entry> handles_;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

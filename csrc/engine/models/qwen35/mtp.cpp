@@ -7,9 +7,8 @@
 #include <exception>
 #include <optional>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
-namespace tb = mfq_tensor_backend;
 
 namespace {
 
@@ -18,7 +17,7 @@ std::vector<MtpState::Layout> layout(const Predictor& model, int device) {
     for (const auto& layer : model.layers) {
         const auto& a = layer.attention;
         result.push_back({device, a.kv_heads, a.attention_head_dim, a.max_position_embeddings,
-            a.official_bf16 ? tb::kBFloat16 : tb::kFloat16, a.kv_quantization});
+            a.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16, a.kv_quantization});
     }
     return result;
 }
@@ -38,18 +37,18 @@ Mtp::Mtp(Predictor model, QuantLinear embedding, RopeCache rope,
 
 void Mtp::reset(int64_t batch) { state_.reset(batch); }
 
-tb::Tensor Mtp::forward(tb::Tensor hidden, tb::Tensor next_ids) {
+::tyloi::Tensor Mtp::forward(::tyloi::Tensor hidden, ::tyloi::Tensor next_ids) {
     return evaluate(std::move(hidden), std::move(next_ids), {});
 }
 
-MtpStep Mtp::step_positioned(tb::Tensor hidden,
-        tb::Tensor next_ids, tb::Tensor positions) {
+MtpStep Mtp::step_positioned(::tyloi::Tensor hidden,
+        ::tyloi::Tensor next_ids, ::tyloi::Tensor positions) {
     auto output = evaluate(std::move(hidden), std::move(next_ids), std::move(positions));
     return {output, output};
 }
 
-tb::Tensor Mtp::evaluate(tb::Tensor hidden,
-        tb::Tensor next_ids, tb::Tensor positions) {
+::tyloi::Tensor Mtp::evaluate(::tyloi::Tensor hidden,
+        ::tyloi::Tensor next_ids, ::tyloi::Tensor positions) {
     const auto& config = model_.config;
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && next_ids.dim() == 2 &&
         hidden.size(0) == next_ids.size(0) && hidden.size(1) == next_ids.size(1) &&
@@ -62,9 +61,9 @@ tb::Tensor Mtp::evaluate(tb::Tensor hidden,
     MfqCudaGuard guard(device);
     const bool explicit_positions = positions.defined();
     auto pos = explicit_positions
-        ? copies_.copy(std::move(positions), device).to(tb::kInt64).contiguous()
-        : tb::arange(state_.position(), state_.position() + tokens,
-            tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64));
+        ? copies_.copy(std::move(positions), device).to(::tyloi::kInt64).contiguous()
+        : ::tyloi::cuda::arange(state_.position(), state_.position() + tokens,
+            ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
     TYLOINFER_RUNTIME_CHECK((pos.dim() == 1 && pos.numel() == tokens) ||
         (pos.dim() == 2 && pos.size(1) == tokens &&
             (pos.size(0) == batch || (pos.size(0) == 3 && !config.mrope_sections.empty()))),
@@ -74,9 +73,9 @@ tb::Tensor Mtp::evaluate(tb::Tensor hidden,
     const auto kv = state_.views();
     const Task embedding{task::Embed{0, 0, embedding_}, -1, {}, "model.embed"};
     Inputs tokens_input;
-    tokens_input.values = {copies_.copy(next_ids.to(tb::kInt64), device_).contiguous()};
+    tokens_input.values = {copies_.copy(next_ids.to(::tyloi::kInt64), device_).contiguous()};
     auto embedded = executor_->run(std::span<const Task>{&embedding, 1}, std::move(tokens_input), {})
-                        .to(tb::kFloat16).contiguous()
+                        .to(::tyloi::kFloat16).contiguous()
                         .to(hidden.scalar_type());
     Inputs inputs;
     inputs.values = {std::move(hidden), std::move(embedded), {}};
@@ -89,9 +88,9 @@ tb::Tensor Mtp::evaluate(tb::Tensor hidden,
     inputs.attention.positions = pos;
     inputs.attention.cache_position = state_.position();
     if (tokens == 1 && state_.position() > 0)
-        inputs.attention.sequence_lengths = tb::full({batch}, state_.position() + 1, pos.options());
+        inputs.attention.sequence_lengths = ::tyloi::cuda::full({batch}, state_.position() + 1, pos.options());
     if (explicit_positions)
-        inputs.attention.cache_positions = tb::arange(state_.position(), state_.position() + tokens, pos.options());
+        inputs.attention.cache_positions = ::tyloi::cuda::arange(state_.position(), state_.position() + tokens, pos.options());
     inputs.trace = trace_;
     inputs.trace_scope = trace_scope_;
     auto output = executor_->run(tasks_, std::move(inputs), {});
@@ -101,7 +100,7 @@ tb::Tensor Mtp::evaluate(tb::Tensor hidden,
 
 void Mtp::trim_cache_to(int64_t position) { state_.trim(position); }
 
-MtpSessionState Mtp::capture_session_state(int64_t position, const tb::Tensor& hidden) const {
+MtpSessionState Mtp::capture_session_state(int64_t position, const ::tyloi::Tensor& hidden) const {
     MfqCudaGuard guard(device_);
     return state_.capture(position, hidden);
 }
@@ -131,4 +130,4 @@ void restore_session(State& state, Mtp* mtp, const TextSessionState& snapshot,
     }
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

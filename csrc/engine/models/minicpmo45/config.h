@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace mfq::models::minicpmo45 {
+namespace tyloi::models::minicpmo45 {
 
 struct Config : ModelConfig {
     std::string version;
@@ -18,7 +18,7 @@ struct Config : ModelConfig {
 };
 
 inline ModelConfig tts_decoder_config() {
-    mfq::models::ModelConfig result;
+    tyloi::models::ModelConfig result;
     result.model_type = "minicpmtts";
     result.hidden_size = 768;
     result.intermediate_size = 3072;
@@ -34,4 +34,4 @@ inline ModelConfig tts_decoder_config() {
     return result;
 }
 
-} // namespace mfq::models::minicpmo45
+} // namespace tyloi::models::minicpmo45

@@ -8,16 +8,16 @@ void CudaPagedWriter::raw(const void *data, size_t size) {
     bytes_.insert(bytes_.end(), begin, begin + size);
 }
 
-void CudaPagedWriter::tensor(const mfq_tensor_backend::Tensor &source) {
+void CudaPagedWriter::tensor(const ::tyloi::Tensor &source) {
     if (!source.defined() || !source.is_cuda() || source.dim() <= 0 || source.dim() > 8) {
         throw std::runtime_error("invalid CUDA paged cache tensor");
     }
     const auto dtype = source.scalar_type();
-    if (dtype != mfq_tensor_backend::kFloat16 && dtype != mfq_tensor_backend::kBFloat16 &&
-        dtype != mfq_tensor_backend::kFloat32 && dtype != mfq_tensor_backend::kInt32 && dtype != mfq_tensor_backend::kInt64) {
+    if (dtype != ::tyloi::kFloat16 && dtype != ::tyloi::kBFloat16 &&
+        dtype != ::tyloi::kFloat32 && dtype != ::tyloi::kInt32 && dtype != ::tyloi::kInt64) {
         throw std::runtime_error("unsupported CUDA paged cache tensor dtype");
     }
-    const auto cpu = source.contiguous().to(mfq_tensor_backend::kCPU);
+    const auto cpu = source.contiguous().to(::tyloi::kCPU);
     scalar<int32_t>(static_cast<int32_t>(dtype));
     scalar<int32_t>(source.get_device());
     scalar<uint32_t>(static_cast<uint32_t>(cpu.dim()));
@@ -41,7 +41,7 @@ void CudaPagedReader::raw(void *destination, size_t size, const char *name) {
     cursor_ += size;
 }
 
-std::pair<mfq_tensor_backend::Tensor, int> CudaPagedReader::tensor() {
+std::pair<::tyloi::Tensor, int> CudaPagedReader::tensor() {
     const auto dtype_value = scalar<int32_t>("dtype");
     const auto device = scalar<int32_t>("device");
     const auto rank = scalar<uint32_t>("rank");
@@ -49,9 +49,9 @@ std::pair<mfq_tensor_backend::Tensor, int> CudaPagedReader::tensor() {
     if (rank == 0 || rank > 8 || device < 0) {
         throw CudaSessionStateError("invalid CUDA paged cache tensor header");
     }
-    const auto dtype = static_cast<mfq_tensor_backend::ScalarType>(dtype_value);
-    if (dtype != mfq_tensor_backend::kFloat16 && dtype != mfq_tensor_backend::kBFloat16 &&
-        dtype != mfq_tensor_backend::kFloat32 && dtype != mfq_tensor_backend::kInt32 && dtype != mfq_tensor_backend::kInt64) {
+    const auto dtype = static_cast<::tyloi::ScalarType>(dtype_value);
+    if (dtype != ::tyloi::kFloat16 && dtype != ::tyloi::kBFloat16 &&
+        dtype != ::tyloi::kFloat32 && dtype != ::tyloi::kInt32 && dtype != ::tyloi::kInt64) {
         throw CudaSessionStateError("invalid CUDA paged cache tensor dtype");
     }
     std::vector<int64_t> shape;
@@ -67,14 +67,14 @@ std::pair<mfq_tensor_backend::Tensor, int> CudaPagedReader::tensor() {
         elements *= static_cast<uint64_t>(dimension);
     }
     const auto bytes = scalar<uint64_t>("tensor size");
-    const uint64_t element_size = dtype == mfq_tensor_backend::kInt64 ? 8 :
-        (dtype == mfq_tensor_backend::kFloat32 || dtype == mfq_tensor_backend::kInt32) ? 4 : 2;
+    const uint64_t element_size = dtype == ::tyloi::kInt64 ? 8 :
+        (dtype == ::tyloi::kFloat32 || dtype == ::tyloi::kInt32) ? 4 : 2;
     if (elements > std::numeric_limits<uint64_t>::max() / element_size ||
         bytes != elements * element_size || bytes > remaining()) {
         throw CudaSessionStateError("invalid CUDA paged cache tensor size");
     }
-    auto cpu = mfq_tensor_backend::empty(
-        shape, mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(dtype));
+    auto cpu = ::tyloi::cuda::empty(
+        shape, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(dtype));
     raw(cpu.data_ptr(), static_cast<size_t>(bytes), "tensor");
     return {std::move(cpu), device};
 }

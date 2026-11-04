@@ -11,7 +11,6 @@
 #include <stdexcept>
 #include <utility>
 
-namespace tb = mfq_tensor_backend;
 
 namespace tq_ops {
 
@@ -89,7 +88,7 @@ IndexedJobs make_indexed_jobs(
 }
 
 void routed_projection(const std::vector<TqWeight>& weights,
-        tb::Tensor source, tb::Tensor output) {
+        ::tyloi::Tensor source, ::tyloi::Tensor output) {
     if (source.dim() != 2 && source.dim() != 3)
         throw std::invalid_argument("invalid prepared TQ routed activation geometry");
     if (output.dim() != 3)
@@ -108,8 +107,8 @@ void routed_projection(const std::vector<TqWeight>& weights,
     views.reserve(weights.size());
     for (const auto& weight : weights) views.push_back(weight.view);
     const auto bytes = static_cast<std::int64_t>(views.size() * sizeof(views[0]));
-    const auto metadata = tb::from_blob(
-        views.data(), {bytes}, tb::TensorOptions().dtype(tb::kUInt8))
+    const auto metadata = ::tyloi::cuda::from_blob(
+        views.data(), {bytes}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
         .clone().to(source.device(), false, false).contiguous();
     const auto* data = reinterpret_cast<const TrellisProjectionView*>(metadata.data_ptr());
     const auto element = source.element_size();
@@ -130,27 +129,27 @@ void routed_projection(const std::vector<TqWeight>& weights,
 
 void run_long_expert(const TqWeight& gate, const TqWeight& up,
         const TqWeight& down, const std::vector<std::int64_t>& slots,
-        std::int64_t routes, const tb::Tensor& source, tb::Tensor output,
-        mfq::cuda::BlasResources* blas, float limit) {
+        std::int64_t routes, const ::tyloi::Tensor& source, ::tyloi::Tensor output,
+        tyloi::cuda::BlasResources* blas, float limit) {
     std::vector<std::int64_t> token_ids;
     token_ids.reserve(slots.size());
     for (const auto slot : slots) token_ids.push_back(slot / routes);
-    const auto token_index = tb::from_blob(
+    const auto token_index = ::tyloi::cuda::from_blob(
         token_ids.data(), {static_cast<std::int64_t>(token_ids.size())},
-        tb::TensorOptions().dtype(tb::kInt64)).clone().to(source.device(), false, false);
-    const auto slot_index = tb::from_blob(
+        ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(source.device(), false, false);
+    const auto slot_index = ::tyloi::cuda::from_blob(
         const_cast<std::int64_t*>(slots.data()), {static_cast<std::int64_t>(slots.size())},
-        tb::TensorOptions().dtype(tb::kInt64)).clone().to(source.device(), false, false);
+        ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(source.device(), false, false);
     const auto gathered = source.index_select(0, token_index);
-    tb::Tensor activated;
+    ::tyloi::Tensor activated;
     if (limit > 0) {
         const auto gv = gate.forward(blas, gathered);
         const auto uv = up.forward(blas, gathered);
         if (tq_detail::dtype(source.scalar_type()) == 0)
             activated = clipped_silu_mul_cuda(gv, uv, limit);
         else
-            activated = (tb::silu(tb::clamp_max(gv.to(tb::kFloat32), limit)) *
-                tb::clamp(uv.to(tb::kFloat32), -limit, limit))
+            activated = (::tyloi::cuda::silu(::tyloi::cuda::clamp_max(gv.to(::tyloi::kFloat32), limit)) *
+                ::tyloi::cuda::clamp(uv.to(::tyloi::kFloat32), -limit, limit))
                 .to(source.scalar_type()).contiguous();
     } else {
         activated = TqProjectionGroup({gate, up}).swiglu(blas, gathered);
@@ -161,8 +160,8 @@ void run_long_expert(const TqWeight& gate, const TqWeight& up,
 void run_indexed(std::span<const TqWeight> gate,
         std::span<const TqWeight> up, std::span<const TqWeight> down,
         const std::vector<std::vector<std::int64_t>>& slots, std::size_t begin,
-        std::int64_t routes, const tb::Tensor& source, tb::Tensor activated,
-        tb::Tensor pairs, float limit, bool wide) {
+        std::int64_t routes, const ::tyloi::Tensor& source, ::tyloi::Tensor activated,
+        ::tyloi::Tensor pairs, float limit, bool wide) {
     const auto input = source.size(-1);
     const auto hidden = activated.size(-1);
     const auto output = pairs.size(-1);
@@ -177,10 +176,10 @@ void run_indexed(std::span<const TqWeight> gate,
         wide_jobs.insert(wide_jobs.end(), jobs.wide[tile].begin(), jobs.wide[tile].end());
     }
     const auto upload_plan = [&](const auto& values) {
-        if (values.empty()) return tb::Tensor{};
+        if (values.empty()) return ::tyloi::Tensor{};
         const auto bytes = static_cast<std::int64_t>(values.size() * sizeof(values[0]));
-        return tb::from_blob(const_cast<void*>(static_cast<const void*>(values.data())),
-            {bytes}, tb::TensorOptions().dtype(tb::kUInt8))
+        return ::tyloi::cuda::from_blob(const_cast<void*>(static_cast<const void*>(values.data())),
+            {bytes}, ::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
             .clone().to(source.device(), false, false).contiguous();
     };
     if (gate_up_jobs.size() > INT_MAX)

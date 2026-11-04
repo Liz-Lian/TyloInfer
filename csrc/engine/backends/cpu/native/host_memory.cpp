@@ -15,7 +15,7 @@
 #include <fstream>
 #endif
 
-mfq::HostMemorySample mfq::sample_host_memory() {
+tyloi::HostMemorySample tyloi::sample_host_memory() {
 #if defined(_WIN32)
     PROCESS_MEMORY_COUNTERS process{};
     MEMORYSTATUSEX system{};
@@ -36,7 +36,7 @@ mfq::HostMemorySample mfq::sample_host_memory() {
 #endif
 }
 
-void mfq::trim_host_cache() noexcept {
+void tyloi::trim_host_cache() noexcept {
 #if defined(__GLIBC__)
     (void)malloc_trim(0);
 #endif

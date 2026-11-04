@@ -193,13 +193,13 @@ __global__ void attention_flash256_f16_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor attention_flash256_cuda(mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v, double scale)
+::tyloi::Tensor attention_flash256_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v, double scale)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat16,
                 "attention_flash256: q must be contiguous CUDA fp16");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16,
                 "attention_flash256: k must be contiguous CUDA fp16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == ::tyloi::kFloat16,
                 "attention_flash256: v must be contiguous CUDA fp16");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4, "attention_flash256: q/k/v must be rank 4");
     const int B = (int)q.size(0);
@@ -211,7 +211,7 @@ mfq_tensor_backend::Tensor attention_flash256_cuda(mfq_tensor_backend::Tensor q,
     TYLOINFER_RUNTIME_CHECK(k.size(0) == B && v.size(0) == B && k.size(2) == T && v.size(2) == T && v.size(1) == Hk,
                 "attention_flash256: only self-attention with matching k/v shapes is supported");
     TYLOINFER_RUNTIME_CHECK(Hq % Hk == 0, "attention_flash256: Hq must be divisible by Hkv");
-    auto out = mfq_tensor_backend::empty_like(q);
+    auto out = ::tyloi::cuda::empty_like(q);
     const dim3 grid((T + 127) / 128, B * Hq);
     constexpr int shmem = 96 * 1024;
     cudaFuncSetAttribute(attention_flash256_f16_kernel,
@@ -365,7 +365,7 @@ __global__ void attention_split_reduce_kernel(
     }
 }
 
-static mfq_tensor_backend::Tensor attention_impl_cuda(mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
+static ::tyloi::Tensor attention_impl_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
                                          double scale, bool causal, int window)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention: q must be cuda contiguous");
@@ -373,20 +373,20 @@ static mfq_tensor_backend::Tensor attention_impl_cuda(mfq_tensor_backend::Tensor
     TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous(), "attention: v must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(q.scalar_type() == k.scalar_type() && q.scalar_type() == v.scalar_type(),
                 "attention: q/k/v dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == mfq_tensor_backend::kFloat16 || q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == ::tyloi::kFloat16 || q.scalar_type() == ::tyloi::kFloat32,
                 "attention: dtype must be f16 or f32");
     int B = (int)q.size(0), Hq = (int)q.size(1), T = (int)q.size(2), D = (int)q.size(3);
     int Hk = (int)k.size(1), Tk = (int)k.size(2);
     TYLOINFER_RUNTIME_CHECK(D == (int)k.size(3) && D == (int)v.size(3), "q/k/v last dim must match");
     TYLOINFER_RUNTIME_CHECK(Hq % Hk == 0, "GQA requires H_q % H_kv == 0");
     int rep = Hq / Hk;
-    auto out = mfq_tensor_backend::empty_like(q);
+    auto out = ::tyloi::cuda::empty_like(q);
     int total = B * Hq * T;
     int shmem = D * (int)sizeof(float);
     cudaStream_t stream = mfq_current_cuda_stream();
     int parts = 1;
     const int visible_keys = window > 0 ? std::min(Tk, window) : Tk;
-    const char* split_env = mfq::cuda::env_lookup("TYLOINFER_ATTENTION_SPLITK");
+    const char* split_env = tyloi::cuda::env_lookup("TYLOINFER_ATTENTION_SPLITK");
     if (total < 128 && visible_keys >= 512 && !(split_env && split_env[0] == '0')) {
         parts = (visible_keys + 255) / 256;
         parts = parts < 2 ? 1 : parts;
@@ -398,9 +398,9 @@ static mfq_tensor_backend::Tensor attention_impl_cuda(mfq_tensor_backend::Tensor
     B, Hq, Hk, T, Tk, D, rep, (float)scale, (int)causal, window)
 #define ATT_SPLIT(BD)                                                                                 \
     do {                                                                                              \
-        auto po = mfq_tensor_backend::empty({total, parts, D}, q.options().dtype(mfq_tensor_backend::kFloat32));                 \
-        auto pm = mfq_tensor_backend::empty({total, parts}, q.options().dtype(mfq_tensor_backend::kFloat32));                    \
-        auto pl = mfq_tensor_backend::empty({total, parts}, q.options().dtype(mfq_tensor_backend::kFloat32));                    \
+        auto po = ::tyloi::cuda::empty({total, parts, D}, q.options().dtype(::tyloi::kFloat32));                 \
+        auto pm = ::tyloi::cuda::empty({total, parts}, q.options().dtype(::tyloi::kFloat32));                    \
+        auto pl = ::tyloi::cuda::empty({total, parts}, q.options().dtype(::tyloi::kFloat32));                    \
         attention_split_part_kernel<BD, scalar_t><<<total * parts, BD, shmem, stream>>>(               \
             q.data_ptr<scalar_t>(), k.data_ptr<scalar_t>(), v.data_ptr<scalar_t>(),                    \
             po.data_ptr<float>(), pm.data_ptr<float>(), pl.data_ptr<float>(),                          \
@@ -427,13 +427,13 @@ static mfq_tensor_backend::Tensor attention_impl_cuda(mfq_tensor_backend::Tensor
     return out;
 }
 
-mfq_tensor_backend::Tensor attention_cuda(mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
+::tyloi::Tensor attention_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
                              double scale, bool causal)
 {
     return attention_impl_cuda(q, k, v, scale, causal, 0);
 }
 
-mfq_tensor_backend::Tensor attention_swa_cuda(mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
+::tyloi::Tensor attention_swa_cuda(::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
                                  double scale, int64_t window)
 {
     TYLOINFER_RUNTIME_CHECK(window > 0 && window <= INT_MAX, "attention_swa: window must be in [1, INT_MAX]");
@@ -501,21 +501,21 @@ __global__ void attention_cache_decode_kernel(
     }
 }
 
-static mfq_tensor_backend::Tensor attention_cache_decode_impl_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache, mfq_tensor_backend::Tensor seq_len,
+static ::tyloi::Tensor attention_cache_decode_impl_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
     double scale, int maximum_cache_position)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention_cache_decode: q must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous(), "attention_cache_decode: k_cache must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(v_cache.is_cuda() && v_cache.is_contiguous(), "attention_cache_decode: v_cache must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(seq_len.is_cuda() && seq_len.is_contiguous() &&
-                seq_len.scalar_type() == mfq_tensor_backend::kInt64,
+                seq_len.scalar_type() == ::tyloi::kInt64,
                 "attention_cache_decode: seq_len must be cuda int64[B]");
     TYLOINFER_RUNTIME_CHECK(q.scalar_type() == k_cache.scalar_type() && q.scalar_type() == v_cache.scalar_type(),
                 "attention_cache_decode: q/k/v dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == mfq_tensor_backend::kFloat16 || q.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-                q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == ::tyloi::kFloat16 || q.scalar_type() == ::tyloi::kBFloat16 ||
+                q.scalar_type() == ::tyloi::kFloat32,
                 "attention_cache_decode: dtype must be f16, bf16, or f32");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(2) == 1, "attention_cache_decode: q must be [B,Hq,1,D]");
     TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k_cache.sizes() == v_cache.sizes(),
@@ -530,7 +530,7 @@ static mfq_tensor_backend::Tensor attention_cache_decode_impl_cuda(
     TYLOINFER_RUNTIME_CHECK(k_cache.size(0) == B && k_cache.size(3) == D, "attention_cache_decode: cache shape mismatch");
     TYLOINFER_RUNTIME_CHECK(Hq % Hk == 0, "attention_cache_decode: GQA requires Hq % Hk == 0");
     int rep = Hq / Hk;
-    auto out = mfq_tensor_backend::empty_like(q);
+    auto out = ::tyloi::cuda::empty_like(q);
     int total = B * Hq;
     int shmem = D * (int)sizeof(float);
     cudaStream_t stream = mfq_current_cuda_stream();
@@ -780,30 +780,30 @@ __global__ void attention_cache_decode_split_reduce_kernel(
     }
 }
 
-static mfq_tensor_backend::Tensor attention_cache_decode_split_impl_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale,
-    mfq_tensor_backend::Tensor partial_o, mfq_tensor_backend::Tensor partial_m, mfq_tensor_backend::Tensor partial_l,
+static ::tyloi::Tensor attention_cache_decode_split_impl_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale,
+    ::tyloi::Tensor partial_o, ::tyloi::Tensor partial_m, ::tyloi::Tensor partial_l,
     int64_t parts, bool dynamic_parts)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention_cache_decode_split: q must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous(), "attention_cache_decode_split: k_cache must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(v_cache.is_cuda() && v_cache.is_contiguous(), "attention_cache_decode_split: v_cache must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(seq_len.is_cuda() && seq_len.is_contiguous() &&
-                seq_len.scalar_type() == mfq_tensor_backend::kInt64,
+                seq_len.scalar_type() == ::tyloi::kInt64,
                 "attention_cache_decode_split: seq_len must be cuda int64[B]");
     TYLOINFER_RUNTIME_CHECK(q.scalar_type() == k_cache.scalar_type() && q.scalar_type() == v_cache.scalar_type(),
                 "attention_cache_decode_split: q/k/v dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == mfq_tensor_backend::kFloat16 || q.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-                q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == ::tyloi::kFloat16 || q.scalar_type() == ::tyloi::kBFloat16 ||
+                q.scalar_type() == ::tyloi::kFloat32,
                 "attention_cache_decode_split: dtype must be f16, bf16, or f32");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(2) == 1, "attention_cache_decode_split: q must be [B,Hq,1,D]");
     TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k_cache.sizes() == v_cache.sizes(),
                 "attention_cache_decode_split: caches must be [B,Hk,max_seq,D]");
-    TYLOINFER_RUNTIME_CHECK(partial_o.is_cuda() && partial_o.is_contiguous() && partial_o.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(partial_o.is_cuda() && partial_o.is_contiguous() && partial_o.scalar_type() == ::tyloi::kFloat32,
                 "attention_cache_decode_split: partial_o must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(partial_m.is_cuda() && partial_m.is_contiguous() && partial_m.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                partial_l.is_cuda() && partial_l.is_contiguous() && partial_l.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(partial_m.is_cuda() && partial_m.is_contiguous() && partial_m.scalar_type() == ::tyloi::kFloat32 &&
+                partial_l.is_cuda() && partial_l.is_contiguous() && partial_l.scalar_type() == ::tyloi::kFloat32,
                 "attention_cache_decode_split: partial_m/l must be contiguous CUDA f32");
 
     const int B = (int)q.size(0);
@@ -820,10 +820,10 @@ static mfq_tensor_backend::Tensor attention_cache_decode_split_impl_cuda(
                 "attention_cache_decode_split: partial_o shape mismatch");
     const int workspace_parts = (int)partial_o.size(1);
     TYLOINFER_RUNTIME_CHECK(parts >= 2 && parts <= workspace_parts, "attention_cache_decode_split: invalid parts");
-    TYLOINFER_RUNTIME_CHECK(partial_m.sizes() == mfq_tensor_backend::IntArrayRef({total, workspace_parts}) &&
+    TYLOINFER_RUNTIME_CHECK(partial_m.sizes() == ::tyloi::IntArrayRef({total, workspace_parts}) &&
                 partial_l.sizes() == partial_m.sizes(), "attention_cache_decode_split: partial_m/l shape mismatch");
 
-    auto out = mfq_tensor_backend::empty_like(q);
+    auto out = ::tyloi::cuda::empty_like(q);
     const int shmem = D * (int)sizeof(float);
     const int rep = Hq / Hk;
     cudaStream_t stream = mfq_current_cuda_stream();
@@ -862,9 +862,9 @@ static mfq_tensor_backend::Tensor attention_cache_decode_split_impl_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor attention_cache_decode_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache, mfq_tensor_backend::Tensor seq_len,
+::tyloi::Tensor attention_cache_decode_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
     double scale)
 {
     return attention_cache_decode_impl_cuda(
@@ -872,12 +872,12 @@ mfq_tensor_backend::Tensor attention_cache_decode_cuda(
         std::move(seq_len), scale, -1);
 }
 
-mfq_tensor_backend::Tensor attention_cache_decode_split_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache, mfq_tensor_backend::Tensor seq_len,
-    double scale, mfq_tensor_backend::Tensor partial_o,
-    mfq_tensor_backend::Tensor partial_m,
-    mfq_tensor_backend::Tensor partial_l, int64_t parts)
+::tyloi::Tensor attention_cache_decode_split_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
+    double scale, ::tyloi::Tensor partial_o,
+    ::tyloi::Tensor partial_m,
+    ::tyloi::Tensor partial_l, int64_t parts)
 {
     return attention_cache_decode_split_impl_cuda(
         std::move(q), std::move(k_cache), std::move(v_cache),
@@ -885,12 +885,12 @@ mfq_tensor_backend::Tensor attention_cache_decode_split_cuda(
         std::move(partial_m), std::move(partial_l), parts, false);
 }
 
-mfq_tensor_backend::Tensor attention_cache_decode_dynamic_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache, mfq_tensor_backend::Tensor seq_len,
-    double scale, mfq_tensor_backend::Tensor partial_o,
-    mfq_tensor_backend::Tensor partial_m,
-    mfq_tensor_backend::Tensor partial_l, int64_t max_parts)
+::tyloi::Tensor attention_cache_decode_dynamic_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache, ::tyloi::Tensor seq_len,
+    double scale, ::tyloi::Tensor partial_o,
+    ::tyloi::Tensor partial_m,
+    ::tyloi::Tensor partial_l, int64_t max_parts)
 {
     return attention_cache_decode_split_impl_cuda(
         std::move(q), std::move(k_cache), std::move(v_cache),
@@ -1005,20 +1005,20 @@ __global__ void attention_cache_swa_split_part_kernel(
     }
 }
 
-static mfq_tensor_backend::Tensor attention_cache_swa_impl_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t window, int64_t planned_length)
+static ::tyloi::Tensor attention_cache_swa_impl_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t window, int64_t planned_length)
 {
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous(), "attention_cache_swa: q must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
                 v_cache.is_cuda() && v_cache.is_contiguous(),
                 "attention_cache_swa: caches must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(seq_len.is_cuda() && seq_len.is_contiguous() &&
-                seq_len.scalar_type() == mfq_tensor_backend::kInt64,
+                seq_len.scalar_type() == ::tyloi::kInt64,
                 "attention_cache_swa: seq_len must be cuda int64[B]");
     TYLOINFER_RUNTIME_CHECK(q.scalar_type() == k_cache.scalar_type() && q.scalar_type() == v_cache.scalar_type(),
                 "attention_cache_swa: q/k/v dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == mfq_tensor_backend::kFloat16 || q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.scalar_type() == ::tyloi::kFloat16 || q.scalar_type() == ::tyloi::kFloat32,
                 "attention_cache_swa: dtype must be f16 or f32");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k_cache.dim() == 4 && v_cache.dim() == 4 &&
                 k_cache.sizes() == v_cache.sizes(),
@@ -1037,7 +1037,7 @@ static mfq_tensor_backend::Tensor attention_cache_swa_impl_cuda(
     TYLOINFER_RUNTIME_CHECK(k_cache.size(0) == B && k_cache.size(3) == D, "attention_cache_swa: cache shape mismatch");
     TYLOINFER_RUNTIME_CHECK(Hq % Hk == 0, "attention_cache_swa: GQA requires Hq % Hk == 0");
 
-    auto out = mfq_tensor_backend::empty_like(q);
+    auto out = ::tyloi::cuda::empty_like(q);
     const int total = B * Hq * T;
     const int rep = Hq / Hk;
     const int shmem = D * (int)sizeof(float);
@@ -1055,9 +1055,9 @@ static mfq_tensor_backend::Tensor attention_cache_swa_impl_cuda(
             seq_len.data_ptr<int64_t>(), out.data_ptr<scalar_t>(),                               \
             Hq, Hk, T, capacity, D, rep, (int)window, (float)scale);                             \
     } else {                                                                                     \
-        auto po = mfq_tensor_backend::empty({total, parts, D}, q.options().dtype(mfq_tensor_backend::kFloat32));            \
-        auto pm = mfq_tensor_backend::empty({total, parts}, q.options().dtype(mfq_tensor_backend::kFloat32));               \
-        auto pl = mfq_tensor_backend::empty({total, parts}, q.options().dtype(mfq_tensor_backend::kFloat32));               \
+        auto po = ::tyloi::cuda::empty({total, parts, D}, q.options().dtype(::tyloi::kFloat32));            \
+        auto pm = ::tyloi::cuda::empty({total, parts}, q.options().dtype(::tyloi::kFloat32));               \
+        auto pl = ::tyloi::cuda::empty({total, parts}, q.options().dtype(::tyloi::kFloat32));               \
         attention_cache_swa_split_part_kernel<BD, scalar_t><<<total * parts, BD, shmem, stream>>>( \
             q.data_ptr<scalar_t>(), k_cache.data_ptr<scalar_t>(), v_cache.data_ptr<scalar_t>(),  \
             seq_len.data_ptr<int64_t>(), po.data_ptr<float>(), pm.data_ptr<float>(),             \
@@ -1078,17 +1078,17 @@ static mfq_tensor_backend::Tensor attention_cache_swa_impl_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor attention_cache_swa_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t window)
+::tyloi::Tensor attention_cache_swa_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t window)
 {
     return attention_cache_swa_impl_cuda(
         q, k_cache, v_cache, seq_len, scale, window, 0);
 }
 
-mfq_tensor_backend::Tensor attention_cache_swa_planned_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t window, int64_t planned_length)
+::tyloi::Tensor attention_cache_swa_planned_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t window, int64_t planned_length)
 {
     TYLOINFER_RUNTIME_CHECK(planned_length > 0 && planned_length <= INT_MAX,
         "attention_cache_swa_planned: planned length must be in [1, INT_MAX]");

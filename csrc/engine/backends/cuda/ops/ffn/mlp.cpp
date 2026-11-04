@@ -11,8 +11,8 @@
 #include <utility>
 #include <vector>
 
-using Tensor = mfq_tensor_backend::Tensor;
-using ActivationKind = mfq::ops::MlpActivation;
+using Tensor = ::tyloi::Tensor;
+using ActivationKind = tyloi::ops::MlpActivation;
 
 Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Tensor &ids,
                                std::size_t gather_budget_bytes) {
@@ -28,12 +28,12 @@ Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Te
     auto project = [&](const Tensor &chunk_ids, const Tensor &chunk_input) {
         const int64_t count = chunk_ids.size(0);
         auto selected =
-            bank.index_select(0, chunk_ids.reshape({-1}).to(mfq_tensor_backend::kInt64))
+            bank.index_select(0, chunk_ids.reshape({-1}).to(::tyloi::kInt64))
                 .reshape({count, routes, output, width});
         auto source = chunk_input.dim() == 2
                           ? chunk_input.unsqueeze(1).expand({count, routes, width})
                           : chunk_input;
-        return mfq_tensor_backend::matmul(selected, source.to(bank.scalar_type()).unsqueeze(-1))
+        return ::tyloi::cuda::matmul(selected, source.to(bank.scalar_type()).unsqueeze(-1))
             .squeeze(-1);
     };
     // Every route copies its whole expert matrix, so a long prompt would gather
@@ -49,12 +49,11 @@ Tensor dense_routed_projection(const Tensor &bank, const Tensor &input, const Te
         const auto count = std::min(chunk_rows, rows - start);
         parts.push_back(project(ids.narrow(0, start, count), input.narrow(0, start, count)));
     }
-    return mfq_tensor_backend::cat(parts, 0);
+    return ::tyloi::cuda::cat(parts, 0);
 }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-using Tensor = mfq_tensor_backend::Tensor;
 
 Tensor expert_activation(ActivationKind activation, Tensor gate, Tensor up, double limit) {
     if (activation == ActivationKind::relu_squared) {
@@ -65,14 +64,14 @@ Tensor expert_activation(ActivationKind activation, Tensor gate, Tensor up, doub
     if (activation == ActivationKind::gelu_gated)
         return gelu_mul_cuda(gate.contiguous(), up.contiguous());
     if (limit > 0.0) {
-        auto clipped_gate = mfq_tensor_backend::clamp_max(
-            gate.to(mfq_tensor_backend::kFloat32), limit);
-        auto clipped_up = mfq_tensor_backend::clamp(
-            up.to(mfq_tensor_backend::kFloat32), -limit, limit);
-        return (mfq_tensor_backend::silu(clipped_gate) * clipped_up)
-            .to(mfq_tensor_backend::kFloat16).contiguous();
+        auto clipped_gate = ::tyloi::cuda::clamp_max(
+            gate.to(::tyloi::kFloat32), limit);
+        auto clipped_up = ::tyloi::cuda::clamp(
+            up.to(::tyloi::kFloat32), -limit, limit);
+        return (::tyloi::cuda::silu(clipped_gate) * clipped_up)
+            .to(::tyloi::kFloat16).contiguous();
     }
-    return (up * mfq_tensor_backend::silu(gate)).contiguous();
+    return (up * ::tyloi::cuda::silu(gate)).contiguous();
 }
 
 void Mlp::check(const Tensor& input, int primary) const {
@@ -90,10 +89,10 @@ void Mlp::check(const Tensor& input, int primary) const {
     auto device = input.device();
     if (!gate_up.layers.empty()) {
         const auto& first = gate_up.layers.front();
-        if (first.tensor_parallel()) device = mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary);
+        if (first.tensor_parallel()) device = ::tyloi::Device(::tyloi::kCUDA, primary);
         for (const auto& layer : gate_up.layers) {
             const auto local_device = layer.tensor_parallel()
-                ? mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary) : input.device();
+                ? ::tyloi::Device(::tyloi::kCUDA, primary) : input.device();
             if (local_device != device)
                 throw std::invalid_argument("MLP gate and up devices do not match");
         }
@@ -131,14 +130,14 @@ bool Mlp::parallel() const {
     return true;
 }
 
-mfq_tensor_backend::Tensor Mlp::sharded(
+::tyloi::Tensor Mlp::sharded(
         CudaProfiler& profiler, KlMmqState& mmq, TqExec& tq, Collectives& collectives,
         int primary, bool peer_first, bool reduce_to_primary, bool fp16_reduce,
-        mfq_tensor_backend::Tensor xh) const {
+        ::tyloi::Tensor xh) const {
     auto shape = xh.sizes().vec();
     auto flat = xh.reshape({-1, xh.size(-1)});
     const size_t shard_count = down.tensor_parallel_shards.size();
-    std::vector<mfq_tensor_backend::Tensor> partials(shard_count);
+    std::vector<::tyloi::Tensor> partials(shard_count);
     for (size_t launch_position = 0; launch_position < shard_count; ++launch_position) {
         const size_t index = parallel_index(peer_first, launch_position, shard_count);
         const auto &gate_shard = gate_up.layers[0].tensor_parallel_shards[index];
@@ -146,39 +145,24 @@ mfq_tensor_backend::Tensor Mlp::sharded(
         const auto &down_shard = down.tensor_parallel_shards[index];
         MfqCudaGuard guard(gate_shard.device);
         auto local_x = collectives.copy(flat, gate_shard.device);
-        using Tensor = mfq_tensor_backend::Tensor;
-        auto unfused = [](const auto &...) { return std::optional<Tensor>{}; };
-        partials[index] = mfq::ops::gated_mlp(
-            local_x, geglu, swiglu_limit, unfused, unfused,
-            [&](Tensor input) {
-                auto gate =
-                    run_quant_linear_shard(profiler, mmq, tq, gate_shard, input);
-                auto up =
-                    run_quant_linear_shard(profiler, mmq, tq, up_shard, input);
-                return std::array<Tensor, 2>{std::move(gate), std::move(up)};
-            },
-            [&](Tensor gate_output, Tensor up_output, auto activation_kind, double limit) {
-                mfq_tensor_backend::Tensor activation;
-                if (activation_kind == mfq::ops::GatedActivation::gelu) {
-                    activation = gelu_mul_cuda(gate_output.contiguous(), up_output.contiguous());
-                } else if (limit > 0.0) {
-                    auto clipped_gate = mfq_tensor_backend::clamp_max(
-                        gate_output.to(mfq_tensor_backend::kFloat32), limit);
-                    auto clipped_up = mfq_tensor_backend::clamp(
-                        up_output.to(mfq_tensor_backend::kFloat32), -limit, limit);
-                    activation = (mfq_tensor_backend::silu(clipped_gate) * clipped_up)
-                                     .to(mfq_tensor_backend::kFloat16)
-                                     .contiguous();
-                } else {
-                    activation = (mfq_tensor_backend::silu(gate_output) * up_output).contiguous();
-                }
-                return activation;
-            },
-            [&](Tensor activation) {
-                return run_quant_linear_shard(profiler, mmq, tq, down_shard,
-                                              activation);
-            },
-            unfused);
+        auto gate_output = run_quant_linear_shard(profiler, mmq, tq, gate_shard, local_x);
+        auto up_output = run_quant_linear_shard(profiler, mmq, tq, up_shard, local_x);
+        ::tyloi::Tensor hidden;
+        if (geglu) {
+            hidden = gelu_mul_cuda(gate_output.contiguous(), up_output.contiguous());
+        } else if (swiglu_limit > 0.0) {
+            auto clipped_gate = ::tyloi::cuda::clamp_max(
+                gate_output.to(::tyloi::kFloat32), swiglu_limit);
+            auto clipped_up = ::tyloi::cuda::clamp(
+                up_output.to(::tyloi::kFloat32), -swiglu_limit, swiglu_limit);
+            hidden = (::tyloi::cuda::silu(clipped_gate) * clipped_up)
+                         .to(::tyloi::kFloat16).contiguous();
+        } else {
+            hidden = (::tyloi::cuda::silu(gate_output) * up_output).contiguous();
+        }
+        gate_output = {};
+        up_output = {};
+        partials[index] = run_quant_linear_shard(profiler, mmq, tq, down_shard, hidden);
     }
     auto output = collectives.sum(std::move(partials), primary,
             reduce_to_primary, fp16_reduce);
@@ -186,11 +170,10 @@ mfq_tensor_backend::Tensor Mlp::sharded(
     return output.reshape(shape);
 }
 
-mfq_tensor_backend::Tensor Mlp::forward(
+::tyloi::Tensor Mlp::forward(
         const Projector& project, CudaProfiler& profiler, const Options& options,
-        mfq_tensor_backend::Tensor xh) const {
-    using Tensor = mfq_tensor_backend::Tensor;
-    using Activation = mfq::ops::GatedActivation;
+        ::tyloi::Tensor xh) const {
+    using Tensor = ::tyloi::Tensor;
     if (activation == ActivationKind::relu_squared) {
         TYLOINFER_RUNTIME_CHECK(!parallel(),
                           "relu-squared MLP does not support tensor parallelism");
@@ -203,102 +186,84 @@ mfq_tensor_backend::Tensor Mlp::forward(
         return profiler.measure("ffn.down",
                                 [&]() { return project.run(down, hidden); });
     }
-    return mfq::ops::gated_mlp(
-        xh, geglu, swiglu_limit,
-        [&](const Tensor &input, Activation activation, double limit) -> std::optional<Tensor> {
-            if (activation != Activation::silu || limit > 0.0)
-                return {};
-            if (mfq::mfq_compat_enabled && options.nvq_fusion && input.numel() / input.size(-1) == 1 &&
-                gate_up.nvq_prefix2 && gate_up.layers.size() == 2 && gate_up.layers[0].is_nvq() &&
-                gate_up.layers[1].is_nvq() && down.is_nvq() && gate_up.outs.size() == 2 &&
-                gate_up.outs[0] == gate_up.outs[1] && gate_up.outs[0] == down.nvq.neuron_len &&
-                (down.nvq.gs == 24 || down.nvq.gs == 28 || down.nvq.gs == 32)) {
-                auto shape = input.sizes().vec();
-                shape.back() = down.nvq.out;
-                return nvq_ffn_swiglu_down(profiler, gate_up.layers[0].nvq, gate_up.layers[1].nvq,
-                                           down.nvq, input.reshape({-1, input.size(-1)}))
-                    .reshape(shape);
-            }
-            return {};
-        },
-        [&](const Tensor &input, Activation activation, double limit) -> std::optional<Tensor> {
-            if(limit<=0.0 && activation==Activation::silu && gate_up.tq.defined() &&
-                    gate_up.outs.size()==2 && gate_up.outs[0]==gate_up.outs[1])
-                return profiler.measure("ffn.gate_up_swiglu",[&] {return project.swiglu(gate_up, input);});
-            if (!mfq::mfq_compat_enabled || limit > 0.0 || !gate_up.nint_grouped || !gate_up.nint.split_w.empty())
-                return {};
-            const auto rows = input.numel() / input.size(-1);
-            if (activation == Activation::gelu && options.gelu_fusion && rows == 1)
-                return profiler.measure("ffn.gate_up_geglu",
-                                        [&] { return project.geglu(gate_up, input); });
-            if (activation == Activation::silu && options.silu_fusion && rows >= 1 &&
-                rows <= 6 && gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1])
-                return profiler.measure("ffn.gate_up_swiglu",
-                                        [&] { return project.swiglu(gate_up, input); });
-            return {};
-        },
-        [&](Tensor input) {
-            return profiler.measure("ffn.gate_up",
-                                    [&] { return project.run(gate_up, input); });
-        },
-        [&](Tensor gate, Tensor up, Activation activation, double limit) {
-            if (activation == Activation::gelu)
-                return profiler.measure(
-                    "ffn.geglu", [&] { return gelu_mul_cuda(gate.contiguous(), up.contiguous()); });
-            if (limit > 0.0)
-                return profiler.measure("ffn.swiglu_clamped", [&] {
-                    auto g =
-                        mfq_tensor_backend::clamp_max(gate.to(mfq_tensor_backend::kFloat32), limit);
-                    auto u = mfq_tensor_backend::clamp(up.to(mfq_tensor_backend::kFloat32), -limit,
-                                                       limit);
-                    return (mfq_tensor_backend::silu(g) * u)
-                        .to(mfq_tensor_backend::kFloat16)
-                        .contiguous();
-                });
-            return profiler.measure(
-                "ffn.swiglu", [&] { return (up * mfq_tensor_backend::silu(gate)).contiguous(); });
-        },
-        [&](Tensor hidden) {
-            return profiler.measure("ffn.down", [&] { return project.run(down, hidden); });
-        },
-        [&](const Tensor &gate, const Tensor &up, Activation activation,
-            double limit) -> std::optional<Tensor> {
-            if (activation != Activation::silu || limit > 0.0 || down.is_dense() || down.is_mxfp8())
-                return {};
-            return profiler.measure("ffn.down",
-                                    [&] { return project.gated(down, up, gate, InputGateMode::Silu); });
+    const double limit = geglu ? 0.0 : swiglu_limit;
+    if (!geglu && !(limit > 0.0) && tyloi::mfq_compat_enabled && options.nvq_fusion &&
+        xh.numel() / xh.size(-1) == 1 && gate_up.nvq_prefix2 && gate_up.layers.size() == 2 &&
+        gate_up.layers[0].is_nvq() && gate_up.layers[1].is_nvq() && down.is_nvq() &&
+        gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1] &&
+        gate_up.outs[0] == down.nvq.neuron_len &&
+        (down.nvq.gs == 24 || down.nvq.gs == 28 || down.nvq.gs == 32)) {
+        auto shape = xh.sizes().vec();
+        shape.back() = down.nvq.out;
+        return nvq_ffn_swiglu_down(profiler, gate_up.layers[0].nvq, gate_up.layers[1].nvq,
+                                   down.nvq, xh.reshape({-1, xh.size(-1)}))
+            .reshape(shape);
+    }
+    std::optional<Tensor> fused_hidden;
+    if (limit <= 0.0 && !geglu && gate_up.tq.defined() &&
+        gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1])
+        fused_hidden = profiler.measure("ffn.gate_up_swiglu", [&] { return project.swiglu(gate_up, xh); });
+    else if (tyloi::mfq_compat_enabled && !(limit > 0.0) && gate_up.nint_grouped && gate_up.nint.split_w.empty()) {
+        const auto rows = xh.numel() / xh.size(-1);
+        if (geglu && options.gelu_fusion && rows == 1)
+            fused_hidden = profiler.measure("ffn.gate_up_geglu", [&] { return project.geglu(gate_up, xh); });
+        else if (!geglu && options.silu_fusion && rows >= 1 &&
+                 rows <= 6 && gate_up.outs.size() == 2 && gate_up.outs[0] == gate_up.outs[1])
+            fused_hidden = profiler.measure("ffn.gate_up_swiglu", [&] { return project.swiglu(gate_up, xh); });
+    }
+    if (fused_hidden)
+        return profiler.measure("ffn.down", [&] { return project.run(down, *fused_hidden); });
+    auto parts = profiler.measure("ffn.gate_up", [&] { return project.run(gate_up, xh); });
+    if (parts.size() != 2)
+        throw std::runtime_error("gated MLP requires gate and up projections");
+    if (!geglu && !(limit > 0.0) && !down.is_dense() && !down.is_mxfp8())
+        return profiler.measure("ffn.down", [&] {
+            return project.gated(down, parts[1], parts[0], InputGateMode::Silu);
         });
+    auto gate = std::move(parts[0]);
+    auto up = std::move(parts[1]);
+    Tensor hidden;
+    if (geglu)
+        hidden = profiler.measure("ffn.geglu", [&] { return gelu_mul_cuda(gate.contiguous(), up.contiguous()); });
+    else if (limit > 0.0)
+        hidden = profiler.measure("ffn.swiglu_clamped", [&] {
+            auto g = ::tyloi::cuda::clamp_max(gate.to(::tyloi::kFloat32), limit);
+            auto u = ::tyloi::cuda::clamp(up.to(::tyloi::kFloat32), -limit, limit);
+            return (::tyloi::cuda::silu(g) * u).to(::tyloi::kFloat16).contiguous();
+        });
+    else
+        hidden = profiler.measure("ffn.swiglu", [&] { return (up * ::tyloi::cuda::silu(gate)).contiguous(); });
+    gate = {};
+    up = {};
+    return profiler.measure("ffn.down", [&] { return project.run(down, hidden); });
 }
 
-mfq_tensor_backend::Tensor Mlp::bf16(
+::tyloi::Tensor Mlp::bf16(
         const Projector& project, CudaProfiler& profiler, bool fused, Tensor input) const {
-    using Activation = mfq::ops::GatedActivation;
-    const auto unfused = [](const auto&...) { return std::optional<Tensor>{}; };
-    return mfq::ops::gated_mlp(
-        std::move(input), false, 0.0, unfused, unfused,
-        [&](Tensor input) {
-            return profiler.measure("full.minicpmo45_ffn_gate_up", [&] {
-                return project.run(gate_up, input);
-            });
-        },
-        [&](Tensor gate, Tensor up, Activation, double) {
-            gate = gate.to(mfq_tensor_backend::kBFloat16).contiguous();
-            up = up.to(mfq_tensor_backend::kBFloat16).contiguous();
-            return profiler.measure("full.minicpmo45_ffn_swiglu", [&] {
-                return fused ? silu_mul_cuda(gate, up)
-                             : (mfq_tensor_backend::silu(gate) * up).contiguous();
-            });
-        },
-        [&](Tensor activation) {
-            return profiler.measure("full.minicpmo45_ffn_down", [&] {
-                return project.run(down, activation).to(mfq_tensor_backend::kBFloat16).contiguous();
-            });
-        }, unfused);
+    auto parts = profiler.measure("full.minicpmo45_ffn_gate_up", [&] {
+        return project.run(gate_up, input);
+    });
+    input = {};
+    if (parts.size() != 2)
+        throw std::runtime_error("gated MLP requires gate and up projections");
+    auto gate = std::move(parts[0]);
+    auto up = std::move(parts[1]);
+    gate = gate.to(::tyloi::kBFloat16).contiguous();
+    up = up.to(::tyloi::kBFloat16).contiguous();
+    auto hidden = profiler.measure("full.minicpmo45_ffn_swiglu", [&] {
+        return fused ? silu_mul_cuda(gate, up)
+                     : (::tyloi::cuda::silu(gate) * up).contiguous();
+    });
+    gate = {};
+    up = {};
+    return profiler.measure("full.minicpmo45_ffn_down", [&] {
+        return project.run(down, hidden).to(::tyloi::kBFloat16).contiguous();
+    });
 }
 
-mfq_tensor_backend::Tensor Mlp::kld(
+::tyloi::Tensor Mlp::kld(
         const Projector& project, CudaProfiler& profiler, KlMmqState& mmq,
-        mfq_tensor_backend::Tensor xh) const {
+        ::tyloi::Tensor xh) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     TYLOINFER_RUNTIME_CHECK(!parallel() &&
                           activation == ActivationKind::silu_gated && !geglu &&
@@ -317,8 +282,8 @@ bool Mlp::can_fuse(const Tensor& x, const Tensor& residual) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     if (activation != ActivationKind::silu_gated || geglu || swiglu_limit > 0.0 ||
         parallel() || !x.is_cuda() || !residual.is_cuda() ||
-        x.scalar_type() != mfq_tensor_backend::kFloat16 ||
-        residual.scalar_type() != mfq_tensor_backend::kFloat16 || !x.is_contiguous() ||
+        x.scalar_type() != ::tyloi::kFloat16 ||
+        residual.scalar_type() != ::tyloi::kFloat16 || !x.is_contiguous() ||
         !residual.is_contiguous() || x.dim() < 1 || residual.dim() < 1 ||
         x.numel() / x.size(-1) != 1 || residual.numel() / residual.size(-1) != 1 ||
         gate_up.layers.size() != 2 || !gate_up.nvq_prefix2 || !gate_up.layers[0].is_nvq() ||
@@ -349,4 +314,4 @@ Tensor Mlp::fused(CudaProfiler& profiler, Tensor x, Tensor residual) const {
 #endif
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

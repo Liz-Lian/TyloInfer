@@ -72,36 +72,35 @@ __global__ void qsa_pool_rotary_cache_kernel(const Value* index,const float* wei
     output[block*width+column+pairs]=Value(__fadd_rn(__fmul_rn(second,cosine),__fmul_rn(first,sine)));
 }
 
-void qsa_pool_rotary_cache_cuda(const mfq_tensor_backend::Tensor& index,const mfq_tensor_backend::Tensor& weight,
-        const mfq_tensor_backend::Tensor& positions,const mfq_tensor_backend::Tensor& cache,
-        const mfq_tensor_backend::Tensor& frequencies,const mfq_tensor_backend::Tensor& axes,
-        const mfq_tensor_backend::Tensor& output,int64_t pool,int64_t maximum,int64_t rotary_maximum,double eps) {
-    namespace tb=mfq_tensor_backend;
+void qsa_pool_rotary_cache_cuda(const ::tyloi::Tensor& index,const ::tyloi::Tensor& weight,
+        const ::tyloi::Tensor& positions,const ::tyloi::Tensor& cache,
+        const ::tyloi::Tensor& frequencies,const ::tyloi::Tensor& axes,
+        const ::tyloi::Tensor& output,int64_t pool,int64_t maximum,int64_t rotary_maximum,double eps) {
     TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 && index.size(2)>0 && index.size(2)<=256 &&
-        (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32) && pool>0 && pool<=INT_MAX &&
+        (index.scalar_type()==::tyloi::kFloat16 || index.scalar_type()==::tyloi::kFloat32) && pool>0 && pool<=INT_MAX &&
         maximum>0 && maximum<=index.size(1) && maximum<=INT_MAX && rotary_maximum>0 && rotary_maximum<=INT_MAX &&
         std::isfinite(eps) && eps>=0,"invalid pooled rotary geometry");
     TYLOINFER_RUNTIME_CHECK(cache.device()==index.device() && cache.is_contiguous() && cache.dim()==1 &&
-        cache.numel()>0 && cache.numel()<=32 && cache.scalar_type()==tb::kInt64 &&
+        cache.numel()>0 && cache.numel()<=32 && cache.scalar_type()==::tyloi::kInt64 &&
         positions.device()==index.device() && positions.is_contiguous() && positions.dim()>=1 && positions.dim()<=3 &&
         positions.size(-1)==cache.numel() && (positions.dim()<3 || positions.size(1)==1) &&
-        (positions.scalar_type()==tb::kInt32 || positions.scalar_type()==tb::kInt64),"invalid pooled rotary positions");
+        (positions.scalar_type()==::tyloi::kInt32 || positions.scalar_type()==::tyloi::kInt64),"invalid pooled rotary positions");
     TYLOINFER_RUNTIME_CHECK(output.device()==index.device() && output.is_contiguous() && output.dim()==3 && output.size(0)==1 &&
         output.size(1)>=(maximum+pool-1)/pool && output.size(2)==index.size(2) && output.scalar_type()==index.scalar_type() &&
-        weight.device()==index.device() && weight.is_contiguous() && weight.scalar_type()==tb::kFloat32 && weight.numel()==index.size(2) &&
-        frequencies.device()==index.device() && frequencies.is_contiguous() && frequencies.scalar_type()==tb::kFloat32 &&
+        weight.device()==index.device() && weight.is_contiguous() && weight.scalar_type()==::tyloi::kFloat32 && weight.numel()==index.size(2) &&
+        frequencies.device()==index.device() && frequencies.is_contiguous() && frequencies.scalar_type()==::tyloi::kFloat32 &&
         frequencies.dim()==1 && frequencies.numel()>0 && frequencies.numel()<=index.size(2)/2 &&
-        axes.device()==index.device() && axes.is_contiguous() && axes.scalar_type()==tb::kInt32 && axes.sizes()==frequencies.sizes(),
+        axes.device()==index.device() && axes.is_contiguous() && axes.scalar_type()==::tyloi::kInt32 && axes.sizes()==frequencies.sizes(),
         "invalid pooled rotary storage");
     MfqCudaGuard guard(index.device());const int width=int(index.size(2));
     const int threads=width<=32?32:width<=64?64:width<=128?128:256;
     const auto launch=[&](auto* source,auto* target) {
         qsa_pool_rotary_cache_kernel<<<unsigned(cache.numel()),threads,0,mfq_current_cuda_stream()>>>(source,
-            weight.data_ptr<float>(),positions.data_ptr(),positions.scalar_type()==tb::kInt64,cache.data_ptr<int64_t>(),
+            weight.data_ptr<float>(),positions.data_ptr(),positions.scalar_type()==::tyloi::kInt64,cache.data_ptr<int64_t>(),
             frequencies.data_ptr<float>(),axes.data_ptr<int32_t>(),target,int(cache.numel()),width,int(pool),int(maximum),
             int(rotary_maximum),int(frequencies.numel()),positions.dim()==1?1:int(positions.size(0)),float(eps),index.stride(1),index.stride(2));
     };
-    if(index.scalar_type()==tb::kFloat16)launch(reinterpret_cast<const __half*>(index.data_ptr()),reinterpret_cast<__half*>(output.data_ptr()));
+    if(index.scalar_type()==::tyloi::kFloat16)launch(reinterpret_cast<const __half*>(index.data_ptr()),reinterpret_cast<__half*>(output.data_ptr()));
     else launch(index.data_ptr<float>(),output.data_ptr<float>());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -237,18 +236,17 @@ void launch_rotary_normalized(const RotaryNormalizedProjection& p) {
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-static std::pair<mfq_tensor_backend::Tensor,RotaryNormalizedProjection> prepare_rotary_normalized(
-    mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor weight,
-    mfq_tensor_backend::Tensor positions, mfq_tensor_backend::Tensor frequencies,
-    mfq_tensor_backend::Tensor axes, int64_t maximum, double eps,
-    mfq_tensor_backend::Tensor key_cache, mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value, mfq_tensor_backend::Tensor value_cache) {
-    namespace tb = mfq_tensor_backend;
-    const auto half_or_float = [](const auto& x) { return x.scalar_type() == tb::kFloat16 || x.scalar_type() == tb::kFloat32; };
-    const auto integer = [](const auto& x) { return x.scalar_type() == tb::kInt32 || x.scalar_type() == tb::kInt64; };
+static std::pair<::tyloi::Tensor,RotaryNormalizedProjection> prepare_rotary_normalized(
+    ::tyloi::Tensor input, ::tyloi::Tensor weight,
+    ::tyloi::Tensor positions, ::tyloi::Tensor frequencies,
+    ::tyloi::Tensor axes, int64_t maximum, double eps,
+    ::tyloi::Tensor key_cache, ::tyloi::Tensor cache_positions,
+    ::tyloi::Tensor projected_value, ::tyloi::Tensor value_cache) {
+    const auto half_or_float = [](const auto& x) { return x.scalar_type() == ::tyloi::kFloat16 || x.scalar_type() == ::tyloi::kFloat32; };
+    const auto integer = [](const auto& x) { return x.scalar_type() == ::tyloi::kInt32 || x.scalar_type() == ::tyloi::kInt64; };
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.dim() == 4 && half_or_float(input) &&
         weight.is_cuda() && weight.device() == input.device() && weight.is_contiguous() &&
-        weight.scalar_type() == tb::kFloat32 && weight.dim() == 1 && weight.numel() == input.size(3),
+        weight.scalar_type() == ::tyloi::kFloat32 && weight.dim() == 1 && weight.numel() == input.size(3),
         "normalized rotary input/weight mismatch");
     const auto batches = input.size(0), tokens = input.size(1), heads = input.size(2), width = input.size(3);
     TYLOINFER_RUNTIME_CHECK(batches > 0 && tokens > 0 && heads > 0 && width > 0 && width <= INT_MAX &&
@@ -263,8 +261,8 @@ static std::pair<mfq_tensor_backend::Tensor,RotaryNormalizedProjection> prepare_
     TYLOINFER_RUNTIME_CHECK(position_axes > 0 && position_axes <= INT_MAX && position_batches <= INT_MAX &&
         (position_batches == 1 || position_batches == batches) && frequencies.is_cuda() && axes.is_cuda() &&
         frequencies.device() == input.device() && axes.device() == input.device() &&
-        frequencies.is_contiguous() && axes.is_contiguous() && frequencies.scalar_type() == tb::kFloat32 &&
-        axes.scalar_type() == tb::kInt32 && frequencies.dim() == 1 && frequencies.sizes() == axes.sizes() &&
+        frequencies.is_contiguous() && axes.is_contiguous() && frequencies.scalar_type() == ::tyloi::kFloat32 &&
+        axes.scalar_type() == ::tyloi::kInt32 && frequencies.dim() == 1 && frequencies.sizes() == axes.sizes() &&
         frequencies.numel() > 0 && frequencies.numel() <= width / 2,
         "normalized rotary frequency/axis mismatch");
     TYLOINFER_RUNTIME_CHECK(key_cache.defined() == cache_positions.defined() &&
@@ -273,7 +271,7 @@ static std::pair<mfq_tensor_backend::Tensor,RotaryNormalizedProjection> prepare_
     int64_t capacity = 0;
     if (key_cache.defined()) {
         TYLOINFER_RUNTIME_CHECK(key_cache.is_cuda() && key_cache.device() == input.device() && key_cache.is_contiguous() &&
-            key_cache.scalar_type() == tb::kFloat16 && key_cache.dim() == 4 && key_cache.size(0) == batches &&
+            key_cache.scalar_type() == ::tyloi::kFloat16 && key_cache.dim() == 4 && key_cache.size(0) == batches &&
             key_cache.size(1) == heads && key_cache.size(2) > 0 && key_cache.size(3) == width &&
             cache_positions.is_cuda() && cache_positions.device() == input.device() && cache_positions.is_contiguous() &&
             integer(cache_positions) && cache_positions.dim() == 1 && cache_positions.numel() == tokens,
@@ -282,63 +280,62 @@ static std::pair<mfq_tensor_backend::Tensor,RotaryNormalizedProjection> prepare_
     }
     if (value_cache.defined()) {
         TYLOINFER_RUNTIME_CHECK(value_cache.is_cuda() && value_cache.device() == input.device() && value_cache.is_contiguous() &&
-            value_cache.scalar_type() == tb::kFloat16 && value_cache.sizes() == key_cache.sizes() &&
+            value_cache.scalar_type() == ::tyloi::kFloat16 && value_cache.sizes() == key_cache.sizes() &&
             projected_value.is_cuda() && projected_value.device() == input.device() &&
             half_or_float(projected_value) && projected_value.sizes() == input.sizes(), "normalized rotary value cache mismatch");
     }
     MfqCudaGuard guard(input.device());
-    auto output = key_cache.defined() ? tb::Tensor{} : tb::empty({batches, heads, tokens, width}, input.options());
+    auto output = key_cache.defined() ? ::tyloi::Tensor{} : ::tyloi::cuda::empty({batches, heads, tokens, width}, input.options());
     const auto layout = [](const auto& x) { return RotaryProjectionLayout{x.stride(0), x.stride(1), x.stride(2), x.stride(3)}; };
     const auto threads = width <= 32 ? 32 : width <= 64 ? 64 : width <= 128 ? 128 : 256;
     RotaryNormalizedProjection projection{
         input.data_ptr(),weight.data_ptr<float>(),positions.data_ptr(),frequencies.data_ptr<float>(),axes.data_ptr<int32_t>(),
         output.defined()?output.data_ptr():nullptr,int(heads),int(tokens),int(width),int(frequencies.numel()),
-        int(position_axes),int(position_batches),int(maximum),int(threads),positions.scalar_type()==tb::kInt64,
+        int(position_axes),int(position_batches),int(maximum),int(threads),positions.scalar_type()==::tyloi::kInt64,
         float(eps),layout(input),key_cache.defined()?reinterpret_cast<__half*>(key_cache.data_ptr()):nullptr,
         cache_positions.defined()?cache_positions.data_ptr():nullptr,
-        cache_positions.defined() && cache_positions.scalar_type()==tb::kInt64,capacity,
+        cache_positions.defined() && cache_positions.scalar_type()==::tyloi::kInt64,capacity,
         projected_value.defined()?projected_value.data_ptr():nullptr,
-        projected_value.defined() && projected_value.scalar_type()==tb::kFloat32,
+        projected_value.defined() && projected_value.scalar_type()==::tyloi::kFloat32,
         projected_value.defined()?layout(projected_value):RotaryProjectionLayout{},
         value_cache.defined()?reinterpret_cast<__half*>(value_cache.data_ptr()):nullptr,input.numel()/width};
     return {output,projection};
 }
 
-mfq_tensor_backend::Tensor rotary_normalized_cached_cuda(
-    mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor weight,
-    mfq_tensor_backend::Tensor positions, mfq_tensor_backend::Tensor frequencies,
-    mfq_tensor_backend::Tensor axes, int64_t maximum, double eps,
-    mfq_tensor_backend::Tensor key_cache, mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value, mfq_tensor_backend::Tensor value_cache) {
+::tyloi::Tensor rotary_normalized_cached_cuda(
+    ::tyloi::Tensor input, ::tyloi::Tensor weight,
+    ::tyloi::Tensor positions, ::tyloi::Tensor frequencies,
+    ::tyloi::Tensor axes, int64_t maximum, double eps,
+    ::tyloi::Tensor key_cache, ::tyloi::Tensor cache_positions,
+    ::tyloi::Tensor projected_value, ::tyloi::Tensor value_cache) {
 
     auto prepared=prepare_rotary_normalized(input,weight,positions,frequencies,axes,maximum,eps,
         key_cache,cache_positions,projected_value,value_cache);
     MfqCudaGuard guard(input.device());
-    if(input.scalar_type()==mfq_tensor_backend::kFloat32)launch_rotary_normalized<float>(prepared.second);
+    if(input.scalar_type()==::tyloi::kFloat32)launch_rotary_normalized<float>(prepared.second);
     else launch_rotary_normalized<__half>(prepared.second);
     return prepared.first;
 }
 
-std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
-    const std::vector<mfq_tensor_backend::Tensor>& inputs,
-    const std::vector<mfq_tensor_backend::Tensor>& weights,
-    mfq_tensor_backend::Tensor positions,mfq_tensor_backend::Tensor frequencies,
-    mfq_tensor_backend::Tensor axes,int64_t maximum,double eps,int cache_entry,
-    mfq_tensor_backend::Tensor key_cache,mfq_tensor_backend::Tensor cache_positions,
-    mfq_tensor_backend::Tensor projected_value,mfq_tensor_backend::Tensor value_cache) {
-    namespace tb=mfq_tensor_backend;
+std::vector<::tyloi::Tensor> rotary_normalized_grouped_cuda(
+    const std::vector<::tyloi::Tensor>& inputs,
+    const std::vector<::tyloi::Tensor>& weights,
+    ::tyloi::Tensor positions,::tyloi::Tensor frequencies,
+    ::tyloi::Tensor axes,int64_t maximum,double eps,int cache_entry,
+    ::tyloi::Tensor key_cache,::tyloi::Tensor cache_positions,
+    ::tyloi::Tensor projected_value,::tyloi::Tensor value_cache) {
     TYLOINFER_RUNTIME_CHECK(!inputs.empty() && inputs.size()<=3 && weights.size()==inputs.size(),
         "normalized rotary group must contain one to three input/weight pairs");
     TYLOINFER_RUNTIME_CHECK((cache_entry>=0 && cache_entry<int(inputs.size())) ||
         (!key_cache.defined() && !cache_positions.defined() && !projected_value.defined() && !value_cache.defined()),
         "normalized rotary cache entry is outside the group");
     RotaryNormalizedGroup group{};group.count=int(inputs.size());
-    std::vector<tb::Tensor> outputs;outputs.reserve(inputs.size());
+    std::vector<::tyloi::Tensor> outputs;outputs.reserve(inputs.size());
     int64_t rows=0;int threads=32;bool uniform=true;
     for(size_t i=0;i<inputs.size();++i) {
         auto prepared=prepare_rotary_normalized(inputs[i],weights[i],positions,frequencies,axes,maximum,eps,
-            int(i)==cache_entry?key_cache:tb::Tensor{},int(i)==cache_entry?cache_positions:tb::Tensor{},
-            int(i)==cache_entry?projected_value:tb::Tensor{},int(i)==cache_entry?value_cache:tb::Tensor{});
+            int(i)==cache_entry?key_cache: ::tyloi::Tensor{},int(i)==cache_entry?cache_positions: ::tyloi::Tensor{},
+            int(i)==cache_entry?projected_value: ::tyloi::Tensor{},int(i)==cache_entry?value_cache: ::tyloi::Tensor{});
         TYLOINFER_RUNTIME_CHECK(inputs[i].device()==inputs[0].device(),"normalized rotary group device mismatch");
         uniform=uniform && inputs[i].scalar_type()==inputs[0].scalar_type();
         group.entries[i]=prepared.second;outputs.push_back(std::move(prepared.first));
@@ -347,11 +344,11 @@ std::vector<mfq_tensor_backend::Tensor> rotary_normalized_grouped_cuda(
     MfqCudaGuard guard(inputs[0].device());
     if(!uniform || rows>INT_MAX) {
         for(size_t i=0;i<inputs.size();++i) {
-            if(inputs[i].scalar_type()==tb::kFloat32)launch_rotary_normalized<float>(group.entries[i]);
+            if(inputs[i].scalar_type()==::tyloi::kFloat32)launch_rotary_normalized<float>(group.entries[i]);
             else launch_rotary_normalized<__half>(group.entries[i]);
         }
     } else {
-        if(inputs[0].scalar_type()==tb::kFloat32)
+        if(inputs[0].scalar_type()==::tyloi::kFloat32)
             rotary_normalized_grouped_kernel<float><<<unsigned(rows),threads,0,mfq_current_cuda_stream()>>>(group);
         else rotary_normalized_grouped_kernel<__half><<<unsigned(rows),threads,0,mfq_current_cuda_stream()>>>(group);
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
@@ -391,24 +388,23 @@ __global__ void rotary_embedding_cached_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor rotary_embedding_cached_cuda(
-    mfq_tensor_backend::Tensor input,mfq_tensor_backend::Tensor positions,
-    mfq_tensor_backend::Tensor frequencies,mfq_tensor_backend::Tensor axes,int64_t maximum) {
-    namespace tb=mfq_tensor_backend;
+::tyloi::Tensor rotary_embedding_cached_cuda(
+    ::tyloi::Tensor input,::tyloi::Tensor positions,
+    ::tyloi::Tensor frequencies,::tyloi::Tensor axes,int64_t maximum) {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && positions.is_cuda() && frequencies.is_cuda() && axes.is_cuda() &&
         input.device()==positions.device() && input.device()==frequencies.device() && input.device()==axes.device(),
         "cached rotary tensors must share a CUDA device");
     TYLOINFER_RUNTIME_CHECK(input.is_contiguous() && positions.is_contiguous() && frequencies.is_contiguous() && axes.is_contiguous() &&
         input.dim()==4 && positions.dim()>=1 && positions.dim()<=3 && frequencies.dim()==1 && axes.sizes()==frequencies.sizes() &&
-        positions.scalar_type()==tb::kInt32 && frequencies.scalar_type()==tb::kFloat32 && axes.scalar_type()==tb::kInt32 &&
-        (input.scalar_type()==tb::kFloat16 || input.scalar_type()==tb::kFloat32),"cached rotary layout/dtype mismatch");
+        positions.scalar_type()==::tyloi::kInt32 && frequencies.scalar_type()==::tyloi::kFloat32 && axes.scalar_type()==::tyloi::kInt32 &&
+        (input.scalar_type()==::tyloi::kFloat16 || input.scalar_type()==::tyloi::kFloat32),"cached rotary layout/dtype mismatch");
     const int64_t pairs=frequencies.numel();
     const int64_t batches=positions.dim()<3?1:positions.size(1),position_axes=positions.dim()==1?1:positions.size(0);
     TYLOINFER_RUNTIME_CHECK(pairs>0 && pairs<=input.size(3)/2 && input.size(0)>0 && input.size(1)>0 && input.size(2)>0 &&
         positions.size(-1)==input.size(2) && (batches==1 || batches==input.size(0)) && position_axes>0 && maximum>0 && maximum<=INT_MAX &&
         input.size(1)<=INT_MAX && input.size(2)<=INT_MAX && input.size(3)<=INT_MAX &&
         batches<=INT_MAX && position_axes<=INT_MAX,"cached rotary geometry mismatch");
-    auto output=tb::empty_like(input);
+    auto output=::tyloi::cuda::empty_like(input);
     const int64_t rows=input.numel()/input.size(3),total=rows*(input.size(3)-pairs);
     const auto blocks=static_cast<unsigned int>((total+127)/128);
     auto launch=[&](auto tag) {
@@ -418,21 +414,21 @@ mfq_tensor_backend::Tensor rotary_embedding_cached_cuda(
             axes.data_ptr<int32_t>(),reinterpret_cast<Value*>(output.data_ptr()),rows,int(input.size(1)),int(input.size(2)),
             int(input.size(3)),int(pairs),int(position_axes),int(batches),int(maximum));
     };
-    if(input.scalar_type()==tb::kFloat32)launch(float{});else launch(__half{});
+    if(input.scalar_type()==::tyloi::kFloat32)launch(float{});else launch(__half{});
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();return output;
 }
 
-mfq_tensor_backend::Tensor rope_ext_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos, double base, int64_t rotary_dim, mfq_tensor_backend::Tensor sections);
-mfq_tensor_backend::Tensor rope_table_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos, mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
-                              int64_t rotary_dim, mfq_tensor_backend::Tensor sections);
-mfq_tensor_backend::Tensor rope_table_bf16_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos,
-                                   mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
+::tyloi::Tensor rope_ext_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos, double base, int64_t rotary_dim, ::tyloi::Tensor sections);
+::tyloi::Tensor rope_table_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos, ::tyloi::Tensor cos, ::tyloi::Tensor sin,
+                              int64_t rotary_dim, ::tyloi::Tensor sections);
+::tyloi::Tensor rope_table_bf16_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos,
+                                   ::tyloi::Tensor cos, ::tyloi::Tensor sin,
                                    int64_t rotary_dim);
-mfq_tensor_backend::Tensor minicpm_bf16_rope_cache_write_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
-    mfq_tensor_backend::Tensor rope_pos, mfq_tensor_backend::Tensor write_pos,
-    mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
-    mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
+::tyloi::Tensor minicpm_bf16_rope_cache_write_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
+    ::tyloi::Tensor rope_pos, ::tyloi::Tensor write_pos,
+    ::tyloi::Tensor cos, ::tyloi::Tensor sin,
+    ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
     int64_t rotary_dim);
 
 __device__ int rope_axis_for_pair(int j, int s0, int s1, int s2)
@@ -657,18 +653,18 @@ __global__ void minicpm_bf16_rope_cache_write_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor rope_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos, double base)
+::tyloi::Tensor rope_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos, double base)
 {
     return rope_ext_cuda(
         x, pos, base, x.size(-1),
-        mfq_tensor_backend::empty({0}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCPU)));
+        ::tyloi::cuda::empty({0}, ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCPU)));
 }
 
-mfq_tensor_backend::Tensor rope_ext_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos, double base, int64_t rotary_dim, mfq_tensor_backend::Tensor sections)
+::tyloi::Tensor rope_ext_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos, double base, int64_t rotary_dim, ::tyloi::Tensor sections)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "rope: x must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == ::tyloi::kFloat32,
                 "rope: pos must be cuda contiguous f32");
     int T = (int)x.size(-2);
     int D = (int)x.size(-1);
@@ -679,7 +675,7 @@ mfq_tensor_backend::Tensor rope_ext_cuda(mfq_tensor_backend::Tensor x, mfq_tenso
     TYLOINFER_RUNTIME_CHECK(pos.size(-1) == T, "rope: pos last dim must match T");
     int s0 = 0, s1 = 0, s2 = 0;
     if (sections.numel() > 0) {
-        TYLOINFER_RUNTIME_CHECK(!sections.is_cuda() && sections.is_contiguous() && sections.scalar_type() == mfq_tensor_backend::kInt64,
+        TYLOINFER_RUNTIME_CHECK(!sections.is_cuda() && sections.is_contiguous() && sections.scalar_type() == ::tyloi::kInt64,
                     "rope: sections must be CPU contiguous int64");
         TYLOINFER_RUNTIME_CHECK(sections.numel() == 3, "rope: sections must have 3 entries");
         const int64_t* sp = sections.data_ptr<int64_t>();
@@ -693,23 +689,23 @@ mfq_tensor_backend::Tensor rope_ext_cuda(mfq_tensor_backend::Tensor x, mfq_tenso
         ? (int)pos.size(0) : 0;
     TYLOINFER_RUNTIME_CHECK(pos_batches == 0 || MT % pos_batches == 0,
                 "rope: batch positions do not match x leading dimensions");
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     rope_kernel<<<MT * T, ROPE_BD, 0, mfq_current_cuda_stream()>>>(
         x.data_ptr<float>(), pos.data_ptr<float>(), out.data_ptr<float>(),
         MT * T, T, D, RD, pos_axes, pos_batches, s0, s1, s2, (float)base);
     return out;
 }
 
-mfq_tensor_backend::Tensor rope_table_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos, mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
-                              int64_t rotary_dim, mfq_tensor_backend::Tensor sections)
+::tyloi::Tensor rope_table_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos, ::tyloi::Tensor cos, ::tyloi::Tensor sin,
+                              int64_t rotary_dim, ::tyloi::Tensor sections)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "rope_table: x must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == ::tyloi::kInt64,
                 "rope_table: pos must be cuda contiguous int64");
-    TYLOINFER_RUNTIME_CHECK(cos.is_cuda() && cos.is_contiguous() && cos.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(cos.is_cuda() && cos.is_contiguous() && cos.scalar_type() == ::tyloi::kFloat32,
                 "rope_table: cos must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(sin.is_cuda() && sin.is_contiguous() && sin.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(sin.is_cuda() && sin.is_contiguous() && sin.scalar_type() == ::tyloi::kFloat32,
                 "rope_table: sin must be cuda contiguous f32");
     int T = (int)x.size(-2);
     int D = (int)x.size(-1);
@@ -725,7 +721,7 @@ mfq_tensor_backend::Tensor rope_table_cuda(mfq_tensor_backend::Tensor x, mfq_ten
     int table_len = (int)cos.size(0);
     int s0 = 0, s1 = 0, s2 = 0;
     if (sections.numel() > 0) {
-        TYLOINFER_RUNTIME_CHECK(!sections.is_cuda() && sections.is_contiguous() && sections.scalar_type() == mfq_tensor_backend::kInt64,
+        TYLOINFER_RUNTIME_CHECK(!sections.is_cuda() && sections.is_contiguous() && sections.scalar_type() == ::tyloi::kInt64,
                     "rope_table: sections must be CPU contiguous int64");
         TYLOINFER_RUNTIME_CHECK(sections.numel() == 3, "rope_table: sections must have 3 entries");
         const int64_t* sp = sections.data_ptr<int64_t>();
@@ -739,7 +735,7 @@ mfq_tensor_backend::Tensor rope_table_cuda(mfq_tensor_backend::Tensor x, mfq_ten
         ? (int)pos.size(0) : 0;
     TYLOINFER_RUNTIME_CHECK(pos_batches == 0 || MT % pos_batches == 0,
                 "rope_table: batch positions do not match x leading dimensions");
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     rope_table_kernel<<<MT * T, ROPE_BD, 0, mfq_current_cuda_stream()>>>(
         x.data_ptr<float>(), pos.data_ptr<int64_t>(), cos.data_ptr<float>(), sin.data_ptr<float>(),
         out.data_ptr<float>(), MT * T, T, D, RD, table_len, pos_axes, pos_batches,
@@ -747,21 +743,21 @@ mfq_tensor_backend::Tensor rope_table_cuda(mfq_tensor_backend::Tensor x, mfq_ten
     return out;
 }
 
-mfq_tensor_backend::Tensor rope_table_bf16_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos,
-                                   mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
+::tyloi::Tensor rope_table_bf16_cuda(::tyloi::Tensor x, ::tyloi::Tensor pos,
+                                   ::tyloi::Tensor cos, ::tyloi::Tensor sin,
                                    int64_t rotary_dim)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
-                    x.scalar_type() == mfq_tensor_backend::kBFloat16,
+                    x.scalar_type() == ::tyloi::kBFloat16,
                 "rope_table_bf16: x must be cuda contiguous bf16");
     TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() &&
-                    pos.scalar_type() == mfq_tensor_backend::kInt64 && pos.dim() == 1,
+                    pos.scalar_type() == ::tyloi::kInt64 && pos.dim() == 1,
                 "rope_table_bf16: pos must be cuda contiguous int64 [T]");
     TYLOINFER_RUNTIME_CHECK(cos.is_cuda() && cos.is_contiguous() &&
-                    cos.scalar_type() == mfq_tensor_backend::kFloat32,
+                    cos.scalar_type() == ::tyloi::kFloat32,
                 "rope_table_bf16: cos must be cuda contiguous f32");
     TYLOINFER_RUNTIME_CHECK(sin.is_cuda() && sin.is_contiguous() &&
-                    sin.scalar_type() == mfq_tensor_backend::kFloat32 &&
+                    sin.scalar_type() == ::tyloi::kFloat32 &&
                     cos.sizes() == sin.sizes(),
                 "rope_table_bf16: sin must match cos");
     const int T = (int)x.size(-2);
@@ -773,7 +769,7 @@ mfq_tensor_backend::Tensor rope_table_bf16_cuda(mfq_tensor_backend::Tensor x, mf
                     cos.dim() == 2 && cos.size(1) == RD / 2,
                 "rope_table_bf16: invalid rotary geometry");
     const int rows = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     rope_table_bf16_kernel<<<
         rows, ROPE_BD, 0, mfq_current_cuda_stream()>>>(
         reinterpret_cast<const __nv_bfloat16*>(
@@ -785,14 +781,14 @@ mfq_tensor_backend::Tensor rope_table_bf16_cuda(mfq_tensor_backend::Tensor x, mf
     return out;
 }
 
-mfq_tensor_backend::Tensor minicpm_bf16_rope_cache_write_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
-    mfq_tensor_backend::Tensor rope_pos, mfq_tensor_backend::Tensor write_pos,
-    mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
-    mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
+::tyloi::Tensor minicpm_bf16_rope_cache_write_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
+    ::tyloi::Tensor rope_pos, ::tyloi::Tensor write_pos,
+    ::tyloi::Tensor cos, ::tyloi::Tensor sin,
+    ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
     int64_t rotary_dim)
 {
-    const auto bf16 = mfq_tensor_backend::kBFloat16;
+    const auto bf16 = ::tyloi::kBFloat16;
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && k.is_cuda() && v.is_cuda() &&
                     q.is_contiguous() && k.is_contiguous() && v.is_contiguous() &&
                     q.scalar_type() == bf16 && k.scalar_type() == bf16 &&
@@ -817,20 +813,20 @@ mfq_tensor_backend::Tensor minicpm_bf16_rope_cache_write_cuda(
                 "minicpm_rope_kv: cache shape mismatch");
     TYLOINFER_RUNTIME_CHECK(rope_pos.is_cuda() && write_pos.is_cuda() &&
                     rope_pos.is_contiguous() && write_pos.is_contiguous() &&
-                    rope_pos.scalar_type() == mfq_tensor_backend::kInt64 &&
-                    write_pos.scalar_type() == mfq_tensor_backend::kInt64 &&
+                    rope_pos.scalar_type() == ::tyloi::kInt64 &&
+                    write_pos.scalar_type() == ::tyloi::kInt64 &&
                     rope_pos.numel() == 1 && write_pos.numel() == 1,
                 "minicpm_rope_kv: positions must be cuda contiguous int64[1]");
     TYLOINFER_RUNTIME_CHECK(cos.is_cuda() && sin.is_cuda() &&
                     cos.is_contiguous() && sin.is_contiguous() &&
-                    cos.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                    sin.scalar_type() == mfq_tensor_backend::kFloat32 &&
+                    cos.scalar_type() == ::tyloi::kFloat32 &&
+                    sin.scalar_type() == ::tyloi::kFloat32 &&
                     cos.sizes() == sin.sizes() && cos.dim() == 2,
                 "minicpm_rope_kv: cos/sin must be matching cuda contiguous f32 tables");
     TYLOINFER_RUNTIME_CHECK(rotary_dim == 128 && cos.size(1) == 64,
                 "minicpm_rope_kv: expected rotary_dim 128");
 
-    auto q_out = mfq_tensor_backend::empty_like(q);
+    auto q_out = ::tyloi::cuda::empty_like(q);
     const int B = (int)q.size(0);
     const int Hq = (int)q.size(1);
     const int Hk = (int)k.size(1);

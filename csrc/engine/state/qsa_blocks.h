@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 struct QsaKvStoreConfig {
     std::size_t budget_bytes = 0;
@@ -55,4 +55,4 @@ private:
     std::shared_ptr<Impl> impl_;
 };
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct Info {
     std::int64_t vocab_size;
@@ -15,4 +15,4 @@ struct Info {
     bool double_warmup;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

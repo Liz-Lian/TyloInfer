@@ -8,9 +8,9 @@
 #include <string>
 #include <unordered_set>
 
-namespace mfq::cuda::dispatch_trace {
+namespace tyloi::cuda::dispatch_trace {
 inline bool enabled() {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_TRACE_KERNEL_DISPATCH");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_TRACE_KERNEL_DISPATCH");
     return option && option[0]=='1';
 }
 // Inspect the kernel node actually appended by this launch. Diagnostics run

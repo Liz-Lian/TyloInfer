@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace mfq::models::minicpmo45 {
+namespace tyloi::models::minicpmo45 {
 
 Config Config::from_json(std::string_view payload) {
     const auto root = nlohmann::json::parse(
@@ -24,4 +24,4 @@ Config Config::from_json(std::string_view payload) {
     return config;
 }
 
-} // namespace mfq::models::minicpmo45
+} // namespace tyloi::models::minicpmo45

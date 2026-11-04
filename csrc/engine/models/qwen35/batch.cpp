@@ -9,9 +9,9 @@
 #include <type_traits>
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 Batch::~Batch() {
     if (state_)
@@ -287,7 +287,7 @@ bool Batch::has_cached_moe() const { return has_cached_moe(*weights_); }
 bool Batch::has_cached_moe(const Model &model) {
     for (const auto &layer : model.layers) {
         const bool result = std::visit(
-            [](const auto &value) { return mfq::cuda::uses_expert_cache(value.ffn); },
+            [](const auto &value) { return tyloi::cuda::uses_expert_cache(value.ffn); },
             layer.weights);
         if (result)
             return true;
@@ -309,7 +309,7 @@ std::string Batch::incompatibility(bool cpu_offload, int cached_slots) const {
                     if (value.attention.sliding)
                         return "continuous batching requires non-sliding Qwen attention";
                 }
-                if (mfq::cuda::uses_expert_cache(value.ffn) &&
+                if (tyloi::cuda::uses_expert_cache(value.ffn) &&
                     value.ffn.moe_top_k > cached_slots)
                     return "continuous batching requires one cached slot per routed expert";
                 return {};
@@ -362,8 +362,8 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
                     auto value_shape = from.v.sizes().vec();
                     key_shape[0] = target.batch;
                     value_shape[0] = target.batch;
-                    cache->k = mfq_tensor_backend::zeros(key_shape, from.k.options());
-                    cache->v = mfq_tensor_backend::zeros(value_shape, from.v.options());
+                    cache->k = ::tyloi::cuda::zeros(key_shape, from.k.options());
+                    cache->v = ::tyloi::cuda::zeros(value_shape, from.v.options());
                 }
                 cache->k.narrow(0, slot, 1).copy_(from.k);
                 cache->v.narrow(0, slot, 1).copy_(from.v);
@@ -383,9 +383,9 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
                 auto recurrent_shape = source.recurrent.sizes().vec();
                 convolution_shape[0] = target.batch;
                 recurrent_shape[0] = target.batch;
-                target_view.convolution = mfq_tensor_backend::zeros(
+                target_view.convolution = ::tyloi::cuda::zeros(
                     convolution_shape, source.convolution.options());
-                target_view.recurrent = mfq_tensor_backend::zeros(
+                target_view.recurrent = ::tyloi::cuda::zeros(
                     recurrent_shape, source.recurrent.options());
                 target_view.transposed = source.transposed;
             }
@@ -398,9 +398,9 @@ void Batch::copy_to_slot(State &target, const State &source, std::int64_t slot) 
 }
 
 Tensor Batch::logits_from_last_hidden(Tensor hidden, const Executor::Mode& mode) {
-    auto last = hidden.index({mfq_tensor_backend::indexing::Slice(), -1,
-                              mfq_tensor_backend::indexing::Slice()})
-                    .to(mfq_tensor_backend::kFloat16)
+    auto last = hidden.index({::tyloi::indexing::Slice(), -1,
+                              ::tyloi::indexing::Slice()})
+                    .to(::tyloi::kFloat16)
                     .contiguous();
     return qwen35::logits(*weights_, *executor_, std::move(last), true, mode);
 }
@@ -431,8 +431,8 @@ BatchState Batch::capture_recurrent_slots(const std::vector<std::int32_t> &slots
             recurrent.push_back(linear->mixer.view().recurrent.narrow(0, slot, 1));
         }
         state.layers[index] = Recurrent::State{
-            mfq_tensor_backend::cat(conv, 0).clone(),
-            mfq_tensor_backend::cat(recurrent, 0).clone(),
+            ::tyloi::cuda::cat(conv, 0).clone(),
+            ::tyloi::cuda::cat(recurrent, 0).clone(),
             linear->mixer.view().transposed};
     }
     return state;
@@ -472,4 +472,4 @@ void Batch::restore_recurrent_slots(const std::vector<std::int32_t> &slots,
     }
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

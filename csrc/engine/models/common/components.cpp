@@ -26,7 +26,7 @@ namespace {
 // causal model supplies weight relationships and layer traversal.
 template <class Model> struct ModelLoader {
     Model &model;
-    const mfq::cuda::weight_loader::Loader& weights;
+    const tyloi::cuda::weight_loader::Loader& weights;
     auto embedding(const std::string& name) {
         return weights.build_embedding(name,
                               model.has_independent_output_weights(*this));
@@ -38,7 +38,7 @@ template <class Model> struct ModelLoader {
         return weights.placement.tensor.enabled() ? output(name) : embedding;
     }
     bool has_weight(const std::string &name) { return weights.has(name); }
-    void final_state(mfq_tensor_backend::Tensor &norm) {
+    void final_state(::tyloi::Tensor &norm) {
         model.adapter_load_final_state(weights, norm);
     }
     void prepare_blocks() { model.adapter_prepare_blocks(weights); }
@@ -61,18 +61,18 @@ template <class Model> struct ModelLoader {
 } // namespace
 
 template <typename Model>
-Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::string &model_path,
+Model tyloi::cuda::load_causal_lm(CudaExecutionContext &execution, const std::string &model_path,
                                 const std::string &config_path, int64_t context_size_override,
                                 bool load_blocks, bool defer_moe_cache_finalize,
-                                std::shared_ptr<const mfq::ModelSource> model_source, bool load_input_output) {
+                                std::shared_ptr<const tyloi::ModelSource> model_source, bool load_input_output) {
     Model model;
     model.execution = &execution;
-    model.source = model_source ? std::move(model_source) : mfq::open_model_source(model_path);
+    model.source = model_source ? std::move(model_source) : tyloi::open_model_source(model_path);
     const auto &source = *model.source;
     validate_model_source(source);
-    model.graph = mfq::models::graph(source);
+    model.graph = tyloi::models::graph(source);
     model.plan = cuda_model_plan(model.graph);
-    auto definition=mfq::models::config_json(source, config_path);
+    auto definition=tyloi::models::config_json(source, config_path);
     definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension, std::move(definition),
                                 model.graph.backbone, context_size_override);
     model.load_definition(definition, model.graph, source,
@@ -115,23 +115,23 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
     }
 
     if (model.adapter_uses_common_rope() && !model.metadata.no_rope) {
-        auto make_rope = [&](mfq_tensor_backend::Device device) {
+        auto make_rope = [&](::tyloi::Device device) {
             RopeCache rope(model.max_position_embeddings(), model.rotary_dim(), model.rope_base(),
                            0, -1, device, model.metadata.rope_interleaved,execution.config.yarn);
             model.adapter_configure_rope(rope, device);
             return rope;
         };
-        const auto primary = mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA,
+        const auto primary = ::tyloi::Device(::tyloi::kCUDA,
                                                         execution.config.layer_placement.primary_device());
         model.rope = make_rope(primary);
         if (execution.config.dense_cpu_layer_count > 0) {
-            model.cpu_rope = make_rope(mfq_tensor_backend::Device(mfq_tensor_backend::kCPU));
+            model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
         }
         if (execution.config.layer_placement.enabled()) {
             for (int device : execution.config.layer_placement.devices) {
                 MfqCudaGuard rope_guard(device);
-                model.device_ropes.emplace(device, make_rope(mfq_tensor_backend::Device(
-                                                       mfq_tensor_backend::kCUDA, device)));
+                model.device_ropes.emplace(device, make_rope(::tyloi::Device(
+                                                       ::tyloi::kCUDA, device)));
             }
         }
     }
@@ -151,32 +151,32 @@ Model mfq::cuda::load_causal_lm(CudaExecutionContext &execution, const std::stri
 
     if (moe_expert_cache_has_sources(execution.weights.moe) &&
         !moe_expert_cache_finalized(execution.weights.moe) && !defer_moe_cache_finalize) {
-        if constexpr(std::is_same_v<Model,mfq::cuda::Qwen4CausalLm>)
-            mfq::cuda::Executor::prepare(model.vocab_size());
+        if constexpr(std::is_same_v<Model,tyloi::cuda::Qwen4CausalLm>)
+            tyloi::cuda::Executor::prepare(model.vocab_size());
         finalize_moe_expert_cache(execution.weights.moe);
     }
     return model;
 }
 
 #define TYLOINFER_INSTANTIATE_CAUSAL_LM(TYPE)                                                            \
-    template TYPE mfq::cuda::load_causal_lm<TYPE>(CudaExecutionContext &, const std::string &,     \
+    template TYPE tyloi::cuda::load_causal_lm<TYPE>(CudaExecutionContext &, const std::string &,     \
                                                   const std::string &, int64_t, bool, bool,        \
-                                                  std::shared_ptr<const mfq::ModelSource>, bool)
+                                                  std::shared_ptr<const tyloi::ModelSource>, bool)
 
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::Qwen4CausalLm);
-TYLOINFER_INSTANTIATE_CAUSAL_LM(mfq::cuda::DeepseekV41CausalLm);
+TYLOINFER_INSTANTIATE_CAUSAL_LM(tyloi::cuda::Qwen4CausalLm);
+TYLOINFER_INSTANTIATE_CAUSAL_LM(tyloi::cuda::DeepseekV41CausalLm);
 
 #undef TYLOINFER_INSTANTIATE_CAUSAL_LM
 
 template <typename Model>
 RuntimeComponents<Model> load_runtime_components(
         Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+        const tyloi::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
     RuntimeComponents<Model> result{model.graph, model.plan};
     if (load_optional_components &&
-            (result.plan.vision != mfq::cuda::CudaVisionAdapter::none ||
-             result.plan.predictor != mfq::cuda::CudaPredictorAdapter::none)) {
+            (result.plan.vision != tyloi::cuda::CudaVisionAdapter::none ||
+             result.plan.predictor != tyloi::cuda::CudaPredictorAdapter::none)) {
         throw std::runtime_error(
             "CUDA component adapter is unsupported for this model");
     }
@@ -184,20 +184,20 @@ RuntimeComponents<Model> load_runtime_components(
 }
 
 template <>
-RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
-        mfq::cuda::Qwen4CausalLm& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+RuntimeComponents<tyloi::cuda::Qwen4CausalLm> load_runtime_components(
+        tyloi::cuda::Qwen4CausalLm& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::Qwen4CausalLm> result{model.graph, model.plan};
+    RuntimeComponents<tyloi::cuda::Qwen4CausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
-    if (result.plan.vision == mfq::cuda::CudaVisionAdapter::grid_vit) {
+    if (result.plan.vision == tyloi::cuda::CudaVisionAdapter::grid_vit) {
         const auto document = nlohmann::json::parse(
-            mfq::models::config_json(*model.source));
+            tyloi::models::config_json(*model.source));
         const auto& vision = document.at("vision_config");
         if (vision.value("hidden_act", std::string("gelu_pytorch_tanh")) != "gelu_pytorch_tanh" ||
                 !vision.value("deepstack_visual_indexes", std::vector<int>{}).empty())
             throw std::runtime_error("unsupported Qwen4 grid-ViT activation or deepstack");
-        mfq::GridVisionConfig config;
+        tyloi::GridVisionConfig config;
         config.hidden_size = vision.at("hidden_size").get<int64_t>();
         config.intermediate_size = vision.at("intermediate_size").get<int64_t>();
         config.depth = vision.at("depth").get<int64_t>();
@@ -220,60 +220,60 @@ RuntimeComponents<mfq::cuda::Qwen4CausalLm> load_runtime_components(
             throw std::runtime_error("invalid Qwen4 grid-ViT text geometry or placeholder IDs");
         const auto* component = result.graph.component("vision");
         result.grid_vision.emplace(
-            mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
+            tyloi::cuda::grid_vision_runtime::CudaGridVisionPromptComponent::load(
                 weights, config, image, video,
                 component->input_contract, component->position_policy));
         result.vision_available = true;
-    } else if (result.plan.vision != mfq::cuda::CudaVisionAdapter::none) {
+    } else if (result.plan.vision != tyloi::cuda::CudaVisionAdapter::none) {
         throw std::runtime_error("unsupported Qwen4 CUDA vision adapter");
     }
-    if (result.plan.predictor != mfq::cuda::CudaPredictorAdapter::none &&
+    if (result.plan.predictor != tyloi::cuda::CudaPredictorAdapter::none &&
              result.plan.predictor !=
-                 mfq::cuda::CudaPredictorAdapter::flash_next) {
+                 tyloi::cuda::CudaPredictorAdapter::flash_next) {
         throw std::runtime_error(
             "unsupported Qwen4 CUDA component adapter");
     }
     if (result.plan.predictor ==
-            mfq::cuda::CudaPredictorAdapter::none) return result;
+            tyloi::cuda::CudaPredictorAdapter::none) return result;
     TYLOINFER_RUNTIME_CHECK(
         model.supports_speculation(),
         "invalid Flash-Next predictor model");
-    auto predictor = mfq::cuda::qwen4_exp::Predictor::load_if_present(
+    auto predictor = tyloi::cuda::qwen4_exp::Predictor::load_if_present(
         *model.execution, weights, model.config, model.embed, model.lm_head,
         model.metadata.final_logit_softcapping);
     if (predictor) {
         result.mtp =
-            std::make_unique<mfq::cuda::qwen4_exp::Predictor>(
+            std::make_unique<tyloi::cuda::qwen4_exp::Predictor>(
                 std::move(*predictor));
     }
     result.mtp_available = static_cast<bool>(result.mtp);
     return result;
 }
 
-RuntimeComponents<mfq::cuda::glm5_next::Model> load_runtime_components(
-        mfq::cuda::glm5_next::Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
-        bool load_optional_components, mfq::cuda::Projector projector,
-        mfq::cuda::Collectives& copies, CudaProfiler& profiler) {
-    RuntimeComponents<mfq::cuda::glm5_next::Model> result{model.graph, model.plan};
+RuntimeComponents<tyloi::cuda::glm5_next::Model> load_runtime_components(
+        tyloi::cuda::glm5_next::Model& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
+        bool load_optional_components, tyloi::cuda::Projector projector,
+        tyloi::cuda::Collectives& copies, CudaProfiler& profiler) {
+    RuntimeComponents<tyloi::cuda::glm5_next::Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
-    if (result.plan.vision != mfq::cuda::CudaVisionAdapter::none ||
-            (result.plan.predictor != mfq::cuda::CudaPredictorAdapter::none &&
+    if (result.plan.vision != tyloi::cuda::CudaVisionAdapter::none ||
+            (result.plan.predictor != tyloi::cuda::CudaPredictorAdapter::none &&
              result.plan.predictor !=
-                 mfq::cuda::CudaPredictorAdapter::flash_next)) {
+                 tyloi::cuda::CudaPredictorAdapter::flash_next)) {
         throw std::runtime_error(
             "unsupported GLM5 CUDA component adapter");
     }
     if (result.plan.predictor ==
-            mfq::cuda::CudaPredictorAdapter::none) return result;
+            tyloi::cuda::CudaPredictorAdapter::none) return result;
     TYLOINFER_RUNTIME_CHECK(
-        mfq::cuda::glm5_next::supports_speculation(model),
+        tyloi::cuda::glm5_next::supports_speculation(model),
         "invalid Flash-Next predictor model");
-    auto predictor = mfq::cuda::glm5_next::Mtp::load_if_present(
+    auto predictor = tyloi::cuda::glm5_next::Mtp::load_if_present(
         weights, std::move(projector), copies, profiler, model.embed, model.config);
     if (predictor) {
         result.mtp =
-            std::make_unique<mfq::cuda::glm5_next::Mtp>(
+            std::make_unique<tyloi::cuda::glm5_next::Mtp>(
                 std::move(*predictor));
     }
     result.mtp_available = static_cast<bool>(result.mtp);
@@ -281,120 +281,120 @@ RuntimeComponents<mfq::cuda::glm5_next::Model> load_runtime_components(
 }
 
 template <>
-RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> load_runtime_components(
-        mfq::cuda::DeepseekV41CausalLm& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm> load_runtime_components(
+        tyloi::cuda::DeepseekV41CausalLm& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
         bool load_optional_components) {
-    RuntimeComponents<mfq::cuda::DeepseekV41CausalLm> result{model.graph, model.plan};
+    RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm> result{model.graph, model.plan};
     if (!load_optional_components) return result;
-    if ((result.plan.vision != mfq::cuda::CudaVisionAdapter::none &&
-         result.plan.vision != mfq::cuda::CudaVisionAdapter::deepseek_v41) ||
-            (result.plan.predictor != mfq::cuda::CudaPredictorAdapter::none &&
+    if ((result.plan.vision != tyloi::cuda::CudaVisionAdapter::none &&
+         result.plan.vision != tyloi::cuda::CudaVisionAdapter::deepseek_v41) ||
+            (result.plan.predictor != tyloi::cuda::CudaPredictorAdapter::none &&
              result.plan.predictor !=
-                 mfq::cuda::CudaPredictorAdapter::deepseek_v41_dspark)) {
+                 tyloi::cuda::CudaPredictorAdapter::deepseek_v41_dspark)) {
         throw std::runtime_error(
             "unsupported DeepSeek-V4.1 CUDA component adapter");
     }
-    if(result.plan.vision==mfq::cuda::CudaVisionAdapter::deepseek_v41) {
-        result.deepseek_vision.emplace(mfq::cuda::deepseek_v41_runtime::Vision::load(model.source,weights,model.shared->config));
+    if(result.plan.vision==tyloi::cuda::CudaVisionAdapter::deepseek_v41) {
+        result.deepseek_vision.emplace(tyloi::cuda::deepseek_v41_runtime::Vision::load(model.source,weights,model.shared->config));
         result.vision_available=true;
     }
     if (result.plan.predictor ==
-            mfq::cuda::CudaPredictorAdapter::none) return result;
+            tyloi::cuda::CudaPredictorAdapter::none) return result;
     TYLOINFER_RUNTIME_CHECK(
         model.supports_suffix_speculation() && model.shared,
         "invalid DeepSeek-V4.1 DSpark model");
     result.mtp =
-        mfq::cuda::deepseek_v41_runtime::load_dspark_if_present(
+        tyloi::cuda::deepseek_v41_runtime::load_dspark_if_present(
             *model.execution, weights, model.shared->config, model.embed, model.lm_head,
             model.metadata.final_logit_softcapping);
     result.mtp_available = static_cast<bool>(result.mtp);
     return result;
 }
 
-RuntimeComponents<mfq::cuda::nemotron_h::Model> load_runtime_components(
-        mfq::cuda::nemotron_h::Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+RuntimeComponents<tyloi::cuda::nemotron_h::Model> load_runtime_components(
+        tyloi::cuda::nemotron_h::Model& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
         bool load_optional_components,
         CudaExecutionContext& execution) {
-    RuntimeComponents<mfq::cuda::nemotron_h::Model> result{model.graph, model.plan};
+    RuntimeComponents<tyloi::cuda::nemotron_h::Model> result{model.graph, model.plan};
     if (!load_optional_components) return result;
-    if ((result.plan.vision != mfq::cuda::CudaVisionAdapter::none &&
-         result.plan.vision != mfq::cuda::CudaVisionAdapter::radio) ||
-            (result.plan.predictor != mfq::cuda::CudaPredictorAdapter::none &&
-             result.plan.predictor != mfq::cuda::CudaPredictorAdapter::nemotron_h)) {
+    if ((result.plan.vision != tyloi::cuda::CudaVisionAdapter::none &&
+         result.plan.vision != tyloi::cuda::CudaVisionAdapter::radio) ||
+            (result.plan.predictor != tyloi::cuda::CudaPredictorAdapter::none &&
+             result.plan.predictor != tyloi::cuda::CudaPredictorAdapter::nemotron_h)) {
         throw std::runtime_error(
             "unsupported Nemotron-H CUDA component adapter");
     }
-    if (result.plan.vision == mfq::cuda::CudaVisionAdapter::radio) {
+    if (result.plan.vision == tyloi::cuda::CudaVisionAdapter::radio) {
         const auto* component = result.graph.component("vision");
         TYLOINFER_RUNTIME_CHECK(component != nullptr,
             "Nemotron-H graph declares a RADIO adapter without a vision component");
-        const auto vision = mfq::models::nemotron_h::RadioVisionConfig::from_json(
-            mfq::models::config_json(*model.source));
+        const auto vision = tyloi::models::nemotron_h::RadioVisionConfig::from_json(
+            tyloi::models::config_json(*model.source));
         result.radio_vision.emplace(
-            mfq::cuda::nemotron_h::CudaRadioPromptComponent::load(
+            tyloi::cuda::nemotron_h::CudaRadioPromptComponent::load(
                 weights, vision, component->input_contract,
                 component->position_policy));
         result.vision_available = true;
     }
     if (result.plan.predictor ==
-            mfq::cuda::CudaPredictorAdapter::none) return result;
-    TYLOINFER_RUNTIME_CHECK(mfq::cuda::nemotron_h::supports_speculation(model),
+            tyloi::cuda::CudaPredictorAdapter::none) return result;
+    TYLOINFER_RUNTIME_CHECK(tyloi::cuda::nemotron_h::supports_speculation(model),
         "invalid Nemotron-H predictor model");
-    auto predictor = mfq::cuda::nemotron_h::Mtp::load_if_present(
+    auto predictor = tyloi::cuda::nemotron_h::Mtp::load_if_present(
         execution, weights, model.config, model.embed);
     // The graph declares the component, so missing weights are a broken
     // container rather than a text-only model.
     TYLOINFER_RUNTIME_CHECK(predictor,
         "Nemotron-H graph declares the predictor component but the source has no MTP weights");
-    result.mtp = std::make_unique<mfq::cuda::nemotron_h::Mtp>(
+    result.mtp = std::make_unique<tyloi::cuda::nemotron_h::Mtp>(
         std::move(*predictor));
     result.mtp_available = true;
     return result;
 }
 
-RuntimeComponents<mfq::cuda::minicpmo45::text::Model>
+RuntimeComponents<tyloi::cuda::minicpmo45::text::Model>
 load_runtime_components(
-        mfq::cuda::minicpmo45::text::Model& model,
-        mfq::cuda::minicpmo45::text::State& state,
-        mfq::cuda::Executor& executor,
-        const mfq::cuda::weight_loader::Loader& weights,
+        tyloi::cuda::minicpmo45::text::Model& model,
+        tyloi::cuda::minicpmo45::text::State& state,
+        tyloi::cuda::Executor& executor,
+        const tyloi::cuda::weight_loader::Loader& weights,
         bool load_optional_components, CudaExecutionContext& execution) {
-    RuntimeComponents<mfq::cuda::minicpmo45::text::Model> result{model.graph, model.plan};
+    RuntimeComponents<tyloi::cuda::minicpmo45::text::Model> result{model.graph, model.plan};
     if (!load_optional_components ||
-            result.plan.vision == mfq::cuda::CudaVisionAdapter::none) {
+            result.plan.vision == tyloi::cuda::CudaVisionAdapter::none) {
         return result;
     }
     if (result.plan.vision !=
-            mfq::cuda::CudaVisionAdapter::minicpmo45) {
+            tyloi::cuda::CudaVisionAdapter::minicpmo45) {
         throw std::runtime_error(
             "unsupported MiniCPM-o CUDA vision adapter");
     }
 
-    result.composite = std::make_unique<mfq::cuda::minicpmo45::Components>(
+    result.composite = std::make_unique<tyloi::cuda::minicpmo45::Components>(
         model, state, executor, weights, execution);
     result.vision_available = true;
     return result;
 }
 
 template <>
-RuntimeComponents<mfq::cuda::minicpmo45::Model>
+RuntimeComponents<tyloi::cuda::minicpmo45::Model>
 load_runtime_components(
-        mfq::cuda::minicpmo45::Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+        tyloi::cuda::minicpmo45::Model& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
         bool) {
-    RuntimeComponents<mfq::cuda::minicpmo45::Model> result{model.graph, model.plan};
+    RuntimeComponents<tyloi::cuda::minicpmo45::Model> result{model.graph, model.plan};
     return result;
 }
 
 #define TYLOINFER_INSTANTIATE_COMPONENTS(TYPE)                                  \
-    template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const mfq::cuda::weight_loader::Loader&, bool)
+    template RuntimeComponents<TYPE> load_runtime_components(TYPE&, const tyloi::cuda::weight_loader::Loader&, bool)
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::gemma4::Model);
+TYLOINFER_INSTANTIATE_COMPONENTS(tyloi::cuda::gemma4::Model);
 #endif
-TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::glm_dsa::Model);
-TYLOINFER_INSTANTIATE_COMPONENTS(mfq::cuda::deepseek_v4::Model);
+TYLOINFER_INSTANTIATE_COMPONENTS(tyloi::cuda::glm_dsa::Model);
+TYLOINFER_INSTANTIATE_COMPONENTS(tyloi::cuda::deepseek_v4::Model);
 
 #undef TYLOINFER_INSTANTIATE_COMPONENTS

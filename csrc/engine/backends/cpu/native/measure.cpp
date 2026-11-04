@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 
 std::future<double> measure_work(
     std::function<void()> work, double preparation_ns) {
@@ -25,4 +25,4 @@ std::future<double> measure_work(
         });
 }
 
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

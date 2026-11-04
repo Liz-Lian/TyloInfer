@@ -5,11 +5,11 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::models::qwen4_exp {
+namespace tyloi::models::qwen4_exp {
 
 struct BlockSnapshot {
-    mfq_tensor_backend::Tensor keys, values, index;
-    mfq_tensor_backend::Tensor convolution, recurrent, ple_convolution;
+    ::tyloi::Tensor keys, values, index;
+    ::tyloi::Tensor convolution, recurrent, ple_convolution;
     int64_t ple_batch = 0;
     std::vector<int64_t> ple_tokens;
 
@@ -26,7 +26,7 @@ struct BlockSnapshot {
 
 struct Snapshot {
     std::vector<BlockSnapshot> blocks;
-    mfq_tensor_backend::Tensor positions;
+    ::tyloi::Tensor positions;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
@@ -37,7 +37,7 @@ struct Snapshot {
 
 struct MtpSnapshot {
     std::vector<BlockSnapshot> blocks;
-    std::vector<mfq_tensor_backend::Tensor> positions;
+    std::vector<::tyloi::Tensor> positions;
     std::vector<int64_t> lengths;
 
     template <class Visit>
@@ -47,4 +47,4 @@ struct MtpSnapshot {
     }
 };
 
-} // namespace mfq::models::qwen4_exp
+} // namespace tyloi::models::qwen4_exp

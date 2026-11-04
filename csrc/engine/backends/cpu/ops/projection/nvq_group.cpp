@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 #if defined(TYLOINFER_CPU_PACKED_AVX2)
 namespace detail {
 NvqGroupDot nvq_group_dot_avx2(int format) noexcept;
@@ -37,4 +37,4 @@ NvqRowsDot nvq_dense_rows_dot_kernel(int format) noexcept {
 #endif
     return nullptr;
 }
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

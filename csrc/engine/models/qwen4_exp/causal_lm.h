@@ -5,7 +5,7 @@
 #include "../common/recurrent_attention.h"
 #include "../common/transformer_layer.h"
 
-namespace mfq::models::qwen4_exp {
+namespace tyloi::models::qwen4_exp {
 
 template <class Loader>
 auto load_residual(Loader &ops, const Config &c, const std::string &p, bool combine) {
@@ -253,4 +253,4 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
     bool adapter_supports_speculation() const noexcept { return true; }
 };
 
-} // namespace mfq::models::qwen4_exp
+} // namespace tyloi::models::qwen4_exp

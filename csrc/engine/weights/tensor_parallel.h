@@ -14,7 +14,7 @@ enum class TensorParallelAxis {
     Input,
 };
 
-namespace mfq {
+namespace tyloi {
 
 struct TensorParallelSlice {
     int device = 0;
@@ -157,4 +157,4 @@ inline void validate_tensor_parallel_slices(
     }
 }
 
-}  // namespace mfq
+}  // namespace tyloi

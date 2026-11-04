@@ -9,7 +9,7 @@
 
 struct MfePoolWeight {
     NintWeight weight;
-    mfq_tensor_backend::Tensor expert_local;
+    ::tyloi::Tensor expert_local;
     int local_experts = 0;
 };
 
@@ -45,6 +45,6 @@ struct MixedMoePool {
     Fp8SqWeight fp8_sq;
     NvqWeight nvq;
     NepqWeight nepq;
-    mfq_tensor_backend::Tensor expert_local;
+    ::tyloi::Tensor expert_local;
     int local_experts = 0;
 };

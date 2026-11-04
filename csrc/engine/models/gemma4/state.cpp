@@ -8,9 +8,9 @@
 
 #include <stdexcept>
 
-namespace mfq::cuda::gemma4 {
+namespace tyloi::cuda::gemma4 {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::unique_ptr<mfq::models::State> Model::make_state() const {
+std::unique_ptr<tyloi::models::State> Model::make_state() const {
     return std::make_unique<State>(*this);
 }
 #endif
@@ -23,9 +23,9 @@ State::State(const Model& model) : layers(model.layers.size()) {
                            attention.sliding ? attention.attention_window : attention.max_position_embeddings,
                            attention.sliding,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                           attention.official_bf16 ? mfq::ScalarType::bfloat16 : mfq::ScalarType::float16,
+                           attention.official_bf16 ? tyloi::ScalarType::bfloat16 : tyloi::ScalarType::float16,
 #else
-                           attention.official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+                           attention.official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
 #endif
                            attention.kv_quantization});
     }
@@ -39,12 +39,12 @@ void State::preallocate() {
         if (layers[index].defined()) continue;
         const auto& layout = layout_[index];
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        layers[index] = mfq::state::allocate_kv(1, layout.heads, layout.capacity, layout.head_dim, layout.sliding,
-            mfq::Device(mfq::DeviceType::cuda, layout.device), layout.dtype, layout.quantization);
+        layers[index] = tyloi::state::allocate_kv(1, layout.heads, layout.capacity, layout.head_dim, layout.sliding,
+            tyloi::Device(tyloi::DeviceType::cuda, layout.device), layout.dtype, layout.quantization);
 #else
         MfqCudaGuard guard(layout.device);
         layers[index] = KVCache(1, layout.heads, layout.capacity, layout.head_dim, layout.sliding,
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layout.device),
+            ::tyloi::Device(::tyloi::kCUDA, layout.device),
             layout.dtype, layout.quantization);
 #endif
     }
@@ -69,8 +69,8 @@ void State::reset(std::int64_t next_batch) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::vector<mfq::Tensor> State::storage() const {
-    std::vector<mfq::Tensor> result;
+std::vector<tyloi::Tensor> State::storage() const {
+    std::vector<tyloi::Tensor> result;
 #else
 std::vector<Tensor> State::storage() const {
     std::vector<Tensor> result;
@@ -111,4 +111,4 @@ void State::restore_text_session_state(const TextSessionState&) {
 }
 #endif
 
-} // namespace mfq::cuda::gemma4
+} // namespace tyloi::cuda::gemma4

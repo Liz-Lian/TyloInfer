@@ -5,8 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::minicpmo45 {
-namespace tb = mfq_tensor_backend;
+namespace tyloi::cuda::minicpmo45 {
 
 namespace {
 Tensor token_ids(Collectives& copies, int device, Tensor ids) {
@@ -14,7 +13,7 @@ Tensor token_ids(Collectives& copies, int device, Tensor ids) {
         "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
     TYLOINFER_RUNTIME_CHECK(ids.size(0) > 0 && ids.size(1) > 0, "token IDs must not be empty");
-    return copies.copy(ids.to(tb::kInt64), device).contiguous();
+    return copies.copy(ids.to(::tyloi::kInt64), device).contiguous();
 }
 }
 
@@ -57,14 +56,14 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(0) == batch && hidden.size(1) == tokens &&
         hidden.size(2) == model.metadata.hidden_size, "inputs_embeds must match [batch,tokens,hidden_size]");
     auto physical = input.cache_positions
-        ? copies.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
-        : tb::arange(state.cache_pos, state.cache_pos + tokens,
-            tb::TensorOptions().dtype(tb::kInt64).device(tb::Device(tb::kCUDA, mode.primary)));
+        ? copies.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + tokens,
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::Device(::tyloi::kCUDA, mode.primary)));
     TYLOINFER_RUNTIME_CHECK((physical.dim() == 1 && physical.numel() == tokens) ||
         (physical.dim() == 2 && physical.size(0) == batch && physical.size(1) == tokens),
         "cache_positions must have shape [tokens] or [batch,tokens]");
     auto positions = input.positions
-        ? copies.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
+        ? copies.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
     TYLOINFER_RUNTIME_CHECK((positions.dim() == 1 && positions.numel() == tokens) ||
         (positions.dim() == 2 && positions.size(0) == batch && positions.size(1) == tokens),
@@ -72,9 +71,9 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (input.lengths) {
         TYLOINFER_RUNTIME_CHECK(input.lengths->dim() == 1 && input.lengths->size(0) == batch,
             "sequence lengths must have shape [batch]");
-        input.lengths = copies.copy(Tensor(*input.lengths).to(tb::kInt64), mode.primary).contiguous();
+        input.lengths = copies.copy(Tensor(*input.lengths).to(::tyloi::kInt64), mode.primary).contiguous();
     } else if (state.cache_pos > 0 && tokens == 1) {
-        input.lengths = tb::full({batch}, state.cache_pos + 1, physical.options());
+        input.lengths = ::tyloi::cuda::full({batch}, state.cache_pos + 1, physical.options());
     }
     if (input.attention_mask)
         TYLOINFER_RUNTIME_CHECK(input.attention_mask->dim() == 2 && input.attention_mask->size(0) == batch &&
@@ -82,7 +81,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
             "attention_mask must cover [batch,cached_plus_current_tokens]");
     hidden = copies.copy(std::move(hidden), mode.primary).contiguous();
     const auto trace = [&] {
-        if (input.trace) input.trace->push_back(copies.copy(hidden, mode.primary).to(tb::kFloat32).contiguous().clone());
+        if (input.trace) input.trace->push_back(copies.copy(hidden, mode.primary).to(::tyloi::kFloat32).contiguous().clone());
     };
     trace();
     for (size_t index = 0; index < model.layers.size(); ++index) {
@@ -90,7 +89,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& attention = layer.attention;
         MfqCudaGuard guard(layer.device);
         const auto local = [&](Tensor value) {
-            return layer.cpu ? value.to(tb::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
+            return layer.cpu ? value.to(::tyloi::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
         };
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, {}, {}, state.cache_pos, input.kv_length, input.attention_parts};
@@ -101,7 +100,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
             const auto capacity = mode.kv_capacity > 0
                 ? std::max(state.cache_pos + tokens, mode.kv_capacity) : attention.max_position_embeddings;
             cache = KVCache(batch, attention.kv_heads, capacity, attention.attention_head_dim,
-                false, hidden.device(), tb::kFloat16);
+                false, hidden.device(), ::tyloi::kFloat16);
         }
         const AttentionKvView kv = cache.view();
         const RopeCache* rope = layer.cpu ? &model.cpu_rope : &model.rope;
@@ -130,4 +129,4 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     return normalize(model, executor, std::move(hidden), batch, tokens);
 }
 
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

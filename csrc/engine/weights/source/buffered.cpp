@@ -12,7 +12,7 @@
 #include <sys/types.h>
 #endif
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 // MSVC's filebuf can split a large xsgetn into thousands of small reads.
@@ -90,4 +90,4 @@ std::function<void(std::uint64_t, std::byte*, std::size_t)> buffered_reader(
     };
 }
 
-} // namespace mfq
+} // namespace tyloi

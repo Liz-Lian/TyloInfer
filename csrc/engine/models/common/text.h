@@ -40,10 +40,10 @@
 #include <utility>
 #include <variant>
 
-namespace mfq::cuda::engine_detail {
+namespace tyloi::cuda::engine_detail {
 
-using namespace mfq::engine;
-using namespace mfq::cuda::internal;
+using namespace tyloi::engine;
+using namespace tyloi::cuda::internal;
 
 template <class M, class S>
 std::unique_ptr<engine::Batch> make_batch(
@@ -66,7 +66,7 @@ struct Text {
     std::shared_ptr<KvMemoryManager>& kv;
     std::shared_ptr<KvOffloadStore>& offload;
     CudaRuntimeConfig config;
-    std::shared_ptr<const mfq::ModelSource> source;
+    std::shared_ptr<const tyloi::ModelSource> source;
     std::shared_ptr<Model> model;
     std::unique_ptr<State> owned_state;
     std::unique_ptr<Executor> executor;
@@ -74,13 +74,13 @@ struct Text {
     Parts components;
     Model& language;
     State& state;
-    const mfq::models::Info info;
+    const tyloi::models::Info info;
     std::function<void()> restore_decode_workspace;
     DecodeGraphCache graph;
     TextSessionCache cache;
-    mfq::engine::mtp::State mtp_state;
+    tyloi::engine::mtp::State mtp_state;
     std::optional<Budget> budget;
-    std::unique_ptr<mfq::engine::Batch> batching;
+    std::unique_ptr<tyloi::engine::Batch> batching;
     bool duplex_active = false;
     std::optional<ExpertSpace> expert_space;
     int graph_draft_depth=3;
@@ -106,7 +106,7 @@ struct Text {
         if(weights.tq)return;
         if(preparing_graph_depth)return;
         prepare_moe_decode_residency(weights.moe);
-        mfq::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+        tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
         restore_mtp_expert_space();
         if(expert_space)
             expert_space->restore(runtime_options::workspace_reserve_bytes(), source.get());
@@ -115,7 +115,7 @@ struct Text {
     void prepare_graph_depth(const InferenceRequest& input) {
         if constexpr(std::is_same_v<Model,Qwen4CausalLm>) {
             if(!components.mtp)return;
-            const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
+            const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_GRAPHS");
             if(!language.reuse_decode_graphs || !execution->config.moe_pipeline || (warmup && warmup[0]=='0'))return;
             const auto& sampling=input.sampling;
             const bool wide=sampling.temperature<=0 || sampling.top_k==1 ||
@@ -134,7 +134,7 @@ struct Text {
                 qwen4_release_decode_graphs(language,components.mtp.get());
                 release_moe_decode_buffers(weights.moe);
                 state.reset(1);components.mtp->reset(1);
-                auto context=mfq::cuda::default_context(execution->config.layer_placement.primary_device());
+                auto context=tyloi::cuda::default_context(execution->config.layer_placement.primary_device());
                 context->reclaim_idle_memory();
                 budget->reclaim((std::size_t(2)<<30)+qwen4_mtp_graph_reserve(language,components.mtp.get(),depth),
                     expert_space ? &*expert_space : nullptr);
@@ -162,7 +162,7 @@ struct Text {
             std::shared_ptr<Model> model_owner, std::unique_ptr<State> state_owner,
             std::unique_ptr<Executor> executor_owner, Parts model_components,
             CudaRuntimeConfig runtime_config,
-            std::shared_ptr<const mfq::ModelSource> model_source,
+            std::shared_ptr<const tyloi::ModelSource> model_source,
             std::shared_ptr<WeightMemoryLedger> ledger)
         : weight_memory(std::move(ledger)), execution(&borrowed), root_executor(borrowed.executor()),
           weights(borrowed_weights),
@@ -174,7 +174,7 @@ struct Text {
               if constexpr (std::is_same_v<Model, State>) return language;
               else return *owned_state;
           }()),
-          info(mfq::models::model_info(language)),
+          info(tyloi::models::model_info(language)),
           graph(info.max_context),
           cache(config.session_cache, config.prefix_cache,
               make_cuda_paged_prefix_cache(*source, info.max_context,
@@ -232,7 +232,7 @@ struct Text {
         if constexpr (std::is_same_v<Model,Qwen4CausalLm>) {
             language.reserve_kv_workspace = [this](std::size_t bytes) {
                 const auto device = execution->config.layer_placement.primary_device();
-                auto context = mfq::cuda::default_context(device);
+                auto context = tyloi::cuda::default_context(device);
                 if (context->available_memory() >= bytes) return;
                 if(expert_space && !expert_space->empty()) {
                     std::cerr<<"runtime_workspace_cache_reclaim reason=kv_growth requested_bytes="<<bytes
@@ -264,7 +264,7 @@ struct Text {
             // Exercise the same draft/verify/commit loop as a real request.
             // Graph-only warmup cannot cover its history replay, sampling and
             // expert exchange boundaries. No synthetic policy/history survives.
-            const auto* warmup=mfq::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_MTP");
+            const auto* warmup=tyloi::cuda::env_lookup("TYLOINFER_QWEN4_WARMUP_MTP");
             if(language.graph_registry && components.mtp &&
                     language.max_position_embeddings()>=48 && (!warmup || warmup[0]!='0')) {
                 struct CacheLearningScope {
@@ -303,7 +303,7 @@ struct Text {
                     <<" ms="<<std::chrono::duration<double,std::milli>(
                         std::chrono::steady_clock::now()-start).count()<<'\n';
                 release_moe_prefill_buffers(weights.moe);
-                mfq::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
+                tyloi::cuda::default_context(execution->config.layer_placement.primary_device())->reclaim_idle_memory();
             }
         }
         preparing_graph_depth=false;
@@ -360,11 +360,11 @@ struct Text {
         if (batching) batching->step(eligible);
     }
     using Prepared = PreparedPrompt;
-    mfq::StepSequence<Prepared> prepare(InferenceRequest& input, State& state) {
+    tyloi::StepSequence<Prepared> prepare(InferenceRequest& input, State& state) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language).prepare(
+        if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language).prepare(
                                    input.prompt, *input.vision, state); }) {
-            const mfq::models::CausalModel& causal = language;
+            const tyloi::models::CausalModel& causal = language;
             return causal.prepare(input.prompt, *input.vision, state);
         } else
 #endif
@@ -379,7 +379,7 @@ struct Text {
 #endif
             input.prompt, *input.vision);
     }
-    auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
+    auto advance_preparation(tyloi::StepSequence<Prepared>& preparation) {
         PrefillCudaTimer timer;
         auto step = preparation.next();
         TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(), mfq_get_current_cuda_stream()));
@@ -420,8 +420,8 @@ struct Text {
             const auto& model = std::as_const(language);
             const auto& parts = std::as_const(components);
             const auto component_metrics = [&] {
-                if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model); })
-                    return static_cast<const mfq::models::CausalModel&>(model).metrics();
+                if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model); })
+                    return static_cast<const tyloi::models::CausalModel&>(model).metrics();
                 else
                     return parts.metrics();
             }();
@@ -449,4 +449,4 @@ struct Text {
     }
 };
 
-} // namespace mfq::cuda::engine_detail
+} // namespace tyloi::cuda::engine_detail

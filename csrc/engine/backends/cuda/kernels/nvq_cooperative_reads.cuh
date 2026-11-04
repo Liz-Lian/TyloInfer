@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 __device__ __forceinline__ uint32_t nvq_checked_word(const uint8_t* data,int64_t byte,int64_t bytes) {
     if(byte+4<=bytes)return *reinterpret_cast<const uint32_t*>(data+byte);
     uint32_t value=0;

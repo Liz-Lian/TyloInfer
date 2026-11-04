@@ -6,7 +6,7 @@
 #include <memory>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 void InferenceMetrics::mark_prefill(const MfqPrefillTiming& timing) {
     prefill_tokens = timing.prompt_tokens;
@@ -100,4 +100,4 @@ TokenOutput InferenceOutput::finish() {
     return output;
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

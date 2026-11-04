@@ -7,7 +7,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace mfq::models {
+namespace tyloi::models {
 namespace {
 
 bool is_table(const archive::Record& record) {
@@ -90,4 +90,4 @@ void check_engram(
     }
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

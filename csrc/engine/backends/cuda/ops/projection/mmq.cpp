@@ -39,8 +39,8 @@ const char * kl_mmq_mode_name(KlMmqMode mode) {
     return "invalid";
 }
 
-mfq_tensor_backend::Tensor KlMmqState::prepare_activation(
-        mfq_tensor_backend::Tensor input) {
+::tyloi::Tensor KlMmqState::prepare_activation(
+        ::tyloi::Tensor input) {
     if (mode != KlMmqMode::Nint8One) return input;
 #if TYLOINFER_ENABLE_MFQ_COMPAT
     const auto original_shape = input.sizes().vec();
@@ -57,13 +57,13 @@ void KlMmqState::reset() noexcept {
     *this = {};
 }
 
-mfq_tensor_backend::Tensor nint_kld(
+::tyloi::Tensor nint_kld(
         CudaProfiler& profiler, KlMmqState& mmq, const QuantLinear& weight,
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor gate,
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor gate,
         InputGateMode mode) {
     TYLOINFER_RUNTIME_CHECK(
-        !weight.tensor_parallel() && (mfq::mfq_compat_enabled && weight.is_nint()),
+        !weight.tensor_parallel() && (tyloi::mfq_compat_enabled && weight.is_nint()),
         "FP32-output KLD down projection requires a local NINT tensor");
     TYLOINFER_RUNTIME_CHECK(
         mmq.mode == KlMmqMode::Fp16,

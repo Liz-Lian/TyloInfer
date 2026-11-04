@@ -14,13 +14,13 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::qwen4_exp {
+namespace tyloi::cuda::qwen4_exp {
 
-struct BatchRequest : mfq::engine::BatchRequest {
-    using mfq::engine::BatchRequest::BatchRequest;
+struct BatchRequest : tyloi::engine::BatchRequest {
+    using tyloi::engine::BatchRequest::BatchRequest;
 
     std::optional<Sampler> sampler;
-    mfq_tensor_backend::Tensor counts, prefill_ids;
+    ::tyloi::Tensor counts, prefill_ids;
     std::vector<std::unique_ptr<internal::PrefillCudaTimer>> prefill_timers;
     std::unique_ptr<Qwen4BatchRequestState> cache;
     int64_t decode_row = -1;
@@ -29,10 +29,10 @@ struct BatchRequest : mfq::engine::BatchRequest {
 
 class BatchOps {
   public:
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     using Request = BatchRequest;
-    using State = mfq::engine::BatchState<Request>;
-    using Sample = mfq::cuda::BatchSample;
+    using State = tyloi::engine::BatchState<Request>;
+    using Sample = tyloi::cuda::BatchSample;
     struct Decoded {
         Tensor logits, greedy_tokens;
     };
@@ -41,15 +41,15 @@ class BatchOps {
     ~BatchOps();
     int64_t vocab_size() const;
     int64_t max_context() const;
-    mfq::engine::Metrics metrics() const;
+    tyloi::engine::Metrics metrics() const;
     void suspend_decode();
-    mfq::engine::PrefillChunk prefill_chunk(const std::shared_ptr<Request>&,
-                                            mfq::engine::PrefillChunk);
-    Sample prefill(const std::shared_ptr<Request>&, mfq::engine::PrefillChunk);
+    tyloi::engine::PrefillChunk prefill_chunk(const std::shared_ptr<Request>&,
+                                            tyloi::engine::PrefillChunk);
+    Sample prefill(const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk);
     std::size_t prefill_batch_limit() const;
     int64_t prefill_batch_token_budget() const;
-    std::vector<mfq::engine::PrefillBatchResult<Sample>> prefill_batch(
-        const std::vector<std::pair<std::shared_ptr<Request>, mfq::engine::PrefillChunk>>&);
+    std::vector<tyloi::engine::PrefillBatchResult<Sample>> prefill_batch(
+        const std::vector<std::pair<std::shared_ptr<Request>, tyloi::engine::PrefillChunk>>&);
     void activate(const std::shared_ptr<Request>&, const Sample&);
     void resume_decode(int64_t);
     void discard_prefill(const std::shared_ptr<Request>&);
@@ -62,7 +62,7 @@ class BatchOps {
     static constexpr bool isolate_context_growth_failures = true;
 
   private:
-    void initialize_prefill(const std::shared_ptr<Request>&, mfq::engine::PrefillChunk);
+    void initialize_prefill(const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk);
     Sample finish_prefill(const std::shared_ptr<Request>&, Tensor next);
 
     Qwen4CausalLm& model_;
@@ -75,4 +75,4 @@ class BatchOps {
             packed_prefill_tokens_ = 0;
 };
 
-} // namespace mfq::cuda::qwen4_exp
+} // namespace tyloi::cuda::qwen4_exp

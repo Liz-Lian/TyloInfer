@@ -2,7 +2,7 @@
 #include "../requests/processor.h"
 #include "components/error.h"
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 void prepare_request(Request &current, const TextProcessor *text, const EngineInfo &info, bool batched, bool mtp_available) {
     auto request = current.submitted;
@@ -66,4 +66,4 @@ void finish_request(const RequestId &id, Request &request, bool &healthy, std::v
     }
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

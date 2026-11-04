@@ -4,7 +4,7 @@
 
 struct TextSessionState;
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 
 CudaPagedPayload encode_block(const TextSessionState&, std::size_t, std::size_t);
 TextSessionState decode_session(const std::vector<CudaPagedPayload>&,
@@ -12,4 +12,4 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>&,
 bool exact(const CudaPagedPayload&);
 bool checkpoint_needs_update(const CudaPagedPayload&, const TextSessionState&);
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

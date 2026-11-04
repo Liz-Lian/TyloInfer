@@ -4,22 +4,22 @@
 
 #include <cstdint>
 
-mfq_tensor_backend::Tensor embedding_lookup_cuda(
-    mfq_tensor_backend::Tensor weight, mfq_tensor_backend::Tensor token_ids);
-mfq_tensor_backend::Tensor nint_embedding_cuda(
-    mfq_tensor_backend::Tensor q_packed, mfq_tensor_backend::Tensor row_q_bits,
-    mfq_tensor_backend::Tensor row_q_bit_offsets,
-    mfq_tensor_backend::Tensor sub_scale, mfq_tensor_backend::Tensor sub_min,
-    mfq_tensor_backend::Tensor neuron_scale, mfq_tensor_backend::Tensor neuron_min,
-    mfq_tensor_backend::Tensor token_ids, int64_t neuron_len, int64_t gs);
-mfq_tensor_backend::Tensor nint8_zero_embedding_lookup_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor scale, mfq_tensor_backend::Tensor token_ids,
+::tyloi::Tensor embedding_lookup_cuda(
+    ::tyloi::Tensor weight, ::tyloi::Tensor token_ids);
+::tyloi::Tensor nint_embedding_cuda(
+    ::tyloi::Tensor q_packed, ::tyloi::Tensor row_q_bits,
+    ::tyloi::Tensor row_q_bit_offsets,
+    ::tyloi::Tensor sub_scale, ::tyloi::Tensor sub_min,
+    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor neuron_min,
+    ::tyloi::Tensor token_ids, int64_t neuron_len, int64_t gs);
+::tyloi::Tensor nint8_zero_embedding_lookup_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor scale, ::tyloi::Tensor token_ids,
     int64_t neuron_len);
-mfq_tensor_backend::Tensor mxfp8_embedding_lookup_cuda(
-    mfq_tensor_backend::Tensor values, mfq_tensor_backend::Tensor scales, mfq_tensor_backend::Tensor token_ids);
-mfq_tensor_backend::Tensor mxfp4_embedding_lookup_cuda(
-    mfq_tensor_backend::Tensor values, mfq_tensor_backend::Tensor scales, mfq_tensor_backend::Tensor token_ids);
-mfq_tensor_backend::Tensor nvq_embedding_lookup_cuda(
-    mfq_tensor_backend::Tensor indices, mfq_tensor_backend::Tensor aux, mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale, mfq_tensor_backend::Tensor codebook, mfq_tensor_backend::Tensor token_ids,
+::tyloi::Tensor mxfp8_embedding_lookup_cuda(
+    ::tyloi::Tensor values, ::tyloi::Tensor scales, ::tyloi::Tensor token_ids);
+::tyloi::Tensor mxfp4_embedding_lookup_cuda(
+    ::tyloi::Tensor values, ::tyloi::Tensor scales, ::tyloi::Tensor token_ids);
+::tyloi::Tensor nvq_embedding_lookup_cuda(
+    ::tyloi::Tensor indices, ::tyloi::Tensor aux, ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor codebook, ::tyloi::Tensor token_ids,
     int64_t neuron_len, int64_t gs, int64_t sub_bits, int64_t format, int64_t sign_mode);

@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-namespace mfq {
+namespace tyloi {
 
 struct alignas(8) MoeCacheScatterDescriptor {
     std::uint64_t destination = 0;
@@ -38,4 +38,4 @@ void moe_cache_mapped_gather_cuda(
     int blocks_per_transfer,
     cudaStream_t stream);
 
-}  // namespace mfq
+}  // namespace tyloi

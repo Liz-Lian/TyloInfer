@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 namespace {
 
 std::vector<std::string> split_csv_values(
@@ -121,4 +121,4 @@ int with_command_errors(const std::function<int()>& fn) {
     }
 }
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

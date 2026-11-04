@@ -4,8 +4,8 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 using Metrics = std::vector<std::pair<std::string, double>>;
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

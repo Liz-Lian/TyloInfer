@@ -10,10 +10,10 @@
 #include <functional>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
-using mfq::StepState;
-using Generation = mfq::StepSequence<EventData>;
+using tyloi::StepState;
+using Generation = tyloi::StepSequence<EventData>;
 
 // Resource owners release exactly once, including coroutine destruction. The
 // scheduler observes teardown failures before publishing a terminal event.
@@ -86,4 +86,4 @@ Generation generate_sequence(Operations operations, InferenceOutput &output, std
     }
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

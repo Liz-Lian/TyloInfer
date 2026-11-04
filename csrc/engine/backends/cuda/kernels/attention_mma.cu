@@ -58,16 +58,16 @@ static int minicpm_flash128_cast_blocks(int64_t elements)
     return std::min<int64_t>(65535, (elements + 255) / 256);
 }
 
-mfq_tensor_backend::Tensor minicpm_flash128_q_cast_cuda(
-    mfq_tensor_backend::Tensor q)
+::tyloi::Tensor minicpm_flash128_q_cast_cuda(
+    ::tyloi::Tensor q)
 {
     TYLOINFER_RUNTIME_CHECK(
         q.is_cuda() && q.is_contiguous() &&
-            q.scalar_type() == mfq_tensor_backend::kBFloat16 &&
+            q.scalar_type() == ::tyloi::kBFloat16 &&
             q.numel() > 0,
         "MiniCPM Flash128 Q cast requires contiguous CUDA BF16");
-    auto output = mfq_tensor_backend::empty(
-        q.sizes(), q.options().dtype(mfq_tensor_backend::kFloat32));
+    auto output = ::tyloi::cuda::empty(
+        q.sizes(), q.options().dtype(::tyloi::kFloat32));
     minicpm_flash128_q_cast_kernel<<<
         minicpm_flash128_cast_blocks(q.numel()), 256, 0,
         mfq_current_cuda_stream()>>>(
@@ -82,21 +82,21 @@ mfq_tensor_backend::Tensor minicpm_flash128_q_cast_cuda(
     return output;
 }
 
-std::vector<mfq_tensor_backend::Tensor> minicpm_flash128_kv_cast_cuda(
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v)
+std::vector<::tyloi::Tensor> minicpm_flash128_kv_cast_cuda(
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v)
 {
     TYLOINFER_RUNTIME_CHECK(
         k.is_cuda() && k.is_contiguous() &&
-            k.scalar_type() == mfq_tensor_backend::kBFloat16 &&
+            k.scalar_type() == ::tyloi::kBFloat16 &&
             v.is_cuda() && v.is_contiguous() &&
-            v.scalar_type() == mfq_tensor_backend::kBFloat16 &&
+            v.scalar_type() == ::tyloi::kBFloat16 &&
             k.sizes() == v.sizes() && k.numel() > 0,
         "MiniCPM Flash128 KV cast requires matching contiguous CUDA BF16");
-    auto key = mfq_tensor_backend::empty(
-        k.sizes(), k.options().dtype(mfq_tensor_backend::kFloat16));
-    auto value = mfq_tensor_backend::empty(
-        v.sizes(), v.options().dtype(mfq_tensor_backend::kFloat16));
+    auto key = ::tyloi::cuda::empty(
+        k.sizes(), k.options().dtype(::tyloi::kFloat16));
+    auto value = ::tyloi::cuda::empty(
+        v.sizes(), v.options().dtype(::tyloi::kFloat16));
     minicpm_flash128_kv_cast_kernel<<<
         minicpm_flash128_cast_blocks(k.numel()), 256, 0,
         mfq_current_cuda_stream()>>>(
@@ -115,16 +115,16 @@ std::vector<mfq_tensor_backend::Tensor> minicpm_flash128_kv_cast_cuda(
     return {key, value};
 }
 
-mfq_tensor_backend::Tensor minicpm_flash128_output_cast_cuda(
-    mfq_tensor_backend::Tensor input)
+::tyloi::Tensor minicpm_flash128_output_cast_cuda(
+    ::tyloi::Tensor input)
 {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
-            input.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            input.scalar_type() == ::tyloi::kFloat32 &&
             input.numel() > 0,
         "MiniCPM Flash128 output cast requires contiguous CUDA F32");
-    auto output = mfq_tensor_backend::empty(
-        input.sizes(), input.options().dtype(mfq_tensor_backend::kBFloat16));
+    auto output = ::tyloi::cuda::empty(
+        input.sizes(), input.options().dtype(::tyloi::kBFloat16));
     minicpm_flash128_output_cast_kernel<<<
         minicpm_flash128_cast_blocks(input.numel()), 256, 0,
         mfq_current_cuda_stream()>>>(
@@ -207,7 +207,7 @@ struct MfqAttentionMmaCache {
     int T = 0;
     int query_tile = 0;
     int kv_tile = 0;
-    mfq_tensor_backend::Tensor kv_range;
+    ::tyloi::Tensor kv_range;
 };
 
 static MfqAttentionMmaCache & mfq_attention_mma_cache(
@@ -216,10 +216,10 @@ static MfqAttentionMmaCache & mfq_attention_mma_cache(
     static MfqAttentionMmaCache cache;
     if (cache.B != B || cache.T != T || cache.query_tile != query_tile ||
         cache.kv_tile != kv_tile) {
-        auto cuda = mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA);
+        auto cuda = ::tyloi::TensorOptions().device(::tyloi::kCUDA);
         const int tiles = (T + query_tile - 1) / query_tile;
-        cache.kv_range = mfq_tensor_backend::empty(
-            {B, tiles, 2}, cuda.dtype(mfq_tensor_backend::kInt32));
+        cache.kv_range = ::tyloi::cuda::empty(
+            {B, tiles, 2}, cuda.dtype(::tyloi::kInt32));
         const int blocks = std::min(65535, std::max(1, (B * tiles + 255) / 256));
         mfq_causal_kv_range_kernel<<<blocks, 256, 0, mfq_current_cuda_stream()>>>(
             cache.kv_range.data_ptr<int>(), B, T, tiles, query_tile, kv_tile, 0);
@@ -238,10 +238,10 @@ static MfqAttentionMmaCache & mfq_attention_mma_swa_cache(
     static int cache_window = 0;
     if (cache.B != B || cache.T != T || cache_window != window ||
         cache.query_tile != query_tile || cache.kv_tile != kv_tile) {
-        auto cuda = mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA);
+        auto cuda = ::tyloi::TensorOptions().device(::tyloi::kCUDA);
         const int tiles = (T + query_tile - 1) / query_tile;
-        cache.kv_range = mfq_tensor_backend::empty(
-            {B, tiles, 2}, cuda.dtype(mfq_tensor_backend::kInt32));
+        cache.kv_range = ::tyloi::cuda::empty(
+            {B, tiles, 2}, cuda.dtype(::tyloi::kInt32));
         const int blocks = std::min(
             65535, std::max(1, (B * tiles + 255) / 256));
         mfq_causal_kv_range_kernel<<<blocks, 256, 0, mfq_current_cuda_stream()>>>(
@@ -257,8 +257,8 @@ static MfqAttentionMmaCache & mfq_attention_mma_swa_cache(
 }
 
 template<int DKQ, int DV, int ncols1, int ncols2>
-static mfq_tensor_backend::Tensor mfq_attention_mma_launch(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v, double scale,
+static ::tyloi::Tensor mfq_attention_mma_launch(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v, double scale,
     bool sliding, int window)
 {
     constexpr int ncols = ncols1 * ncols2;
@@ -304,7 +304,7 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_launch(
     auto & cache = sliding
         ? mfq_attention_mma_swa_cache(B, T, window, ncols1, nbatch_fa)
         : mfq_attention_mma_cache(B, T, ncols1, nbatch_fa);
-    auto out = mfq_tensor_backend::empty({B, T, Hq, DV}, q.options());
+    auto out = ::tyloi::cuda::empty({B, T, Hq, DV}, q.options());
     using Kernel = decltype(&flash_attn_ext_f16<
         DKQ, DV, ncols1, ncols2, false, false, true>);
     Kernel kernel = flash_attn_ext_f16<
@@ -347,14 +347,14 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_launch(
     return out;
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma256_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v, double scale)
+::tyloi::Tensor mfq_attention_mma256_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v, double scale)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32,
                 "mfq_attention_mma256: q must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma256: k must be contiguous CUDA f16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma256: v must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4, "mfq_attention_mma256: rank must be 4");
     const int B = (int)q.size(0);
@@ -382,23 +382,23 @@ mfq_tensor_backend::Tensor mfq_attention_mma256_cuda(
     return mfq_attention_mma_launch<256, 256, 64, 1>(q, k, v, scale, false, 0);
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma128_cuda(
-    mfq_tensor_backend::Tensor q,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v,
+::tyloi::Tensor mfq_attention_mma128_cuda(
+    ::tyloi::Tensor q,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v,
     double scale)
 {
     TYLOINFER_RUNTIME_CHECK(
         q.is_cuda() && q.is_contiguous() &&
-            q.scalar_type() == mfq_tensor_backend::kFloat32,
+            q.scalar_type() == ::tyloi::kFloat32,
         "mfq_attention_mma128: q must be contiguous CUDA f32");
     TYLOINFER_RUNTIME_CHECK(
         k.is_cuda() && k.is_contiguous() &&
-            k.scalar_type() == mfq_tensor_backend::kFloat16,
+            k.scalar_type() == ::tyloi::kFloat16,
         "mfq_attention_mma128: k must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(
         v.is_cuda() && v.is_contiguous() &&
-            v.scalar_type() == mfq_tensor_backend::kFloat16,
+            v.scalar_type() == ::tyloi::kFloat16,
         "mfq_attention_mma128: v must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(
         q.dim() == 4 && k.dim() == 4 && v.dim() == 4,
@@ -441,14 +441,14 @@ mfq_tensor_backend::Tensor mfq_attention_mma128_cuda(
         q, k, v, scale, false, 0);
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma512_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v, double scale)
+::tyloi::Tensor mfq_attention_mma512_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v, double scale)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32,
                 "mfq_attention_mma512: q must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma512: k must be contiguous CUDA f16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma512: v must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                 "mfq_attention_mma512: rank must be 4");
@@ -467,12 +467,12 @@ mfq_tensor_backend::Tensor mfq_attention_mma512_cuda(
     return mfq_attention_mma_launch<512, 512, 8, 8>(q, k, v, scale, false, 0);
 }
 
-mfq_tensor_backend::Tensor attention_glm_mla576_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv, double scale)
+::tyloi::Tensor attention_glm_mla576_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor kv, double scale)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32,
                 "glm_mla576: q must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(kv.is_cuda() && kv.is_contiguous() && kv.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(kv.is_cuda() && kv.is_contiguous() && kv.scalar_type() == ::tyloi::kFloat16,
                 "glm_mla576: kv must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && kv.dim() == 4,
                 "glm_mla576: expected q[B,64,T,576], kv[B,1,T,576]");
@@ -492,9 +492,9 @@ mfq_tensor_backend::Tensor attention_glm_mla576_cuda(
 }
 
 template<int ncols1>
-static mfq_tensor_backend::Tensor attention_glm_mla576_cached_impl(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv_cache, int64_t logical_len,
-    mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta,
+static ::tyloi::Tensor attention_glm_mla576_cached_impl(
+    ::tyloi::Tensor q, ::tyloi::Tensor kv_cache, int64_t logical_len,
+    ::tyloi::Tensor mask, ::tyloi::Tensor kv_max, ::tyloi::Tensor meta,
     double scale)
 {
     constexpr int DKQ = 576;
@@ -588,7 +588,7 @@ static mfq_tensor_backend::Tensor attention_glm_mla576_cached_impl(
         query_offset, static_cast<int>(mask.size(1)), iter_j,
         ncols1, nbatch_fa);
 
-    auto out = mfq_tensor_backend::empty({B, M, 64, DV}, q.options());
+    auto out = ::tyloi::cuda::empty({B, M, 64, DV}, q.options());
     const uint3 ne01 = init_fastdiv_values(M);
     kernel<<<rounded_blocks, dim3(32, nwarps, 1), shmem, stream>>>(
         reinterpret_cast<const char *>(q.data_ptr<float>()),
@@ -634,17 +634,17 @@ static mfq_tensor_backend::Tensor attention_glm_mla576_cached_impl(
     return out;
 }
 
-mfq_tensor_backend::Tensor attention_glm_mla576_cached_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv_cache, int64_t logical_len,
-    mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta,
+::tyloi::Tensor attention_glm_mla576_cached_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor kv_cache, int64_t logical_len,
+    ::tyloi::Tensor mask, ::tyloi::Tensor kv_max, ::tyloi::Tensor meta,
     double scale)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32 &&
                 kv_cache.is_cuda() && kv_cache.is_contiguous() &&
-                kv_cache.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                mask.is_cuda() && mask.is_contiguous() && mask.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                kv_max.is_cuda() && kv_max.is_contiguous() && kv_max.scalar_type() == mfq_tensor_backend::kInt32 &&
-                meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == mfq_tensor_backend::kFloat32,
+                kv_cache.scalar_type() == ::tyloi::kFloat16 &&
+                mask.is_cuda() && mask.is_contiguous() && mask.scalar_type() == ::tyloi::kFloat16 &&
+                kv_max.is_cuda() && kv_max.is_contiguous() && kv_max.scalar_type() == ::tyloi::kInt32 &&
+                meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == ::tyloi::kFloat32,
                 "glm_mla576_cached: unsupported dtype or placement");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(1) == 64 && q.size(3) == 576 &&
                 kv_cache.dim() == 4 && kv_cache.size(0) == q.size(0) &&
@@ -664,14 +664,14 @@ mfq_tensor_backend::Tensor attention_glm_mla576_cached_cuda(
         q, kv_cache, logical_len, mask, kv_max, meta, scale);
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma256_swa_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v, double scale, int64_t window)
+::tyloi::Tensor mfq_attention_mma256_swa_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v, double scale, int64_t window)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32,
                 "mfq_attention_mma256_swa: q must be contiguous CUDA f32");
-    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma256_swa: k must be contiguous CUDA f16");
-    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(v.is_cuda() && v.is_contiguous() && v.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma256_swa: v must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                 "mfq_attention_mma256_swa: rank must be 4");
@@ -698,29 +698,29 @@ mfq_tensor_backend::Tensor mfq_attention_mma256_swa_cuda(
 
 template<int DKQ_EXPECTED, int DV_EXPECTED, int NCOLS1, int NCOLS2,
          bool V_IS_K_VIEW = false>
-static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
-    mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
+static ::tyloi::Tensor mfq_attention_mma_decode_impl(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t planned_len,
+    ::tyloi::Tensor mask, ::tyloi::Tensor kv_max, ::tyloi::Tensor meta)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32,
                 "mfq_attention_mma_decode: q must be contiguous CUDA f32");
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
-                k_cache.scalar_type() == mfq_tensor_backend::kFloat16,
+                k_cache.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma_decode: k cache must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(v_cache.is_cuda() && v_cache.is_contiguous() &&
-                v_cache.scalar_type() == mfq_tensor_backend::kFloat16,
+                v_cache.scalar_type() == ::tyloi::kFloat16,
                 "mfq_attention_mma_decode: v cache must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(seq_len.is_cuda() && seq_len.is_contiguous() &&
-                seq_len.scalar_type() == mfq_tensor_backend::kInt64,
+                seq_len.scalar_type() == ::tyloi::kInt64,
                 "mfq_attention_mma_decode: seq_len must be contiguous CUDA int64[B]");
-    TYLOINFER_RUNTIME_CHECK(mask.is_cuda() && mask.is_contiguous() && mask.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(mask.is_cuda() && mask.is_contiguous() && mask.scalar_type() == ::tyloi::kFloat16 &&
                 mask.dim() == 2,
                 "mfq_attention_mma_decode: mask must be contiguous CUDA f16[B, stride]");
     TYLOINFER_RUNTIME_CHECK(kv_max.is_cuda() && kv_max.is_contiguous() &&
-                kv_max.scalar_type() == mfq_tensor_backend::kInt32,
+                kv_max.scalar_type() == ::tyloi::kInt32,
                 "mfq_attention_mma_decode: kv_max must be contiguous CUDA int32[B]");
-    TYLOINFER_RUNTIME_CHECK(meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == ::tyloi::kFloat32,
                 "mfq_attention_mma_decode: meta must be contiguous CUDA f32");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(2) == 1 && k_cache.dim() == 4 && v_cache.dim() == 4,
                 "mfq_attention_mma_decode: expected q[B,Hq,1,D], cache[B,Hk,max_seq,D]");
@@ -814,7 +814,7 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
     const int tile_waves = (ntiles_dst + resident_blocks - 1) / resident_blocks;
     const int tile_efficiency = 100 * ntiles_dst / (resident_blocks * tile_waves);
     bool stream_k = cc >= 890 || tile_efficiency < 75;
-    const char * stream_k_env = mfq::cuda::env_lookup("TYLOINFER_MMA_ATTENTION_DECODE_STREAMK");
+    const char * stream_k_env = tyloi::cuda::env_lookup("TYLOINFER_MMA_ATTENTION_DECODE_STREAMK");
     if (stream_k_env != nullptr) stream_k = stream_k_env[0] != '0';
     int raw_blocks = stream_k
         ? std::min(resident_blocks, ntiles_dst * ntiles_kv)
@@ -855,7 +855,7 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
         reinterpret_cast<half*>(mask.data_ptr<mfq_half>()), kv_max.data_ptr<int>(),
         seq_len.data_ptr<int64_t>(), B, mask_stride, nbatch_fa);
 
-    auto out = mfq_tensor_backend::empty({B, 1, Hq, DV_EXPECTED}, q.options());
+    auto out = ::tyloi::cuda::empty({B, 1, Hq, DV_EXPECTED}, q.options());
     const uint3 ne01 = init_fastdiv_values(1);
     const uint32_t n_head_log2 = 1u << (uint32_t)floorf(log2f((float)Hq));
     kernel<<<rounded_blocks, dim3(32, nwarps, 1), shmem, stream>>>(
@@ -896,37 +896,37 @@ static mfq_tensor_backend::Tensor mfq_attention_mma_decode_impl(
     return out;
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma256_decode_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
-    mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
+::tyloi::Tensor mfq_attention_mma256_decode_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t planned_len,
+    ::tyloi::Tensor mask, ::tyloi::Tensor kv_max, ::tyloi::Tensor meta)
 {
     return mfq_attention_mma_decode_impl<256, 256, 1, 8>(
         q, k_cache, v_cache, seq_len, scale, planned_len, mask, kv_max, meta);
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma512_decode_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
-    mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
+::tyloi::Tensor mfq_attention_mma512_decode_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t planned_len,
+    ::tyloi::Tensor mask, ::tyloi::Tensor kv_max, ::tyloi::Tensor meta)
 {
     return mfq_attention_mma_decode_impl<512, 512, 1, 8>(
         q, k_cache, v_cache, seq_len, scale, planned_len, mask, kv_max, meta);
 }
 
-mfq_tensor_backend::Tensor attention_glm_mla576_decode_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv_cache, mfq_tensor_backend::Tensor seq_len,
-    double scale, int64_t planned_len, mfq_tensor_backend::Tensor mask,
-    mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
+::tyloi::Tensor attention_glm_mla576_decode_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor kv_cache, ::tyloi::Tensor seq_len,
+    double scale, int64_t planned_len, ::tyloi::Tensor mask,
+    ::tyloi::Tensor kv_max, ::tyloi::Tensor meta)
 {
     return mfq_attention_mma_decode_impl<576, 512, 1, 16, true>(
         q, kv_cache, kv_cache, seq_len, scale, planned_len, mask, kv_max, meta);
 }
 
-mfq_tensor_backend::Tensor mfq_attention_mma256_swa_decode_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor seq_len, double scale, int64_t planned_len,
-    mfq_tensor_backend::Tensor mask, mfq_tensor_backend::Tensor kv_max, mfq_tensor_backend::Tensor meta)
+::tyloi::Tensor mfq_attention_mma256_swa_decode_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor seq_len, double scale, int64_t planned_len,
+    ::tyloi::Tensor mask, ::tyloi::Tensor kv_max, ::tyloi::Tensor meta)
 {
     return mfq_attention_mma_decode_impl<256, 256, 4, 2>(
         q, k_cache, v_cache, seq_len, scale, planned_len, mask, kv_max, meta);

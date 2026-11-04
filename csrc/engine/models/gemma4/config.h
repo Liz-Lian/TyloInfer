@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <string_view>
 
-namespace mfq::models::gemma4 {
+namespace tyloi::models::gemma4 {
 
 struct Config : ModelConfig {
     std::int64_t global_head_dim = 0;
@@ -22,4 +22,4 @@ struct Config : ModelConfig {
 
 };
 
-} // namespace mfq::models::gemma4
+} // namespace tyloi::models::gemma4

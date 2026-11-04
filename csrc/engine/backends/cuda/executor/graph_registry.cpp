@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <condition_variable>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 struct HostRegistrationSchedule {
     std::mutex mutex;

@@ -22,15 +22,15 @@ struct MoeRoutePlan;
 class MoePinnedExpertArena;
 class MoeQuantRangeSource {
 public:
-    explicit MoeQuantRangeSource(std::shared_ptr<mfq::MfeQuantExpertStore> store);
+    explicit MoeQuantRangeSource(std::shared_ptr<tyloi::MfeQuantExpertStore> store);
     const std::shared_ptr<MixedMoeRuntime>& metadata() const { return metadata_; }
-    const mfq::MfeQuantExpertStore& store() const { return *store_; }
+    const tyloi::MfeQuantExpertStore& store() const { return *store_; }
     MixedMoePool read_expert(int expert) const;
     MixedMoePool allocate_expert(int expert) const;
-    void copy_expert_fields(int expert,const std::vector<mfq_tensor_backend::Tensor>& targets,bool touch_cache=true) const;
+    void copy_expert_fields(int expert,const std::vector<::tyloi::Tensor>& targets,bool touch_cache=true) const;
     bool copy_nvq_expert_fields(const std::vector<int>& experts,
-        const std::array<mfq_tensor_backend::Tensor,4>& targets) const;
-    MixedMoePool decode_expert(int expert,const mfq::MfeQuantExpert& encoded) const;
+        const std::array<::tyloi::Tensor,4>& targets) const;
+    MixedMoePool decode_expert(int expert,const tyloi::MfeQuantExpert& encoded) const;
     void mark_preload_complete(bool assert_resident) { disk_sealed_.store(assert_resident); preloaded_.store(true); }
     bool expert_disk_sealed() const { return disk_sealed_.load(); }
     void bind_host_cache(std::shared_ptr<MoeHostExpertCache> cache,int source_id);
@@ -43,9 +43,9 @@ public:
     bool gpu_resident(int expert) const;
     std::size_t expert_field_bytes(int expert) const;
     const std::shared_ptr<MoeHostExpertCache>& host_cache() const { return host_cache_; }
-    mfq::MoeCacheKey host_key(int expert) const;
-    mfq_tensor_backend::Tensor forward_cpu(
-        mfq_tensor_backend::Tensor input,const MoeRoutePlan& route,
+    tyloi::MoeCacheKey host_key(int expert) const;
+    ::tyloi::Tensor forward_cpu(
+        ::tyloi::Tensor input,const MoeRoutePlan& route,
         const std::unordered_map<int,MoeHostExpertCache::Lease>* prepared = nullptr) const;
     std::uint64_t cpu_projections() const { return cpu_projections_.load(); }
     void record_cpu_projections(std::size_t experts) const { cpu_projections_.fetch_add(experts); }
@@ -68,10 +68,10 @@ private:
     MixedMoePool read_expert_canonical(int expert) const;
     struct FieldLayout {
         std::vector<std::int64_t> shape;
-        mfq_tensor_backend::ScalarType dtype;
+        ::tyloi::ScalarType dtype;
         std::size_t offset=0,bytes=0;
     };
-    std::shared_ptr<mfq::MfeQuantExpertStore> store_;
+    std::shared_ptr<tyloi::MfeQuantExpertStore> store_;
     std::shared_ptr<MixedMoeRuntime> metadata_;
     std::vector<std::int64_t> q_strides_;
     std::vector<std::size_t> field_bytes_;

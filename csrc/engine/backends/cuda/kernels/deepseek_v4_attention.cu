@@ -850,13 +850,13 @@ __global__ void dsv4_decode_plan_kernel(
 
 } // namespace
 
-mfq_tensor_backend::Tensor dsv4_fp4_sim_cuda(mfq_tensor_backend::Tensor input) {
+::tyloi::Tensor dsv4_fp4_sim_cuda(::tyloi::Tensor input) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
-            input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            input.scalar_type() == ::tyloi::kFloat16 &&
             input.dim() >= 1 && input.size(-1) % 32 == 0,
         "dsv4_fp4_sim: expected contiguous CUDA f16 with last dimension divisible by 32");
-    auto output = mfq_tensor_backend::empty_like(input);
+    auto output = ::tyloi::cuda::empty_like(input);
     const int64_t groups = input.numel() / 32;
     TYLOINFER_RUNTIME_CHECK(
         groups > 0 && groups <= std::numeric_limits<int>::max(),
@@ -874,16 +874,16 @@ mfq_tensor_backend::Tensor dsv4_fp4_sim_cuda(mfq_tensor_backend::Tensor input) {
     return output;
 }
 
-mfq_tensor_backend::Tensor dsv4_compress_cuda(
-    mfq_tensor_backend::Tensor kv,
-    mfq_tensor_backend::Tensor gate,
-    mfq_tensor_backend::Tensor ape,
-    mfq_tensor_backend::Tensor norm,
-    mfq_tensor_backend::Tensor prev_kv,
-    mfq_tensor_backend::Tensor prev_gate,
-    mfq_tensor_backend::Tensor positions,
-    mfq_tensor_backend::Tensor cos,
-    mfq_tensor_backend::Tensor sin,
+::tyloi::Tensor dsv4_compress_cuda(
+    ::tyloi::Tensor kv,
+    ::tyloi::Tensor gate,
+    ::tyloi::Tensor ape,
+    ::tyloi::Tensor norm,
+    ::tyloi::Tensor prev_kv,
+    ::tyloi::Tensor prev_gate,
+    ::tyloi::Tensor positions,
+    ::tyloi::Tensor cos,
+    ::tyloi::Tensor sin,
     int64_t ratio,
     bool overlap,
     int64_t quant_mode,
@@ -892,8 +892,8 @@ mfq_tensor_backend::Tensor dsv4_compress_cuda(
     const auto scalar_type = kv.scalar_type();
     TYLOINFER_RUNTIME_CHECK(
         kv.is_cuda() && kv.is_contiguous() &&
-            (scalar_type == mfq_tensor_backend::kFloat16 ||
-             scalar_type == mfq_tensor_backend::kFloat32) &&
+            (scalar_type == ::tyloi::kFloat16 ||
+             scalar_type == ::tyloi::kFloat32) &&
             gate.is_cuda() && gate.is_contiguous() &&
             gate.scalar_type() == scalar_type &&
             kv.sizes() == gate.sizes(),
@@ -907,21 +907,21 @@ mfq_tensor_backend::Tensor dsv4_compress_cuda(
         "dsv4_compress: expected [B,W,ratio,D or 2D], D=128 or 512");
     TYLOINFER_RUNTIME_CHECK(
         ape.is_cuda() && ape.is_contiguous() &&
-            ape.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            ape.scalar_type() == ::tyloi::kFloat32 &&
             ape.dim() == 2 && ape.size(0) == ratio &&
             ape.size(1) == kv.size(3) &&
             norm.is_cuda() && norm.is_contiguous() &&
-            norm.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            norm.scalar_type() == ::tyloi::kFloat32 &&
             norm.numel() == head_dim,
         "dsv4_compress: invalid APE or norm");
     TYLOINFER_RUNTIME_CHECK(
         positions.is_cuda() && positions.is_contiguous() &&
-            positions.scalar_type() == mfq_tensor_backend::kInt64 &&
+            positions.scalar_type() == ::tyloi::kInt64 &&
             positions.numel() == kv.size(0) * kv.size(1) &&
             cos.is_cuda() && cos.is_contiguous() &&
-            cos.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            cos.scalar_type() == ::tyloi::kFloat32 &&
             sin.is_cuda() && sin.is_contiguous() &&
-            sin.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            sin.scalar_type() == ::tyloi::kFloat32 &&
             cos.dim() == 2 && sin.sizes() == cos.sizes() &&
             cos.size(1) >= 32,
         "dsv4_compress: invalid positions or RoPE table");
@@ -941,9 +941,9 @@ mfq_tensor_backend::Tensor dsv4_compress_cuda(
             (quant_mode == 1 && head_dim == kHeadDim) ||
             (quant_mode == 2 && head_dim == kIndexerDim),
         "dsv4_compress: quant_mode must match D=512 FP8 or D=128 FP4 cache");
-    auto out = mfq_tensor_backend::empty(
+    auto out = ::tyloi::cuda::empty(
         {kv.size(0), kv.size(1), head_dim},
-        kv.options().dtype(mfq_tensor_backend::kFloat16));
+        kv.options().dtype(::tyloi::kFloat16));
     const int blocks =
         static_cast<int>(kv.size(0) * kv.size(1));
     auto launch = [&](auto scalar_tag, auto head_tag) {
@@ -969,10 +969,10 @@ mfq_tensor_backend::Tensor dsv4_compress_cuda(
             static_cast<int>(cos.size(1)), static_cast<int>(quant_mode),
             static_cast<float>(eps));
     };
-    if (scalar_type == mfq_tensor_backend::kFloat32 && head_dim == kHeadDim) {
+    if (scalar_type == ::tyloi::kFloat32 && head_dim == kHeadDim) {
         launch(Dsv4TypeTag<float>{},
                std::integral_constant<int, kHeadDim>{});
-    } else if (scalar_type == mfq_tensor_backend::kFloat32) {
+    } else if (scalar_type == ::tyloi::kFloat32) {
         launch(Dsv4TypeTag<float>{},
                std::integral_constant<int, kIndexerDim>{});
     } else if (head_dim == kHeadDim) {
@@ -989,19 +989,19 @@ mfq_tensor_backend::Tensor dsv4_compress_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor dsv4_decode_pool_update_cuda(
-    mfq_tensor_backend::Tensor kv_token,
-    mfq_tensor_backend::Tensor gate_token,
-    mfq_tensor_backend::Tensor ape,
-    mfq_tensor_backend::Tensor norm,
-    mfq_tensor_backend::Tensor state_kv,
-    mfq_tensor_backend::Tensor state_gate,
-    mfq_tensor_backend::Tensor prev_kv,
-    mfq_tensor_backend::Tensor prev_gate,
-    mfq_tensor_backend::Tensor pool,
-    mfq_tensor_backend::Tensor seq_len,
-    mfq_tensor_backend::Tensor cos,
-    mfq_tensor_backend::Tensor sin,
+::tyloi::Tensor dsv4_decode_pool_update_cuda(
+    ::tyloi::Tensor kv_token,
+    ::tyloi::Tensor gate_token,
+    ::tyloi::Tensor ape,
+    ::tyloi::Tensor norm,
+    ::tyloi::Tensor state_kv,
+    ::tyloi::Tensor state_gate,
+    ::tyloi::Tensor prev_kv,
+    ::tyloi::Tensor prev_gate,
+    ::tyloi::Tensor pool,
+    ::tyloi::Tensor seq_len,
+    ::tyloi::Tensor cos,
+    ::tyloi::Tensor sin,
     int64_t ratio,
     bool overlap,
     int64_t quant_mode,
@@ -1015,8 +1015,8 @@ mfq_tensor_backend::Tensor dsv4_decode_pool_update_cuda(
     const int64_t out_dim = overlap ? 2 * head_dim : head_dim;
     TYLOINFER_RUNTIME_CHECK(
         kv_token.is_cuda() && kv_token.is_contiguous() &&
-            (scalar_type == mfq_tensor_backend::kFloat16 ||
-             scalar_type == mfq_tensor_backend::kFloat32) &&
+            (scalar_type == ::tyloi::kFloat16 ||
+             scalar_type == ::tyloi::kFloat32) &&
             gate_token.is_cuda() && gate_token.is_contiguous() &&
             gate_token.scalar_type() == scalar_type &&
             kv_token.sizes() == gate_token.sizes() &&
@@ -1046,25 +1046,25 @@ mfq_tensor_backend::Tensor dsv4_decode_pool_update_cuda(
         "dsv4_decode_pool_update: invalid overlap history");
     TYLOINFER_RUNTIME_CHECK(
         pool.is_cuda() && pool.is_contiguous() &&
-            pool.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            pool.scalar_type() == ::tyloi::kFloat16 &&
             pool.dim() == 3 && pool.size(0) == B &&
             pool.size(1) > 0 && pool.size(2) == head_dim &&
             seq_len.is_cuda() && seq_len.is_contiguous() &&
-            seq_len.scalar_type() == mfq_tensor_backend::kInt64 &&
+            seq_len.scalar_type() == ::tyloi::kInt64 &&
             seq_len.numel() == B,
         "dsv4_decode_pool_update: invalid pool or sequence length");
     TYLOINFER_RUNTIME_CHECK(
         ape.is_cuda() && ape.is_contiguous() &&
-            ape.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            ape.scalar_type() == ::tyloi::kFloat32 &&
             ape.dim() == 2 && ape.size(0) == ratio &&
             ape.size(1) == out_dim &&
             norm.is_cuda() && norm.is_contiguous() &&
-            norm.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            norm.scalar_type() == ::tyloi::kFloat32 &&
             norm.numel() == head_dim &&
             cos.is_cuda() && cos.is_contiguous() &&
-            cos.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            cos.scalar_type() == ::tyloi::kFloat32 &&
             sin.is_cuda() && sin.is_contiguous() &&
-            sin.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            sin.scalar_type() == ::tyloi::kFloat32 &&
             cos.dim() == 2 && sin.sizes() == cos.sizes() &&
             cos.size(1) >= 32,
         "dsv4_decode_pool_update: invalid compressor parameters");
@@ -1100,10 +1100,10 @@ mfq_tensor_backend::Tensor dsv4_decode_pool_update_cuda(
             static_cast<int>(cos.size(1)), static_cast<int>(quant_mode),
             static_cast<float>(eps));
     };
-    if (scalar_type == mfq_tensor_backend::kFloat32 && head_dim == kHeadDim) {
+    if (scalar_type == ::tyloi::kFloat32 && head_dim == kHeadDim) {
         launch(Dsv4TypeTag<float>{},
                std::integral_constant<int, kHeadDim>{});
-    } else if (scalar_type == mfq_tensor_backend::kFloat32) {
+    } else if (scalar_type == ::tyloi::kFloat32) {
         launch(Dsv4TypeTag<float>{},
                std::integral_constant<int, kIndexerDim>{});
     } else if (head_dim == kHeadDim) {
@@ -1121,21 +1121,21 @@ mfq_tensor_backend::Tensor dsv4_decode_pool_update_cuda(
     return pool;
 }
 
-static mfq_tensor_backend::Tensor dsv4_indexer_scores_impl(
-    mfq_tensor_backend::Tensor q,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor weights,
+static ::tyloi::Tensor dsv4_indexer_scores_impl(
+    ::tyloi::Tensor q,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor weights,
     int64_t query_offset,
     int64_t ratio,
-    mfq_tensor_backend::Tensor candidates)
+    ::tyloi::Tensor candidates)
 {
     TYLOINFER_RUNTIME_CHECK(
         q.is_cuda() && q.is_contiguous() &&
-            q.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            q.scalar_type() == ::tyloi::kFloat16 &&
             k.is_cuda() && k.is_contiguous() &&
-            k.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            k.scalar_type() == ::tyloi::kFloat16 &&
             weights.is_cuda() && weights.is_contiguous() &&
-            weights.scalar_type() == mfq_tensor_backend::kFloat16,
+            weights.scalar_type() == ::tyloi::kFloat16,
         "dsv4_indexer_scores: tensors must be contiguous CUDA f16");
     TYLOINFER_RUNTIME_CHECK(
         q.dim() == 4 &&
@@ -1150,14 +1150,14 @@ static mfq_tensor_backend::Tensor dsv4_indexer_scores_impl(
         "dsv4_indexer_scores: shape mismatch");
     const bool indexed = candidates.defined();
     if (indexed) TYLOINFER_RUNTIME_CHECK(candidates.is_cuda() && candidates.is_contiguous() &&
-        candidates.device() == q.device() && candidates.scalar_type() == mfq_tensor_backend::kInt64 &&
+        candidates.device() == q.device() && candidates.scalar_type() == ::tyloi::kInt64 &&
         candidates.dim() == 3 && candidates.size(0) == q.size(0) && candidates.size(1) == q.size(1),
         "dsv4_indexer_scores: invalid candidate positions");
     const int B = static_cast<int>(q.size(0));
     const int M = static_cast<int>(q.size(1));
     const int K = static_cast<int>(k.size(1));
     const int N = indexed ? static_cast<int>(candidates.size(2)) : K;
-    auto out = mfq_tensor_backend::empty({B, M, N}, q.options());
+    auto out = ::tyloi::cuda::empty({B, M, N}, q.options());
     if (!N) return out;
     const dim3 grid(
         (N + kIndexerKeysPerTile - 1) / kIndexerKeysPerTile, M, B);
@@ -1192,24 +1192,24 @@ static mfq_tensor_backend::Tensor dsv4_indexer_scores_impl(
     return out;
 }
 
-mfq_tensor_backend::Tensor dsv4_indexer_scores_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor weights, int64_t query_offset, int64_t ratio) {
+::tyloi::Tensor dsv4_indexer_scores_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k,
+    ::tyloi::Tensor weights, int64_t query_offset, int64_t ratio) {
     return dsv4_indexer_scores_impl(q, k, weights, query_offset, ratio, {});
 }
 
-mfq_tensor_backend::Tensor dsv4_indexer_candidate_scores_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor weights, mfq_tensor_backend::Tensor candidates,
+::tyloi::Tensor dsv4_indexer_candidate_scores_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k,
+    ::tyloi::Tensor weights, ::tyloi::Tensor candidates,
     int64_t query_offset, int64_t ratio) {
     return dsv4_indexer_scores_impl(q, k, weights, query_offset, ratio, candidates);
 }
 
 
-mfq_tensor_backend::Tensor dsv4_topk512_cuda(mfq_tensor_backend::Tensor scores) {
+::tyloi::Tensor dsv4_topk512_cuda(::tyloi::Tensor scores) {
     TYLOINFER_RUNTIME_CHECK(
         scores.is_cuda() && scores.is_contiguous() &&
-            scores.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            scores.scalar_type() == ::tyloi::kFloat16 &&
             scores.dim() == 3 && scores.size(2) > 0 &&
             scores.size(0) * scores.size(1) <= INT_MAX &&
             scores.size(2) <= INT_MAX,
@@ -1218,15 +1218,15 @@ mfq_tensor_backend::Tensor dsv4_topk512_cuda(mfq_tensor_backend::Tensor scores) 
         static_cast<int>(scores.size(0) * scores.size(1));
     const int K = static_cast<int>(scores.size(2));
     if (K <= kIndexerTopK) {
-        return mfq_tensor_backend::arange(
-            K, scores.options().dtype(mfq_tensor_backend::kInt32))
+        return ::tyloi::cuda::arange(
+            K, scores.options().dtype(::tyloi::kInt32))
             .reshape({1, 1, K})
             .expand({scores.size(0), scores.size(1), K})
             .contiguous();
     }
-    auto out = mfq_tensor_backend::empty(
+    auto out = ::tyloi::cuda::empty(
         {scores.size(0), scores.size(1), kIndexerTopK},
-        scores.options().dtype(mfq_tensor_backend::kInt32));
+        scores.options().dtype(::tyloi::kInt32));
     dsv4_topk_indices_kernel<kIndexerTopK><<<
         rows, 256, 0, mfq_current_cuda_stream()>>>(
         reinterpret_cast<const half *>(scores.data_ptr<mfq_half>()),
@@ -1238,8 +1238,8 @@ mfq_tensor_backend::Tensor dsv4_topk512_cuda(mfq_tensor_backend::Tensor scores) 
     return out;
 }
 
-std::vector<mfq_tensor_backend::Tensor> dsv4_build_prefill_plan_cuda(
-    mfq_tensor_backend::Tensor topk,
+std::vector<::tyloi::Tensor> dsv4_build_prefill_plan_cuda(
+    ::tyloi::Tensor topk,
     int64_t query_offset,
     int64_t local_history,
     int64_t pool_len,
@@ -1248,7 +1248,7 @@ std::vector<mfq_tensor_backend::Tensor> dsv4_build_prefill_plan_cuda(
 {
     TYLOINFER_RUNTIME_CHECK(
         topk.is_cuda() && topk.is_contiguous() &&
-            topk.scalar_type() == mfq_tensor_backend::kInt32 &&
+            topk.scalar_type() == ::tyloi::kInt32 &&
             topk.dim() == 3 && topk.size(1) > 0 &&
             query_offset >= 0 && local_history >= 0 &&
             pool_len >= 0 && ratio > 0 && window > 0,
@@ -1258,11 +1258,11 @@ std::vector<mfq_tensor_backend::Tensor> dsv4_build_prefill_plan_cuda(
     const int topk_count = static_cast<int>(topk.size(2));
     const int selected =
         ((static_cast<int>(window) + topk_count + 31) / 32) * 32;
-    auto indices = mfq_tensor_backend::empty(
+    auto indices = ::tyloi::cuda::empty(
         {B, M, selected}, topk.options());
-    auto mask = mfq_tensor_backend::empty(
+    auto mask = ::tyloi::cuda::empty(
         {B, M, selected},
-        topk.options().dtype(mfq_tensor_backend::kFloat16));
+        topk.options().dtype(::tyloi::kFloat16));
     const int64_t total =
         static_cast<int64_t>(B) * M * selected;
     const int blocks = std::min<int64_t>(
@@ -1282,19 +1282,19 @@ std::vector<mfq_tensor_backend::Tensor> dsv4_build_prefill_plan_cuda(
     return {indices, mask};
 }
 
-std::vector<mfq_tensor_backend::Tensor> dsv4_build_decode_plan_cuda(
-    mfq_tensor_backend::Tensor topk,
-    mfq_tensor_backend::Tensor seq_len,
+std::vector<::tyloi::Tensor> dsv4_build_decode_plan_cuda(
+    ::tyloi::Tensor topk,
+    ::tyloi::Tensor seq_len,
     int64_t pool_len,
     int64_t ratio,
     int64_t window)
 {
     TYLOINFER_RUNTIME_CHECK(
         topk.is_cuda() && topk.is_contiguous() &&
-            topk.scalar_type() == mfq_tensor_backend::kInt32 &&
+            topk.scalar_type() == ::tyloi::kInt32 &&
             topk.dim() == 3 && topk.size(1) == 1 &&
             seq_len.is_cuda() && seq_len.is_contiguous() &&
-            seq_len.scalar_type() == mfq_tensor_backend::kInt64 &&
+            seq_len.scalar_type() == ::tyloi::kInt64 &&
             seq_len.numel() == topk.size(0) &&
             pool_len >= 0 && ratio > 0 && window > 0,
         "dsv4_decode_plan: invalid input");
@@ -1302,11 +1302,11 @@ std::vector<mfq_tensor_backend::Tensor> dsv4_build_decode_plan_cuda(
     const int topk_count = static_cast<int>(topk.size(2));
     const int selected =
         ((static_cast<int>(window) + topk_count + 31) / 32) * 32;
-    auto indices = mfq_tensor_backend::empty(
+    auto indices = ::tyloi::cuda::empty(
         {B, 1, selected}, topk.options());
-    auto mask = mfq_tensor_backend::empty(
+    auto mask = ::tyloi::cuda::empty(
         {B, 1, selected},
-        topk.options().dtype(mfq_tensor_backend::kFloat16));
+        topk.options().dtype(::tyloi::kFloat16));
     const int64_t total = static_cast<int64_t>(B) * selected;
     const int blocks = std::min<int64_t>(
         65535, std::max<int64_t>(1, (total + 255) / 256));
@@ -1325,28 +1325,28 @@ std::vector<mfq_tensor_backend::Tensor> dsv4_build_decode_plan_cuda(
     return {indices, mask};
 }
 
-mfq_tensor_backend::Tensor attention_dsv4_sparse_cuda(
-    mfq_tensor_backend::Tensor q,
-    mfq_tensor_backend::Tensor kv,
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor mask,
-    mfq_tensor_backend::Tensor sinks,
-    mfq_tensor_backend::Tensor meta,
+::tyloi::Tensor attention_dsv4_sparse_cuda(
+    ::tyloi::Tensor q,
+    ::tyloi::Tensor kv,
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor mask,
+    ::tyloi::Tensor sinks,
+    ::tyloi::Tensor meta,
     double scale)
 {
     TYLOINFER_RUNTIME_CHECK(
         q.is_cuda() && q.is_contiguous() &&
-            q.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            q.scalar_type() == ::tyloi::kFloat32 &&
             kv.is_cuda() && kv.is_contiguous() &&
-            kv.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            kv.scalar_type() == ::tyloi::kFloat16 &&
             indices.is_cuda() && indices.is_contiguous() &&
-            indices.scalar_type() == mfq_tensor_backend::kInt32 &&
+            indices.scalar_type() == ::tyloi::kInt32 &&
             mask.is_cuda() && mask.is_contiguous() &&
-            mask.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            mask.scalar_type() == ::tyloi::kFloat16 &&
             sinks.is_cuda() && sinks.is_contiguous() &&
-            sinks.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            sinks.scalar_type() == ::tyloi::kFloat32 &&
             meta.is_cuda() && meta.is_contiguous() &&
-            meta.scalar_type() == mfq_tensor_backend::kFloat32,
+            meta.scalar_type() == ::tyloi::kFloat32,
         "dsv4_sparse_attention: unsupported dtype or placement");
     TYLOINFER_RUNTIME_CHECK(
         q.dim() == 4 && q.size(1) == kHeads &&

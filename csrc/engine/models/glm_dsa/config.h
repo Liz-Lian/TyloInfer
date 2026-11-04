@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::glm_dsa {
+namespace tyloi::models::glm_dsa {
 
 struct Config : ModelConfig {
     std::vector<std::string> indexer_types;
@@ -42,4 +42,4 @@ struct Config : ModelConfig {
 
 };
 
-} // namespace mfq::models::glm_dsa
+} // namespace tyloi::models::glm_dsa

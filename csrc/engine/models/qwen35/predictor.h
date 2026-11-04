@@ -7,21 +7,21 @@
 
 #include <vector>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 struct Predictor {
     struct Layer {
         FullAttention attention;
-        mfq_tensor_backend::Tensor ffn_norm;
+        ::tyloi::Tensor ffn_norm;
         Ffn ffn;
     };
 
-    mfq::models::qwen35::Config config;
+    tyloi::models::qwen35::Config config;
     QuantLinear fusion;
-    mfq_tensor_backend::Tensor hidden_norm, embedding_norm, output_norm;
+    ::tyloi::Tensor hidden_norm, embedding_norm, output_norm;
     std::vector<Layer> layers;
 
     std::vector<Task> tasks() const;
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::engine::mtp {
+namespace tyloi::engine::mtp {
 
 struct BatchAcceptance {
     int drafted;
@@ -221,4 +221,4 @@ private:
     std::map<Key, Verdict> verdicts_;
 };
 
-} // namespace mfq::engine::mtp
+} // namespace tyloi::engine::mtp

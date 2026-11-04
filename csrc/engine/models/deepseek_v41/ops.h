@@ -29,12 +29,12 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda { class Pipelines; }
+namespace tyloi::cuda { class Pipelines; }
 
-namespace mfq::cuda::deepseek_v41_runtime {
+namespace tyloi::cuda::deepseek_v41_runtime {
 
-using Tensor = mfq_tensor_backend::Tensor;
-using CommonConfig = mfq::models::deepseek_v41::Config;
+using Tensor = ::tyloi::Tensor;
+using CommonConfig = tyloi::models::deepseek_v41::Config;
 
 struct SharedState {
     CommonConfig config;
@@ -47,7 +47,7 @@ struct SharedState {
     std::unique_ptr<EngramHashState> engram_hash;
     EngramHashBatch engram_hashes;
     std::vector<Engram*> engram_prefetch;
-    std::vector<const mfq::cuda::Ffn*> router_prefetch;
+    std::vector<const tyloi::cuda::Ffn*> router_prefetch;
     std::vector<Tensor> dspark_target_hiddens;
     bool capture_dspark_targets = false;
     Tensor image_mask, text_rows, routing_mask;
@@ -62,16 +62,16 @@ struct SharedState {
     void set_image_mask(Tensor mask) {
         if(!mask.defined()) {image_mask={};text_rows={};routing_mask={};text_row_ids.clear();return;}
         TYLOINFER_RUNTIME_CHECK(mask.is_cpu() && mask.dim()==2 && mask.is_contiguous() &&
-                          mask.scalar_type()==mfq_tensor_backend::kUInt8,
+                          mask.scalar_type()==::tyloi::kUInt8,
                           "DeepSeek-V4.1 image mask must be contiguous CPU uint8 [B,T]");
         std::vector<int64_t> images;text_row_ids.clear();
         const auto* flags=mask.data_ptr<uint8_t>();
         for(int64_t i=0;i<mask.numel();++i)(flags[i]?images:text_row_ids).push_back(i);
         if(images.empty()){set_image_mask({});return;}
-        auto options=mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA)
-            .dtype(mfq_tensor_backend::kInt64);
-        auto text=mfq_tensor_backend::tensor(text_row_ids,options);
-        auto routing=mask.reshape({-1,1}).to(mfq_tensor_backend::kCUDA).to(mfq_tensor_backend::kBool);
+        auto options=::tyloi::TensorOptions().device(::tyloi::kCUDA)
+            .dtype(::tyloi::kInt64);
+        auto text=::tyloi::cuda::tensor(text_row_ids,options);
+        auto routing=mask.reshape({-1,1}).to(::tyloi::kCUDA).to(::tyloi::kBool);
         image_mask=std::move(mask);text_rows=std::move(text);routing_mask=std::move(routing);
     }
 
@@ -106,7 +106,7 @@ struct SharedState {
                           "DeepSeek-V4.1 DSpark target layers were not fully captured");
         return dspark_target_hiddens.size() == 1
                    ? dspark_target_hiddens.front()
-                   : mfq_tensor_backend::cat(dspark_target_hiddens, -1).contiguous();
+                   : ::tyloi::cuda::cat(dspark_target_hiddens, -1).contiguous();
     }
 
     void begin_speculative() {
@@ -147,7 +147,7 @@ struct SharedState {
 
     void enter_layer(std::int64_t layer, std::int64_t layer_count, std::int64_t current_batch,
                      std::int64_t current_tokens, std::int64_t current_position,
-                     const mfq_tensor_backend::Device &device, const Tensor &token_ids) {
+                     const ::tyloi::Device &device, const Tensor &token_ids) {
         if (layer == 0) {
             compressed_kv = Tensor();
             index_k = Tensor();
@@ -160,9 +160,9 @@ struct SharedState {
             tokens = current_tokens;
             next_layer = 0;
             previous_pre =
-                mfq_tensor_backend::zeros({current_batch, current_tokens, 4},
-                                          mfq_tensor_backend::TensorOptions().device(device).dtype(
-                                              mfq_tensor_backend::kFloat32));
+                ::tyloi::cuda::zeros({current_batch, current_tokens, 4},
+                                          ::tyloi::TensorOptions().device(device).dtype(
+                                              ::tyloi::kFloat32));
             previous_pre.narrow(2, 0, 1).fill_(1.0);
             TYLOINFER_RUNTIME_CHECK(engram_hash && token_ids.dim() == 2 &&
                                   token_ids.size(0) == current_batch &&
@@ -190,9 +190,9 @@ struct SharedState {
         }
         ++next_layer;
         if (!attention_meta.defined() || attention_meta.device() != device) {
-            attention_meta = mfq_tensor_backend::empty(
-                {8 * 1024 * 1024}, mfq_tensor_backend::TensorOptions().device(device).dtype(
-                                       mfq_tensor_backend::kFloat32));
+            attention_meta = ::tyloi::cuda::empty(
+                {8 * 1024 * 1024}, ::tyloi::TensorOptions().device(device).dtype(
+                                       ::tyloi::kFloat32));
         }
     }
 
@@ -201,10 +201,10 @@ struct SharedState {
                               previous_pre.sizes() == hidden.sizes().slice(0, 3) &&
                               next_layer == layer_count,
                           "DeepSeek-V4.1 final Mega-mHC state is incomplete");
-        return (previous_pre.to(mfq_tensor_backend::kFloat32).unsqueeze(-1) *
-                hidden.to(mfq_tensor_backend::kFloat32))
+        return (previous_pre.to(::tyloi::kFloat32).unsqueeze(-1) *
+                hidden.to(::tyloi::kFloat32))
             .sum(2)
-            .to(mfq_tensor_backend::kFloat16)
+            .to(::tyloi::kFloat16)
             .contiguous();
     }
 };
@@ -224,10 +224,10 @@ inline Tensor weighted_rms(const Tensor &input, const Tensor &weight, double eps
     const auto shape = input.sizes().vec();
     TYLOINFER_RUNTIME_CHECK(!shape.empty() && weight.numel() == shape.back(),
                       "DeepSeek-V4.1 weighted RMS geometry mismatch");
-    return rms_norm_cuda(input.reshape({-1, shape.back()}).to(mfq_tensor_backend::kFloat32), weight,
+    return rms_norm_cuda(input.reshape({-1, shape.back()}).to(::tyloi::kFloat32), weight,
                          epsilon)
         .reshape(shape)
-        .to(mfq_tensor_backend::kFloat16)
+        .to(::tyloi::kFloat16)
         .contiguous();
 }
 
@@ -240,20 +240,20 @@ inline Tensor rotate_token_major_tail(Tensor input, const Tensor &positions,
 }
 
 inline Tensor empty_topk(std::int64_t batch, std::int64_t tokens,
-                         const mfq_tensor_backend::Device &device) {
-    return mfq_tensor_backend::empty(
+                         const ::tyloi::Device &device) {
+    return ::tyloi::cuda::empty(
         {batch, tokens, 0},
-        mfq_tensor_backend::TensorOptions().device(device).dtype(mfq_tensor_backend::kInt32));
+        ::tyloi::TensorOptions().device(device).dtype(::tyloi::kInt32));
 }
 
 inline Tensor normalize_topk(Tensor selected, const Tensor &values, std::int64_t pool_length) {
-    selected = selected.to(mfq_tensor_backend::kInt64).contiguous();
+    selected = selected.to(::tyloi::kInt64).contiguous();
     auto valid = (selected >= 0.0) & (selected < static_cast<double>(pool_length));
-    valid = valid & mfq_tensor_backend::isneginf(values).logical_not();
-    auto masked = mfq_tensor_backend::where(valid, selected, static_cast<double>(pool_length));
-    auto ordered = std::get<0>(mfq_tensor_backend::sort(masked, -1, false));
-    return mfq_tensor_backend::where(ordered < static_cast<double>(pool_length), ordered, -1.0)
-        .to(mfq_tensor_backend::kInt32)
+    valid = valid & ::tyloi::cuda::isneginf(values).logical_not();
+    auto masked = ::tyloi::cuda::where(valid, selected, static_cast<double>(pool_length));
+    auto ordered = std::get<0>(::tyloi::cuda::sort(masked, -1, false));
+    return ::tyloi::cuda::where(ordered < static_cast<double>(pool_length), ordered, -1.0)
+        .to(::tyloi::kInt32)
         .contiguous();
 }
 
@@ -268,22 +268,22 @@ inline Tensor select_topk(const Tensor &scores, std::int64_t requested, std::int
     Tensor values;
     if (count == width) {
         relative =
-            mfq_tensor_backend::arange(width, scores.options().dtype(mfq_tensor_backend::kInt64))
+            ::tyloi::cuda::arange(width, scores.options().dtype(::tyloi::kInt64))
                 .reshape({1, 1, width})
                 .expand({scores.size(0), scores.size(1), width})
                 .contiguous();
         values = scores;
-    } else if (count == 512 && scores.scalar_type() == mfq_tensor_backend::kFloat16) {
+    } else if (count == 512 && scores.scalar_type() == ::tyloi::kFloat16) {
         relative =
-            dsv4_topk512_cuda(scores.contiguous()).to(mfq_tensor_backend::kInt64).contiguous();
+            dsv4_topk512_cuda(scores.contiguous()).to(::tyloi::kInt64).contiguous();
         values = scores.gather(-1, relative);
     } else {
-        auto result = mfq_tensor_backend::topk(scores, count, -1, true, false);
+        auto result = ::tyloi::cuda::topk(scores, count, -1, true, false);
         values = std::get<0>(result);
         relative = std::get<1>(result);
     }
     auto selected = source_indices
-                        ? source_indices->to(mfq_tensor_backend::kInt64).gather(-1, relative)
+                        ? source_indices->to(::tyloi::kInt64).gather(-1, relative)
                         : relative;
     return normalize_topk(selected, values, pool_length);
 }
@@ -298,44 +298,44 @@ inline Tensor candidate_blocks_from_scores(const Tensor &scores, std::int64_t ra
     const auto padded = blocks * block_size;
     Tensor padded_scores = scores;
     if (padded != width) {
-        padded_scores = mfq_tensor_backend::cat(
+        padded_scores = ::tyloi::cuda::cat(
             {scores,
-             mfq_tensor_backend::full({batch, tokens, padded - width},
+             ::tyloi::cuda::full({batch, tokens, padded - width},
                                       -std::numeric_limits<float>::infinity(), scores.options())},
             -1);
     }
     auto block_scores = padded_scores.reshape({batch, tokens, blocks, block_size}).amax(-1);
-    auto int_options = scores.options().dtype(mfq_tensor_backend::kInt64);
-    auto visible = (mfq_tensor_backend::arange(position + 1, position + tokens + 1, int_options)
+    auto int_options = scores.options().dtype(::tyloi::kInt64);
+    auto visible = (::tyloi::cuda::arange(position + 1, position + tokens + 1, int_options)
                         .reshape({1, tokens, 1}) /
                     static_cast<double>(ratio));
-    auto last = mfq_tensor_backend::where(visible > 0.0,
+    auto last = ::tyloi::cuda::where(visible > 0.0,
                                           (visible - 1.0) / static_cast<double>(block_size), -1.0);
-    auto block_ids = mfq_tensor_backend::arange(blocks, int_options).reshape({1, 1, blocks});
-    block_scores = mfq_tensor_backend::where(block_ids == last,
+    auto block_ids = ::tyloi::cuda::arange(blocks, int_options).reshape({1, 1, blocks});
+    block_scores = ::tyloi::cuda::where(block_ids == last,
                                              std::numeric_limits<float>::infinity(), block_scores);
     const auto count = std::min(requested_blocks, blocks);
-    auto result = mfq_tensor_backend::topk(block_scores, count, -1, true, false);
+    auto result = ::tyloi::cuda::topk(block_scores, count, -1, true, false);
     auto values = std::get<0>(result);
     auto selected = std::get<1>(result);
-    return mfq_tensor_backend::where(mfq_tensor_backend::isneginf(values).logical_not(), selected,
+    return ::tyloi::cuda::where(::tyloi::cuda::isneginf(values).logical_not(), selected,
                                      -1.0)
-        .to(mfq_tensor_backend::kInt32)
+        .to(::tyloi::kInt32)
         .contiguous();
 }
 
 inline Tensor candidate_positions(const Tensor &blocks, std::int64_t block_size,
                                   std::int64_t pool_length) {
     const auto count = blocks.size(-1);
-    auto block64 = blocks.to(mfq_tensor_backend::kInt64);
+    auto block64 = blocks.to(::tyloi::kInt64);
     auto within =
-        mfq_tensor_backend::arange(block_size, blocks.options().dtype(mfq_tensor_backend::kInt64))
+        ::tyloi::cuda::arange(block_size, blocks.options().dtype(::tyloi::kInt64))
             .reshape({1, 1, 1, block_size});
     auto expanded = (block64.unsqueeze(-1) * static_cast<double>(block_size) + within)
                         .reshape({blocks.size(0), blocks.size(1), count * block_size});
     auto valid = (expanded >= 0.0) & (expanded < static_cast<double>(pool_length));
-    return mfq_tensor_backend::where(valid, expanded, -1.0)
-        .to(mfq_tensor_backend::kInt64)
+    return ::tyloi::cuda::where(valid, expanded, -1.0)
+        .to(::tyloi::kInt64)
         .contiguous();
 }
 
@@ -379,7 +379,7 @@ struct Block final : ::Block {
     QuantLinear index_query;
     QuantLinear index_key;
     QuantLinear index_score;
-    mfq::cuda::Ffn mlp;
+    tyloi::cuda::Ffn mlp;
     Tensor vision_router_bias;
     TailRope rope;
     std::unique_ptr<Engram> engram;
@@ -401,11 +401,11 @@ struct Block final : ::Block {
     bool index_source() const noexcept { return config.is_index_source(layer); }
 
     void reset(std::int64_t batch) override {
-        const auto half = mfq_tensor_backend::TensorOptions()
-                              .device(mfq_tensor_backend::kCUDA)
-                              .dtype(mfq_tensor_backend::kFloat16);
+        const auto half = ::tyloi::TensorOptions()
+                              .device(::tyloi::kCUDA)
+                              .dtype(::tyloi::kFloat16);
         state.local_kv =
-            mfq_tensor_backend::zeros({batch, config.sliding_window, config.head_dim}, half);
+            ::tyloi::cuda::zeros({batch, config.sliding_window, config.head_dim}, half);
         state.compressed_kv = Tensor();
         state.index_k = Tensor();
         state.partial_kv = Tensor();
@@ -413,13 +413,13 @@ struct Block final : ::Block {
         if (kv_source()) {
             const auto capacity = std::max<std::int64_t>(1, max_context / ratio);
             state.compressed_kv =
-                mfq_tensor_backend::zeros({batch, capacity, config.head_dim}, half);
+                ::tyloi::cuda::zeros({batch, capacity, config.head_dim}, half);
             state.index_k =
-                mfq_tensor_backend::zeros({batch, capacity, config.index_head_dim}, half);
+                ::tyloi::cuda::zeros({batch, capacity, config.index_head_dim}, half);
             if (ratio > 1) {
-                const auto fp32 = half.dtype(mfq_tensor_backend::kFloat32);
-                state.partial_kv = mfq_tensor_backend::zeros({batch, ratio, config.head_dim}, fp32);
-                state.partial_score = mfq_tensor_backend::full(
+                const auto fp32 = half.dtype(::tyloi::kFloat32);
+                state.partial_kv = ::tyloi::cuda::zeros({batch, ratio, config.head_dim}, fp32);
+                state.partial_score = ::tyloi::cuda::full(
                     {batch, ratio, config.head_dim}, -std::numeric_limits<float>::infinity(), fp32);
             }
         }
@@ -450,10 +450,10 @@ struct Block final : ::Block {
         speculative_compressed_length = state.compressed_length;
         speculative_partial_length = state.partial_length;
         speculative_slot_ids =
-            mfq_tensor_backend::arange(state.position, state.position + draft_tokens,
-                                       state.local_kv.options().dtype(mfq_tensor_backend::kInt64))
+            ::tyloi::cuda::arange(state.position, state.position + draft_tokens,
+                                       state.local_kv.options().dtype(::tyloi::kInt64))
                 .remainder(static_cast<double>(config.sliding_window))
-                .to(mfq_tensor_backend::kInt64)
+                .to(::tyloi::kInt64)
                 .contiguous();
         speculative_local_slots = state.local_kv.index_select(1, speculative_slot_ids).clone();
         if (state.partial_kv.defined()) {
@@ -523,7 +523,7 @@ struct Block final : ::Block {
                 return MhcResult{std::move(result[0]),std::move(result[1]),std::move(result[2]),std::move(result[3])};
             }
             auto prepared = deepseek_v41_hc_prepare_cuda(residual, previous_pre, norm, config.rms_eps);
-            auto mixes = mfq_tensor_backend::matmul(prepared.at(0), function.transpose(0, 1));
+            auto mixes = ::tyloi::cuda::matmul(prepared.at(0), function.transpose(0, 1));
             auto coefficients = dsv4_hc_coefficients_cuda(mixes.contiguous(), scale, base,
                                                           config.hc_sinkhorn_iters, config.hc_eps);
             return MhcResult{std::move(prepared.at(1)), std::move(coefficients.at(0)),
@@ -549,7 +549,7 @@ struct Block final : ::Block {
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
         Tensor projected_kv, projected_score;
-        return mfq::models::deepseek_v41::compress(
+        return tyloi::models::deepseek_v41::compress(
             state, tokens, position, ratio,
             [&] {
                 return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_key_value, input), compressor_norm,
@@ -557,10 +557,10 @@ struct Block final : ::Block {
             },
             [&] {
                 projected_kv = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_key_value, input)
-                                   .to(mfq_tensor_backend::kFloat32)
+                                   .to(::tyloi::kFloat32)
                                    .contiguous();
                 projected_score = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(compressor_gate, input)
-                                      .to(mfq_tensor_backend::kFloat32)
+                                      .to(::tyloi::kFloat32)
                                       .contiguous();
                 if(speculative_pending) {
                     speculative_projected_kv=projected_kv;
@@ -572,8 +572,8 @@ struct Block final : ::Block {
                                      .reshape({batch, complete, ratio, config.head_dim});
                 auto score_groups = projected_score.narrow(1, 0, cutoff)
                                         .reshape({batch, complete, ratio, config.head_dim});
-                auto pooled = (kv_groups * mfq_tensor_backend::softmax(score_groups, 2)).sum(2);
-                return weighted_rms(pooled.to(mfq_tensor_backend::kFloat16), compressor_norm,
+                auto pooled = (kv_groups * ::tyloi::cuda::softmax(score_groups, 2)).sum(2);
+                return weighted_rms(pooled.to(::tyloi::kFloat16), compressor_norm,
                                     config.rms_eps);
             },
             [&](int64_t cutoff, int64_t remainder) {
@@ -588,12 +588,12 @@ struct Block final : ::Block {
             },
             [&] {
                 auto pooled =
-                    (state.partial_kv * mfq_tensor_backend::softmax(state.partial_score, 1))
+                    (state.partial_kv * ::tyloi::cuda::softmax(state.partial_score, 1))
                         .sum(1, true);
-                return weighted_rms(pooled.to(mfq_tensor_backend::kFloat16), compressor_norm,
+                return weighted_rms(pooled.to(::tyloi::kFloat16), compressor_norm,
                                     config.rms_eps);
             },
-            [](const auto &emitted) { return mfq_tensor_backend::cat(emitted, 1).contiguous(); });
+            [](const auto &emitted) { return ::tyloi::cuda::cat(emitted, 1).contiguous(); });
     }
 
     void publish_compressed_source(CudaExecutionContext &execution, const Tensor &input,
@@ -607,16 +607,16 @@ struct Block final : ::Block {
             TYLOINFER_RUNTIME_CHECK(begin + count <= state.compressed_kv.size(1),
                               "DeepSeek-V4.1 compressed cache capacity exceeded");
             auto group_positions =
-                mfq_tensor_backend::arange(begin * ratio, (begin + count) * ratio, ratio,
-                                           latent->options().dtype(mfq_tensor_backend::kInt64));
+                ::tyloi::cuda::arange(begin * ratio, (begin + count) * ratio, ratio,
+                                           latent->options().dtype(::tyloi::kInt64));
             auto index_values =
                 weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(index_key, *latent), index_key_norm, config.rms_eps);
             index_values = rotate_token_major_tail(index_values, group_positions, rope);
             index_values = dsv4_fp4_sim_cuda(index_values.contiguous());
             auto compressed = rotate_token_major_tail(*latent, group_positions, rope);
             compressed = deepseek_v41_mxfp4_e4m3_scale_sim_cuda(compressed.contiguous());
-            auto rows = mfq_tensor_backend::arange(
-                begin, begin + count, latent->options().dtype(mfq_tensor_backend::kInt64));
+            auto rows = ::tyloi::cuda::arange(
+                begin, begin + count, latent->options().dtype(::tyloi::kInt64));
             state.index_k.index_copy_(1, rows, index_values);
             state.compressed_kv.index_copy_(1, rows, compressed);
             state.compressed_length += count;
@@ -636,7 +636,7 @@ struct Block final : ::Block {
         // Restrict scoring only when the candidate budget excludes some KV.
         // An all-inclusive list adds scattered loads without reducing work.
         const bool restricted = pool_length > config.candidate_topk_blocks * config.candidate_block_size;
-        return mfq::models::deepseek_v41::hierarchical_index(
+        return tyloi::models::deepseek_v41::hierarchical_index(
             ratio, index_source(), layer, config.candidate_source_layer, pool_length,
             [&] { return empty_topk(batch, tokens, input.device()); },
             [&] {
@@ -653,10 +653,10 @@ struct Block final : ::Block {
                 query = rope.forward(query, positions, false)
                             .transpose(1, 2)
                             .contiguous();
-                query = dsv4_fp4_sim_cuda(query.to(mfq_tensor_backend::kFloat16).contiguous());
+                query = dsv4_fp4_sim_cuda(query.to(::tyloi::kFloat16).contiguous());
                 auto weights = execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(index_score, input)
                                    .reshape({batch, tokens, config.index_n_heads})
-                                   .to(mfq_tensor_backend::kFloat16)
+                                   .to(::tyloi::kFloat16)
                                    .contiguous();
                 auto keys = shared->index_k.narrow(1, 0, pool_length).contiguous();
                 if (layer > config.candidate_source_layer && restricted) {
@@ -694,7 +694,7 @@ struct Block final : ::Block {
         const auto batch = input.size(0);
         const auto tokens = input.size(1);
         const auto local_history = truncated_local ? 0 : std::min(position, config.sliding_window);
-        return mfq::models::deepseek_v41::attention(
+        return tyloi::models::deepseek_v41::attention(
             kv_source(), ratio,
             [&] {
                 return weighted_rms(execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)).run(query_a, input), query_a_norm,
@@ -705,7 +705,7 @@ struct Block final : ::Block {
                                  .reshape({batch, tokens, config.n_heads, config.head_dim})
                                  .transpose(1, 2)
                                  .contiguous()
-                                 .to(mfq_tensor_backend::kFloat32);
+                                 .to(::tyloi::kFloat32);
                 query = rope.forward(query, positions, false);
 
                 return query;
@@ -731,20 +731,20 @@ struct Block final : ::Block {
             [&](Tensor local) {
                 Tensor local_for_attention;
                 if (tokens == 1) {
-                    auto slot = mfq_tensor_backend::full(
+                    auto slot = ::tyloi::cuda::full(
                         {1}, position % config.sliding_window,
-                        positions.options().dtype(mfq_tensor_backend::kInt64));
+                        positions.options().dtype(::tyloi::kInt64));
                     state.local_kv.index_copy_(1, slot, local);
                     local_for_attention = state.local_kv;
                 } else {
                     const auto history = local_history;
                     std::vector<Tensor> local_parts;
                     if (history > 0) {
-                        auto slots = mfq_tensor_backend::arange(
+                        auto slots = ::tyloi::cuda::arange(
                                          position - history, position,
-                                         positions.options().dtype(mfq_tensor_backend::kInt64))
+                                         positions.options().dtype(::tyloi::kInt64))
                                          .remainder(static_cast<double>(config.sliding_window))
-                                         .to(mfq_tensor_backend::kInt64)
+                                         .to(::tyloi::kInt64)
                                          .contiguous();
                         local_parts.push_back(state.local_kv.index_select(1, slots));
                     }
@@ -752,13 +752,13 @@ struct Block final : ::Block {
                     local_for_attention =
                         local_parts.size() == 1
                             ? local_parts.front()
-                            : mfq_tensor_backend::cat(local_parts, 1).contiguous();
+                            : ::tyloi::cuda::cat(local_parts, 1).contiguous();
                     const auto recent = std::min(tokens, config.sliding_window);
-                    auto recent_slots = mfq_tensor_backend::arange(
+                    auto recent_slots = ::tyloi::cuda::arange(
                                             position + tokens - recent, position + tokens,
-                                            positions.options().dtype(mfq_tensor_backend::kInt64))
+                                            positions.options().dtype(::tyloi::kInt64))
                                             .remainder(static_cast<double>(config.sliding_window))
-                                            .to(mfq_tensor_backend::kInt64)
+                                            .to(::tyloi::kInt64)
                                             .contiguous();
                     state.local_kv.index_copy_(1, recent_slots,
                                                local.narrow(1, tokens - recent, recent));
@@ -767,7 +767,7 @@ struct Block final : ::Block {
                 const auto pool_length = ratio > 0 ? shared->compressed_length : 0;
                 auto cache =
                     pool_length > 0
-                        ? mfq_tensor_backend::cat({local_for_attention,
+                        ? ::tyloi::cuda::cat({local_for_attention,
                                                    shared->compressed_kv.narrow(1, 0, pool_length)},
                                                   1)
                               .contiguous()
@@ -780,11 +780,11 @@ struct Block final : ::Block {
                 if (tokens == 1) {
                     auto lengths = sequence_lengths.has_value()
                                        ? sequence_lengths.value()
-                                             .to(input.device(), mfq_tensor_backend::kInt64)
+                                             .to(input.device(), ::tyloi::kInt64)
                                              .contiguous()
-                                       : mfq_tensor_backend::full(
+                                       : ::tyloi::cuda::full(
                                              {batch}, position + 1,
-                                             positions.options().dtype(mfq_tensor_backend::kInt64));
+                                             positions.options().dtype(::tyloi::kInt64));
                     plan = dsv4_build_decode_plan_cuda(
                         topk, lengths, pool_length, ratio > 0 ? ratio : 1, config.sliding_window);
                 } else {
@@ -839,7 +839,7 @@ struct Block final : ::Block {
 
         const auto batch = hidden.size(0), tokens = hidden.size(1);
         const bool truncated_local = std::exchange(replay_local_window, false);
-        return mfq::models::deepseek_v41::decoder_layer(
+        return tyloi::models::deepseek_v41::decoder_layer(
             std::move(hidden), bool(engram), shared->previous_pre,
             [&](Tensor value) {
                 return profiler.measure("deepseek_v41.engram", [&] {
@@ -872,7 +872,7 @@ struct Block final : ::Block {
                 return profiler.measure("deepseek_v41.mlp", [&] {
                     if(shared->image_mask.defined()) {
                         TYLOINFER_RUNTIME_CHECK(vision_router_bias.defined(),"DeepSeek-V4.1 visual router bias is missing");
-                        auto bias=mfq_tensor_backend::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
+                        auto bias=::tyloi::cuda::where(shared->routing_mask,vision_router_bias,mlp.moe_router_bias).contiguous();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                         return mlp.forward(
                             value.reshape({-1,config.hidden}), execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn, current_ids, bias)
@@ -912,14 +912,14 @@ struct Block final : ::Block {
     }
 };
 
-mfq::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_at(Pipelines& pipelines, const weight_loader::Loader& weights,
                 const CommonConfig &config, const std::string &prefix, std::int64_t layer,
                 std::int64_t top_k);
 
 std::unique_ptr<::Block> load_block(Pipelines& pipelines, const weight_loader::Loader& weights,
                                     std::int64_t layer, const std::shared_ptr<SharedState> &shared, std::size_t engram_cache_rows);
 void validate_load_options(const CudaExecutionContext &execution);
-std::shared_ptr<SharedState> load_shared_state(const mfq::source::Source &source,
+std::shared_ptr<SharedState> load_shared_state(const tyloi::source::Source &source,
                                                const CommonConfig &config);
 Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &hidden,
                        CudaProfiler &profiler);
@@ -927,13 +927,13 @@ Tensor finalize_hidden(const std::shared_ptr<SharedState> &state, const Tensor &
 inline int run_self_check() {
     EngramHashState::self_check();
     run_dspark_self_check();
-    auto options = mfq_tensor_backend::TensorOptions()
-                       .device(mfq_tensor_backend::kCUDA)
-                       .dtype(mfq_tensor_backend::kInt32);
+    auto options = ::tyloi::TensorOptions()
+                       .device(::tyloi::kCUDA)
+                       .dtype(::tyloi::kInt32);
     auto blocks =
-        mfq_tensor_backend::tensor(std::vector<std::int32_t>{0, 2, -1}, options).reshape({1, 1, 3});
+        ::tyloi::cuda::tensor(std::vector<std::int32_t>{0, 2, -1}, options).reshape({1, 1, 3});
     auto positions = candidate_positions(blocks, 2, 5)
-                         .to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64)
+                         .to(::tyloi::kCPU, ::tyloi::kInt64)
                          .contiguous();
     const std::vector<std::int64_t> expected{0, 1, 4, -1, -1, -1};
     const auto *values = positions.data_ptr<std::int64_t>();
@@ -944,37 +944,37 @@ inline int run_self_check() {
     return 0;
 }
 
-} // namespace mfq::cuda::deepseek_v41_runtime
+} // namespace tyloi::cuda::deepseek_v41_runtime
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-mfq::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm&,const MtpModule*);
+tyloi::models::SnapshotSize snapshot_size(const DeepseekV41CausalLm&,const MtpModule*);
 
 struct DeepseekV41Model : CausalResources {
     static constexpr bool joint_speculation_supported=true;
-    bool adapter_prefetch_token_rows(DeepseekV41CausalLm&,const mfq_tensor_backend::Tensor&);
-    template <class Backend> using CausalModel = mfq::models::deepseek_v41::CausalLm<Backend>;
-    mfq::models::deepseek_v41::Config config;
+    bool adapter_prefetch_token_rows(DeepseekV41CausalLm&,const ::tyloi::Tensor&);
+    template <class Backend> using CausalModel = tyloi::models::deepseek_v41::CausalLm<Backend>;
+    tyloi::models::deepseek_v41::Config config;
     std::shared_ptr<deepseek_v41_runtime::SharedState> shared;
 
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
-                                  mfq_tensor_backend::Tensor &output_norm);
-    void adapter_prepare_blocks(const mfq::cuda::weight_loader::Loader& weights);
-    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
+    void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+                                  ::tyloi::Tensor &output_norm);
+    void adapter_prepare_blocks(const tyloi::cuda::weight_loader::Loader& weights);
+    std::unique_ptr<Block> adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     void adapter_begin_forward(bool capture_raw_hidden);
     bool adapter_supports_prepared_prompt() const noexcept {return true;}
-    void adapter_set_image_mask(mfq_tensor_backend::Tensor mask) {shared->set_image_mask(std::move(mask));}
-    mfq_tensor_backend::Tensor collapse_hidden(mfq_tensor_backend::Tensor hidden, int64_t batch,
+    void adapter_set_image_mask(::tyloi::Tensor mask) {shared->set_image_mask(std::move(mask));}
+    ::tyloi::Tensor collapse_hidden(::tyloi::Tensor hidden, int64_t batch,
                                                int64_t tokens) const;
-    mfq_tensor_backend::Tensor normalize_hidden(mfq_tensor_backend::Tensor hidden,
-                                                const mfq_tensor_backend::Tensor &output_norm,
+    ::tyloi::Tensor normalize_hidden(::tyloi::Tensor hidden,
+                                                const ::tyloi::Tensor &output_norm,
                                                 int64_t batch, int64_t tokens) const;
-    mfq_tensor_backend::Tensor
-    adapter_raw_hidden(const mfq_tensor_backend::Tensor &hidden,
-                       const mfq_tensor_backend::Tensor &finalized) const;
+    ::tyloi::Tensor
+    adapter_raw_hidden(const ::tyloi::Tensor &hidden,
+                       const ::tyloi::Tensor &finalized) const;
     void adapter_begin_speculative();
     void adapter_commit_speculative();
     void adapter_rollback_speculative(int64_t keep);
@@ -988,15 +988,15 @@ template <> struct CudaSessionCodec<DeepseekV41Model> {
     static void restore(Model& model,const TextSessionState& state);
 };
 
-mfq_tensor_backend::Tensor deepseek_v41_prefill_hidden(
-    DeepseekV41CausalLm& model, mfq_tensor_backend::Tensor ids, std::int64_t compute_chunk,
-    const std::function<bool()>& stopped = {}, mfq_tensor_backend::Tensor* raw_hidden = nullptr);
+::tyloi::Tensor deepseek_v41_prefill_hidden(
+    DeepseekV41CausalLm& model, ::tyloi::Tensor ids, std::int64_t compute_chunk,
+    const std::function<bool()>& stopped = {}, ::tyloi::Tensor* raw_hidden = nullptr);
 std::int64_t prefill_span(const DeepseekV41CausalLm&, std::size_t tokens,
                           std::int64_t chunk, std::size_t, std::size_t,
                           bool transformed, bool retained);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::models {
+namespace tyloi::models {
 extern template struct deepseek_v41::CausalLm<cuda::CudaCausalOps<cuda::DeepseekV41Model>>;
-} // namespace mfq::models
+} // namespace tyloi::models

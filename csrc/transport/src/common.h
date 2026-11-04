@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::transport_detail {
+namespace tyloi::transport_detail {
 
 class ApiError final : public std::runtime_error {
 public:
@@ -39,10 +39,10 @@ public:
     std::string param;
 };
 
-using RequestWork = mfq::engine::InferenceInput;
-using RequestInput = mfq::engine::InferenceInput;
-using RequestMetrics = mfq::engine::InferenceMetrics;
-using CompletionResult = mfq::engine::InferenceResult;
+using RequestWork = tyloi::engine::InferenceInput;
+using RequestInput = tyloi::engine::InferenceInput;
+using RequestMetrics = tyloi::engine::InferenceMetrics;
+using CompletionResult = tyloi::engine::InferenceResult;
 
 using MfqModelCapabilityProfile = MfqModelCapabilities;
 
@@ -130,13 +130,13 @@ json model_capability_profile_json(
 json duplex_profile_json(const MfqDuplexSamplingProfile & value);
 json tts_profile_json(const MfqTtsSamplingProfile & value);
 json chat_template_capabilities_json(
-    const mfq::engine::ChatTemplateCapabilities & capabilities);
+    const tyloi::engine::ChatTemplateCapabilities & capabilities);
 bool valid_mfq_session_id(const std::string & session_id);
 json runtime_generate_body(const json & params);
-mfq::engine::CountTokens parse_token_count_request(const json& body);
-json token_count_json(const mfq::engine::TokenCount& result);
-mfq::engine::ScoreText parse_score_request(const json& body);
-json likelihood_result_json(const mfq::engine::LikelihoodResult& result);
+tyloi::engine::CountTokens parse_token_count_request(const json& body);
+json token_count_json(const tyloi::engine::TokenCount& result);
+tyloi::engine::ScoreText parse_score_request(const json& body);
+json likelihood_result_json(const tyloi::engine::LikelihoodResult& result);
 RequestInput parse_input(
     const json & body,
     bool chat,
@@ -175,12 +175,12 @@ std::vector<float> decode_audio_features(
     const std::string & encoded,
     int32_t frames);
 
-} // namespace mfq::transport_detail
+} // namespace tyloi::transport_detail
 
-namespace mfq::transport_detail {
+namespace tyloi::transport_detail {
 class CompletionStream {
 public:
-    CompletionStream(const mfq::engine::Engine& engine, const RequestWork& work, std::string id);
+    CompletionStream(const tyloi::engine::Engine& engine, const RequestWork& work, std::string id);
     ~CompletionStream();
     std::optional<std::vector<common_chat_msg_diff>> next();
     void cancel();
@@ -189,9 +189,9 @@ public:
     RequestMetrics metrics;
     std::size_t prompt_tokens = 0;
 private:
-    const mfq::engine::Engine& engine_;
+    const tyloi::engine::Engine& engine_;
     std::string id_;
-    std::shared_ptr<mfq::engine::Output> request_;
+    std::shared_ptr<tyloi::engine::Output> request_;
     bool terminal_ = false;
     std::size_t generated_tokens_ = 0;
     std::size_t processed_tokens_ = 0;
@@ -201,4 +201,4 @@ private:
     std::chrono::steady_clock::time_point first_token_;
 };
 
-} // namespace mfq::transport_detail
+} // namespace tyloi::transport_detail

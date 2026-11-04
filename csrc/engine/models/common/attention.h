@@ -13,19 +13,19 @@
 #include <memory>
 #include <optional>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct AttentionStep {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor positions;
-    std::optional<mfq::Tensor> sequence_lengths;
-    std::optional<mfq::Tensor> cache_positions;
-    std::optional<mfq::Tensor> attention_mask;
+    tyloi::Tensor positions;
+    std::optional<tyloi::Tensor> sequence_lengths;
+    std::optional<tyloi::Tensor> cache_positions;
+    std::optional<tyloi::Tensor> attention_mask;
 #else
-    mfq_tensor_backend::Tensor positions;
-    MfqOptional<mfq_tensor_backend::Tensor> sequence_lengths = mfq_nullopt;
-    MfqOptional<mfq_tensor_backend::Tensor> cache_positions = mfq_nullopt;
-    MfqOptional<mfq_tensor_backend::Tensor> attention_mask = mfq_nullopt;
+    ::tyloi::Tensor positions;
+    MfqOptional<::tyloi::Tensor> sequence_lengths = mfq_nullopt;
+    MfqOptional<::tyloi::Tensor> cache_positions = mfq_nullopt;
+    MfqOptional<::tyloi::Tensor> attention_mask = mfq_nullopt;
 #endif
     std::int64_t cache_position = 0;
     std::int64_t planned_kv_length = 0;
@@ -49,21 +49,21 @@ struct FullAttention {
     // NoPE GQA: skip rotary operations while keeping the KV cache normal.
     bool no_rope = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::ops::RopeTable attention_rope;
-    mfq::Tensor attn_norm, q_norm, k_norm, v_norm;
-    std::shared_ptr<const mfq::weights::Weights> qkv;
+    tyloi::ops::RopeTable attention_rope;
+    tyloi::Tensor attn_norm, q_norm, k_norm, v_norm;
+    std::shared_ptr<const tyloi::weights::Weights> qkv;
 #else
     RopeCache attention_rope;
-    mfq_tensor_backend::Tensor attn_norm, q_norm, k_norm, v_norm;
+    ::tyloi::Tensor attn_norm, q_norm, k_norm, v_norm;
     QuantLinearGroup qkv;
 #endif
     bool attention_output_gate = false;
     bool split_q_kv_projections = false;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::shared_ptr<const mfq::weights::Weights> q_projection;
-    std::shared_ptr<const mfq::weights::Weights> k_projection;
-    std::shared_ptr<const mfq::weights::Weights> v_projection;
-    std::shared_ptr<const mfq::weights::Weights> o;
+    std::shared_ptr<const tyloi::weights::Weights> q_projection;
+    std::shared_ptr<const tyloi::weights::Weights> k_projection;
+    std::shared_ptr<const tyloi::weights::Weights> v_projection;
+    std::shared_ptr<const tyloi::weights::Weights> o;
 #else
     QuantLinear q_projection;
     QuantLinear k_projection;
@@ -71,16 +71,16 @@ struct FullAttention {
     QuantLinear o;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::state::KvQuantization kv_quantization;
-    std::array<mfq::Tensor, 2> forward(
-        mfq::Tensor input, const AttentionStep& step,
-        mfq::state::KvView cache, const mfq::ops::RopeTable& rope,
-        mfq::ops::Trace* trace = nullptr) const;
+    tyloi::state::KvQuantization kv_quantization;
+    std::array<tyloi::Tensor, 2> forward(
+        tyloi::Tensor input, const AttentionStep& step,
+        tyloi::state::KvView cache, const tyloi::ops::RopeTable& rope,
+        tyloi::ops::Trace* trace = nullptr) const;
 #else
-    mfq::cuda::KvQuantization kv_quantization;
-    std::array<mfq_tensor_backend::Tensor, 2> forward(
+    tyloi::cuda::KvQuantization kv_quantization;
+    std::array<::tyloi::Tensor, 2> forward(
         const Projector& project, CudaProfiler& profiler, const AttentionOptions& options,
-        mfq_tensor_backend::Tensor input,
+        ::tyloi::Tensor input,
         const AttentionStep& step,
         AttentionKvView cache,
         AttentionScratch& scratch,
@@ -89,4 +89,4 @@ struct FullAttention {
 #endif
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

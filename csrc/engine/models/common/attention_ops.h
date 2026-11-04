@@ -10,22 +10,21 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::attention_ops {
-namespace tb = mfq_tensor_backend;
-using Tensor = tb::Tensor;
+namespace tyloi::cuda::attention_ops {
+using Tensor = ::tyloi::Tensor;
 using Linear = std::shared_ptr<const QuantLinear>;
 using Transform = std::function<Tensor(const Projector&, const Tensor&)>;
 using Embedding = std::function<Tensor(const Tensor&)>;
 
 inline Tensor rms_norm(const Tensor& value, const Tensor& weight, double eps) {
-    auto f = value.to(tb::kFloat32);
-    return (f * tb::rsqrt((f * f).mean(-1, true) + eps) * weight.to(tb::kFloat32))
+    auto f = value.to(::tyloi::kFloat32);
+    return (f * ::tyloi::cuda::rsqrt((f * f).mean(-1, true) + eps) * weight.to(::tyloi::kFloat32))
         .to(value.scalar_type());
 }
 
 class SequenceCache {
 public:
-    SequenceCache(int64_t maximum, int64_t width, tb::ScalarType dtype = tb::kFloat16)
+    SequenceCache(int64_t maximum, int64_t width, ::tyloi::ScalarType dtype = ::tyloi::kFloat16)
         : maximum_(maximum), width_(width), dtype_(dtype) {
         TYLOINFER_RUNTIME_CHECK(maximum > 0 && width > 0, "invalid sequence cache dimensions");
     }
@@ -43,7 +42,7 @@ public:
         TYLOINFER_RUNTIME_CHECK(values_.defined(), "fixed sequence cache requires a prefilled state");
         TYLOINFER_RUNTIME_CHECK(capacity>=position_ && capacity<=maximum_, "invalid fixed sequence cache capacity");
         if(values_.size(1)==capacity)return;
-        auto expanded=tb::zeros({values_.size(0),capacity,width_},values_.options());
+        auto expanded=::tyloi::cuda::zeros({values_.size(0),capacity,width_},values_.options());
         if(position_)expanded.narrow(1,0,position_).copy_(values_.narrow(1,0,position_));
         values_=std::move(expanded);
     }
@@ -52,7 +51,7 @@ public:
             value.size(1)<=values_.size(1)-position_ &&
             value.size(0)==values_.size(0) && value.size(2)==width_ && positions.dim()==1 &&
             positions.size(0)==value.size(1), "fixed sequence cache append geometry mismatch");
-        values_.index_copy_(1,positions.to(tb::kInt64),value.to(dtype_));
+        values_.index_copy_(1,positions.to(::tyloi::kInt64),value.to(dtype_));
         return values_;
     }
     void advance_fixed(int64_t tokens) {
@@ -73,7 +72,7 @@ public:
         if (!values_.defined() || required > values_.size(1)) {
             int64_t capacity = values_.defined() ? values_.size(1) : std::min<int64_t>(16, maximum_);
             while (capacity < required) capacity = std::min(maximum_, capacity > maximum_ / 2 ? maximum_ : capacity * 2);
-            auto expanded = tb::zeros({value.size(0), capacity, width_}, value.options().dtype(dtype_));
+            auto expanded = ::tyloi::cuda::zeros({value.size(0), capacity, width_}, value.options().dtype(dtype_));
             if (position_) expanded.narrow(1, 0, position_).copy_(values_.narrow(1, 0, position_));
             values_ = std::move(expanded);
         }
@@ -83,7 +82,7 @@ public:
     }
 private:
     int64_t maximum_, width_, position_ = 0;
-    tb::ScalarType dtype_;
+    ::tyloi::ScalarType dtype_;
     Tensor values_;
 };
 
@@ -94,28 +93,28 @@ inline Tensor select_pooled_blocks(const Tensor& scores, int64_t query_offset,
         scores.size(1) <= logical_length - query_offset && scores.size(2) == logical_length / pool,
         "pooled attention selection geometry mismatch");
     const auto b = scores.size(0), t = scores.size(1), pools = scores.size(2);
-    const auto options = scores.options().dtype(tb::kInt64);
-    auto absolute = tb::arange(t, options) + query_offset;
-    auto selected = tb::full({b,t,budget}, -1, options);
+    const auto options = scores.options().dtype(::tyloi::kInt64);
+    auto absolute = ::tyloi::cuda::arange(t, options) + query_offset;
+    auto selected = ::tyloi::cuda::full({b,t,budget}, -1, options);
     const auto count = std::min(budget / pool, pools);
     if (count) {
-        auto ends = tb::arange(pools, options) * pool + (pool - 1);
+        auto ends = ::tyloi::cuda::arange(pools, options) * pool + (pool - 1);
         auto visible = (ends.reshape({1,1,pools}) <= absolute.reshape({1,t,1})).expand({b,t,pools});
-        auto ranked = tb::where(visible, scores.to(tb::kFloat32), tb::full_like(scores, -1e30).to(tb::kFloat32));
-        auto indices = std::get<1>(tb::topk(ranked, count, -1, true, false));
+        auto ranked = ::tyloi::cuda::where(visible, scores.to(::tyloi::kFloat32), ::tyloi::cuda::full_like(scores, -1e30).to(::tyloi::kFloat32));
+        auto indices = std::get<1>(::tyloi::cuda::topk(ranked, count, -1, true, false));
         auto valid = visible.gather(-1, indices).unsqueeze(-1).expand({b,t,count,pool});
-        auto expanded = indices.unsqueeze(-1) * pool + tb::arange(pool, options);
-        expanded = tb::where(valid, expanded, tb::full_like(expanded, -1));
+        auto expanded = indices.unsqueeze(-1) * pool + ::tyloi::cuda::arange(pool, options);
+        expanded = ::tyloi::cuda::where(valid, expanded, ::tyloi::cuda::full_like(expanded, -1));
         selected.narrow(-1, 0, count * pool).copy_(expanded.reshape({b,t,count * pool}));
     }
     if (include_tail && pool > 1) {
         auto count = (absolute + 1).remainder(pool);
-        auto offsets = tb::arange(pool - 1, options).unsqueeze(0);
+        auto offsets = ::tyloi::cuda::arange(pool - 1, options).unsqueeze(0);
         auto tail = (absolute + 1 - count).unsqueeze(1) + offsets;
-        tail = tb::where(offsets < count.unsqueeze(1), tail, tb::full_like(tail, -1));
-        selected = tb::cat({selected, tail.unsqueeze(0).expand({b,t,pool - 1})}, -1);
+        tail = ::tyloi::cuda::where(offsets < count.unsqueeze(1), tail, ::tyloi::cuda::full_like(tail, -1));
+        selected = ::tyloi::cuda::cat({selected, tail.unsqueeze(0).expand({b,t,pool - 1})}, -1);
     }
-    return selected.to(tb::kInt32).contiguous();
+    return selected.to(::tyloi::kInt32).contiguous();
 }
 
-} // namespace mfq::cuda::attention_ops
+} // namespace tyloi::cuda::attention_ops

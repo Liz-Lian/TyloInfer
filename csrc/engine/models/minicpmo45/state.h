@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::cuda::minicpmo45 {
+namespace tyloi::cuda::minicpmo45 {
 
 struct Model;
 
@@ -29,8 +29,8 @@ public:
     int64_t position() const noexcept { return cache_pos; }
     void advance(int64_t tokens) noexcept { cache_pos += tokens; }
     void set_position_delta(int64_t delta) noexcept { decode_position_delta = delta; }
-    std::vector<mfq_tensor_backend::Tensor> storage() const;
-    std::vector<mfq_tensor_backend::Tensor*> graph_state() { return {}; }
+    std::vector<::tyloi::Tensor> storage() const;
+    std::vector<::tyloi::Tensor*> graph_state() { return {}; }
 
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
@@ -55,4 +55,4 @@ private:
     int64_t maximum_;
 };
 
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

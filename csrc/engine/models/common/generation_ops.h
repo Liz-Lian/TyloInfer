@@ -16,17 +16,17 @@
 
 struct DecodeGraphCache;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-inline mfq::models::ForwardOptions forward_options(const Executor::Mode& mode) {
+inline tyloi::models::ForwardOptions forward_options(const Executor::Mode& mode) {
     return {mode.kv_capacity, mode.trace, mode.trace_layer, mode.primary};
 }
 #endif
 
 template<class Model, class Ops, class Finish>
-std::tuple<mfq_tensor_backend::Tensor, bool, bool> generation_prefill(
-        Model&, Ops&, const mfq::engine::PrefillChunk&, mfq_tensor_backend::Tensor&, const Finish&) {
+std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
+        Model&, Ops&, const tyloi::engine::PrefillChunk&, ::tyloi::Tensor&, const Finish&) {
     return {{}, false, false};
 }
 
@@ -37,7 +37,7 @@ template<class Model, class Ops>
 std::optional<int64_t> generation_decode(Model&, Ops&) { return std::nullopt; }
 
 template<class Model, class Ops>
-void generation_request(Model&, Ops&, const mfq::engine::InferenceRequest&) {}
+void generation_request(Model&, Ops&, const tyloi::engine::InferenceRequest&) {}
 
 template<class Model>
 bool generation_borrow(Model&, std::size_t, const PreparedPrompt*) { return false; }
@@ -48,4 +48,4 @@ void generation_prefill_begin(Model&, DecodeGraphCache&, bool) {}
 template<class Model, class Ops>
 void generation_prefill_end(Model&, Ops&, bool, bool) {}
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

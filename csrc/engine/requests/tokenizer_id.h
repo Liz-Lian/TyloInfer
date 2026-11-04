@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-namespace mfq {
+namespace tyloi {
 
 inline constexpr std::string_view tokenizer_identity_format =
     "mfq.tokenizer-vocabulary.v1";
@@ -60,4 +60,4 @@ inline void validate_tokenizer_identity(
     }
 }
 
-} // namespace mfq
+} // namespace tyloi

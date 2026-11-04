@@ -104,7 +104,7 @@ __device__ __forceinline__ float decode_value(
 struct SqPackedDecoder {
     const std::uint8_t *blob, *row_q;
     const std::int32_t *offsets, *auxiliary;
-    mfq::sq::Layout q;
+    tyloi::sq::Layout q;
     __device__ void load8(int row, int column, float* destination, int outputs, int width) const {
         if (row >= outputs || column >= width) {
 #pragma unroll
@@ -198,7 +198,7 @@ __global__ void sq_dequant(
         const std::int32_t* row_symbol_byte_offsets,
         const std::int32_t* row_auxiliary,
         T* out,
-        mfq::sq::Layout q) {
+        tyloi::sq::Layout q) {
     const auto* symbols = blob + q.symbols;
     const std::size_t count = std::size_t(q.outputs) * q.width;
     for (std::size_t index = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -237,7 +237,7 @@ __global__ void sq_mmq(
                        const std::int32_t* row_symbol_byte_offsets,
                        const std::int32_t* row_auxiliary,
                        const T* x, T* y,
-                       mfq::sq::Layout q, int rows,
+                       tyloi::sq::Layout q, int rows,
                        const std::int32_t* expert_ids,
                        const std::int32_t* expert_local,
                        int n_experts,
@@ -329,7 +329,7 @@ __global__ void __launch_bounds__(128) sq_backward_matrix(
         const std::int32_t* row_auxiliary,
         const __half* output_gradient,
         float* partials,
-        mfq::sq::Layout q,
+        tyloi::sq::Layout q,
         int rows,
         int output_tile) {
     const int lane = static_cast<int>(threadIdx.x) & 31;
@@ -394,11 +394,11 @@ __global__ void __launch_bounds__(128) sq_backward_matrix(
 
 #endif
 
-mfq::sq::Layout validate(
-        const mfq_tensor_backend::Tensor& blob,
-        const mfq_tensor_backend::Tensor& row_q,
-        const mfq_tensor_backend::Tensor& row_symbol_byte_offsets,
-        const mfq_tensor_backend::Tensor& row_auxiliary,
+tyloi::sq::Layout validate(
+        const ::tyloi::Tensor& blob,
+        const ::tyloi::Tensor& row_q,
+        const ::tyloi::Tensor& row_symbol_byte_offsets,
+        const ::tyloi::Tensor& row_auxiliary,
         std::int64_t bits,
         std::int64_t outputs,
         std::int64_t width,
@@ -406,23 +406,23 @@ mfq::sq::Layout validate(
         std::int64_t q_sum,
         std::int64_t sq4_rows) {
     const auto q = bits == 0
-        ? mfq::sq::adaptive_layout(outputs, width, base, q_sum, sq4_rows)
-        : mfq::sq::layout(bits, outputs, width, base);
-    TYLOINFER_RUNTIME_CHECK(blob.is_cuda() && blob.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        ? tyloi::sq::adaptive_layout(outputs, width, base, q_sum, sq4_rows)
+        : tyloi::sq::layout(bits, outputs, width, base);
+    TYLOINFER_RUNTIME_CHECK(blob.is_cuda() && blob.scalar_type() == ::tyloi::kUInt8 &&
         blob.dim() == 1 && blob.is_contiguous() && std::size_t(blob.numel()) == q.bytes,
         "MXFP4-SQ blob requires contiguous rank-1 CUDA uint8 and exact payload length");
     TYLOINFER_RUNTIME_CHECK(
         row_q.is_cuda() && row_q.get_device() == blob.get_device() &&
-        row_q.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        row_q.scalar_type() == ::tyloi::kUInt8 &&
         row_q.dim() == 1 && row_q.is_contiguous() && row_q.numel() == outputs &&
         row_symbol_byte_offsets.is_cuda() &&
         row_symbol_byte_offsets.get_device() == blob.get_device() &&
-        row_symbol_byte_offsets.scalar_type() == mfq_tensor_backend::kInt32 &&
+        row_symbol_byte_offsets.scalar_type() == ::tyloi::kInt32 &&
         row_symbol_byte_offsets.dim() == 1 &&
         row_symbol_byte_offsets.is_contiguous() &&
         row_symbol_byte_offsets.numel() == outputs &&
         row_auxiliary.is_cuda() && row_auxiliary.get_device() == blob.get_device() &&
-        row_auxiliary.scalar_type() == mfq_tensor_backend::kInt32 &&
+        row_auxiliary.scalar_type() == ::tyloi::kInt32 &&
         row_auxiliary.dim() == 1 && row_auxiliary.is_contiguous() &&
         row_auxiliary.numel() == outputs,
         "MXFP4-SQ row metadata requires matching contiguous CUDA arrays");
@@ -438,7 +438,7 @@ void launch_mmq(
                 const std::int32_t* row_symbol_byte_offsets,
                 const std::int32_t* row_auxiliary,
                 const T* x, T* y,
-                mfq::sq::Layout q, int rows, cudaStream_t stream) {
+                tyloi::sq::Layout q, int rows, cudaStream_t stream) {
     const auto tasks = ((std::int64_t(q.outputs) + 3) / 4) * ((std::int64_t(rows) + M - 1) / M);
     const int blocks = int(std::min<std::int64_t>(tasks, 65535));
     sq_mmq<M, T><<<blocks, 128, 0, stream>>>(
@@ -456,7 +456,7 @@ void launch_routed_mmq(
         __half* y,
         const std::int32_t* expert_ids,
         const std::int32_t* expert_local,
-        mfq::sq::Layout q,
+        tyloi::sq::Layout q,
         int route_count,
         int routes,
         int n_experts,
@@ -492,7 +492,7 @@ void dispatch_mmq(
                   const std::int32_t* row_symbol_byte_offsets,
                   const std::int32_t* row_auxiliary,
                   const T* x, T* y,
-                  mfq::sq::Layout q, int rows, cudaStream_t stream) {
+                  tyloi::sq::Layout q, int rows, cudaStream_t stream) {
 #define TYLOINFER_SQ_M_CASE(M) case M: launch_mmq<M>(blob, row_q, row_symbol_byte_offsets, row_auxiliary, x, y, q, rows, stream); break
     switch (rows) {
         TYLOINFER_SQ_M_CASE(1); TYLOINFER_SQ_M_CASE(2); TYLOINFER_SQ_M_CASE(3);
@@ -511,7 +511,7 @@ void launch_backward_matrix(
         const std::int32_t* row_auxiliary,
         const __half* output_gradient,
         float* partials,
-        mfq::sq::Layout q,
+        tyloi::sq::Layout q,
         int rows,
         int output_tile,
         cudaStream_t stream) {
@@ -531,7 +531,7 @@ void dispatch_backward_matrix(
         const std::int32_t* row_auxiliary,
         const __half* output_gradient,
         float* partials,
-        mfq::sq::Layout q,
+        tyloi::sq::Layout q,
         int rows,
         int output_tile,
         cudaStream_t stream) {
@@ -558,11 +558,11 @@ void dispatch_backward_matrix(
 
 } // namespace
 
-mfq_tensor_backend::Tensor mxfp4_sq_dequant_cuda(
-        mfq_tensor_backend::Tensor blob,
-        mfq_tensor_backend::Tensor row_q,
-        mfq_tensor_backend::Tensor row_symbol_byte_offsets,
-        mfq_tensor_backend::Tensor row_auxiliary,
+::tyloi::Tensor mxfp4_sq_dequant_cuda(
+        ::tyloi::Tensor blob,
+        ::tyloi::Tensor row_q,
+        ::tyloi::Tensor row_symbol_byte_offsets,
+        ::tyloi::Tensor row_auxiliary,
         std::int64_t bits, std::int64_t outputs,
         std::int64_t width, std::int64_t base,
         std::int64_t q_sum, std::int64_t sq4_rows,
@@ -571,8 +571,8 @@ mfq_tensor_backend::Tensor mxfp4_sq_dequant_cuda(
         blob, row_q, row_symbol_byte_offsets, row_auxiliary,
         bits, outputs, width, base, q_sum, sq4_rows);
     const MfqCudaGuard guard(blob.device());
-    auto out = mfq_tensor_backend::empty({outputs, width}, blob.options().dtype(
-        fp32 ? mfq_tensor_backend::kFloat32 : mfq_tensor_backend::kFloat16));
+    auto out = ::tyloi::cuda::empty({outputs, width}, blob.options().dtype(
+        fp32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16));
     const auto count = outputs * width;
     const int blocks = int(std::min<std::int64_t>((count + 255) / 256, 65535));
     const auto* data = blob.data_ptr<std::uint8_t>();
@@ -592,12 +592,12 @@ mfq_tensor_backend::Tensor mxfp4_sq_dequant_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor mxfp4_sq_matmul_cuda(
-        mfq_tensor_backend::Tensor blob,
-        mfq_tensor_backend::Tensor row_q,
-        mfq_tensor_backend::Tensor row_symbol_byte_offsets,
-        mfq_tensor_backend::Tensor row_auxiliary,
-        mfq_tensor_backend::Tensor input,
+::tyloi::Tensor mxfp4_sq_matmul_cuda(
+        ::tyloi::Tensor blob,
+        ::tyloi::Tensor row_q,
+        ::tyloi::Tensor row_symbol_byte_offsets,
+        ::tyloi::Tensor row_auxiliary,
+        ::tyloi::Tensor input,
         std::int64_t bits, std::int64_t outputs,
         std::int64_t width, std::int64_t base,
         std::int64_t q_sum, std::int64_t sq4_rows) {
@@ -607,11 +607,11 @@ mfq_tensor_backend::Tensor mxfp4_sq_matmul_cuda(
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.get_device() == blob.get_device() &&
         input.dim() == 2 && input.is_contiguous() && input.size(1) == width &&
         input.size(0) <= std::numeric_limits<int>::max() &&
-        (input.scalar_type() == mfq_tensor_backend::kFloat16 ||
-         input.scalar_type() == mfq_tensor_backend::kFloat32),
+        (input.scalar_type() == ::tyloi::kFloat16 ||
+         input.scalar_type() == ::tyloi::kFloat32),
         "MXFP4-SQ activation requires contiguous rank-2 CUDA FP16/FP32 on the weight device");
     const MfqCudaGuard guard(blob.device());
-    auto out = mfq_tensor_backend::empty({input.size(0), outputs}, input.options());
+    auto out = ::tyloi::cuda::empty({input.size(0), outputs}, input.options());
     const int rows = int(input.size(0));
     if (!rows) return out;
     const auto* data = blob.data_ptr<std::uint8_t>();
@@ -619,15 +619,15 @@ mfq_tensor_backend::Tensor mxfp4_sq_matmul_cuda(
     const auto* symbol_offsets = row_symbol_byte_offsets.data_ptr<std::int32_t>();
     const auto* auxiliary = row_auxiliary.data_ptr<std::int32_t>();
     const auto stream = mfq_current_cuda_stream();
-    if (input.scalar_type() == mfq_tensor_backend::kFloat32) {
+    if (input.scalar_type() == ::tyloi::kFloat32) {
         dispatch_mmq(
             data, q_data, symbol_offsets, auxiliary,
             input.data_ptr<float>(), out.data_ptr<float>(), q, rows, stream);
     } else {
         const auto* x = reinterpret_cast<const __half*>(input.data_ptr<mfq_half>());
         auto* y = reinterpret_cast<__half*>(out.data_ptr<mfq_half>());
-        const char* disable_tensor_core = mfq::cuda::env_lookup("TYLOINFER_DISABLE_SQ_TENSOR_CORE");
-        const char* force_tensor_core = mfq::cuda::env_lookup("TYLOINFER_FORCE_SQ_TENSOR_CORE");
+        const char* disable_tensor_core = tyloi::cuda::env_lookup("TYLOINFER_DISABLE_SQ_TENSOR_CORE");
+        const char* force_tensor_core = tyloi::cuda::env_lookup("TYLOINFER_FORCE_SQ_TENSOR_CORE");
         // Retained 3090 Ti comparisons show a crossover at M*N=131072 for
         // M>=32; smaller projections lose to the direct packed kernel.
         const bool profitable = rows >= 32 && std::int64_t(rows) * outputs >= 131072;
@@ -645,13 +645,13 @@ mfq_tensor_backend::Tensor mxfp4_sq_matmul_cuda(
 }
 
 void mxfp4_sq_moe_matmul_cuda(
-        mfq_tensor_backend::Tensor blob,
-        mfq_tensor_backend::Tensor row_q,
-        mfq_tensor_backend::Tensor row_symbol_byte_offsets,
-        mfq_tensor_backend::Tensor row_auxiliary,
-        mfq_tensor_backend::Tensor input,
-        mfq_tensor_backend::Tensor expert_ids,
-        mfq_tensor_backend::Tensor expert_local,
+        ::tyloi::Tensor blob,
+        ::tyloi::Tensor row_q,
+        ::tyloi::Tensor row_symbol_byte_offsets,
+        ::tyloi::Tensor row_auxiliary,
+        ::tyloi::Tensor input,
+        ::tyloi::Tensor expert_ids,
+        ::tyloi::Tensor expert_local,
         std::int64_t bits,
         std::int64_t n_experts,
         std::int64_t local_experts,
@@ -660,23 +660,23 @@ void mxfp4_sq_moe_matmul_cuda(
         std::int64_t base,
         std::int64_t q_sum,
         std::int64_t sq4_rows,
-        mfq_tensor_backend::Tensor output) {
+        ::tyloi::Tensor output) {
     const auto q = validate(
         blob, row_q, row_symbol_byte_offsets, row_auxiliary,
         bits, local_experts * out_per_expert, width, base,
         q_sum, sq4_rows);
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.get_device() == blob.get_device() &&
-        input.is_contiguous() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input.is_contiguous() && input.scalar_type() == ::tyloi::kFloat16 &&
         (input.dim() == 2 || input.dim() == 3) && input.size(-1) == width &&
         expert_ids.is_cuda() && expert_ids.get_device() == blob.get_device() &&
-        expert_ids.is_contiguous() && expert_ids.scalar_type() == mfq_tensor_backend::kInt32 &&
+        expert_ids.is_contiguous() && expert_ids.scalar_type() == ::tyloi::kInt32 &&
         expert_ids.dim() == 2 && expert_ids.size(0) == input.size(0) &&
         expert_local.is_cuda() && expert_local.get_device() == blob.get_device() &&
-        expert_local.is_contiguous() && expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
+        expert_local.is_contiguous() && expert_local.scalar_type() == ::tyloi::kInt32 &&
         expert_local.dim() == 1 && expert_local.numel() == n_experts &&
         output.is_cuda() && output.get_device() == blob.get_device() &&
-        output.is_contiguous() && output.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        output.is_contiguous() && output.scalar_type() == ::tyloi::kFloat16 &&
         output.dim() == 3 && output.size(0) == expert_ids.size(0) &&
         output.size(1) == expert_ids.size(1) && output.size(2) == out_per_expert &&
         (input.dim() == 2 || input.size(1) == expert_ids.size(1)) &&
@@ -713,12 +713,12 @@ void mxfp4_sq_moe_matmul_cuda(
 }
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-mfq_tensor_backend::Tensor mxfp4_sq_backward_input_cuda(
-        mfq_tensor_backend::Tensor blob,
-        mfq_tensor_backend::Tensor row_q,
-        mfq_tensor_backend::Tensor row_symbol_byte_offsets,
-        mfq_tensor_backend::Tensor row_auxiliary,
-        mfq_tensor_backend::Tensor output_gradient,
+::tyloi::Tensor mxfp4_sq_backward_input_cuda(
+        ::tyloi::Tensor blob,
+        ::tyloi::Tensor row_q,
+        ::tyloi::Tensor row_symbol_byte_offsets,
+        ::tyloi::Tensor row_auxiliary,
+        ::tyloi::Tensor output_gradient,
         std::int64_t bits,
         std::int64_t outputs,
         std::int64_t width,
@@ -733,11 +733,11 @@ mfq_tensor_backend::Tensor mxfp4_sq_backward_input_cuda(
         output_gradient.get_device() == blob.get_device() &&
         output_gradient.dim() == 2 && output_gradient.is_contiguous() &&
         output_gradient.size(1) == outputs &&
-        (output_gradient.scalar_type() == mfq_tensor_backend::kFloat16 ||
-         output_gradient.scalar_type() == mfq_tensor_backend::kFloat32),
+        (output_gradient.scalar_type() == ::tyloi::kFloat16 ||
+         output_gradient.scalar_type() == ::tyloi::kFloat32),
         "MXFP4-SQ backward requires contiguous CUDA FP16/FP32 [M,N]");
     const MfqCudaGuard guard(blob.device());
-    auto result = mfq_tensor_backend::empty(
+    auto result = ::tyloi::cuda::empty(
         {output_gradient.size(0), width}, output_gradient.options());
     const auto count = output_gradient.size(0) * width;
     if (!count) return result;
@@ -747,13 +747,13 @@ mfq_tensor_backend::Tensor mxfp4_sq_backward_input_cuda(
     const auto stream = mfq_current_cuda_stream();
     const auto* data = blob.data_ptr<std::uint8_t>();
     const int rows = int(output_gradient.size(0));
-    if (output_gradient.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    if (output_gradient.scalar_type() == ::tyloi::kFloat16 &&
             rows <= 8) {
         const int output_tile = rows <= 4 ? 16 : 32;
         const int splits = (int(outputs) + output_tile - 1) / output_tile;
-        auto partials = mfq_tensor_backend::empty(
+        auto partials = ::tyloi::cuda::empty(
             {splits, rows, width},
-            output_gradient.options().dtype(mfq_tensor_backend::kFloat32));
+            output_gradient.options().dtype(::tyloi::kFloat32));
         const auto* gradient = reinterpret_cast<const __half*>(
             output_gradient.data_ptr<mfq_half>());
         auto* destination = reinterpret_cast<__half*>(

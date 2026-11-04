@@ -6,9 +6,9 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda::glm5_next {
+namespace tyloi::cuda::glm5_next {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 struct Model;
 
 struct KdaState {
@@ -66,4 +66,4 @@ public:
     int64_t speculative_start = -1, speculative_confirmed = 0;
 };
 
-} // namespace mfq::cuda::glm5_next
+} // namespace tyloi::cuda::glm5_next

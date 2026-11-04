@@ -22,16 +22,14 @@
 #include <type_traits>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-namespace tb = mfq_tensor_backend;
-using Tensor = tb::Tensor;
 
 const MoeRoutePlan& MlaScratch::head_route(int64_t rows, int heads) {
     const int64_t key = rows * 4096 + heads;
     const auto build = [&] {
-        auto options = tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt32);
-        auto ids = tb::remainder(tb::arange(rows, options), heads).reshape({rows, 1}).contiguous();
+        auto options = ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt32);
+        auto ids = ::tyloi::cuda::remainder(::tyloi::cuda::arange(rows, options), heads).reshape({rows, 1}).contiguous();
         return build_moe_route_plan(ids, heads);
     };
     if (rows != heads) {
@@ -49,32 +47,32 @@ const MoeRoutePlan& MlaScratch::head_route(int64_t rows, int heads) {
 void MlaScratch::ensure_meta() {
     constexpr int64_t kMetaFloats = 8 * 1024 * 1024;
     if (!attention_meta.defined() || attention_meta.numel() < kMetaFloats)
-        attention_meta = tb::empty({kMetaFloats}, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kFloat32));
+        attention_meta = ::tyloi::cuda::empty({kMetaFloats}, ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kFloat32));
 }
 
 void MlaScratch::ensure_compressed() {
     ensure_meta();
     if (!hadamard_signs.defined())
-        hadamard_signs = tb::ones({128}, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt8));
+        hadamard_signs = ::tyloi::cuda::ones({128}, ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt8));
 }
 
 void MlaScratch::ensure_dense_workspace(int64_t B, int64_t M, int64_t logical_len) {
     const int64_t stride = (logical_len + 63) / 64 * 64;
-    auto cuda = tb::TensorOptions().device(tb::kCUDA);
+    auto cuda = ::tyloi::TensorOptions().device(::tyloi::kCUDA);
     if (!dense_mask.defined() || dense_mask.size(0) < M || dense_mask.size(1) < stride)
-        dense_mask = tb::empty({M, stride}, cuda.dtype(tb::kFloat16));
+        dense_mask = ::tyloi::cuda::empty({M, stride}, cuda.dtype(::tyloi::kFloat16));
     if (!kv_max.defined() || kv_max.numel() < B * M)
-        kv_max = tb::empty({B * M}, cuda.dtype(tb::kInt32));
+        kv_max = ::tyloi::cuda::empty({B * M}, cuda.dtype(::tyloi::kInt32));
     ensure_meta();
 }
 
 void MlaScratch::ensure_decode_workspace(int64_t B, int64_t planned_len) {
     const int64_t stride = (planned_len + 63) / 64 * 64;
-    auto cuda = tb::TensorOptions().device(tb::kCUDA);
+    auto cuda = ::tyloi::TensorOptions().device(::tyloi::kCUDA);
     if (!decode_mask.defined() || decode_mask.size(0) != B || decode_mask.size(1) < stride)
-        decode_mask = tb::empty({B, stride}, cuda.dtype(tb::kFloat16));
+        decode_mask = ::tyloi::cuda::empty({B, stride}, cuda.dtype(::tyloi::kFloat16));
     if (!kv_max.defined() || kv_max.numel() < B)
-        kv_max = tb::empty({B}, cuda.dtype(tb::kInt32));
+        kv_max = ::tyloi::cuda::empty({B}, cuda.dtype(::tyloi::kInt32));
     ensure_meta();
 }
 
@@ -156,7 +154,7 @@ namespace {
 
 void record(Trace* trace, std::string_view name, const Tensor& value) {
     if (trace && !name.empty())
-        trace->emplace_back(std::string(name), value.to(tb::kFloat32).contiguous().clone());
+        trace->emplace_back(std::string(name), value.to(::tyloi::kFloat32).contiguous().clone());
 }
 
 std::vector<std::vector<size_t>> releases(std::span<const Task> tasks, const Inputs& inputs) {
@@ -342,7 +340,7 @@ AttentionScratch& Executor::attention_scratch(std::size_t index) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-AttentionScratch& Executor::attention_scratch(mfq::Device device, AttentionGeometry geometry) {
+AttentionScratch& Executor::attention_scratch(tyloi::Device device, AttentionGeometry geometry) {
     const auto stream = device.is_cuda()
         ? reinterpret_cast<std::uintptr_t>(current_stream(device.index).stream()) : 0;
     std::lock_guard lock(attention_scratch_mutex_);
@@ -356,7 +354,7 @@ class ExecutorScope;
 thread_local ExecutorScope* active_scope = nullptr;
 #endif
 
-class ExecutorScope final : public mfq::Executor::Scope {
+class ExecutorScope final : public tyloi::Executor::Scope {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     ExecutorScope(Executor& executor, int primary, ContextSet& contexts, const Ffn::Mode& mode)
@@ -387,10 +385,10 @@ public:
 private:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     std::optional<CudaScope> native_;
-    std::optional<mfq_tensor_backend::NoGradGuard> no_grad_;
+    std::optional<::tyloi::cuda::NoGradGuard> no_grad_;
 #else
     CudaScope native_;
-    mfq_tensor_backend::NoGradGuard no_grad_;
+    ::tyloi::cuda::NoGradGuard no_grad_;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     ExecutorScope* previous_;
@@ -398,11 +396,11 @@ private:
 };
 } // namespace
 
-std::unique_ptr<mfq::Executor::Scope> Executor::enter() {
+std::unique_ptr<tyloi::Executor::Scope> Executor::enter() {
     return enter(primary_);
 }
 
-std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device) {
+std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     return enter(device, active_scope && &active_scope->owner == this ? active_scope->ffn : mode_.ffn);
 #else
@@ -411,11 +409,11 @@ std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device) {
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::unique_ptr<mfq::Executor::Scope> Executor::enter(int device, const Ffn::Mode& mode) {
+std::unique_ptr<tyloi::Executor::Scope> Executor::enter(int device, const Ffn::Mode& mode) {
     return std::make_unique<ExecutorScope>(*this, device, contexts_, mode);
 }
 
-std::unique_ptr<mfq::Executor::Scope> Executor::enter(const Ffn::Mode& mode) {
+std::unique_ptr<tyloi::Executor::Scope> Executor::enter(const Ffn::Mode& mode) {
     return std::make_unique<ExecutorScope>(*this, mode);
 }
 
@@ -464,14 +462,14 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                 for (auto slot : release[index]) values[slot] = {};
                 auto compute = [&]() -> Tensor {
                     if constexpr (std::is_same_v<Op, task::Norm>) {
-                        return qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(tb::kFloat32),
+                        return qwen_rms_norm(input.reshape({-1, input.size(-1)}).to(::tyloi::kFloat32),
                             op.weight, op.eps, op.offset).reshape(input.sizes());
                     } else if constexpr (std::is_same_v<Op, task::Embed>) {
                         return quant_embedding_lookup(op.weight, std::move(input));
                     } else if constexpr (std::is_same_v<Op, task::Softcap>) {
-                        return op.cap > 0.0 ? tb::tanh(input / op.cap) * op.cap : std::move(input);
+                        return op.cap > 0.0 ? ::tyloi::cuda::tanh(input / op.cap) * op.cap : std::move(input);
                     } else if constexpr (std::is_same_v<Op, task::Concat>) {
-                        return tb::cat({input, second}, op.axis);
+                        return ::tyloi::cuda::cat({input, second}, op.axis);
                     } else if constexpr (std::is_same_v<Op, task::Project>) {
                         return project.run(op.weight, std::move(input));
                     } else if constexpr (std::is_same_v<Op, task::Attention>) {
@@ -485,9 +483,9 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
                             *inputs.rope, trace);
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        if (op.residual_out) *op.residual_out = tb::Tensor(output[0]);
-                        values[op.residual] = tb::Tensor(std::move(output[0]));
-                        return tb::Tensor(std::move(output[1]));
+                        if (op.residual_out) *op.residual_out = output[0];
+                        values[op.residual] = std::move(output[0]);
+                        return std::move(output[1]);
 #else
                         if (op.residual_out) *op.residual_out = output[0];
                         values[op.residual] = std::move(output[0]);
@@ -520,15 +518,14 @@ Tensor Executor::run(std::span<const Task> tasks, Inputs inputs, const Mode& mod
 }
 
 void Executor::prepare(std::int64_t vocabulary) {
-    namespace tb=mfq_tensor_backend;
-    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     const auto before=context->local_memory_usage();
     {
-        const auto gpu=tb::TensorOptions().device(tb::kCUDA);
-        auto random=tb::full({1},.37,gpu.dtype(tb::kFloat32));
-        auto counts=tb::zeros({vocabulary},gpu.dtype(tb::kInt32));
-        for(auto dtype:{tb::kFloat16,tb::kFloat32}) {
-            auto logits=tb::zeros({1,vocabulary},gpu.dtype(dtype));
+        const auto gpu=::tyloi::TensorOptions().device(::tyloi::kCUDA);
+        auto random=::tyloi::cuda::full({1},.37,gpu.dtype(::tyloi::kFloat32));
+        auto counts=::tyloi::cuda::zeros({vocabulary},gpu.dtype(::tyloi::kInt32));
+        for(auto dtype:{::tyloi::kFloat16,::tyloi::kFloat32}) {
+            auto logits=::tyloi::cuda::zeros({1,vocabulary},gpu.dtype(dtype));
             // Lazy CUDA modules and sampler workspaces must be charged before
             // expert arenas consume the remaining device budget. Exercise both
             // compact and fallback sampling without touching request RNG/state.
@@ -547,4 +544,4 @@ void Executor::prepare(std::int64_t vocabulary) {
         <<" local_after="<<context->local_memory_usage()<<"\n";
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

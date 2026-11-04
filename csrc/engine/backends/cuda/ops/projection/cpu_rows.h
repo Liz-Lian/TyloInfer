@@ -10,10 +10,10 @@
 // to integer codes, expands weights, or launches another thread pool.
 struct CpuProjectionRows {
     int width=0, outputs=0;
-    mfq::cpu::PackedNintView nint;
-    mfq::cpu::NvqDecodeView nvq{};
-    mfq::cpu::PackedNintRows nint_rows=nullptr;
-    mfq::cpu::NvqRowsDot nvq_rows=nullptr;
+    tyloi::cpu::PackedNintView nint;
+    tyloi::cpu::NvqDecodeView nvq{};
+    tyloi::cpu::PackedNintRows nint_rows=nullptr;
+    tyloi::cpu::NvqRowsDot nvq_rows=nullptr;
     std::function<void(const float*,int,int,float*,int,int,int)> scalar_rows;
     void run(const float* input,int batch,int input_stride,float* output,
         int output_stride,int begin,int end) const {

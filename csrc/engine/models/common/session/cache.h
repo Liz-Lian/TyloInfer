@@ -14,25 +14,25 @@
 #include <utility>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 class ModelSource;
 namespace cache {
 class PagedPrefixCache;
 }
 }
 
-namespace mfq::engine {
+namespace tyloi::engine {
 struct PrefixCacheConfig;
 struct SessionCacheConfig;
 }
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 bool cuda_has_separate_memory();
 
 struct TextSessionRestore {
     std::size_t tokens = 0;
-    mfq_tensor_backend::Tensor mtp_last_target_hidden;
+    ::tyloi::Tensor mtp_last_target_hidden;
 };
 
 struct CudaSessionOps {
@@ -91,19 +91,19 @@ struct CudaSessionOps {
     }
 };
 
-std::shared_ptr<mfq::cache::PagedPrefixCache>
+std::shared_ptr<tyloi::cache::PagedPrefixCache>
 make_cuda_paged_prefix_cache(
-    const mfq::ModelSource& source,
+    const tyloi::ModelSource& source,
     std::int64_t max_position_embeddings,
     bool supports_paged_text_session_state,
-    const mfq::engine::PrefixCacheConfig& config);
+    const tyloi::engine::PrefixCacheConfig& config);
 
 class TextSessionCache {
 public:
     explicit TextSessionCache(
-        const mfq::engine::SessionCacheConfig& session_config,
-        const mfq::engine::PrefixCacheConfig& prefix_config,
-        std::shared_ptr<mfq::cache::PagedPrefixCache> paged_cache = {},
+        const tyloi::engine::SessionCacheConfig& session_config,
+        const tyloi::engine::PrefixCacheConfig& prefix_config,
+        std::shared_ptr<tyloi::cache::PagedPrefixCache> paged_cache = {},
         bool supported = true,
         int disabled_reason = 0,
         bool native_hot_snapshots = false);
@@ -125,7 +125,7 @@ public:
         const std::string& input_key = {});
 
     void store(const std::string& session_id, TextSessionState state);
-    mfq::engine::SessionResult control(const mfq::engine::SessionCommand& command);
+    tyloi::engine::SessionResult control(const tyloi::engine::SessionCommand& command);
     std::vector<std::pair<std::string, double>> metrics() const;
     std::map<int, std::size_t> device_hot_bytes() const;
     std::size_t clear_live_sessions() noexcept;
@@ -137,7 +137,7 @@ public:
     std::uint64_t set_disk_limit(std::uint64_t max_bytes);
 
 private:
-    struct Impl : mfq::engine::SessionCache<CudaSessionOps> {
+    struct Impl : tyloi::engine::SessionCache<CudaSessionOps> {
         using SessionCache::SessionCache;
     };
     std::unique_ptr<Impl> impl_;
@@ -156,4 +156,4 @@ TextSessionRestore TextSessionCache::restore_best(
         state, drain, mtp, requested_session, prompt, maximum_prefix_tokens, input_key);
 }
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace mfq::archive {
+namespace tyloi::archive {
 namespace {
 
 constexpr std::uint64_t kMaxStringBytes = std::uint64_t{64} << 20;
@@ -383,4 +383,4 @@ Index Merge::finish() {
     return std::move(output_);
 }
 
-} // namespace mfq::archive
+} // namespace tyloi::archive

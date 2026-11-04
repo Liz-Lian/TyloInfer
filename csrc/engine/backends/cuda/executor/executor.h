@@ -17,7 +17,7 @@
 
 class TqExec;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Branches;
 class Collectives;
@@ -26,25 +26,25 @@ class RouteStats;
 
 class Executor
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    : public mfq::Executor
+    : public tyloi::Executor
 #endif
 {
 public:
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::unique_ptr<mfq::Executor::Scope> enter() override;
+    std::unique_ptr<tyloi::Executor::Scope> enter() override;
     void drain() override;
 #else
-    std::unique_ptr<mfq::Executor::Scope> enter();
+    std::unique_ptr<tyloi::Executor::Scope> enter();
 #endif
-    std::unique_ptr<mfq::Executor::Scope> enter(int device);
+    std::unique_ptr<tyloi::Executor::Scope> enter(int device);
     void join();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     void wait();
     static Executor& current();
     static const Ffn::Mode& current_ffn();
-    std::unique_ptr<mfq::Executor::Scope> enter(int device, const Ffn::Mode& mode);
+    std::unique_ptr<tyloi::Executor::Scope> enter(int device, const Ffn::Mode& mode);
     // Override only the policy on this active executor; retain its device and stream.
-    std::unique_ptr<mfq::Executor::Scope> enter(const Ffn::Mode& mode);
+    std::unique_ptr<tyloi::Executor::Scope> enter(const Ffn::Mode& mode);
 #else
     void wait(const std::unordered_set<int>& devices);
 #endif
@@ -94,19 +94,19 @@ public:
     ContextSet& contexts() noexcept { return contexts_; }
     const ContextSet& contexts() const noexcept { return contexts_; }
 
-    mfq_tensor_backend::Tensor run(std::span<const Task> tasks, Inputs inputs,
+    ::tyloi::Tensor run(std::span<const Task> tasks, Inputs inputs,
                                    const Mode& mode);
-    std::vector<mfq_tensor_backend::Tensor> storage() const;
+    std::vector<::tyloi::Tensor> storage() const;
     Projector projector(const Ffn::Mode& mode);
     Projector projector(const Ffn::Mode& mode, int primary);
-    mfq_tensor_backend::Tensor full_ffn(
-        const Ffn& ffn, const mfq_tensor_backend::Tensor& ffn_norm,
-        const FullAttention& attention, mfq_tensor_backend::Tensor residual,
-        mfq_tensor_backend::Tensor output, const Ffn::Mode& mode, Trace* trace = nullptr);
-    mfq_tensor_backend::Tensor linear_ffn(
-        const Ffn& ffn, const mfq_tensor_backend::Tensor& ffn_norm,
-        const LinearAttention& attention, mfq_tensor_backend::Tensor residual,
-        mfq_tensor_backend::Tensor output, const Ffn::Mode& mode);
+    ::tyloi::Tensor full_ffn(
+        const Ffn& ffn, const ::tyloi::Tensor& ffn_norm,
+        const FullAttention& attention, ::tyloi::Tensor residual,
+        ::tyloi::Tensor output, const Ffn::Mode& mode, Trace* trace = nullptr);
+    ::tyloi::Tensor linear_ffn(
+        const Ffn& ffn, const ::tyloi::Tensor& ffn_norm,
+        const LinearAttention& attention, ::tyloi::Tensor residual,
+        ::tyloi::Tensor output, const Ffn::Mode& mode);
     CudaProfiler& profiler() noexcept { return profiler_; }
     KlMmqState& mmq() noexcept { return mmq_; }
     const KlMmqState& mmq() const noexcept { return mmq_; }
@@ -124,7 +124,7 @@ public:
     AttentionScratch& attention_scratch(std::size_t index);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     using AttentionGeometry = std::tuple<std::int64_t, std::int64_t, std::int64_t, std::int64_t>;
-    AttentionScratch& attention_scratch(mfq::Device device, AttentionGeometry geometry);
+    AttentionScratch& attention_scratch(tyloi::Device device, AttentionGeometry geometry);
 #else
     std::unordered_map<const void*, AttentionScratch>& attention_scratch() noexcept { return attention_scratch_; }
 #endif
@@ -167,4 +167,4 @@ private:
     std::map<int, MlaScratch> mla_scratch_;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

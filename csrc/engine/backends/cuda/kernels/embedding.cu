@@ -205,19 +205,19 @@ int launch_blocks(size_t elements) {
 }  // namespace
 
 
-mfq_tensor_backend::Tensor embedding_lookup_cuda(
-        mfq_tensor_backend::Tensor weight,
-        mfq_tensor_backend::Tensor token_ids) {
+::tyloi::Tensor embedding_lookup_cuda(
+        ::tyloi::Tensor weight,
+        ::tyloi::Tensor token_ids) {
     TYLOINFER_RUNTIME_CHECK(
         weight.is_cuda() && weight.is_contiguous() && weight.dim() == 2,
         "embedding weight must be contiguous CUDA rank-2");
     TYLOINFER_RUNTIME_CHECK(
-        weight.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        weight.scalar_type() == mfq_tensor_backend::kFloat16,
+        weight.scalar_type() == ::tyloi::kFloat32 ||
+        weight.scalar_type() == ::tyloi::kFloat16,
         "embedding weight must be fp16 or fp32");
     TYLOINFER_RUNTIME_CHECK(
         token_ids.is_cuda() && token_ids.is_contiguous() &&
-        token_ids.scalar_type() == mfq_tensor_backend::kInt64 &&
+        token_ids.scalar_type() == ::tyloi::kInt64 &&
         token_ids.device() == weight.device(),
         "embedding token IDs must be contiguous CUDA int64 on the weight device");
     const int vocabulary = static_cast<int>(weight.size(0));
@@ -225,7 +225,7 @@ mfq_tensor_backend::Tensor embedding_lookup_cuda(
     const int token_count = static_cast<int>(token_ids.numel());
     auto shape = token_ids.sizes().vec();
     shape.push_back(width);
-    auto output = mfq_tensor_backend::empty(shape, weight.options());
+    auto output = ::tyloi::cuda::empty(shape, weight.options());
     if (token_count == 0) {
         return output;
     }
@@ -274,14 +274,14 @@ mfq_tensor_backend::Tensor embedding_lookup_cuda(
 
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-mfq_tensor_backend::Tensor nint_selected_rows_cuda(
-        mfq_tensor_backend::Tensor packed,
-        mfq_tensor_backend::Tensor descriptors, int64_t width) {
+::tyloi::Tensor nint_selected_rows_cuda(
+        ::tyloi::Tensor packed,
+        ::tyloi::Tensor descriptors, int64_t width) {
     TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() &&
-        packed.scalar_type() == mfq_tensor_backend::kUInt8 && packed.dim() == 1,
+        packed.scalar_type() == ::tyloi::kUInt8 && packed.dim() == 1,
         "NINT selected payload must be CUDA uint8 rank-1");
     TYLOINFER_RUNTIME_CHECK(descriptors.is_cuda() && descriptors.is_contiguous() &&
-        descriptors.scalar_type() == mfq_tensor_backend::kInt32 &&
+        descriptors.scalar_type() == ::tyloi::kInt32 &&
         descriptors.dim() == 2 && descriptors.size(1) == 6 &&
         descriptors.device() == packed.device(),
         "NINT selected descriptors must be CUDA int32 [rows,6] on the payload device");
@@ -290,8 +290,8 @@ mfq_tensor_backend::Tensor nint_selected_rows_cuda(
         static_cast<uint64_t>(descriptors.size(0)) * width <= std::numeric_limits<uint32_t>::max(),
         "NINT selected row dimensions exceed bounds");
     const MfqCudaGuard guard(packed.device());
-    auto output = mfq_tensor_backend::empty({descriptors.size(0), width},
-        packed.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty({descriptors.size(0), width},
+        packed.options().dtype(::tyloi::kFloat16));
     if (descriptors.size(0) == 0) return output;
     TYLOINFER_RUNTIME_CHECK(packed.numel() > 0, "NINT selected payload is empty");
     const size_t total = static_cast<size_t>(descriptors.size(0)) * width;
@@ -307,19 +307,19 @@ mfq_tensor_backend::Tensor nint_selected_rows_cuda(
 
 
 void nint_selected_rows_into_cuda(
-        mfq_tensor_backend::Tensor packed, mfq_tensor_backend::Tensor descriptors,
-        mfq_tensor_backend::Tensor inverse, mfq_tensor_backend::Tensor output) {
+        ::tyloi::Tensor packed, ::tyloi::Tensor descriptors,
+        ::tyloi::Tensor inverse, ::tyloi::Tensor output) {
     TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() &&
-        packed.scalar_type() == mfq_tensor_backend::kUInt8 && packed.dim() == 1 && packed.numel() > 0,
+        packed.scalar_type() == ::tyloi::kUInt8 && packed.dim() == 1 && packed.numel() > 0,
         "NINT selected payload must be nonempty CUDA uint8 rank-1");
     TYLOINFER_RUNTIME_CHECK(descriptors.is_cuda() && descriptors.is_contiguous() &&
-        descriptors.scalar_type() == mfq_tensor_backend::kInt32 && descriptors.dim() == 2 &&
+        descriptors.scalar_type() == ::tyloi::kInt32 && descriptors.dim() == 2 &&
         descriptors.size(1) == 6 && descriptors.device() == packed.device(),
         "NINT selected descriptors must be CUDA int32 [rows,6]");
     TYLOINFER_RUNTIME_CHECK(inverse.is_cuda() && inverse.is_contiguous() &&
-        inverse.scalar_type() == mfq_tensor_backend::kInt64 && inverse.dim() == 1 &&
+        inverse.scalar_type() == ::tyloi::kInt64 && inverse.dim() == 1 &&
         inverse.device() == packed.device() && output.device() == packed.device() &&
-        output.is_contiguous() && output.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        output.is_contiguous() && output.scalar_type() == ::tyloi::kFloat16 &&
         output.dim() == 2 && output.size(0) == inverse.numel() && output.size(1) > 0 &&
         output.size(1) <= std::numeric_limits<int>::max() &&
         output.numel() <= std::numeric_limits<uint32_t>::max(),
@@ -333,47 +333,47 @@ void nint_selected_rows_into_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-mfq_tensor_backend::Tensor nint_embedding_cuda(
-        mfq_tensor_backend::Tensor bitstream,
-        mfq_tensor_backend::Tensor row_q_bits,
-        mfq_tensor_backend::Tensor row_q_bit_offsets,
-        mfq_tensor_backend::Tensor subgroup_scale,
-        mfq_tensor_backend::Tensor subgroup_minimum,
-        mfq_tensor_backend::Tensor neuron_scale,
-        mfq_tensor_backend::Tensor neuron_minimum,
-        mfq_tensor_backend::Tensor token_ids,
+::tyloi::Tensor nint_embedding_cuda(
+        ::tyloi::Tensor bitstream,
+        ::tyloi::Tensor row_q_bits,
+        ::tyloi::Tensor row_q_bit_offsets,
+        ::tyloi::Tensor subgroup_scale,
+        ::tyloi::Tensor subgroup_minimum,
+        ::tyloi::Tensor neuron_scale,
+        ::tyloi::Tensor neuron_minimum,
+        ::tyloi::Tensor token_ids,
         int64_t width,
         int64_t group_size) {
     TYLOINFER_RUNTIME_CHECK(
         bitstream.is_cuda() && bitstream.is_contiguous() &&
-        bitstream.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        bitstream.scalar_type() == ::tyloi::kUInt8 &&
         bitstream.dim() == 1,
         "NINT embedding bitstream must be contiguous CUDA uint8 rank-1");
     TYLOINFER_RUNTIME_CHECK(
         row_q_bits.is_cuda() && row_q_bits.is_contiguous() &&
-        row_q_bits.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        row_q_bits.scalar_type() == ::tyloi::kUInt8 &&
         row_q_bits.dim() == 1 && row_q_bit_offsets.is_cuda() &&
         row_q_bit_offsets.is_contiguous() &&
-        row_q_bit_offsets.scalar_type() == mfq_tensor_backend::kInt64 &&
+        row_q_bit_offsets.scalar_type() == ::tyloi::kInt64 &&
         row_q_bit_offsets.dim() == 1,
         "NINT embedding q metadata is invalid");
     TYLOINFER_RUNTIME_CHECK(
         subgroup_scale.is_cuda() && subgroup_scale.is_contiguous() &&
-        subgroup_scale.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        subgroup_scale.scalar_type() == ::tyloi::kUInt8 &&
         subgroup_scale.dim() == 2 && subgroup_minimum.is_cuda() &&
         subgroup_minimum.is_contiguous() &&
-        subgroup_minimum.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        subgroup_minimum.scalar_type() == ::tyloi::kUInt8 &&
         subgroup_minimum.sizes() == subgroup_scale.sizes(),
         "NINT embedding subgroup metadata is invalid");
     TYLOINFER_RUNTIME_CHECK(
         neuron_scale.is_cuda() && neuron_scale.is_contiguous() &&
-        neuron_scale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+        neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
         neuron_minimum.is_cuda() && neuron_minimum.is_contiguous() &&
-        neuron_minimum.scalar_type() == mfq_tensor_backend::kFloat32,
+        neuron_minimum.scalar_type() == ::tyloi::kFloat32,
         "NINT embedding neuron metadata is invalid");
     TYLOINFER_RUNTIME_CHECK(
         token_ids.is_cuda() && token_ids.is_contiguous() &&
-        token_ids.scalar_type() == mfq_tensor_backend::kInt64,
+        token_ids.scalar_type() == ::tyloi::kInt64,
         "NINT embedding token IDs must be contiguous CUDA int64");
     const int vocabulary = static_cast<int>(subgroup_scale.size(0));
     const int groups = static_cast<int>(subgroup_scale.size(1));
@@ -399,8 +399,8 @@ mfq_tensor_backend::Tensor nint_embedding_cuda(
     const int token_count = static_cast<int>(token_ids.numel());
     auto shape = token_ids.sizes().vec();
     shape.push_back(width);
-    auto output = mfq_tensor_backend::empty(
-        shape, bitstream.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty(
+        shape, bitstream.options().dtype(::tyloi::kFloat16));
     if (token_count == 0) {
         return output;
     }
@@ -428,25 +428,25 @@ mfq_tensor_backend::Tensor nint_embedding_cuda(
 }
 
 
-mfq_tensor_backend::Tensor nint8_zero_embedding_lookup_cuda(
-        mfq_tensor_backend::Tensor quantized,
-        mfq_tensor_backend::Tensor scale,
-        mfq_tensor_backend::Tensor token_ids,
+::tyloi::Tensor nint8_zero_embedding_lookup_cuda(
+        ::tyloi::Tensor quantized,
+        ::tyloi::Tensor scale,
+        ::tyloi::Tensor token_ids,
         int64_t width) {
     TYLOINFER_RUNTIME_CHECK(
         quantized.is_cuda() && quantized.is_contiguous() &&
-        quantized.scalar_type() == mfq_tensor_backend::kUInt8 &&
+        quantized.scalar_type() == ::tyloi::kUInt8 &&
         quantized.dim() == 3 && quantized.size(2) == 32,
         "NINT8-0 embedding q must be contiguous CUDA uint8 [V,G,32]");
     TYLOINFER_RUNTIME_CHECK(
         scale.is_cuda() && scale.is_contiguous() &&
-        scale.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        scale.scalar_type() == ::tyloi::kFloat16 &&
         scale.dim() == 2 && scale.size(0) == quantized.size(0) &&
         scale.size(1) == quantized.size(1),
         "NINT8-0 embedding scale must be contiguous CUDA fp16 [V,G]");
     TYLOINFER_RUNTIME_CHECK(
         token_ids.is_cuda() && token_ids.is_contiguous() &&
-        token_ids.scalar_type() == mfq_tensor_backend::kInt64 &&
+        token_ids.scalar_type() == ::tyloi::kInt64 &&
         token_ids.device() == quantized.device() &&
         scale.device() == quantized.device(),
         "NINT8-0 embedding tensors must share one CUDA device");
@@ -458,8 +458,8 @@ mfq_tensor_backend::Tensor nint8_zero_embedding_lookup_cuda(
     const int token_count = static_cast<int>(token_ids.numel());
     auto shape = token_ids.sizes().vec();
     shape.push_back(width);
-    auto output = mfq_tensor_backend::empty(
-        shape, quantized.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty(
+        shape, quantized.options().dtype(::tyloi::kFloat16));
     if (token_count == 0) {
         return output;
     }

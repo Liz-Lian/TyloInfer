@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 template <typename Index>
@@ -329,8 +329,8 @@ Tensor index_select_cuda(
         throw std::invalid_argument("index_select expects CUDA source and one-dimensional indices");
     }
     auto indices = indices_source.device() == source.device()
-        ? indices_source.contiguous()
-        : indices_source.to(source.device()).contiguous();
+        ? contiguous(indices_source)
+        : contiguous(copy(indices_source, source.device()));
     const auto selected = normalize_dimension(dimension, source.dim());
     auto shape = source.sizes().vec();
     shape[selected] = indices.numel();
@@ -383,8 +383,8 @@ Tensor gather_cuda(
         throw std::invalid_argument("gather requires matching CUDA tensor ranks");
     }
     auto indices = indices_source.device() == source.device()
-        ? indices_source.contiguous()
-        : indices_source.to(source.device()).contiguous();
+        ? contiguous(indices_source)
+        : contiguous(copy(indices_source, source.device()));
     const auto selected = normalize_dimension(dimension, source.dim());
     auto output = empty(indices.sizes(), source.options());
     const auto [blocks, threads] = launch_geometry(output.numel());
@@ -407,7 +407,7 @@ Tensor repeat_cuda(const Tensor& source, std::span<const std::int64_t> repeats) 
         throw std::invalid_argument("repeat geometry is invalid");
     }
     auto aligned = source;
-    while (aligned.dim() < static_cast<std::int64_t>(repeats.size())) aligned = aligned.unsqueeze(0);
+    while (aligned.dim() < static_cast<std::int64_t>(repeats.size())) aligned = unsqueeze(aligned, 0);
     auto shape = aligned.sizes().vec();
     for (std::size_t index = 0; index < repeats.size(); ++index) {
         if (repeats[index] < 0) throw std::invalid_argument("repeat count cannot be negative");
@@ -467,8 +467,8 @@ void scatter_cuda(
         throw std::invalid_argument(
             "native scatter_add supports int32, int64, FP16, BF16, FP32, and FP64");
     }
-    auto index = index_source.to(destination.device()).contiguous();
-    auto source = source_value.to(destination.device()).contiguous();
+    auto index = contiguous(copy(index_source, destination.device()));
+    auto source = contiguous(copy(source_value, destination.device()));
     const auto selected = normalize_dimension(dimension, destination.dim());
     const auto [blocks, threads] = launch_geometry(source.numel());
     const auto stream = current_stream(destination.get_device()).stream();
@@ -492,8 +492,8 @@ void index_copy_cuda(
     if (!destination.is_cuda() || destination.scalar_type() != source_value.scalar_type()) {
         throw std::invalid_argument("index_copy tensor geometry or dtype mismatch");
     }
-    auto index = index_source.to(destination.device()).contiguous();
-    auto source = source_value.to(destination.device()).contiguous();
+    auto index = contiguous(copy(index_source, destination.device()));
+    auto source = contiguous(copy(source_value, destination.device()));
     const auto selected = normalize_dimension(dimension, destination.dim());
     if (source.size(static_cast<std::int64_t>(selected)) != index.numel()) {
         throw std::invalid_argument("index_copy source extent does not match indices");
@@ -518,7 +518,7 @@ void index_fill_cuda(
     const Tensor& index_source,
     double value) {
     if (!destination.is_cuda()) throw std::invalid_argument("index_fill requires CUDA tensor");
-    auto index = index_source.to(destination.device()).contiguous();
+    auto index = contiguous(copy(index_source, destination.device()));
     const auto selected = normalize_dimension(dimension, destination.dim());
     auto indexed_shape = destination.sizes().vec();
     indexed_shape[selected] = index.numel();
@@ -544,7 +544,7 @@ void index_fill_cuda(
 
 void masked_fill_cuda(Tensor& destination, const Tensor& mask_source, double value) {
     if (!destination.is_cuda()) throw std::invalid_argument("masked_fill requires CUDA tensor");
-    auto mask = mask_source.to(destination.device(), kBool);
+    auto mask = cast(mask_source, kBool, destination.device());
     const auto aligned = align_for_broadcast(mask, destination.sizes());
     const auto [blocks, threads] = launch_geometry(destination.numel());
     const auto stream = current_stream(destination.get_device()).stream();
@@ -557,9 +557,9 @@ void masked_fill_cuda(Tensor& destination, const Tensor& mask_source, double val
 }
 
 Tensor masked_select_cuda(const Tensor& source_value, const Tensor& mask_value) {
-    auto source = source_value.contiguous();
-    auto mask = mask_value.to(source.device(), kBool).expand(source.sizes()).contiguous();
-    auto mask_host = mask.to(kCPU).contiguous();
+    auto source = contiguous(source_value);
+    auto mask = contiguous(expand(cast(mask_value, kBool, source.device()), source.sizes()));
+    auto mask_host = contiguous(copy(mask, Device{kCPU, 0}));
     const auto* flags = mask_host.data_ptr<bool>();
     std::int64_t selected = 0;
     for (std::int64_t index = 0; index < mask_host.numel(); ++index) selected += flags[index];
@@ -586,4 +586,4 @@ Tensor masked_select_cuda(const Tensor& source_value, const Tensor& mask_value) 
     return output;
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

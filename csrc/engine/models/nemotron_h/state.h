@@ -8,13 +8,13 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda::nemotron_h {
+namespace tyloi::cuda::nemotron_h {
 
 struct Model;
 
 struct MambaState {
     Recurrent mixer;
-    mfq_tensor_backend::Tensor speculative_xbc, speculative_dt;
+    ::tyloi::Tensor speculative_xbc, speculative_dt;
 };
 
 using LayerState = std::variant<std::monostate, MambaState, KVCache>;
@@ -33,8 +33,8 @@ public:
     void set_position_delta(std::int64_t delta) noexcept { decode_position_delta = delta; }
     void preallocate();
     void commit_speculative();
-    std::vector<mfq_tensor_backend::Tensor> storage() const;
-    std::vector<mfq_tensor_backend::Tensor*> graph_state();
+    std::vector<::tyloi::Tensor> storage() const;
+    std::vector<::tyloi::Tensor*> graph_state();
     TextSessionStateKind text_session_state_kind() const;
     bool supports_text_session_state() const;
     bool supports_paged_text_session_state() const;
@@ -47,7 +47,7 @@ public:
     struct FullLayout {
         std::int64_t heads, head_dim, capacity;
         bool sliding;
-        mfq_tensor_backend::ScalarType dtype;
+        ::tyloi::ScalarType dtype;
         KvQuantization quantization;
     };
     struct Layout {
@@ -64,4 +64,4 @@ private:
     std::vector<Layout> layout_;
 };
 
-} // namespace mfq::cuda::nemotron_h
+} // namespace tyloi::cuda::nemotron_h

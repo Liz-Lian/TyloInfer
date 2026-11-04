@@ -7,9 +7,9 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq { class ModelSource; }
+namespace tyloi { class ModelSource; }
 
-namespace mfq {
+namespace tyloi {
 
 inline constexpr std::string_view kModelGraphAsset =
     "__mfq_asset__/model_graph.json";
@@ -72,4 +72,4 @@ ModelGraph graph(const ModelSource& source);
 
 } // namespace models
 
-} // namespace mfq
+} // namespace tyloi

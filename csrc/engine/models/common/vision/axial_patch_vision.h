@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::models::axial_patch_vision {
+namespace tyloi::models::axial_patch_vision {
 
 // Backend-neutral geometry for the shared axial patch ViT contract: patch
 // linear, bidirectional attention with two-axis RoPE, RMSNorm, SwiGLU and a
@@ -61,4 +61,4 @@ void validate_span(
     int downsample_ratio,
     const std::vector<std::int64_t>& token_types);
 
-} // namespace mfq::models::axial_patch_vision
+} // namespace tyloi::models::axial_patch_vision

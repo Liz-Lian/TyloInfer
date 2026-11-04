@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::fp8sq {
+namespace tyloi::fp8sq {
 
 // Design intent: MXFP8-SQ and FP8-128SQ are high-fidelity, fine-grained
 // requantization containers for native QAT weights.  They preserve legal E4M3
@@ -426,4 +426,4 @@ inline std::vector<std::uint8_t> slice(
     return result;
 }
 
-} // namespace mfq::fp8sq
+} // namespace tyloi::fp8sq

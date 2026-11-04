@@ -19,7 +19,7 @@
 
 namespace mfq_sparse_attn_mma {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 struct RuntimeInput {
     const void* positions = nullptr;
@@ -31,7 +31,7 @@ struct RuntimeInput {
     bool half_query = false;
     bool wide_positions = false;
     bool direct_query = false;
-    mfq::cuda::HotKvView hot{};
+    tyloi::cuda::HotKvView hot{};
 };
 
 inline uint3 sparse_fastdiv_values(uint32_t divisor) {
@@ -250,7 +250,7 @@ Tensor launch(
     const Tensor& gate = Tensor{},
     bool half_output = false,
     const Tensor& positions = Tensor{},
-    int64_t causal_columns = 0, mfq::cuda::HotKvView hot = {}) {
+    int64_t causal_columns = 0, tyloi::cuda::HotKvView hot = {}) {
     static_assert(ncols1 == 1,
         "selected-token tiles require one index row per query tile");
     constexpr int ncols = ncols1 * ncols2;
@@ -286,28 +286,28 @@ Tensor launch(
     TYLOINFER_RUNTIME_CHECK(k.is_contiguous() &&
         v.is_contiguous() && (causal || indices.is_contiguous()),
         name, ": tensors must be contiguous");
-    TYLOINFER_RUNTIME_CHECK((q.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        q.scalar_type() == mfq_tensor_backend::kFloat16) &&
-        k.scalar_type() == mfq_tensor_backend::kFloat16 &&
-        v.scalar_type() == mfq_tensor_backend::kFloat16 &&
-        (causal || indices.scalar_type() == mfq_tensor_backend::kInt32),
+    TYLOINFER_RUNTIME_CHECK((q.scalar_type() == ::tyloi::kFloat32 ||
+        q.scalar_type() == ::tyloi::kFloat16) &&
+        k.scalar_type() == ::tyloi::kFloat16 &&
+        v.scalar_type() == ::tyloi::kFloat16 &&
+        (causal || indices.scalar_type() == ::tyloi::kInt32),
         name, ": expected f32/f16/f16/i32 tensors");
     if (causal) {
         TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.device() == q.device() &&
             positions.is_contiguous() && positions.dim() == 1 && positions.numel() == M &&
-            (positions.scalar_type() == mfq_tensor_backend::kInt32 || positions.scalar_type() == mfq_tensor_backend::kInt64) &&
+            (positions.scalar_type() == ::tyloi::kInt32 || positions.scalar_type() == ::tyloi::kInt64) &&
             !mask.defined() && !indices.defined(), name, ": invalid implicit causal selection");
     }
     if (mask.defined()) {
         TYLOINFER_RUNTIME_CHECK(mask.is_cuda() && mask.device() == q.device() &&
             mask.is_contiguous() &&
-            mask.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            mask.scalar_type() == ::tyloi::kFloat16 &&
             mask.sizes() == indices.sizes(), name, ": invalid mask");
     }
     if (sinks.defined()) {
         TYLOINFER_RUNTIME_CHECK(sinks.is_cuda() && sinks.device() == q.device() &&
             sinks.is_contiguous() &&
-            sinks.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            sinks.scalar_type() == ::tyloi::kFloat32 &&
             sinks.numel() == heads, name, ": invalid sinks");
     }
 
@@ -395,24 +395,24 @@ Tensor launch(
         TYLOINFER_RUNTIME_CHECK(required_meta <=
             static_cast<size_t>(std::numeric_limits<int64_t>::max()),
             name, ": meta workspace is too large");
-        meta = mfq_tensor_backend::empty(
+        meta = ::tyloi::cuda::empty(
             {static_cast<int64_t>(required_meta)},
-            q.options().dtype(mfq_tensor_backend::kFloat32));
+            q.options().dtype(::tyloi::kFloat32));
     }
     TYLOINFER_RUNTIME_CHECK(meta.is_cuda() && meta.device() == q.device() &&
         meta.is_contiguous() &&
-        meta.scalar_type() == mfq_tensor_backend::kFloat32 &&
+        meta.scalar_type() == ::tyloi::kFloat32 &&
         static_cast<size_t>(meta.numel()) >= required_meta,
         name, ": meta workspace too small, need ", required_meta,
         " float elements");
 
-    Tensor out = mfq_tensor_backend::empty({B, M, heads, DV}, q.options().dtype(mfq_tensor_backend::kFloat32));
+    Tensor out = ::tyloi::cuda::empty({B, M, heads, DV}, q.options().dtype(::tyloi::kFloat32));
     const auto stream = mfq_current_cuda_stream();
     const RuntimeInput input{causal ? positions.data_ptr() : nullptr,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3), static_cast<int>(causal_columns),
-        q.scalar_type() == mfq_tensor_backend::kFloat16,
-        causal && positions.scalar_type() == mfq_tensor_backend::kInt64,
-        causal || !q.is_contiguous() || q.scalar_type() == mfq_tensor_backend::kFloat16, hot};
+        q.scalar_type() == ::tyloi::kFloat16,
+        causal && positions.scalar_type() == ::tyloi::kInt64,
+        causal || !q.is_contiguous() || q.scalar_type() == ::tyloi::kFloat16, hot};
     kernel<<<rounded_blocks, dim3(32, nwarps, 1), shmem, stream>>>(
         q.data_ptr(),
         reinterpret_cast<const half *>(k.data_ptr<mfq_half>()),

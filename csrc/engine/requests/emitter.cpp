@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 namespace {
 
 constexpr char kReplacement[] = "\xEF\xBF\xBD";
@@ -107,4 +107,4 @@ bool TextEmitter::emit_prefix(std::size_t limit, bool at_end) {
     return true;
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

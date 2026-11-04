@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq {
+namespace tyloi {
 std::vector<std::uint8_t> join_rows(
         const std::vector<std::vector<std::uint8_t>>& blobs) {
     if (blobs.empty()) throw std::invalid_argument("empty TQ row selection");
@@ -130,4 +130,4 @@ std::size_t TqTable::row_image_bytes_bound() const {
     return (bytes + 7) & ~std::size_t(7);
 }
 
-} // namespace mfq
+} // namespace tyloi

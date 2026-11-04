@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Three canonical E8 indices fit in two aligned words. In the 36-bit case,
 // first_vector*12 and the pointer alignment make shift a multiple of four,

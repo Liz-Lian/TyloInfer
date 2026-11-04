@@ -10,9 +10,9 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::gemma4 {
+namespace tyloi::cuda::gemma4 {
 struct LayerLoader : TransformerWeightLoader {
-    auto rope(int64_t capacity, const mfq::models::gemma4::LayerSpec &spec) {
+    auto rope(int64_t capacity, const tyloi::models::gemma4::LayerSpec &spec) {
         auto cache = RopeCache(capacity, spec.head_dim, spec.rope_base, spec.head_dim, spec.rotary_pairs);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         return cache.view();
@@ -21,15 +21,15 @@ struct LayerLoader : TransformerWeightLoader {
 #endif
     }
     auto ones(int64_t width) {
-        return mfq_tensor_backend::ones({width}, mfq_tensor_backend::TensorOptions()
-                                                     .device(mfq_tensor_backend::kCUDA)
-                                                     .dtype(mfq_tensor_backend::kFloat32));
+        return ::tyloi::cuda::ones({width}, ::tyloi::TensorOptions()
+                                                     .device(::tyloi::kCUDA)
+                                                     .dtype(::tyloi::kFloat32));
     }
     auto layer_scale(const std::string &name) {
-        return dense(name).to(mfq_tensor_backend::kFloat16).contiguous();
+        return dense(name).to(::tyloi::kFloat16).contiguous();
     }
     auto router_parameter(const std::string &name) {
-        return dense(name).to(mfq_tensor_backend::kFloat32).contiguous();
+        return dense(name).to(::tyloi::kFloat32).contiguous();
     }
     auto normalized_router_parameter(const std::string &name, double divisor) {
         return (router_parameter(name) / divisor).contiguous();
@@ -39,8 +39,8 @@ struct LayerLoader : TransformerWeightLoader {
         auto down = weights.weight(down_name);
         auto group = weights.gate_up(names, *down, shared_gate_up_compatible_prefix,
                                      preserve_projection_boundaries);
-        return mfq::models::Mlp{std::move(group), std::move(down),
-                                mfq::ops::MlpActivation::gelu_gated};
+        return tyloi::models::Mlp{std::move(group), std::move(down),
+                                tyloi::ops::MlpActivation::gelu_gated};
 #else
         auto down = linear(down_name);
         auto group = gate_up(names, down);
@@ -59,14 +59,14 @@ struct LayerLoader : TransformerWeightLoader {
 #endif
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    static auto shape(const mfq::Tensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const mfq::Tensor& value) { return value.numel(); }
-    static auto expert_shape(const std::shared_ptr<const mfq::weights::Weights>& weight) {
+    static auto shape(const tyloi::Tensor& value) { return value.sizes().vec(); }
+    static int64_t elements(const tyloi::Tensor& value) { return value.numel(); }
+    static auto expert_shape(const std::shared_ptr<const tyloi::weights::Weights>& weight) {
         const auto shape = weight->shape();
         return std::array<int64_t, 3>{static_cast<int64_t>(weight->size()), shape.rows, shape.cols};
     }
 #else
-    static auto expert_shape(const mfq::cuda::Experts &weight) {
+    static auto expert_shape(const tyloi::cuda::Experts &weight) {
         return std::array<int64_t, 3>{weight.n_experts, weight.out_per_expert, weight.neuron_len};
     }
 #endif
@@ -78,7 +78,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &config,
     Layer result;
     result.device = weights.placement.device;
     LayerLoader loader{{weights}};
-    mfq::models::gemma4::load_layer(result.attention, result, loader, config, layer, type);
+    tyloi::models::gemma4::load_layer(result.attention, result, loader, config, layer, type);
     return result;
 }
 
@@ -124,4 +124,4 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     }
 }
 
-} // namespace mfq::cuda::gemma4
+} // namespace tyloi::cuda::gemma4

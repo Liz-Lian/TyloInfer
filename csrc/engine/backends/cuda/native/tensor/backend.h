@@ -1,5 +1,6 @@
 #pragma once
 #include "env.h"
+#include "engine/tensor.h"
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
@@ -25,23 +26,22 @@
 #include "engine/backends/cuda/native/graph.h"
 #include "tensor.h"
 
-namespace mfq_tensor_backend = ::mfq::cuda;
 using mfq_half = __half;
 using mfq_bfloat16 = __nv_bfloat16;
-using MfqBackendError = ::mfq::cuda::Error;
-inline constexpr auto mfq_float8_e4m3fn = ::mfq::cuda::kFloat8E4M3FN;
-inline constexpr auto mfq_dispatch_half = ::mfq::cuda::ScalarType::float16;
-inline constexpr auto mfq_dispatch_bfloat16 = ::mfq::cuda::ScalarType::bfloat16;
+using MfqBackendError = ::tyloi::cuda::Error;
+inline constexpr auto mfq_float8_e4m3fn = ::tyloi::kFloat8E4M3FN;
+inline constexpr auto mfq_dispatch_half = ::tyloi::ScalarType::float16;
+inline constexpr auto mfq_dispatch_bfloat16 = ::tyloi::ScalarType::bfloat16;
 
 inline cudaStream_t mfq_current_cuda_stream() {
-    return ::mfq::cuda::current_stream().stream();
+    return ::tyloi::cuda::current_stream().stream();
 }
 
 inline cublasHandle_t mfq_current_cublas_handle() {
     int device = 0;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device));
-    auto context = ::mfq::cuda::default_context(device);
-    context->blas().set_stream(::mfq::cuda::current_stream(device).stream());
+    auto context = ::tyloi::cuda::default_context(device);
+    context->blas().set_stream(::tyloi::cuda::current_stream(device).stream());
     return context->blas().get();
 }
 
@@ -49,7 +49,7 @@ inline void mfq_cuda_synchronize() {
     int device = 0;
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device));
     TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(
-        ::mfq::cuda::current_stream(device).stream()));
+        ::tyloi::cuda::current_stream(device).stream()));
 }
 
 template <typename... Values>
@@ -74,9 +74,9 @@ template <typename... Values>
 #define TYLOINFER_DISPATCH_FLOATING_TYPES_AND_HALF(TYPE, NAME, ...) \
     ([&]() { \
         switch (TYPE) { \
-            case ::mfq::cuda::ScalarType::float64: { using scalar_t = double; return (__VA_ARGS__)(); } \
-            case ::mfq::cuda::ScalarType::float32: { using scalar_t = float; return (__VA_ARGS__)(); } \
-            case ::mfq::cuda::ScalarType::float16: { using scalar_t = __half; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::float64: { using scalar_t = double; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::float32: { using scalar_t = float; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::float16: { using scalar_t = __half; return (__VA_ARGS__)(); } \
             default: ::mfq_runtime_check_failed(NAME, ": unsupported floating dtype"); \
         } \
     })()
@@ -84,10 +84,10 @@ template <typename... Values>
 #define TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(TYPE1, TYPE2, TYPE, NAME, ...) \
     ([&]() { \
         switch (TYPE) { \
-            case ::mfq::cuda::ScalarType::float64: { using scalar_t = double; return (__VA_ARGS__)(); } \
-            case ::mfq::cuda::ScalarType::float32: { using scalar_t = float; return (__VA_ARGS__)(); } \
-            case ::mfq::cuda::ScalarType::float16: { using scalar_t = __half; return (__VA_ARGS__)(); } \
-            case ::mfq::cuda::ScalarType::bfloat16: { using scalar_t = __nv_bfloat16; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::float64: { using scalar_t = double; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::float32: { using scalar_t = float; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::float16: { using scalar_t = __half; return (__VA_ARGS__)(); } \
+            case ::tyloi::ScalarType::bfloat16: { using scalar_t = __nv_bfloat16; return (__VA_ARGS__)(); } \
             default: ::mfq_runtime_check_failed(NAME, ": unsupported floating dtype"); \
         } \
     })()
@@ -95,15 +95,15 @@ template <typename... Values>
 class MfqCudaGuard final {
 public:
     explicit MfqCudaGuard(int device) : guard_(device) {}
-    explicit MfqCudaGuard(const ::mfq::cuda::Device& device) : guard_(device.index) {}
+    explicit MfqCudaGuard(const ::tyloi::Device& device) : guard_(device.index) {}
 
 private:
-    ::mfq::cuda::DeviceGuard guard_;
+    ::tyloi::cuda::DeviceGuard guard_;
 };
 
-using MfqCudaStream = ::mfq::cuda::StreamHandle;
-using MfqCudaStreamGuard = ::mfq::cuda::StreamGuard;
-using MfqCudaGraph = ::mfq::cuda::Graph;
+using MfqCudaStream = ::tyloi::cuda::StreamHandle;
+using MfqCudaStreamGuard = ::tyloi::cuda::StreamGuard;
+using MfqCudaGraph = ::tyloi::cuda::Graph;
 
 inline void mfq_prepare_cuda_graph_memory(MfqCudaGraph& graph) {
     graph.prepare_memory();
@@ -118,13 +118,13 @@ inline void mfq_prepare_cuda_graph_memory(
 inline void mfq_debug_dump_cuda_graph(MfqCudaGraph&) {}
 
 inline MfqCudaStream mfq_get_current_cuda_stream(int device = -1) {
-    return ::mfq::cuda::current_stream(device);
+    return ::tyloi::cuda::current_stream(device);
 }
 
 inline MfqCudaStream mfq_get_stream_from_pool(
     bool high_priority = false,
     int device = -1) {
-    return ::mfq::cuda::stream_from_pool(high_priority, device);
+    return ::tyloi::cuda::stream_from_pool(high_priority, device);
 }
 
 inline int mfq_current_cuda_device() {
@@ -134,16 +134,16 @@ inline int mfq_current_cuda_device() {
 }
 
 inline void mfq_cuda_empty_cache() {
-    ::mfq::cuda::default_context(mfq_current_cuda_device())->trim();
+    ::tyloi::cuda::default_context(mfq_current_cuda_device())->trim();
 }
 
 inline bool mfq_cuda_graph_capture_supported() {
-    return ::mfq::cuda::default_context(
+    return ::tyloi::cuda::default_context(
         mfq_current_cuda_device())->supports_async_allocations();
 }
 
 inline void mfq_cuda_record_stream(
-    const ::mfq::cuda::Tensor& tensor,
+    const ::tyloi::Tensor& tensor,
     const MfqCudaStream& stream) {
     tensor.record_stream(reinterpret_cast<std::uintptr_t>(stream.stream()));
 }
@@ -163,8 +163,8 @@ struct MfqCudaMemoryStats {
 };
 
 inline MfqCudaMemoryStats mfq_cuda_memory_stats(int device) {
-    ::mfq::cuda::DeviceGuard guard(device);
-    const auto context=::mfq::cuda::default_context(device);
+    ::tyloi::cuda::DeviceGuard guard(device);
+    const auto context=::tyloi::cuda::default_context(device);
     const auto owned=context->memory_stats();
     MfqCudaMemoryStats stats;
     stats.allocated_bytes = owned.allocated;
@@ -193,19 +193,19 @@ void mfq_parallel_for(
     std::int64_t end,
     std::int64_t grain,
     Function&& function) {
-    ::mfq::host_parallel_for(begin, end, grain, mfq_get_num_threads(),
+    ::tyloi::host_parallel_for(begin, end, grain, mfq_get_num_threads(),
         std::forward<Function>(function));
 }
 
 inline void mfq_disable_tf32_cublas() {
-    auto context = ::mfq::cuda::default_context(mfq_current_cuda_device());
+    auto context = ::tyloi::cuda::default_context(mfq_current_cuda_device());
     context->blas().set_stream(mfq_current_cuda_stream());
     TYLOINFER_NATIVE_CUDA_CHECK(cublasSetMathMode(
         context->blas().get(), CUBLAS_DEFAULT_MATH));
 }
 
 inline void mfq_cuda_manual_seed_all(std::uint64_t seed) {
-    ::mfq::cuda::manual_seed(static_cast<std::int64_t>(seed));
+    ::tyloi::cuda::manual_seed(static_cast<std::int64_t>(seed));
 }
 
 #else
@@ -218,7 +218,6 @@ inline void mfq_cuda_manual_seed_all(std::uint64_t seed) {
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/extension.h>
 
-namespace mfq_tensor_backend = ::torch;
 using mfq_half = ::at::Half;
 using mfq_bfloat16 = ::at::BFloat16;
 using MfqBackendError = ::c10::Error;
@@ -249,7 +248,7 @@ using MfqCudaStreamGuard = ::c10::cuda::CUDAStreamGuard;
 using MfqCudaGraph = ::at::cuda::CUDAGraph;
 
 inline void mfq_prepare_cuda_graph_memory(MfqCudaGraph& graph) {
-    const char* debug_path = mfq::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
+    const char* debug_path = tyloi::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
     if (debug_path != nullptr && debug_path[0] != '\0') {
         graph.enable_debug_mode();
     }
@@ -262,7 +261,7 @@ inline void mfq_prepare_cuda_graph_memory(
 }
 
 inline void mfq_debug_dump_cuda_graph(MfqCudaGraph& graph) {
-    const char* debug_path = mfq::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
+    const char* debug_path = tyloi::cuda::env_lookup("TYLOINFER_TORCH_CUDA_GRAPH_DUMP");
     if (debug_path != nullptr && debug_path[0] != '\0') {
         TYLOINFER_CUDA_CHECK(cudaGraphDebugDotPrint(
             graph.raw_cuda_graph(), debug_path, cudaGraphDebugDotFlagsVerbose));
@@ -361,41 +360,61 @@ using MfqOptional = std::optional<Value>;
 
 inline constexpr std::nullopt_t mfq_nullopt = std::nullopt;
 
-inline mfq_tensor_backend::Tensor mfq_linear(
-    const mfq_tensor_backend::Tensor& input,
-    const mfq_tensor_backend::Tensor& weight,
-    const std::optional<mfq_tensor_backend::Tensor>& bias = std::nullopt) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return ::mfq::cuda::linear(input, weight, bias);
-#else
-    return ::at::linear(input, weight, bias);
-#endif
+inline ::tyloi::Tensor mfq_linear(
+    const ::tyloi::Tensor& input,
+    const ::tyloi::Tensor& weight,
+    const std::optional<::tyloi::Tensor>& bias = std::nullopt) {
+    return ::tyloi::cuda::linear(input, weight, bias);
 }
 
-inline mfq_tensor_backend::Tensor mfq_linear(
-    const mfq_tensor_backend::Tensor& input,
-    const mfq_tensor_backend::Tensor& weight,
-    const mfq_tensor_backend::Tensor& bias) {
+inline ::tyloi::Tensor mfq_linear(
+    const ::tyloi::Tensor& input,
+    const ::tyloi::Tensor& weight,
+    const ::tyloi::Tensor& bias) {
     return mfq_linear(
-        input, weight, std::optional<mfq_tensor_backend::Tensor>(bias));
+        input, weight, std::optional<::tyloi::Tensor>(bias));
 }
 
-inline mfq_tensor_backend::Tensor mfq_scaled_dot_product_attention(
-    const mfq_tensor_backend::Tensor& query,
-    const mfq_tensor_backend::Tensor& key,
-    const mfq_tensor_backend::Tensor& value,
-    const std::optional<mfq_tensor_backend::Tensor>& mask,
+inline ::tyloi::Tensor mfq_scaled_dot_product_attention(
+    const ::tyloi::Tensor& query,
+    const ::tyloi::Tensor& key,
+    const ::tyloi::Tensor& value,
+    const std::optional<::tyloi::Tensor>& mask,
     double dropout,
     bool causal,
     const std::optional<double>& scale,
     bool enable_grouped_query_attention) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return ::mfq::cuda::scaled_dot_product_attention(
+    return ::tyloi::cuda::scaled_dot_product_attention(
         query, key, value, mask, dropout, causal, scale,
         enable_grouped_query_attention);
+}
 #else
+inline ::at::Tensor mfq_linear(
+    const ::at::Tensor& input,
+    const ::at::Tensor& weight,
+    const std::optional<::at::Tensor>& bias = std::nullopt) {
+    return ::at::linear(input, weight, bias);
+}
+
+inline ::at::Tensor mfq_linear(
+    const ::at::Tensor& input,
+    const ::at::Tensor& weight,
+    const ::at::Tensor& bias) {
+    return mfq_linear(input, weight, std::optional<::at::Tensor>(bias));
+}
+
+inline ::at::Tensor mfq_scaled_dot_product_attention(
+    const ::at::Tensor& query,
+    const ::at::Tensor& key,
+    const ::at::Tensor& value,
+    const std::optional<::at::Tensor>& mask,
+    double dropout,
+    bool causal,
+    const std::optional<double>& scale,
+    bool enable_grouped_query_attention) {
     return ::at::scaled_dot_product_attention(
         query, key, value, mask, dropout, causal, scale,
         enable_grouped_query_attention);
-#endif
 }
+#endif

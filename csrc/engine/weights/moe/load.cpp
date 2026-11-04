@@ -12,7 +12,7 @@
 #include <numeric>
 #include <unordered_set>
 
-static void initialize_mfe_nint_runtime(mfq::cuda::Experts & result) {
+static void initialize_mfe_nint_runtime(tyloi::cuda::Experts & result) {
     if (!result.pools || result.pools->empty()) {
         throw std::runtime_error("MFE NINT runtime requires at least one pool");
     }
@@ -38,8 +38,8 @@ static void initialize_mfe_nint_runtime(mfq::cuda::Experts & result) {
     }
 }
 
-mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data & cpu) {
-    mfq::cuda::Experts result;
+tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data & cpu) {
+    tyloi::cuda::Experts result;
     result.unified_nint_projection = true;
     result.n_experts = cpu.n_experts;
     result.out_per_expert = cpu.out_per_expert;
@@ -60,8 +60,8 @@ mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data & cpu) {
             const int expert = source_pool.expert_ids.at(static_cast<size_t>(index));
             local[static_cast<size_t>(expert)] = index;
         }
-        pool.expert_local = mfq_tensor_backend::from_blob(
-            local.data(), {(int64_t)local.size()}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
+        pool.expert_local = ::tyloi::cuda::from_blob(
+            local.data(), {(int64_t)local.size()}, ::tyloi::TensorOptions().dtype(::tyloi::kInt32))
             .clone().to(pool.weight.q_packed.device()).contiguous();
         pools.push_back(std::move(pool));
     }
@@ -70,16 +70,16 @@ mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data & cpu) {
     return result;
 }
 
-mfq_tensor_backend::Tensor copy_cpu_weight_to_cuda(
-        const mfq_tensor_backend::Tensor & source) {
+::tyloi::Tensor copy_cpu_weight_to_cuda(
+        const ::tyloi::Tensor & source) {
     return source.defined()
-        ? source.to(mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA,
+        ? source.to(::tyloi::Device(
+            ::tyloi::kCUDA,
             mfq_current_cuda_device())).contiguous()
-        : mfq_tensor_backend::Tensor();
+        : ::tyloi::Tensor();
 }
 
-static int64_t tensor_storage_bytes(const mfq_tensor_backend::Tensor & value) {
+static int64_t tensor_storage_bytes(const ::tyloi::Tensor & value) {
     return value.defined()
         ? value.numel() * (int64_t)value.element_size()
         : 0;
@@ -152,7 +152,7 @@ int64_t mixed_moe_storage_bytes(const MixedMoeRuntime & runtime) {
 }
 
 std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
-        const mfq::mfe::Data & cpu,
+        const tyloi::mfe::Data & cpu,
         bool cuda,
         const MoeLoadOptions& options) {
     auto runtime = std::make_shared<MixedMoeRuntime>();
@@ -167,13 +167,13 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
         for (int index = 0; index < pool.local_experts; ++index) {
             local[(size_t)source.expert_ids[(size_t)index]] = index;
         }
-        pool.expert_local = mfq_tensor_backend::from_blob(
+        pool.expert_local = ::tyloi::cuda::from_blob(
             local.data(), {(int64_t)local.size()},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt32))
             .clone();
         if (cuda) {
-            const auto target = mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA,
+            const auto target = ::tyloi::Device(
+                ::tyloi::kCUDA,
                 mfq_current_cuda_device());
             pool.expert_local =
                 pool.expert_local.to(target).contiguous();
@@ -204,7 +204,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
                 throw std::runtime_error(
                     "mixed MXFP4-SQ cohort shape mismatch");
             }
-        } else if (mfq::fp8sq::is_dtype(source.dtype)) {
+        } else if (tyloi::fp8sq::is_dtype(source.dtype)) {
             pool.family = MixedMoeFamily::Fp8Sq;
             pool.fp8_sq = to_device_fp8_sq(
                 source.dtype, source.payload, cuda);
@@ -224,7 +224,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
             }
         } else if (source.dtype == "NEPQ") {
             pool.family = MixedMoeFamily::Nepq;
-            auto parsed = mfq::nepq::unpack(
+            auto parsed = tyloi::nepq::unpack(
                 source.payload, source.dtype, source.runtime_payload);
             if (parsed.n_experts != pool.local_experts ||
                 parsed.out_per_expert != cpu.out_per_expert ||
@@ -234,7 +234,7 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
             pool.nepq = to_device_nepq(parsed, cuda);
         } else {
             pool.family = MixedMoeFamily::Nvq;
-            auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
+            auto parsed = tyloi::nvq::unpack(source.payload, source.dtype);
             if (parsed.out != expected_rows || parsed.neuron_len != cpu.neuron_len) {
                 throw std::runtime_error("mixed NVQ/NPQ cohort shape mismatch");
             }
@@ -252,9 +252,9 @@ std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
     return runtime;
 }
 
-static mfq::cuda::Experts wrap_mixed_moe_runtime(
+static tyloi::cuda::Experts wrap_mixed_moe_runtime(
         const std::shared_ptr<MixedMoeRuntime> & runtime) {
-    mfq::cuda::Experts result;
+    tyloi::cuda::Experts result;
     result.unified_nint_projection = runtime->nint_only();
     result.n_experts = runtime->n_experts;
     result.out_per_expert = runtime->out_per_expert;
@@ -267,15 +267,15 @@ static mfq::cuda::Experts wrap_mixed_moe_runtime(
     return result;
 }
 
-mfq::cuda::Experts to_gpu_mixed_moe(
-        const mfq::mfe::Data & cpu,
+tyloi::cuda::Experts to_gpu_mixed_moe(
+        const tyloi::mfe::Data & cpu,
         const MoeLoadOptions& options) {
     return wrap_mixed_moe_runtime(
         make_mixed_moe_runtime(cpu, true, options));
 }
 
-mfq::cuda::Experts to_cuda_device_moe_expert_slice(
-        const mfq::mfe::Data & cpu,
+tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
+        const tyloi::mfe::Data & cpu,
         int64_t expert_begin,
         int64_t expert_end,
         int device,
@@ -287,15 +287,15 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
     }
     const bool all_nint = std::all_of(
         cpu.pools.begin(), cpu.pools.end(),
-        [](const mfq::mfe::Pool & pool) {
+        [](const tyloi::mfe::Pool & pool) {
             return pool.dtype == "NINT";
         });
     MfqCudaGuard guard(device);
     if (all_nint) {
-        mfq::mfe::Data sliced = cpu;
+        tyloi::mfe::Data sliced = cpu;
         sliced.pools.clear();
         for (const auto & source : cpu.pools) {
-            mfq::mfe::Pool destination = source;
+            tyloi::mfe::Pool destination = source;
             destination.expert_ids.clear();
             std::vector<int64_t> rows;
             for (size_t local = 0;
@@ -346,12 +346,12 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
             local_map[static_cast<size_t>(expert_ids[local])] =
                 static_cast<int32_t>(local);
         }
-        pool.expert_local = mfq_tensor_backend::from_blob(
+        pool.expert_local = ::tyloi::cuda::from_blob(
             local_map.data(),
             {static_cast<int64_t>(local_map.size())},
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32))
-            .clone().to(mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA,
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt32))
+            .clone().to(::tyloi::Device(
+                ::tyloi::kCUDA,
                 mfq_current_cuda_device())).contiguous();
         if (source.dtype == "NINT8-0") {
             pool.family = MixedMoeFamily::Nint8Zero;
@@ -370,8 +370,8 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
         } else if (source.dtype == "MXFP4-SQ") {
             pool.family = MixedMoeFamily::Mxfp4Sq;
             pool.mxfp4_sq = to_device_mxfp4_sq(
-                mfq::sq::select_rows(source.payload, rows), true);
-        } else if (mfq::fp8sq::is_dtype(source.dtype)) {
+                tyloi::sq::select_rows(source.payload, rows), true);
+        } else if (tyloi::fp8sq::is_dtype(source.dtype)) {
             if (rows.size() != source.expert_ids.size() *
                     static_cast<size_t>(cpu.out_per_expert)) {
                 throw std::runtime_error(
@@ -382,14 +382,14 @@ mfq::cuda::Experts to_cuda_device_moe_expert_slice(
                 source.dtype, source.payload, true);
         } else if (source.dtype == "NEPQ") {
             pool.family = MixedMoeFamily::Nepq;
-            auto parsed = mfq::nepq::unpack(
+            auto parsed = tyloi::nepq::unpack(
                 source.payload, source.dtype, source.runtime_payload);
             pool.nepq = to_device_nepq(select_nepq_cpu_rows(
                 parsed, rows, cpu.out_per_expert,
                 pool.local_experts), true);
         } else {
             pool.family = MixedMoeFamily::Nvq;
-            auto parsed = mfq::nvq::unpack(source.payload, source.dtype);
+            auto parsed = tyloi::nvq::unpack(source.payload, source.dtype);
             pool.nvq = to_device_nvq(
                 select_nvq_cpu_rows(parsed, rows), true,
                 options.nvq2, options.nvq_groups);
@@ -493,7 +493,7 @@ static NepqWeight copy_cpu_nepq_to_cuda(const NepqWeight & source) {
     return result;
 }
 
-mfq::cuda::Experts stage_cpu_mixed_moe(
+tyloi::cuda::Experts stage_cpu_mixed_moe(
         const std::shared_ptr<MixedMoeRuntime> & cpu,
         bool heterogeneous) {
     if (!cpu) throw std::runtime_error("missing CPU-offloaded MoE state");
@@ -530,9 +530,9 @@ mfq::cuda::Experts stage_cpu_mixed_moe(
     return wrap_mixed_moe_runtime(runtime);
 }
 
-mfq::cuda::Experts cpu_mixed_moe_metadata(
+tyloi::cuda::Experts cpu_mixed_moe_metadata(
         const std::shared_ptr<MixedMoeRuntime> & runtime) {
-    mfq::cuda::Experts result;
+    tyloi::cuda::Experts result;
     result.unified_nint_projection = runtime->nint_only();
     result.n_experts = runtime->n_experts;
     result.out_per_expert = runtime->out_per_expert;
@@ -543,21 +543,21 @@ mfq::cuda::Experts cpu_mixed_moe_metadata(
     return result;
 }
 
-mfq::mfe::Data load_mfe_cpu(
-        const mfq::source::Source & mfq, const std::string & name) {
+tyloi::mfe::Data load_mfe_cpu(
+        const tyloi::source::Source & mfq, const std::string & name) {
     const auto& dtype = require_tensor(mfq, name).dtype;
     if (dtype == "NINT") {
-        mfq::mfe::Pool pool;
+        tyloi::mfe::Pool pool;
         pool.dtype = "NINT";
         pool.payload = read_tensor(mfq, name);
-        pool.weight = mfq::nint::unpack(pool.payload);
+        pool.weight = tyloi::nint::unpack(pool.payload);
         const auto& shape = pool.weight.shape;
         TYLOINFER_RUNTIME_CHECK(pool.weight.axis == 0 && shape.size() == 3 &&
             shape[0] > 0 && shape[0] <= std::numeric_limits<int>::max() &&
             shape[1] > 0 && shape[1] <= std::numeric_limits<int>::max() &&
             shape[2] == pool.weight.neuron_len && shape[0] * shape[1] == pool.weight.out,
             "routed NINT tensor must use [experts,out,in]: ", name);
-        mfq::mfe::Data result;
+        tyloi::mfe::Data result;
         result.n_experts = static_cast<int>(shape[0]);
         result.out_per_expert = static_cast<int>(shape[1]);
         result.neuron_len = pool.weight.neuron_len;
@@ -570,25 +570,25 @@ mfq::mfe::Data load_mfe_cpu(
     if (dtype != "MFE") {
         throw std::runtime_error("expert tensor must use MFE: " + name);
     }
-    return mfq::mfe::unpack(read_tensor(mfq, name));
+    return tyloi::mfe::unpack(read_tensor(mfq, name));
 }
 
-mfq_tensor_backend::Tensor mfe_dense_reference(
-        const mfq::source::Source& source,
+::tyloi::Tensor mfe_dense_reference(
+        const tyloi::source::Source& source,
         const std::string& name,
-        mfq_tensor_backend::Tensor input,
+        ::tyloi::Tensor input,
         const std::vector<std::int32_t>& expert_ids,
         int tokens,
         int routes,
         bool routed_input) {
-    auto cpu = mfq::mfe::unpack(read_tensor(source, name));
-    auto reference = mfq_tensor_backend::empty(
+    auto cpu = tyloi::mfe::unpack(read_tensor(source, name));
+    auto reference = ::tyloi::cuda::empty(
         {tokens * routes, cpu.out_per_expert},
-        input.options().dtype(mfq_tensor_backend::kFloat16));
+        input.options().dtype(::tyloi::kFloat16));
     for (const auto& pool : cpu.pools) {
-        mfq_tensor_backend::Tensor dense_flat;
+        ::tyloi::Tensor dense_flat;
         int rotation_block = 0;
-        mfq_tensor_backend::Tensor rotation_signs;
+        ::tyloi::Tensor rotation_signs;
         if (pool.dtype == "NINT8-0") {
             auto packed = to_device_nint8_zero(pool.q8_zero, true);
             dense_flat = nint8_zero_dequant_cuda(
@@ -603,9 +603,9 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
                 packed.neuron_min, packed.neuron_len, packed.gs);
         } else if (pool.dtype == "MXFP4") {
             dense_flat = dequant_mxfp4_cpu(pool.mxfp4)
-                .to(mfq_tensor_backend::kCUDA).contiguous();
+                .to(::tyloi::kCUDA).contiguous();
         } else if (pool.dtype == "NEPQ") {
-            auto packed = to_device_nepq(mfq::nepq::unpack(
+            auto packed = to_device_nepq(tyloi::nepq::unpack(
                 pool.payload, pool.dtype, pool.runtime_payload), true);
             dense_flat = nepq_dequant_cuda(
                 packed.indices_packed, packed.aux_packed,
@@ -628,7 +628,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
             rotation_signs = packed.rotation_signs;
         } else {
             dense_flat = nvq_dequant(to_device_nvq(
-                mfq::nvq::unpack(pool.payload, pool.dtype), true));
+                tyloi::nvq::unpack(pool.payload, pool.dtype), true));
         }
         auto dense = dense_flat.reshape({
             static_cast<int64_t>(pool.expert_ids.size()),
@@ -644,18 +644,18 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
                 }
             }
             if (pair_indices.empty()) continue;
-            auto pair_index = mfq_tensor_backend::from_blob(
+            auto pair_index = ::tyloi::cuda::from_blob(
                 pair_indices.data(),
                 {static_cast<int64_t>(pair_indices.size())},
-                mfq_tensor_backend::TensorOptions()
-                    .dtype(mfq_tensor_backend::kInt64))
-                .clone().to(mfq_tensor_backend::kCUDA);
-            auto token_index = mfq_tensor_backend::from_blob(
+                ::tyloi::TensorOptions()
+                    .dtype(::tyloi::kInt64))
+                .clone().to(::tyloi::kCUDA);
+            auto token_index = ::tyloi::cuda::from_blob(
                 token_indices.data(),
                 {static_cast<int64_t>(token_indices.size())},
-                mfq_tensor_backend::TensorOptions()
-                    .dtype(mfq_tensor_backend::kInt64))
-                .clone().to(mfq_tensor_backend::kCUDA);
+                ::tyloi::TensorOptions()
+                    .dtype(::tyloi::kInt64))
+                .clone().to(::tyloi::kCUDA);
             auto selected = routed_input
                 ? input.reshape({tokens * routes, cpu.neuron_len})
                       .index_select(0, pair_index)
@@ -665,7 +665,7 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
                     selected.contiguous(), rotation_signs,
                     rotation_block);
             }
-            auto expected = mfq_tensor_backend::matmul(
+            auto expected = ::tyloi::cuda::matmul(
                 selected,
                 dense.index({static_cast<int64_t>(local)})
                     .transpose(0, 1));
@@ -675,17 +675,17 @@ mfq_tensor_backend::Tensor mfe_dense_reference(
     return reference;
 }
 
-mfq_tensor_backend::Tensor materialize_mfe_dense(
-        const mfq::source::Source& source,
+::tyloi::Tensor materialize_mfe_dense(
+        const tyloi::source::Source& source,
         const std::string& name) {
-    auto cpu = mfq::mfe::unpack(read_tensor(source, name));
-    auto dense = mfq_tensor_backend::empty(
+    auto cpu = tyloi::mfe::unpack(read_tensor(source, name));
+    auto dense = ::tyloi::cuda::empty(
         {cpu.n_experts, cpu.out_per_expert, cpu.neuron_len},
-        mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::kCUDA)
-            .dtype(mfq_tensor_backend::kFloat16));
+        ::tyloi::TensorOptions()
+            .device(::tyloi::kCUDA)
+            .dtype(::tyloi::kFloat16));
     for (const auto& pool : cpu.pools) {
-        mfq_tensor_backend::Tensor local_flat;
+        ::tyloi::Tensor local_flat;
         if (pool.dtype == "NINT8-0") {
             auto packed = to_device_nint8_zero(pool.q8_zero, true);
             local_flat = nint8_zero_dequant_cuda(
@@ -700,7 +700,7 @@ mfq_tensor_backend::Tensor materialize_mfe_dense(
                 packed.neuron_min, packed.neuron_len, packed.gs);
         } else if (pool.dtype == "MXFP4") {
             local_flat = dequant_mxfp4_cpu(pool.mxfp4)
-                .to(mfq_tensor_backend::kCUDA).contiguous();
+                .to(::tyloi::kCUDA).contiguous();
         } else {
             throw std::runtime_error(
                 "dense MoE reference requires NINT or MXFP4 cohorts");
@@ -708,13 +708,13 @@ mfq_tensor_backend::Tensor materialize_mfe_dense(
         auto local = local_flat.reshape({
             static_cast<int64_t>(pool.expert_ids.size()),
             cpu.out_per_expert, cpu.neuron_len});
-        auto expert_index = mfq_tensor_backend::from_blob(
+        auto expert_index = ::tyloi::cuda::from_blob(
             const_cast<int32_t*>(pool.expert_ids.data()),
             {static_cast<int64_t>(pool.expert_ids.size())},
-            mfq_tensor_backend::TensorOptions()
-                .dtype(mfq_tensor_backend::kInt32))
-            .clone().to(mfq_tensor_backend::kCUDA)
-            .to(mfq_tensor_backend::kInt64);
+            ::tyloi::TensorOptions()
+                .dtype(::tyloi::kInt32))
+            .clone().to(::tyloi::kCUDA)
+            .to(::tyloi::kInt64);
         dense.index_copy_(0, expert_index, local);
     }
     return dense;

@@ -29,10 +29,10 @@
 #include <utility>
 #include <variant>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace engine_detail {
-using namespace mfq::engine;
-using namespace mfq::cuda::internal;
+using namespace tyloi::engine;
+using namespace tyloi::cuda::internal;
 
 template <class State, auto Load>
 class EngineInstance final : public Engine {
@@ -45,7 +45,7 @@ class EngineInstance final : public Engine {
 #else
             CudaScope guard(value->execution->config.layer_placement.primary_device(), value->execution->executor().contexts());
 #endif
-            mfq_tensor_backend::NoGradGuard no_grad;
+            ::tyloi::cuda::NoGradGuard no_grad;
             return run(*value);
         }, *state);
     }
@@ -66,8 +66,8 @@ class EngineInstance final : public Engine {
     bool can_batch(const EngineRequest& request) const override {
         return std::visit([&](const auto& ops) { return ops->can_batch(request); }, *state);
     }
-    std::unique_ptr<mfq::Executor::Scope> enter() override {
-        return std::visit([](auto& ops) -> std::unique_ptr<mfq::Executor::Scope> {
+    std::unique_ptr<tyloi::Executor::Scope> enter() override {
+        return std::visit([](auto& ops) -> std::unique_ptr<tyloi::Executor::Scope> {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             return ops->executor->enter();
 #else
@@ -120,7 +120,7 @@ class EngineInstance final : public Engine {
     }
 
   private:
-    friend void ::mfq::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
+    friend void ::tyloi::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
     CudaEngineOptions options;
     std::shared_ptr<KvMemoryManager> kv;
     RoutedCache weights;
@@ -136,12 +136,12 @@ class EngineInstance final : public Engine {
             EngineInfo info;
             std::unique_ptr<TextProcessor> text;
             {
-                const bool dump_env = mfq::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
-                mfq::cuda::env_freeze();
-                if (dump_env) std::cerr << "cuda knobs at load:\n" << mfq::cuda::env_dump();
+                const bool dump_env = tyloi::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false);
+                tyloi::cuda::env_freeze();
+                if (dump_env) std::cerr << "cuda knobs at load:\n" << tyloi::cuda::env_dump();
                 if (!options.context_size) options.context_size = 32768;
                 if (execution) throw std::logic_error("CUDA load requires retired resources");
-                auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
+                auto [execution_config, numeric_options] = tyloi::cuda::load_cuda_execution_config();
                 executor = std::make_unique<Executor>(std::move(numeric_options), 0);
                 execution = std::make_unique<CudaExecutionContext>(
                     *executor, std::move(execution_config), weights, kv, offload);
@@ -150,7 +150,7 @@ class EngineInstance final : public Engine {
                 execution->executor().profiler().enabled = false;
                 auto weight_memory=std::make_shared<WeightMemoryLedger>();
                 const WeightMemoryLoadScope memory_load(*weight_memory);
-                mfq_tensor_backend::NoGradGuard no_grad;
+                ::tyloi::cuda::NoGradGuard no_grad;
                 auto config = resolve_cuda_runtime_config(options);
                 const auto kv_options = runtime_options::qsa_kv_offload();
                 kv=std::make_shared<KvMemoryManager>();
@@ -187,8 +187,8 @@ class EngineInstance final : public Engine {
                     info.reload = true;
                     auto text = TextProcessor::load(*state.source, options.tokenizer_model,
                         info.vocab_size, info.model_type);
-                    info.stop_token_ids = mfq::models::stop_token_ids(
-                        mfq::models::config_json(*state.source, options.config_path), info.vocab_size);
+                    info.stop_token_ids = tyloi::models::stop_token_ids(
+                        tyloi::models::config_json(*state.source, options.config_path), info.vocab_size);
                     return std::pair{std::move(info), std::move(text)};
                 });
                 info = std::move(result.first);
@@ -208,8 +208,8 @@ class EngineInstance final : public Engine {
         return std::visit([](const auto& value) { return value && value->exclusive(); }, *state);
     }
     void unload() {
-        if (mfq::cuda::env_frozen() && mfq::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
-            std::cerr << "cuda knobs in use:\n" << mfq::cuda::env_dump();
+        if (tyloi::cuda::env_frozen() && tyloi::cuda::env_flag("TYLOINFER_CUDA_ENV_DUMP", false))
+            std::cerr << "cuda knobs in use:\n" << tyloi::cuda::env_dump();
         std::exception_ptr failure;
         if (execution) {
             try {
@@ -232,4 +232,4 @@ class EngineInstance final : public Engine {
 };
 } // namespace engine_detail
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

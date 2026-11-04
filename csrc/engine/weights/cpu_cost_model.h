@@ -8,7 +8,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace mfq {
+namespace tyloi {
 class MoeCpuCostModel {
 public:
     // Three projection compatibility identities plus the repeated-row count.
@@ -62,4 +62,4 @@ struct MoeCpuCalibrationState {
     std::uint64_t observations() const noexcept { return observations_total; }
     double work_ns() const noexcept { return elapsed_ns; }
 };
-} // namespace mfq
+} // namespace tyloi

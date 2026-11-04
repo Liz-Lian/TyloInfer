@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace mfq::weights {
+namespace tyloi::weights {
 
 // Values retain physical backing; this module owns byte admission and recency.
 // A caller holding a value keeps it alive independently of cache eviction.
@@ -89,4 +89,4 @@ public:
     }
 };
 
-} // namespace mfq::weights
+} // namespace tyloi::weights

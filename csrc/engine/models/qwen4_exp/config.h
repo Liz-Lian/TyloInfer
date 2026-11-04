@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::qwen4_exp {
+namespace tyloi::models::qwen4_exp {
 
 struct Config {
     int64_t vocab, hidden, layers, maximum, heads, kv_heads, width, rotary, interval, streams, rank;
@@ -30,7 +30,7 @@ struct Config {
         return !predictor &&
                std::find(ple_layers.begin(), ple_layers.end(), layer + 1) != ple_layers.end();
     }
-    mfq::ops::MoeRouting routing() const { return {mfq::ops::RouterActivation::softmax, normalize_routes, false, 1.0}; }
+    tyloi::ops::MoeRouting routing() const { return {tyloi::ops::RouterActivation::softmax, normalize_routes, false, 1.0}; }
     static Config from_json(std::string_view payload);
 
     static Config parse(const nlohmann::json &outer) {
@@ -144,4 +144,4 @@ struct Config {
     }
 };
 
-} // namespace mfq::models::qwen4_exp
+} // namespace tyloi::models::qwen4_exp

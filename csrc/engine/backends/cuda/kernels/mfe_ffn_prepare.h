@@ -1,6 +1,6 @@
 #pragma once
 #include "mfe_ffn.h"
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // Original compressed field addresses, published only after their first reader
 // has completed. Geometry and activation pointers stay in the GPU templates.
 struct alignas(16) MfeCachedExpert {

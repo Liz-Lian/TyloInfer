@@ -9,13 +9,13 @@
 struct MfqMultimodalInput;
 struct MfqDuplexSessionParams;
 struct MfqDuplexStepInput;
-namespace mfq::engine {
+namespace tyloi::engine {
 class MfqTokenizer;
 struct InferenceInput;
 struct InferenceRequest;
 }
 
-namespace mfq::models {
+namespace tyloi::models {
 
 std::unordered_set<std::int64_t> stop_token_ids(std::string_view config, std::int64_t vocabulary);
 
@@ -28,4 +28,4 @@ void prepare_duplex_session(const engine::MfqTokenizer& tokenizer,
 void prepare_duplex_step(const engine::MfqTokenizer& tokenizer,
     const std::string& text, MfqDuplexStepInput& step);
 
-} // namespace mfq::models
+} // namespace tyloi::models

@@ -18,9 +18,9 @@
 
 namespace {
 
-using mfq::cuda::mx::decode_e8m0;
-using mfq::cuda::mx::decode_e4m3fn;
-using mfq::cuda::mx::decode_mxfp4_e2m1;
+using tyloi::cuda::mx::decode_e8m0;
+using tyloi::cuda::mx::decode_e4m3fn;
+using tyloi::cuda::mx::decode_mxfp4_e2m1;
 
 __device__ __forceinline__ float warp_sum(float value) {
 #pragma unroll
@@ -203,10 +203,10 @@ __global__ void mxfp8_packed_small_m_kernel(
     }
 }
 
-int mxfp8_column_shift(const mfq_tensor_backend::Tensor& values,const mfq_tensor_backend::Tensor& scales) {
+int mxfp8_column_shift(const ::tyloi::Tensor& values,const ::tyloi::Tensor& scales) {
     return values.size(1)/scales.size(1)==128?7:5;
 }
-int mxfp8_row_shift(const mfq_tensor_backend::Tensor& values,const mfq_tensor_backend::Tensor& scales) {
+int mxfp8_row_shift(const ::tyloi::Tensor& values,const ::tyloi::Tensor& scales) {
     return scales.size(0)==values.size(0)?0:mxfp8_column_shift(values,scales);
 }
 
@@ -219,10 +219,10 @@ void record_mxfp8_packed_dispatch(int rows,int width,int outputs,int tile,int pa
 
 template <int TILE_M, typename Output>
 void launch_mxfp8_small_m(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & x,
-        mfq_tensor_backend::Tensor & y,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & x,
+        ::tyloi::Tensor & y,
         int groups,
         int outputs_per_group,
         cudaStream_t stream) {
@@ -411,12 +411,12 @@ __global__ void __launch_bounds__(mxfp8_prefill_threads) mxfp8_matmul_kernel(
 }
 
 void validate_mxfp8(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales) {
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales) {
     TYLOINFER_RUNTIME_CHECK(values.is_cuda() && scales.is_cuda(),
                 "MXFP8 values and scales must be CUDA tensors");
-    TYLOINFER_RUNTIME_CHECK(values.scalar_type() == mfq_tensor_backend::kUInt8 &&
-                    scales.scalar_type() == mfq_tensor_backend::kUInt8,
+    TYLOINFER_RUNTIME_CHECK(values.scalar_type() == ::tyloi::kUInt8 &&
+                    scales.scalar_type() == ::tyloi::kUInt8,
                 "MXFP8 values and scales must be uint8");
     TYLOINFER_RUNTIME_CHECK(values.is_contiguous() && scales.is_contiguous(),
                 "MXFP8 values and scales must be contiguous");
@@ -435,12 +435,12 @@ void validate_mxfp8(
 
 } // namespace
 
-mfq_tensor_backend::Tensor mxfp8_dequant_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales) {
+::tyloi::Tensor mxfp8_dequant_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales) {
     validate_mxfp8(values, scales);
-    auto dense = mfq_tensor_backend::empty(
-        values.sizes(), values.options().dtype(mfq_tensor_backend::kFloat16));
+    auto dense = ::tyloi::cuda::empty(
+        values.sizes(), values.options().dtype(::tyloi::kFloat16));
     const std::size_t count = std::size_t(values.numel());
     constexpr int threads = 256;
     const int blocks = int((count + threads - 1) / threads);
@@ -454,13 +454,13 @@ mfq_tensor_backend::Tensor mxfp8_dequant_cuda(
     return dense;
 }
 
-mfq_tensor_backend::Tensor mxfp8_embedding_lookup_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor token_ids) {
+::tyloi::Tensor mxfp8_embedding_lookup_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor token_ids) {
     validate_mxfp8(values, scales);
     TYLOINFER_RUNTIME_CHECK(token_ids.is_cuda() && token_ids.is_contiguous() &&
-                    token_ids.scalar_type() == mfq_tensor_backend::kInt64 &&
+                    token_ids.scalar_type() == ::tyloi::kInt64 &&
                     token_ids.get_device() == values.get_device() &&
                     token_ids.numel() <= std::numeric_limits<int>::max(),
                 "MXFP8 embedding ids must be contiguous CUDA int64 on the weight device");
@@ -469,7 +469,7 @@ mfq_tensor_backend::Tensor mxfp8_embedding_lookup_cuda(
     const int width = static_cast<int>(values.size(1));
     auto shape = token_ids.sizes().vec();
     shape.push_back(width);
-    auto output = mfq_tensor_backend::empty(shape, values.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty(shape, values.options().dtype(::tyloi::kFloat16));
     constexpr int threads = 256;
     const int64_t total = static_cast<int64_t>(count) * width;
     const int blocks = static_cast<int>(std::min<int64_t>(
@@ -486,19 +486,19 @@ mfq_tensor_backend::Tensor mxfp8_embedding_lookup_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor mxfp8_small_m_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor x) {
+::tyloi::Tensor mxfp8_small_m_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor x) {
     validate_mxfp8(values, scales);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 2,
                 "MXFP8 activation must be contiguous CUDA fp16 rank-2");
     TYLOINFER_RUNTIME_CHECK(x.size(1) == values.size(1),
                 "MXFP8 activation width mismatch");
     TYLOINFER_RUNTIME_CHECK(x.size(0) >= 1 && x.size(0) <= 8,
                 "MXFP8 small-M kernel supports M in [1, 8]");
-    auto y = mfq_tensor_backend::empty(
+    auto y = ::tyloi::cuda::empty(
         {x.size(0), values.size(0)}, x.options());
     const cudaStream_t stream = mfq_current_cuda_stream();
 #define TYLOINFER_LAUNCH_MXFP8(TILE) \
@@ -518,12 +518,12 @@ mfq_tensor_backend::Tensor mxfp8_small_m_cuda(
     return y;
 }
 
-mfq_tensor_backend::Tensor mxfp8_matmul_f16_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor input) {
+::tyloi::Tensor mxfp8_matmul_f16_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor input) {
     validate_mxfp8(values, scales);
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
                     input.is_contiguous() && input.dim() == 2 &&
                     input.size(0) > 0 && input.size(1) == values.size(1) &&
                     input.size(0) <= std::numeric_limits<int>::max(),
@@ -531,7 +531,7 @@ mfq_tensor_backend::Tensor mxfp8_matmul_f16_cuda(
     const int rows = static_cast<int>(input.size(0));
     const int outputs = static_cast<int>(values.size(0));
     const int width = static_cast<int>(input.size(1));
-    auto result = mfq_tensor_backend::empty({rows, outputs}, input.options());
+    auto result = ::tyloi::cuda::empty({rows, outputs}, input.options());
     mxfp8_matmul_kernel<__half><<<dim3((outputs+63)/64,(rows+mxfp8_prefill_rows-1)/mxfp8_prefill_rows),mxfp8_prefill_threads,0,mfq_current_cuda_stream()>>>(
         values.data_ptr<std::uint8_t>(),scales.data_ptr<std::uint8_t>(),
         reinterpret_cast<const __half*>(input.data_ptr<mfq_half>()),
@@ -541,20 +541,20 @@ mfq_tensor_backend::Tensor mxfp8_matmul_f16_cuda(
     return result;
 }
 
-mfq_tensor_backend::Tensor mxfp8_small_m_f32_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor x) {
+::tyloi::Tensor mxfp8_small_m_f32_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor x) {
     validate_mxfp8(values, scales);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 2 &&
                     x.size(1) == values.size(1),
                 "MXFP8 FP32-output activation geometry mismatch");
     TYLOINFER_RUNTIME_CHECK(x.size(0) >= 1 && x.size(0) <= 8,
                 "MXFP8 FP32-output small-M kernel supports M in [1, 8]");
-    auto y = mfq_tensor_backend::empty(
+    auto y = ::tyloi::cuda::empty(
         {x.size(0), values.size(0)},
-        x.options().dtype(mfq_tensor_backend::kFloat32));
+        x.options().dtype(::tyloi::kFloat32));
     const cudaStream_t stream = mfq_current_cuda_stream();
 #define TYLOINFER_LAUNCH_MXFP8_F32(TILE) \
     launch_mxfp8_small_m<TILE, float>( \
@@ -573,19 +573,19 @@ mfq_tensor_backend::Tensor mxfp8_small_m_f32_cuda(
     return y;
 }
 
-mfq_tensor_backend::Tensor mxfp8_gemm_f32_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor x) {
+::tyloi::Tensor mxfp8_gemm_f32_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor x) {
     validate_mxfp8(values, scales);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 2 &&
                     x.size(1) == values.size(1),
                 "MXFP8 FP32-output GEMM activation geometry mismatch");
     const int M = int(x.size(0));
     const int N = int(values.size(0));
-    auto y = mfq_tensor_backend::empty(
-        {M, N}, x.options().dtype(mfq_tensor_backend::kFloat32));
+    auto y = ::tyloi::cuda::empty(
+        {M, N}, x.options().dtype(::tyloi::kFloat32));
     mxfp8_matmul_kernel<float><<<dim3((N+63)/64,(M+mxfp8_prefill_rows-1)/mxfp8_prefill_rows),mxfp8_prefill_threads,0,mfq_current_cuda_stream()>>>(
         values.data_ptr<std::uint8_t>(),scales.data_ptr<std::uint8_t>(),
         reinterpret_cast<const __half*>(x.data_ptr<mfq_half>()),y.data_ptr<float>(),M,N,int(x.size(1)),
@@ -596,11 +596,11 @@ mfq_tensor_backend::Tensor mxfp8_gemm_f32_cuda(
 
 namespace {
 template <typename Output>
-mfq_tensor_backend::Tensor mxfp8_groupwise_gemm(
-        mfq_tensor_backend::Tensor values,mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor input,int64_t groups) {
+::tyloi::Tensor mxfp8_groupwise_gemm(
+        ::tyloi::Tensor values,::tyloi::Tensor scales,
+        ::tyloi::Tensor input,int64_t groups) {
     validate_mxfp8(values,scales);
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type()==mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type()==::tyloi::kFloat16 &&
         input.is_contiguous() && input.dim()==3 && groups>0 && input.size(1)==groups &&
         values.size(0)%groups==0 && input.size(2)==values.size(1) && input.size(0)>0 &&
         input.size(0)<=std::numeric_limits<int>::max() && values.size(0)<=std::numeric_limits<int>::max() &&
@@ -609,8 +609,8 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_gemm(
     const int rows=int(input.size(0)),outputs=int(values.size(0)),width=int(values.size(1));
     const int per_group=int(values.size(0)/groups);
     auto options=input.options();
-    if constexpr(std::is_same_v<Output,float>)options=options.dtype(mfq_tensor_backend::kFloat32);
-    auto result=mfq_tensor_backend::empty({rows,outputs},options);
+    if constexpr(std::is_same_v<Output,float>)options=options.dtype(::tyloi::kFloat32);
+    auto result=::tyloi::cuda::empty({rows,outputs},options);
     mxfp8_matmul_kernel<Output><<<dim3(unsigned(((per_group-1)/64+1)*groups),unsigned((rows+mxfp8_prefill_rows-1)/mxfp8_prefill_rows)),
         mxfp8_prefill_threads,0,mfq_current_cuda_stream()>>>(
             values.data_ptr<uint8_t>(),scales.data_ptr<uint8_t>(),
@@ -626,24 +626,24 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_gemm(
 }
 }
 
-mfq_tensor_backend::Tensor mxfp8_groupwise_gemm_f16_cuda(
-        mfq_tensor_backend::Tensor values,mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor input,int64_t groups) {
+::tyloi::Tensor mxfp8_groupwise_gemm_f16_cuda(
+        ::tyloi::Tensor values,::tyloi::Tensor scales,
+        ::tyloi::Tensor input,int64_t groups) {
     return mxfp8_groupwise_gemm<__half>(values,scales,input,groups);
 }
-mfq_tensor_backend::Tensor mxfp8_groupwise_gemm_f32_cuda(
-        mfq_tensor_backend::Tensor values,mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor input,int64_t groups) {
+::tyloi::Tensor mxfp8_groupwise_gemm_f32_cuda(
+        ::tyloi::Tensor values,::tyloi::Tensor scales,
+        ::tyloi::Tensor input,int64_t groups) {
     return mxfp8_groupwise_gemm<float>(values,scales,input,groups);
 }
 
-mfq_tensor_backend::Tensor mxfp8_groupwise_small_m_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor x,
+::tyloi::Tensor mxfp8_groupwise_small_m_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor x,
         int64_t groups) {
     validate_mxfp8(values, scales);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 3,
                 "MXFP8 groupwise activation must be contiguous CUDA fp16 rank-3");
     TYLOINFER_RUNTIME_CHECK(groups > 0 && x.size(1) == groups &&
@@ -655,7 +655,7 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_small_m_cuda(
     const int64_t outputs_per_group = values.size(0) / groups;
     TYLOINFER_RUNTIME_CHECK(outputs_per_group % 32 == 0,
                 "MXFP8 groupwise outputs per group must be divisible by 32");
-    auto y = mfq_tensor_backend::empty({x.size(0), values.size(0)}, x.options());
+    auto y = ::tyloi::cuda::empty({x.size(0), values.size(0)}, x.options());
     const cudaStream_t stream = mfq_current_cuda_stream();
 #define TYLOINFER_LAUNCH_GROUPED_MXFP8(TILE) \
     launch_mxfp8_small_m<TILE, __half>( \
@@ -674,13 +674,13 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_small_m_cuda(
     return y;
 }
 
-mfq_tensor_backend::Tensor mxfp8_groupwise_small_m_f32_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor x,
+::tyloi::Tensor mxfp8_groupwise_small_m_f32_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor x,
         int64_t groups) {
     validate_mxfp8(values, scales);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                     x.is_contiguous() && x.dim() == 3 &&
                     groups > 0 && x.size(1) == groups &&
                     values.size(0) % groups == 0 &&
@@ -691,9 +691,9 @@ mfq_tensor_backend::Tensor mxfp8_groupwise_small_m_f32_cuda(
     const int64_t outputs_per_group = values.size(0) / groups;
     TYLOINFER_RUNTIME_CHECK(outputs_per_group % 32 == 0,
                 "MXFP8 groupwise outputs per group must be divisible by 32");
-    auto y = mfq_tensor_backend::empty(
+    auto y = ::tyloi::cuda::empty(
         {x.size(0), values.size(0)},
-        x.options().dtype(mfq_tensor_backend::kFloat32));
+        x.options().dtype(::tyloi::kFloat32));
     const cudaStream_t stream = mfq_current_cuda_stream();
 #define TYLOINFER_LAUNCH_GROUPED_MXFP8_F32(TILE) \
     launch_mxfp8_small_m<TILE, float>( \
@@ -824,12 +824,12 @@ __global__ void __launch_bounds__(256) mxfp4_matmul_f16_kernel(
 }
 
 void validate_mxfp4_dense(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales) {
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales) {
     TYLOINFER_RUNTIME_CHECK(values.is_cuda() && scales.is_cuda(),
                 "MXFP4 values and scales must be CUDA tensors");
-    TYLOINFER_RUNTIME_CHECK(values.scalar_type() == mfq_tensor_backend::kUInt8 &&
-                    scales.scalar_type() == mfq_tensor_backend::kUInt8,
+    TYLOINFER_RUNTIME_CHECK(values.scalar_type() == ::tyloi::kUInt8 &&
+                    scales.scalar_type() == ::tyloi::kUInt8,
                 "MXFP4 values and scales must be uint8");
     TYLOINFER_RUNTIME_CHECK(values.is_contiguous() && scales.is_contiguous(),
                 "MXFP4 values and scales must be contiguous");
@@ -1020,12 +1020,12 @@ __global__ void __launch_bounds__(128) mxfp4_moe_grouped_tensor_kernel(
 }
 
 void validate_mxfp4_moe(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & input,
-        const mfq_tensor_backend::Tensor & ids,
-        const mfq_tensor_backend::Tensor & expert_local,
-        const mfq_tensor_backend::Tensor & output,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & input,
+        const ::tyloi::Tensor & ids,
+        const ::tyloi::Tensor & expert_local,
+        const ::tyloi::Tensor & output,
         int64_t global_experts,
         int64_t pool_experts,
         int64_t out_per_expert,
@@ -1033,12 +1033,12 @@ void validate_mxfp4_moe(
     TYLOINFER_RUNTIME_CHECK(values.is_cuda() && scales.is_cuda() && input.is_cuda() &&
                     ids.is_cuda() && expert_local.is_cuda() && output.is_cuda(),
                 "MXFP4 routed tensors must be CUDA tensors");
-    TYLOINFER_RUNTIME_CHECK(values.scalar_type() == mfq_tensor_backend::kUInt8 &&
-                    scales.scalar_type() == mfq_tensor_backend::kUInt8 &&
-                    input.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                    ids.scalar_type() == mfq_tensor_backend::kInt32 &&
-                    expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
-                    output.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(values.scalar_type() == ::tyloi::kUInt8 &&
+                    scales.scalar_type() == ::tyloi::kUInt8 &&
+                    input.scalar_type() == ::tyloi::kFloat16 &&
+                    ids.scalar_type() == ::tyloi::kInt32 &&
+                    expert_local.scalar_type() == ::tyloi::kInt32 &&
+                    output.scalar_type() == ::tyloi::kFloat16,
                 "MXFP4 routed tensor dtypes are invalid");
     TYLOINFER_RUNTIME_CHECK(values.is_contiguous() && scales.is_contiguous() &&
                     input.is_contiguous() && ids.is_contiguous() &&
@@ -1048,13 +1048,13 @@ void validate_mxfp4_moe(
                     values.dim() == 2 &&
                     values.size(0) == pool_experts * out_per_expert &&
                     values.size(1) == neuron_len / 2 &&
-                    scales.sizes() == mfq_tensor_backend::IntArrayRef(
+                    scales.sizes() == ::tyloi::IntArrayRef(
                         {pool_experts * out_per_expert, neuron_len / 32}),
                 "MXFP4 routed weight geometry mismatch");
     TYLOINFER_RUNTIME_CHECK((input.dim() == 2 || input.dim() == 3) &&
                     input.size(-1) == neuron_len && ids.dim() == 2 &&
                     input.size(0) == ids.size(0) &&
-                    output.sizes() == mfq_tensor_backend::IntArrayRef(
+                    output.sizes() == ::tyloi::IntArrayRef(
                         {ids.size(0), ids.size(1), out_per_expert}) &&
                     expert_local.numel() == global_experts,
                 "MXFP4 routed activation/route geometry mismatch");
@@ -1062,14 +1062,14 @@ void validate_mxfp4_moe(
 
 } // namespace
 
-mfq_tensor_backend::Tensor mxfp4_dequant_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales) {
+::tyloi::Tensor mxfp4_dequant_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales) {
     validate_mxfp4_dense(values, scales);
     const int outputs = static_cast<int>(values.size(0));
     const int width = static_cast<int>(values.size(1) * 2);
-    auto dense = mfq_tensor_backend::empty(
-        {outputs, width}, values.options().dtype(mfq_tensor_backend::kFloat16));
+    auto dense = ::tyloi::cuda::empty(
+        {outputs, width}, values.options().dtype(::tyloi::kFloat16));
     const std::size_t count = static_cast<std::size_t>(outputs) * width;
     constexpr int threads = 256;
     const int blocks = static_cast<int>((count + threads - 1) / threads);
@@ -1083,13 +1083,13 @@ mfq_tensor_backend::Tensor mxfp4_dequant_cuda(
     return dense;
 }
 
-mfq_tensor_backend::Tensor mxfp4_embedding_lookup_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor token_ids) {
+::tyloi::Tensor mxfp4_embedding_lookup_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor token_ids) {
     validate_mxfp4_dense(values, scales);
     TYLOINFER_RUNTIME_CHECK(token_ids.is_cuda() && token_ids.is_contiguous() &&
-                    token_ids.scalar_type() == mfq_tensor_backend::kInt64 &&
+                    token_ids.scalar_type() == ::tyloi::kInt64 &&
                     token_ids.get_device() == values.get_device() &&
                     token_ids.numel() <= std::numeric_limits<int>::max(),
                 "MXFP4 embedding ids must be contiguous CUDA int64 on the weight device");
@@ -1098,7 +1098,7 @@ mfq_tensor_backend::Tensor mxfp4_embedding_lookup_cuda(
     const int width = static_cast<int>(values.size(1) * 2);
     auto shape = token_ids.sizes().vec();
     shape.push_back(width);
-    auto output = mfq_tensor_backend::empty(shape, values.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty(shape, values.options().dtype(::tyloi::kFloat16));
     constexpr int threads = 256;
     const int64_t total = static_cast<int64_t>(count) * width;
     const int blocks = static_cast<int>(std::min<int64_t>(
@@ -1115,12 +1115,12 @@ mfq_tensor_backend::Tensor mxfp4_embedding_lookup_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor mxfp4_matmul_f16_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor input) {
+::tyloi::Tensor mxfp4_matmul_f16_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor input) {
     validate_mxfp4_dense(values, scales);
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
                     input.is_contiguous() && input.dim() == 2 &&
                     input.size(0) > 0 &&
                     input.size(0) <= std::numeric_limits<int>::max() &&
@@ -1129,7 +1129,7 @@ mfq_tensor_backend::Tensor mxfp4_matmul_f16_cuda(
     const int rows = static_cast<int>(input.size(0));
     const int outputs = static_cast<int>(values.size(0));
     const int width = static_cast<int>(input.size(1));
-    auto result = mfq_tensor_backend::empty({rows, outputs}, input.options());
+    auto result = ::tyloi::cuda::empty({rows, outputs}, input.options());
     constexpr int kRowsPerTile = 8;
     constexpr int kOutputsPerTile = 8;
     const int row_tiles = (rows + kRowsPerTile - 1) / kRowsPerTile;
@@ -1149,21 +1149,21 @@ mfq_tensor_backend::Tensor mxfp4_matmul_f16_cuda(
     return result;
 }
 
-mfq_tensor_backend::Tensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor input,
-        mfq_tensor_backend::Tensor ids,
-        mfq_tensor_backend::Tensor expert_local,
+::tyloi::Tensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor input,
+        ::tyloi::Tensor ids,
+        ::tyloi::Tensor expert_local,
         int64_t global_experts,
         int64_t pool_experts,
         int64_t out_per_expert,
         int64_t neuron_len,
-        mfq_tensor_backend::Tensor output,
-        mfq_tensor_backend::Tensor ids_dst,
-        mfq_tensor_backend::Tensor expert_bounds,
-        mfq_tensor_backend::Tensor tile_bounds,
-        mfq_tensor_backend::Tensor tile_experts) {
+        ::tyloi::Tensor output,
+        ::tyloi::Tensor ids_dst,
+        ::tyloi::Tensor expert_bounds,
+        ::tyloi::Tensor tile_bounds,
+        ::tyloi::Tensor tile_experts) {
     validate_mxfp4_moe(
         values, scales, input, ids, expert_local, output,
         global_experts, pool_experts, out_per_expert, neuron_len);
@@ -1177,9 +1177,9 @@ mfq_tensor_backend::Tensor mxfp4_moe_grouped_matmul_pool_f16_cuda(
     if (ids_dst.numel() == ids.numel()) {
         TYLOINFER_RUNTIME_CHECK(expert_bounds.is_cuda() && tile_bounds.is_cuda() &&
                         tile_experts.is_cuda() &&
-                        expert_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
-                        tile_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
-                        tile_experts.scalar_type() == mfq_tensor_backend::kInt32 &&
+                        expert_bounds.scalar_type() == ::tyloi::kInt32 &&
+                        tile_bounds.scalar_type() == ::tyloi::kInt32 &&
+                        tile_experts.scalar_type() == ::tyloi::kInt32 &&
                         expert_bounds.is_contiguous() &&
                         tile_bounds.is_contiguous() && tile_experts.is_contiguous() &&
                         expert_bounds.numel() >= global_experts + 1 &&
@@ -1332,10 +1332,10 @@ __global__ void __launch_bounds__(256) mxfp8_backward_mma_kernel(
 
 template <int Rows, int Columns>
 void launch_mxfp8_backward_mma(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int rows,
         int outputs,
         int width,
@@ -1415,19 +1415,19 @@ __global__ void __launch_bounds__(32) mxfp4_backward_vec4_partial_kernel(
 
 template <int Rows>
 void launch_mxfp4_backward_vec4_small_m(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     constexpr int kOutputTile = 32;
     const int output_groups = (outputs + kOutputTile - 1) / kOutputTile;
-    mfq_tensor_backend::Tensor partials = mfq_tensor_backend::empty(
+    ::tyloi::Tensor partials = ::tyloi::cuda::empty(
         {output_groups, rows, width},
-        values.options().dtype(mfq_tensor_backend::kFloat32));
+        values.options().dtype(::tyloi::kFloat32));
     const dim3 partial_grid(
         static_cast<unsigned>((width + 127) / 128),
         static_cast<unsigned>(output_groups));
@@ -1558,10 +1558,10 @@ mxfp8_backward_block_reduce_kernel(
 
 template <int Rows>
 void launch_mxfp8_backward_block_reduce(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int rows,
         int outputs,
         int width,
@@ -1590,18 +1590,18 @@ void launch_mxfp8_backward_block_reduce(
 
 template <int Rows>
 void launch_mxfp8_backward_scalar_small_m(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     const int output_groups = (outputs + 127) / 128;
-    mfq_tensor_backend::Tensor partials = mfq_tensor_backend::empty(
+    ::tyloi::Tensor partials = ::tyloi::cuda::empty(
         {output_groups, rows, width},
-        values.options().dtype(mfq_tensor_backend::kFloat32));
+        values.options().dtype(::tyloi::kFloat32));
     const dim3 partial_grid(
         static_cast<unsigned>((width + 31) / 32),
         static_cast<unsigned>(output_groups));
@@ -1684,18 +1684,18 @@ __global__ void __launch_bounds__(32) mxfp8_backward_vec4_partial_kernel(
 
 template <int Rows>
 void launch_mxfp8_backward_vec4_small_m(
-        const mfq_tensor_backend::Tensor & values,
-        const mfq_tensor_backend::Tensor & scales,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & values,
+        const ::tyloi::Tensor & scales,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     const int output_groups = (outputs + 31) / 32;
-    mfq_tensor_backend::Tensor partials = mfq_tensor_backend::empty(
+    ::tyloi::Tensor partials = ::tyloi::cuda::empty(
         {output_groups, rows, width},
-        values.options().dtype(mfq_tensor_backend::kFloat32));
+        values.options().dtype(::tyloi::kFloat32));
     const dim3 partial_grid(
         static_cast<unsigned>((width + 127) / 128),
         static_cast<unsigned>(output_groups));
@@ -1715,10 +1715,10 @@ void launch_mxfp8_backward_vec4_small_m(
 #endif
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-mfq_tensor_backend::Tensor mx_backward_input_cuda(
-        mfq_tensor_backend::Tensor values,
-        mfq_tensor_backend::Tensor scales,
-        mfq_tensor_backend::Tensor output_gradient,
+::tyloi::Tensor mx_backward_input_cuda(
+        ::tyloi::Tensor values,
+        ::tyloi::Tensor scales,
+        ::tyloi::Tensor output_gradient,
         bool mxfp4) {
     if (mxfp4) {
         validate_mxfp4_dense(values, scales);
@@ -1735,14 +1735,14 @@ mfq_tensor_backend::Tensor mx_backward_input_cuda(
         "MX backward tensors must share one CUDA device");
     const auto dtype = output_gradient.scalar_type();
     TYLOINFER_RUNTIME_CHECK(
-        dtype == mfq_tensor_backend::kFloat16 ||
-        dtype == mfq_tensor_backend::kFloat32 ||
-        dtype == mfq_tensor_backend::kBFloat16,
+        dtype == ::tyloi::kFloat16 ||
+        dtype == ::tyloi::kFloat32 ||
+        dtype == ::tyloi::kBFloat16,
         "MX backward output gradient must be fp16, bf16, or fp32");
     const int rows = static_cast<int>(output_gradient.size(0));
     const int outputs = static_cast<int>(values.size(0));
     const int width = static_cast<int>(mxfp4 ? values.size(1) * 2 : values.size(1));
-    auto result = mfq_tensor_backend::empty({rows, width}, output_gradient.options());
+    auto result = ::tyloi::cuda::empty({rows, width}, output_gradient.options());
     const int64_t total = static_cast<int64_t>(rows) * width;
     if (total == 0) {
         return result;
@@ -1752,7 +1752,7 @@ mfq_tensor_backend::Tensor mx_backward_input_cuda(
     const int blocks = static_cast<int>(std::min<int64_t>(
         (total + threads - 1) / threads, 65535));
     const cudaStream_t stream = mfq_current_cuda_stream();
-    if (mxfp4 && dtype == mfq_tensor_backend::kFloat16 && rows <= 8) {
+    if (mxfp4 && dtype == ::tyloi::kFloat16 && rows <= 8) {
         if (rows == 1) {
             launch_mxfp4_backward_vec4_small_m<1>(
                 values, scales, output_gradient, result,
@@ -1773,7 +1773,7 @@ mfq_tensor_backend::Tensor mx_backward_input_cuda(
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
         return result;
     }
-    if (!mxfp4 && mxfp8_column_shift(values,scales)==7 && mxfp8_row_shift(values,scales)==7 && dtype == mfq_tensor_backend::kFloat16 && rows <= 8) {
+    if (!mxfp4 && mxfp8_column_shift(values,scales)==7 && mxfp8_row_shift(values,scales)==7 && dtype == ::tyloi::kFloat16 && rows <= 8) {
         const int output_groups = (outputs + 127) / 128;
         if (rows == 1 && output_groups <= 8) {
             launch_mxfp8_backward_block_reduce<1>(

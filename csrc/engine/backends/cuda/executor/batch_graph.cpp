@@ -4,7 +4,7 @@
 
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 BatchGraph::BatchGraph() : stream(mfq_get_stream_from_pool(false)) {}
 
@@ -15,7 +15,7 @@ void BatchGraph::ensure_compute_streams(const Collectives& collectives) {
 }
 
 std::vector<MfqCudaStream>
-BatchGraph::participant_streams(const mfq::cuda::Collectives& collectives) const {
+BatchGraph::participant_streams(const tyloi::cuda::Collectives& collectives) const {
     return cuda_graph_participant_streams(compute_streams, collectives);
 }
 
@@ -37,9 +37,9 @@ void BatchGraph::invalidate() {
     if (graph)
         graph->reset();
     graph.reset();
-    static_next = mfq_tensor_backend::Tensor();
+    static_next = ::tyloi::Tensor();
     state_addresses.clear();
     valid = false;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

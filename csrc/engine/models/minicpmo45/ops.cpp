@@ -11,16 +11,15 @@
 #include <algorithm>
 #include <iostream>
 
-namespace mfq::cuda::minicpmo45::text {
-namespace tb = mfq_tensor_backend;
+namespace tyloi::cuda::minicpmo45::text {
 
-Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition, int64_t context) {
+Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition, int64_t context) {
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = mfq::models::graph(*model.source);
+    model.graph = tyloi::models::graph(*model.source);
     model.plan = cuda_model_plan(model.graph);
-    mfq::models::require_model(model.graph.backbone == "minicpmo45",
+    tyloi::models::require_model(model.graph.backbone == "minicpmo45",
         "model backbone does not match the requested causal model");
     auto& config = model.config;
     config = Config::from_json(definition);
@@ -48,10 +47,10 @@ Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view defi
     metadata.layer_types = config.layer_types;
     metadata.rope_interleaved = true;
     metadata.decode_graph_double_warmup = true;
-    mfq::models::require_model(config.num_hidden_layers == model.graph.topology.text_layers,
+    tyloi::models::require_model(config.num_hidden_layers == model.graph.topology.text_layers,
         "model graph/config text-layer topology mismatch");
     if (context > 0) {
-        mfq::models::require_model(context <= model.metadata.max_position_embeddings,
+        tyloi::models::require_model(context <= model.metadata.max_position_embeddings,
             "--ctx-size exceeds max_position_embeddings");
         config.max_position_embeddings = model.metadata.max_position_embeddings = context;
     }
@@ -69,15 +68,15 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config, int
     TransformerWeightLoader loader{weights};
     loader.preserve_projection_boundaries = true;
     const auto prefix = "model.block." + std::to_string(index) + ".";
-    mfq::models::load_attention_mixer(layer.attention, loader, config, index, prefix, 0.0);
+    tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix, 0.0);
     layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-    layer.ffn = mfq::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
+    layer.ffn = tyloi::models::load_dense_ffn<Ffn>(loader, config, prefix + "mlp.");
     return layer;
 }
 
 void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
           int gpu_layers, bool expert_parallel, bool load_layers, bool load_input_output,
-          const mfq::ops::YarnScaling& yarn) {
+          const tyloi::ops::YarnScaling& yarn) {
     const auto& config = model.config;
     if (expert_parallel)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
@@ -89,16 +88,16 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     if (model.plan.vision == CudaVisionAdapter::grid_vit && cpu_layers > 0)
         throw std::runtime_error("CUDA grid-Vision currently requires GPU-resident text layers");
     MfqCudaGuard guard(placement.primary_device());
-    const auto make_rope = [&](tb::Device device) {
+    const auto make_rope = [&](::tyloi::Device device) {
         return RopeCache(config.max_position_embeddings, config.rotary_dim, config.rope_base,
                          0, -1, device, true, yarn);
     };
-    model.rope = make_rope(tb::Device(tb::kCUDA, placement.primary_device()));
-    if (cpu_layers > 0) model.cpu_rope = make_rope(tb::Device(tb::kCPU));
+    model.rope = make_rope(::tyloi::Device(::tyloi::kCUDA, placement.primary_device()));
+    if (cpu_layers > 0) model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
     if (placement.enabled())
         for (int device : placement.devices) {
             MfqCudaGuard device_guard(device);
-            model.device_ropes.emplace(device, make_rope(tb::Device(tb::kCUDA, device)));
+            model.device_ropes.emplace(device, make_rope(::tyloi::Device(::tyloi::kCUDA, device)));
         }
     if (load_input_output) {
         const bool separate = !config.tie_word_embeddings && weights.has("model.output.weight");
@@ -138,7 +137,7 @@ void State::preallocate() {
         if (l.cpu || layers[i].defined()) continue;
         MfqCudaGuard guard(l.device);
         layers[i] = KVCache(1, l.heads, l.capacity, l.head_dim, l.sliding,
-                            tb::Device(tb::kCUDA, l.device), tb::kBFloat16, l.quantization);
+                            ::tyloi::Device(::tyloi::kCUDA, l.device), ::tyloi::kBFloat16, l.quantization);
     }
 }
 void State::reset(int64_t next_batch) {
@@ -195,7 +194,7 @@ void State::restore_text_session_state(const TextSessionState& state) {
         throw CudaSessionStateError("full-attention text session state is incompatible");
     for (size_t i = 0; i < layers.size(); ++i) {
         MfqCudaGuard guard(layout_[i].device);
-        restore_kv(layers[i], (*saved)[i], layout_[i].head_dim, tb::kBFloat16, layout_[i].quantization);
+        restore_kv(layers[i], (*saved)[i], layout_[i].head_dim, ::tyloi::kBFloat16, layout_[i].quantization);
     }
     cache_pos = state.cache_pos;
     decode_position_delta = state.decode_position_delta;
@@ -204,11 +203,11 @@ void State::restore_text_session_state(const TextSessionState& state) {
 
 namespace {
 Tensor token_ids(Collectives& copies, int primary, Tensor ids) {
-    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
         "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
-    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0, "token IDs must not be empty");
-    return copies.copy(ids.to(tb::kInt64), primary).contiguous();
+    tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0, "token IDs must not be empty");
+    return copies.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 }
 
@@ -218,7 +217,7 @@ Tensor embed(const Model& model, Executor& executor, Collectives& copies, int pr
     Inputs inputs;
     inputs.values = {token_ids(copies, primary, std::move(ids))};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
-        .to(tb::kBFloat16).contiguous();
+        .to(::tyloi::kBFloat16).contiguous();
 }
 Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t batch, int64_t tokens) {
     return executor.profiler().measure("model.output_norm", [&] {
@@ -234,7 +233,7 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool,
     Inputs inputs;
     inputs.values = {std::move(hidden)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
-        .to(tb::kBFloat16).contiguous();
+        .to(::tyloi::kBFloat16).contiguous();
 }
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& copies,
                const Executor::Mode& mode, Input input) {
@@ -243,34 +242,34 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     auto hidden = input.embeddings ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, copies, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
-    mfq::models::require_model(hidden.dim() == 3 && hidden.size(0) == B && hidden.size(1) == T &&
+    tyloi::models::require_model(hidden.dim() == 3 && hidden.size(0) == B && hidden.size(1) == T &&
         hidden.size(2) == model.metadata.hidden_size,
         "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    mfq::models::require_model(input.confirmed == 0, "unsupported speculative backbone geometry");
+    tyloi::models::require_model(input.confirmed == 0, "unsupported speculative backbone geometry");
     if (state.cache_pos == 0) state.reset(B);
-    const auto options = tb::TensorOptions().dtype(tb::kInt64).device(tb::Device(tb::kCUDA, mode.primary));
+    const auto options = ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::Device(::tyloi::kCUDA, mode.primary));
     auto physical = input.cache_positions
-        ? copies.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
-        : tb::arange(state.cache_pos, state.cache_pos + T, options);
+        ? copies.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto positions = input.positions
-        ? copies.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
+        ? copies.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta ? physical + state.decode_position_delta : physical);
-    mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
+    tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
         (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
         "cache_positions must have shape [tokens] or [batch,tokens]");
-    mfq::models::require_model((positions.dim() == 1 && positions.size(0) == T) ||
+    tyloi::models::require_model((positions.dim() == 1 && positions.size(0) == T) ||
         (positions.dim() == 2 && positions.size(0) == B && positions.size(1) == T),
         "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.attention_mask) {
         const auto mask = Tensor(*input.attention_mask);
-        mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
+        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
             "attention_mask must cover [batch,cached_plus_current_tokens]");
         if ((T == 1 || state.cache_pos == 0) && mask.eq(1).all().item<bool>())
             input.attention_mask.reset();
     }
-    hidden = copies.copy(std::move(hidden), mode.primary).to(tb::kBFloat16).contiguous();
+    hidden = copies.copy(std::move(hidden), mode.primary).to(::tyloi::kBFloat16).contiguous();
     const auto trace = [&] {
-        if (input.trace) input.trace->push_back(copies.copy(hidden, mode.primary).to(tb::kFloat32).clone());
+        if (input.trace) input.trace->push_back(copies.copy(hidden, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace();
     for (size_t i = 0; i < model.layers.size(); ++i) {
@@ -278,7 +277,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
         const auto& attention = layer.attention;
         MfqCudaGuard layer_guard(layer.device);
         const auto local = [&](Tensor value) {
-            return layer.cpu ? value.to(tb::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
+            return layer.cpu ? value.to(::tyloi::kCPU).contiguous() : copies.copy(value, layer.device).contiguous();
         };
         hidden = local(std::move(hidden));
         AttentionStep step{local(positions), {}, local(physical), {}, state.cache_pos,
@@ -291,7 +290,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
                                   : attention.max_position_embeddings);
         if (!cache.defined())
             cache = KVCache(B, attention.kv_heads, capacity, attention.attention_head_dim,
-                            attention.sliding, hidden.device(), tb::kBFloat16, attention.kv_quantization);
+                            attention.sliding, hidden.device(), ::tyloi::kBFloat16, attention.kv_quantization);
         cache.quantization = attention.kv_quantization;
         const AttentionKvView kv = cache.view();
         const RopeCache* rope = layer.cpu ? &model.cpu_rope : &model.rope;
@@ -317,4 +316,4 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     if (input.raw_hidden) *input.raw_hidden = std::move(hidden);
     return finalized;
 }
-} // namespace mfq::cuda::minicpmo45::text
+} // namespace tyloi::cuda::minicpmo45::text

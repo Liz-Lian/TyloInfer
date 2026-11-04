@@ -7,7 +7,7 @@
 #include <memory>
 #include <unordered_map>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 class MfqSource final : public ModelSource {
 public:
@@ -56,4 +56,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

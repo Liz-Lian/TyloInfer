@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class TailRope {
 public:
@@ -13,14 +13,14 @@ public:
              double compress_rope_base = 0.0, int64_t original_positions = 0,
              double rope_factor = 1.0, double beta_fast = 32.0, double beta_slow = 1.0);
 
-    mfq_tensor_backend::Tensor forward(mfq_tensor_backend::Tensor input,
-                                       mfq_tensor_backend::Tensor positions,
+    ::tyloi::Tensor forward(::tyloi::Tensor input,
+                                       ::tyloi::Tensor positions,
                                        bool inverse = false) const;
-    const mfq_tensor_backend::Tensor &cos() const { return cos_; }
-    const mfq_tensor_backend::Tensor &sin() const { return sin_; }
+    const ::tyloi::Tensor &cos() const { return cos_; }
+    const ::tyloi::Tensor &sin() const { return sin_; }
 
 private:
-    mfq_tensor_backend::Tensor cos_, sin_, negative_sin_;
+    ::tyloi::Tensor cos_, sin_, negative_sin_;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

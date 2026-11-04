@@ -29,13 +29,13 @@ __global__ void clipped_silu_mul_kernel(const half* gate,const half* up,half* ou
     }
 }
 
-mfq_tensor_backend::Tensor clipped_silu_mul_cuda(mfq_tensor_backend::Tensor gate,
-        mfq_tensor_backend::Tensor up,double limit) {
+::tyloi::Tensor clipped_silu_mul_cuda(::tyloi::Tensor gate,
+        ::tyloi::Tensor up,double limit) {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && up.device()==gate.device() &&
-        gate.scalar_type()==mfq_tensor_backend::kFloat16 && up.scalar_type()==mfq_tensor_backend::kFloat16 &&
+        gate.scalar_type()==::tyloi::kFloat16 && up.scalar_type()==::tyloi::kFloat16 &&
         gate.sizes()==up.sizes() && gate.is_contiguous() && up.is_contiguous() && limit>0,
         "clipped SwiGLU requires matching contiguous CUDA FP16 tensors and a positive limit");
-    auto output=mfq_tensor_backend::empty(gate.sizes(),gate.options());
+    auto output=::tyloi::cuda::empty(gate.sizes(),gate.options());
     if(gate.numel())clipped_silu_mul_kernel<<<unsigned((gate.numel()+255)/256),256,0,mfq_current_cuda_stream()>>>(
         reinterpret_cast<const half*>(gate.data_ptr<mfq_half>()),reinterpret_cast<const half*>(up.data_ptr<mfq_half>()),
         reinterpret_cast<half*>(output.data_ptr<mfq_half>()),gate.numel(),float(limit));
@@ -128,35 +128,35 @@ __global__ void silu_mul_bf16_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor silu_mul_cuda(mfq_tensor_backend::Tensor gate, mfq_tensor_backend::Tensor up)
+::tyloi::Tensor silu_mul_cuda(::tyloi::Tensor gate, ::tyloi::Tensor up)
 {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.is_contiguous(), "silu_mul: gate must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(up.is_cuda() && up.is_contiguous(), "silu_mul: up must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(gate.sizes() == up.sizes(), "silu_mul: gate/up shapes must match");
     TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == up.scalar_type(), "silu_mul: gate/up dtype must match");
     TYLOINFER_RUNTIME_CHECK(
-        gate.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        gate.scalar_type() == mfq_tensor_backend::kFloat16 ||
-        gate.scalar_type() == mfq_tensor_backend::kBFloat16,
+        gate.scalar_type() == ::tyloi::kFloat32 ||
+        gate.scalar_type() == ::tyloi::kFloat16 ||
+        gate.scalar_type() == ::tyloi::kBFloat16,
         "silu_mul: dtype must be f32, f16, or bf16");
 
-    auto out = mfq_tensor_backend::empty_like(gate);
-    const auto dtype = gate.scalar_type() == mfq_tensor_backend::kFloat32
-        ? mfq::cuda::ScalarType::float32
-        : gate.scalar_type() == mfq_tensor_backend::kFloat16
-            ? mfq::cuda::ScalarType::float16
-            : mfq::cuda::ScalarType::bfloat16;
+    auto out = ::tyloi::cuda::empty_like(gate);
+    const auto dtype = gate.scalar_type() == ::tyloi::kFloat32
+        ? ::tyloi::ScalarType::float32
+        : gate.scalar_type() == ::tyloi::kFloat16
+            ? ::tyloi::ScalarType::float16
+            : ::tyloi::ScalarType::bfloat16;
     const auto shape = gate.sizes().vec();
-    mfq::cuda::kernels::silu_mul(
-        mfq::cuda::make_contiguous_view(
+    tyloi::cuda::kernels::silu_mul(
+        ::tyloi::make_contiguous_view(
             gate.data_ptr(), shape, dtype,
-            mfq::cuda::Device{mfq::cuda::DeviceType::cuda, gate.get_device()}),
-        mfq::cuda::make_contiguous_view(
+            ::tyloi::Device{::tyloi::DeviceType::cuda, gate.get_device()}),
+        ::tyloi::make_contiguous_view(
             up.data_ptr(), shape, dtype,
-            mfq::cuda::Device{mfq::cuda::DeviceType::cuda, up.get_device()}),
-        mfq::cuda::make_contiguous_view(
+            ::tyloi::Device{::tyloi::DeviceType::cuda, up.get_device()}),
+        ::tyloi::make_contiguous_view(
             out.data_ptr(), shape, dtype,
-            mfq::cuda::Device{mfq::cuda::DeviceType::cuda, out.get_device()}),
+            ::tyloi::Device{::tyloi::DeviceType::cuda, out.get_device()}),
         mfq_current_cuda_stream());
     return out;
 }
@@ -190,30 +190,30 @@ __global__ void gelu_mul_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor gelu_mul_cuda(mfq_tensor_backend::Tensor gate, mfq_tensor_backend::Tensor up)
+::tyloi::Tensor gelu_mul_cuda(::tyloi::Tensor gate, ::tyloi::Tensor up)
 {
     TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.is_contiguous(), "gelu_mul: gate must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(up.is_cuda() && up.is_contiguous(), "gelu_mul: up must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(gate.sizes() == up.sizes(), "gelu_mul: gate/up shapes must match");
     TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == up.scalar_type(), "gelu_mul: gate/up dtype must match");
-    TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == mfq_tensor_backend::kFloat32 || gate.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(gate.scalar_type() == ::tyloi::kFloat32 || gate.scalar_type() == ::tyloi::kFloat16,
                 "gelu_mul: dtype must be f32 or f16");
 
-    auto out = mfq_tensor_backend::empty_like(gate);
-    const auto dtype = gate.scalar_type() == mfq_tensor_backend::kFloat32
-        ? mfq::cuda::ScalarType::float32
-        : mfq::cuda::ScalarType::float16;
+    auto out = ::tyloi::cuda::empty_like(gate);
+    const auto dtype = gate.scalar_type() == ::tyloi::kFloat32
+        ? ::tyloi::ScalarType::float32
+        : ::tyloi::ScalarType::float16;
     const auto shape = gate.sizes().vec();
-    mfq::cuda::kernels::gelu_mul(
-        mfq::cuda::make_contiguous_view(
+    tyloi::cuda::kernels::gelu_mul(
+        ::tyloi::make_contiguous_view(
             gate.data_ptr(), shape, dtype,
-            mfq::cuda::Device{mfq::cuda::DeviceType::cuda, gate.get_device()}),
-        mfq::cuda::make_contiguous_view(
+            ::tyloi::Device{::tyloi::DeviceType::cuda, gate.get_device()}),
+        ::tyloi::make_contiguous_view(
             up.data_ptr(), shape, dtype,
-            mfq::cuda::Device{mfq::cuda::DeviceType::cuda, up.get_device()}),
-        mfq::cuda::make_contiguous_view(
+            ::tyloi::Device{::tyloi::DeviceType::cuda, up.get_device()}),
+        ::tyloi::make_contiguous_view(
             out.data_ptr(), shape, dtype,
-            mfq::cuda::Device{mfq::cuda::DeviceType::cuda, out.get_device()}),
+            ::tyloi::Device{::tyloi::DeviceType::cuda, out.get_device()}),
         mfq_current_cuda_stream());
     return out;
 }
@@ -233,25 +233,25 @@ __global__ void relu_squared_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor relu_squared_cuda(mfq_tensor_backend::Tensor input)
+::tyloi::Tensor relu_squared_cuda(::tyloi::Tensor input)
 {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous(),
         "relu_squared: input must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(
-        input.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        input.scalar_type() == mfq_tensor_backend::kFloat16 ||
-        input.scalar_type() == mfq_tensor_backend::kBFloat16,
+        input.scalar_type() == ::tyloi::kFloat32 ||
+        input.scalar_type() == ::tyloi::kFloat16 ||
+        input.scalar_type() == ::tyloi::kBFloat16,
         "relu_squared: dtype must be f32, f16, or bf16");
-    auto out = mfq_tensor_backend::empty_like(input);
+    auto out = ::tyloi::cuda::empty_like(input);
     const size_t elements = (size_t)input.numel();
     if (elements == 0) return out;
     constexpr int block = 256;
     const int grid = (int)std::min<size_t>(4096, (elements + block - 1) / block);
     cudaStream_t stream = mfq_current_cuda_stream();
-    if (input.scalar_type() == mfq_tensor_backend::kFloat32) {
+    if (input.scalar_type() == ::tyloi::kFloat32) {
         relu_squared_kernel<float><<<grid, block, 0, stream>>>(
             input.data_ptr<float>(), out.data_ptr<float>(), elements);
-    } else if (input.scalar_type() == mfq_tensor_backend::kFloat16) {
+    } else if (input.scalar_type() == ::tyloi::kFloat16) {
         relu_squared_kernel<__half><<<grid, block, 0, stream>>>(
             reinterpret_cast<const __half*>(input.data_ptr<mfq_half>()),
             reinterpret_cast<__half*>(out.data_ptr<mfq_half>()), elements);
@@ -296,8 +296,8 @@ __global__ void linear_gate_beta_kernel(
     }
 }
 
-std::vector<mfq_tensor_backend::Tensor> linear_gate_beta_cuda(
-    mfq_tensor_backend::Tensor alpha, mfq_tensor_backend::Tensor beta, mfq_tensor_backend::Tensor dt_bias, mfq_tensor_backend::Tensor a_log,
+std::vector<::tyloi::Tensor> linear_gate_beta_cuda(
+    ::tyloi::Tensor alpha, ::tyloi::Tensor beta, ::tyloi::Tensor dt_bias, ::tyloi::Tensor a_log,
     bool stable_softplus)
 {
     TYLOINFER_RUNTIME_CHECK(alpha.is_cuda() && beta.is_cuda(), "linear_gate_beta: alpha/beta must be cuda tensors");
@@ -305,29 +305,29 @@ std::vector<mfq_tensor_backend::Tensor> linear_gate_beta_cuda(
     TYLOINFER_RUNTIME_CHECK(alpha.dim() == 3 && beta.dim() == 3, "linear_gate_beta: alpha/beta must be [B,T,V]");
     TYLOINFER_RUNTIME_CHECK(alpha.sizes() == beta.sizes(), "linear_gate_beta: alpha/beta shape mismatch");
     TYLOINFER_RUNTIME_CHECK(alpha.scalar_type() == beta.scalar_type(), "linear_gate_beta: alpha/beta dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(alpha.scalar_type() == mfq_tensor_backend::kFloat32 || alpha.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(alpha.scalar_type() == ::tyloi::kFloat32 || alpha.scalar_type() == ::tyloi::kFloat16,
                 "linear_gate_beta: alpha/beta dtype must be f32 or f16");
     TYLOINFER_RUNTIME_CHECK(dt_bias.is_contiguous() && a_log.is_contiguous(), "linear_gate_beta: dt_bias/a_log must be contiguous");
-    TYLOINFER_RUNTIME_CHECK(dt_bias.scalar_type() == mfq_tensor_backend::kFloat32 && a_log.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(dt_bias.scalar_type() == ::tyloi::kFloat32 && a_log.scalar_type() == ::tyloi::kFloat32,
                 "linear_gate_beta: dt_bias/a_log must be f32");
     int64_t B = alpha.size(0);
     int64_t T = alpha.size(1);
     int64_t V = alpha.size(2);
     TYLOINFER_RUNTIME_CHECK(dt_bias.numel() == V && a_log.numel() == V, "linear_gate_beta: parameter size mismatch");
 
-    auto opts = mfq_tensor_backend::TensorOptions().device(alpha.device()).dtype(mfq_tensor_backend::kFloat32);
-    auto gate_t = mfq_tensor_backend::empty({B, V, T}, opts);
-    auto beta_t = mfq_tensor_backend::empty({B, V, T}, opts);
-    const auto dtype = alpha.scalar_type() == mfq_tensor_backend::kFloat32
-        ? mfq::cuda::ScalarType::float32
-        : mfq::cuda::ScalarType::float16;
-    const auto device = mfq::cuda::Device{mfq::cuda::DeviceType::cuda, alpha.get_device()};
-    mfq::cuda::TensorView alpha_view;
+    auto opts = ::tyloi::TensorOptions().device(alpha.device()).dtype(::tyloi::kFloat32);
+    auto gate_t = ::tyloi::cuda::empty({B, V, T}, opts);
+    auto beta_t = ::tyloi::cuda::empty({B, V, T}, opts);
+    const auto dtype = alpha.scalar_type() == ::tyloi::kFloat32
+        ? ::tyloi::ScalarType::float32
+        : ::tyloi::ScalarType::float16;
+    const auto device = ::tyloi::Device{::tyloi::DeviceType::cuda, alpha.get_device()};
+    ::tyloi::TensorView alpha_view;
     alpha_view.data = alpha.data_ptr();
     alpha_view.rank = 3;
     alpha_view.scalar_type = dtype;
     alpha_view.device = device;
-    mfq::cuda::TensorView beta_view = alpha_view;
+    ::tyloi::TensorView beta_view = alpha_view;
     beta_view.data = beta.data_ptr();
     for (int index = 0; index < 3; ++index) {
         alpha_view.sizes[index] = alpha.size(index);
@@ -337,23 +337,23 @@ std::vector<mfq_tensor_backend::Tensor> linear_gate_beta_cuda(
     }
     const std::array<std::int64_t, 1> parameter_shape = {V};
     const std::array<std::int64_t, 3> output_shape = {B, V, T};
-    mfq::cuda::kernels::linear_gate_beta(
+    tyloi::cuda::kernels::linear_gate_beta(
         alpha_view,
         beta_view,
-        mfq::cuda::make_contiguous_view(
-            dt_bias.data_ptr(), parameter_shape, mfq::cuda::ScalarType::float32, device),
-        mfq::cuda::make_contiguous_view(
-            a_log.data_ptr(), parameter_shape, mfq::cuda::ScalarType::float32, device),
-        mfq::cuda::make_contiguous_view(
-            gate_t.data_ptr(), output_shape, mfq::cuda::ScalarType::float32, device),
-        mfq::cuda::make_contiguous_view(
-            beta_t.data_ptr(), output_shape, mfq::cuda::ScalarType::float32, device),
+        ::tyloi::make_contiguous_view(
+            dt_bias.data_ptr(), parameter_shape, ::tyloi::ScalarType::float32, device),
+        ::tyloi::make_contiguous_view(
+            a_log.data_ptr(), parameter_shape, ::tyloi::ScalarType::float32, device),
+        ::tyloi::make_contiguous_view(
+            gate_t.data_ptr(), output_shape, ::tyloi::ScalarType::float32, device),
+        ::tyloi::make_contiguous_view(
+            beta_t.data_ptr(), output_shape, ::tyloi::ScalarType::float32, device),
         mfq_current_cuda_stream(), stable_softplus);
     return {gate_t, beta_t};
 }
 
 
-namespace mfq::cuda::kernels {
+namespace tyloi::cuda::kernels {
 
 void silu_mul(
     const TensorView& gate,
@@ -477,4 +477,4 @@ void linear_gate_beta(
     }
 }
 
-}  // namespace mfq::cuda::kernels
+}  // namespace tyloi::cuda::kernels

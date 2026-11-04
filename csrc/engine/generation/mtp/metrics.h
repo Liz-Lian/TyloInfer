@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::engine::mtp {
+namespace tyloi::engine::mtp {
 
 inline constexpr int kMaximumReportedDraftDepth = 7;
 
@@ -36,4 +36,4 @@ void append_generation_metrics(
     std::vector<std::pair<std::string, double>>& metrics,
     const GenerationStats& stats);
 
-} // namespace mfq::engine::mtp
+} // namespace tyloi::engine::mtp

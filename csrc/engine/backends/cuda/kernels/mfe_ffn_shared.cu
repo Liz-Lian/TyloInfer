@@ -6,7 +6,7 @@
 #include "mfe_ffn_shared_short.cuh"
 #include "mfe_ffn_gu_group_quant.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 __global__ void __launch_bounds__(64) shared_prepare_input(const __half* input,int width,
         const MfeInputQuantization* inputs,int count) {
@@ -193,7 +193,7 @@ void mfe_ffn_shared_resident_with_gate(const MfeFfnBatch& b,const MfePrepareShar
 }
 }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 template<int Capacity,bool LowParallelism=false>
 void launch_short_shared(const MfeFfnBatch& b,int first,int groups,bool down,cudaStream_t stream) {

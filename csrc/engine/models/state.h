@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 class State {
 public:
@@ -15,10 +15,10 @@ public:
     virtual std::int64_t position() const noexcept = 0;
     virtual void advance(std::int64_t tokens) noexcept = 0;
     virtual void set_position_delta(std::int64_t delta) noexcept = 0;
-    virtual std::vector<mfq::Tensor> storage() const = 0;
-    virtual std::vector<mfq::Tensor*> graph_state() = 0;
+    virtual std::vector<tyloi::Tensor> storage() const = 0;
+    virtual std::vector<tyloi::Tensor*> graph_state() = 0;
     virtual bool supports_text_session_state() const = 0;
     virtual bool supports_paged_text_session_state() const = 0;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

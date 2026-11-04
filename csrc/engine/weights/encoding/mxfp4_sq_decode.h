@@ -2,7 +2,7 @@
 #include "mxfp4_sq_blob.h"
 #include <cmath>
 
-namespace mfq::sq {
+namespace tyloi::sq {
 // Frozen catalogs shared with the CUDA and Metal wire-format contract.
 inline constexpr std::uint8_t kSq1Palette[64] = {
     15, 6, 14, 7, 13, 7, 15, 5, 15, 7, 11, 6, 14, 3, 12, 6,
@@ -90,4 +90,4 @@ inline void decode_cpu_row(const std::uint8_t* blob, const Layout& layout,
         }
     }
 }
-} // namespace mfq::sq
+} // namespace tyloi::sq

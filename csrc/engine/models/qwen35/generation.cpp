@@ -3,30 +3,30 @@
 #include "engine/generate_impl.h"
 #include "engine/mtp_impl.h"
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 #define TYLOINFER_INSTANTIATE_QWEN35_GENERATION(PREDICTOR) \
 template Generation generate( \
-    mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &, mfq::cuda::Executor*, \
-    mfq::cuda::Collectives&, mfq::cuda::Executor::Mode, CudaProfiler&, \
-    mfq::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>, \
-    const mfq::models::Info &, const mfq::ModelSource*, \
+    tyloi::cuda::qwen35::Model &, tyloi::cuda::qwen35::State &, tyloi::cuda::Executor*, \
+    tyloi::cuda::Collectives&, tyloi::cuda::Executor::Mode, CudaProfiler&, \
+    tyloi::cuda::RoutedCache&, bool&, bool, bool, std::function<void()>, \
+    const tyloi::models::Info &, const tyloi::ModelSource*, \
     DecodeGraphCache &, TextSessionCache &, const CudaRuntimeConfig &, \
-    mfq::engine::InferenceRequest &, mfq::engine::InferenceOutput &, \
-    mfq::engine::mtp::State &, PREDICTOR *, \
-    std::optional<PreparedPrompt>, mfq::engine::Batch*, std::string, \
+    tyloi::engine::InferenceRequest &, tyloi::engine::InferenceOutput &, \
+    tyloi::engine::mtp::State &, PREDICTOR *, \
+    std::optional<PreparedPrompt>, tyloi::engine::Batch*, std::string, \
     std::function<void()>);
 TYLOINFER_INSTANTIATE_QWEN35_GENERATION(MtpModule)
-TYLOINFER_INSTANTIATE_QWEN35_GENERATION(mfq::cuda::qwen35::Mtp)
+TYLOINFER_INSTANTIATE_QWEN35_GENERATION(tyloi::cuda::qwen35::Mtp)
 #undef TYLOINFER_INSTANTIATE_QWEN35_GENERATION
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
-using mfq::engine::Generation;
-using namespace mfq::engine;
+using tyloi::engine::Generation;
+using namespace tyloi::engine;
 
-template Generation run_mtp_generation<mfq::cuda::qwen35::Model, mfq::cuda::qwen35::State>(
-    mfq::cuda::qwen35::Model &, mfq::cuda::qwen35::State &,
-    mfq::cuda::Executor*, mfq::cuda::Collectives&, mfq::cuda::Executor::Mode,
-    mfq::cuda::RoutedCache&, const mfq::models::Info &, const mfq::ModelSource*,
-    MtpModule &, mfq::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
-    const mfq::cuda::PreparedPrompt *, std::size_t, mfq_tensor_backend::Tensor,
-    mfq_tensor_backend::Tensor *, std::size_t, std::function<void()>);
+template Generation run_mtp_generation<tyloi::cuda::qwen35::Model, tyloi::cuda::qwen35::State>(
+    tyloi::cuda::qwen35::Model &, tyloi::cuda::qwen35::State &,
+    tyloi::cuda::Executor*, tyloi::cuda::Collectives&, tyloi::cuda::Executor::Mode,
+    tyloi::cuda::RoutedCache&, const tyloi::models::Info &, const tyloi::ModelSource*,
+    MtpModule &, tyloi::engine::mtp::State &, InferenceRequest &, InferenceOutput &, int64_t,
+    const tyloi::cuda::PreparedPrompt *, std::size_t, ::tyloi::Tensor,
+    ::tyloi::Tensor *, std::size_t, std::function<void()>);

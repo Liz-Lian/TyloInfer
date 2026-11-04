@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq {
+namespace tyloi {
 
 inline void start_moe_cpu_calibration(
     MoeCpuCalibrationState& state,
@@ -49,4 +49,4 @@ inline void reset_moe_cpu_calibration(
     state.elapsed_ns = 0;
 }
 
-} // namespace mfq
+} // namespace tyloi

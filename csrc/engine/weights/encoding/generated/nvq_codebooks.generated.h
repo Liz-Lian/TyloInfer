@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-namespace mfq::nvq_codebooks {
+namespace tyloi::nvq_codebooks {
 
 inline constexpr uint16_t kNvq1LCodebookPacked[2048] = {
     0x0000, 0x0002, 0x0005, 0x0008, 0x000a, 0x0011, 0x0015, 0x0020, 0x0022, 0x0028, 0x002a, 0x0045,
@@ -229,4 +229,4 @@ inline constexpr uint16_t kNvq3CodebookPacked[256] = {
     0x0f40, 0x0f42, 0x0f54, 0x0f98,
 };
 
-}  // namespace mfq::nvq_codebooks
+}  // namespace tyloi::nvq_codebooks

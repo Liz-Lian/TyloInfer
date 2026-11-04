@@ -7,7 +7,7 @@
 #include <string>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 Buffer::Buffer(std::shared_ptr<Context> context, std::size_t bytes)
     : context_(std::move(context)), bytes_(bytes) {
@@ -89,4 +89,4 @@ void HostBuffer::reset() noexcept {
     bytes_ = 0;
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

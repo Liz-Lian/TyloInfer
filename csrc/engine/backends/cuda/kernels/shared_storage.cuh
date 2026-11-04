@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <type_traits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template <typename T, std::size_t Count = 1>
 struct SharedStorage {

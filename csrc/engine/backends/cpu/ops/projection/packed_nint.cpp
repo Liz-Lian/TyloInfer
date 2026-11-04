@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 namespace {
 void validate(const PackedNintView& w) {
     if (w.outputs < 0 || w.width <= 0 || w.group_size <= 0)
@@ -90,4 +90,4 @@ PackedNintRows packed_nint_rows_kernel() noexcept {
 #endif
     return detail::packed_nint_scalar_rows;
 }
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

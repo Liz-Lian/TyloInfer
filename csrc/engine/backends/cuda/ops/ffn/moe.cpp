@@ -13,14 +13,14 @@
 #include <utility>
 void fp8_sq_moe_matmul(
         const Fp8SqWeight & weight,
-        mfq_tensor_backend::Tensor input,
-        mfq_tensor_backend::Tensor expert_ids,
-        mfq_tensor_backend::Tensor expert_local,
+        ::tyloi::Tensor input,
+        ::tyloi::Tensor expert_ids,
+        ::tyloi::Tensor expert_local,
         int n_experts,
         int local_experts,
         int out_per_expert,
         int neuron_len,
-        mfq_tensor_backend::Tensor output) {
+        ::tyloi::Tensor output) {
     if (weight.dtype == "MXFP8-SQ" || weight.dtype == "FP8-128SQ") {
         check_device(weight, input);
         check_device(expert_local, input);
@@ -73,8 +73,8 @@ void MoeScratch::bind(const std::shared_ptr<MixedNvqDispatch>& dispatch) {
     }
 }
 
-std::shared_ptr<MoeScratch> mfq::cuda::MoeScratchCache::get(
-        const std::shared_ptr<const void>& source, mfq_tensor_backend::Tensor x) {
+std::shared_ptr<MoeScratch> tyloi::cuda::MoeScratchCache::get(
+        const std::shared_ptr<const void>& source, ::tyloi::Tensor x) {
     std::lock_guard lock(mutex);
     for (auto it = values.begin(); it != values.end();) {
         if (it->first.expired()) it = values.erase(it);
@@ -91,7 +91,7 @@ std::shared_ptr<MoeScratch> mfq::cuda::MoeScratchCache::get(
 }
 
 MoeActivationWorkspace MoeScratch::activation_workspace(
-        mfq_tensor_backend::Tensor x, int input_rows, int groups, int gs,
+        ::tyloi::Tensor x, int input_rows, int groups, int gs,
         MixedMoeTransformKey transform, bool stable) {
     // Shared quantization publishes an exact-row view. Honor that binding
     // before selecting our own scratch, including graph-sized inputs.
@@ -110,10 +110,10 @@ MoeActivationWorkspace MoeScratch::activation_workspace(
         // Publish both allocations together so an allocation failure cannot
         // leave new Q8 storage paired with an old scale buffer.
         MoeActivationWorkspace workspace;
-        workspace.qx = mfq_tensor_backend::empty(
-            {capacity, groups * gs}, x.options().dtype(mfq_tensor_backend::kInt8));
-        workspace.xscale = mfq_tensor_backend::empty(
-            {capacity, groups}, x.options().dtype(mfq_tensor_backend::kFloat32));
+        workspace.qx = ::tyloi::cuda::empty(
+            {capacity, groups * gs}, x.options().dtype(::tyloi::kInt8));
+        workspace.xscale = ::tyloi::cuda::empty(
+            {capacity, groups}, x.options().dtype(::tyloi::kFloat32));
         it = activation_workspaces.insert_or_assign(key, std::move(workspace)).first;
     }
     return {it->second.qx.narrow(0, 0, input_rows),
@@ -121,16 +121,16 @@ MoeActivationWorkspace MoeScratch::activation_workspace(
 }
 
 MoeActivationWorkspace MoeScratch::prefill_activation_workspace(
-        mfq_tensor_backend::Tensor x,int input_rows,int groups,int gs,
+        ::tyloi::Tensor x,int input_rows,int groups,int gs,
         MixedMoeTransformKey transform) {
     return activation_workspace(x, input_rows, groups, gs, transform, false);
 }
 
-mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
+::tyloi::Tensor MixedMoeRuntime::forward(
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
-        mfq_tensor_backend::Tensor x,
+        ::tyloi::Tensor x,
         const MoeRoutePlan & route,
         bool input_prequantized,
         int epilogue_mode) const {
@@ -141,7 +141,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             "mixed MFE projection epilogue requires only canonical NINT");
     }
     if (!x.is_cuda() || !x.is_contiguous() ||
-        x.scalar_type() != mfq_tensor_backend::kFloat16 ||
+        x.scalar_type() != ::tyloi::kFloat16 ||
         (x.dim() != 2 && x.dim() != 3) || x.size(-1) != neuron_len) {
         throw std::runtime_error(
             "mixed MFE input must be contiguous CUDA f16 with exact K");
@@ -161,14 +161,14 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         ? out_per_expert
         : out_per_expert / 2;
     auto output = partial_experts
-        ? mfq_tensor_backend::zeros(
+        ? ::tyloi::cuda::zeros(
             {tokens, routes, result_width},
-            x.options().dtype(mfq_tensor_backend::kFloat16))
-        : mfq_tensor_backend::empty(
+            x.options().dtype(::tyloi::kFloat16))
+        : ::tyloi::cuda::empty(
             {tokens, routes, result_width},
-            x.options().dtype(mfq_tensor_backend::kFloat16));
+            x.options().dtype(::tyloi::kFloat16));
     std::unordered_map<
-        MixedMoeTransformKey, mfq_tensor_backend::Tensor,
+        MixedMoeTransformKey, ::tyloi::Tensor,
         MixedMoeTransformKeyHash> prepared_inputs;
     const MixedMoeTransformKey identity{};
     prepared_inputs.emplace(identity, x);
@@ -195,7 +195,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
     const bool use_active_nvq=use_nvq_decode && options.active_decode &&
         route.ids.numel()>0 && route.ids.numel()<=1024;
     if (use_active_nvq && (!route.ids.is_cuda() || !route.ids.is_contiguous() ||
-            route.ids.scalar_type() != mfq_tensor_backend::kInt32 ||
+            route.ids.scalar_type() != ::tyloi::kInt32 ||
             route.ids.get_device() != x.get_device())) {
         throw std::runtime_error("active NVQ routes require contiguous int32 IDs on the input CUDA device");
     }
@@ -220,19 +220,19 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         check_device(scratch.nvq_expert_pool, x);
         check_device(scratch.nvq_expert_local, x);
     }
-    mfq_tensor_backend::Tensor active_nvq_plan;
+    ::tyloi::Tensor active_nvq_plan;
     if(use_active_nvq) {
         const int pairs=int(route.ids.numel());
         auto found=scratch.nvq_active_plans.find(pairs);
         if(found==scratch.nvq_active_plans.end())found=scratch.nvq_active_plans.emplace(pairs,
-            mfq_tensor_backend::empty({1+int64_t(pairs)*3},route.ids.options())).first;
+            ::tyloi::cuda::empty({1+int64_t(pairs)*3},route.ids.options())).first;
         active_nvq_plan=found->second;
-        mfq::cuda::moe_plan_nvq_routes(reinterpret_cast<const uint64_t*>(nvq_dispatch->map_ptrs.data_ptr<int64_t>()),
+        tyloi::cuda::moe_plan_nvq_routes(reinterpret_cast<const uint64_t*>(nvq_dispatch->map_ptrs.data_ptr<int64_t>()),
             nvq_dispatch->pool_count,n_experts,route.ids.data_ptr<int32_t>(),pairs,
             active_nvq_plan.data_ptr<int32_t>(),mfq_current_cuda_stream());
         TYLOINFER_CUDA_CHECK(cudaGetLastError());
     } else if(use_nvq_prefill || use_nvq_decode) {
-        mfq::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nvq_dispatch->map_ptrs.data_ptr<int64_t>()),
+        tyloi::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nvq_dispatch->map_ptrs.data_ptr<int64_t>()),
             nvq_dispatch->pool_count,n_experts,scratch.nvq_expert_pool.data_ptr<int32_t>(),
             scratch.nvq_expert_local.data_ptr<int32_t>(),mfq_current_cuda_stream());
         TYLOINFER_CUDA_CHECK(cudaGetLastError());
@@ -325,8 +325,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
                     plan.total_groups+=int(w.ng);
                 }
             }
-            plan.weight_ptrs=mfq_tensor_backend::tensor(pointers).reshape({int64_t(nint_dispatch->pools.size()),9}).to(x.device());
-            plan.quantize_descriptors=mfq_tensor_backend::tensor(quantize).reshape({int64_t(geometries.size()),4}).to(x.device());
+            plan.weight_ptrs=::tyloi::cuda::tensor(pointers).reshape({int64_t(nint_dispatch->pools.size()),9}).to(x.device());
+            plan.quantize_descriptors=::tyloi::cuda::tensor(quantize).reshape({int64_t(geometries.size()),4}).to(x.device());
             found=scratch.nint_input_plans.emplace(input_rows,std::move(plan)).first;
         }
         auto& plan=found->second;
@@ -351,8 +351,8 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             prepare_rows=(w.gs==24 || w.gs==28) && w.bits>=4 && w.bits<=6;
             if(prepare_rows) {
                 check_device(plan.quantize_descriptors, x);
-                if(!plan.row_metadata_workspace.defined())plan.row_metadata_workspace=mfq_tensor_backend::empty(
-                    {w.out,4},w.q_packed.options().dtype(mfq_tensor_backend::kInt32));
+                if(!plan.row_metadata_workspace.defined())plan.row_metadata_workspace=::tyloi::cuda::empty(
+                    {w.out,4},w.q_packed.options().dtype(::tyloi::kInt32));
                 moe_quantize_shared_nint_rows_cuda(x.reshape({input_rows,neuron_len}),plan.quantize_descriptors,
                     plan.total_groups,!input_prequantized,w.row_q_bit_offsets,w.neuron_scale,w.neuron_min,
                     plan.row_metadata_workspace,pool.expert_local,route.ids,out_per_expert,pool.local_experts);
@@ -378,7 +378,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
                 reinterpret_cast<int64_t>(w.neuron_scale.data_ptr()),reinterpret_cast<int64_t>(w.neuron_min.data_ptr()),
                 reinterpret_cast<int64_t>(workspace.qx.data_ptr()),reinterpret_cast<int64_t>(workspace.xscale.data_ptr())},
                 {int(w.ng),int(w.gs),int(w.q_packed.numel()/pool.local_experts)},pool.local_experts};
-            direct=mfq::cuda::try_nint_decode(view,row_metadata,pool.expert_local,route.ids,output,x.dim()==3,int(w.bits),prepare_rows);
+            direct=tyloi::cuda::try_nint_decode(view,row_metadata,pool.expert_local,route.ids,output,x.dim()==3,int(w.bits),prepare_rows);
         }
         if(!direct) {
             check_device(nint_dispatch->map_ptrs, x);
@@ -394,7 +394,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
             }
             check_device(scratch.nint_expert_pool, x);
             check_device(scratch.nint_expert_local, x);
-            mfq::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nint_dispatch->map_ptrs.data_ptr<int64_t>()),
+            tyloi::cuda::moe_update_nvq_maps(reinterpret_cast<const uint64_t*>(nint_dispatch->map_ptrs.data_ptr<int64_t>()),
                 int(nint_dispatch->pools.size()),n_experts,scratch.nint_expert_pool.data_ptr<int32_t>(),
                 scratch.nint_expert_local.data_ptr<int32_t>(),mfq_current_cuda_stream());
             TYLOINFER_CUDA_CHECK(cudaGetLastError());
@@ -440,7 +440,7 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
         int gs = 24;
         int groups = 0;
         MixedMoeTransformKey transform{};
-        mfq_tensor_backend::Tensor value = x;
+        ::tyloi::Tensor value = x;
         if (pool.family == MixedMoeFamily::Nint) {
             gs = (int)pool.nint.gs;
             groups = (int)pool.nint.ng;
@@ -646,14 +646,14 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
                ((pool.nvq.kernel_format==1 && pool.nvq.sub_bits==3) ||
                 (pool.nvq.kernel_format==8 && pool.nvq.sub_bits==4))) {
                 const auto& w=pool.nvq;Nvq1DecodeView view;
-                const std::array<mfq_tensor_backend::Tensor,5> fields={w.indices_packed,w.aux_packed,
+                const std::array<::tyloi::Tensor,5> fields={w.indices_packed,w.aux_packed,
                     w.sub_scale_packed,w.neuron_scale,w.codebook};
                 for(int i=0;i<5;++i)if(fields[i].defined())view.pointers[i]=reinterpret_cast<int64_t>(fields[i].data_ptr());
                 view.sizes[0]=w.indices_packed.numel();view.sizes[1]=w.aux_packed.numel();
                 view.sizes[2]=w.sub_scale_packed.numel();
                 view.groups=int(w.ng);view.vectors=int((neuron_len+7)/8);
                 view.format=int(w.kernel_format);view.local_experts=pool.local_experts;
-                decode_done=mfq::cuda::try_nvq_decode(view,w.decode_records,w.integer_codebook,value,route.ids,pool.expert_local,qx,xscale,
+                decode_done=tyloi::cuda::try_nvq_decode(view,w.decode_records,w.integer_codebook,value,route.ids,pool.expert_local,qx,xscale,
                     output,n_experts,out_per_expert,input_quantized);
             }
             if(decode_done)activation_quantized_after_call=true;
@@ -697,11 +697,11 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward(
     return output;
 }
 
-mfq_tensor_backend::Tensor MixedMoeRuntime::forward_glu_output(
+::tyloi::Tensor MixedMoeRuntime::forward_glu_output(
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
-        mfq_tensor_backend::Tensor x,
+        ::tyloi::Tensor x,
         const MoeRoutePlan & route,
         bool gelu) const {
     if (nint_only() && kl_mmq.mode == KlMmqMode::Default) {
@@ -721,16 +721,16 @@ bool MixedMoeRuntime::supports_clamped_swiglu() const {
     return !pools.empty();
 }
 
-mfq_tensor_backend::Tensor MixedMoeRuntime::forward_clamped_swiglu(
+::tyloi::Tensor MixedMoeRuntime::forward_clamped_swiglu(
         MoeScratch& scratch,
         const MoeOptions& options,
         KlMmqState& kl_mmq,
-        mfq_tensor_backend::Tensor gate_up,
+        ::tyloi::Tensor gate_up,
         const MoeRoutePlan & route,
         double limit) const {
     if (!supports_clamped_swiglu() ||
         !gate_up.is_cuda() || !gate_up.is_contiguous() ||
-        gate_up.scalar_type() != mfq_tensor_backend::kFloat16 ||
+        gate_up.scalar_type() != ::tyloi::kFloat16 ||
         gate_up.dim() != 3 || gate_up.size(2) != 2 * neuron_len) {
         throw std::runtime_error(
             "mixed MFE clamped SwiGLU input is unsupported");
@@ -744,10 +744,10 @@ mfq_tensor_backend::Tensor MixedMoeRuntime::forward_clamped_swiglu(
     }
     auto parts = gate_up.split_with_sizes(
         {neuron_len, neuron_len}, -1);
-    auto gate = mfq_tensor_backend::clamp_max(parts[0], limit);
-    auto up = mfq_tensor_backend::clamp(parts[1], -limit, limit);
+    auto gate = ::tyloi::cuda::clamp_max(parts[0], limit);
+    auto up = ::tyloi::cuda::clamp(parts[1], -limit, limit);
     auto activation =
-        (mfq_tensor_backend::silu(gate) * up).contiguous();
+        (::tyloi::cuda::silu(gate) * up).contiguous();
     return forward(
         scratch, options, kl_mmq,
         activation, route);

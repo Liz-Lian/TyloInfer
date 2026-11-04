@@ -5,9 +5,9 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq { class ModelSource; }
+namespace tyloi { class ModelSource; }
 
-namespace mfq::models {
+namespace tyloi::models {
 
 std::string config_json(
     const ModelSource& source,
@@ -39,4 +39,4 @@ struct ModelConfig {
     static ModelConfig from_json(std::string_view payload);
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

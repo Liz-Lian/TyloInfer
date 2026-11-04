@@ -26,7 +26,7 @@
 #include <wrl/client.h>
 #endif
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 __global__ void record_gpu_timestamp_kernel(uint64_t* timestamps, std::size_t index) {
     unsigned long long nanoseconds;
@@ -76,7 +76,7 @@ std::shared_ptr<AllocationBudget> device_allocation_budget(int device) {
     auto& budget=allocation_budgets[device];
     if(!budget) {
         auto candidate=std::make_shared<AllocationBudget>();
-        if(const auto* value=mfq::cuda::env_lookup("TYLOINFER_CUDA_VRAM_LIMIT_GIB")) {
+        if(const auto* value=tyloi::cuda::env_lookup("TYLOINFER_CUDA_VRAM_LIMIT_GIB")) {
             char* end=nullptr;const double gib=std::strtod(value,&end);
             const long double bytes=static_cast<long double>(gib)*1024*1024*1024;
             if(end==value || *end || !std::isfinite(gib) || gib<0 ||
@@ -340,7 +340,7 @@ std::size_t Context::available_memory() const {
             const auto available=memory.Budget>memory.CurrentUsage?std::size_t(memory.Budget-memory.CurrentUsage):0;
             if(available<free) {
                 static std::atomic<bool> reported{false};
-                if(mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS") && !reported.exchange(true,std::memory_order_relaxed))
+                if(tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS") && !reported.exchange(true,std::memory_order_relaxed))
                     std::fprintf(stderr,"cuda_residency_budget scope=first_limit cuda_free_bytes=%zu budget_bytes=%llu usage_bytes=%llu available_bytes=%zu\n",
                         free,static_cast<unsigned long long>(memory.Budget),static_cast<unsigned long long>(memory.CurrentUsage),available);
                 free=available;
@@ -362,7 +362,7 @@ void Context::reclaim_idle_memory() {
     // Trimming unused pages leaves live graph-pool allocations untouched.
     TYLOINFER_NATIVE_CUDA_CHECK(cudaDeviceSynchronize());
     trim_pool_pages();
-    if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY");trace && trace[0]=='1') {
+    if(const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_TRACE_RESIDENCY_MEMORY");trace && trace[0]=='1') {
         std::lock_guard lock(graph_pool_mutex_);
         std::size_t cached=0,blocks=0;
         for(const auto& [stream,pool]:graph_pools_)for(const auto& [bytes,pointers]:pool.available) {
@@ -602,7 +602,7 @@ void* Context::allocate(std::size_t bytes, cudaStream_t stream) {
         if(pointer) {if(async_allocations_)(void)cudaFreeAsync(pointer,allocation_stream);else (void)cudaFree(pointer);}
         allocation_budget_->release(bytes);throw;
     }
-    if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
+    if(const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
         std::cerr<<"cuda_large_allocate pointer="<<pointer<<" bytes="<<bytes
             <<" graph="<<pooled_allocation<<" resident="<<resident_allocations<<'\n';
     return pointer;
@@ -666,7 +666,7 @@ void Context::release(
             (void)cudaFree(pointer);
         }
     });
-    if(const auto* trace=mfq::cuda::env_lookup("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
+    if(const auto* trace=tyloi::cuda::env_lookup("TYLOINFER_TRACE_LARGE_ALLOCATIONS");trace && trace[0]=='1' && bytes>=(std::size_t(1)<<20))
         std::cerr<<"cuda_large_release pointer="<<pointer<<" bytes="<<bytes<<'\n';
     allocation_budget_->release(bytes);
 }
@@ -804,4 +804,4 @@ void Context::trim() {
     check_memory_limit();
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

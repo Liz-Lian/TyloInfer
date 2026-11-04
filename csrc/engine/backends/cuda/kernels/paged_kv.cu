@@ -846,9 +846,9 @@ __global__ void paged_attention_decode_reduce_kernel(
 }
 
 void validate_pointer_table(
-        const mfq_tensor_backend::Tensor & pointers, const char * name) {
+        const ::tyloi::Tensor & pointers, const char * name) {
     TYLOINFER_RUNTIME_CHECK(pointers.is_cuda() && pointers.is_contiguous() &&
-        pointers.scalar_type() == mfq_tensor_backend::kInt64 &&
+        pointers.scalar_type() == ::tyloi::kInt64 &&
         pointers.dim() == 1 && pointers.numel() > 0,
         name, " must be a non-empty contiguous CUDA int64 vector");
 }
@@ -856,12 +856,12 @@ void validate_pointer_table(
 } // namespace
 
 void paged_kv_cache_write_cuda(
-    mfq_tensor_backend::Tensor k_chunk_ptrs,
-    mfq_tensor_backend::Tensor v_chunk_ptrs,
-    mfq_tensor_backend::Tensor page_table,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v,
-    mfq_tensor_backend::Tensor positions,
+    ::tyloi::Tensor k_chunk_ptrs,
+    ::tyloi::Tensor v_chunk_ptrs,
+    ::tyloi::Tensor page_table,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v,
+    ::tyloi::Tensor positions,
     int64_t page_size,
     int64_t pages_per_chunk) {
     validate_pointer_table(k_chunk_ptrs, "paged KV key chunk table");
@@ -869,7 +869,7 @@ void paged_kv_cache_write_cuda(
     TYLOINFER_RUNTIME_CHECK(k_chunk_ptrs.numel() == v_chunk_ptrs.numel(),
         "paged KV chunk table sizes differ");
     TYLOINFER_RUNTIME_CHECK(page_table.is_cuda() && page_table.is_contiguous() &&
-        page_table.scalar_type() == mfq_tensor_backend::kInt32 &&
+        page_table.scalar_type() == ::tyloi::kInt32 &&
         page_table.dim() == 2,
         "paged KV page table must be contiguous CUDA int32[batch,pages]");
     TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() &&
@@ -877,12 +877,12 @@ void paged_kv_cache_write_cuda(
         k.sizes() == v.sizes(),
         "paged KV inputs must be matching contiguous CUDA rank-4 tensors");
     TYLOINFER_RUNTIME_CHECK(k.scalar_type() == v.scalar_type() &&
-        (k.scalar_type() == mfq_tensor_backend::kFloat16 ||
-         k.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-         k.scalar_type() == mfq_tensor_backend::kFloat32),
+        (k.scalar_type() == ::tyloi::kFloat16 ||
+         k.scalar_type() == ::tyloi::kBFloat16 ||
+         k.scalar_type() == ::tyloi::kFloat32),
         "paged KV inputs require a supported matching floating dtype");
     TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.is_contiguous() &&
-        positions.scalar_type() == mfq_tensor_backend::kInt64 &&
+        positions.scalar_type() == ::tyloi::kInt64 &&
         (positions.dim() == 1 || positions.dim() == 2),
         "paged KV positions must be contiguous CUDA int64 [T] or [B,T]");
     TYLOINFER_RUNTIME_CHECK(page_size > 0 && page_size <= INT_MAX &&
@@ -923,11 +923,11 @@ void paged_kv_cache_write_cuda(
 }
 
 void paged_kv_cache_gather_cuda(
-    mfq_tensor_backend::Tensor k_chunk_ptrs,
-    mfq_tensor_backend::Tensor v_chunk_ptrs,
-    mfq_tensor_backend::Tensor page_table,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v,
+    ::tyloi::Tensor k_chunk_ptrs,
+    ::tyloi::Tensor v_chunk_ptrs,
+    ::tyloi::Tensor page_table,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v,
     int64_t page_size,
     int64_t pages_per_chunk) {
     validate_pointer_table(k_chunk_ptrs, "paged gather key pointers");
@@ -936,7 +936,7 @@ void paged_kv_cache_gather_cuda(
         k.dim() == 4 && k.sizes() == v.sizes() && k.scalar_type() == v.scalar_type(),
         "paged gather requires matching contiguous CUDA rank-4 outputs");
     TYLOINFER_RUNTIME_CHECK(page_table.is_cuda() && page_table.is_contiguous() &&
-        page_table.scalar_type() == mfq_tensor_backend::kInt32 && page_table.dim() == 2 &&
+        page_table.scalar_type() == ::tyloi::kInt32 && page_table.dim() == 2 &&
         page_table.size(0) >= k.size(0) && page_size > 0 && pages_per_chunk > 0 &&
         k.size(2) <= page_table.size(1) * page_size,
         "paged gather has invalid page geometry");
@@ -955,19 +955,19 @@ void paged_kv_cache_gather_cuda(
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
-    mfq_tensor_backend::Tensor q,
-    mfq_tensor_backend::Tensor k_chunk_ptrs,
-    mfq_tensor_backend::Tensor v_chunk_ptrs,
-    mfq_tensor_backend::Tensor page_table,
-    mfq_tensor_backend::Tensor seq_len,
+::tyloi::Tensor attention_paged_cache_decode_cuda(
+    ::tyloi::Tensor q,
+    ::tyloi::Tensor k_chunk_ptrs,
+    ::tyloi::Tensor v_chunk_ptrs,
+    ::tyloi::Tensor page_table,
+    ::tyloi::Tensor seq_len,
     double scale,
     int64_t page_size,
     int64_t pages_per_chunk,
     int64_t kv_heads,
-    mfq_tensor_backend::Tensor partial_o,
-    mfq_tensor_backend::Tensor partial_m,
-    mfq_tensor_backend::Tensor partial_l,
+    ::tyloi::Tensor partial_o,
+    ::tyloi::Tensor partial_m,
+    ::tyloi::Tensor partial_l,
     int64_t parts,
     bool dynamic_parts) {
     validate_pointer_table(k_chunk_ptrs, "paged attention key chunk table");
@@ -975,18 +975,18 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
     TYLOINFER_RUNTIME_CHECK(k_chunk_ptrs.numel() == v_chunk_ptrs.numel(),
         "paged attention chunk table sizes differ");
     TYLOINFER_RUNTIME_CHECK(page_table.is_cuda() && page_table.is_contiguous() &&
-        page_table.scalar_type() == mfq_tensor_backend::kInt32 &&
+        page_table.scalar_type() == ::tyloi::kInt32 &&
         page_table.dim() == 2,
         "paged attention page table must be contiguous CUDA int32[batch,pages]");
     TYLOINFER_RUNTIME_CHECK(seq_len.is_cuda() && seq_len.is_contiguous() &&
-        seq_len.scalar_type() == mfq_tensor_backend::kInt64 &&
+        seq_len.scalar_type() == ::tyloi::kInt64 &&
         seq_len.dim() == 1,
         "paged attention lengths must be contiguous CUDA int64[batch]");
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.dim() == 4 &&
         q.size(2) == 1 &&
-        (q.scalar_type() == mfq_tensor_backend::kFloat16 ||
-         q.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-         q.scalar_type() == mfq_tensor_backend::kFloat32),
+        (q.scalar_type() == ::tyloi::kFloat16 ||
+         q.scalar_type() == ::tyloi::kBFloat16 ||
+         q.scalar_type() == ::tyloi::kFloat32),
         "paged attention query must be CUDA [batch,heads,1,dim]");
     TYLOINFER_RUNTIME_CHECK(page_size > 0 && page_size <= INT_MAX &&
         pages_per_chunk > 0 && pages_per_chunk <= INT_MAX &&
@@ -1005,9 +1005,9 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
     TYLOINFER_RUNTIME_CHECK(parts <= workspace_parts && partial_m.defined() &&
         partial_l.defined() && partial_m.is_cuda() && partial_l.is_cuda() &&
         partial_m.is_contiguous() && partial_l.is_contiguous() &&
-        partial_m.scalar_type() == mfq_tensor_backend::kFloat32 &&
-        partial_l.scalar_type() == mfq_tensor_backend::kFloat32 &&
-        partial_m.sizes() == mfq_tensor_backend::IntArrayRef(
+        partial_m.scalar_type() == ::tyloi::kFloat32 &&
+        partial_l.scalar_type() == ::tyloi::kFloat32 &&
+        partial_m.sizes() == ::tyloi::IntArrayRef(
             {B * Hq, workspace_parts}) &&
         partial_l.sizes() == partial_m.sizes(),
         "paged attention partial statistics shape mismatch");
@@ -1016,7 +1016,7 @@ mfq_tensor_backend::Tensor attention_paged_cache_decode_cuda(
         "paged attention received an invalid KV-head count");
     const int Hk = static_cast<int>(kv_heads);
     const int gqa_ratio = Hq / Hk;
-    auto output = mfq_tensor_backend::empty_like(q);
+    auto output = ::tyloi::cuda::empty_like(q);
     const int total = B * Hq;
     const int chunks = static_cast<int>(k_chunk_ptrs.numel());
     const int logical_pages = static_cast<int>(page_table.size(1));

@@ -7,7 +7,7 @@
 #include <vector>
 #include "read_span.h"
 
-namespace mfq {
+namespace tyloi {
 
 enum class FileReadMode { Buffered, Direct };
 FileReadMode model_file_read_mode();
@@ -54,4 +54,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq
+} // namespace tyloi

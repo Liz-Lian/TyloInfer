@@ -3,7 +3,7 @@
 #include <cmath>
 #include <limits>
 
-namespace mfq::models::axial_patch_vision {
+namespace tyloi::models::axial_patch_vision {
 namespace {
 
 int checked_positive(std::int64_t value, const char* name) {
@@ -123,4 +123,4 @@ void validate_span(
     }
 }
 
-} // namespace mfq::models::axial_patch_vision
+} // namespace tyloi::models::axial_patch_vision

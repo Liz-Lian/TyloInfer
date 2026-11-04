@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 // Mode 1 is checked against all sixteen LUT entries during unpacking. In a
 // two-bank D4 table the FP16 scales are exact integers 1..8. Inspect the mode
 // once per projection, outside the compressed-group loop.

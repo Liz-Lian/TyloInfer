@@ -9,7 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids,
              const Executor::Mode& = {});
@@ -32,7 +32,7 @@ Tensor forward_layer(
     Collectives& collectives,
     const Layer& layer,
     LayerState& state,
-    mfq::cuda::Executor& executor,
+    tyloi::cuda::Executor& executor,
     std::size_t scratch_offset,
     Tensor input,
     const AttentionStep& step,
@@ -40,4 +40,4 @@ Tensor forward_layer(
     const RopeCache& rope,
     const Executor::Mode& options);
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

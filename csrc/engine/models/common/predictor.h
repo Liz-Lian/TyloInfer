@@ -1,7 +1,7 @@
 #pragma once
 #include "causal_forward.h"
 
-namespace mfq::models {
+namespace tyloi::models {
 struct PredictorCursor {
     int64_t layer, start;
 };
@@ -56,4 +56,4 @@ auto projected_predictor(State &state, int64_t batch, int64_t tokens, int64_t de
     return std::pair{std::move(result), std::move(multi)};
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

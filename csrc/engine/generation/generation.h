@@ -6,7 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 inline bool batch_compatible(const EngineRequest &request, bool persistent_prefix, bool has_mtp) {
     const auto &input = request.input;
@@ -181,4 +181,4 @@ Generation generate_request(Ops ops, InferenceRequest &request, InferenceOutput 
     cleanup.finish();
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

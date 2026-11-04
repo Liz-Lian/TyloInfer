@@ -5,21 +5,21 @@
 #include "engine/models/glm5_next/config.h"
 #include "engine/models/glm5_next/state.h"
 
-namespace mfq::cuda::weight_loader { struct Loader; }
+namespace tyloi::cuda::weight_loader { struct Loader; }
 
-namespace mfq::cuda::glm5_next {
+namespace tyloi::cuda::glm5_next {
 using attention_ops::Linear;
 class SparseMla;
 
 struct Mtp final : MtpModule {
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     struct Layer {
         Tensor attention_norm, ffn_norm;
         std::unique_ptr<SparseMla> attention;
         attention_ops::Transform ffn;
     };
 
-    mfq::models::glm5_next::Config config;
+    tyloi::models::glm5_next::Config config;
     Tensor embedding_norm, hidden_norm, output_norm;
     Linear fusion;
     std::vector<Layer> layers;
@@ -35,7 +35,7 @@ struct Mtp final : MtpModule {
     static std::optional<Mtp> load_if_present(const weight_loader::Loader& weights,
                                                       Projector projector, Collectives& copies,
                                                       CudaProfiler& profiler, QuantLinear embedding,
-                                                      const mfq::models::glm5_next::Config &main);
+                                                      const tyloi::models::glm5_next::Config &main);
 
     void reset(int64_t next_batch = 1) override;
 
@@ -66,4 +66,4 @@ struct Mtp final : MtpModule {
     int primary_;
 };
 
-} // namespace mfq::cuda::glm5_next
+} // namespace tyloi::cuda::glm5_next

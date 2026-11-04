@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 inline bool mtp_stream_prompt_history(Qwen4CausalLm&, int64_t tokens, const char* option) {
     return tokens>16384 && (!option || option[0]!='0');
@@ -106,7 +106,7 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
 #ifdef TYLOINFER_MTP_VERIFY_HISTORY_TAIL
     auto& target_maintenance=ops.target_maintenance;
 #endif
-      if(auto* predictor=dynamic_cast<mfq::cuda::qwen4_exp::Predictor*>(&mtp);
+      if(auto* predictor=dynamic_cast<tyloi::cuda::qwen4_exp::Predictor*>(&mtp);
           predictor && predictor->layers.size()==1 && model.reuse_decode_graphs &&
           model.graph_registry && ids.size(1)>1 && ids.size(1)<=128) {
         const auto prefix=ids.size(1)-1;
@@ -124,7 +124,7 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
 #endif
         // Earlier teacher-forced rows contribute only predictor attention KV.
         // Their FFN/readout has no consumer; draft from the final row alone.
-        const auto* chain_option=mfq::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
+        const auto* chain_option=tyloi::cuda::env_lookup("TYLOINFER_MTP_HISTORY_CHAIN");
         if(prefix>1 && (!chain_option || chain_option[0]!='0')) {
           ops.predictor_history_step(hidden.narrow(1,0,prefix),ids.narrow(1,0,prefix),
               positions.defined()?positions.narrow(-1,0,prefix):Tensor{},true);
@@ -144,8 +144,8 @@ std::optional<MtpStep> mtp_predictor_step(Qwen4CausalLm& model, Ops& ops, Tensor
             double maximum=0;bool close=true;
             for(const auto& pair:std::array<std::pair<Tensor,Tensor>,2>{{
                     {result.sample_hidden,reference.sample_hidden},{result.chain_hidden,reference.chain_hidden}}}) {
-              const auto actual=pair.first.to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kFloat32).contiguous();
-              const auto expected=pair.second.to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kFloat32).contiguous();
+              const auto actual=pair.first.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
+              const auto expected=pair.second.to(::tyloi::kCPU,::tyloi::kFloat32).contiguous();
               TYLOINFER_RUNTIME_CHECK(actual.sizes()==expected.sizes(),"MTP history-tail shape differs from full predictor");
               for(int64_t i=0;i<actual.numel();++i) {
                 const auto error=std::abs(double(actual.template data_ptr<float>()[i])-expected.template data_ptr<float>()[i]);
@@ -238,7 +238,7 @@ void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tenso
         if(ids.size(1)>128)workspace.begin((std::size_t(64)<<20)+
             std::size_t(ids.size(1))*model.hidden_size()*model.hc_mult()*sizeof(float)*12);
         {
-            auto resident_hidden=hidden.to(mfq_tensor_backend::kCUDA);
+            auto resident_hidden=hidden.to(::tyloi::kCUDA);
             (void)predictor.evaluate(resident_hidden,ids,0,true,positions,{},true);
         }
         TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(),mfq_get_current_cuda_stream()));
@@ -253,4 +253,4 @@ void mtp_predictor_prefill(Qwen4CausalLm& model, Ops& ops, Tensor& hidden, Tenso
     } else (void)ops.predictor_step(std::move(hidden),std::move(ids),std::move(positions));
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -9,20 +9,20 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using MediaCache = mfq::cache::Media<mfq::Tensor>;
-using PreparedPrompt = mfq::models::Prepared;
+using MediaCache = tyloi::cache::Media<tyloi::Tensor>;
+using PreparedPrompt = tyloi::models::Prepared;
 #else
-using MediaCache = mfq::cache::Media<mfq_tensor_backend::Tensor>;
+using MediaCache = tyloi::cache::Media<::tyloi::Tensor>;
 struct PreparedPrompt {
     std::vector<std::int64_t> token_ids;
-    mfq_tensor_backend::Tensor embeddings;
-    mfq_tensor_backend::Tensor positions;
+    ::tyloi::Tensor embeddings;
+    ::tyloi::Tensor positions;
     int decode_position_delta = 0;
     std::string cache_key;
-    mfq_tensor_backend::Tensor image_mask;
+    ::tyloi::Tensor image_mask;
 
     bool transformed() const noexcept {
         return embeddings.defined() || positions.defined() ||
@@ -40,17 +40,17 @@ public:
     ImageMaskScope(Model& model,const PreparedPrompt* prepared,
                    int64_t offset,int64_t count):model_(model) {
         if(!prepared || !prepared->image_mask.defined())return;
-        if constexpr(requires {model_.adapter_set_image_mask(mfq_tensor_backend::Tensor(prepared->image_mask));}) {
-            model_.adapter_set_image_mask(mfq_tensor_backend::Tensor(prepared->image_mask).narrow(1,offset,count).contiguous());
+        if constexpr(requires {model_.adapter_set_image_mask(prepared->image_mask);}) {
+            model_.adapter_set_image_mask(prepared->image_mask.narrow(1,offset,count).contiguous());
             active_=true;
         } else throw std::invalid_argument("model cannot apply an image participation mask");
     }
     ~ImageMaskScope() {
-        if constexpr(requires {model_.adapter_set_image_mask(mfq_tensor_backend::Tensor{});})
+        if constexpr(requires {model_.adapter_set_image_mask(::tyloi::Tensor{});})
             if(active_)model_.adapter_set_image_mask({});
     }
     ImageMaskScope(const ImageMaskScope&)=delete;
     ImageMaskScope& operator=(const ImageMaskScope&)=delete;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

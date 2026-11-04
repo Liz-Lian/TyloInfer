@@ -9,7 +9,7 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class PagedKv {
     struct Identity {};
@@ -59,12 +59,12 @@ private:
     struct Pool {
         Layout layout;
         int64_t key_width = 0, value_width = 0;
-        mfq_tensor_backend::ScalarType dtype = mfq_tensor_backend::kFloat16;
-        mfq_tensor_backend::Tensor k_chunk_ptrs, v_chunk_ptrs;
-        std::vector<mfq_tensor_backend::Tensor> k_chunks, v_chunks;
+        ::tyloi::ScalarType dtype = ::tyloi::kFloat16;
+        ::tyloi::Tensor k_chunk_ptrs, v_chunk_ptrs;
+        std::vector<::tyloi::Tensor> k_chunks, v_chunks;
     };
     struct Chunk {
-        mfq_tensor_backend::Tensor k, v;
+        ::tyloi::Tensor k, v;
     };
 
     static size_t checked_maximum_pages(int32_t sequences, int64_t pages_per_sequence);
@@ -75,12 +75,12 @@ private:
     int32_t maximum_sequences_ = 0;
     int64_t logical_pages_per_sequence_ = 0;
     size_t maximum_physical_pages_ = 0;
-    mfq::engine::PagedKvPageAllocator allocator_;
+    tyloi::engine::PagedKvPageAllocator allocator_;
     std::shared_ptr<const Identity> identity_ = std::make_shared<Identity>();
     std::vector<std::uint64_t> page_generations_;
     std::uint64_t generation_ = 1;
     std::vector<std::int32_t> host_page_table_;
-    std::map<int, mfq_tensor_backend::Tensor> device_page_tables_;
+    std::map<int, ::tyloi::Tensor> device_page_tables_;
     std::vector<Pool> layers_;
     size_t storage_pages_ = 0;
     size_t reserved_bytes_ = 0;
@@ -90,4 +90,4 @@ private:
     std::atomic<size_t> release_count_metric_{0}, page_table_updates_metric_{0};
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

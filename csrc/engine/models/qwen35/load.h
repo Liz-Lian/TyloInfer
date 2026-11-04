@@ -14,9 +14,9 @@
 
 struct LayerPlacementConfig;
 struct TransformerWeightLoader;
-namespace mfq::cuda::weight_loader { struct Loader; }
+namespace tyloi::cuda::weight_loader { struct Loader; }
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 struct LoadOptions {
     std::string config_path;
@@ -29,9 +29,9 @@ struct LoadOptions {
     bool load_input_output = true;
 };
 
-Model load(std::shared_ptr<const mfq::ModelSource> source,
+Model load(std::shared_ptr<const tyloi::ModelSource> source,
            const weight_loader::Loader& weights, LayerPlacementConfig& placement,
-           mfq::ops::YarnScaling& yarn, int& cpu_layers,
+           tyloi::ops::YarnScaling& yarn, int& cpu_layers,
            const LoadOptions& options);
 
 Layer load_layer(const weight_loader::Loader&, const Config&,
@@ -41,4 +41,4 @@ Layer load_layer(const weight_loader::Loader&, const Config&,
 std::optional<Predictor> load_predictor(
     TransformerWeightLoader&, const Config&, KvQuantization);
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

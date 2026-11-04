@@ -9,33 +9,33 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-inline mfq_tensor_backend::Tensor vision_layer_norm(
-        mfq_tensor_backend::Tensor input, const mfq_tensor_backend::Tensor &weight,
-        const mfq_tensor_backend::Tensor &bias, double epsilon) {
+inline ::tyloi::Tensor vision_layer_norm(
+        ::tyloi::Tensor input, const ::tyloi::Tensor &weight,
+        const ::tyloi::Tensor &bias, double epsilon) {
     const auto dtype = input.scalar_type();
-    auto output = mfq_tensor_backend::layer_norm(input, {input.size(-1)}, weight.to(dtype),
+    auto output = ::tyloi::cuda::layer_norm(input, {input.size(-1)}, weight.to(dtype),
                                                  bias.to(dtype), epsilon);
     return output.to(dtype).contiguous();
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::cuda::ops {
-inline mfq::Tensor layer_norm(mfq::Tensor input, const mfq::Tensor& weight,
-                              const mfq::Tensor& bias, double epsilon) {
+namespace tyloi::cuda::ops {
+inline tyloi::Tensor layer_norm(tyloi::Tensor input, const tyloi::Tensor& weight,
+                              const tyloi::Tensor& bias, double epsilon) {
     MfqCudaGuard guard(input.device().index);
-    return mfq_tensor_backend::layer_norm(mfq_tensor_backend::Tensor(input), {input.size(-1)},
-        mfq_tensor_backend::Tensor(weight), mfq_tensor_backend::Tensor(bias), epsilon);
+    return ::tyloi::cuda::layer_norm(input, {input.size(-1)},
+        weight, bias, epsilon);
 }
 }
 #endif
 
-namespace mfq::cuda::vision {
+namespace tyloi::cuda::vision {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 struct RmsNorm {
     Tensor weight;
@@ -47,7 +47,7 @@ struct RmsNorm {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor operator()(const mfq::Tensor& input) const {
+    tyloi::Tensor operator()(const tyloi::Tensor& input) const {
 #else
     Tensor operator()(const Tensor& input) const {
 #endif
@@ -55,12 +55,12 @@ struct RmsNorm {
             throw std::runtime_error("vision RMSNorm input width mismatch");
         }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return mfq::ops::contiguous(mfq::ops::cast(
-            mfq::ops::rms_norm(input, weight, epsilon, 0.0), input.scalar_type()));
+        return tyloi::ops::contiguous(tyloi::ops::cast(
+            tyloi::ops::rms_norm(input, weight, epsilon, 0.0), input.scalar_type()));
 #else
         const auto shape = input.sizes().vec();
         auto normalized = rms_norm_cuda(
-            input.reshape({-1, shape.back()}).to(mfq_tensor_backend::kFloat32),
+            input.reshape({-1, shape.back()}).to(::tyloi::kFloat32),
             weight,
             epsilon);
         return normalized.reshape(shape)
@@ -81,18 +81,18 @@ struct LayerNorm {
     }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor operator()(const mfq::Tensor& input) const {
+    tyloi::Tensor operator()(const tyloi::Tensor& input) const {
 #else
     Tensor operator()(const Tensor& input) const {
 #endif
         if (input.dim() == 0 || input.size(-1) != weight.size(0))
             throw std::runtime_error("grid-ViT LayerNorm input width mismatch");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        return mfq::ops::layer_norm(input, weight, bias, epsilon);
+        return tyloi::ops::layer_norm(input, weight, bias, epsilon);
 #else
-        return mfq_tensor_backend::layer_norm(input, {weight.size(0)}, weight, bias, epsilon);
+        return ::tyloi::cuda::layer_norm(input, {weight.size(0)}, weight, bias, epsilon);
 #endif
     }
 };
 
-} // namespace mfq::cuda::vision
+} // namespace tyloi::cuda::vision

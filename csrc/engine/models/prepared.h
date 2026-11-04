@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct Prepared {
     std::vector<std::int64_t> token_ids;
@@ -22,4 +22,4 @@ struct Prepared {
     }
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

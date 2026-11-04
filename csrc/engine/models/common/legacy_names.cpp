@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 namespace {
 
 using json = nlohmann::json;
@@ -1465,4 +1465,4 @@ Names legacy_names(
     return result;
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

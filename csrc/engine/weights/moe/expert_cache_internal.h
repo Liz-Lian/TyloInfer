@@ -34,7 +34,7 @@ public:
     void record_prefill_copy(const PrefillCopySubmission&);
     PrefillCopySubmission finish_prefill_copy(int slot);
     void finish_prefill_copies();
-    std::shared_ptr<mfq::cuda::KvExpertLoan> kv_expert_loan_;
+    std::shared_ptr<tyloi::cuda::KvExpertLoan> kv_expert_loan_;
     std::vector<int> set_prefill_low_priority_sources(std::vector<int>);
     std::vector<int> prioritize_prefill_layers(int first,int last);
     bool prefill_layer_active(int layer) const {
@@ -57,7 +57,7 @@ public:
     }
     bool layer_prefill_ready() const { return pipeline_prefill_layer_layout_ && pipeline_ram_registered_bytes_>0; }
     std::uint64_t streamed_bytes() const {return stats_.ram_pcie_bytes;}
-    mfq_tensor_backend::Device device() const {return mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, owner_device_);}
+    ::tyloi::Device device() const {return ::tyloi::Device(::tyloi::kCUDA, owner_device_);}
     MoeExpertCache(
             int64_t budget_bytes,
             const MoeCacheOptions& options)
@@ -87,10 +87,10 @@ public:
         mapped_gather_enabled_ = options.mapped;
         mapped_copy_blocks_ = options.copy_blocks;
         range_read_pool_ =
-            std::make_unique<mfq::cuda::MfeMxfp4ReadPool>(
+            std::make_unique<tyloi::cuda::MfeMxfp4ReadPool>(
                 options.io_workers);
         range_overlap_enabled_ = options.overlap;
-        const auto diagnostics=mfq::cuda::runtime_options::moe_diagnostics();
+        const auto diagnostics=tyloi::cuda::runtime_options::moe_diagnostics();
         pipeline_cpu_profile_enabled_=diagnostics.cpu_rows;
         pipeline_cpu_profile_fail_alloc_=diagnostics.cpu_rows_fail_alloc;
         pipeline_dma_profile_enabled_=diagnostics.dma;
@@ -117,7 +117,7 @@ public:
     }
 
     ~MoeExpertCache() {
-        mfq::cuda::internal::on_device_noexcept(owner_device_, [&] {
+        tyloi::cuda::internal::on_device_noexcept(owner_device_, [&] {
             ssd_prediction_reader_.reset();
             ssd_prediction_reads_.reset();ssd_previous_prediction_.reset();
             ssd_prefill_reader_.reset();
@@ -189,7 +189,7 @@ public:
     std::shared_ptr<MoeCachedSource> register_range_source(
         const std::string & name,
         std::shared_ptr<MixedMoeRuntime> metadata,
-        std::shared_ptr<mfq::cuda::MfeMxfp4ExpertStore> store,
+        std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> store,
         int minimum_slots,
         int layer_id,
         std::string projection_role);
@@ -286,7 +286,7 @@ public:
         return result;
     }
 
-    void set_profile(mfq::MoeCacheProfile profile) {
+    void set_profile(tyloi::MoeCacheProfile profile) {
         if (finalized_ || !sources_.empty()) {
             throw std::runtime_error(
                 "MoE cache profile must be set before source registration");
@@ -311,7 +311,7 @@ public:
     }
 
     const uint8_t * register_mapped_field(
-            const mfq_tensor_backend::Tensor & field) {
+            const ::tyloi::Tensor & field) {
         if (!mapped_gather_enabled_ || !field.defined() ||
                 field.numel() == 0) {
             return nullptr;
@@ -549,7 +549,7 @@ public:
     };
     std::unique_ptr<SsdExpertReads> prepare_ssd_expert_reads(std::vector<SsdExpertRequest> requests,bool background=false,bool prediction=false);
     void execute_ssd_expert_reads(SsdExpertReads& reads,bool background=false);
-    void execute_ssd_expert_reads(SsdExpertReads& reads,mfq::HostParallelPool& pool,int workers,bool touch=true,
+    void execute_ssd_expert_reads(SsdExpertReads& reads,tyloi::HostParallelPool& pool,int workers,bool touch=true,
         SsdReadPriority::Demand* demand=nullptr);
     void queue_ssd_prediction(std::vector<SsdExpertRequest> requests);
     void observe_ssd_prediction_demand(const std::vector<SsdExpertRequest>& requests,
@@ -581,7 +581,7 @@ public:
     bool ssd_router_prefetch() const noexcept {return ssd_prediction_auto_;}
     std::unique_ptr<SsdExpertReads> begin_ssd_expert_reads(std::vector<SsdExpertRequest> requests,std::size_t gate_up_requests);
     std::vector<MoeHostExpertCache::Lease> read_ssd_experts(const std::vector<SsdExpertRequest>& requests,bool background=false);
-    struct SsdExpertCopy {MoeQuantRangeSource* source;int expert;std::vector<mfq_tensor_backend::Tensor> fields;};
+    struct SsdExpertCopy {MoeQuantRangeSource* source;int expert;std::vector<::tyloi::Tensor> fields;};
     void copy_ssd_experts(const std::vector<SsdExpertCopy>& requests);
     std::future<void> queue_ssd_expert_copies(std::vector<SsdExpertCopy> requests);
     std::array<std::future<void>,2> queue_ssd_prefill_phases(
@@ -616,7 +616,7 @@ public:
         if(ids.device()!=device())throw std::runtime_error("cached MoE routes must use the cache device");
         const MfqCudaGuard guard(owner_device_);
         if (!ids.is_cuda() || !ids.is_contiguous() ||
-                ids.scalar_type() != mfq_tensor_backend::kInt32 ||
+                ids.scalar_type() != ::tyloi::kInt32 ||
                 ids.dim() != 2) {
             throw std::runtime_error(
                 "cached MoE routes must be contiguous CUDA int32");
@@ -637,11 +637,11 @@ public:
         }
         if (!route_host_.defined() ||
                 route_host_.numel() < count) {
-            route_host_ = mfq_tensor_backend::empty(
+            route_host_ = ::tyloi::cuda::empty(
                 {count},
-                mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCPU)
-                    .dtype(mfq_tensor_backend::kInt32)
+                ::tyloi::TensorOptions()
+                    .device(::tyloi::kCPU)
+                    .dtype(::tyloi::kInt32)
                     .pinned_memory(true));
         }
         auto current =
@@ -727,8 +727,8 @@ public:
 
     void print_stats(std::ostream & stream) const {
         const auto host=host_experts_->stats();
-        const auto kv_spec=kv_expert_loan_?kv_expert_loan_->speculative_stats():mfq::cuda::KvExpertLoan::SpeculativeStats{};
-        const auto kv_reuse=kv_expert_loan_?kv_expert_loan_->reuse_stats():mfq::cuda::KvExpertLoan::ReuseStats{};
+        const auto kv_spec=kv_expert_loan_?kv_expert_loan_->speculative_stats():tyloi::cuda::KvExpertLoan::SpeculativeStats{};
+        const auto kv_reuse=kv_expert_loan_?kv_expert_loan_->reuse_stats():tyloi::cuda::KvExpertLoan::ReuseStats{};
         stream << "moe_cache_stats"
                << " budget_bytes=" << budget_bytes_
                << " allocated_bytes=" << allocated_bytes_
@@ -760,8 +760,8 @@ public:
                << " pipeline_cpu_calibration_ns=" << uint64_t(pipeline_cpu_calibration_.work_ns())
                << " expert_disk_reads_after_preload=" << expert_disk_reads_after_preload()
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-               << " tensor_host_bytes=" << mfq::cuda::tensor_host_bytes.load()
-               << " tensor_host_peak_bytes=" << mfq::cuda::tensor_host_peak_bytes.load()
+               << " tensor_host_bytes=" << tyloi::cuda::tensor_host_bytes.load()
+               << " tensor_host_peak_bytes=" << tyloi::cuda::tensor_host_peak_bytes.load()
 #endif
                << " gpu_demote_bytes=" << stats_.gpu_demote_bytes
                << " host_bytes=" << host_bytes_
@@ -1028,7 +1028,7 @@ public:
 
     std::vector<std::pair<std::string, double>> memory_metrics() const {
         const auto host = host_experts_->stats();
-        const auto kv_reuse=kv_expert_loan_?kv_expert_loan_->reuse_stats():mfq::cuda::KvExpertLoan::ReuseStats{};
+        const auto kv_reuse=kv_expert_loan_?kv_expert_loan_->reuse_stats():tyloi::cuda::KvExpertLoan::ReuseStats{};
         const auto residency=moe_residency_?moe_residency_->stats():MoeResidencyManager::Stats{};
         const auto [pinned_bytes,pinned_used]=pinned_expert_memory();
         const auto cached=host.managed_bytes+host.transient_bytes;
@@ -1049,7 +1049,7 @@ public:
         const auto cold=ssd_expert_total_bytes_>gpu_weights?ssd_expert_total_bytes_-gpu_weights:0;
         std::vector<std::pair<std::string,double>> result{{"ssd_expert_enabled", ssd_experts_ ? 1.0 : 0.0},
             {"ssd_io_workers",double(options_.io_workers)},
-            {"host_tensor_bytes",double(mfq::cuda::tensor_host_bytes.load())},
+            {"host_tensor_bytes",double(tyloi::cuda::tensor_host_bytes.load())},
             {"ssd_expert_payload_bytes",double(ssd_experts_ && cold>host.resident_bytes?cold-host.resident_bytes:0)},
             {"ssd_expert_bytes_read",double(disk_read_bytes)},
             {"ssd_expert_read_count",double(disk_reads)},
@@ -1068,9 +1068,9 @@ public:
             {"ssd_ram_protected_bytes",double(host.reuse_protected_bytes)},
             {"ssd_reuse_hits",double(kv_reuse.protected_hits)},
             {"ssd_probation_evictions",double(kv_reuse.probation_evictions)},
-            {"ssd_protected_cache_bytes",double(kv_reuse.protected_pages*mfq::cuda::KvExpertLoan::page)},
-            {"ssd_reuse_capacity_bytes",double(kv_reuse.capacity_pages*mfq::cuda::KvExpertLoan::page)},
-            {"ssd_reuse_protected_limit_bytes",double(kv_reuse.protected_limit_pages*mfq::cuda::KvExpertLoan::page)},
+            {"ssd_protected_cache_bytes",double(kv_reuse.protected_pages*tyloi::cuda::KvExpertLoan::page)},
+            {"ssd_reuse_capacity_bytes",double(kv_reuse.capacity_pages*tyloi::cuda::KvExpertLoan::page)},
+            {"ssd_reuse_protected_limit_bytes",double(kv_reuse.protected_limit_pages*tyloi::cuda::KvExpertLoan::page)},
             {"ssd_reuse_protected_trims",double(kv_reuse.protected_trims)},
             {"ssd_reuse_protected_accesses",double(kv_reuse.protected_accesses)},
             {"ssd_reuse_accepted_row_promotions",double(kv_reuse.accepted_row_promotions)},
@@ -1199,7 +1199,7 @@ public:
               {"small_window_hot_groups_4",double(stats_.pipeline_small_window_hot_groups[4])},
               {"prefill_cpu_copy_join_ms",double(stats_.pipeline_prefill_cpu_copy_join_ns)/1e6},
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            {"host_tensor_allocated_bytes",double(mfq::cuda::tensor_host_bytes.load())},
+            {"host_tensor_allocated_bytes",double(tyloi::cuda::tensor_host_bytes.load())},
 #endif
             {"ram_expert_pcie_read_bytes", double(stats_.ram_pcie_bytes)}};
         append_expert_format_metrics(result);
@@ -1209,15 +1209,15 @@ public:
 private:
     struct PrefillLoan {
         struct Arena {
-            MoeGpuArena* arena;int first;std::vector<mfq_tensor_backend::Tensor> saved;
+            MoeGpuArena* arena;int first;std::vector<::tyloi::Tensor> saved;
             MoeHostExpertCache::Lease owner;
-            mfq_tensor_backend::Tensor keys;
+            ::tyloi::Tensor keys;
             std::vector<std::pair<int,int>> refresh;
         };
         struct Cohort {std::vector<int32_t> experts;std::vector<int64_t> fields;};
         struct Copy {const uint8_t* source;std::size_t offset,bytes;};
         struct Layer {std::size_t bytes=0;std::vector<Copy> copies;};
-        struct Stage {mfq_tensor_backend::Tensor host;bool pinned=false;};
+        struct Stage {::tyloi::Tensor host;bool pinned=false;};
         std::vector<Arena> arenas;
         std::map<std::pair<int,int>,Cohort> cohorts;
         std::map<int,Layer> layers;
@@ -1274,7 +1274,7 @@ private:
         std::uint64_t serve=0,cell_call=0,prepare_ns=0,activation_ns=0,scatter_ns=0,total_ns=0;
         // Parallel work sum, already contained in the Gate/Up pool interval.
         std::uint64_t activation_work_ns=0;
-        mfq::HostParallelProfile gate_up,down;
+        tyloi::HostParallelProfile gate_up,down;
         std::vector<CpuProjectionSample> projections;
     };
     bool pipeline_cpu_profile_enabled_=false,pipeline_cpu_profile_dropped_=false;
@@ -1324,15 +1324,15 @@ private:
     bool ssd_experts_=false;
     std::size_t ssd_expert_total_bytes_=0;
     SsdReadPriority ssd_read_priority_;
-    std::unique_ptr<mfq::HostParallelPool> ssd_read_pool_;
-    std::unique_ptr<mfq::HostParallelPool> ssd_background_read_pool_;
+    std::unique_ptr<tyloi::HostParallelPool> ssd_read_pool_;
+    std::unique_ptr<tyloi::HostParallelPool> ssd_background_read_pool_;
     std::shared_ptr<MoeSsdPrefillReader> ssd_prefill_reader_;
-    std::unique_ptr<mfq::HostParallelPool> ssd_prediction_pool_;
+    std::unique_ptr<tyloi::HostParallelPool> ssd_prediction_pool_;
     std::shared_ptr<MoeSsdPrefillReader> ssd_prediction_reader_;
     std::unique_ptr<SsdExpertReads> ssd_prediction_reads_,ssd_previous_prediction_;
     std::vector<SsdExpertRequest> ssd_pending_prediction_;
     std::function<void()> ssd_pending_forecast_;
-    std::vector<mfq::cuda::KvExpertLoan::Key> ssd_forecast_gpu_fields_;
+    std::vector<tyloi::cuda::KvExpertLoan::Key> ssd_forecast_gpu_fields_;
     std::uint64_t ssd_prediction_gpu_protected_fields_=0;
     std::uint64_t ssd_prediction_batches_=0,ssd_prediction_jobs_=0,ssd_prediction_bytes_=0,ssd_prediction_busy_skips_=0;
     std::uint64_t ssd_prediction_wait_ns_=0,ssd_prediction_switches_=0;
@@ -1350,12 +1350,12 @@ private:
     MoeCacheOptions options_;
     double ram_pcie_fraction_=0;
     double pipeline_pcie_gbps_=0;
-    bool pipeline_cpu_transfer_budget_=mfq::cuda::runtime_options::cpu_transfer_budget();
+    bool pipeline_cpu_transfer_budget_=tyloi::cuda::runtime_options::cpu_transfer_budget();
     bool pipeline_comparison_cpu_policy_=false;
     std::uint64_t pipeline_cpu_policy_changed_routes_=0;
     bool pipeline_shared_cpu_cost_=false;
-    mfq::MoeCpuCostModel pipeline_cpu_cost_;
-    mfq::MoeCpuCalibrationState pipeline_cpu_calibration_;
+    tyloi::MoeCpuCostModel pipeline_cpu_cost_;
+    tyloi::MoeCpuCalibrationState pipeline_cpu_calibration_;
     bool measuring_preload_h2d_=false;
     std::vector<std::unique_ptr<MoePreloadH2DTiming>> preload_h2d_timings_;
     friend class MoeCachedSource;
@@ -1377,7 +1377,7 @@ private:
     std::vector<std::array<int,3>> pipeline_bundles_;
     std::unordered_map<std::string,std::unique_ptr<MoeGpuArena>> pipeline_stages_;
     std::size_t pipeline_direct_cache_budget_=0;
-    mfq_tensor_backend::Tensor pipeline_direct_cache_storage_;
+    ::tyloi::Tensor pipeline_direct_cache_storage_;
     std::optional<std::size_t> pipeline_direct_cache_region_;
     uint64_t pipeline_wire_fallback_cells_=0,pipeline_wire_fallback_bytes_=0;
     std::vector<std::function<void()>> pipeline_decode_release_;
@@ -1385,19 +1385,19 @@ private:
     std::vector<std::weak_ptr<MoeScratch>> pipeline_prefill_scratch_;
     std::shared_ptr<void> pipeline_prefill_dma_metadata_;
     std::shared_ptr<void> pipeline_prefill_route_publication_;
-    mfq_tensor_backend::Tensor pipeline_prefill_ring_;
+    ::tyloi::Tensor pipeline_prefill_ring_;
     int pipeline_prefill_group_capacity_=0;
     bool pipeline_prefill_predictor_=false;
-    mfq_tensor_backend::Tensor pipeline_prefill_host_ring_;
-    mfq_tensor_backend::Tensor pipeline_prefill_metadata_host_;
+    ::tyloi::Tensor pipeline_prefill_host_ring_;
+    ::tyloi::Tensor pipeline_prefill_metadata_host_;
     std::size_t pipeline_prefill_metadata_stride_=0;
     std::size_t pipeline_prefill_host_stride_=0;
     bool pipeline_prefill_layer_layout_=false;
     std::map<int,std::pair<int64_t,int64_t>> pipeline_prefill_layers_;
     std::map<int,int64_t> pipeline_prefill_layer_gate_up_bytes_;
-    mfq_tensor_backend::Tensor pipeline_prefill_layer_buffer_;
-    mfq_tensor_backend::Tensor pipeline_prefill_layer_second_buffer_;
-    mfq_tensor_backend::Tensor pipeline_prefill_layer_down_buffer_;
+    ::tyloi::Tensor pipeline_prefill_layer_buffer_;
+    ::tyloi::Tensor pipeline_prefill_layer_second_buffer_;
+    ::tyloi::Tensor pipeline_prefill_layer_down_buffer_;
     int64_t pipeline_prefill_layer_split_=0;
     int64_t pipeline_prefill_layer_stride_=0;
     std::function<void(std::size_t)> reserve_workspace_;
@@ -1416,19 +1416,19 @@ private:
     uint64_t pipeline_prefill_pool_previous_threshold_=0;
     std::vector<std::function<void()>> pipeline_prefill_release_;
     std::unordered_map<std::string,std::shared_ptr<MoeFfnPrefillHostWorkspace>> pipeline_prefill_host_workspaces_;
-    bool pipeline_transfer_cache_=mfq::cuda::runtime_options::transfer_cache();
-    bool pipeline_mapped_copy_=mfq::cuda::runtime_options::mapped_copy();
+    bool pipeline_transfer_cache_=tyloi::cuda::runtime_options::transfer_cache();
+    bool pipeline_mapped_copy_=tyloi::cuda::runtime_options::mapped_copy();
     std::vector<MoeCacheNewLease> pipeline_transfer_slots_;
-    mfq_tensor_backend::Tensor pipeline_host_stage_;
-    mfq_tensor_backend::Tensor pipeline_wire_gpu_;
-    std::array<std::unique_ptr<mfq::cuda::DmaCopyBatch>,2> pipeline_dma_batches_;
-    mfq_tensor_backend::Tensor pipeline_prefetch_wire_gpu_,pipeline_prefetch_host_stage_;
-    std::vector<mfq::MoeCacheKey> pipeline_prefetched_keys_;
-    mfq_tensor_backend::Tensor pipeline_sigmoid_table_;
+    ::tyloi::Tensor pipeline_host_stage_;
+    ::tyloi::Tensor pipeline_wire_gpu_;
+    std::array<std::unique_ptr<tyloi::cuda::DmaCopyBatch>,2> pipeline_dma_batches_;
+    ::tyloi::Tensor pipeline_prefetch_wire_gpu_,pipeline_prefetch_host_stage_;
+    std::vector<tyloi::MoeCacheKey> pipeline_prefetched_keys_;
+    ::tyloi::Tensor pipeline_sigmoid_table_;
     int64_t pipeline_wire_route_bytes_=0,pipeline_wire_route_fields_=0;
     std::array<std::pair<int64_t,int64_t>,2> pipeline_wire_geometry_{};
     std::unordered_map<int,std::vector<int64_t>> pipeline_host_staged_expert_bytes_;
-    std::shared_ptr<mfq_tensor_backend::Tensor> pipeline_ram_complement_;
+    std::shared_ptr<::tyloi::Tensor> pipeline_ram_complement_;
     std::shared_ptr<MoePinnedExpertArena> pinned_expert_arena_;
     int64_t pipeline_ram_registered_bytes_=0;
     void* pipeline_ram_alias_=nullptr;
@@ -1441,7 +1441,7 @@ private:
     std::vector<DispatchRecord> pipeline_comparison_records_;
     std::vector<DispatchRecord> pipeline_dispatch_records_,pipeline_dispatch_replay_;
     std::size_t pipeline_dispatch_replay_cursor_=0;
-    std::shared_ptr<mfq::cuda::Context> pipeline_pool_context_;
+    std::shared_ptr<tyloi::cuda::Context> pipeline_pool_context_;
     cudaStream_t pipeline_pool_stream_=nullptr;
 
     void append_source_transfers(
@@ -1450,13 +1450,13 @@ private:
         bool prefetch,
         std::vector<MoeCacheTransfer> & transfers,
         bool & replaced_occupied,
-        std::vector<std::pair<mfq::MoeCacheSlotBook *, int>> * held_slots,
+        std::vector<std::pair<tyloi::MoeCacheSlotBook *, int>> * held_slots,
         std::vector<MoeCacheNewLease> * new_leases);
 
     void rollback_preparation(
         const std::vector<MoeCacheNewLease> & new_leases,
         const std::vector<
-            std::pair<mfq::MoeCacheSlotBook *, int>> & held_slots) noexcept;
+            std::pair<tyloi::MoeCacheSlotBook *, int>> & held_slots) noexcept;
 
     bool begin_deferred_range_read(
         MoeCachedSource & source,
@@ -1465,7 +1465,7 @@ private:
     void finish_deferred_range_read(MoeCachedSource & source);
 
     void record_range_read(
-        const mfq::cuda::MfeMxfp4ReadBatchStats & range_stats) {
+        const tyloi::cuda::MfeMxfp4ReadBatchStats & range_stats) {
         stats_.range_read_bytes += static_cast<int64_t>(range_stats.bytes);
         stats_.range_read_calls += static_cast<int64_t>(range_stats.calls);
         stats_.range_file_opens +=
@@ -1489,11 +1489,11 @@ private:
                         stage.host.numel() < required_bytes) {
                     int64_t capacity = 1;
                     while (capacity < required_bytes) capacity *= 2;
-                    stage.host = mfq_tensor_backend::empty(
+                    stage.host = ::tyloi::cuda::empty(
                         {capacity},
-                        mfq_tensor_backend::TensorOptions()
-                            .device(mfq_tensor_backend::kCPU)
-                            .dtype(mfq_tensor_backend::kUInt8)
+                        ::tyloi::TensorOptions()
+                            .device(::tyloi::kCPU)
+                            .dtype(::tyloi::kUInt8)
                             .pinned_memory(true));
                 }
                 if (require_device &&
@@ -1501,11 +1501,11 @@ private:
                          stage.device.numel() < required_bytes)) {
                     int64_t capacity = 1;
                     while (capacity < required_bytes) capacity *= 2;
-                    stage.device = mfq_tensor_backend::empty(
+                    stage.device = ::tyloi::cuda::empty(
                         {capacity},
-                        mfq_tensor_backend::TensorOptions()
+                        ::tyloi::TensorOptions()
                             .device(device())
-                            .dtype(mfq_tensor_backend::kUInt8));
+                            .dtype(::tyloi::kUInt8));
                 }
                 return stage;
             }
@@ -1519,11 +1519,11 @@ private:
                 stage.host.numel() < required_bytes) {
             int64_t capacity = 1;
             while (capacity < required_bytes) capacity *= 2;
-            stage.host = mfq_tensor_backend::empty(
+            stage.host = ::tyloi::cuda::empty(
                 {capacity},
-                mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCPU)
-                    .dtype(mfq_tensor_backend::kUInt8)
+                ::tyloi::TensorOptions()
+                    .device(::tyloi::kCPU)
+                    .dtype(::tyloi::kUInt8)
                     .pinned_memory(true));
         }
         if (require_device &&
@@ -1531,11 +1531,11 @@ private:
                  stage.device.numel() < required_bytes)) {
             int64_t capacity = 1;
             while (capacity < required_bytes) capacity *= 2;
-            stage.device = mfq_tensor_backend::empty(
+            stage.device = ::tyloi::cuda::empty(
                 {capacity},
-                mfq_tensor_backend::TensorOptions()
+                ::tyloi::TensorOptions()
                     .device(device())
-                    .dtype(mfq_tensor_backend::kUInt8));
+                    .dtype(::tyloi::kUInt8));
         }
         return stage;
     }
@@ -1544,7 +1544,7 @@ private:
             const std::vector<MoeCacheTransfer> & transfers,
             bool waits_for_compute,
             bool wait_on_compute_stream) {
-        std::vector<mfq::cuda::MfeMxfp4ReadRequest> range_requests;
+        std::vector<tyloi::cuda::MfeMxfp4ReadRequest> range_requests;
         auto materialize_source = [&range_requests](
                 const MoeCacheTransfer & transfer,
                 uint8_t * destination) {
@@ -1671,7 +1671,7 @@ private:
         const int64_t scatter_descriptor_bytes =
             static_cast<int64_t>(staged_count) *
             static_cast<int64_t>(
-                sizeof(mfq::MoeCacheScatterDescriptor));
+                sizeof(tyloi::MoeCacheScatterDescriptor));
         if (scatter_descriptor_bytes >
                 std::numeric_limits<int64_t>::max() -
                     scatter_descriptor_offset) {
@@ -1684,7 +1684,7 @@ private:
         const int64_t mapped_descriptor_bytes =
             static_cast<int64_t>(mapped_count) *
             static_cast<int64_t>(
-                sizeof(mfq::MoeCacheMappedCopyDescriptor));
+                sizeof(tyloi::MoeCacheMappedCopyDescriptor));
         if (mapped_descriptor_bytes >
                 std::numeric_limits<int64_t>::max() -
                     mapped_descriptor_offset) {
@@ -1696,10 +1696,10 @@ private:
         auto & stage = acquire_stage(total_bytes, true);
         auto * staging = stage.host.data_ptr<uint8_t>();
         auto * scatter_descriptors =
-            reinterpret_cast<mfq::MoeCacheScatterDescriptor *>(
+            reinterpret_cast<tyloi::MoeCacheScatterDescriptor *>(
                 staging + scatter_descriptor_offset);
         auto * mapped_descriptors =
-            reinterpret_cast<mfq::MoeCacheMappedCopyDescriptor *>(
+            reinterpret_cast<tyloi::MoeCacheMappedCopyDescriptor *>(
                 staging + mapped_descriptor_offset);
         int64_t offset = 0;
         int scatter_descriptor = 0;
@@ -1757,7 +1757,7 @@ private:
             weight_stream_));
         if (h2d_timing) TYLOINFER_CUDA_CHECK(cudaEventRecord(h2d_timing->end,weight_stream_));
         if (staged_count > 0) {
-            mfq::moe_cache_scatter_cuda(
+            tyloi::moe_cache_scatter_cuda(
                 stage.device.data_ptr<uint8_t>(),
                 scatter_descriptor_offset,
                 staged_count,
@@ -1765,10 +1765,10 @@ private:
         }
         if (mapped_count > 0) {
             auto * device_descriptors =
-                reinterpret_cast<const mfq::MoeCacheMappedCopyDescriptor *>(
+                reinterpret_cast<const tyloi::MoeCacheMappedCopyDescriptor *>(
                     stage.device.data_ptr<uint8_t>() +
                     mapped_descriptor_offset);
-            mfq::moe_cache_mapped_gather_cuda(
+            tyloi::moe_cache_mapped_gather_cuda(
                 device_descriptors,
                 mapped_count,
                 mapped_copy_blocks_,
@@ -1788,7 +1788,7 @@ private:
         }
     }
 
-    void invalidate(const mfq::MoeCacheKey & key, int slot,bool retain_cold=true);
+    void invalidate(const tyloi::MoeCacheKey & key, int slot,bool retain_cold=true);
     void publish_quant_promotions(const std::vector<MoeCacheNewLease>& leases);
 
     const int owner_device_;
@@ -1805,7 +1805,7 @@ private:
     bool transfer_ready_recorded_ = false;
     cudaEvent_t route_input_ready_ = nullptr;
     cudaEvent_t route_done_ = nullptr;
-    mfq_tensor_backend::Tensor route_host_;
+    ::tyloi::Tensor route_host_;
     uint64_t pending_route_generation_ = 0;
     int64_t pending_route_count_ = 0;
     int pending_route_n_experts_ = 0;
@@ -1815,8 +1815,8 @@ private:
     std::unordered_map<std::string, std::unique_ptr<MoeGpuArena>> arenas_;
     std::vector<std::shared_ptr<MoeCachedSource>> sources_;
     std::vector<int> prefill_low_priority_layers_;
-    std::optional<mfq::MoeCacheProfile> profile_;
-    std::vector<mfq::MoeProfileCandidate> prewarm_selected_;
+    std::optional<tyloi::MoeCacheProfile> profile_;
+    std::vector<tyloi::MoeProfileCandidate> prewarm_selected_;
     MoeCacheStats stats_;
     std::shared_ptr<MoeHostExpertCache> host_experts_;
     struct RegisteredHostField {
@@ -1829,7 +1829,7 @@ private:
     int64_t mapped_registered_bytes_ = 0;
     std::vector<RegisteredHostField> registered_host_fields_;
     std::unordered_map<void *, const uint8_t *> mapped_host_lookup_;
-    std::unique_ptr<mfq::cuda::MfeMxfp4ReadPool> range_read_pool_;
+    std::unique_ptr<tyloi::cuda::MfeMxfp4ReadPool> range_read_pool_;
     std::unordered_map<int, std::unique_ptr<MoePendingRangeRead>>
         pending_range_reads_;
     bool range_overlap_enabled_ = true;

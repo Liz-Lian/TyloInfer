@@ -9,7 +9,6 @@
 #include <limits>
 
 namespace mfq_selected_attention {
-namespace tb = mfq_tensor_backend;
 
 void values(std::initializer_list<const Tensor*> tensors) {
     const auto* first = *tensors.begin();
@@ -19,16 +18,16 @@ void values(std::initializer_list<const Tensor*> tensors) {
         TYLOINFER_RUNTIME_CHECK(value->device() == first->device(),
             "selected-attention tensors must share one CUDA device");
         const auto dtype = value->scalar_type();
-        TYLOINFER_RUNTIME_CHECK(dtype == tb::kFloat32 || dtype == tb::kFloat16 ||
-            dtype == tb::kBFloat16, "selected attention requires F32/F16/BF16 values");
+        TYLOINFER_RUNTIME_CHECK(dtype == ::tyloi::kFloat32 || dtype == ::tyloi::kFloat16 ||
+            dtype == ::tyloi::kBFloat16, "selected attention requires F32/F16/BF16 values");
     }
 }
 
 Tensor promoted_matmul(const Tensor& left, const Tensor& right) {
     // MLX matmul promotes mixed floating operands, unlike ATen matmul.
     const auto dtype = left.scalar_type() == right.scalar_type()
-        ? left.scalar_type() : tb::kFloat32;
-    return tb::matmul(left.to(dtype), right.to(dtype));
+        ? left.scalar_type() : ::tyloi::kFloat32;
+    return ::tyloi::cuda::matmul(left.to(dtype), right.to(dtype));
 }
 
 Tensor dots(const Tensor& query, const Tensor& pooled) {
@@ -40,8 +39,8 @@ Tensor dots(const Tensor& query, const Tensor& pooled) {
         "selected-attention score dimensions disagree");
     // QSA rotates [B,H,T,D] then permutes back to [B,T,H,D]. Native
     // batched GEMM requires the leading batch axes to have compact strides.
-    return tb::matmul(query.to(tb::kFloat32).contiguous(),
-        pooled.to(tb::kFloat32).transpose(-1, -2).unsqueeze(1)).clamp_min(0.0);
+    return ::tyloi::cuda::matmul(query.to(::tyloi::kFloat32).contiguous(),
+        pooled.to(::tyloi::kFloat32).transpose(-1, -2).unsqueeze(1)).clamp_min(0.0);
 }
 
 void attention_shapes(const Tensor& query, const Tensor& key, const Tensor& value) {
@@ -121,7 +120,7 @@ __global__ void sparse_attention_kernel(
     float* output, int64_t heads, int64_t kv_heads, int64_t tokens,
     int64_t width, int64_t cache_length, int64_t topk, float scale,
     bool half_query, const void* causal_positions, bool wide_positions,
-    AttentionEpilogue epilogue, mfq::cuda::HotKvView hot) {
+    AttentionEpilogue epilogue, tyloi::cuda::HotKvView hot) {
     const int tid = threadIdx.x;
     const int lane = tid & 31;
     const int warp = tid >> 5;
@@ -223,30 +222,30 @@ __global__ void sparse_attention_kernel(
 
 static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
     const Tensor& selected, double scale, bool v_is_k_view,
-    const Tensor& gate, bool half_output, bool fused_query = false, mfq::cuda::HotKvView hot = {}) {
+    const Tensor& gate, bool half_output, bool fused_query = false, tyloi::cuda::HotKvView hot = {}) {
     attention_shapes(q, k, v);
     TYLOINFER_RUNTIME_CHECK(selected.defined() && selected.is_cuda() &&
         selected.device() == q.device() && selected.dim() == 3 &&
         selected.size(0) == q.size(0) && selected.size(1) == q.size(2) &&
         selected.size(2) > 0, "sparse indices must have [B,T,topk] shape");
-    TYLOINFER_RUNTIME_CHECK(selected.scalar_type() == tb::kInt32 ||
-        selected.scalar_type() == tb::kInt64, "sparse indices must be integer");
+    TYLOINFER_RUNTIME_CHECK(selected.scalar_type() == ::tyloi::kInt32 ||
+        selected.scalar_type() == ::tyloi::kInt64, "sparse indices must be integer");
     TYLOINFER_RUNTIME_CHECK(std::isfinite(scale), "attention scale must be finite");
     MfqCudaGuard guard(q.device());
     const bool direct_query = fused_query && !v_is_k_view && q.size(3) == 256 &&
         (q.size(1) == 24 || selected.size(2) <= 512) &&
-        (q.scalar_type() == tb::kFloat16 || q.scalar_type() == tb::kFloat32);
-    auto query = direct_query ? q : q.to(tb::kFloat32).contiguous();
-    auto key = k.to(tb::kFloat16).contiguous();
-    auto value = v_is_k_view ? key : v.to(tb::kFloat16).contiguous();
-    auto indices = selected.to(tb::kInt32).contiguous();
+        (q.scalar_type() == ::tyloi::kFloat16 || q.scalar_type() == ::tyloi::kFloat32);
+    auto query = direct_query ? q : q.to(::tyloi::kFloat32).contiguous();
+    auto key = k.to(::tyloi::kFloat16).contiguous();
+    auto value = v_is_k_view ? key : v.to(::tyloi::kFloat16).contiguous();
+    auto indices = selected.to(::tyloi::kInt32).contiguous();
     if (q.size(0) == 0 || q.size(2) == 0) {
-        return tb::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
-            q.options().dtype(tb::kFloat32));
+        return ::tyloi::cuda::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
+            q.options().dtype(::tyloi::kFloat32));
     }
     if (key.size(2) == 0) {
-        return tb::zeros({q.size(0), q.size(2), q.size(1), q.size(3)},
-            q.options().dtype(tb::kFloat32));
+        return ::tyloi::cuda::zeros({q.size(0), q.size(2), q.size(1), q.size(3)},
+            q.options().dtype(::tyloi::kFloat32));
     }
 
     const bool use_qsa_mma = !v_is_k_view && q.size(3) == 256;
@@ -262,8 +261,8 @@ static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
             ((source_count + index_tile - 1) / index_tile) * index_tile;
         auto shape = indices.sizes().vec();
         shape[2] = padded_count;
-        auto safe_indices = tb::empty(shape, indices.options());
-        auto mask = tb::empty(shape, query.options().dtype(tb::kFloat16));
+        auto safe_indices = ::tyloi::cuda::empty(shape, indices.options());
+        auto mask = ::tyloi::cuda::empty(shape, query.options().dtype(::tyloi::kFloat16));
         TYLOINFER_RUNTIME_CHECK(
             indices.size(0) <= std::numeric_limits<int64_t>::max() /
                 indices.size(1),
@@ -294,8 +293,8 @@ static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
             scale, "glm5_sparse_mla_attention");
     }
 
-    auto output = tb::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
-        q.options().dtype(tb::kFloat32));
+    auto output = ::tyloi::cuda::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
+        q.options().dtype(::tyloi::kFloat32));
     if (output.numel() == 0) return output;
     const int64_t blocks = output.numel() / q.size(3);
     TYLOINFER_RUNTIME_CHECK(blocks <= std::numeric_limits<int>::max(),
@@ -316,7 +315,7 @@ static Tensor sparse_impl(const Tensor& q, const Tensor& k, const Tensor& v,
 }
 
 Tensor sparse(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& selected, double scale, bool v_is_k_view, mfq::cuda::HotKvView hot) {
+    const Tensor& selected, double scale, bool v_is_k_view, tyloi::cuda::HotKvView hot) {
     return sparse_impl(q, k, v, selected, scale, v_is_k_view, Tensor{}, false, false, hot);
 }
 
@@ -340,7 +339,7 @@ AttentionLayout attention_layout(const Tensor& x) {
 }
 
 bool half_or_float(const Tensor& x) {
-    return x.scalar_type() == tb::kFloat16 || x.scalar_type() == tb::kFloat32;
+    return x.scalar_type() == ::tyloi::kFloat16 || x.scalar_type() == ::tyloi::kFloat32;
 }
 
 Tensor gated(const Tensor& attended, const Tensor& gate, bool half_output) {
@@ -348,24 +347,24 @@ Tensor gated(const Tensor& attended, const Tensor& gate, bool half_output) {
     TYLOINFER_RUNTIME_CHECK(attended.dim() == 4 && attended.sizes() == gate.sizes(),
         "attention gate requires matching [B,T,H,D] inputs");
     if (!half_or_float(attended) || !half_or_float(gate))
-        return (attended.to(tb::kFloat32) * tb::sigmoid(gate.to(tb::kFloat32)))
-            .to(half_output ? tb::kFloat16 : tb::kFloat32);
+        return (attended.to(::tyloi::kFloat32) * ::tyloi::cuda::sigmoid(gate.to(::tyloi::kFloat32)))
+            .to(half_output ? ::tyloi::kFloat16 : ::tyloi::kFloat32);
     MfqCudaGuard guard(attended.device());
-    auto output = tb::empty(attended.sizes(), attended.options().dtype(half_output ? tb::kFloat16 : tb::kFloat32));
+    auto output = ::tyloi::cuda::empty(attended.sizes(), attended.options().dtype(half_output ? ::tyloi::kFloat16 : ::tyloi::kFloat32));
     if (!output.numel()) return output;
     const AttentionEpilogue epilogue{gate.data_ptr(), output.data_ptr(),
-        gate.scalar_type() == tb::kFloat32, half_output,
-        gate.scalar_type() == tb::kFloat32 && !gate.is_contiguous(), attention_layout(gate)};
+        gate.scalar_type() == ::tyloi::kFloat32, half_output,
+        gate.scalar_type() == ::tyloi::kFloat32 && !gate.is_contiguous(), attention_layout(gate)};
     const int blocks = int(std::min<int64_t>(65535, (output.numel() + 255) / 256));
     attention_gated_kernel<<<blocks, 256, 0, mfq_current_cuda_stream()>>>(attended.data_ptr(),
-        attended.scalar_type() == tb::kFloat16, attention_layout(attended), epilogue,
+        attended.scalar_type() == ::tyloi::kFloat16, attention_layout(attended), epilogue,
         output.numel(), output.size(2), output.size(1), output.size(3));
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
 
 Tensor sparse_gated(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& indices, const Tensor& gate, double scale, bool half_output, mfq::cuda::HotKvView hot) {
+    const Tensor& indices, const Tensor& gate, double scale, bool half_output, tyloi::cuda::HotKvView hot) {
     attention_shapes(q, k, v);
     values({&q, &gate});
     TYLOINFER_RUNTIME_CHECK(gate.dim() == 4 && gate.size(0) == q.size(0) &&
@@ -375,7 +374,7 @@ Tensor sparse_gated(const Tensor& q, const Tensor& k, const Tensor& v,
     // Keep the shared selected-attention arithmetic for all other widths.
     if (q.size(3) != 256 || !half_or_float(gate) || !q.numel() || !k.size(2))
         return gated(sparse(q, k, v, indices, scale, false,hot), gate, half_output);
-    const char* fused_query = mfq::cuda::env_lookup("TYLOINFER_QSA_SPARSE_QUERY_FUSED");
+    const char* fused_query = tyloi::cuda::env_lookup("TYLOINFER_QSA_SPARSE_QUERY_FUSED");
     return sparse_impl(q, k, v, indices, scale, false, gate, half_output,
         !fused_query || fused_query[0] != '0',hot);
 }
@@ -409,14 +408,14 @@ Tensor block_indices_to_tokens(const Tensor& blocks, const Tensor& positions,
     TYLOINFER_RUNTIME_CHECK(blocks.defined() && positions.defined() && blocks.is_cuda() &&
         positions.is_cuda() && blocks.device() == positions.device() &&
         blocks.dim() == 3 && positions.dim() == 1 && positions.numel() == blocks.size(1) &&
-        (blocks.scalar_type() == tb::kInt32 || blocks.scalar_type() == tb::kInt64) &&
-        (positions.scalar_type() == tb::kInt32 || positions.scalar_type() == tb::kInt64) &&
+        (blocks.scalar_type() == ::tyloi::kInt32 || blocks.scalar_type() == ::tyloi::kInt64) &&
+        (positions.scalar_type() == ::tyloi::kInt32 || positions.scalar_type() == ::tyloi::kInt64) &&
         pool > 0 && budget > 0 && pool <= INT_MAX && budget <= INT_MAX-pool &&
         blocks.size(1) <= INT_MAX && blocks.size(2) <= budget/pool,
         "block-selected token geometry mismatch");
     MfqCudaGuard guard(blocks.device());
     const int64_t columns = budget+pool-1;
-    auto output = tb::empty({blocks.size(0),blocks.size(1),columns},blocks.options().dtype(tb::kInt32));
+    auto output = ::tyloi::cuda::empty({blocks.size(0),blocks.size(1),columns},blocks.options().dtype(::tyloi::kInt32));
     if (!output.numel()) return output;
     auto compact_blocks = blocks.contiguous(), compact_positions = positions.contiguous();
     const int grid = int(std::min<int64_t>(65535,(output.numel()+255)/256));
@@ -426,11 +425,11 @@ Tensor block_indices_to_tokens(const Tensor& blocks, const Tensor& positions,
             compact_blocks.data_ptr<Block>(),compact_positions.data_ptr<Position>(),output.data_ptr<int32_t>(),
             blocks.size(0)*blocks.size(1),int(blocks.size(1)),int(blocks.size(2)),int(pool),int(budget),int(columns));
     };
-    if (blocks.scalar_type() == tb::kInt64) {
-        if (positions.scalar_type() == tb::kInt64) launch(int64_t{},int64_t{});
+    if (blocks.scalar_type() == ::tyloi::kInt64) {
+        if (positions.scalar_type() == ::tyloi::kInt64) launch(int64_t{},int64_t{});
         else launch(int64_t{},int32_t{});
     } else {
-        if (positions.scalar_type() == tb::kInt64) launch(int32_t{},int64_t{});
+        if (positions.scalar_type() == ::tyloi::kInt64) launch(int32_t{},int64_t{});
         else launch(int32_t{},int32_t{});
     }
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
@@ -567,7 +566,7 @@ Tensor mma_reduce_gated(const Tensor& partial,const Tensor& metadata,const Tenso
     bool half_output,int kv_heads,int total_blocks,int parts,int query_columns,int head_columns) {
     values({&partial,&metadata,&gate});
     TYLOINFER_RUNTIME_CHECK(partial.dim()==4 && partial.sizes()==gate.sizes() &&
-        partial.scalar_type()==tb::kFloat32 && metadata.scalar_type()==tb::kFloat32 &&
+        partial.scalar_type()==::tyloi::kFloat32 && metadata.scalar_type()==::tyloi::kFloat32 &&
         partial.is_contiguous() && metadata.is_contiguous() && half_or_float(gate) &&
         kv_heads>0 && partial.size(2)%kv_heads==0 && total_blocks>0 && parts>0 &&
         query_columns>0 && head_columns>0,"MMA gate reduction geometry mismatch");
@@ -582,40 +581,40 @@ Tensor mma_reduce_gated(const Tensor& partial,const Tensor& metadata,const Tenso
     const size_t shared=size_t(parts-1)*sizeof(float2);
     TYLOINFER_RUNTIME_CHECK(shared+sizeof(float)<=48*1024,"MMA gate reduction shared memory exceeded");
     MfqCudaGuard guard(partial.device());
-    auto output=tb::empty(partial.sizes(),partial.options().dtype(half_output?tb::kFloat16:tb::kFloat32));
-    const char* parallel=mfq::cuda::env_lookup("TYLOINFER_QSA_PARALLEL_REDUCE");
+    auto output=::tyloi::cuda::empty(partial.sizes(),partial.options().dtype(half_output?::tyloi::kFloat16: ::tyloi::kFloat32));
+    const char* parallel=tyloi::cuda::env_lookup("TYLOINFER_QSA_PARALLEL_REDUCE");
     const bool parallel_reduce=!parallel || parallel[0]!='0';
     const auto kernel=parallel_reduce?mma_reduce_gate_kernel:mma_reduce_gate_serial_kernel;
     if(output.numel())kernel<<<unsigned(output.numel()/width),256,parallel_reduce?0:shared,mfq_current_cuda_stream()>>>(
         partial.data_ptr<float>(),reinterpret_cast<const float2*>(metadata.data_ptr<float>()),
         gate.data_ptr(),output.data_ptr(),attention_layout(gate),int(tokens),int(heads),kv_heads,
-        int(width),total_blocks,parts,query_columns,head_columns,gate.scalar_type()==tb::kFloat32,
-        half_output,gate.scalar_type()==tb::kFloat32 && !gate.is_contiguous());
+        int(width),total_blocks,parts,query_columns,head_columns,gate.scalar_type()==::tyloi::kFloat32,
+        half_output,gate.scalar_type()==::tyloi::kFloat32 && !gate.is_contiguous());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
 
 Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
     const Tensor& positions, const Tensor& gate, int64_t columns, double scale,
-    bool half_output, bool fused_mma_gate, bool fused_mma_prepare, mfq::cuda::HotKvView hot) {
+    bool half_output, bool fused_mma_gate, bool fused_mma_prepare, tyloi::cuda::HotKvView hot) {
     attention_shapes(q, k, v);
     values({&q, &gate});
     TYLOINFER_RUNTIME_CHECK(gate.dim() == 4 && gate.size(0) == q.size(0) && gate.size(1) == q.size(2) &&
         gate.size(2) == q.size(1) && gate.size(3) == q.size(3) && positions.defined() &&
         positions.is_cuda() && positions.device() == q.device() && positions.dim() == 1 &&
-        positions.numel() == q.size(2) && (positions.scalar_type() == tb::kInt32 || positions.scalar_type() == tb::kInt64) &&
+        positions.numel() == q.size(2) && (positions.scalar_type() == ::tyloi::kInt32 || positions.scalar_type() == ::tyloi::kInt64) &&
         columns > 0 && columns <= INT_MAX && std::isfinite(scale), "causal attention gate geometry mismatch");
     MfqCudaGuard guard(q.device());
     auto cache_positions = positions.contiguous();
     if (!half_or_float(q) || !half_or_float(gate) || (q.size(3) == 256 && !k.size(2))) {
-        auto selected = tb::arange(columns, positions.options()).reshape({1, 1, columns})
+        auto selected = ::tyloi::cuda::arange(columns, positions.options()).reshape({1, 1, columns})
             .expand({q.size(0), q.size(2), columns});
-        selected = tb::where(selected <= cache_positions.reshape({1, q.size(2), 1}),
-            selected, tb::full_like(selected, -1));
+        selected = ::tyloi::cuda::where(selected <= cache_positions.reshape({1, q.size(2), 1}),
+            selected, ::tyloi::cuda::full_like(selected, -1));
         return gated(sparse(q, k, v, selected, scale, false,hot), gate, half_output);
     }
     if (q.size(3) == 256) {
-        auto key = k.to(tb::kFloat16).contiguous(), value = v.to(tb::kFloat16).contiguous();
+        auto key = k.to(::tyloi::kFloat16).contiguous(), value = v.to(::tyloi::kFloat16).contiguous();
         if(hot.mapping && q.numel()) {
             auto attended=mfq_sparse_attn_mma::launch<256,256,1,16,false,true>(q,key,value,
                 Tensor{},Tensor{},Tensor{},Tensor{},scale,"causal_gqa_attention_hot",
@@ -632,16 +631,16 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
         // Prepare the original MMA query, safe indices and validity mask together.
         TYLOINFER_RUNTIME_CHECK(columns <= INT_MAX - 32, "causal MMA index geometry exceeds 32 bits");
         const int64_t padded_columns = ((columns + 31) / 32) * 32;
-        auto query = tb::empty(q.sizes(), q.options().dtype(tb::kFloat32));
-        auto indices = tb::empty({q.size(0), q.size(2), padded_columns}, q.options().dtype(tb::kInt32));
-        auto mask = tb::empty(indices.sizes(), q.options().dtype(tb::kFloat16));
+        auto query = ::tyloi::cuda::empty(q.sizes(), q.options().dtype(::tyloi::kFloat32));
+        auto indices = ::tyloi::cuda::empty({q.size(0), q.size(2), padded_columns}, q.options().dtype(::tyloi::kInt32));
+        auto mask = ::tyloi::cuda::empty(indices.sizes(), q.options().dtype(::tyloi::kFloat16));
         const int blocks = int(std::min<int64_t>(65535, (std::max(query.numel(), indices.numel()) + 255) / 256));
-        if (!blocks) return tb::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
-            q.options().dtype(half_output ? tb::kFloat16 : tb::kFloat32));
+        if (!blocks) return ::tyloi::cuda::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
+            q.options().dtype(half_output ? ::tyloi::kFloat16 : ::tyloi::kFloat32));
         const auto layout = AttentionLayout{q.stride(0), q.stride(2), q.stride(1), q.stride(3)};
         prepare_causal_attention_kernel<<<blocks, 256, 0, mfq_current_cuda_stream()>>>(
-            q.data_ptr(), q.scalar_type() == tb::kFloat16, layout, query.data_ptr<float>(), query.numel(),
-            q.size(1), q.size(2), q.size(3), cache_positions.data_ptr(), cache_positions.scalar_type() == tb::kInt64,
+            q.data_ptr(), q.scalar_type() == ::tyloi::kFloat16, layout, query.data_ptr<float>(), query.numel(),
+            q.size(1), q.size(2), q.size(3), cache_positions.data_ptr(), cache_positions.scalar_type() == ::tyloi::kInt64,
             indices.data_ptr<int32_t>(), reinterpret_cast<half*>(mask.data_ptr()), indices.numel(),
             columns, padded_columns, k.size(2));
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
@@ -652,21 +651,21 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
         return gated(attended, gate, half_output);
     }
     auto query = q.contiguous();
-    auto key = k.to(tb::kFloat16).contiguous(), value = v.to(tb::kFloat16).contiguous();
-    auto output = tb::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
-        q.options().dtype(half_output ? tb::kFloat16 : tb::kFloat32));
+    auto key = k.to(::tyloi::kFloat16).contiguous(), value = v.to(::tyloi::kFloat16).contiguous();
+    auto output = ::tyloi::cuda::empty({q.size(0), q.size(2), q.size(1), q.size(3)},
+        q.options().dtype(half_output ? ::tyloi::kFloat16 : ::tyloi::kFloat32));
     if (!output.numel()) return output;
-    auto scratch = q.size(3) > 1024 ? tb::empty(output.sizes(), q.options().dtype(tb::kFloat32)) : Tensor{};
+    auto scratch = q.size(3) > 1024 ? ::tyloi::cuda::empty(output.sizes(), q.options().dtype(::tyloi::kFloat32)) : Tensor{};
     const auto blocks = output.numel() / q.size(3);
     TYLOINFER_RUNTIME_CHECK(blocks <= INT_MAX, "causal attention exceeds CUDA grid size");
     const AttentionEpilogue epilogue{gate.data_ptr(), output.data_ptr(),
-        gate.scalar_type() == tb::kFloat32, half_output,
-        gate.scalar_type() == tb::kFloat32 && !gate.is_contiguous(), attention_layout(gate)};
+        gate.scalar_type() == ::tyloi::kFloat32, half_output,
+        gate.scalar_type() == ::tyloi::kFloat32 && !gate.is_contiguous(), attention_layout(gate)};
     #define TYLOINFER_LAUNCH_CAUSAL(S,H) sparse_attention_kernel<S,H><<<unsigned(blocks), 256, 0, mfq_current_cuda_stream()>>>( \
         query.data_ptr(), reinterpret_cast<const half*>(key.data_ptr()), reinterpret_cast<const half*>(value.data_ptr()), \
         nullptr, scratch.defined() ? scratch.data_ptr<float>() : nullptr, q.size(1), k.size(1), q.size(2), q.size(3), \
-        k.size(2), columns, float(scale), q.scalar_type() == tb::kFloat16, cache_positions.data_ptr(), \
-        cache_positions.scalar_type() == tb::kInt64, epilogue,hot)
+        k.size(2), columns, float(scale), q.scalar_type() == ::tyloi::kFloat16, cache_positions.data_ptr(), \
+        cache_positions.scalar_type() == ::tyloi::kInt64, epilogue,hot)
     if (q.size(3) <= 256) { if(hot.mapping){TYLOINFER_LAUNCH_CAUSAL(1,true);}else{TYLOINFER_LAUNCH_CAUSAL(1,false);} }
     else if (q.size(3) <= 512) { if(hot.mapping){TYLOINFER_LAUNCH_CAUSAL(2,true);}else{TYLOINFER_LAUNCH_CAUSAL(2,false);} }
     else if (q.size(3) <= 1024) { if(hot.mapping){TYLOINFER_LAUNCH_CAUSAL(4,true);}else{TYLOINFER_LAUNCH_CAUSAL(4,false);} }
@@ -677,7 +676,7 @@ Tensor causal_gated(const Tensor& q, const Tensor& k, const Tensor& v,
 }
 
 Tensor dense(const Tensor& query, const Tensor& key, const Tensor& value,
-                       int64_t offset, double scale, mfq::cuda::HotKvView hot) {
+                       int64_t offset, double scale, tyloi::cuda::HotKvView hot) {
     attention_shapes(query, key, value);
     const auto count = key.size(2);
     TYLOINFER_RUNTIME_CHECK(count > 0 && offset >= 0 && offset <= count &&
@@ -685,19 +684,19 @@ Tensor dense(const Tensor& query, const Tensor& key, const Tensor& value,
     TYLOINFER_RUNTIME_CHECK(std::isfinite(scale), "attention scale must be finite");
     MfqCudaGuard guard(query.device());
     if(hot.mapping) {
-        auto positions=tb::arange(offset,offset+query.size(2),query.options().dtype(tb::kInt64));
+        auto positions=::tyloi::cuda::arange(offset,offset+query.size(2),query.options().dtype(::tyloi::kInt64));
         if(query.size(3)==256)return mfq_sparse_attn_mma::launch<256,256,1,16,false,true>(
             query,key,value,Tensor{},Tensor{},Tensor{},Tensor{},scale,"dense_gqa_attention_hot",
             Tensor{},false,positions,offset+query.size(2),hot);
-        auto selected=tb::arange(offset+query.size(2),positions.options()).reshape({1,1,-1}).expand({1,query.size(2),offset+query.size(2)});
-        selected=tb::where(selected<=positions.reshape({1,-1,1}),selected,tb::full_like(selected,-1));
+        auto selected=::tyloi::cuda::arange(offset+query.size(2),positions.options()).reshape({1,1,-1}).expand({1,query.size(2),offset+query.size(2)});
+        selected=::tyloi::cuda::where(selected<=positions.reshape({1,-1,1}),selected,::tyloi::cuda::full_like(selected,-1));
         return sparse(query,key,value,selected,scale,false,hot);
     }
-    const auto options = query.options().dtype(tb::kInt64);
-    const auto kp = tb::arange(count, options).unsqueeze(0);
-    const auto qp = tb::arange(query.size(2), options).unsqueeze(1) + offset;
+    const auto options = query.options().dtype(::tyloi::kInt64);
+    const auto kp = ::tyloi::cuda::arange(count, options).unsqueeze(0);
+    const auto qp = ::tyloi::cuda::arange(query.size(2), options).unsqueeze(1) + offset;
     auto mask = (kp <= qp).unsqueeze(0).unsqueeze(0);
-    return tb::scaled_dot_product_attention(query, key.to(query.scalar_type()),
+    return ::tyloi::cuda::scaled_dot_product_attention(query, key.to(query.scalar_type()),
         value.to(query.scalar_type()), mask, 0.0, false, scale, true).permute({0, 2, 1, 3});
 }
 

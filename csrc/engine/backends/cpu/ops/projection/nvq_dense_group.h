@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace mfq::cpu::detail {
+namespace tyloi::cpu::detail {
 // Borrow the compact stream in NvqDecodeView::indices. The loader validates
 // its exact length; no padding or expanded code vectors are retained.
 struct DenseNvqRecord {
@@ -56,4 +56,4 @@ inline DenseNvqRecord load_dense_nvq_group(const NvqDecodeView& w,std::int64_t r
     }
     return result;
 }
-} // namespace mfq::cpu::detail
+} // namespace tyloi::cpu::detail

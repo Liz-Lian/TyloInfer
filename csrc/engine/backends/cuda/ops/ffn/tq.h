@@ -8,7 +8,7 @@
 #include <span>
 #include <vector>
 
-namespace mfq::cuda { class BlasResources; }
+namespace tyloi::cuda { class BlasResources; }
 
 namespace tq_ops {
 
@@ -31,15 +31,15 @@ IndexedJobs make_indexed_jobs(
 
 void routed_projection(
     const std::vector<TqWeight>& weights,
-    mfq_tensor_backend::Tensor source,
-    mfq_tensor_backend::Tensor output);
+    ::tyloi::Tensor source,
+    ::tyloi::Tensor output);
 
 void run_long_expert(
     const TqWeight& gate, const TqWeight& up, const TqWeight& down,
     const std::vector<std::int64_t>& slots, std::int64_t routes,
-    const mfq_tensor_backend::Tensor& source,
-    mfq_tensor_backend::Tensor output,
-    mfq::cuda::BlasResources* blas, float limit);
+    const ::tyloi::Tensor& source,
+    ::tyloi::Tensor output,
+    tyloi::cuda::BlasResources* blas, float limit);
 
 void run_indexed(
     std::span<const TqWeight> gate,
@@ -47,8 +47,8 @@ void run_indexed(
     std::span<const TqWeight> down,
     const std::vector<std::vector<std::int64_t>>& slots,
     std::size_t begin, std::int64_t routes,
-    const mfq_tensor_backend::Tensor& source,
-    mfq_tensor_backend::Tensor activated,
-    mfq_tensor_backend::Tensor pairs, float limit, bool wide);
+    const ::tyloi::Tensor& source,
+    ::tyloi::Tensor activated,
+    ::tyloi::Tensor pairs, float limit, bool wide);
 
 } // namespace tq_ops

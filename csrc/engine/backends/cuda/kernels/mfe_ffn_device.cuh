@@ -26,7 +26,7 @@
 #include <climits>
 #include <type_traits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 template<int Capacity>
 __device__ __forceinline__ int token_group_index(const MfeFfnBatch& b,int index) {
@@ -1356,4 +1356,4 @@ __global__ void __launch_bounds__(1024) mfe_ffn_down_reduce_kernel_quad(MfeFfnBa
 }
 
 } // anonymous namespace
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

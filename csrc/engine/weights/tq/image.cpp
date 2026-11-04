@@ -7,7 +7,7 @@
 #include <utility>
 
 std::vector<std::uint8_t> tq_image(
-        const std::vector<std::uint8_t>& blob, const mfq::TqLayout& layout) {
+        const std::vector<std::uint8_t>& blob, const tyloi::TqLayout& layout) {
     // Keep the packed words aligned in the single image consumed by CUDA.
     const auto words_offset = (layout.packed + 3) & ~std::size_t(3);
     const auto relative_offset = words_offset + layout.packed_bytes;
@@ -22,8 +22,8 @@ std::vector<std::uint8_t> tq_image(
     return image;
 }
 
-TqWeight tq_view(mfq_tensor_backend::Tensor image,
-                 const mfq::TqLayout& layout, std::int64_t columns) {
+TqWeight tq_view(::tyloi::Tensor image,
+                 const tyloi::TqLayout& layout, std::int64_t columns) {
     if (columns < 1 || columns > layout.width || layout.rows > INT_MAX ||
         layout.width > INT_MAX) {
         throw std::invalid_argument("invalid TQ CUDA logical shape");
@@ -47,7 +47,7 @@ TqWeight tq_view(mfq_tensor_backend::Tensor image,
 }
 
 TqWeight promote_tq(const TqWeight& weight,
-                   const mfq_tensor_backend::Device& device) {
+                   const ::tyloi::Device& device) {
     TqWeight result=weight;
     result.image=weight.image.to(device,false,false).contiguous();
     const auto old=reinterpret_cast<std::uintptr_t>(weight.image.data_ptr());
@@ -62,16 +62,16 @@ TqWeight promote_tq(const TqWeight& weight,
 
 TqWeight to_device_tq(const std::vector<std::uint8_t>& blob,
                       std::int64_t columns, int device, bool cuda) {
-    const mfq::TqLayout layout(blob.data(), blob.size());
+    const tyloi::TqLayout layout(blob.data(), blob.size());
     const auto image = tq_image(blob, layout);
     const MfqCudaGuard guard(device);
-    auto storage = mfq_tensor_backend::from_blob(
+    auto storage = ::tyloi::cuda::from_blob(
         const_cast<std::uint8_t*>(image.data()),
         {static_cast<std::int64_t>(image.size())},
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8)).clone();
+        ::tyloi::TensorOptions().dtype(::tyloi::kUInt8)).clone();
     if (cuda) {
         storage = storage.to(
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device),
+            ::tyloi::Device(::tyloi::kCUDA, device),
             false, false).contiguous();
     }
     return tq_view(std::move(storage), layout, columns);

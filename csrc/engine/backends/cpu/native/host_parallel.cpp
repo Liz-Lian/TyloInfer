@@ -10,7 +10,7 @@
 #include <thread>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 thread_local bool inside_host_work = false;
@@ -290,4 +290,4 @@ void host_parallel_for(std::int64_t begin, std::int64_t end,
     pool.run(begin, end, grain, threads, function);
 }
 
-} // namespace mfq
+} // namespace tyloi

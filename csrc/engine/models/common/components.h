@@ -30,9 +30,9 @@
 struct CudaExecutionContext;
 
 template <class Model, class Parts>
-void describe_model(const Model& language, const Parts& components, mfq::engine::EngineInfo& info) {
-    if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language); }) {
-        info.capabilities = static_cast<const mfq::models::CausalModel&>(language).capabilities();
+void describe_model(const Model& language, const Parts& components, tyloi::engine::EngineInfo& info) {
+    if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language); }) {
+        info.capabilities = static_cast<const tyloi::models::CausalModel&>(language).capabilities();
         const auto& caps = info.capabilities;
         info.duplex = caps.full_duplex;
         info.multimodal = caps.image_input || caps.video_input || caps.audio_input ||
@@ -44,31 +44,31 @@ void describe_model(const Model& language, const Parts& components, mfq::engine:
 
 template <typename Model>
 struct RuntimeComponents {
-    mfq::ModelGraph graph;
-    mfq::cuda::CudaModelPlan plan;
+    tyloi::ModelGraph graph;
+    tyloi::cuda::CudaModelPlan plan;
     std::optional<
-        mfq::cuda::grid_vision_runtime::CudaGridVisionPromptComponent>
+        tyloi::cuda::grid_vision_runtime::CudaGridVisionPromptComponent>
         grid_vision;
-    std::optional<mfq::cuda::deepseek_v41_runtime::Vision> deepseek_vision;
-    std::optional<mfq::cuda::nemotron_h::CudaRadioPromptComponent>
+    std::optional<tyloi::cuda::deepseek_v41_runtime::Vision> deepseek_vision;
+    std::optional<tyloi::cuda::nemotron_h::CudaRadioPromptComponent>
         radio_vision;
     std::unique_ptr<MtpModule> mtp;
-    std::unique_ptr<mfq::cuda::minicpmo45::Components> composite;
+    std::unique_ptr<tyloi::cuda::minicpmo45::Components> composite;
     bool vision_available = false;
     bool mtp_available = false;
 
-    mfq::cuda::CudaComponentState state() const noexcept {
-        return mfq::cuda::cuda_component_state(
+    tyloi::cuda::CudaComponentState state() const noexcept {
+        return tyloi::cuda::cuda_component_state(
             graph, plan, vision_available, mtp_available);
     }
 
     static constexpr bool streamed_kv() noexcept {
-        return std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>;
+        return std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>;
     }
 
-    mfq::engine::Metrics metrics() const {
-        std::optional<mfq::cuda::KvQuantization> quantization;
-        if constexpr (streamed_kv()) quantization = mfq::cuda::cuda_kv_quantization();
+    tyloi::engine::Metrics metrics() const {
+        std::optional<tyloi::cuda::KvQuantization> quantization;
+        if constexpr (streamed_kv()) quantization = tyloi::cuda::cuda_kv_quantization();
         const auto component_state = state();
         return {
             {"kv_memory_supported", streamed_kv() ? 1.0 : 0.0},
@@ -82,23 +82,23 @@ struct RuntimeComponents {
             {"mtp_available", double(component_state.mtp_available)}};
     }
 
-    mfq::engine::Metrics profile_metrics(const Model& language) const {
-        if constexpr (std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>)
-            return mfq::cuda::qwen4_decode_graph_profile_metrics(language, mtp.get());
+    tyloi::engine::Metrics profile_metrics(const Model& language) const {
+        if constexpr (std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>)
+            return tyloi::cuda::qwen4_decode_graph_profile_metrics(language, mtp.get());
         return {};
     }
 
-    std::optional<mfq::engine::Metrics> memory_metrics(const Model& language) const {
-        if constexpr (std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>)
-            return mfq::cuda::qwen4_cache_memory_metrics(language, mtp.get());
+    std::optional<tyloi::engine::Metrics> memory_metrics(const Model& language) const {
+        if constexpr (std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>)
+            return tyloi::cuda::qwen4_cache_memory_metrics(language, mtp.get());
         return std::nullopt;
     }
 
-    void describe(mfq::engine::EngineInfo& info) const {
+    void describe(tyloi::engine::EngineInfo& info) const {
         const auto component_state = state();
         const bool duplex = bool(composite);
         info.multimodal = component_state.vision_available || duplex;
-        const auto caps = mfq::cuda::cuda_runtime_capabilities(
+        const auto caps = tyloi::cuda::cuda_runtime_capabilities(
             graph, plan, component_state, info.multimodal, duplex);
         info.duplex = caps.full_duplex;
         info.capabilities = {graph.architecture, caps.text,
@@ -106,19 +106,19 @@ struct RuntimeComponents {
             caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
     }
 
-    mfq::StepSequence<mfq::cuda::PreparedPrompt> prepare(
-        Model& language, mfq::cuda::MediaCache& images,
+    tyloi::StepSequence<tyloi::cuda::PreparedPrompt> prepare(
+        Model& language, tyloi::cuda::MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-        mfq::cuda::Projector projector, mfq::cuda::Collectives& collectives,
+        tyloi::cuda::Projector projector, tyloi::cuda::Collectives& collectives,
 #endif
         int primary,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-        mfq::cuda::Executor* executor,
+        tyloi::cuda::Executor* executor,
 #endif
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media) {
         if (composite) return composite->prepare(tokens, media);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if constexpr (std::is_same_v<Model, mfq::cuda::Qwen4CausalLm>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::Qwen4CausalLm>)
 #endif
         if (grid_vision)
             return grid_vision->prepare(language, images,
@@ -130,14 +130,14 @@ struct RuntimeComponents {
                 executor,
 #endif
                 tokens, media);
-        if constexpr (std::is_same_v<Model, mfq::cuda::DeepseekV41CausalLm>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::DeepseekV41CausalLm>)
             if (deepseek_vision)
                 return deepseek_vision->prepare(language, images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                     projector,
 #endif
                     tokens, media);
-        if constexpr (std::is_same_v<Model, mfq::cuda::nemotron_h::Model>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::nemotron_h::Model>)
             if (radio_vision)
                 return radio_vision->prepare(language,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -148,7 +148,7 @@ struct RuntimeComponents {
     }
 
     template <class T>
-    mfq::engine::ControlResult control(const T& value) {
+    tyloi::engine::ControlResult control(const T& value) {
         if (!composite)
             throw std::invalid_argument("model has no duplex component");
         if constexpr (std::is_same_v<T, MfqDuplexSessionParams>) {
@@ -166,50 +166,50 @@ struct RuntimeComponents {
 template <typename Model>
 RuntimeComponents<Model> load_runtime_components(
     Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+        const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
 
 template <>
-RuntimeComponents<mfq::cuda::Qwen4CausalLm>
+RuntimeComponents<tyloi::cuda::Qwen4CausalLm>
 load_runtime_components(
-    mfq::cuda::Qwen4CausalLm& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+    tyloi::cuda::Qwen4CausalLm& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
-RuntimeComponents<mfq::cuda::glm5_next::Model>
+RuntimeComponents<tyloi::cuda::glm5_next::Model>
 load_runtime_components(
-    mfq::cuda::glm5_next::Model& model,
-    const mfq::cuda::weight_loader::Loader& weights,
-    bool load_optional_components, mfq::cuda::Projector projector,
-    mfq::cuda::Collectives& copies, CudaProfiler& profiler);
+    tyloi::cuda::glm5_next::Model& model,
+    const tyloi::cuda::weight_loader::Loader& weights,
+    bool load_optional_components, tyloi::cuda::Projector projector,
+    tyloi::cuda::Collectives& copies, CudaProfiler& profiler);
 
 template <>
-RuntimeComponents<mfq::cuda::DeepseekV41CausalLm>
+RuntimeComponents<tyloi::cuda::DeepseekV41CausalLm>
 load_runtime_components(
-    mfq::cuda::DeepseekV41CausalLm& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+    tyloi::cuda::DeepseekV41CausalLm& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components);
 
-RuntimeComponents<mfq::cuda::nemotron_h::Model>
+RuntimeComponents<tyloi::cuda::nemotron_h::Model>
 load_runtime_components(
-    mfq::cuda::nemotron_h::Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+    tyloi::cuda::nemotron_h::Model& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components,
     CudaExecutionContext& execution);
 
 
-RuntimeComponents<mfq::cuda::minicpmo45::text::Model>
+RuntimeComponents<tyloi::cuda::minicpmo45::text::Model>
 load_runtime_components(
-    mfq::cuda::minicpmo45::text::Model& model,
-    mfq::cuda::minicpmo45::text::State& state,
-    mfq::cuda::Executor& executor,
-    const mfq::cuda::weight_loader::Loader& weights,
+    tyloi::cuda::minicpmo45::text::Model& model,
+    tyloi::cuda::minicpmo45::text::State& state,
+    tyloi::cuda::Executor& executor,
+    const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components, CudaExecutionContext& execution);
 
 template <>
-RuntimeComponents<mfq::cuda::minicpmo45::Model>
+RuntimeComponents<tyloi::cuda::minicpmo45::Model>
 load_runtime_components(
-    mfq::cuda::minicpmo45::Model& model,
-        const mfq::cuda::weight_loader::Loader& weights,
+    tyloi::cuda::minicpmo45::Model& model,
+        const tyloi::cuda::weight_loader::Loader& weights,
     bool load_optional_components);

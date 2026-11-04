@@ -21,19 +21,19 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::weight_loader { struct Loader; }
+namespace tyloi::cuda::weight_loader { struct Loader; }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class Collectives;
 class Executor;
 }
 
-namespace mfq::cuda::grid_vision_runtime {
+namespace tyloi::cuda::grid_vision_runtime {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Tensor = mfq::Tensor;
+using Tensor = tyloi::Tensor;
 #else
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 #endif
 
 class CudaGridVisionEncoder {
@@ -41,7 +41,7 @@ class CudaGridVisionEncoder {
     static CudaGridVisionEncoder load(const weight_loader::Loader& weights,
                                       const GridVisionConfig &config);
 
-    mfq::StepSequence<Tensor> encode(
+    tyloi::StepSequence<Tensor> encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                                    Projector projector,
 #endif
@@ -68,19 +68,19 @@ class CudaGridVisionEncoder {
             const std::vector<std::int32_t>& segment_lengths) const {
             const std::int64_t tokens = input.size(0);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto projected = mfq::ops::reshape(mfq::ops::affine(input, qkv.weight, qkv.bias), {tokens, 3, heads, head_dim});
-            auto query = mfq::ops::axial_rope(mfq::ops::select(projected, 1, 0), positions, theta);
-            auto key = mfq::ops::axial_rope(mfq::ops::select(projected, 1, 1), positions, theta);
-            auto value = mfq::ops::select(projected, 1, 2);
-            auto attended = mfq::ops::segmented_attention(query, key, value, segment_lengths);
-            return mfq::ops::affine(mfq::ops::reshape(attended, {tokens, hidden}), output.weight, output.bias);
+            auto projected = tyloi::ops::reshape(tyloi::ops::affine(input, qkv.weight, qkv.bias), {tokens, 3, heads, head_dim});
+            auto query = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 0), positions, theta);
+            auto key = tyloi::ops::axial_rope(tyloi::ops::select(projected, 1, 1), positions, theta);
+            auto value = tyloi::ops::select(projected, 1, 2);
+            auto attended = tyloi::ops::segmented_attention(query, key, value, segment_lengths);
+            return tyloi::ops::affine(tyloi::ops::reshape(attended, {tokens, hidden}), output.weight, output.bias);
 #else
-            auto projected = mfq::cuda::affine(projector, qkv, input).reshape({tokens, 3, heads, head_dim});
+            auto projected = tyloi::cuda::affine(projector, qkv, input).reshape({tokens, 3, heads, head_dim});
             auto query = vision::apply_axial_rope(projected.select(1, 0), positions, theta);
             auto key = vision::apply_axial_rope(projected.select(1, 1), positions, theta);
             auto value = projected.select(1, 2);
             auto attended = vision::segmented_attention(query, key, value, segment_lengths);
-            return mfq::cuda::affine(projector, output, attended.reshape({tokens, hidden}));
+            return tyloi::cuda::affine(projector, output, attended.reshape({tokens, hidden}));
 #endif
         }
     };
@@ -108,7 +108,7 @@ class CudaGridVisionEncoder {
                           const Tensor& input,
                           const std::vector<std::int32_t>& positions,
                           const std::vector<std::int32_t>& segment_lengths) const {
-            return mfq::models::pre_norm_layer(
+            return tyloi::models::pre_norm_layer(
                 input, [&](const Tensor& x, int stage) { return stage == 0 ? norm1(x) : norm2(x); },
                 [&](Tensor x) { return attention(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -116,21 +116,19 @@ class CudaGridVisionEncoder {
 #endif
                     x, positions, segment_lengths); },
                 [&](Tensor x) {
-                    return mfq::ops::mlp(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        std::move(x), [&](Tensor value) { return mfq::ops::affine(std::move(value), mlp_up.weight, mlp_up.bias); },
-                        [](Tensor value) { return mfq::ops::gelu(std::move(value), true); },
-                        [&](Tensor value) { return mfq::ops::affine(std::move(value), mlp_down.weight, mlp_down.bias); });
+                    return tyloi::ops::affine(tyloi::ops::gelu(
+                        tyloi::ops::affine(std::move(x), mlp_up.weight, mlp_up.bias), true),
+                        mlp_down.weight, mlp_down.bias);
 #else
-                        std::move(x), [&](Tensor value) { return mfq::cuda::affine(projector, mlp_up, std::move(value)); },
-                        [](Tensor value) { return mfq_tensor_backend::gelu(value, "tanh"); },
-                        [&](Tensor value) { return mfq::cuda::affine(projector, mlp_down, std::move(value)); });
+                    return tyloi::cuda::affine(projector, mlp_down, ::tyloi::cuda::gelu(
+                        tyloi::cuda::affine(projector, mlp_up, std::move(x)), "tanh"));
 #endif
                 },
                 [](Tensor residual, Tensor branch) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
                     auto dtype = residual.scalar_type();
-                    return mfq::ops::add(std::move(residual), mfq::ops::cast(std::move(branch), dtype));
+                    return tyloi::ops::add(std::move(residual), tyloi::ops::cast(std::move(branch), dtype));
 #else
                     return residual + branch.to(residual.scalar_type());
 #endif
@@ -157,7 +155,7 @@ class CudaGridVisionPromptComponent {
          std::string input_contract, std::string position_policy);
 
     template <typename Model>
-    mfq::StepSequence<PreparedPrompt> prepare(
+    tyloi::StepSequence<PreparedPrompt> prepare(
         const Model &language, MediaCache &images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector, Collectives &collectives,
@@ -188,7 +186,7 @@ class CudaGridVisionPromptComponent {
         }
         std::string cache_key =
             input_contract_ + '|' + position_policy_ + '|' +
-            mfq::cache::block_hash_hex(mfq::cache::sha256(
+            tyloi::cache::block_hash_hex(tyloi::cache::sha256(
                 media.pixel_values.data(), media.pixel_values.size() * sizeof(float)));
         for (const auto value : media.pixel_shape) {
             cache_key.push_back('|');
@@ -202,21 +200,21 @@ class CudaGridVisionPromptComponent {
         Tensor merged = images.find(cache_key);
         if (!merged.defined()) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto pixels = mfq::ops::from_blob(
+            auto pixels = tyloi::ops::from_blob(
                 const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
-                mfq::TensorOptions().dtype(mfq::ScalarType::float32).device(mfq::DeviceType::cpu));
-            pixels = mfq::ops::clone(std::move(pixels));
-            pixels = mfq::ops::cast(std::move(pixels), mfq::ScalarType::float32, mfq::Device{mfq::DeviceType::cuda, 0});
+                tyloi::TensorOptions().dtype(tyloi::ScalarType::float32).device(tyloi::DeviceType::cpu));
+            pixels = tyloi::ops::clone(std::move(pixels));
+            pixels = tyloi::ops::cast(std::move(pixels), tyloi::ScalarType::float32, tyloi::Device{tyloi::DeviceType::cuda, 0});
 #else
-            auto pixels = mfq_tensor_backend::from_blob(
+            auto pixels = ::tyloi::cuda::from_blob(
                               const_cast<float *>(media.pixel_values.data()), media.pixel_shape,
-                              mfq_tensor_backend::TensorOptions()
-                                  .dtype(mfq_tensor_backend::kFloat32)
-                                  .device(mfq_tensor_backend::kCPU))
+                              ::tyloi::TensorOptions()
+                                  .dtype(::tyloi::kFloat32)
+                                  .device(::tyloi::kCPU))
                               .clone()
-                              .to(mfq_tensor_backend::kCUDA);
+                              .to(::tyloi::kCUDA);
 #endif
-            co_yield mfq::StepState::advanced;
+            co_yield tyloi::StepState::advanced;
             auto encoding = encoder_.encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                 projector,
@@ -230,24 +228,24 @@ class CudaGridVisionPromptComponent {
                     co_yield step.state;
             }
             const auto merge = [&](const auto &norm, const auto &up, const auto &down) {
-                return mfq::models::grid_vision::merge(
+                return tyloi::models::grid_vision::merge(
                     patches, patches.size(0), encoder_.config(),
                     [&](Tensor value) { return norm(value); },
                     [](Tensor value, int64_t rows, int64_t width) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                        return mfq::ops::reshape(std::move(value), {rows, width});
+                        return tyloi::ops::reshape(std::move(value), {rows, width});
 #else
                         return value.reshape({rows, width});
 #endif
                     },
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                    [&](Tensor value) { return mfq::ops::affine(std::move(value), up.weight, up.bias); },
-                    [](Tensor value) { return mfq::ops::gelu(std::move(value)); },
-                    [&](Tensor value) { return mfq::ops::affine(std::move(value), down.weight, down.bias); });
+                    [&](Tensor value) { return tyloi::ops::affine(std::move(value), up.weight, up.bias); },
+                    [](Tensor value) { return tyloi::ops::gelu(std::move(value)); },
+                    [&](Tensor value) { return tyloi::ops::affine(std::move(value), down.weight, down.bias); });
 #else
-                    [&](Tensor value) { return mfq::cuda::affine(projector, up, std::move(value)); },
-                    [](Tensor value) { return mfq_tensor_backend::gelu(value, "none"); },
-                    [&](Tensor value) { return mfq::cuda::affine(projector, down, std::move(value)); });
+                    [&](Tensor value) { return tyloi::cuda::affine(projector, up, std::move(value)); },
+                    [](Tensor value) { return ::tyloi::cuda::gelu(value, "none"); },
+                    [&](Tensor value) { return tyloi::cuda::affine(projector, down, std::move(value)); });
 #endif
             };
             if (encoder_.host_weights()) {
@@ -263,7 +261,7 @@ class CudaGridVisionPromptComponent {
                     output = merge(norm, up, down);
                 }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                merged = loan.finish(mfq_tensor_backend::Tensor(std::move(output)));
+                merged = loan.finish(std::move(output));
 #else
                 merged = loan.finish(std::move(output));
 #endif
@@ -271,31 +269,31 @@ class CudaGridVisionPromptComponent {
                 merged = merge(merger_norm_, merger_up_, merger_down_);
             }
             images.store(cache_key, merged);
-            co_yield mfq::StepState::advanced;
+            co_yield tyloi::StepState::advanced;
         }
 
-        auto prepared = mfq::models::grid_vision::prepare(
+        auto prepared = tyloi::models::grid_vision::prepare(
             token_ids, merged, merged.size(0), image_token_id_, video_token_id_, encoder_.config(),
             {grid},
             [&](const auto &tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto ids = mfq::ops::tensor(tokens, mfq::Device{mfq::DeviceType::cuda, 0});
-                Tensor shaped = mfq::ops::reshape(std::move(ids), {1, -1});
+                auto ids = tyloi::ops::tensor(tokens, tyloi::Device{tyloi::DeviceType::cuda, 0});
+                Tensor shaped = tyloi::ops::reshape(std::move(ids), {1, -1});
                 if constexpr (requires(const Model &value, Tensor value_ids, int device) {
                                   value.embedding(std::move(value_ids), device);
                               }) {
-                    return mfq::ops::contiguous(language.embedding(std::move(shaped), primary));
+                    return tyloi::ops::contiguous(language.embedding(std::move(shaped), primary));
                 } else {
-                    return mfq::ops::contiguous(language.embed_forward(mfq_tensor_backend::Tensor(shaped)));
+                    return tyloi::ops::contiguous(language.embed_forward(shaped));
                 }
 #else
                 auto ids =
-                    mfq_tensor_backend::tensor(tokens, mfq_tensor_backend::TensorOptions()
-                                                           .dtype(mfq_tensor_backend::kInt64)
-                                                           .device(mfq_tensor_backend::kCUDA));
+                    ::tyloi::cuda::tensor(tokens, ::tyloi::TensorOptions()
+                                                           .dtype(::tyloi::kInt64)
+                                                           .device(::tyloi::kCUDA));
                 ids = ids.reshape({1, -1});
-                if constexpr (requires(const Model &value, mfq::cuda::Executor &value_executor,
-                                       mfq::cuda::Collectives &collectives, int primary,
+                if constexpr (requires(const Model &value, tyloi::cuda::Executor &value_executor,
+                                       tyloi::cuda::Collectives &collectives, int primary,
                                        Tensor value_ids) {
                                   embed(value, value_executor, collectives, primary,
                                         std::move(value_ids));
@@ -312,31 +310,31 @@ class CudaGridVisionPromptComponent {
             },
             [](Tensor &embeddings, const Tensor &vision, const std::vector<int64_t> &indices) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto index = mfq::ops::tensor(indices, mfq::Device{mfq::DeviceType::cuda, 0});
-                mfq::ops::index_copy(embeddings, 1, std::move(index),
-                    mfq::ops::unsqueeze(mfq::ops::cast(vision, embeddings.scalar_type()), 0));
+                auto index = tyloi::ops::tensor(indices, tyloi::Device{tyloi::DeviceType::cuda, 0});
+                tyloi::ops::index_copy(embeddings, 1, std::move(index),
+                    tyloi::ops::unsqueeze(tyloi::ops::cast(vision, embeddings.scalar_type()), 0));
 #else
                 auto index =
-                    mfq_tensor_backend::tensor(indices, mfq_tensor_backend::TensorOptions()
-                                                            .dtype(mfq_tensor_backend::kInt64)
-                                                            .device(mfq_tensor_backend::kCUDA));
+                    ::tyloi::cuda::tensor(indices, ::tyloi::TensorOptions()
+                                                            .dtype(::tyloi::kInt64)
+                                                            .device(::tyloi::kCUDA));
                 embeddings.index_copy_(1, index, vision.to(embeddings.scalar_type()).unsqueeze(0));
 #endif
             },
             [](const GridMropePositions &positions) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                Tensor values = mfq::ops::tensor(positions.values, mfq::Device{mfq::DeviceType::cpu, 0});
-                values = mfq::ops::reshape(std::move(values), {3, positions.token_count});
-                values = mfq::ops::cast(std::move(values), mfq_tensor_backend::kInt32, mfq::Device{mfq::DeviceType::cuda, 0});
-                return mfq::ops::cast(std::move(values), mfq_tensor_backend::kInt64);
+                Tensor values = tyloi::ops::tensor(positions.values, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                values = tyloi::ops::reshape(std::move(values), {3, positions.token_count});
+                values = tyloi::ops::cast(std::move(values), ::tyloi::kInt32, tyloi::Device{tyloi::DeviceType::cuda, 0});
+                return tyloi::ops::cast(std::move(values), ::tyloi::kInt64);
 #else
-                return mfq_tensor_backend::tensor(positions.values,
-                                                  mfq_tensor_backend::TensorOptions()
-                                                      .dtype(mfq_tensor_backend::kInt32)
-                                                      .device(mfq_tensor_backend::kCPU))
+                return ::tyloi::cuda::tensor(positions.values,
+                                                  ::tyloi::TensorOptions()
+                                                      .dtype(::tyloi::kInt32)
+                                                      .device(::tyloi::kCPU))
                     .reshape({3, positions.token_count})
-                    .to(mfq_tensor_backend::kCUDA)
-                    .to(mfq_tensor_backend::kInt64);
+                    .to(::tyloi::kCUDA)
+                    .to(::tyloi::kInt64);
 #endif
             });
         co_yield PreparedPrompt{token_ids, std::move(prepared.embeddings),
@@ -364,4 +362,4 @@ class CudaGridVisionPromptComponent {
     std::string position_policy_;
 };
 
-} // namespace mfq::cuda::grid_vision_runtime
+} // namespace tyloi::cuda::grid_vision_runtime

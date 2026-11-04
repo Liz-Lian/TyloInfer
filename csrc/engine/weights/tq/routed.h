@@ -14,7 +14,7 @@ struct TqRoutedWeight {
     std::uint64_t source_id = 0;
     std::int64_t experts = 0, out = 0, input = 0;
 
-    mfq_tensor_backend::Tensor forward(
-        mfq_tensor_backend::Tensor input_value,
-        mfq_tensor_backend::Tensor ids) const;
+    ::tyloi::Tensor forward(
+        ::tyloi::Tensor input_value,
+        ::tyloi::Tensor ids) const;
 };

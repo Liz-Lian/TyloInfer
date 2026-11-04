@@ -4,26 +4,26 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-mfq::Tensor Model::embedding(mfq::Tensor ids, int primary) const {
+tyloi::Tensor Model::embedding(tyloi::Tensor ids, int primary) const {
     if (ids.dim() != 1 && ids.dim() != 2)
         throw std::runtime_error("token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = Tensor(std::move(ids)).unsqueeze(0);
     if (ids.size(0) <= 0 || ids.size(1) <= 0)
         throw std::runtime_error("token IDs must not be empty");
-    auto normalized = mfq::ops::contiguous(mfq::ops::copy(
-        mfq::ops::cast(std::move(ids), mfq::ScalarType::int64),
-        mfq::Device{mfq::DeviceType::cuda, primary}));
-    auto result = mfq::ops::measure("model.embed", normalized.device(), [&] {
-        return mfq::ops::embedding(std::move(normalized), embed);
+    auto normalized = tyloi::ops::contiguous(tyloi::ops::copy(
+        tyloi::ops::cast(std::move(ids), tyloi::ScalarType::int64),
+        tyloi::Device{tyloi::DeviceType::cuda, primary}));
+    auto result = tyloi::ops::measure("model.embed", normalized.device(), [&] {
+        return tyloi::ops::embedding(std::move(normalized), embed);
     });
-    return mfq::ops::contiguous(mfq::ops::cast(std::move(result), mfq::ScalarType::float16));
+    return tyloi::ops::contiguous(tyloi::ops::cast(std::move(result), tyloi::ScalarType::float16));
 }
 #endif
 
-std::array<mfq::cuda::Task, 2> Layer::tasks() const {
+std::array<tyloi::cuda::Task, 2> Layer::tasks() const {
     if (const auto* full = std::get_if<Full>(&weights)) {
         return {{
             {task::Attention{0, 1, 2, full->attention, 0}, full->attention.layer},
@@ -42,4 +42,4 @@ Task Linear::replay(std::int64_t tokens) const {
     return {task::Replay{attention, 0, tokens}};
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

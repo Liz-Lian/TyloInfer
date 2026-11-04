@@ -31,10 +31,10 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::deepseek_v41_runtime {
+namespace tyloi::cuda::deepseek_v41_runtime {
 
-using EngramTensor = mfq_tensor_backend::Tensor;
-using EngramConfig = mfq::models::deepseek_v41::Config;
+using EngramTensor = ::tyloi::Tensor;
+using EngramConfig = tyloi::models::deepseek_v41::Config;
 
 namespace engram_detail {
 
@@ -143,13 +143,13 @@ inline float decode_e4m3(std::uint8_t raw) {
 
 } // namespace engram_detail
 
-using EngramHashBatch = mfq::models::deepseek_v41::EngramHashBatch;
-class EngramHashState : public mfq::models::deepseek_v41::EngramHashState {
-    using HashState = mfq::models::deepseek_v41::EngramHashState;
+using EngramHashBatch = tyloi::models::deepseek_v41::EngramHashBatch;
+class EngramHashState : public tyloi::models::deepseek_v41::EngramHashState {
+    using HashState = tyloi::models::deepseek_v41::EngramHashState;
 
   public:
     using HashState::HashState;
-    static std::unique_ptr<EngramHashState> load(const mfq::source::Source &model,
+    static std::unique_ptr<EngramHashState> load(const tyloi::source::Source &model,
                                                  const EngramConfig &config) {
         constexpr const char *asset_name = "__mfq_asset__/deepseek-v41-engram-v1.bin";
         if (!model.has_asset(asset_name)) {
@@ -244,7 +244,7 @@ class EngramHashState : public mfq::models::deepseek_v41::EngramHashState {
         const int batch = static_cast<int>(token_ids.size(0));
         const int tokens = static_cast<int>(token_ids.size(1));
         auto host_ids =
-            token_ids.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous();
+            token_ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         return HashState::forward(host_ids.data_ptr<int64_t>(), batch, tokens, pos0,image_mask);
     }
 
@@ -256,10 +256,10 @@ class EngramHashState : public mfq::models::deepseek_v41::EngramHashState {
             return EngramHashState(8, 3, 2, 0, {1}, {36}, {5, 7, 11, 13}, {0, 5, 12, 23}, {3, 5, 7},
                                    {0, 1, 2, 3, 4, 5, 6, 7});
         };
-        const auto options = mfq_tensor_backend::TensorOptions()
-                                 .device(mfq_tensor_backend::kCPU)
-                                 .dtype(mfq_tensor_backend::kInt64);
-        auto all_ids = mfq_tensor_backend::tensor(std::vector<std::int64_t>{1, 2, 3, 4}, options)
+        const auto options = ::tyloi::TensorOptions()
+                                 .device(::tyloi::kCPU)
+                                 .dtype(::tyloi::kInt64);
+        auto all_ids = ::tyloi::cuda::tensor(std::vector<std::int64_t>{1, 2, 3, 4}, options)
                            .reshape({1, 4});
         auto full_state = make_state();
         const auto full = full_state.forward(all_ids, 0);
@@ -292,16 +292,16 @@ class EngramHashState : public mfq::models::deepseek_v41::EngramHashState {
 
 class EngramTable {
   public:
-    static std::shared_ptr<EngramTable> load(const mfq::source::Source&, const std::string&,
+    static std::shared_ptr<EngramTable> load(const tyloi::source::Source&, const std::string&,
         std::int64_t expected_rows, int expected_width, std::size_t cache_capacity_rows);
     ~EngramTable();
     void prefetch(const std::int64_t* rows, std::size_t count) const;
     EngramTensor gather(const std::int64_t* rows, int batch, int tokens, int hash_columns,
-                        const mfq_tensor_backend::Device& device) const;
+                        const ::tyloi::Device& device) const;
   private:
-    EngramTable(const mfq::source::Source&, std::string, std::uint64_t nbytes,
+    EngramTable(const tyloi::source::Source&, std::string, std::uint64_t nbytes,
                 std::int64_t rows, int width, std::uint64_t value_bytes, std::size_t capacity,
-                std::shared_ptr<mfq::NintRows> nint={});
+                std::shared_ptr<tyloi::NintRows> nint={});
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -319,10 +319,10 @@ class Engram {
             static_cast<int>(std::distance(config.engram_layer_ids.begin(), found));
         const auto prefix = "model.block." + std::to_string(layer) + ".associative_memory.";
         auto query = weights.tensor(prefix + "query.weight")
-                         .to(mfq_tensor_backend::kFloat32)
+                         .to(::tyloi::kFloat32)
                          .contiguous();
         auto key = weights.tensor(prefix + "key.weight")
-                       .to(mfq_tensor_backend::kFloat32)
+                       .to(::tyloi::kFloat32)
                        .contiguous();
         if (query.dim() != 2 || query.size(0) != config.hc_mult || query.size(1) != config.hidden ||
             key.sizes() != query.sizes()) {
@@ -417,4 +417,4 @@ class Engram {
     EngramTensor query_key_weight_;
 };
 
-} // namespace mfq::cuda::deepseek_v41_runtime
+} // namespace tyloi::cuda::deepseek_v41_runtime

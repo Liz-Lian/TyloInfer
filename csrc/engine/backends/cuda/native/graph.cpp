@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 GraphWarmupScope::GraphWarmupScope(std::shared_ptr<Context> context, cudaStream_t stream)
     : context_(std::move(context)), stream_(stream) {
@@ -159,12 +159,12 @@ void Graph::capture_end() {
             pool_streams_[index].stream());
     }
     TYLOINFER_NATIVE_CUDA_CHECK(capture_status);
-    if (const char* dot_path = mfq::cuda::env_lookup("TYLOINFER_NATIVE_CUDA_GRAPH_DOT");
+    if (const char* dot_path = tyloi::cuda::env_lookup("TYLOINFER_NATIVE_CUDA_GRAPH_DOT");
         dot_path != nullptr && dot_path[0] != '\0') {
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphDebugDotPrint(
             graph_, dot_path, cudaGraphDebugDotFlagsVerbose));
     }
-    if (const char* trace = mfq::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH");
+    if (const char* trace = tyloi::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_GRAPH");
         trace != nullptr && std::atoi(trace) != 0) {
         std::size_t count = 0;
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphGetNodes(graph_, nullptr, &count));
@@ -173,7 +173,7 @@ void Graph::capture_end() {
         std::unordered_set<void*> allocations;
         std::unordered_set<void*> frees;
         std::unordered_set<void*> reported_kernels;
-        const char* resources=mfq::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_KERNEL_RESOURCES");
+        const char* resources=tyloi::cuda::env_lookup("TYLOINFER_TRACE_NATIVE_CUDA_KERNEL_RESOURCES");
         std::size_t kernels = 0;
         std::size_t copies = 0;
         for (auto node : nodes) {
@@ -226,7 +226,7 @@ void Graph::capture_end() {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphInstantiate(&executable_, graph_, 0));
     // A first replay may block in the driver while it uploads a large graph.
     // Prepare it before replay can wait for CPU-produced mapped flags.
-    if (const char* upload = mfq::cuda::env_lookup("TYLOINFER_NATIVE_CUDA_GRAPH_UPLOAD");
+    if (const char* upload = tyloi::cuda::env_lookup("TYLOINFER_NATIVE_CUDA_GRAPH_UPLOAD");
         upload == nullptr || std::atoi(upload) != 0) {
         TYLOINFER_NATIVE_CUDA_CHECK(cudaGraphUpload(executable_, stream_.stream()));
         TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamSynchronize(stream_.stream()));
@@ -284,4 +284,4 @@ void Graph::reset() noexcept {
     shared_pool_ = false;
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

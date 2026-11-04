@@ -19,20 +19,20 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 namespace {
 
 struct LayerLoader : TransformerWeightLoader {
-    using Ffn = mfq::cuda::Ffn;
+    using Ffn = tyloi::cuda::Ffn;
     bool mirror_scalars = true;
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
 
     static Tensor log_negative(Tensor value) {
-        return mfq_tensor_backend::log(-value);
+        return ::tyloi::cuda::log(-value);
     }
 
     void linear_projections(LinearAttention& attention,
-                            const mfq::models::qwen35::LinearWeightNames& names,
+                            const tyloi::models::qwen35::LinearWeightNames& names,
                             bool split_qkv) const {
         if (split_qkv) {
             attention.split_in_proj = true;
@@ -94,7 +94,7 @@ struct LayerLoader : TransformerWeightLoader {
             attention.out_proj_dense = weights.tensor(name);
             if (require_tensor(weights.source, name).dtype == "F16")
                 attention.out_proj_dense =
-                    attention.out_proj_dense.to(mfq_tensor_backend::kFloat16).contiguous();
+                    attention.out_proj_dense.to(::tyloi::kFloat16).contiguous();
             if (attention.out_proj_dense.dim() != 2)
                 throw std::runtime_error(
                     "dense linear_attention output projection must be 2D");
@@ -120,16 +120,16 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config,
     if (Config::attention_kind(type) == Config::AttentionKind::full) {
         Full full;
         full.attention.kv_quantization = cuda_kv_quantization();
-        mfq::models::load_attention_mixer(
+        tyloi::models::load_attention_mixer(
             full.attention, loader, config, index,
             std::string(tensor_root) + ".block." + std::to_string(index) + ".",
             config.legacy_tensor_layout.norm_weight_offset,
             config.attention_output_gate);
         full.attention.attention_rotary_dim = config.rotary_dim;
-        full.attention.no_rope = config.positional_encoding == mfq::models::PositionalEncoding::none;
+        full.attention.no_rope = config.positional_encoding == tyloi::models::PositionalEncoding::none;
         full.ffn_norm = loader.dense(std::string(tensor_root) + ".block." +
                                      std::to_string(index) + ".mlp.norm.weight");
-        full.ffn = mfq::models::qwen35::load_ffn<Ffn>(loader, config, index, tensor_root);
+        full.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, tensor_root);
         result.weights = std::move(full);
     } else {
         Linear linear;
@@ -144,29 +144,29 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config,
         const auto prefix = std::string(tensor_root) + ".block." + std::to_string(index) + ".";
         linear.attention.attn_norm = loader.dense(prefix + "attention.norm.weight");
         linear.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-        mfq::models::qwen35::load_linear_attention(
+        tyloi::models::qwen35::load_linear_attention(
             linear.attention, loader, config, index, tensor_root);
-        linear.ffn = mfq::models::qwen35::load_ffn<Ffn>(loader, config, index, tensor_root);
+        linear.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, tensor_root);
         result.weights = std::move(linear);
     }
     return result;
 }
 
-Model load(std::shared_ptr<const mfq::ModelSource> source,
+Model load(std::shared_ptr<const tyloi::ModelSource> source,
            const weight_loader::Loader& weights, LayerPlacementConfig& placement,
-           mfq::ops::YarnScaling& yarn, int& cpu_layers,
+           tyloi::ops::YarnScaling& yarn, int& cpu_layers,
            const LoadOptions& options) {
-    mfq::cuda::validate_model_source(*source);
+    tyloi::cuda::validate_model_source(*source);
     Model model;
     model.source = std::move(source);
     const auto& source_ref = *model.source;
-    model.graph = mfq::models::graph(source_ref);
+    model.graph = tyloi::models::graph(source_ref);
     model.plan = cuda_model_plan(model.graph);
     if (model.graph.component("vision") != nullptr &&
         model.plan.vision != CudaVisionAdapter::grid_vit)
         throw std::runtime_error("Qwen CUDA vision requires grid_vit/grid_vision.v1/grid_mrope");
-    auto definition = mfq::models::config_json(source_ref, options.config_path);
-    definition = mfq::cuda::configure_yarn(yarn, options.extend_yarn, std::move(definition),
+    auto definition = tyloi::models::config_json(source_ref, options.config_path);
+    definition = tyloi::cuda::configure_yarn(yarn, options.extend_yarn, std::move(definition),
                                            model.graph.backbone, options.context_size);
     if (model.graph.backbone != "qwen3_5" && model.graph.backbone != "generic_qwen")
         throw std::runtime_error("Qwen3.5 loading requires a Qwen-compatible model graph");
@@ -179,7 +179,7 @@ Model load(std::shared_ptr<const mfq::ModelSource> source,
     }
     if (model.config.num_hidden_layers != model.graph.topology.text_layers)
         throw std::runtime_error("model graph/config text-layer topology mismatch");
-    model.metadata = mfq::models::qwen35::metadata_from_config(model.config);
+    model.metadata = tyloi::models::qwen35::metadata_from_config(model.config);
 
     if (options.expert_parallel && model.config.num_experts <= 0)
         throw std::runtime_error("--expert-parallel requires a model with routed experts");
@@ -209,8 +209,8 @@ Model load(std::shared_ptr<const mfq::ModelSource> source,
     cpu_layers = placed_cpu_layers;
     const auto& config = model.config;
     MfqCudaGuard scope(weights.placement.device);
-    if (config.positional_encoding != mfq::models::PositionalEncoding::none) {
-        const auto make_rope = [&](mfq_tensor_backend::Device device) {
+    if (config.positional_encoding != tyloi::models::PositionalEncoding::none) {
+        const auto make_rope = [&](::tyloi::Device device) {
             RopeCache rope(config.max_position_embeddings, config.rotary_dim,
                            config.rope_base, 0, -1, device,
                            model.metadata.rope_interleaved, yarn);
@@ -218,16 +218,16 @@ Model load(std::shared_ptr<const mfq::ModelSource> source,
                                  config.rotary_dim, device);
             return rope;
         };
-        const auto primary = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, weights.placement.device);
+        const auto primary = ::tyloi::Device(
+            ::tyloi::kCUDA, weights.placement.device);
         model.rope = make_rope(primary);
         if (cpu_layers > 0)
-            model.cpu_rope = make_rope(mfq_tensor_backend::Device(mfq_tensor_backend::kCPU));
+            model.cpu_rope = make_rope(::tyloi::Device(::tyloi::kCPU));
         if (placement.enabled()) {
             for (int device : placement.devices) {
                 MfqCudaGuard rope_guard(device);
                 model.device_ropes.emplace(
-                    device, make_rope(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device)));
+                    device, make_rope(::tyloi::Device(::tyloi::kCUDA, device)));
             }
         }
     }
@@ -296,13 +296,13 @@ std::optional<Predictor> load_predictor(TransformerWeightLoader& loader,
         const auto prefix = "predictor.block." + std::to_string(index) + ".";
         Predictor::Layer layer;
         layer.attention.kv_quantization = quantization;
-        mfq::models::load_attention_mixer(layer.attention, loader, config, index, prefix,
+        tyloi::models::load_attention_mixer(layer.attention, loader, config, index, prefix,
             config.legacy_tensor_layout.norm_weight_offset, config.attention_output_gate);
         layer.ffn_norm = loader.dense(prefix + "mlp.norm.weight");
-        layer.ffn = mfq::models::qwen35::load_ffn<Ffn>(loader, config, index, "predictor");
+        layer.ffn = tyloi::models::qwen35::load_ffn<Ffn>(loader, config, index, "predictor");
         model.layers.push_back(std::move(layer));
     }
     return model;
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

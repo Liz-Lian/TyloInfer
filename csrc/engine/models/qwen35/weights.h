@@ -4,7 +4,7 @@
 #include "engine/ops.h"
 #include "../common/weight_loading.h"
 
-namespace mfq::models::qwen35 {
+namespace tyloi::models::qwen35 {
 
 struct LinearWeightNames {
     std::string qkv, qk, value, gate, alpha, beta;
@@ -29,7 +29,7 @@ Ffn load_ffn(Loader& ops, const Config& config, int layer, std::string_view tens
     ffn.moe_shared_gate = ops.router_parameter(prefix + "shared_expert.router.weight");
     ffn.moe_top_k = static_cast<int>(config.num_experts_per_tok);
     const auto routing = config.routing();
-    ffn.moe_use_sqrt_softplus = routing.activation == mfq::ops::RouterActivation::sqrt_softplus;
+    ffn.moe_use_sqrt_softplus = routing.activation == tyloi::ops::RouterActivation::sqrt_softplus;
     ffn.moe_normalize = routing.normalize;
     ffn.moe_delayed_softmax = routing.delayed_softmax;
     ffn.moe_router_scale = routing.scale;
@@ -75,4 +75,4 @@ void load_linear_attention(Attention& attention, Loader& ops, const Config& conf
 }
 
 
-} // namespace mfq::models::qwen35
+} // namespace tyloi::models::qwen35

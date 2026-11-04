@@ -34,7 +34,6 @@
 #include <fstream>
 #endif
 
-namespace tb=mfq_tensor_backend;
 namespace {
 class PhaseClock {
     std::atomic<std::uint64_t>& total_;
@@ -51,24 +50,24 @@ public:
     }
 };
 bool native_residency_dma_enabled() {
-    const auto* residency=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");
-    if(residency)return residency[0]=='1' && mfq::cuda::NativeDmaBatch::available();
+    const auto* residency=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_NATIVE_DMA");
+    if(residency)return residency[0]=='1' && tyloi::cuda::NativeDmaBatch::available();
 #if defined(_WIN32)
     // Follow the measured Windows transfer default; preserve the global opt-out.
-    const auto* pipeline=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_BATCH");
-    return (!pipeline || std::atoi(pipeline)>0) && mfq::cuda::NativeDmaBatch::available();
+    const auto* pipeline=tyloi::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_BATCH");
+    return (!pipeline || std::atoi(pipeline)>0) && tyloi::cuda::NativeDmaBatch::available();
 #else
     return false;
 #endif
 }
-MoeResidencyManager::MemorySample process_memory() { return mfq::sample_host_memory(); }
+MoeResidencyManager::MemorySample process_memory() { return tyloi::sample_host_memory(); }
 }
 struct MoeResidencyManager::Impl {
     struct Move {
         int incoming_source=0,outgoing_source=0,cohort=0,incoming=0,outgoing=0,slot=-1;
         int incoming_bundle=0,incoming_projection=0;
         MoeHostExpertCache::Lease lease;
-        mfq::MoeCacheSlotBook::Replacement replacement;
+        tyloi::MoeCacheSlotBook::Replacement replacement;
         // Canonical expert formats have at most seven physical fields. Keep
         // transaction metadata with the move instead of allocating three tiny
         // vectors for every promoted projection on every adaptation round.
@@ -92,10 +91,10 @@ struct MoeResidencyManager::Impl {
     int first=0,last=0;
     int64_t rounds=0;
     int pending_tokens=0;
-    std::unique_ptr<mfq::engine::RouteHistory> route_history;
+    std::unique_ptr<tyloi::engine::RouteHistory> route_history;
     std::vector<std::vector<uint8_t>> projection_marks;
-    const float heat_retention=mfq::cuda::runtime_options::residency_heat_retention();
-    const int interval=mfq::cuda::runtime_options::residency_interval();
+    const float heat_retention=tyloi::cuda::runtime_options::residency_heat_retention();
+    const int interval=tyloi::cuda::runtime_options::residency_interval();
     const bool exchange_defaults=[this] {
         // The measured combination needs fixed GPU routing, registered RAM,
         // transfer-cache reuse and no background CPU calibration. Keep it a
@@ -109,71 +108,71 @@ struct MoeResidencyManager::Impl {
         for(const auto* name:{"TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE","TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE",
                 "TYLOINFER_MOE_RESIDENCY_CACHED_REFILL","TYLOINFER_MOE_RESIDENCY_BATCHED",
                 "TYLOINFER_MOE_RESIDENCY_ASYNC_PUBLISH","TYLOINFER_MOE_RESIDENCY_WINDOW_PREPARE"}) {
-            const auto* value=mfq::cuda::env_lookup(name);if(value && value[0]!='1')return false;
+            const auto* value=tyloi::cuda::env_lookup(name);if(value && value[0]!='1')return false;
         }
-        const auto* promotion=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+        const auto* promotion=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return !promotion || promotion[0]=='2';
     }();
     const bool promote_transfer=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return flag?(flag[0]=='1' || flag[0]=='2'):exchange_defaults;
     }();
     const bool reuse_transfer=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PROMOTE_TRANSFER");
         return flag?flag[0]=='2':exchange_defaults;
     }();
-    std::vector<mfq::MoeCacheKey> speculative_host_keys;
+    std::vector<tyloi::MoeCacheKey> speculative_host_keys;
     // One streamed expert serves every matching row of a verification window.
     // Rank its avoided transfer once, rather than counting each routed token.
     const int speculative_heat_mode=[] {
-        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_MTP_WINDOW_HEAT");
+        const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_MTP_WINDOW_HEAT");
         return option?std::clamp(std::atoi(option),0,2):2;
     }();
     bool traced_speculative_heat=false;
-    std::unique_ptr<mfq::MoeResidencyRanker> ranking;
+    std::unique_ptr<tyloi::MoeResidencyRanker> ranking;
     struct TransferStage {std::string key;MoeGpuArena* arena=nullptr;int projection=0;};
     std::vector<std::vector<TransferStage>> transfer_stages;
     bool direct=false;
     bool batched=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_BATCHED");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_BATCHED");
         return flag?flag[0]!='0':exchange_defaults;
     }();
     bool async_publish=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_ASYNC_PUBLISH");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_ASYNC_PUBLISH");
         return flag?flag[0]!='0':exchange_defaults;
     }();
     bool window_prepare=[] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_WINDOW_PREPARE");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_WINDOW_PREPARE");
         return !flag || flag[0]!='0';
     }();
     bool expert_fence=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_EXPERT_FENCE");
         return flag?flag[0]=='1':exchange_defaults;
     }();
     bool cached_refill=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_CACHED_REFILL");
         return flag?flag[0]=='1':exchange_defaults;
     }();
     bool direct_exchange=[this] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DIRECT_EXCHANGE");
         return flag?flag[0]=='1':exchange_defaults;
     }();
     std::uint64_t refill_dma_min=[] {
-        const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_REFILL_DMA_MIN_BYTES");
+        const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_REFILL_DMA_MIN_BYTES");
         return value?std::uint64_t(std::max<long long>(0,std::atoll(value))):std::uint64_t(0);
     }();
     std::uint64_t refill_chunk_bytes=[] {
-        const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_REFILL_CHUNK_BYTES");
+        const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_REFILL_CHUNK_BYTES");
         if(!value)return std::uint64_t(65536);
         const auto parsed=std::atoll(value);
         return parsed<=0?std::uint64_t(0):std::uint64_t(std::clamp<long long>(parsed,4096,1048576))&~std::uint64_t(15);
     }();
     bool parallel_host=[] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PARALLEL_HOST");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PARALLEL_HOST");
         return flag && flag[0]!='0';
     }();
     const bool retire_kv_duplicates=[] {
-        const auto* flag=mfq::cuda::env_lookup("TYLOINFER_MOE_RETIRE_KV_DUPLICATES");
+        const auto* flag=tyloi::cuda::env_lookup("TYLOINFER_MOE_RETIRE_KV_DUPLICATES");
         return !flag || flag[0]!='0';
     }();
     void retire_promoted_kv() {
@@ -186,12 +185,12 @@ struct MoeResidencyManager::Impl {
     std::atomic<std::uint64_t> shadow_backup_bytes{0},shadow_backup_fields{0};
     std::atomic<std::uint64_t> shadow_index_rebuilds{0},shadow_index_matches{0},shadow_index_backup_bytes{0};
     struct ShadowIndex {
-        struct Row {mfq::MoeCacheKey key;int64_t row;};
+        struct Row {tyloi::MoeCacheKey key;int64_t row;};
         std::weak_ptr<const MoeHostExpert> owner;
         uint64_t generation=0;
         int64_t slots=0;
         std::vector<Row> rows;
-        static bool less(const mfq::MoeCacheKey& a,const mfq::MoeCacheKey& b) {
+        static bool less(const tyloi::MoeCacheKey& a,const tyloi::MoeCacheKey& b) {
             if(a.source!=b.source)return a.source<b.source;
             if(a.cohort!=b.cohort)return a.cohort<b.cohort;
             return a.expert<b.expert;
@@ -200,7 +199,7 @@ struct MoeResidencyManager::Impl {
     std::map<const MoeGpuArena*,ShadowIndex> shadow_indices;
     bool shadow_index_reported=false;
     int64_t find_shadow_row(const MoeGpuArena& arena,const MoeHostExpertCache::Lease& owner,
-                           const mfq::MoeCacheKey& key) {
+                           const tyloi::MoeCacheKey& key) {
         try {
             auto& index=shadow_indices[&arena];
             const auto& identities=owner->weights.expert_local;const auto slots=identities.size(0);
@@ -208,7 +207,7 @@ struct MoeResidencyManager::Impl {
             if(index.owner.lock()!=owner || index.generation!=arena.prefill_backup_generation || index.slots!=slots) {
                 index.rows.clear();index.rows.reserve(std::size_t(slots));
                 for(int64_t row=0;row<slots;++row) {
-                    const mfq::MoeCacheKey candidate{data[row*3],data[row*3+1],data[row*3+2]};
+                    const tyloi::MoeCacheKey candidate{data[row*3],data[row*3+1],data[row*3+2]};
                     if(candidate.source>=0 && candidate.cohort>=0 && candidate.expert>=0)index.rows.push_back({candidate,row});
                 }
                 std::sort(index.rows.begin(),index.rows.end(),[](const auto& a,const auto& b){return ShadowIndex::less(a.key,b.key);});
@@ -254,55 +253,55 @@ struct MoeResidencyManager::Impl {
     int64_t last_backup_bytes=0,last_small_backup_bytes=0;
     std::size_t last_backup_fields=0,last_small_backup_fields=0;
     const int64_t small_backup_limit=[] {
-        const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
+        const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_SMALL_BACKUP_BYTES");
         return value?std::clamp<int64_t>(std::atoll(value),0,1048576):int64_t(65536);
     }();
-    std::unique_ptr<mfq::cuda::HostBuffer> backup_descriptors;
-    mfq::MoeCacheMappedCopyDescriptor* backup_descriptors_device=nullptr;
+    std::unique_ptr<tyloi::cuda::HostBuffer> backup_descriptors;
+    tyloi::MoeCacheMappedCopyDescriptor* backup_descriptors_device=nullptr;
     uint8_t* backup_ram_device=nullptr;
     struct PrefillRoutes {int tokens=0,routes=0;};
     std::vector<PrefillRoutes> prefill_routes;
-    tb::Tensor prefill_route_device;
-    std::unique_ptr<mfq::cuda::HostBuffer> prefill_route_host;
+    ::tyloi::Tensor prefill_route_device;
+    std::unique_ptr<tyloi::cuda::HostBuffer> prefill_route_host;
     int prefill_route_stride=0;
     cudaEvent_t prefill_done=nullptr;
     bool prefill_pending=false;
     std::vector<Move> pending;
     std::size_t pending_complete_bundles=0;
     std::vector<Map> maps;
-    tb::Tensor upload,backup;
-    std::unique_ptr<mfq::cuda::HostBuffer> map_upload,map_descriptors;
+    ::tyloi::Tensor upload,backup;
+    std::unique_ptr<tyloi::cuda::HostBuffer> map_upload,map_descriptors;
     uint8_t* map_upload_device=nullptr;
-    mfq::MoeCacheMappedCopyDescriptor* map_descriptors_device=nullptr;
-    tb::Tensor device_work,copy_descriptors,device_descriptors;
+    tyloi::MoeCacheMappedCopyDescriptor* map_descriptors_device=nullptr;
+    ::tyloi::Tensor device_work,copy_descriptors,device_descriptors;
     int work_tokens=0;
     cudaStream_t stream=nullptr,backup_stream=nullptr;
     cudaEvent_t backup_done=nullptr;
     std::vector<cudaEvent_t> preserve_events;
     cudaEvent_t done=nullptr;
     cudaEvent_t window_done=nullptr;
-    std::unique_ptr<mfq::cuda::HostBuffer> expert_done_host;
+    std::unique_ptr<tyloi::cuda::HostBuffer> expert_done_host;
     uint32_t* expert_done_device=nullptr;
     cudaStream_t expert_compute_stream=nullptr;
     bool pending_window=false;
     bool pending_expert_fence=false;
     static constexpr std::size_t refill_capacity=65535;
-    std::unique_ptr<mfq::cuda::HostBuffer> refill_descriptors;
-    mfq::MoeCacheMappedCopyDescriptor* refill_device=nullptr;
+    std::unique_ptr<tyloi::cuda::HostBuffer> refill_descriptors;
+    tyloi::MoeCacheMappedCopyDescriptor* refill_device=nullptr;
     std::thread worker;
     std::mutex worker_mutex;
     std::condition_variable work_available,work_finished;
     std::atomic_bool work_pending{false};
     bool work_requested=false,work_ready=false,stopping=false,window_inflight=false;
     const bool predictor_overlap=[] {
-        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
+        const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_EXCHANGE_OVERLAP");
         return !option || option[0]!='0';
     }();
     bool predictor_overlap_scope=false,predictor_overlap_allowed=false;
     bool ssd_predictor_isolated=false;
     bool ssd_copies_permitted=false;
     std::size_t ssd_stage_capacity=0;
-    std::optional<mfq::cuda::KvExpertLoan::ExchangeReadGuard> exchange_reads;
+    std::optional<tyloi::cuda::KvExpertLoan::ExchangeReadGuard> exchange_reads;
     std::atomic<std::uint64_t> predictor_overlap_rounds{0},predictor_overlap_serves{0};
     std::exception_ptr error;
     explicit Impl(MoeExpertCache* value,Observer observe,MemoryProbe probe)
@@ -314,15 +313,15 @@ struct MoeResidencyManager::Impl {
             std::size_t capacity=0,count=0;
             for(const auto& source:cache->sources_)for(const auto& cohort:source->cohorts_)
                 {capacity+=cohort.host_map.size()*sizeof(int32_t);++count;}
-            map_upload=std::make_unique<mfq::cuda::HostBuffer>(capacity,true);
-            map_descriptors=std::make_unique<mfq::cuda::HostBuffer>(count*sizeof(mfq::MoeCacheMappedCopyDescriptor),true);
+            map_upload=std::make_unique<tyloi::cuda::HostBuffer>(capacity,true);
+            map_descriptors=std::make_unique<tyloi::cuda::HostBuffer>(count*sizeof(tyloi::MoeCacheMappedCopyDescriptor),true);
             TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&map_upload_device),map_upload->data(),0));
             TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&map_descriptors_device),map_descriptors->data(),0));
         }
         // Publish every small map in one launch after the old graph retires.
         // One H2D submission per projection otherwise costs more than the
         // entire map payload, especially during the first routing changes.
-        auto* descriptors=static_cast<mfq::MoeCacheMappedCopyDescriptor*>(map_descriptors->data());
+        auto* descriptors=static_cast<tyloi::MoeCacheMappedCopyDescriptor*>(map_descriptors->data());
         std::size_t offset=0;
         for(std::size_t i=0;i<maps.size();++i) {
             const auto& map=maps[i];auto& cohort=cache->sources_[map.source]->cohorts_[map.cohort];
@@ -335,7 +334,7 @@ struct MoeResidencyManager::Impl {
             observe("map",i);
         }
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        mfq::moe_cache_mapped_gather_cuda(map_descriptors_device,int(maps.size()),1,stream);
+        tyloi::moe_cache_mapped_gather_cuda(map_descriptors_device,int(maps.size()),1,stream);
     }
     unsigned projection_mask(int bundle,int projection) const {
         if(projection<0)return 7;
@@ -359,7 +358,7 @@ struct MoeResidencyManager::Impl {
     struct CachedRefill {
         Impl& s;
         const bool native_ssd_dma;
-        std::vector<mfq::cuda::DmaCopy> native_copies;
+        std::vector<tyloi::cuda::DmaCopy> native_copies;
         std::size_t count=0;
         std::uint64_t largest=0;
         explicit CachedRefill(Impl& owner):s(owner),
@@ -373,7 +372,7 @@ struct MoeResidencyManager::Impl {
                 else TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(destination,source,std::size_t(bytes),cudaMemcpyDeviceToDevice,s.stream));
                 s.cached_copy_dma_bytes+=bytes;++s.cached_copy_dma_fields;
             } else if(s.cached_refill && (!s.refill_dma_min || bytes<s.refill_dma_min) && pieces<=refill_capacity-count) {
-                auto* descriptors=static_cast<mfq::MoeCacheMappedCopyDescriptor*>(s.refill_descriptors->data());
+                auto* descriptors=static_cast<tyloi::MoeCacheMappedCopyDescriptor*>(s.refill_descriptors->data());
                 for(std::uint64_t begin=0;begin<bytes;begin+=chunk) {
                     const auto size=std::min(chunk,bytes-begin);
                     descriptors[count++]={reinterpret_cast<uint64_t>(destination+begin),reinterpret_cast<uint64_t>(source+begin),size};
@@ -387,7 +386,7 @@ struct MoeResidencyManager::Impl {
         }
         bool submit() {
             if(!native_copies.empty()) {
-                if(mfq::cuda::NativeDmaBatch::submit(native_copies,s.stream,1,
+                if(tyloi::cuda::NativeDmaBatch::submit(native_copies,s.stream,1,
                         [](const void* pointer,std::size_t){return reinterpret_cast<CUdeviceptr>(pointer);})) {
                     ++s.native_dma_batches;s.native_dma_copies+=native_copies.size();
                 } else {
@@ -401,7 +400,7 @@ struct MoeResidencyManager::Impl {
             // actual bytes, avoiding maximum-size grids for tiny fields.
             const int blocks=s.refill_chunk_bytes?1:static_cast<int>(std::min<std::uint64_t>(128,(largest+4095)/4096));
             std::atomic_thread_fence(std::memory_order_seq_cst);
-            mfq::moe_cache_mapped_gather_cuda(s.refill_device,int(count),blocks,s.stream);
+            tyloi::moe_cache_mapped_gather_cuda(s.refill_device,int(count),blocks,s.stream);
             ++s.cached_copy_batches;s.cached_copy_descriptors+=count;s.cached_copy_blocks+=count*blocks;
             return true;
         }
@@ -418,7 +417,7 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
     std::cerr<<"moe_residency_policy retention="<<s.heat_retention<<" interval="<<s.interval
         <<" projection_heat="<<(cache->options_.warm && cache->options_.projection_heat)<<'\n';
     s.transfer_stages.resize(cache->sources_.size());
-    std::vector<mfq::engine::RouteHistory::Bundle> route_layout;
+    std::vector<tyloi::engine::RouteHistory::Bundle> route_layout;
     route_layout.reserve(cache->pipeline_bundles_.size());
     for(const auto& bundle:cache->pipeline_bundles_) {
         const auto& source=cache->sources_.at(bundle[0]);
@@ -439,16 +438,16 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
         }
     }
     const auto heat_mode=s.speculative_heat_mode==0
-        ?mfq::engine::RouteHistory::HeatMode::count
+        ?tyloi::engine::RouteHistory::HeatMode::count
         :s.speculative_heat_mode==1
-            ?mfq::engine::RouteHistory::HeatMode::unique
-            :mfq::engine::RouteHistory::HeatMode::normalized;
-    s.route_history=std::make_unique<mfq::engine::RouteHistory>(route_layout,heat_mode,s.heat_retention);
+            ?tyloi::engine::RouteHistory::HeatMode::unique
+            :tyloi::engine::RouteHistory::HeatMode::normalized;
+    s.route_history=std::make_unique<tyloi::engine::RouteHistory>(route_layout,heat_mode,s.heat_retention);
     if(s.first==std::numeric_limits<int>::max())for(const auto& bundle:cache->pipeline_bundles_) {
         const auto layer=cache->sources_[bundle[0]]->layer_id_;
         s.first=std::min(s.first,layer);s.last=std::max(s.last,layer);
     }
-    using Expert=mfq::MoeResidencyRanker::Expert;
+    using Expert=tyloi::MoeResidencyRanker::Expert;
     std::vector<std::vector<Expert>> layout;
     if(cache->options_.warm && cache->options_.projection_heat) {
         std::map<std::pair<MoeGpuArena*,int>,std::vector<Expert>> groups;
@@ -483,18 +482,18 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
         }
         for(auto& item:groups)layout.push_back(std::move(item.second));
     }
-    s.ranking=std::make_unique<mfq::MoeResidencyRanker>(std::move(layout));
+    s.ranking=std::make_unique<tyloi::MoeResidencyRanker>(std::move(layout));
     if(s.cached_refill) {
         // Allocate before any consumer graph runs. Only descriptors are mapped;
         // weights stay in their original GPU fields. This avoids a per-round
         // allocation or descriptor upload delaying the early D2H backups.
-        s.refill_descriptors=std::make_unique<mfq::cuda::HostBuffer>(
-            Impl::refill_capacity*sizeof(mfq::MoeCacheMappedCopyDescriptor),true);
+        s.refill_descriptors=std::make_unique<tyloi::cuda::HostBuffer>(
+            Impl::refill_capacity*sizeof(tyloi::MoeCacheMappedCopyDescriptor),true);
         TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&s.refill_device),s.refill_descriptors->data(),0));
     }
     if(s.small_backup_limit && cache->pipeline_ram_registered_bytes_ && cache->pipeline_ram_complement_) {
-        s.backup_descriptors=std::make_unique<mfq::cuda::HostBuffer>(
-            Impl::refill_capacity*sizeof(mfq::MoeCacheMappedCopyDescriptor),true);
+        s.backup_descriptors=std::make_unique<tyloi::cuda::HostBuffer>(
+            Impl::refill_capacity*sizeof(tyloi::MoeCacheMappedCopyDescriptor),true);
         TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&s.backup_descriptors_device),s.backup_descriptors->data(),0));
         TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&s.backup_ram_device),cache->pipeline_ram_complement_->data_ptr(),0));
     }
@@ -510,16 +509,16 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
         if(cache->options_.host_limit)
             capacity=std::min(capacity,memory.resident_bytes>=cache->options_.host_limit?std::uint64_t(0):
                 (cache->options_.host_limit-memory.resident_bytes)/8);
-        const auto options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true);
+        const auto options=::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8).pinned_memory(true);
         for(capacity=capacity/4096*4096;capacity;capacity=capacity/2/4096*4096) {
             try {
                 // Optional exchange buffers must leave pinned capacity for
                 // the decode/verification packets prepared after this stage.
                 // The driver may impose a tighter quota than free host RAM.
-                auto headroom=tb::empty({std::int64_t(std::max<std::uint64_t>(
+                auto headroom=::tyloi::cuda::empty({std::int64_t(std::max<std::uint64_t>(
                     std::uint64_t(256)<<20,2*capacity))},options);
-                s.backup=tb::empty({std::int64_t(capacity)},options);
-                s.upload=tb::empty({std::int64_t(capacity)},options);
+                s.backup=::tyloi::cuda::empty({std::int64_t(capacity)},options);
+                s.upload=::tyloi::cuda::empty({std::int64_t(capacity)},options);
                 s.ssd_stage_capacity=std::size_t(capacity);break;
             } catch(const MfqResourceExhausted&) {s.backup={};s.upload={};}
         }
@@ -531,7 +530,7 @@ MoeResidencyManager::MoeResidencyManager(MoeExpertCache* cache,Observer observer
     if(window_event!=cudaSuccess){cudaEventDestroy(s.done);s.done=nullptr;cudaStreamDestroy(s.stream);s.stream=nullptr;TYLOINFER_CUDA_CHECK(window_event);}
 }
 MoeResidencyManager::~MoeResidencyManager() {
-    mfq::cuda::internal::on_device_noexcept(impl_->cache->owner_device_, [&] {
+    tyloi::cuda::internal::on_device_noexcept(impl_->cache->owner_device_, [&] {
         if(impl_->prefill_done) {
             (void)cudaEventSynchronize(impl_->prefill_done);
             (void)cudaEventDestroy(impl_->prefill_done);
@@ -564,7 +563,7 @@ void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int
     auto& s=*impl_;
     const MfqCudaGuard guard(s.cache->device());
     if(layer<0 || !s.cache->options_.adapt || !s.cache->options_.warm)return;
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREFILL_RESIDENCY");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREFILL_RESIDENCY");
     if(option && option[0]=='0')return;
     const auto stream=static_cast<cudaStream_t>(raw_stream);
     if(!s.prefill_done)TYLOINFER_CUDA_CHECK(cudaEventCreateWithFlags(&s.prefill_done,cudaEventDisableTiming));
@@ -574,8 +573,8 @@ void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int
         const int64_t elements=int64_t(s.prefill_routes.size())*32*routes;
         // The samples are consumed after prefill returns the borrowed expert
         // storage. They must not be allocated from that temporary workspace.
-        mfq::cuda::ResidentAllocationScope resident;
-        auto next=tb::empty({elements},tb::TensorOptions().device(s.cache->device()).dtype(tb::kInt32));
+        tyloi::cuda::ResidentAllocationScope resident;
+        auto next=::tyloi::cuda::empty({elements},::tyloi::TensorOptions().device(s.cache->device()).dtype(::tyloi::kInt32));
         // Preserve samples if a model uses different routing widths by layer.
         if(s.prefill_route_device.defined())for(std::size_t b=0;b<s.prefill_routes.size();++b) {
             const auto& sample=s.prefill_routes[b];if(!sample.tokens)continue;
@@ -584,7 +583,7 @@ void MoeResidencyManager::record_prefill_routes(int layer,const int32_t* ids,int
                 sample.tokens*sample.routes*sizeof(int32_t),cudaMemcpyDeviceToDevice,stream));
         }
         s.prefill_route_device=std::move(next);s.prefill_route_stride=routes;
-        s.prefill_route_host=std::make_unique<mfq::cuda::HostBuffer>(elements*sizeof(int32_t),false);
+        s.prefill_route_host=std::make_unique<tyloi::cuda::HostBuffer>(elements*sizeof(int32_t),false);
     }
     for(std::size_t b=0;b<s.prefill_routes.size();++b) {
         if(s.cache->sources_[s.cache->pipeline_bundles_[b][0]]->layer_id_!=layer)continue;
@@ -669,7 +668,7 @@ void MoeResidencyManager::record_window_expert_fence(int layer,void* raw_stream)
     if(!s.expert_done_host) {
         if(status!=cudaStreamCaptureStatusNone)
             throw std::logic_error("adaptive expert fence was not warmed before graph capture");
-        s.expert_done_host=std::make_unique<mfq::cuda::HostBuffer>(128,true);
+        s.expert_done_host=std::make_unique<tyloi::cuda::HostBuffer>(128,true);
         std::memset(s.expert_done_host->data(),0,128);
         TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&s.expert_done_device),s.expert_done_host->data(),0));
     }
@@ -680,7 +679,7 @@ void MoeResidencyManager::record_window_expert_fence(int layer,void* raw_stream)
     // replayed external CUDA event did not release side-stream copies before
     // a blocked graph tail in the local WDDM regression test.
     s.expert_compute_stream=stream;
-    mfq::cuda::signal_mapped_flag(s.expert_done_device,stream);
+    tyloi::cuda::signal_mapped_flag(s.expert_done_device,stream);
 }
 void MoeResidencyManager::finish_window(int layer) {
     auto& s=*impl_;if(layer!=s.last)return;
@@ -750,7 +749,7 @@ void MoeResidencyManager::after_layer(int layer,const std::vector<int32_t>& ids,
     // Rank and exchange at the configured window interval for both paths;
     // exchanging after every speculative verification serializes the next
     // draft behind a multi-millisecond backbone cache transaction.
-    const auto* short_interval=mfq::cuda::env_lookup("TYLOINFER_MOE_SHORT_DECODE_INTERVAL");
+    const auto* short_interval=tyloi::cuda::env_lookup("TYLOINFER_MOE_SHORT_DECODE_INTERVAL");
     const bool interval_decode=tokens==1 || (tokens<=8 &&
         (!independent_sequences || !short_interval || short_interval[0]!='0'));
     if(s.cache->options_.warm && interval_decode && (++s.rounds%s.interval)!=0)return;
@@ -825,7 +824,7 @@ void MoeResidencyManager::prepare() {
     };
     const PhaseClock clock(s.prepare_ns,s.pending_tokens<=8?&s.decode_prepare_ns:nullptr);
     const MfqCudaGuard guard(cache.sources_.front()->cohorts_.front().active.expert_local.device());
-    using Expert=mfq::MoeResidencyRanker::Expert;
+    using Expert=tyloi::MoeResidencyRanker::Expert;
     if(cache.pipeline_transfer_cache_)for(std::size_t source_id=0;source_id<s.transfer_stages.size();++source_id)
       for(auto& stage:s.transfer_stages[source_id])
         if(!stage.arena) {
@@ -881,7 +880,7 @@ void MoeResidencyManager::prepare() {
         }
         if(s.pending_window && s.pending_expert_fence) {
             const PhaseClock wait_clock(s.expert_fence_wait_ns,nullptr);
-            mfq::cuda::wait_route_publication(static_cast<const uint32_t*>(s.expert_done_host->data()),s.expert_compute_stream,60000);
+            tyloi::cuda::wait_route_publication(static_cast<const uint32_t*>(s.expert_done_host->data()),s.expert_compute_stream,60000);
             ++s.expert_fence_waits;
         }else TYLOINFER_CUDA_CHECK(cudaStreamWaitEvent(s.stream,s.window_done,0));
         copies_ready=true;
@@ -916,7 +915,7 @@ void MoeResidencyManager::prepare() {
         // otherwise early-layer hotspots can never become GPU residents.
         // Leave most of the managed cache available to concurrent demand IO.
         stage_limit=std::min(stage_limit,std::uint64_t(cache.host_experts_->stats().budget_bytes/4));
-        std::vector<mfq::MoeResidencyRanker::Pair> selected;
+        std::vector<tyloi::MoeResidencyRanker::Pair> selected;
         std::vector<MoeExpertCache::SsdExpertRequest> requests;
         std::vector<std::pair<int,int>> keys;
         std::vector<std::pair<int,int>> gpu_images;
@@ -1015,7 +1014,7 @@ void MoeResidencyManager::prepare() {
                         ~RetireImage(){if(stream)(void)cudaStreamSynchronize(stream);}
                     } retire{s.stream};
                     const auto target=moe_cache_field_refs(image);
-                    std::array<mfq::cuda::DmaCopy,8> copies{};std::size_t count=0;
+                    std::array<tyloi::cuda::DmaCopy,8> copies{};std::size_t count=0;
                     for(std::size_t f=0;f<target.size();++f)if(cohort.bytes_per_expert[f]) {
                         auto* destination=target[f].data_ptr();const auto bytes=std::size_t(cohort.bytes_per_expert[f]);
                         if(count) {
@@ -1140,13 +1139,13 @@ void MoeResidencyManager::prepare() {
     s.memory_rejections+=memory_rejections;
     s.route_history->decay();
     if(s.pending.empty()){finish_plan();return;}
-    const auto options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true);
+    const auto options=::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8).pinned_memory(true);
     if(cache.options_.warm &&
         (!s.backup.defined() || s.backup.numel()<bytes || (!s.direct && (!s.upload.defined() || s.upload.numel()<bytes)))) {
         s.backup={};s.upload={};
     }
-    if(!s.backup.defined() || s.backup.numel()<bytes)s.backup=tb::empty({bytes},options);
-    if(!s.direct && (!s.upload.defined() || s.upload.numel()<bytes))s.upload=tb::empty({bytes},options);
+    if(!s.backup.defined() || s.backup.numel()<bytes)s.backup=::tyloi::cuda::empty({bytes},options);
+    if(!s.direct && (!s.upload.defined() || s.upload.numel()<bytes))s.upload=::tyloi::cuda::empty({bytes},options);
     s.backup_peak_bytes=std::max(s.backup_peak_bytes.load(),std::uint64_t(s.backup.numel()));
     s.pending_complete_bundles=s.complete_pending_bundles();
     s.planned_bundles+=s.pending_complete_bundles;s.planned_projections+=s.pending.size();
@@ -1195,7 +1194,7 @@ void MoeResidencyManager::prepare() {
         return;
     }
     if(cache.ssd_experts() && cache.kv_expert_loan_) {
-        const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
+        const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
         if(!option || option[0]!='0') {
             // CPU images still participate in the bounded RAM exchange, but
             // an immutable extra GPU copy need not cross PCIe a second time.
@@ -1216,7 +1215,7 @@ void MoeResidencyManager::prepare() {
     const bool native_ssd_dma=cache.ssd_experts() && s.direct && native_residency_dma_enabled();
     void* backup_alias=nullptr;
     if(native_ssd_dma)TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&backup_alias,s.backup.data_ptr(),0));
-    const auto submit_ssd_dma=[&](const std::vector<mfq::cuda::DmaCopy>& copies,cudaMemcpyKind kind) {
+    const auto submit_ssd_dma=[&](const std::vector<tyloi::cuda::DmaCopy>& copies,cudaMemcpyKind kind) {
         if(copies.empty())return;
         auto aliases=copies;
         const auto ram_begin=reinterpret_cast<uintptr_t>(cache.pipeline_ram_complement_->data_ptr());
@@ -1233,7 +1232,7 @@ void MoeResidencyManager::prepare() {
             }
             if(upload)copy.source=base+(address-begin);else copy.destination=base+(address-begin);
         }
-        if(mapped && mfq::cuda::NativeDmaBatch::submit(aliases,s.stream,1,
+        if(mapped && tyloi::cuda::NativeDmaBatch::submit(aliases,s.stream,1,
                 [](const void* p,std::size_t){return reinterpret_cast<CUdeviceptr>(p);})) {
             ++s.native_dma_batches;s.native_dma_copies+=copies.size();
         } else {
@@ -1243,7 +1242,7 @@ void MoeResidencyManager::prepare() {
     };
     {
     const PhaseClock backup_clock(s.backup_submit_ns,nullptr);
-    std::vector<mfq::cuda::DmaCopy> copies;
+    std::vector<tyloi::cuda::DmaCopy> copies;
     for(const auto& move:s.pending) {
         auto& cohort=cache.sources_[move.incoming_source]->cohorts_[move.cohort];
         for(std::size_t f=0;f<move.field_count;++f) {
@@ -1260,7 +1259,7 @@ void MoeResidencyManager::prepare() {
     {
     const PhaseClock refill_clock(s.refill_submit_ns,nullptr);
     Impl::CachedRefill refill(s);
-    std::vector<mfq::cuda::DmaCopy> copies;
+    std::vector<tyloi::cuda::DmaCopy> copies;
     for(std::size_t i=0;i<s.pending.size();++i) {
         auto& move=s.pending[i];auto& cohort=cache.sources_[move.incoming_source]->cohorts_[move.cohort];
         const auto incoming=moe_cache_field_refs(move.lease->weights);
@@ -1311,9 +1310,9 @@ void MoeResidencyManager::prepare_direct_exchange() {
         return alias && address>=begin && address-begin<=bytes && count<=bytes-(address-begin)
             ?alias+(address-begin):nullptr;
     };
-    const auto submit_native=[&](std::vector<mfq::cuda::DmaCopy>& copies,cudaMemcpyKind kind,cudaStream_t stream) {
+    const auto submit_native=[&](std::vector<tyloi::cuda::DmaCopy>& copies,cudaMemcpyKind kind,cudaStream_t stream) {
         if(copies.empty())return;
-        std::vector<mfq::cuda::DmaCopy> aliases=copies;
+        std::vector<tyloi::cuda::DmaCopy> aliases=copies;
         bool mapped=true;
         for(auto& copy:aliases) {
             if(kind==cudaMemcpyHostToDevice) {
@@ -1324,7 +1323,7 @@ void MoeResidencyManager::prepare_direct_exchange() {
                 if(!destination){mapped=false;break;}copy.destination=destination;
             }
         }
-        if(mapped && mfq::cuda::NativeDmaBatch::submit(aliases,stream,1,
+        if(mapped && tyloi::cuda::NativeDmaBatch::submit(aliases,stream,1,
                 [](const void* pointer,std::size_t){return reinterpret_cast<CUdeviceptr>(pointer);})) {
             ++s.native_dma_batches;s.native_dma_copies+=copies.size();
         } else {
@@ -1334,9 +1333,9 @@ void MoeResidencyManager::prepare_direct_exchange() {
         copies.clear();
     };
     constexpr int64_t wire_control_bytes=256;
-    const auto* loan_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
+    const auto* loan_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_KV_REFILL");
     const bool reuse_loan=(!loan_option || loan_option[0]!='0') && bool(cache.kv_expert_loan_);
-    const auto* keyed_option=mfq::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
+    const auto* keyed_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_KEYED_EXCHANGE");
     bool predictor_disjoint=s.predictor_overlap && s.pending_tokens<=8 && reuse_loan && (!keyed_option || keyed_option[0]=='1') &&
         std::all_of(s.pending.begin(),s.pending.end(),[&](const auto& move) {
             return !move.cached_arena && cache.sources_[move.incoming_source]->layer_id_>=0 &&
@@ -1370,8 +1369,8 @@ void MoeResidencyManager::prepare_direct_exchange() {
             incoming_bytes+=bytes;move.uncached_bytes+=bytes;
         }
     }
-    const auto* shadow_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW");
-    const auto* shadow_index_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
+    const auto* shadow_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW");
+    const auto* shadow_index_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_PREFILL_SHADOW_INDEX");
     const bool indexed_shadow=!shadow_index_option || shadow_index_option[0]!='0';
     if(!shadow_option || shadow_option[0]!='0')for(auto& move:s.pending) {
         const auto& cohort=cache.sources_[move.incoming_source]->cohorts_[move.cohort];
@@ -1384,7 +1383,7 @@ void MoeResidencyManager::prepare_direct_exchange() {
         auto owner=cache.host_experts_->find(*arena.prefill_backup_key);
         if(!owner)continue;
         const auto& keys=owner->weights.expert_local;
-        if(!keys.defined() || keys.is_cuda() || keys.scalar_type()!=tb::kInt32 ||
+        if(!keys.defined() || keys.is_cuda() || keys.scalar_type()!=::tyloi::kInt32 ||
                 keys.dim()!=2 || keys.size(1)!=3 || !keys.is_contiguous())continue;
         const auto image_slots=keys.size(0);auto row=int64_t(move.slot)+image_slots-arena.slots;
         const auto old_key=cache.sources_[move.outgoing_source]->quant_source_->host_key(move.outgoing);
@@ -1418,9 +1417,9 @@ void MoeResidencyManager::prepare_direct_exchange() {
     s.last_gpu_preserve=gpu_preserve;s.last_preserve_bytes=incoming_bytes;
     s.last_backup_bytes=0;s.last_small_backup_bytes=0;
     s.last_backup_fields=0;s.last_small_backup_fields=0;
-    const auto* duplex_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DUPLEX");
+    const auto* duplex_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DUPLEX");
     const bool duplex=gpu_preserve && (!duplex_option || duplex_option[0]!='0');
-    const auto* group_option=mfq::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DUPLEX_CHUNK_BYTES");
+    const auto* group_option=tyloi::cuda::env_lookup("TYLOINFER_MOE_RESIDENCY_DUPLEX_CHUNK_BYTES");
     const int64_t group_limit=group_option?std::clamp<int64_t>(std::atoll(group_option),4096,int64_t(64)<<20):int64_t(8)<<20;
     std::vector<std::vector<std::size_t>> preserve_groups;
     if(duplex) {
@@ -1455,8 +1454,8 @@ void MoeResidencyManager::prepare_direct_exchange() {
             :s.backup.data_ptr<uint8_t>()+move.offsets[field];
     };
     {
-        mfq::cpu::HostMemoryCopyBatch copies;
-        std::vector<mfq::cuda::DmaCopy> preserve_copies;
+        tyloi::cpu::HostMemoryCopyBatch copies;
+        std::vector<tyloi::cuda::DmaCopy> preserve_copies;
         const auto flush_preserve=[&]{submit_native(preserve_copies,cudaMemcpyHostToDevice,s.stream);};
         const auto preserve=[&](const Impl::Move& move) {
             const auto fields=moe_cache_field_refs(move.lease->weights);
@@ -1579,7 +1578,7 @@ void MoeResidencyManager::prepare_direct_exchange() {
         {
             const PhaseClock backup_clock(s.backup_submit_ns,nullptr);
             std::size_t small_count=0;
-            std::vector<mfq::cuda::DmaCopy> backup_copies;
+            std::vector<tyloi::cuda::DmaCopy> backup_copies;
             const auto flush_backup=[&]{submit_native(backup_copies,cudaMemcpyDeviceToHost,backup_stream);};
             const auto ram_begin=reinterpret_cast<uintptr_t>(cache.pipeline_ram_complement_->data_ptr());
             const auto ram_bytes=uint64_t(cache.pipeline_ram_registered_bytes_);
@@ -1611,7 +1610,7 @@ void MoeResidencyManager::prepare_direct_exchange() {
                     const auto address=reinterpret_cast<uintptr_t>(fields[f].data_ptr());
                     if(s.backup_descriptors && count<=s.small_backup_limit && small_count<Impl::refill_capacity &&
                             address>=ram_begin && address-ram_begin<=ram_bytes && uint64_t(count)<=ram_bytes-(address-ram_begin)) {
-                        auto* descriptors=static_cast<mfq::MoeCacheMappedCopyDescriptor*>(s.backup_descriptors->data());
+                        auto* descriptors=static_cast<tyloi::MoeCacheMappedCopyDescriptor*>(s.backup_descriptors->data());
                         descriptors[small_count++]={reinterpret_cast<uint64_t>(s.backup_ram_device+(address-ram_begin)),
                             reinterpret_cast<uint64_t>(gpu),uint64_t(count)};
                         s.last_small_backup_bytes+=count;++s.last_small_backup_fields;
@@ -1646,7 +1645,7 @@ void MoeResidencyManager::prepare_direct_exchange() {
             // every preservation group above also protects deferred RAM writes.
             if(small_count) {
                 std::atomic_thread_fence(std::memory_order_seq_cst);
-                mfq::moe_cache_mapped_gather_cuda(s.backup_descriptors_device,int(small_count),1,backup_stream);
+                tyloi::moe_cache_mapped_gather_cuda(s.backup_descriptors_device,int(small_count),1,backup_stream);
                 s.observe("direct_backup_batch",0);
             }
             if(duplex) {
@@ -1752,10 +1751,10 @@ void MoeResidencyManager::prepare_batched(std::int64_t bytes) {
             upload_bytes+=count;first=last;
         }
     }
-    const auto gpu_options=s.cache->sources_.front()->cohorts_.front().active.expert_local.options().dtype(tb::kUInt8);
-    const auto host_options=tb::TensorOptions().device(tb::kCPU).dtype(tb::kUInt8).pinned_memory(true);
+    const auto gpu_options=s.cache->sources_.front()->cohorts_.front().active.expert_local.options().dtype(::tyloi::kUInt8);
+    const auto host_options=::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kUInt8).pinned_memory(true);
     const int64_t work_bytes=std::max(bytes,upload_bytes);
-    const int64_t descriptor_bytes=int64_t(fields.size())*sizeof(mfq::MoeCacheMappedCopyDescriptor);
+    const int64_t descriptor_bytes=int64_t(fields.size())*sizeof(tyloi::MoeCacheMappedCopyDescriptor);
     // These copies are outside captured graphs. Release a larger prefill
     // workspace at a row-count transition; steady decode keeps reusing it.
     if(s.work_tokens!=s.pending_tokens) {
@@ -1766,18 +1765,18 @@ void MoeResidencyManager::prepare_batched(std::int64_t bytes) {
     }
     s.work_tokens=s.pending_tokens;
     s.observe("workspace_begin",0);
-    if(!s.device_work.defined() || s.device_work.numel()<work_bytes)s.device_work=tb::empty({work_bytes},gpu_options);
+    if(!s.device_work.defined() || s.device_work.numel()<work_bytes)s.device_work=::tyloi::cuda::empty({work_bytes},gpu_options);
     s.observe("workspace_device",0);
     if(!s.copy_descriptors.defined() || s.copy_descriptors.numel()<2*descriptor_bytes) {
-        s.copy_descriptors=tb::empty({2*descriptor_bytes},host_options);
+        s.copy_descriptors=::tyloi::cuda::empty({2*descriptor_bytes},host_options);
         s.observe("workspace_host_descriptors",0);
-        s.device_descriptors=tb::empty({2*descriptor_bytes},gpu_options);
+        s.device_descriptors=::tyloi::cuda::empty({2*descriptor_bytes},gpu_options);
     }
     s.observe("workspace_ready",0);
     s.batch_device_bytes=s.device_work.numel()+s.device_descriptors.numel();
     auto* work=s.device_work.data_ptr<uint8_t>();
-    auto* host=reinterpret_cast<mfq::MoeCacheMappedCopyDescriptor*>(s.copy_descriptors.data_ptr<uint8_t>());
-    auto* device=reinterpret_cast<mfq::MoeCacheMappedCopyDescriptor*>(s.device_descriptors.data_ptr<uint8_t>());
+    auto* host=reinterpret_cast<tyloi::MoeCacheMappedCopyDescriptor*>(s.copy_descriptors.data_ptr<uint8_t>());
+    auto* device=reinterpret_cast<tyloi::MoeCacheMappedCopyDescriptor*>(s.device_descriptors.data_ptr<uint8_t>());
     for(std::size_t f=0;f<fields.size();++f) {
         const auto& field=fields[f];
         host[f]={reinterpret_cast<uint64_t>(work+field.backup_offset),reinterpret_cast<uint64_t>(field.gpu),uint64_t(field.bytes)};
@@ -1790,7 +1789,7 @@ void MoeResidencyManager::prepare_batched(std::int64_t bytes) {
     // One device workspace serves both directions. The stream completes the
     // outgoing backup before reusing its bytes or changing any resident field.
     const int blocks=static_cast<int>(std::min<int64_t>(128,(largest+4095)/4096));
-    mfq::moe_cache_mapped_gather_cuda(device,int(fields.size()),blocks,s.stream);
+    tyloi::moe_cache_mapped_gather_cuda(device,int(fields.size()),blocks,s.stream);
     TYLOINFER_CUDA_CHECK(cudaMemcpyAsync(s.backup.data_ptr(),work,std::size_t(bytes),cudaMemcpyDeviceToHost,s.stream));
     ++s.backup_copies;
     s.observe("backup",0);
@@ -1804,7 +1803,7 @@ void MoeResidencyManager::prepare_batched(std::int64_t bytes) {
         ++s.upload_copies;
     }
     for(auto& move:s.pending)move.touched_fields=move.field_count;
-    mfq::moe_cache_mapped_gather_cuda(device+fields.size(),int(fields.size()),blocks,s.stream);
+    tyloi::moe_cache_mapped_gather_cuda(device+fields.size(),int(fields.size()),blocks,s.stream);
     for(std::size_t i=0;i<s.pending.size();++i)s.observe("upload",i);
 }
 void MoeResidencyManager::rollback() {
@@ -1920,7 +1919,7 @@ void MoeResidencyManager::publish_pending() {
         }
         std::function<void()> prepare_host;
         if(s.parallel_host)prepare_host=[&] {
-            mfq::cpu::expert_pool().rows(copy_bytes,[&](int64_t begin,int64_t end) {
+            tyloi::cpu::expert_pool().rows(copy_bytes,[&](int64_t begin,int64_t end) {
                 auto copy=std::upper_bound(copies.begin(),copies.end(),begin,
                     [](int64_t position,const HostCopy& item){return position<item.end;});
                 while(begin<end) {
@@ -1932,7 +1931,7 @@ void MoeResidencyManager::publish_pending() {
             s.parallel_host_bytes+=copy_bytes;++s.parallel_host_batches;
         };
         if(!s.parallel_host)prepare_host=[&] {
-            mfq::cpu::HostMemoryCopyBatch batch;
+            tyloi::cpu::HostMemoryCopyBatch batch;
             for(const auto& copy:copies)
                 batch.copy(copy.destination,copy.source,std::size_t(copy.end-copy.begin));
         };
@@ -1983,8 +1982,8 @@ MoeResidencyManager::Stats MoeResidencyManager::stats() const noexcept {
 }
 void MoeResidencyManager::trace_rank_summary(std::ostream& out) const {
     const auto& s=*impl_;
-    const auto* enabled=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_RANK_SUMMARY");
-    const auto* ssd_profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
+    const auto* enabled=tyloi::cuda::env_lookup("TYLOINFER_TRACE_MOE_RANK_SUMMARY");
+    const auto* ssd_profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     if(enabled?enabled[0]!='1':!(s.cache->ssd_experts() && ssd_profile && ssd_profile[0]=='1'))return;
     // Called only after exchanges finish. Estimate the placement restriction
     // from existing decayed observations, without instrumenting GPU work.

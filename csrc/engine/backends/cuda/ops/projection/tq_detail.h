@@ -8,10 +8,10 @@
 
 namespace tq_detail {
 
-inline int dtype(mfq_tensor_backend::ScalarType type) {
-    if (type == mfq_tensor_backend::kFloat16) return 0;
-    if (type == mfq_tensor_backend::kBFloat16) return 1;
-    if (type == mfq_tensor_backend::kFloat32) return 2;
+inline int dtype(::tyloi::ScalarType type) {
+    if (type == ::tyloi::kFloat16) return 0;
+    if (type == ::tyloi::kBFloat16) return 1;
+    if (type == ::tyloi::kFloat32) return 2;
     throw std::invalid_argument("TQ activation dtype must be FP16, BF16 or FP32");
 }
 
@@ -22,8 +22,8 @@ inline void status(int code) {
     TYLOINFER_CUDA_CHECK(static_cast<cudaError_t>(code));
 }
 
-inline int gemm_min_tokens(mfq_tensor_backend::ScalarType type) {
-    return type == mfq_tensor_backend::kFloat16 ? 32 : 128;
+inline int gemm_min_tokens(::tyloi::ScalarType type) {
+    return type == ::tyloi::kFloat16 ? 32 : 128;
 }
 
 } // namespace tq_detail

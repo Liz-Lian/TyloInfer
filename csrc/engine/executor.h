@@ -2,7 +2,7 @@
 
 #include <memory>
 
-namespace mfq {
+namespace tyloi {
 
 class Executor {
 public:
@@ -20,4 +20,4 @@ public:
     virtual void drain() = 0;
 };
 
-} // namespace mfq
+} // namespace tyloi

@@ -2,7 +2,7 @@
 
 #include "engine/models/source.h"
 
-namespace mfq::models {
+namespace tyloi::models {
 
 class GgufSource final : public ModelSource {
 public:
@@ -30,4 +30,4 @@ private:
     std::shared_ptr<Impl> impl_;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

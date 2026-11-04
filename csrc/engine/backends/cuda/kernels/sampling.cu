@@ -527,18 +527,18 @@ __global__ void sample_top_k_top_p_kernel(
     out[row] = chosen;
 }
 
-mfq_tensor_backend::Tensor sample_greedy_cuda(mfq_tensor_backend::Tensor logits)
+::tyloi::Tensor sample_greedy_cuda(::tyloi::Tensor logits)
 {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_greedy: logits must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_greedy: logits must be [B,V]");
     TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        logits.scalar_type() == mfq_tensor_backend::kFloat16 ||
-        logits.scalar_type() == mfq_tensor_backend::kBFloat16,
+        logits.scalar_type() == ::tyloi::kFloat32 ||
+        logits.scalar_type() == ::tyloi::kFloat16 ||
+        logits.scalar_type() == ::tyloi::kBFloat16,
         "sample_greedy: logits dtype must be f32, f16, or bf16");
     int B = (int)logits.size(0);
     int V = (int)logits.size(1);
-    auto out = mfq_tensor_backend::empty({B}, logits.options().dtype(mfq_tensor_backend::kInt64));
+    auto out = ::tyloi::cuda::empty({B}, logits.options().dtype(::tyloi::kInt64));
     const auto stream = mfq_current_cuda_stream();
     const auto logits_address = reinterpret_cast<std::uintptr_t>(
         logits.data_ptr());
@@ -547,14 +547,14 @@ mfq_tensor_backend::Tensor sample_greedy_cuda(mfq_tensor_backend::Tensor logits)
     if (V >= 16384 && B <= 65535) {
         // Large vocabularies with a few rows need multiple CTAs per row.
         const int chunks = (V + SAMPLE_GREEDY_CHUNK - 1) / SAMPLE_GREEDY_CHUNK;
-        auto values = mfq_tensor_backend::empty({B, chunks}, logits.options().dtype(mfq_tensor_backend::kFloat32));
-        auto indices = mfq_tensor_backend::empty({B, chunks}, logits.options().dtype(mfq_tensor_backend::kInt64));
+        auto values = ::tyloi::cuda::empty({B, chunks}, logits.options().dtype(::tyloi::kFloat32));
+        auto indices = ::tyloi::cuda::empty({B, chunks}, logits.options().dtype(::tyloi::kInt64));
         const dim3 grid(chunks, B);
-        if ((V & 1) == 0 && pair_aligned && logits.scalar_type() == mfq_tensor_backend::kFloat16) {
+        if ((V & 1) == 0 && pair_aligned && logits.scalar_type() == ::tyloi::kFloat16) {
             sample_greedy_pair_chunks_kernel<half2><<<grid, SAMPLE_BD, 0, stream>>>(
                 reinterpret_cast<const half2*>(logits.data_ptr<mfq_half>()),
                 values.data_ptr<float>(), indices.data_ptr<int64_t>(), V, chunks);
-        } else if ((V & 1) == 0 && pair_aligned && logits.scalar_type() == mfq_tensor_backend::kBFloat16) {
+        } else if ((V & 1) == 0 && pair_aligned && logits.scalar_type() == ::tyloi::kBFloat16) {
             sample_greedy_pair_chunks_kernel<__nv_bfloat162><<<grid, SAMPLE_BD, 0, stream>>>(
                 reinterpret_cast<const __nv_bfloat162*>(logits.data_ptr<mfq_bfloat16>()),
                 values.data_ptr<float>(), indices.data_ptr<int64_t>(), V, chunks);
@@ -571,13 +571,13 @@ mfq_tensor_backend::Tensor sample_greedy_cuda(mfq_tensor_backend::Tensor logits)
     }
     if ((V & 1) == 0 &&
         pair_aligned &&
-        logits.scalar_type() == mfq_tensor_backend::kFloat16) {
+        logits.scalar_type() == ::tyloi::kFloat16) {
         sample_greedy_pair_kernel<half2><<<B, SAMPLE_BD, 0, stream>>>(
             reinterpret_cast<const half2*>(logits.data_ptr<mfq_half>()),
             out.data_ptr<int64_t>(), V);
     } else if ((V & 1) == 0 &&
                pair_aligned &&
-               logits.scalar_type() == mfq_tensor_backend::kBFloat16) {
+               logits.scalar_type() == ::tyloi::kBFloat16) {
         sample_greedy_pair_kernel<__nv_bfloat162>
             <<<B, SAMPLE_BD, 0, stream>>>(
                 reinterpret_cast<const __nv_bfloat162*>(
@@ -594,22 +594,22 @@ mfq_tensor_backend::Tensor sample_greedy_cuda(mfq_tensor_backend::Tensor logits)
     return out;
 }
 
-mfq_tensor_backend::Tensor sample_softmax_cuda(mfq_tensor_backend::Tensor logits, mfq_tensor_backend::Tensor random, double temperature)
+::tyloi::Tensor sample_softmax_cuda(::tyloi::Tensor logits, ::tyloi::Tensor random, double temperature)
 {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_softmax: logits must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == ::tyloi::kFloat32,
                 "sample_softmax: random must be cuda contiguous f32");
     TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_softmax: logits must be [B,V]");
     TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        logits.scalar_type() == mfq_tensor_backend::kFloat16 ||
-        logits.scalar_type() == mfq_tensor_backend::kBFloat16,
+        logits.scalar_type() == ::tyloi::kFloat32 ||
+        logits.scalar_type() == ::tyloi::kFloat16 ||
+        logits.scalar_type() == ::tyloi::kBFloat16,
         "sample_softmax: logits dtype must be f32, f16, or bf16");
     int B = (int)logits.size(0);
     int V = (int)logits.size(1);
     TYLOINFER_RUNTIME_CHECK(random.numel() == B, "sample_softmax: random length must match B");
     TYLOINFER_RUNTIME_CHECK(temperature > 0.0, "sample_softmax: temperature must be > 0");
-    auto out = mfq_tensor_backend::empty({B}, logits.options().dtype(mfq_tensor_backend::kInt64));
+    auto out = ::tyloi::cuda::empty({B}, logits.options().dtype(::tyloi::kInt64));
     TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
         mfq_dispatch_half, mfq_dispatch_bfloat16,
         logits.scalar_type(), "sample_softmax_cuda", [&] {
@@ -621,12 +621,12 @@ mfq_tensor_backend::Tensor sample_softmax_cuda(mfq_tensor_backend::Tensor logits
 }
 
 template<bool Conditional>
-static mfq_tensor_backend::Tensor sample_top_k_compact_impl(
-    mfq_tensor_backend::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
+static ::tyloi::Tensor sample_top_k_compact_impl(
+    ::tyloi::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous() && logits.dim()==2,
         "sample_top_k_compact: logits must be contiguous CUDA [B,V]");
-    TYLOINFER_RUNTIME_CHECK(logits.scalar_type()==mfq_tensor_backend::kFloat32 ||
-        logits.scalar_type()==mfq_tensor_backend::kFloat16 || logits.scalar_type()==mfq_tensor_backend::kBFloat16,
+    TYLOINFER_RUNTIME_CHECK(logits.scalar_type()==::tyloi::kFloat32 ||
+        logits.scalar_type()==::tyloi::kFloat16 || logits.scalar_type()==::tyloi::kBFloat16,
         "sample_top_k_compact: unsupported logit dtype");
     const int B=int(logits.size(0)),V=int(logits.size(1));
     TYLOINFER_RUNTIME_CHECK(B>0 && B<=32 && logits.size(1)<=INT_MAX && top_k>0 && top_k<=V && top_k<=64,
@@ -634,9 +634,9 @@ static mfq_tensor_backend::Tensor sample_top_k_compact_impl(
     const int items=V<=8192?1:V<=65536?4:8;
     const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
     // Explicit types keep these non-dependent for nvcc's MSVC-mode front end.
-    mfq_tensor_backend::Tensor out=mfq_tensor_backend::empty({B,top_k},logits.options().dtype(mfq_tensor_backend::kInt64));
-    mfq_tensor_backend::Tensor a=mfq_tensor_backend::empty({int64_t(B)*blocks*top_k},out.options());
-    mfq_tensor_backend::Tensor b=mfq_tensor_backend::empty(a.sizes(),a.options());
+    ::tyloi::Tensor out=::tyloi::cuda::empty({B,top_k},logits.options().dtype(::tyloi::kInt64));
+    ::tyloi::Tensor a=::tyloi::cuda::empty({int64_t(B)*blocks*top_k},out.options());
+    ::tyloi::Tensor b=::tyloi::cuda::empty(a.sizes(),a.options());
     auto* first=reinterpret_cast<uint64_t*>(a.data_ptr<int64_t>());
     auto* second=reinterpret_cast<uint64_t*>(b.data_ptr<int64_t>());
     const auto stream=mfq_current_cuda_stream();
@@ -661,30 +661,30 @@ static mfq_tensor_backend::Tensor sample_top_k_compact_impl(
     return out;
 }
 
-mfq_tensor_backend::Tensor sample_top_k_compact_cuda(mfq_tensor_backend::Tensor logits,int64_t top_k) {
+::tyloi::Tensor sample_top_k_compact_cuda(::tyloi::Tensor logits,int64_t top_k) {
     return sample_top_k_compact_impl<false>(std::move(logits),top_k,nullptr);
 }
-mfq_tensor_backend::Tensor sample_top_k_compact_if_cuda(
-        mfq_tensor_backend::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
+::tyloi::Tensor sample_top_k_compact_if_cuda(
+        ::tyloi::Tensor logits,int64_t top_k,const volatile int32_t* enabled) {
     TYLOINFER_RUNTIME_CHECK(enabled,"sample_top_k_compact_if: null replay flag");
     return sample_top_k_compact_impl<true>(std::move(logits),top_k,enabled);
 }
 
-mfq_tensor_backend::Tensor sample_top_k_top_p_cuda(
-    mfq_tensor_backend::Tensor logits,
-    mfq_tensor_backend::Tensor random,
+::tyloi::Tensor sample_top_k_top_p_cuda(
+    ::tyloi::Tensor logits,
+    ::tyloi::Tensor random,
     double temperature,
     int64_t top_k,
     double top_p)
 {
     TYLOINFER_RUNTIME_CHECK(logits.is_cuda() && logits.is_contiguous(), "sample_top_k_top_p: logits must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(random.is_cuda() && random.is_contiguous() && random.scalar_type() == ::tyloi::kFloat32,
                 "sample_top_k_top_p: random must be cuda contiguous f32");
     TYLOINFER_RUNTIME_CHECK(logits.dim() == 2, "sample_top_k_top_p: logits must be [B,V]");
     TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        logits.scalar_type() == mfq_tensor_backend::kFloat16 ||
-        logits.scalar_type() == mfq_tensor_backend::kBFloat16,
+        logits.scalar_type() == ::tyloi::kFloat32 ||
+        logits.scalar_type() == ::tyloi::kFloat16 ||
+        logits.scalar_type() == ::tyloi::kBFloat16,
         "sample_top_k_top_p: logits dtype must be f32, f16, or bf16");
     int B = (int)logits.size(0);
     int V = (int)logits.size(1);
@@ -692,24 +692,24 @@ mfq_tensor_backend::Tensor sample_top_k_top_p_cuda(
     TYLOINFER_RUNTIME_CHECK(temperature > 0.0, "sample_top_k_top_p: temperature must be > 0");
     TYLOINFER_RUNTIME_CHECK(top_k > 0 && top_k <= V && top_k <= SAMPLE_MAX_TOP_K,
                 "sample_top_k_top_p: top_k must be in [1, min(V,1024)]");
-    auto out = mfq_tensor_backend::empty({B}, logits.options().dtype(mfq_tensor_backend::kInt64));
+    auto out = ::tyloi::cuda::empty({B}, logits.options().dtype(::tyloi::kInt64));
 
-    const char* radix_env = mfq::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_TOPK");
+    const char* radix_env = tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_TOPK");
     const bool use_radix = B == 1 && top_k <= SAMPLE_RADIX_MAX_TOP_K &&
         (radix_env == nullptr || radix_env[0] != '0');
     if (use_radix) {
         cudaStream_t stream = mfq_current_cuda_stream();
-        const auto* key_option=mfq::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_KEYS");
+        const auto* key_option=tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_KEYS");
         if(!key_option || key_option[0]!='0') {
-            const auto* item_option=mfq::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_ITEMS");
+            const auto* item_option=tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_RADIX_ITEMS");
             const int requested=item_option?std::atoi(item_option):(V<=8192?1:V<=65536?4:8);
             const int items=requested==8?8:requested==1?1:4;
-            const auto* bitonic_option=mfq::cuda::env_lookup("TYLOINFER_SAMPLE_KEY_BITONIC");
+            const auto* bitonic_option=tyloi::cuda::env_lookup("TYLOINFER_SAMPLE_KEY_BITONIC");
             const bool bitonic=!bitonic_option || bitonic_option[0]!='0';
             const int blocks=(V+SAMPLE_BD*items-1)/(SAMPLE_BD*items);
             const int64_t capacity=int64_t(blocks)*top_k;
-            auto a=mfq_tensor_backend::empty({capacity},logits.options().dtype(mfq_tensor_backend::kInt64));
-            auto b=mfq_tensor_backend::empty({capacity},a.options());
+            auto a=::tyloi::cuda::empty({capacity},logits.options().dtype(::tyloi::kInt64));
+            auto b=::tyloi::cuda::empty({capacity},a.options());
             auto* first=reinterpret_cast<uint64_t*>(a.data_ptr<int64_t>());
             auto* second=reinterpret_cast<uint64_t*>(b.data_ptr<int64_t>());
             TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(mfq_dispatch_half,mfq_dispatch_bfloat16,
@@ -733,14 +733,14 @@ mfq_tensor_backend::Tensor sample_top_k_top_p_cuda(
         }
         const int first_blocks = (V + SAMPLE_BD - 1) / SAMPLE_BD;
         const int64_t capacity = (int64_t)first_blocks * top_k;
-        auto vals_a = mfq_tensor_backend::empty(
-            {capacity}, logits.options().dtype(mfq_tensor_backend::kFloat32));
-        auto idxs_a = mfq_tensor_backend::empty(
-            {capacity}, logits.options().dtype(mfq_tensor_backend::kInt32));
-        auto vals_b = mfq_tensor_backend::empty(
-            {capacity}, logits.options().dtype(mfq_tensor_backend::kFloat32));
-        auto idxs_b = mfq_tensor_backend::empty(
-            {capacity}, logits.options().dtype(mfq_tensor_backend::kInt32));
+        auto vals_a = ::tyloi::cuda::empty(
+            {capacity}, logits.options().dtype(::tyloi::kFloat32));
+        auto idxs_a = ::tyloi::cuda::empty(
+            {capacity}, logits.options().dtype(::tyloi::kInt32));
+        auto vals_b = ::tyloi::cuda::empty(
+            {capacity}, logits.options().dtype(::tyloi::kFloat32));
+        auto idxs_b = ::tyloi::cuda::empty(
+            {capacity}, logits.options().dtype(::tyloi::kInt32));
         TYLOINFER_DISPATCH_FLOATING_TYPES_AND2(
             mfq_dispatch_half, mfq_dispatch_bfloat16,
             logits.scalar_type(), "sample_top_k_radix_stage1", [&] {
@@ -787,11 +787,11 @@ mfq_tensor_backend::Tensor sample_top_k_top_p_cuda(
     return out;
 }
 
-void sample_token_counts_add_cuda(mfq_tensor_backend::Tensor counts, mfq_tensor_backend::Tensor tokens)
+void sample_token_counts_add_cuda(::tyloi::Tensor counts, ::tyloi::Tensor tokens)
 {
-    TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == mfq_tensor_backend::kInt32,
+    TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == ::tyloi::kInt32,
                 "sample_token_counts_add: counts must be contiguous CUDA int32");
-    TYLOINFER_RUNTIME_CHECK(tokens.is_cuda() && tokens.is_contiguous() && tokens.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(tokens.is_cuda() && tokens.is_contiguous() && tokens.scalar_type() == ::tyloi::kInt64,
                 "sample_token_counts_add: tokens must be contiguous CUDA int64");
     TYLOINFER_RUNTIME_CHECK(counts.dim() == 1, "sample_token_counts_add: counts must be [V]");
     int64_t n = tokens.numel();
@@ -802,9 +802,9 @@ void sample_token_counts_add_cuda(mfq_tensor_backend::Tensor counts, mfq_tensor_
         counts.data_ptr<int32_t>(), tokens.data_ptr<int64_t>(), n, (int)counts.numel());
 }
 
-mfq_tensor_backend::Tensor sample_apply_penalties_cuda(
-    mfq_tensor_backend::Tensor logits,
-    mfq_tensor_backend::Tensor counts,
+::tyloi::Tensor sample_apply_penalties_cuda(
+    ::tyloi::Tensor logits,
+    ::tyloi::Tensor counts,
     double presence_penalty,
     double frequency_penalty,
     double repetition_penalty)
@@ -814,11 +814,11 @@ mfq_tensor_backend::Tensor sample_apply_penalties_cuda(
     TYLOINFER_RUNTIME_CHECK(logits.dim() == 2 && logits.size(0) == 1,
                 "sample_apply_penalties: logits must be [1,V]");
     TYLOINFER_RUNTIME_CHECK(
-        logits.scalar_type() == mfq_tensor_backend::kFloat32 ||
-        logits.scalar_type() == mfq_tensor_backend::kFloat16 ||
-        logits.scalar_type() == mfq_tensor_backend::kBFloat16,
+        logits.scalar_type() == ::tyloi::kFloat32 ||
+        logits.scalar_type() == ::tyloi::kFloat16 ||
+        logits.scalar_type() == ::tyloi::kBFloat16,
         "sample_apply_penalties: logits dtype must be f32, f16, or bf16");
-    TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == mfq_tensor_backend::kInt32,
+    TYLOINFER_RUNTIME_CHECK(counts.is_cuda() && counts.is_contiguous() && counts.scalar_type() == ::tyloi::kInt32,
                 "sample_apply_penalties: counts must be contiguous CUDA int32");
     TYLOINFER_RUNTIME_CHECK(counts.dim() == 1 && counts.numel() == logits.size(1),
                 "sample_apply_penalties: counts must be [V]");

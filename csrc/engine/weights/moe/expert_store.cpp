@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 
 template <typename T>
@@ -582,4 +582,4 @@ MfeMxfp4ReadBatchStats MfeMxfp4ReadPool::read(
     return submit(requests).wait();
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

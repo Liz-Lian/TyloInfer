@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::gguf {
+namespace tyloi::gguf {
 namespace {
 
 std::vector<std::byte> read_record(const Record& record) {
@@ -117,4 +117,4 @@ Record integers(std::string name, const std::vector<std::int64_t>& values) {
     return record;
 }
 
-} // namespace mfq::gguf
+} // namespace tyloi::gguf

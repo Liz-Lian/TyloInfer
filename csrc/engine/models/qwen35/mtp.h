@@ -10,7 +10,7 @@
 #include <functional>
 #include <memory>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 class State;
 class Mtp;
@@ -25,16 +25,16 @@ public:
         bool preallocate);
 
     void reset(int64_t batch = 1) override;
-    mfq_tensor_backend::Tensor forward(
-        mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor next_ids) override;
-    MtpStep step_positioned(mfq_tensor_backend::Tensor hidden,
-        mfq_tensor_backend::Tensor next_ids, mfq_tensor_backend::Tensor positions) override;
+    ::tyloi::Tensor forward(
+        ::tyloi::Tensor hidden, ::tyloi::Tensor next_ids) override;
+    MtpStep step_positioned(::tyloi::Tensor hidden,
+        ::tyloi::Tensor next_ids, ::tyloi::Tensor positions) override;
 
     int64_t cache_position() const noexcept override { return state_.position(); }
     void trim_cache_to(int64_t position) override;
     bool supports_session_state() const noexcept override { return true; }
     MtpSessionState capture_session_state(int64_t target_cache_position,
-        const mfq_tensor_backend::Tensor& last_target_hidden) const override;
+        const ::tyloi::Tensor& last_target_hidden) const override;
 
     bool teacher_forced_prompt_prime() const noexcept override { return true; }
     bool target_bootstrap_decode() const noexcept override { return false; }
@@ -45,9 +45,9 @@ private:
     friend void restore_session(State&, Mtp*, const TextSessionState&,
         const std::function<void()>&);
 
-    mfq_tensor_backend::Tensor evaluate(
-        mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor next_ids,
-        mfq_tensor_backend::Tensor positions);
+    ::tyloi::Tensor evaluate(
+        ::tyloi::Tensor hidden, ::tyloi::Tensor next_ids,
+        ::tyloi::Tensor positions);
 
     Predictor model_;
     QuantLinear embedding_;
@@ -62,4 +62,4 @@ private:
     const int& trace_scope_;
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

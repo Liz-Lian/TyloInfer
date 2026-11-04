@@ -2,7 +2,7 @@
 #include <filesystem>
 #include <string>
 
-namespace mfq {
+namespace tyloi {
 // A profile belongs to one exact checkpoint entry, not every model in a folder.
 // Explicit CLI selection wins; absent sidecars preserve ordinary placement.
 inline std::string resolve_moe_cache_profile_path(const std::string& explicit_path,

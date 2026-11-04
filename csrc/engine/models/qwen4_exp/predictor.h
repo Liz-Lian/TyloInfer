@@ -6,19 +6,19 @@
 #include "engine/models/qwen4_exp/config.h"
 
 struct CudaExecutionContext;
-namespace mfq::cuda::weight_loader { struct Loader; }
+namespace tyloi::cuda::weight_loader { struct Loader; }
 
-namespace mfq::cuda { class GatedResidual; }
+namespace tyloi::cuda { class GatedResidual; }
 
-namespace mfq::cuda::qwen4_exp {
+namespace tyloi::cuda::qwen4_exp {
 using attention_ops::Linear;
 struct Qwen4Block;
 struct Qwen4MtpGraph;
 
 struct Predictor final : MtpModule {
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
 
-    mfq::models::qwen4_exp::Config config;
+    tyloi::models::qwen4_exp::Config config;
     QuantLinear embedding, output;
     double softcap = 0;
     int primary = 0;
@@ -47,7 +47,7 @@ struct Predictor final : MtpModule {
 
     static std::optional<Predictor> load_if_present(CudaExecutionContext &execution,
                                                       const weight_loader::Loader& weights,
-                                                      const mfq::models::qwen4_exp::Config &main,
+                                                      const tyloi::models::qwen4_exp::Config &main,
                                                       QuantLinear embedding, QuantLinear output,
                                                       double softcap);
 
@@ -78,11 +78,11 @@ struct Predictor final : MtpModule {
     bool target_bootstrap_decode() const noexcept override;
 
     bool preserve_output_dtype() const noexcept override;
-    std::unique_ptr<mfq::engine::mtp::DepthPolicy> depth_policy(
-        int maximum_depth, mfq::engine::mtp::PolicyState& state) const override;
+    std::unique_ptr<tyloi::engine::mtp::DepthPolicy> depth_policy(
+        int maximum_depth, tyloi::engine::mtp::PolicyState& state) const override;
     bool supports_session_state() const noexcept override;
     MtpSessionState capture_session_state(int64_t,const Tensor&) const override;
     void restore_session_state(const MtpSessionState&) override;
 };
 
-} // namespace mfq::cuda::qwen4_exp
+} // namespace tyloi::cuda::qwen4_exp

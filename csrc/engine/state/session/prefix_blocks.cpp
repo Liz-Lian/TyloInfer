@@ -34,7 +34,7 @@
 #include <unistd.h>
 #endif
 
-namespace mfq::cache {
+namespace tyloi::cache {
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{
@@ -1743,4 +1743,4 @@ PrefixBlockStoreMetrics PrefixBlockStore::metrics() const {
     return implementation_->metrics();
 }
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

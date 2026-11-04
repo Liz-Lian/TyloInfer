@@ -7,9 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
-namespace tb = mfq_tensor_backend;
 
-tb::Tensor TqRoutedWeight::forward(tb::Tensor input_value,tb::Tensor ids)const {
+::tyloi::Tensor TqRoutedWeight::forward(::tyloi::Tensor input_value,::tyloi::Tensor ids)const {
     if(!cache || !source_id || experts<1 || out<1 || input<1 ||
        ids.dim()!=2 || ids.size(1)<1 || ids.size(1)>65535 || input_value.size(-1)!=input ||
        !input_value.is_cuda() || (input_value.dim()!=2 && input_value.dim()!=3))
@@ -18,10 +17,10 @@ tb::Tensor TqRoutedWeight::forward(tb::Tensor input_value,tb::Tensor ids)const {
     if(input_value.size(0)!=tokens || (input_value.dim()==3 && input_value.size(1)!=routes))
         throw std::invalid_argument("TQ routed token/route count differs");
     const auto source=input_value.contiguous();
-    auto result=tb::empty({tokens,routes,out},source.options());
+    auto result=::tyloi::cuda::empty({tokens,routes,out},source.options());
     if(!tokens)return result;
     const MfqCudaGuard guard(source.get_device());
-    auto host=ids.contiguous().cpu().to(tb::kInt64);
+    auto host=ids.contiguous().cpu().to(::tyloi::kInt64);
     const auto* selected=host.data_ptr<std::int64_t>();
     for(std::int64_t i=0;i<host.numel();++i) {
         if(selected[i]<0 || selected[i]>=experts)throw std::out_of_range("TQ routed expert ID is out of bounds");

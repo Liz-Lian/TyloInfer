@@ -20,7 +20,7 @@
 #include <type_traits>
 #endif
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 Engine::Engine() = default;
 Engine::~Engine() {
@@ -39,9 +39,9 @@ void Engine::retire_request(Request& request) noexcept {
     request.state.reset();
 }
 #else
-using namespace mfq::cuda;
+using namespace tyloi::cuda;
 namespace {
-cuda::Executor& cuda_root(mfq::Executor& executor) { return static_cast<cuda::Executor&>(executor); }
+cuda::Executor& cuda_root(tyloi::Executor& executor) { return static_cast<cuda::Executor&>(executor); }
 }
 
 template <class F> decltype(auto) Engine::with_cuda(F&& work) {
@@ -54,7 +54,7 @@ EngineInfo Engine::describe() const { return impl_->info_; }
 
 bool Engine::ready() const { return impl_->ready_; }
 
-std::unique_ptr<mfq::Executor::Scope> Engine::enter() { return impl_->forward_->enter(); }
+std::unique_ptr<tyloi::Executor::Scope> Engine::enter() { return impl_->forward_->enter(); }
 
 void Engine::prepare_request(Request& request, bool batched) {
     engine::prepare_request(request, impl_->text_.get(), impl_->info_, batched, false);
@@ -139,18 +139,18 @@ bool Engine::exclusive() const { return false; }
 
 void Engine::execute(const std::vector<RequestId>&) {}
 
-mfq::StepSequence<Engine::Prepared> Engine::prepare(InferenceRequest& input, models::State& state) {
+tyloi::StepSequence<Engine::Prepared> Engine::prepare(InferenceRequest& input, models::State& state) {
     return model_->prepare(input.prompt, *input.vision, state);
 }
 
-std::pair<mfq::StepResult<Engine::Prepared>, double> Engine::advance_preparation(mfq::StepSequence<Prepared>& preparation) {
+std::pair<tyloi::StepResult<Engine::Prepared>, double> Engine::advance_preparation(tyloi::StepSequence<Prepared>& preparation) {
     internal::PrefillCudaTimer timer;
     auto step = preparation.next();
     TYLOINFER_CUDA_CHECK(cudaEventRecord(timer.finished_event(), mfq_get_current_cuda_stream()));
     return std::pair{std::move(step), timer.elapsed_ms()};
 }
 
-mfq::StepSequence<EventData> Engine::generate_text(InferenceRequest& input, InferenceOutput& output, models::State& state, std::optional<Prepared> prepared, const RequestId& id, bool) {
+tyloi::StepSequence<EventData> Engine::generate_text(InferenceRequest& input, InferenceOutput& output, models::State& state, std::optional<Prepared> prepared, const RequestId& id, bool) {
     return internal::generate(*model_, state, impl_->forward_.get(), cuda_root(*executor_).collectives(),
         cuda_root(*executor_).forward_mode(impl_->load_.layer_placement.primary_device()), cuda_root(*executor_).profiler(), *impl_->weights_,
         cuda_root(*executor_).mode().ffn.serial, impl_->load_.report_cuda_memory,
@@ -161,7 +161,7 @@ mfq::StepSequence<EventData> Engine::generate_text(InferenceRequest& input, Infe
         static_cast<MtpModule*>(nullptr), std::move(prepared), nullptr, id, impl_->restore_);
 }
 
-mfq::StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
+tyloi::StepSequence<EventData> Engine::generate(const RequestId& id, Request& request) {
     return engine::generate_prepared(*this, *request.state, request.input, *request.output, id, request.batched);
 }
 
@@ -193,4 +193,4 @@ SessionResult Engine::set_budget(const SessionCommand& command) {
 
 #endif
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

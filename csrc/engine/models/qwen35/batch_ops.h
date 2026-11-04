@@ -15,26 +15,26 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 bool batch_graph_enabled(const Model&, const CudaContinuousBatchConfig&);
 
-struct BatchRequest : mfq::engine::BatchRequest {
-    using mfq::engine::BatchRequest::BatchRequest;
+struct BatchRequest : tyloi::engine::BatchRequest {
+    using tyloi::engine::BatchRequest::BatchRequest;
 
     std::optional<Sampler> sampler;
-    mfq_tensor_backend::Tensor counts;
-    mfq_tensor_backend::Tensor prefill_ids;
+    ::tyloi::Tensor counts;
+    ::tyloi::Tensor prefill_ids;
     std::vector<std::unique_ptr<internal::PrefillCudaTimer>> prefill_timers;
     RequestState cache;
 };
 
 class BatchOps {
   public:
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     using Request = BatchRequest;
-    using State = mfq::engine::BatchState<Request>;
-    using Sample = mfq::cuda::BatchSample;
+    using State = tyloi::engine::BatchState<Request>;
+    using Sample = tyloi::cuda::BatchSample;
     struct Decoded {
         Tensor logits, greedy_tokens;
     };
@@ -48,11 +48,11 @@ class BatchOps {
     BatchOps& operator=(const BatchOps&) = delete;
     int64_t vocab_size() const;
     int64_t max_context() const;
-    mfq::engine::Metrics metrics() const;
+    tyloi::engine::Metrics metrics() const;
     void suspend_decode();
-    mfq::engine::PrefillChunk prefill_chunk(const std::shared_ptr<Request>&,
-                                            mfq::engine::PrefillChunk);
-    Sample prefill(const std::shared_ptr<Request>&, mfq::engine::PrefillChunk);
+    tyloi::engine::PrefillChunk prefill_chunk(const std::shared_ptr<Request>&,
+                                            tyloi::engine::PrefillChunk);
+    Sample prefill(const std::shared_ptr<Request>&, tyloi::engine::PrefillChunk);
     void activate(const std::shared_ptr<Request>&, const Sample&);
     void resume_decode(int64_t cache_position);
     void discard_prefill(const std::shared_ptr<Request>&);
@@ -84,7 +84,7 @@ class BatchOps {
     int64_t cuda_graph_replays_{0};
     Tensor decode_metadata_host_;
     Tensor decode_metadata_cuda_;
-    std::vector<std::unique_ptr<mfq::cuda::BatchGraph>> decode_graphs_;
+    std::vector<std::unique_ptr<tyloi::cuda::BatchGraph>> decode_graphs_;
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

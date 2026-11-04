@@ -13,7 +13,6 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace tb = mfq_tensor_backend;
 
 namespace {
 
@@ -25,7 +24,7 @@ void status(int code) {
     TYLOINFER_CUDA_CHECK(static_cast<cudaError_t>(code));
 }
 
-std::size_t segment_for(const mfq::TqTable& table, std::uint64_t row) {
+std::size_t segment_for(const tyloi::TqTable& table, std::uint64_t row) {
     std::size_t segment = 0;
     while (segment + 1 < table.segment_count() &&
            table.segment_end(segment) <= row) {
@@ -34,9 +33,9 @@ std::size_t segment_for(const mfq::TqTable& table, std::uint64_t row) {
     return segment;
 }
 
-tb::Tensor lookup_tq_rows(const mfq::TqTable& table,
+::tyloi::Tensor lookup_tq_rows(const tyloi::TqTable& table,
                           const std::int64_t* ids, std::size_t count,
-                          const tb::Device& device) {
+                          const ::tyloi::Device& device) {
     if (!device.is_cuda() || !count || !ids) {
         throw std::invalid_argument("TQ table lookup requires CUDA and row IDs");
     }
@@ -61,7 +60,7 @@ tb::Tensor lookup_tq_rows(const mfq::TqTable& table,
                 selected[run] - start, selected[next - 1] + 1 - start));
             run = next;
         }
-        return to_device_tq(mfq::join_rows(pieces), table.width(), device.index);
+        return to_device_tq(tyloi::join_rows(pieces), table.width(), device.index);
     };
     const auto first = segment_for(table, selected.front());
     const auto last = segment_for(table, selected.back());
@@ -74,25 +73,25 @@ tb::Tensor lookup_tq_rows(const mfq::TqTable& table,
                 inverse.push_back(std::lower_bound(
                     selected.begin(), selected.end(), ids[i]) - selected.begin());
             }
-            const auto index = tb::from_blob(
+            const auto index = ::tyloi::cuda::from_blob(
                 inverse.data(), {static_cast<std::int64_t>(count)},
-                tb::TensorOptions().dtype(tb::kInt64)).clone().to(device, false, false);
+                ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(device, false, false);
             return weight.embedding(index);
         }
         if (count > 65535) {
-            return weight.embedding(tb::arange(
-                count, weight.image.options().dtype(tb::kInt64)));
+            return weight.embedding(::tyloi::cuda::arange(
+                count, weight.image.options().dtype(::tyloi::kInt64)));
         }
-        auto result = tb::empty(
+        auto result = ::tyloi::cuda::empty(
             {static_cast<std::int64_t>(count), table.width()},
-            weight.image.options().dtype(tb::kFloat16));
+            weight.image.options().dtype(::tyloi::kFloat16));
         status(mfq_tq_embedding(weight.view, nullptr, static_cast<int>(count),
                                  result.data_ptr(), 0, mfq_current_cuda_stream()));
         return result;
     }
-    auto result = tb::empty(
+    auto result = ::tyloi::cuda::empty(
         {static_cast<std::int64_t>(selected.size()), table.width()},
-        tb::TensorOptions().device(device).dtype(tb::kFloat16));
+        ::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat16));
     std::size_t begin = 0;
     for (std::size_t segment = 0;
          segment < table.segment_count() && begin < selected.size(); ++segment) {
@@ -103,8 +102,8 @@ tb::Tensor lookup_tq_rows(const mfq::TqTable& table,
             const auto weight = gather(segment, begin, end);
             const auto rows = end - begin;
             if (rows > 65535) {
-                const auto index = tb::arange(
-                    rows, weight.image.options().dtype(tb::kInt64));
+                const auto index = ::tyloi::cuda::arange(
+                    rows, weight.image.options().dtype(::tyloi::kInt64));
                 result.slice(0, begin, end).copy_(weight.embedding(index));
             } else {
                 status(mfq_tq_embedding(
@@ -123,9 +122,9 @@ tb::Tensor lookup_tq_rows(const mfq::TqTable& table,
             inverse.push_back(std::lower_bound(
                 selected.begin(), selected.end(), ids[i]) - selected.begin());
         }
-        const auto index = tb::from_blob(
+        const auto index = ::tyloi::cuda::from_blob(
             inverse.data(), {static_cast<std::int64_t>(count)},
-            tb::TensorOptions().dtype(tb::kInt64)).clone().to(device, false, false);
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(device, false, false);
         return result.index_select(0, index);
     }
     return result;
@@ -133,25 +132,25 @@ tb::Tensor lookup_tq_rows(const mfq::TqTable& table,
 
 } // namespace
 
-tb::Tensor lookup_tq_table(const mfq::TqTable& table,
+::tyloi::Tensor lookup_tq_table(const tyloi::TqTable& table,
                            const std::int64_t* ids, std::size_t count,
-                           const tb::Device& device) {
+                           const ::tyloi::Device& device) {
     return lookup_tq_rows(table, ids, count, device);
 }
 
-tb::Tensor lookup_tq_table(const mfq::TqTable& table, tb::Tensor ids) {
-    auto host = ids.contiguous().cpu().to(tb::kInt64);
+::tyloi::Tensor lookup_tq_table(const tyloi::TqTable& table, ::tyloi::Tensor ids) {
+    auto host = ids.contiguous().cpu().to(::tyloi::kInt64);
     auto shape = ids.sizes().vec();
     shape.push_back(table.width());
-    if (!ids.numel()) return tb::empty(shape, ids.options().dtype(tb::kFloat16));
+    if (!ids.numel()) return ::tyloi::cuda::empty(shape, ids.options().dtype(::tyloi::kFloat16));
     return lookup_tq_rows(
         table, host.data_ptr<std::int64_t>(), host.numel(), ids.device()).reshape(shape);
 }
 
-tb::Tensor lookup_tq_shards(
-        const std::vector<std::shared_ptr<mfq::TqTable>>& tables,
+::tyloi::Tensor lookup_tq_shards(
+        const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
         std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,
-        const tb::Device& device) {
+        const ::tyloi::Device& device) {
     if (tables.empty() || !tables.front() || rows_per_shard < 1 || !device.is_cuda()) {
         throw std::invalid_argument("invalid TQ table shard geometry");
     }
@@ -162,15 +161,15 @@ tb::Tensor lookup_tq_shards(
         }
     }
     static std::atomic<bool> reported{false};
-    if (mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE") && !reported.exchange(true)) {
+    if (tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE") && !reported.exchange(true)) {
         std::fprintf(stderr,
             "tq_table_shards_dispatch enabled=1 shards=%zu lookups=%zu width=%lld CPU_ids=1\n",
             tables.size(), ids.size(), static_cast<long long>(columns));
     }
     const MfqCudaGuard guard(device);
-    auto result = tb::empty(
+    auto result = ::tyloi::cuda::empty(
         {static_cast<std::int64_t>(ids.size()), columns},
-        tb::TensorOptions().device(device).dtype(tb::kFloat16));
+        ::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat16));
     std::vector<std::vector<std::int64_t>> local(tables.size()), positions(tables.size());
     for (std::size_t index = 0; index < ids.size(); ++index) {
         if (ids[index] < 0 ||
@@ -185,10 +184,10 @@ tb::Tensor lookup_tq_shards(
         if (local[shard].empty()) continue;
         const auto values = lookup_tq_rows(
             *tables[shard], local[shard].data(), local[shard].size(), device);
-        const auto index = tb::from_blob(
+        const auto index = ::tyloi::cuda::from_blob(
             positions[shard].data(),
             {static_cast<std::int64_t>(positions[shard].size())},
-            tb::TensorOptions().dtype(tb::kInt64)).clone().to(device, false, false);
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt64)).clone().to(device, false, false);
         result.index_copy_(0, index, values);
     }
     return result;
@@ -197,13 +196,13 @@ tb::Tensor lookup_tq_shards(
 namespace {
 
 class TqRowStage final : public RowStage {
-    std::vector<std::shared_ptr<mfq::TqTable>> tables_;
+    std::vector<std::shared_ptr<tyloi::TqTable>> tables_;
     std::vector<std::int64_t> shape_;
     std::int64_t rows_per_shard_, count_ = 1, columns_ = 0;
     std::size_t image_stride_ = 0, images_offset_ = 0, bytes_ = 0;
-    tb::Device device_;
-    std::unique_ptr<mfq::cuda::HostBuffer> host_;
-    tb::Tensor packet_, output_;
+    ::tyloi::Device device_;
+    std::unique_ptr<tyloi::cuda::HostBuffer> host_;
+    ::tyloi::Tensor packet_, output_;
     std::uint8_t* packet_address_ = nullptr;
     bool mapped_ = false, charged_ = false;
     std::vector<MfqCudaStream> streams_;
@@ -219,7 +218,7 @@ class TqRowStage final : public RowStage {
     }
     TrellisProjectionView pack_row(
             const std::vector<std::uint8_t>& wire, std::size_t slot) {
-        const mfq::TqLayout layout(wire.data(), wire.size());
+        const tyloi::TqLayout layout(wire.data(), wire.size());
         const auto image = tq_image(wire, layout);
         if (layout.rows != 1 || columns_ > layout.width || image.size() > image_stride_) {
             throw std::invalid_argument("TQ stage row exceeds its prepared layout");
@@ -239,9 +238,9 @@ class TqRowStage final : public RowStage {
     }
 
 public:
-    TqRowStage(std::vector<std::shared_ptr<mfq::TqTable>> tables,
+    TqRowStage(std::vector<std::shared_ptr<tyloi::TqTable>> tables,
                std::int64_t rows_per_shard, std::vector<std::int64_t> shape,
-               const tb::Device& device)
+               const ::tyloi::Device& device)
         : tables_(std::move(tables)), shape_(std::move(shape)),
           rows_per_shard_(rows_per_shard), device_(device) {
         if (tables_.empty() || !tables_[0] || rows_per_shard_ < 1 || !device.is_cuda()) {
@@ -278,9 +277,9 @@ public:
         int can_map = 0;
         TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(
             &can_map, cudaDevAttrCanMapHostMemory, device.index));
-        const auto* setting = mfq::cuda::env_lookup("TYLOINFER_PLE_MAPPED_ROWS");
+        const auto* setting = tyloi::cuda::env_lookup("TYLOINFER_PLE_MAPPED_ROWS");
         mapped_ = can_map && (setting ? setting[0] == '1' : bytes_ <= 16u * 1024);
-        host_ = std::make_unique<mfq::cuda::HostBuffer>(bytes_, mapped_);
+        host_ = std::make_unique<tyloi::cuda::HostBuffer>(bytes_, mapped_);
         if (mapped_) {
             void* address = nullptr;
             const auto error = cudaHostGetDevicePointer(&address, host_->data(), 0);
@@ -292,15 +291,15 @@ public:
                 packet_address_ = static_cast<std::uint8_t*>(address);
             }
         }
-        const auto options = tb::TensorOptions().device(device).dtype(tb::kFloat16);
+        const auto options = ::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat16);
         if (!mapped_) {
-            packet_ = tb::empty(
-                {static_cast<std::int64_t>(bytes_)}, options.dtype(tb::kUInt8));
+            packet_ = ::tyloi::cuda::empty(
+                {static_cast<std::int64_t>(bytes_)}, options.dtype(::tyloi::kUInt8));
             packet_address_ = packet_.data_ptr<std::uint8_t>();
         }
         auto output_shape = shape_;
         output_shape.push_back(columns_);
-        output_ = tb::zeros(output_shape, options);
+        output_ = ::tyloi::cuda::zeros(output_shape, options);
         std::memset(host_->data(), 0, bytes_);
         const auto zero_width = (std::uint64_t(columns_) + 255) & ~std::uint64_t(255);
         if (zero_width > INT_MAX) {
@@ -308,11 +307,11 @@ public:
         }
         std::vector<std::uint8_t> zero(72 + zero_width / 32 + zero_width / 8);
         std::memcpy(zero.data(), "RTRELL05", 8);
-        mfq::TqLayout::integer(zero.data() + 8, 5, 4);
-        mfq::TqLayout::integer(zero.data() + 12, 1, 4);
-        mfq::TqLayout::integer(zero.data() + 16, zero_width, 4);
-        mfq::TqLayout::integer(zero.data() + 24, 16, 4);
-        mfq::TqLayout::integer(zero.data() + 28, zero_width / 8, 4);
+        tyloi::TqLayout::integer(zero.data() + 8, 5, 4);
+        tyloi::TqLayout::integer(zero.data() + 12, 1, 4);
+        tyloi::TqLayout::integer(zero.data() + 16, zero_width, 4);
+        tyloi::TqLayout::integer(zero.data() + 24, 16, 4);
+        tyloi::TqLayout::integer(zero.data() + 28, zero_width / 8, 4);
         const auto view = pack_row(zero, 0);
         auto* views = static_cast<TrellisProjectionView*>(host_->data());
         std::fill_n(views, count_, view);
@@ -322,7 +321,7 @@ public:
                 mfq_current_cuda_stream()));
         }
         TYLOINFER_CUDA_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()));
-        mfq::cuda::charge_tensor_host_bytes(bytes_);
+        tyloi::cuda::charge_tensor_host_bytes(bytes_);
         charged_ = true;
     }
 
@@ -335,10 +334,10 @@ public:
         }
         output_ = {};
         packet_ = {};
-        if (charged_) mfq::cuda::tensor_host_bytes.fetch_sub(bytes_);
+        if (charged_) tyloi::cuda::tensor_host_bytes.fetch_sub(bytes_);
         if (restore) (void)cudaSetDevice(previous);
     }
-    tb::Tensor output() const override { return output_; }
+    ::tyloi::Tensor output() const override { return output_; }
     bool mapped_rows() const override { return mapped_; }
     void upload(const std::vector<std::int64_t>& ids,
                 const std::vector<std::int64_t>& shape) override {
@@ -387,8 +386,8 @@ public:
 } // namespace
 
 std::shared_ptr<RowStage> make_tq_row_stage(
-        const std::vector<std::shared_ptr<mfq::TqTable>>& tables,
+        const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
         std::int64_t rows_per_shard, const std::vector<std::int64_t>& shape,
-        const tb::Device& device) {
+        const ::tyloi::Device& device) {
     return std::make_shared<TqRowStage>(tables, rows_per_shard, shape, device);
 }

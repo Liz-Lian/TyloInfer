@@ -16,16 +16,16 @@
 
 enum class KlMmqMode;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct TokenInputOptions {
     std::string ids_arg, ids_file;
     int gen = 16;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 std::vector<int64_t> parse_ids(const std::string& value);
 KlMmqMode parse_kl_mmq_mode(const std::string& value);
@@ -34,9 +34,9 @@ std::vector<int64_t> load_ids_file(const std::string& path);
 
 int with_command_errors(const std::function<int()>& fn);
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
-namespace mfq::cuda::commands {
+namespace tyloi::cuda::commands {
 
 struct HelpRequested {};
 
@@ -212,4 +212,4 @@ inline int print_usage_error(const UsageError& error) {
     return 2;
 }
 
-} // namespace mfq::cuda::commands
+} // namespace tyloi::cuda::commands

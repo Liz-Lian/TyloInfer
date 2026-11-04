@@ -13,8 +13,8 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 
-void load_important_neuron_branch(const mfq::cuda::weight_loader::Loader& weights,
-                                  int64_t hidden_size, int64_t intermediate_size, mfq::cuda::Ffn &f,
+void load_important_neuron_branch(const tyloi::cuda::weight_loader::Loader& weights,
+                                  int64_t hidden_size, int64_t intermediate_size, tyloi::cuda::Ffn &f,
                                   const std::string &down_name, const std::string &gate_name,
                                   const std::string &up_name) {
     const std::string down_high = down_name + ".in_high";
@@ -34,7 +34,7 @@ void load_important_neuron_branch(const mfq::cuda::weight_loader::Loader& weight
         throw std::runtime_error("important-neuron records are unsupported on routed MoE FFNs");
     }
 
-    auto high = std::make_unique<mfq::cuda::Ffn>();
+    auto high = std::make_unique<tyloi::cuda::Ffn>();
     high->down = weights.projection(down_high, TensorParallelAxis::Input);
     high->gate_up = weights.build_gate_up({gate_high, up_high}, high->down);
     high->geglu = f.geglu;
@@ -51,19 +51,19 @@ void load_important_neuron_branch(const mfq::cuda::weight_loader::Loader& weight
     f.important_neurons = std::move(high);
 }
 
-mfq_tensor_backend::Tensor TransformerWeightLoader::dense(const std::string& name) const {
+::tyloi::Tensor TransformerWeightLoader::dense(const std::string& name) const {
     return weights.tensor(name);
 }
 QuantLinear TransformerWeightLoader::linear(const std::string& name) const {
     return weights.projection(name);
 }
 bool TransformerWeightLoader::has(const std::string& name) const { return has_tensor(weights.source, name); }
-mfq_tensor_backend::Tensor TransformerWeightLoader::router_parameter(const std::string& name) const {
+::tyloi::Tensor TransformerWeightLoader::router_parameter(const std::string& name) const {
     if(keep_quantized_router && name.ends_with("router.weight") && require_tensor(weights.source,name).dtype=="TQ") {
         router_projection=std::make_shared<QuantLinear>(linear(name));
         return {};
     }
-    return dense(name).to(mfq_tensor_backend::kFloat32).contiguous();
+    return dense(name).to(::tyloi::kFloat32).contiguous();
 }
 QuantLinearGroup TransformerWeightLoader::projections(const std::vector<std::string>& names) const {
     return weights.build_group(names);
@@ -73,9 +73,9 @@ QuantLinearGroup TransformerWeightLoader::gate_up(const std::vector<std::string>
     return weights.build_gate_up(names, down, shared_gate_up_compatible_prefix,
                               preserve_projection_boundaries);
 }
-void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::vector<std::string>& names) const {
+void TransformerWeightLoader::qkv(tyloi::cuda::FullAttention& block, const std::vector<std::string>& names) const {
     const bool mirror_kv = block.attention_output_gate &&
-        mfq::cuda::env_flag("TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true) &&
+        tyloi::cuda::env_flag("TYLOINFER_TP_MIRROR_QWEN35_ATTENTION_KV", true) &&
         is_quant_dtype(require_tensor(weights.source, names[1]).dtype) &&
         is_quant_dtype(require_tensor(weights.source, names[2]).dtype);
     if (mirror_kv) {
@@ -98,20 +98,20 @@ void TransformerWeightLoader::qkv(mfq::cuda::FullAttention& block, const std::ve
 #endif
     }
 }
-void TransformerWeightLoader::output(mfq::cuda::FullAttention& block, const std::string& name) const {
+void TransformerWeightLoader::output(tyloi::cuda::FullAttention& block, const std::string& name) const {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     block.o = weights.weight(name);
 #else
     block.o = linear(name);
 #endif
 }
-void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
+void TransformerWeightLoader::important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,
     const std::string& down, const std::string& gate, const std::string& up) const {
     load_important_neuron_branch(weights, hidden, intermediate, ffn, down, gate, up);
 }
-void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,
+void TransformerWeightLoader::experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                                      const std::string& name, int layer) const {
-    using Role = mfq::models::ExpertProjection;
+    using Role = tyloi::models::ExpertProjection;
     const auto& record = require_tensor(weights.source, name);
     if(record.dtype=="TQ") {
         if(projection==Role::gate_up)
@@ -150,7 +150,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
     }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-    mfq::cuda::Experts* weight = nullptr;
+    tyloi::cuda::Experts* weight = nullptr;
     std::shared_ptr<MixedMoeRuntime>* cpu = nullptr;
     const char* role = nullptr;
     switch (projection) {
@@ -170,7 +170,7 @@ void TransformerWeightLoader::experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertPr
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-mfq::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) const {
+tyloi::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) const {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 
     return weights.build_experts(name);
@@ -179,13 +179,13 @@ mfq::cuda::Experts TransformerWeightLoader::headwise(const std::string& name) co
     throw std::runtime_error("Legacy MFQ inference requires a compatibility build");
 #endif
 }
-mfq::cuda::Ffn load_moe_weights(const mfq::cuda::weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_weights(const tyloi::cuda::weight_loader::Loader& weights,
                      std::string_view prefix, const MoeWeightLoadOptions& options) {
     TransformerWeightLoader loader{weights};
     loader.keep_quantized_router=true;
     loader.cpu_offloaded = options.cpu_offloaded;
     loader.shared_gate_up_compatible_prefix = options.shared_gate_up_compatible_prefix;
-    auto result=mfq::models::load_moe_weights<mfq::cuda::Ffn>(
+    auto result=tyloi::models::load_moe_weights<tyloi::cuda::Ffn>(
         loader, std::string(prefix), options.layer, options.router_bias_required,
         options.ungated_experts, options.ungated_shared);
     if(result.moe_tq) {
@@ -205,9 +205,9 @@ mfq::cuda::Ffn load_moe_weights(const mfq::cuda::weight_loader::Loader& weights,
     return result;
 }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-std::string configure_yarn(mfq::ops::YarnScaling& yarn, bool extend, std::string definition,
+std::string configure_yarn(tyloi::ops::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context) {
     yarn = {};
     if(extend) {
@@ -233,12 +233,12 @@ std::string configure_yarn(mfq::ops::YarnScaling& yarn, bool extend, std::string
     return definition;
 }
 
-void validate_model_source(const mfq::ModelSource& source) {
+void validate_model_source(const tyloi::ModelSource& source) {
     if (source.find_tensor("model.token_embedding.weight") == nullptr) {
         throw std::runtime_error(
             "canonical text tensor inventory has no token embedding");
     }
-    for (const auto& component : mfq::models::graph(source).components) {
+    for (const auto& component : tyloi::models::graph(source).components) {
         if (component.tensor_root != "runtime" &&
                 !has_tensor_prefix(source, component.tensor_root)) {
             throw std::runtime_error(
@@ -248,7 +248,7 @@ void validate_model_source(const mfq::ModelSource& source) {
     }
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
 void validate_native_placement(const ParallelConfig& tensor, const LayerPlacementConfig& layers,
                                int gpu_layers) {

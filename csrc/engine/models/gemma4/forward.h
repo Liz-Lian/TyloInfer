@@ -11,10 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace mfq::cuda::gemma4 {
+namespace tyloi::cuda::gemma4 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-Tensor forward_layer(const Layer&, mfq::state::KvView&, Tensor, const AttentionStep&,
+Tensor forward_layer(const Layer&, tyloi::state::KvView&, Tensor, const AttentionStep&,
                      const Model::Options&);
 #else
 Tensor embed(const Model&, Executor&, Collectives&, int primary, Tensor ids,
@@ -28,4 +28,4 @@ Tensor forward_layer(const Layer&, KVCache&, Executor&, std::size_t scratch_inde
                      const AttentionStep&, const Executor::Mode&);
 #endif
 
-} // namespace mfq::cuda::gemma4
+} // namespace tyloi::cuda::gemma4

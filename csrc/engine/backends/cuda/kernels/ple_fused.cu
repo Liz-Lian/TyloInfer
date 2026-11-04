@@ -5,7 +5,6 @@
 #include <type_traits>
 
 namespace mfq_qwen4_exp {
-namespace tb=mfq_tensor_backend;
 namespace {
 // Match the native serial score sum exactly. Coalesced product loads replace
 // the old four-thread reduction's repeated global loads; no reassociation.
@@ -81,15 +80,15 @@ __global__ void ple_conv_add_kernel(const float* input,const float* weight,const
 std::vector<Tensor> ple_gate_norm_cuda(const Tensor& key,const Tensor& query,const Tensor& value,
         const Tensor& norm,int64_t hidden,int64_t streams,double eps) {
     const auto valid=[](const Tensor& x) {return x.is_cuda() && x.is_contiguous() &&
-        (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32);};
+        (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32);};
     TYLOINFER_RUNTIME_CHECK(valid(key) && valid(query) && valid(value) && key.sizes()==query.sizes() &&
         hidden>0 && hidden<=8192 && streams>0 && key.numel()==value.numel()*streams &&
         value.numel()%hidden==0 && key.device()==query.device() && key.device()==value.device() &&
-        norm.is_cuda() && norm.is_contiguous() && norm.scalar_type()==tb::kFloat32 &&
+        norm.is_cuda() && norm.is_contiguous() && norm.scalar_type()==::tyloi::kFloat32 &&
         norm.numel()==hidden*streams && norm.device()==key.device(),"PLE fused gate geometry/dtype invalid");
     MfqCudaGuard guard(key.device());
-    auto gated=tb::empty(key.sizes(),key.options().dtype(tb::kFloat32));
-    auto normalized=tb::empty(key.sizes(),key.options().dtype(tb::kFloat32));
+    auto gated=::tyloi::cuda::empty(key.sizes(),key.options().dtype(::tyloi::kFloat32));
+    auto normalized=::tyloi::cuda::empty(key.sizes(),key.options().dtype(::tyloi::kFloat32));
     const auto launch=[&](auto k) {
       const auto launch_query=[&](auto q) {
         const auto launch_value=[&](auto v) {
@@ -99,11 +98,11 @@ std::vector<Tensor> ple_gate_norm_cuda(const Tensor& key,const Tensor& query,con
                 reinterpret_cast<const V*>(value.data_ptr()),norm.data_ptr<float>(),gated.data_ptr<float>(),
                 normalized.data_ptr<float>(),int(hidden),int(streams),std::sqrt(double(hidden)),float(eps));
         };
-        if(value.scalar_type()==tb::kFloat16)launch_value(__half{});else launch_value(float{});
+        if(value.scalar_type()==::tyloi::kFloat16)launch_value(__half{});else launch_value(float{});
       };
-      if(query.scalar_type()==tb::kFloat16)launch_query(__half{});else launch_query(float{});
+      if(query.scalar_type()==::tyloi::kFloat16)launch_query(__half{});else launch_query(float{});
     };
-    if(key.scalar_type()==tb::kFloat16)launch(__half{});else launch(float{});
+    if(key.scalar_type()==::tyloi::kFloat16)launch(__half{});else launch(float{});
     TYLOINFER_CUDA_CHECK(cudaGetLastError());
     return {gated,normalized};
 }
@@ -111,7 +110,7 @@ std::vector<Tensor> ple_gate_norm_cuda(const Tensor& key,const Tensor& query,con
 std::vector<Tensor> ple_conv_add_cuda(const Tensor& input,const Tensor& source_weight,
         const std::optional<Tensor>& previous,int64_t dilation,const Tensor& gated,bool half_output) {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.dim()==3 &&
-        input.scalar_type()==tb::kFloat32 && gated.is_contiguous() && gated.scalar_type()==tb::kFloat32 &&
+        input.scalar_type()==::tyloi::kFloat32 && gated.is_contiguous() && gated.scalar_type()==::tyloi::kFloat32 &&
         gated.sizes()==input.sizes() && gated.device()==input.device() && dilation>0,
         "PLE fused convolution input invalid");
     auto weight=source_weight;
@@ -121,11 +120,11 @@ std::vector<Tensor> ple_conv_add_cuda(const Tensor& input,const Tensor& source_w
     const int64_t history=(weight.size(1)-1)*dilation;
     const std::vector<int64_t> shape{input.size(0),history,input.size(2)};
     TYLOINFER_RUNTIME_CHECK(!previous || (previous->is_cuda() && previous->is_contiguous() &&
-        previous->scalar_type()==tb::kFloat32 && previous->sizes().vec()==shape &&
+        previous->scalar_type()==::tyloi::kFloat32 && previous->sizes().vec()==shape &&
         previous->device()==input.device()),"PLE convolution state invalid");
-    MfqCudaGuard guard(input.device());weight=weight.to(tb::kFloat32).contiguous();
-    auto output=tb::empty(input.sizes(),input.options().dtype(half_output?tb::kFloat16:tb::kFloat32));
-    auto next=tb::empty(shape,input.options());
+    MfqCudaGuard guard(input.device());weight=weight.to(::tyloi::kFloat32).contiguous();
+    auto output=::tyloi::cuda::empty(input.sizes(),input.options().dtype(half_output?::tyloi::kFloat16: ::tyloi::kFloat32));
+    auto next=::tyloi::cuda::empty(shape,input.options());
     const int64_t count=std::max(input.numel(),next.numel());
     const auto launch=[&](auto out) {
         ple_conv_add_kernel<decltype(out)><<<unsigned((count+255)/256),256,0,mfq_current_cuda_stream()>>>(

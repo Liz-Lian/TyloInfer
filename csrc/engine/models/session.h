@@ -25,9 +25,9 @@ enum class TextSessionStateKind : int {
 struct MtpSessionState {
     std::variant<
         std::vector<KvSnapshot>,
-        mfq::models::qwen4_exp::MtpSnapshot,
-        mfq::models::deepseek_v41::MtpSnapshot> payload = std::vector<KvSnapshot>{};
-    mfq_tensor_backend::Tensor last_target_hidden;
+        tyloi::models::qwen4_exp::MtpSnapshot,
+        tyloi::models::deepseek_v41::MtpSnapshot> payload = std::vector<KvSnapshot>{};
+    ::tyloi::Tensor last_target_hidden;
     int64_t cache_pos = 0;
     size_t bytes = 0;
 };
@@ -36,10 +36,10 @@ using TextSessionPayload = std::variant<
     std::monostate,
     std::vector<KvSnapshot>,
     std::vector<HybridBlockSessionState>,
-    std::vector<mfq::models::deepseek_v4::BlockSnapshot>,
-    std::vector<mfq::models::glm_dsa::BlockSnapshot>,
-    mfq::models::qwen4_exp::Snapshot,
-    mfq::models::deepseek_v41::Snapshot>;
+    std::vector<tyloi::models::deepseek_v4::BlockSnapshot>,
+    std::vector<tyloi::models::glm_dsa::BlockSnapshot>,
+    tyloi::models::qwen4_exp::Snapshot,
+    tyloi::models::deepseek_v41::Snapshot>;
 
 struct TextSessionState {
     std::vector<int64_t> tokens;

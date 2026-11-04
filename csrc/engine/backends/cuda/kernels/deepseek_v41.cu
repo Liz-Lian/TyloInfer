@@ -131,12 +131,12 @@ __global__ void mxfp4_e4m3_scale_sim_kernel(
 }
 
 void require_input(
-    const mfq_tensor_backend::Tensor& input,
+    const ::tyloi::Tensor& input,
     std::int64_t group,
     const char* operation) {
     TYLOINFER_RUNTIME_CHECK(
         input.is_cuda() && input.is_contiguous() &&
-            input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            input.scalar_type() == ::tyloi::kFloat16 &&
             input.dim() >= 1 && input.numel() > 0 &&
             input.size(-1) % group == 0,
         operation,
@@ -148,29 +148,29 @@ void require_input(
 
 } // namespace
 
-static std::vector<mfq_tensor_backend::Tensor> hc_prepare_impl(
-    mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor previous_pre,
-    mfq_tensor_backend::Tensor norm, double epsilon, bool projection) {
+static std::vector<::tyloi::Tensor> hc_prepare_impl(
+    ::tyloi::Tensor residual, ::tyloi::Tensor previous_pre,
+    ::tyloi::Tensor norm, double epsilon, bool projection) {
     TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() &&
-                          residual.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                          residual.scalar_type() == ::tyloi::kFloat16 &&
                           residual.dim() == 4 && residual.size(2) == 4 &&
                           residual.size(3) > 0 && residual.size(3) <= INT_MAX,
                       "deepseek_v41_hc_prepare: expected CUDA f16 [B,T,4,H]");
     TYLOINFER_RUNTIME_CHECK(previous_pre.is_cuda() && previous_pre.is_contiguous() &&
-                          previous_pre.scalar_type() == mfq_tensor_backend::kFloat32 &&
+                          previous_pre.scalar_type() == ::tyloi::kFloat32 &&
                           previous_pre.dim() == 3 && previous_pre.size(0) == residual.size(0) &&
                           previous_pre.size(1) == residual.size(1) && previous_pre.size(2) == 4 &&
                           norm.is_cuda() && norm.is_contiguous() &&
-                          norm.scalar_type() == mfq_tensor_backend::kFloat32 &&
+                          norm.scalar_type() == ::tyloi::kFloat32 &&
                           norm.numel() == residual.size(3) && std::isfinite(epsilon) && epsilon > 0,
                       "deepseek_v41_hc_prepare: invalid previous weights, norm, or epsilon");
     const auto rows = residual.size(0) * residual.size(1), hidden = residual.size(3);
     TYLOINFER_RUNTIME_CHECK(rows > 0 && rows <= INT_MAX,
                       "deepseek_v41_hc_prepare: row count is out of range");
-    mfq_tensor_backend::Tensor normalized;
-    if (projection) normalized = mfq_tensor_backend::empty(
+    ::tyloi::Tensor normalized;
+    if (projection) normalized = ::tyloi::cuda::empty(
         {residual.size(0), residual.size(1), 4 * hidden}, previous_pre.options());
-    auto branch = mfq_tensor_backend::empty(
+    auto branch = ::tyloi::cuda::empty(
         {residual.size(0), residual.size(1), hidden}, residual.options());
     if (projection) {
         hc_prepare_kernel<true><<<static_cast<int>(rows), 256, 0, mfq_current_cuda_stream()>>>(
@@ -188,22 +188,22 @@ static std::vector<mfq_tensor_backend::Tensor> hc_prepare_impl(
     return {normalized, branch};
 }
 
-std::vector<mfq_tensor_backend::Tensor> deepseek_v41_hc_prepare_cuda(
-    mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor previous_pre,
-    mfq_tensor_backend::Tensor norm, double epsilon) {
+std::vector<::tyloi::Tensor> deepseek_v41_hc_prepare_cuda(
+    ::tyloi::Tensor residual, ::tyloi::Tensor previous_pre,
+    ::tyloi::Tensor norm, double epsilon) {
     return hc_prepare_impl(residual, previous_pre, norm, epsilon, true);
 }
 
-mfq_tensor_backend::Tensor deepseek_v41_hc_input_cuda(
-    mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor previous_pre,
-    mfq_tensor_backend::Tensor norm, double epsilon) {
+::tyloi::Tensor deepseek_v41_hc_input_cuda(
+    ::tyloi::Tensor residual, ::tyloi::Tensor previous_pre,
+    ::tyloi::Tensor norm, double epsilon) {
     return hc_prepare_impl(residual, previous_pre, norm, epsilon, false).at(1);
 }
 
-mfq_tensor_backend::Tensor deepseek_v41_mxfp8_e4m3_sim_cuda(
-    mfq_tensor_backend::Tensor input) {
+::tyloi::Tensor deepseek_v41_mxfp8_e4m3_sim_cuda(
+    ::tyloi::Tensor input) {
     require_input(input, 32, "deepseek_v41_mxfp8_e4m3_sim");
-    auto output = mfq_tensor_backend::empty_like(input);
+    auto output = ::tyloi::cuda::empty_like(input);
     mxfp8_sim_kernel<<<
         static_cast<int>(input.numel() / 32), 32, 0,
         mfq_current_cuda_stream()>>>(
@@ -213,10 +213,10 @@ mfq_tensor_backend::Tensor deepseek_v41_mxfp8_e4m3_sim_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor deepseek_v41_mxfp4_e4m3_scale_sim_cuda(
-    mfq_tensor_backend::Tensor input) {
+::tyloi::Tensor deepseek_v41_mxfp4_e4m3_scale_sim_cuda(
+    ::tyloi::Tensor input) {
     require_input(input, 16, "deepseek_v41_mxfp4_e4m3_scale_sim");
-    auto output = mfq_tensor_backend::empty_like(input);
+    auto output = ::tyloi::cuda::empty_like(input);
     mxfp4_e4m3_scale_sim_kernel<<<
         static_cast<int>(input.numel() / 16), 32, 0,
         mfq_current_cuda_stream()>>>(
@@ -291,17 +291,16 @@ __global__ void engram_gate_add_kernel(const half* source, const Projected* proj
 }
 }
 
-mfq_tensor_backend::Tensor deepseek_v41_engram_rows_cuda(
-    mfq_tensor_backend::Tensor packed, mfq_tensor_backend::Tensor inverse, int64_t width) {
-    namespace tb = mfq_tensor_backend;
-    TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() && packed.scalar_type() == tb::kUInt8 &&
+::tyloi::Tensor deepseek_v41_engram_rows_cuda(
+    ::tyloi::Tensor packed, ::tyloi::Tensor inverse, int64_t width) {
+    TYLOINFER_RUNTIME_CHECK(packed.is_cuda() && packed.is_contiguous() && packed.scalar_type() == ::tyloi::kUInt8 &&
         packed.dim() == 2 && packed.size(0) > 0 && width > 0 && width <= INT_MAX && width % 32 == 0 &&
         packed.size(1) == width + width / 32 && inverse.is_cuda() && inverse.is_contiguous() &&
-        inverse.scalar_type() == tb::kInt64 && inverse.dim() == 1 && inverse.numel() > 0 &&
+        inverse.scalar_type() == ::tyloi::kInt64 && inverse.dim() == 1 && inverse.numel() > 0 &&
         packed.device() == inverse.device(), "invalid Engram MXFP8 row packet");
     TYLOINFER_RUNTIME_CHECK(inverse.numel() <= int64_t(INT_MAX) * 256 / width,
                       "Engram row output exceeds launch bounds");
-    auto output = tb::empty({inverse.numel(), width}, packed.options().dtype(tb::kFloat16));
+    auto output = ::tyloi::cuda::empty({inverse.numel(), width}, packed.options().dtype(::tyloi::kFloat16));
     engram_rows_kernel<<<int((output.numel() + 255) / 256), 256, 0, mfq_current_cuda_stream()>>>(
         packed.data_ptr<uint8_t>(), inverse.data_ptr<int64_t>(),
         reinterpret_cast<half*>(output.data_ptr<mfq_half>()), int(width), output.numel());
@@ -309,25 +308,24 @@ mfq_tensor_backend::Tensor deepseek_v41_engram_rows_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor deepseek_v41_engram_gate_add_cuda(
-    mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor projected,
-    mfq_tensor_backend::Tensor query_key_weight, double epsilon) {
-    namespace tb = mfq_tensor_backend;
-    TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.is_contiguous() && hidden.scalar_type() == tb::kFloat16 &&
+::tyloi::Tensor deepseek_v41_engram_gate_add_cuda(
+    ::tyloi::Tensor hidden, ::tyloi::Tensor projected,
+    ::tyloi::Tensor query_key_weight, double epsilon) {
+    TYLOINFER_RUNTIME_CHECK(hidden.is_cuda() && hidden.is_contiguous() && hidden.scalar_type() == ::tyloi::kFloat16 &&
         hidden.dim() == 4 && hidden.size(2) > 0 && hidden.size(3) > 0 && hidden.size(3) <= INT_MAX &&
         projected.is_cuda() && projected.is_contiguous() && projected.dim() == 3 &&
-        (projected.scalar_type() == tb::kFloat16 || projected.scalar_type() == tb::kFloat32) &&
+        (projected.scalar_type() == ::tyloi::kFloat16 || projected.scalar_type() == ::tyloi::kFloat32) &&
         projected.size(0) == hidden.size(0) && projected.size(1) == hidden.size(1) &&
         projected.size(2) == (hidden.size(2) + 1) * hidden.size(3) &&
         query_key_weight.is_cuda() && query_key_weight.is_contiguous() &&
-        query_key_weight.scalar_type() == tb::kFloat32 &&
+        query_key_weight.scalar_type() == ::tyloi::kFloat32 &&
         query_key_weight.numel() == hidden.size(2) * hidden.size(3) &&
         hidden.device() == projected.device() && hidden.device() == query_key_weight.device() &&
         std::isfinite(epsilon) && epsilon > 0, "invalid Engram gate/add tensors");
     const auto rows = hidden.size(0) * hidden.size(1) * hidden.size(2);
     TYLOINFER_RUNTIME_CHECK(rows > 0 && rows <= INT_MAX, "Engram gate/add launch exceeds bounds");
-    auto output = tb::empty_like(hidden);
-    if (projected.scalar_type() == tb::kFloat16)
+    auto output = ::tyloi::cuda::empty_like(hidden);
+    if (projected.scalar_type() == ::tyloi::kFloat16)
         engram_gate_add_kernel<<<int(rows), 256, 0, mfq_current_cuda_stream()>>>(
             reinterpret_cast<const half*>(hidden.data_ptr<mfq_half>()),
             reinterpret_cast<const half*>(projected.data_ptr<mfq_half>()), query_key_weight.data_ptr<float>(),
@@ -380,20 +378,19 @@ __global__ void hc_project_partial_kernel(const half* residual, const float* pre
 }
 }
 
-mfq_tensor_backend::Tensor deepseek_v41_hc_project_cuda(mfq_tensor_backend::Tensor residual,
-    mfq_tensor_backend::Tensor previous, mfq_tensor_backend::Tensor function) {
-    namespace tb=mfq_tensor_backend;
-    TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() && residual.scalar_type()==tb::kFloat16 &&
+::tyloi::Tensor deepseek_v41_hc_project_cuda(::tyloi::Tensor residual,
+    ::tyloi::Tensor previous, ::tyloi::Tensor function) {
+    TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() && residual.scalar_type()==::tyloi::kFloat16 &&
         residual.dim()==4 && residual.size(2)==4 && residual.size(3)>0 && residual.size(3)<=INT_MAX/4 &&
-        previous.is_cuda() && previous.is_contiguous() && previous.scalar_type()==tb::kFloat32 &&
+        previous.is_cuda() && previous.is_contiguous() && previous.scalar_type()==::tyloi::kFloat32 &&
         previous.dim()==3 && previous.size(0)==residual.size(0) && previous.size(1)==residual.size(1) &&
         previous.size(2)==4 && function.is_cuda() && function.is_contiguous() &&
-        function.scalar_type()==tb::kFloat32 && function.dim()==2 && function.size(0)==24 &&
+        function.scalar_type()==::tyloi::kFloat32 && function.dim()==2 && function.size(0)==24 &&
         function.size(1)==4*residual.size(3) && residual.device()==function.device() &&
         residual.device()==previous.device(), "invalid mHC split projection tensors");
     const auto rows=residual.size(0)*residual.size(1), hidden=residual.size(3), parts=(4*hidden+63)/64;
     TYLOINFER_RUNTIME_CHECK(rows>0 && rows<=65535,"mHC split projection row count exceeds launch bounds");
-    auto partials=tb::empty({rows,parts,26},previous.options());
+    auto partials=::tyloi::cuda::empty({rows,parts,26},previous.options());
     hc_project_partial_kernel<<<dim3(int(parts),int(rows)),64,0,mfq_current_cuda_stream()>>>(
         reinterpret_cast<const half*>(residual.data_ptr<mfq_half>()),previous.data_ptr<float>(),
         function.data_ptr<float>(),partials.data_ptr<float>(),int(hidden),int(parts));

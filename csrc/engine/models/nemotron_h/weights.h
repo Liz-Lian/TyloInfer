@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::models::nemotron_h {
+namespace tyloi::models::nemotron_h {
 
 // One pre-normed Mamba-2 mixer. The fused projection keeps z, xBC and dt in
 // one matrix; the graph slices them instead of splitting the checkpoint
@@ -150,7 +150,7 @@ void load_dense_mlp(Block& block, Loader& ops, const Config& config, int layer,
     auto& ffn = block.ffn;
     ffn.down = ops.linear(mlp + "down.weight");
     ffn.gate_up = ops.gate_up({mlp + "up.weight"}, ffn.down);
-    ffn.activation = mfq::ops::MlpActivation::relu_squared;
+    ffn.activation = tyloi::ops::MlpActivation::relu_squared;
     if (ffn.gate_up.outs.size() != 1 || ffn.gate_up.outs[0] != config.intermediate_size ||
         ffn.down.out() != config.hidden_size ||
         ffn.down.neuron_len() != config.intermediate_size) {
@@ -180,4 +180,4 @@ inline void load_config(std::string_view payload, const ModelGraph& graph, Confi
     metadata.layer_types = config.layer_types;
 }
 
-} // namespace mfq::models::nemotron_h
+} // namespace tyloi::models::nemotron_h

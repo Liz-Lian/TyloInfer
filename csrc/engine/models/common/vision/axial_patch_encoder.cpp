@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::axial_patch_vision {
+namespace tyloi::cuda::axial_patch_vision {
 namespace {
 using vision::RmsNorm;
 
@@ -56,7 +56,7 @@ struct CudaAxialPatchVisionTower::Impl {
     weight_loader::Loader loader;
     Config config;
 
-    mfq::StepSequence<Tensor> encode_steps(
+    tyloi::StepSequence<Tensor> encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
                                           Projector projector,
 #endif
@@ -67,7 +67,7 @@ struct CudaAxialPatchVisionTower::Impl {
         const std::int64_t count = std::int64_t(height) * width;
         const auto hidden = config.hidden, heads = config.heads, dim = config.head_dim();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if (patches.dim() == 4) patches = mfq::ops::reshape(patches, {count, config.patch_width()});
+        if (patches.dim() == 4) patches = tyloi::ops::reshape(patches, {count, config.patch_width()});
 #else
         if (patches.dim() == 4) patches = patches.reshape({count, config.patch_width()});
 #endif
@@ -75,9 +75,9 @@ struct CudaAxialPatchVisionTower::Impl {
             throw std::invalid_argument("axial patch vision patch geometry mismatch");
         const auto host = loader.for_layer(loader.placement.device, true);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        patches = mfq::ops::cast(patches, mfq_tensor_backend::kFloat16);
+        patches = tyloi::ops::cast(patches, ::tyloi::kFloat16);
 #else
-        patches = patches.to(mfq_tensor_backend::kFloat16);
+        patches = patches.to(::tyloi::kFloat16);
 #endif
         const auto activations = std::size_t(count) * std::size_t(std::max(6 * hidden, 2 * config.intermediate)) * sizeof(float)
             + (std::size_t(32) << 20);
@@ -89,18 +89,18 @@ struct CudaAxialPatchVisionTower::Impl {
             {
                 auto device = fields::to_cuda(std::move(patch));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                output = mfq::ops::affine(patches, device.weight, device.bias);
+                output = tyloi::ops::affine(patches, device.weight, device.bias);
 #else
-                output = mfq::cuda::affine(projector, device, patches);
+                output = tyloi::cuda::affine(projector, device, patches);
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            value = loan.finish(mfq_tensor_backend::Tensor(std::move(output)));
+            value = loan.finish(std::move(output));
 #else
             value = loan.finish(std::move(output));
 #endif
         }
-        co_yield mfq::StepState::advanced;
+        co_yield tyloi::StepState::advanced;
         std::vector<std::int32_t> positions;
         positions.reserve(std::size_t(count) * 2);
         for (int row = 0; row < height; ++row)
@@ -121,22 +121,22 @@ struct CudaAxialPatchVisionTower::Impl {
             {
                 auto weights = fields::to_cuda(std::move(block));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto qkv = mfq::ops::affine(weights.norm1(value), weights.qkv.weight, weights.qkv.bias);
+                auto qkv = tyloi::ops::affine(weights.norm1(value), weights.qkv.weight, weights.qkv.bias);
                 const auto rope = [&](int index) {
-                    return mfq::ops::axial_rope(mfq::ops::reshape(
-                        mfq::ops::slice(qkv, -1, index * hidden, (index + 1) * hidden),
+                    return tyloi::ops::axial_rope(tyloi::ops::reshape(
+                        tyloi::ops::slice(qkv, -1, index * hidden, (index + 1) * hidden),
                         {count, heads, dim}), positions, config.rope_theta);
                 };
                 auto query = rope(0), key = rope(1);
-                auto v = mfq::ops::reshape(mfq::ops::slice(qkv, -1, 2 * hidden, 3 * hidden), {count, heads, dim});
-                auto attended = mfq::ops::reshape(mfq::ops::segmented_attention(query, key, v, {std::int32_t(count)}), {count, hidden});
-                auto result = mfq::ops::add(value, mfq::ops::affine(std::move(attended), weights.output.weight, weights.output.bias));
-                auto gate_up = mfq::ops::affine(weights.norm2(result), weights.gate_up.weight, weights.gate_up.bias);
-                output = mfq::ops::add(result, mfq::ops::affine(mfq::ops::multiply(
-                    mfq::ops::silu(mfq::ops::slice(gate_up, -1, 0, config.intermediate)),
-                    mfq::ops::slice(gate_up, -1, config.intermediate, 2 * config.intermediate)), weights.down.weight, weights.down.bias));
+                auto v = tyloi::ops::reshape(tyloi::ops::slice(qkv, -1, 2 * hidden, 3 * hidden), {count, heads, dim});
+                auto attended = tyloi::ops::reshape(tyloi::ops::segmented_attention(query, key, v, {std::int32_t(count)}), {count, hidden});
+                auto result = tyloi::ops::add(value, tyloi::ops::affine(std::move(attended), weights.output.weight, weights.output.bias));
+                auto gate_up = tyloi::ops::affine(weights.norm2(result), weights.gate_up.weight, weights.gate_up.bias);
+                output = tyloi::ops::add(result, tyloi::ops::affine(tyloi::ops::multiply(
+                    tyloi::ops::silu(tyloi::ops::slice(gate_up, -1, 0, config.intermediate)),
+                    tyloi::ops::slice(gate_up, -1, config.intermediate, 2 * config.intermediate)), weights.down.weight, weights.down.bias));
 #else
-                auto qkv = mfq::cuda::affine(projector, weights.qkv, weights.norm1(value));
+                auto qkv = tyloi::cuda::affine(projector, weights.qkv, weights.norm1(value));
                 const auto rope = [&](int index) {
                     return vision::apply_axial_rope(
                         qkv.narrow(-1, index * hidden, hidden).reshape({count, heads, dim}), positions, config.rope_theta);
@@ -144,24 +144,24 @@ struct CudaAxialPatchVisionTower::Impl {
                 auto query = rope(0), key = rope(1);
                 auto v = qkv.narrow(-1, 2 * hidden, hidden).reshape({count, heads, dim});
                 auto attended = vision::segmented_attention(query, key, v, {std::int32_t(count)}).reshape({count, hidden});
-                auto result = value + mfq::cuda::affine(projector, weights.output, std::move(attended));
-                auto gate_up = mfq::cuda::affine(projector, weights.gate_up, weights.norm2(result));
-                output = result + mfq::cuda::affine(projector, weights.down,
-                    mfq_tensor_backend::silu(gate_up.narrow(-1, 0, config.intermediate)) *
+                auto result = value + tyloi::cuda::affine(projector, weights.output, std::move(attended));
+                auto gate_up = tyloi::cuda::affine(projector, weights.gate_up, weights.norm2(result));
+                output = result + tyloi::cuda::affine(projector, weights.down,
+                    ::tyloi::cuda::silu(gate_up.narrow(-1, 0, config.intermediate)) *
                     gate_up.narrow(-1, config.intermediate, config.intermediate));
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            value = loan.finish(mfq_tensor_backend::Tensor(std::move(output)));
+            value = loan.finish(std::move(output));
 #else
             value = loan.finish(std::move(output));
 #endif
-            co_yield mfq::StepState::advanced;
+            co_yield tyloi::StepState::advanced;
         }
         {
             const auto ratio = int(config.downsample_ratio);
-            const auto grid = mfq::models::axial_patch_vision::aligned_grid(height, width, ratio);
-            const auto indices = mfq::models::axial_patch_vision::gather_indices(height, width, ratio);
+            const auto grid = tyloi::models::axial_patch_vision::aligned_grid(height, width, ratio);
+            const auto indices = tyloi::models::axial_patch_vision::gather_indices(height, width, ratio);
             AlignerWeights weights{
                 norm(host, "vision.output_norm.weight", hidden, config.rms_eps),
                 affine(host, "vision.aligner.input", hidden * ratio * ratio, config.output_hidden),
@@ -171,31 +171,31 @@ struct CudaAxialPatchVisionTower::Impl {
             {
                 auto device = fields::to_cuda(std::move(weights));
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto padded = mfq::ops::cat({device.norm(value), mfq::ops::zeros({1, hidden}, value.options())}, 0);
-                Tensor index = mfq::ops::tensor(indices, mfq::Device{mfq::DeviceType::cpu, 0});
-                index = mfq::ops::cast(index, mfq_tensor_backend::kInt64);
-                index = mfq::ops::cast(index, mfq_tensor_backend::kInt64, mfq::Device{mfq_tensor_backend::kCUDA, 0});
-                auto gathered = mfq::ops::reshape(mfq::ops::contiguous(mfq::ops::transpose(
-                    mfq::ops::reshape(mfq::ops::index_select(padded, 0, index), {grid.count(), ratio * ratio, hidden}), 1, 2)),
+                auto padded = tyloi::ops::cat({device.norm(value), tyloi::ops::zeros({1, hidden}, value.options())}, 0);
+                Tensor index = tyloi::ops::tensor(indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                index = tyloi::ops::cast(index, ::tyloi::kInt64);
+                index = tyloi::ops::cast(index, ::tyloi::kInt64, tyloi::Device{::tyloi::kCUDA, 0});
+                auto gathered = tyloi::ops::reshape(tyloi::ops::contiguous(tyloi::ops::transpose(
+                    tyloi::ops::reshape(tyloi::ops::index_select(padded, 0, index), {grid.count(), ratio * ratio, hidden}), 1, 2)),
                     {grid.count(), hidden * ratio * ratio});
 #else
-                auto padded = mfq_tensor_backend::cat({device.norm(value), mfq_tensor_backend::zeros({1, hidden}, value.options())}, 0);
-                auto index = mfq_tensor_backend::tensor(indices,
-                    mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32).device(mfq_tensor_backend::kCPU))
-                    .to(mfq_tensor_backend::kInt64).to(mfq_tensor_backend::kCUDA);
+                auto padded = ::tyloi::cuda::cat({device.norm(value), ::tyloi::cuda::zeros({1, hidden}, value.options())}, 0);
+                auto index = ::tyloi::cuda::tensor(indices,
+                    ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCPU))
+                    .to(::tyloi::kInt64).to(::tyloi::kCUDA);
                 auto gathered = padded.index_select(0, index).reshape({grid.count(), ratio * ratio, hidden})
                     .transpose(1, 2).contiguous().reshape({grid.count(), hidden * ratio * ratio});
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto projected = mfq::ops::affine(std::move(gathered), device.input.weight, device.input.bias);
-                output = mfq::ops::affine(mfq::ops::gelu(projected), device.output.weight, device.output.bias);
+                auto projected = tyloi::ops::affine(std::move(gathered), device.input.weight, device.input.bias);
+                output = tyloi::ops::affine(tyloi::ops::gelu(projected), device.output.weight, device.output.bias);
 #else
-                auto projected = mfq::cuda::affine(projector, device.input, std::move(gathered));
-                output = mfq::cuda::affine(projector, device.output, mfq_tensor_backend::gelu(projected, "none"));
+                auto projected = tyloi::cuda::affine(projector, device.input, std::move(gathered));
+                output = tyloi::cuda::affine(projector, device.output, ::tyloi::cuda::gelu(projected, "none"));
 #endif
             }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            value = loan.finish(mfq_tensor_backend::Tensor(std::move(output)));
+            value = loan.finish(std::move(output));
 #else
             value = loan.finish(std::move(output));
 #endif
@@ -218,7 +218,7 @@ CudaAxialPatchVisionTower::CudaAxialPatchVisionTower(CudaAxialPatchVisionTower&&
 CudaAxialPatchVisionTower& CudaAxialPatchVisionTower::operator=(CudaAxialPatchVisionTower&&) noexcept = default;
 CudaAxialPatchVisionTower::~CudaAxialPatchVisionTower() = default;
 
-mfq::StepSequence<Tensor> CudaAxialPatchVisionTower::encode_steps(
+tyloi::StepSequence<Tensor> CudaAxialPatchVisionTower::encode_steps(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     Projector projector,
 #endif
@@ -246,4 +246,4 @@ Tensor CudaAxialPatchVisionTower::encode(
 }
 
 const Config& CudaAxialPatchVisionTower::config() const noexcept { return impl_->config; }
-} // namespace mfq::cuda::axial_patch_vision
+} // namespace tyloi::cuda::axial_patch_vision

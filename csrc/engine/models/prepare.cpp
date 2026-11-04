@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 std::unordered_set<std::int64_t> stop_token_ids(std::string_view config, std::int64_t vocabulary) {
     std::unordered_set<std::int64_t> result;
@@ -363,4 +363,4 @@ void prepare_duplex_step(
     }
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

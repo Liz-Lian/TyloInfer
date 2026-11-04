@@ -119,12 +119,12 @@ __global__ void kv_cache_write_rows_kernel(
         k, v, k_cache, v_cache, src, dst, D, lane);
 }
 
-std::vector<mfq_tensor_backend::Tensor> kv_cache_write_cuda(
-    mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v,
-    mfq_tensor_backend::Tensor positions)
+std::vector<::tyloi::Tensor> kv_cache_write_cuda(
+    ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v,
+    ::tyloi::Tensor positions)
 {
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous(), "kv_cache_write: k_cache must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(v_cache.is_cuda() && v_cache.is_contiguous(), "kv_cache_write: v_cache must be cuda contiguous");
@@ -133,11 +133,11 @@ std::vector<mfq_tensor_backend::Tensor> kv_cache_write_cuda(
     TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == v_cache.scalar_type() && k_cache.scalar_type() == k.scalar_type()
                 && k_cache.scalar_type() == v.scalar_type(),
                 "kv_cache_write: k/v/cache dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == mfq_tensor_backend::kFloat16 ||
-                k_cache.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-                k_cache.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == ::tyloi::kFloat16 ||
+                k_cache.scalar_type() == ::tyloi::kBFloat16 ||
+                k_cache.scalar_type() == ::tyloi::kFloat32,
                 "kv_cache_write: dtype must be f16, bf16 or f32");
-    TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.is_contiguous() && positions.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.is_contiguous() && positions.scalar_type() == ::tyloi::kInt64,
                 "kv_cache_write: positions must be cuda contiguous int64");
     TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                 "kv_cache_write: all k/v tensors must be 4D");
@@ -240,11 +240,11 @@ __global__ void kv_cache_write_ring_kernel(
     }
 }
 
-std::vector<mfq_tensor_backend::Tensor> kv_cache_write_ring_cuda(
-    mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v,
+std::vector<::tyloi::Tensor> kv_cache_write_ring_cuda(
+    ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v,
     int64_t position_start)
 {
     TYLOINFER_RUNTIME_CHECK(position_start >= 0, "kv_cache_write_ring: position_start must be nonnegative");
@@ -256,9 +256,9 @@ std::vector<mfq_tensor_backend::Tensor> kv_cache_write_ring_cuda(
     TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == v_cache.scalar_type() &&
                 k_cache.scalar_type() == k.scalar_type() && k_cache.scalar_type() == v.scalar_type(),
                 "kv_cache_write_ring: k/v/cache dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == mfq_tensor_backend::kFloat16 ||
-                k_cache.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-                k_cache.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == ::tyloi::kFloat16 ||
+                k_cache.scalar_type() == ::tyloi::kBFloat16 ||
+                k_cache.scalar_type() == ::tyloi::kFloat32,
                 "kv_cache_write_ring: dtype must be f16, bf16 or f32");
     TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                 "kv_cache_write_ring: all tensors must be rank 4");
@@ -321,12 +321,12 @@ __global__ void kv_cache_write_ring_positions_kernel(
     }
 }
 
-std::vector<mfq_tensor_backend::Tensor> kv_cache_write_ring_positions_cuda(
-    mfq_tensor_backend::Tensor k_cache,
-    mfq_tensor_backend::Tensor v_cache,
-    mfq_tensor_backend::Tensor k,
-    mfq_tensor_backend::Tensor v,
-    mfq_tensor_backend::Tensor positions)
+std::vector<::tyloi::Tensor> kv_cache_write_ring_positions_cuda(
+    ::tyloi::Tensor k_cache,
+    ::tyloi::Tensor v_cache,
+    ::tyloi::Tensor k,
+    ::tyloi::Tensor v,
+    ::tyloi::Tensor positions)
 {
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && k_cache.is_contiguous() &&
                 v_cache.is_cuda() && v_cache.is_contiguous(),
@@ -334,14 +334,14 @@ std::vector<mfq_tensor_backend::Tensor> kv_cache_write_ring_positions_cuda(
     TYLOINFER_RUNTIME_CHECK(k.is_cuda() && k.is_contiguous() && v.is_cuda() && v.is_contiguous(),
                 "kv_cache_write_ring_positions: inputs must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(positions.is_cuda() && positions.is_contiguous() &&
-                positions.scalar_type() == mfq_tensor_backend::kInt64 && positions.dim() == 1,
+                positions.scalar_type() == ::tyloi::kInt64 && positions.dim() == 1,
                 "kv_cache_write_ring_positions: positions must be cuda contiguous int64[T]");
     TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == v_cache.scalar_type() &&
                 k_cache.scalar_type() == k.scalar_type() && k_cache.scalar_type() == v.scalar_type(),
                 "kv_cache_write_ring_positions: k/v/cache dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == mfq_tensor_backend::kFloat16 ||
-                k_cache.scalar_type() == mfq_tensor_backend::kBFloat16 ||
-                k_cache.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(k_cache.scalar_type() == ::tyloi::kFloat16 ||
+                k_cache.scalar_type() == ::tyloi::kBFloat16 ||
+                k_cache.scalar_type() == ::tyloi::kFloat32,
                 "kv_cache_write_ring_positions: dtype must be f16, bf16 or f32");
     TYLOINFER_RUNTIME_CHECK(k_cache.dim() == 4 && v_cache.dim() == 4 && k.dim() == 4 && v.dim() == 4,
                 "kv_cache_write_ring_positions: all tensors must be rank 4");

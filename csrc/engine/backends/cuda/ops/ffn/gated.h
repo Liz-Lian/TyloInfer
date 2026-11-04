@@ -9,12 +9,12 @@ struct QuantLinear;
 struct CudaProfiler;
 using GatedResidualMarker = std::function<void(const char*)>;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class Projector;
 
 class GatedResidual {
 public:
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     struct Result {
         Tensor mixed;
         Tensor residual;
@@ -84,4 +84,4 @@ private:
                    const GatedResidualMarker& marker) const;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

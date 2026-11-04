@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <optional>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // Remaining WDDM shared-memory budget; absent on platforms without WDDM.
 std::optional<std::size_t> shared_memory_available(int device);
 // Keep long-lived request state out of the temporary async allocator pool.

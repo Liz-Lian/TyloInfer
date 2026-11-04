@@ -18,7 +18,7 @@
 #include <unistd.h>
 #endif
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 using json = nlohmann::json;
@@ -386,4 +386,4 @@ void Safetensors::drop_file_cache() const noexcept {
 #endif
 }
 
-} // namespace mfq
+} // namespace tyloi

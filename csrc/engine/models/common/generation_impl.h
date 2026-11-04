@@ -27,24 +27,24 @@
 #include <iostream>
 #include <optional>
 #include <utility>
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 namespace generation_detail {
 
-using Tensor = mfq_tensor_backend::Tensor;
-using mfq_tensor_backend::indexing::Slice;
+using Tensor = ::tyloi::Tensor;
+using ::tyloi::indexing::Slice;
 
 template <typename Model, typename State>
 constexpr bool has_forward =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    requires(Model& model, State& state, mfq::cuda::Input input,
-             const mfq::models::ForwardOptions& options) {
-        static_cast<const mfq::models::CausalModel&>(model).forward(std::move(input), state, options);
+    requires(Model& model, State& state, tyloi::cuda::Input input,
+             const tyloi::models::ForwardOptions& options) {
+        static_cast<const tyloi::models::CausalModel&>(model).forward(std::move(input), state, options);
     } ||
 #endif
     requires(
-    Model& model, State& state, mfq::cuda::Executor& executor,
-    mfq::cuda::Collectives& collectives, const mfq::cuda::Executor::Mode& mode,
-    mfq::cuda::Input input) {
+    Model& model, State& state, tyloi::cuda::Executor& executor,
+    tyloi::cuda::Collectives& collectives, const tyloi::cuda::Executor::Mode& mode,
+    tyloi::cuda::Input input) {
     forward(model, state, executor, collectives, mode, std::move(input));
 };
 
@@ -52,22 +52,22 @@ template <typename Model>
 constexpr bool has_logits =
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     requires(Model& model, Tensor hidden) {
-        static_cast<const mfq::models::CausalModel&>(model).logits(std::move(hidden), true);
+        static_cast<const tyloi::models::CausalModel&>(model).logits(std::move(hidden), true);
     } ||
 #endif
     requires(
-    Model& model, mfq::cuda::Executor& executor, Tensor hidden) {
+    Model& model, tyloi::cuda::Executor& executor, Tensor hidden) {
     logits(model, executor, std::move(hidden), true);
 };
 
 template <typename Model, typename State>
-Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
-              Collectives& collectives, const Executor::Mode& mode, mfq::cuda::Input input) {
+Tensor hidden(Model& model, State& state, tyloi::cuda::Executor* executor,
+              Collectives& collectives, const Executor::Mode& mode, tyloi::cuda::Input input) {
     static_assert(has_forward<Model, State>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).forward(
+    if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).forward(
                                std::move(input), state, forward_options(mode)); }) {
-        const mfq::models::CausalModel& causal = model;
+        const tyloi::models::CausalModel& causal = model;
         auto scope = Executor::current().enter(mode.ffn);
         return Tensor(causal.forward(std::move(input), state, forward_options(mode)));
     } else
@@ -81,13 +81,13 @@ Tensor hidden(Model& model, State& state, mfq::cuda::Executor* executor,
 }
 
 template <typename Model>
-Tensor project(Model& model, mfq::cuda::Executor* executor,
+Tensor project(Model& model, tyloi::cuda::Executor* executor,
                const Executor::Mode& mode, Tensor value, bool capped) {
     static_assert(has_logits<Model>);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model).logits(
+    if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model).logits(
                                std::move(value), capped); }) {
-        const mfq::models::CausalModel& causal = model;
+        const tyloi::models::CausalModel& causal = model;
         auto scope = Executor::current().enter(mode.ffn);
         return Tensor(causal.logits(std::move(value), capped));
     } else
@@ -100,21 +100,21 @@ Tensor project(Model& model, mfq::cuda::Executor* executor,
 }
 
 template <typename Model, typename State>
-Tensor last_logits(Model& model, State& state, mfq::cuda::Executor* executor,
+Tensor last_logits(Model& model, State& state, tyloi::cuda::Executor* executor,
                    Collectives& collectives, const Executor::Mode& mode, Tensor ids, bool capped) {
     auto value = hidden(model, state, executor, collectives, mode,
-                        mfq::cuda::Input{std::move(ids)});
+                        tyloi::cuda::Input{std::move(ids)});
     return project(model, executor, mode,
                    value.index({Slice(), -1, Slice()})
-                          .to(mfq_tensor_backend::kFloat16)
+                          .to(::tyloi::kFloat16)
                           .contiguous(),
                       capped);
 }
 
 template <typename Model, typename State>
-Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* executor,
+Tensor sample_token(Model &model, State& state, tyloi::cuda::Executor* executor,
     Collectives& collectives, const Executor::Mode& mode, CudaProfiler& profiler, Tensor ids,
-    mfq::cuda::Sampler &sampler, mfq_tensor_backend::Tensor counts,
+    tyloi::cuda::Sampler &sampler, ::tyloi::Tensor counts,
     const MfqTokenConstraintPtr &token_constraint) {
     const auto run = [&]() {
         if (sampler.greedy() && !sampler.has_penalties() && !token_constraint) {
@@ -131,14 +131,14 @@ Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* executor,
             auto logits = last_logits(model, state, executor, collectives, mode,
                                           std::move(ids), true)
                               .contiguous().view({1, -1});
-            return mfq::engine::sample_logits(sampler, std::move(logits), counts,
+            return tyloi::engine::sample_logits(sampler, std::move(logits), counts,
                                             token_constraint);
         } else {
             auto logits = model.last_logits(ids).contiguous().view({1, -1});
-            return mfq::engine::sample_logits(sampler, std::move(logits), counts, token_constraint);
+            return tyloi::engine::sample_logits(sampler, std::move(logits), counts, token_constraint);
         }
     };
-    const auto* setting = mfq::cuda::env_lookup("TYLOINFER_PROFILE_DECODE");
+    const auto* setting = tyloi::cuda::env_lookup("TYLOINFER_PROFILE_DECODE");
     if (!setting || setting[0] != '1' || ids.numel() > 8) return run();
     const bool previous = profiler.enabled;
     profiler.reset();
@@ -157,37 +157,37 @@ Tensor sample_token(Model &model, State& state, mfq::cuda::Executor* executor,
 template <typename Model, typename State> struct CudaGenerationOps {
     Model &model;
     State &state;
-    mfq::cuda::Executor* executor;
+    tyloi::cuda::Executor* executor;
     Collectives& collectives;
     const Executor::Mode mode;
     CudaProfiler& profiler;
     RoutedCache& weights;
     bool& serial_branches;
     bool report_memory;
-    const mfq::models::Info &info;
+    const tyloi::models::Info &info;
     DecodeGraphCache &graph;
     const MfqTokenConstraintPtr &constraint;
-    mfq_tensor_backend::Tensor pending, counts;
-    mfq_tensor_backend::Tensor known_token_host;
-    mfq::cuda::Sampler sampler;
+    ::tyloi::Tensor pending, counts;
+    ::tyloi::Tensor known_token_host;
+    tyloi::cuda::Sampler sampler;
     bool has_penalties;
     const PreparedPrompt *prepared;
     const CudaDecodeGraphConfig graph_config;
-    mfq_tensor_backend::Tensor full_ids;
+    ::tyloi::Tensor full_ids;
     std::int32_t generation_limit = 0;
     bool graph_active = false;
     bool graph_prepared = false;
     int64_t prefill_compute_chunk=1024;
-    mfq::engine::InferenceOutput* output=nullptr;
+    tyloi::engine::InferenceOutput* output=nullptr;
     std::function<void()> restore;
 
-    CudaGenerationOps(Model &model, State &state, mfq::cuda::Executor* executor,
+    CudaGenerationOps(Model &model, State &state, tyloi::cuda::Executor* executor,
         Collectives& collectives, Executor::Mode mode, CudaProfiler& profiler,
         RoutedCache& weights, bool& serial_branches, bool report_memory,
-        const mfq::models::Info &info, DecodeGraphCache &graph,
-        const mfq::engine::InferenceRequest &request, const PreparedPrompt *prepared,
+        const tyloi::models::Info &info, DecodeGraphCache &graph,
+        const tyloi::engine::InferenceRequest &request, const PreparedPrompt *prepared,
         const CudaDecodeGraphConfig &graph_config,int64_t compute_chunk=1024,
-        mfq::engine::InferenceOutput* inference_output=nullptr,
+        tyloi::engine::InferenceOutput* inference_output=nullptr,
         std::function<void()> restore = {})
         : model(model), state(state), executor(executor), collectives(collectives), mode(mode), profiler(profiler),
           weights(weights), serial_branches(serial_branches), report_memory(report_memory),
@@ -195,22 +195,22 @@ template <typename Model, typename State> struct CudaGenerationOps {
           sampler(request.sampling),
           has_penalties(sampler.has_penalties()), prepared(prepared), graph_config(graph_config),
           prefill_compute_chunk(compute_chunk),output(inference_output),restore(std::move(restore)) {
-        full_ids = mfq_tensor_backend::tensor(request.prompt,
-            mfq_tensor_backend::TensorOptions()
-                .dtype(mfq_tensor_backend::kInt64)
-                .device(mfq_tensor_backend::kCUDA))
+        full_ids = ::tyloi::cuda::tensor(request.prompt,
+            ::tyloi::TensorOptions()
+                .dtype(::tyloi::kInt64)
+                .device(::tyloi::kCUDA))
                        .reshape({1, -1})
                        .contiguous();
         graph.ensure_storage(info.vocab_size);
         if (has_penalties) {
-            counts = mfq::cuda::SamplingOps::token_counts(full_ids, info.vocab_size, graph.counts);
+            counts = tyloi::cuda::SamplingOps::token_counts(full_ids, info.vocab_size, graph.counts);
         }
         generation_limit = request.sampling.max_tokens;
         graph_active = graph_eligible();
     }
 
-    double prefill(const mfq::engine::PrefillChunk &chunk) {
-        using Tensor = mfq_tensor_backend::Tensor;
+    double prefill(const tyloi::engine::PrefillChunk &chunk) {
+        using Tensor = ::tyloi::Tensor;
         PrefillCudaTimer timer;
         bool prefill_finished=false;
         const auto finish_prefill=[&] {
@@ -231,7 +231,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
             WeightLoan workspace(weights.moe);
             const bool borrowed=generation_workspace(model,workspace,chunk.count);
             if constexpr (has_forward<Model, State>) {
-                mfq::cuda::Input input;
+                tyloi::cuda::Input input;
                 input.ids = ids;
                 input.embeddings = Tensor(prepared->embeddings).narrow(1, chunk.offset, chunk.count)
                                         .contiguous();
@@ -239,7 +239,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                     input.positions = Tensor(prepared->positions).narrow(-1, chunk.offset, chunk.count)
                                            .contiguous();
                 input.advance = true;
-                hidden = ::mfq::cuda::internal::generation_detail::hidden(
+                hidden = ::tyloi::cuda::internal::generation_detail::hidden(
                     model, state, executor, collectives, mode, std::move(input));
             } else {
                 hidden = model.hidden_forward_inputs(ids,
@@ -260,12 +260,12 @@ template <typename Model, typename State> struct CudaGenerationOps {
             state.set_position_delta(prepared->decode_position_delta);
         } else {
             if constexpr (has_forward<Model, State>) {
-                hidden = ::mfq::cuda::internal::generation_detail::hidden(
-                    model, state, executor, collectives, mode, mfq::cuda::Input{std::move(ids)});
+                hidden = ::tyloi::cuda::internal::generation_detail::hidden(
+                    model, state, executor, collectives, mode, tyloi::cuda::Input{std::move(ids)});
             } else {
                 MfqOptional<Tensor> length = mfq_nullopt;
                 if (model.adapter_uses_decode_sequence_length() && chunk.offset > 0 && chunk.count == 1)
-                    length = mfq_tensor_backend::full({1}, chunk.offset + 1, full_ids.options());
+                    length = ::tyloi::cuda::full({1}, chunk.offset + 1, full_ids.options());
                 hidden = model.hidden_forward(ids, mfq_nullopt, length);
             }
         }
@@ -274,15 +274,15 @@ template <typename Model, typename State> struct CudaGenerationOps {
         finish_prefill();
         if (chunk.offset + chunk.count == full_ids.size(1)) {
             auto input = hidden.index({Slice(), -1, Slice()})
-                             .to(mfq_tensor_backend::kFloat16)
+                             .to(::tyloi::kFloat16)
                              .contiguous();
             if constexpr (has_logits<Model>) {
                 auto logits = project(model, executor, mode, std::move(input), true)
                                   .reshape({1, -1});
-                pending = mfq::engine::sample_logits(sampler, std::move(logits), counts, constraint);
+                pending = tyloi::engine::sample_logits(sampler, std::move(logits), counts, constraint);
             } else {
                 auto logits = model.logits_from_hidden(std::move(input)).reshape({1, -1});
-                pending = mfq::engine::sample_logits(sampler, std::move(logits), counts, constraint);
+                pending = tyloi::engine::sample_logits(sampler, std::move(logits), counts, constraint);
             }
         }
         const auto elapsed=timer.elapsed_ms();
@@ -309,7 +309,7 @@ template <typename Model, typename State> struct CudaGenerationOps {
                generation_limit <= graph.generated_capacity;
     }
     void prepare_graph() {
-        using Tensor = mfq_tensor_backend::Tensor;
+        using Tensor = ::tyloi::Tensor;
         graph.ensure_compute_streams(collectives);
         MfqCudaGuard graph_device_guard(graph.stream.device_index());
         auto graph_stream_guards = activate_cuda_graph_compute_streams(graph.compute_streams);
@@ -329,19 +329,19 @@ template <typename Model, typename State> struct CudaGenerationOps {
         graph_mode.ffn.serial = true;
         const auto sample_static = [&]() {
             if constexpr (has_forward<Model, State> && has_logits<Model>) {
-                mfq::cuda::Input input;
+                tyloi::cuda::Input input;
                 input.ids = graph.static_input;
                 input.positions = graph.static_pos;
                 input.cache_positions = graph.static_pos;
                 input.lengths = graph.static_len;
                 input.kv_length = planned;
                 input.attention_parts = parts;
-                auto value = ::mfq::cuda::internal::generation_detail::hidden(
+                auto value = ::tyloi::cuda::internal::generation_detail::hidden(
                     model, state, executor, collectives, graph_mode, std::move(input));
                 auto logits = project(
                     model, executor, graph_mode,
                     value.index({Slice(), -1, Slice()})
-                        .to(mfq_tensor_backend::kFloat16)
+                        .to(::tyloi::kFloat16)
                         .contiguous(),
                     !(greedy && !has_penalties))
                                   .contiguous().view({1, -1});
@@ -455,11 +455,11 @@ template <typename Model, typename State> struct CudaGenerationOps {
             sample_token_counts_add_cuda(counts, pending.contiguous());
         }
         if constexpr(requires {model.adapter_prefetch_token_rows(model,known_token_host);}) {
-            const auto* option=mfq::cuda::env_lookup("TYLOINFER_DECODE_EARLY_PLE");
+            const auto* option=tyloi::cuda::env_lookup("TYLOINFER_DECODE_EARLY_PLE");
             if((option && option[0]=='0') || (prepared && prepared->transformed()) ||
                (output && output->stopped()))return;
-            if(!known_token_host.defined())known_token_host=mfq_tensor_backend::empty({1,1},
-                mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kInt64));
+            if(!known_token_host.defined())known_token_host=::tyloi::cuda::empty({1,1},
+                ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kInt64));
             known_token_host.template data_ptr<int64_t>()[0]=token;
             if(prefetch_token_rows(model,known_token_host)) {
                 static bool reported=false;
@@ -473,4 +473,4 @@ template <typename Model, typename State> struct CudaGenerationOps {
 };
 
 } // namespace generation_detail
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::mx {
+namespace tyloi::mx {
 
 std::vector<std::byte> prefix(
     std::string_view dtype,
@@ -15,9 +15,9 @@ std::vector<std::byte> prefix(
     const std::vector<std::int64_t>& scale_shape,
     const std::string& name);
 
-} // namespace mfq::mx
+} // namespace tyloi::mx
 
-namespace mfq::mxfp8 {
+namespace tyloi::mxfp8 {
 
 struct Data {
     std::int64_t out = 0;
@@ -30,9 +30,9 @@ struct Data {
 
 Data unpack(const std::vector<std::uint8_t>& blob);
 
-} // namespace mfq::mxfp8
+} // namespace tyloi::mxfp8
 
-namespace mfq::mxfp4 {
+namespace tyloi::mxfp4 {
 
 struct Data {
     std::int64_t out = 0;
@@ -43,4 +43,4 @@ struct Data {
 
 Data unpack(const std::vector<std::uint8_t>& blob);
 
-} // namespace mfq::mxfp4
+} // namespace tyloi::mxfp4

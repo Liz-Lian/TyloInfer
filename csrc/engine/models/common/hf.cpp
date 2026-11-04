@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 using json = nlohmann::json;
 
@@ -76,4 +76,4 @@ Names hf_names(
     return compatibility;
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

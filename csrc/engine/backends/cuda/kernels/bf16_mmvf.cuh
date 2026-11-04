@@ -28,7 +28,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-namespace mfq::cuda::bf16_mmvf_detail {
+namespace tyloi::cuda::bf16_mmvf_detail {
 __device__ __forceinline__ float warp_sum(float value) {
 #pragma unroll
     for(int offset=16;offset>0;offset>>=1)

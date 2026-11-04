@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 template<int Bits>
 __device__ __forceinline__ uint2 load_d4_index_pair(const uint8_t* data,
         int64_t index,int64_t nbytes,bool complete) {

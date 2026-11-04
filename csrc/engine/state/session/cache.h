@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // Matching, eviction and restore/store ordering are shared. Backend supplies
 // native snapshot/predictor types and the paged payload codec.
@@ -53,7 +53,7 @@ template <class Backend> class SessionCache {
     }
     template <class SessionConfig, class PrefixConfig>
     explicit SessionCache(const SessionConfig &session_config, const PrefixConfig &prefix_config,
-        std::shared_ptr<mfq::cache::PagedPrefixCache> paged_cache = {}, bool supported = true,
+        std::shared_ptr<tyloi::cache::PagedPrefixCache> paged_cache = {}, bool supported = true,
         int disabled_reason = 0, bool native_hot_snapshots = false)
         : snapshots_([&] {
               auto configuration = session_config.snapshots;
@@ -423,7 +423,7 @@ template <class Backend> class SessionCache {
         }
         auto blocks = std::move(existing.blocks);
         const bool final_already_stored=blocks.size()==full_blocks;
-        mfq::cache::BlockHash parent{};
+        tyloi::cache::BlockHash parent{};
         if (!blocks.empty())
             parent = blocks.back();
         for (size_t index = blocks.size(); index < full_blocks; ++index) {
@@ -434,12 +434,12 @@ template <class Backend> class SessionCache {
                 parent, state.tokens.data() + token_offset, count, std::move(payload),state.input_key);
             blocks.push_back(parent);
         }
-        if constexpr(requires { Backend::checkpoint_needs_update(mfq::cache::PagedPrefixPayload{},state); }) {
+        if constexpr(requires { Backend::checkpoint_needs_update(tyloi::cache::PagedPrefixPayload{},state); }) {
             if(final_already_stored) {
                 auto final=paged_cache_->blocks.load_prefix({blocks.back()});
                 if(final.empty() || Backend::checkpoint_needs_update(final.front(),state)) {
                     const auto index=full_blocks-1,offset=index*block_size;
-                    const auto previous=index?blocks[index-1]:mfq::cache::BlockHash{};
+                    const auto previous=index?blocks[index-1]:tyloi::cache::BlockHash{};
                     const auto refreshed=paged_cache_->replace(previous,state.tokens.data()+offset,
                         std::min(block_size,state.tokens.size()-offset),
                         Backend::encode(state,block_size,index),state.input_key);
@@ -457,9 +457,9 @@ template <class Backend> class SessionCache {
         }
     }
 
-    mfq::engine::SessionSnapshotCache<Snapshot> snapshots_;
-    std::shared_ptr<mfq::cache::PagedPrefixCache> paged_cache_;
-    mfq::engine::PagedSessionBindings paged_bindings_;
+    tyloi::engine::SessionSnapshotCache<Snapshot> snapshots_;
+    std::shared_ptr<tyloi::cache::PagedPrefixCache> paged_cache_;
+    tyloi::engine::PagedSessionBindings paged_bindings_;
     uint64_t paged_disk_budget_ = 0;
     uint64_t paged_hot_budget_ = 0;
     uint64_t paged_ram_budget_ = 0;
@@ -470,4 +470,4 @@ template <class Backend> class SessionCache {
     std::uint64_t anonymous_snapshots_ = 0;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

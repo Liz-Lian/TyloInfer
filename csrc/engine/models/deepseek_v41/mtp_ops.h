@@ -3,7 +3,7 @@
 #include "engine/models/common/mtp_ops.h"
 #include "engine/models/deepseek_v41/ops.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template<class Ops, class Chunk, class Tensor, class Timer, class Finish>
 std::optional<typename Ops::PrefillResult> mtp_prefill(DeepseekV41CausalLm& model, Ops& ops, const Chunk& chunk,
@@ -17,4 +17,4 @@ std::optional<typename Ops::PrefillResult> mtp_prefill(DeepseekV41CausalLm& mode
     return std::nullopt;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

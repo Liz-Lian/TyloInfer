@@ -5,8 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::minicpmo45 {
-namespace tb = mfq_tensor_backend;
+namespace tyloi::cuda::minicpmo45 {
 
 State::State(const Model& model)
     : layers(model.layers.size()), maximum_(model.metadata.max_position_embeddings) {
@@ -21,7 +20,7 @@ void State::preallocate() {
         if (layout.cpu || layers[index].defined()) continue;
         MfqCudaGuard guard(layout.device);
         layers[index] = KVCache(1, layout.heads, layout.capacity, layout.head_dim, false,
-            tb::Device(tb::kCUDA, layout.device), tb::kFloat16);
+            ::tyloi::Device(::tyloi::kCUDA, layout.device), ::tyloi::kFloat16);
     }
 }
 
@@ -79,10 +78,10 @@ State::Restore State::prepare(const TextSessionState& state) const {
         const auto& layout = layout_[index];
         const auto& cache = saved->at(index);
         validate_kv(cache);
-        const auto device = tb::Device(layout.cpu ? tb::kCPU : tb::kCUDA,
+        const auto device = ::tyloi::Device(layout.cpu ? ::tyloi::kCPU : ::tyloi::kCUDA,
                                        layout.cpu ? -1 : layout.device);
         if (cache.ring || cache.k.device() != device || cache.v.device() != device ||
-            cache.k.scalar_type() != tb::kFloat16 || cache.v.scalar_type() != tb::kFloat16 ||
+            cache.k.scalar_type() != ::tyloi::kFloat16 || cache.v.scalar_type() != ::tyloi::kFloat16 ||
             cache.k.size(1) != layout.heads || cache.v.size(1) != layout.heads ||
             cache.k.size(3) != layout.head_dim || cache.v.size(3) != layout.head_dim ||
             cache.k.size(2) != state.cache_pos || cache.capacity < state.cache_pos)
@@ -95,7 +94,7 @@ void State::stage(Restore& restore, const TextSessionState& state) const {
     const auto& saved = std::get<std::vector<KvSnapshot>>(state.payload);
     for (size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
-        restore_kv(restore.layers[index], saved[index], layout_[index].head_dim, tb::kFloat16, {});
+        restore_kv(restore.layers[index], saved[index], layout_[index].head_dim, ::tyloi::kFloat16, {});
     }
 }
 
@@ -106,4 +105,4 @@ void State::publish(Restore&& restore) noexcept {
     batch = 1;
 }
 
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

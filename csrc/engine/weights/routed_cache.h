@@ -11,7 +11,7 @@ class MoeExpertCache;
 class TqCache;
 class TqExec;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class WeightLoan;
 
@@ -37,4 +37,4 @@ struct RoutedCache {
     void reset() noexcept;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

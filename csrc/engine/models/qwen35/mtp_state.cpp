@@ -3,9 +3,8 @@
 
 #include <algorithm>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
-namespace tb = mfq_tensor_backend;
 
 MtpState::MtpState(std::vector<Layout> layout, int64_t hidden)
     : layout_(std::move(layout)), kv_(layout_.size()), hidden_(hidden) {}
@@ -25,7 +24,7 @@ void MtpState::prepare(int64_t batch, int64_t tokens, int64_t kl_capacity) {
         const auto capacity = kl_capacity > 0
             ? std::min(layout.capacity, std::max(position_ + tokens, kl_capacity)) : layout.capacity;
         KVCache grown(batch, layout.heads, capacity, layout.head_dim, false,
-            tb::Device(tb::kCUDA, layout.device), layout.dtype, layout.quantization);
+            ::tyloi::Device(::tyloi::kCUDA, layout.device), layout.dtype, layout.quantization);
         if (kv_[index].defined() && position_ > 0) {
             grown.k.narrow(2, 0, position_).copy_(kv_[index].k.narrow(2, 0, position_));
             grown.v.narrow(2, 0, position_).copy_(kv_[index].v.narrow(2, 0, position_));
@@ -61,7 +60,7 @@ std::vector<AttentionKvView> MtpState::views() const {
     return result;
 }
 
-MtpSessionState MtpState::capture(int64_t target_position, const tb::Tensor& hidden) const {
+MtpSessionState MtpState::capture(int64_t target_position, const ::tyloi::Tensor& hidden) const {
     const auto position = target_position - 1;
     if (position <= 0 || position > position_ || !hidden.defined() ||
         hidden.dim() != 3 || hidden.size(0) != 1 || hidden.size(1) != 1 || hidden.size(2) != hidden_)
@@ -96,7 +95,7 @@ MtpState::Restore MtpState::prepare(const MtpSessionState& saved) const {
             ? cuda_kv_packed_width(int(layout.head_dim), layout.quantization.key_bits()) : layout.head_dim;
         const auto value_width = layout.quantization.enabled()
             ? cuda_kv_packed_width(int(layout.head_dim), layout.quantization.value_bits()) : layout.head_dim;
-        const auto dtype = layout.quantization.enabled() ? tb::kInt32 : layout.dtype;
+        const auto dtype = layout.quantization.enabled() ? ::tyloi::kInt32 : layout.dtype;
         if (block.capacity > layout.capacity || block.ring ||
             block.k.size(1) != layout.heads || block.k.size(2) != saved.cache_pos ||
             block.k.size(3) != key_width || block.v.size(3) != value_width ||
@@ -122,4 +121,4 @@ void MtpState::publish(Restore&& restore) noexcept {
     position_ = restore.position;
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

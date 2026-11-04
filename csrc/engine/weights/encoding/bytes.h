@@ -4,7 +4,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace mfq::encoding {
+namespace tyloi::encoding {
 
 template <typename T>
 void append_little(std::vector<std::byte>& destination, T value) {
@@ -15,4 +15,4 @@ void append_little(std::vector<std::byte>& destination, T value) {
     }
 }
 
-} // namespace mfq::encoding
+} // namespace tyloi::encoding

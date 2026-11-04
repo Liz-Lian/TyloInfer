@@ -17,7 +17,7 @@
 
 namespace {
 
-using namespace mfq::transport_detail;
+using namespace tyloi::transport_detail;
 
 static json error_body(const std::string & message, const std::string & type, const std::string & param = {}) {
     return {
@@ -61,12 +61,12 @@ static void handle_api_error(httplib::Response & res, const ApiError & error) {
     set_json(res, error_body(error.what(), error.type, error.param), error.status);
 }
 
-static ApiError api_error(const mfq::engine::InferenceInputError & error) {
+static ApiError api_error(const tyloi::engine::InferenceInputError & error) {
     const char * type = "invalid_request_error";
-    if (error.code == mfq::engine::InferenceInputErrorCode::Unsupported) {
+    if (error.code == tyloi::engine::InferenceInputErrorCode::Unsupported) {
         type = "unsupported_parameter";
     } else if (error.code ==
-            mfq::engine::InferenceInputErrorCode::ContextLength) {
+            tyloi::engine::InferenceInputErrorCode::ContextLength) {
         type = "context_length_exceeded";
     }
     return ApiError(400, type, error.what(), error.field);
@@ -74,7 +74,7 @@ static ApiError api_error(const mfq::engine::InferenceInputError & error) {
 
 int run_mfq_http_transport(
         const MfqHttpRuntimeTransportConfig & config,
-        const mfq::engine::Engine & engine) {
+        const tyloi::engine::Engine & engine) {
     const bool duplex = engine.info().duplex;
     if (config.port < 1 || config.port > 65535) {
         throw std::runtime_error("runtime transport port must be in [1, 65535]");
@@ -135,7 +135,7 @@ int run_mfq_http_transport(
             duplex_socket = nullptr;
             duplex_backend_started = false;
         }
-        if (stop_backend) (void)engine.control(mfq::engine::StopDuplex{});
+        if (stop_backend) (void)engine.control(tyloi::engine::StopDuplex{});
         if (close_socket && socket != nullptr && socket->is_open()) {
             socket->close(
                 httplib::ws::CloseStatus::Normal, "session closed");
@@ -468,7 +468,7 @@ int run_mfq_http_transport(
                         {"metrics", metrics},
                     });
                 }
-            } catch (const mfq::engine::InferenceInputError & error) {
+            } catch (const tyloi::engine::InferenceInputError & error) {
                 send_event({
                     {"type", "session.closed"},
                     {"session_id", owned_session},
@@ -536,7 +536,7 @@ int run_mfq_http_transport(
         const auto snapshot = engine.snapshot();
         const auto& metrics = snapshot.runtime;
         value["runtime_metrics_age_ms"] = std::chrono::duration<double, std::milli>(
-            mfq::engine::Clock::now() - snapshot.captured).count();
+            tyloi::engine::Clock::now() - snapshot.captured).count();
 
         for (const auto& item : metrics) {
             value[item.first] = item.second;
@@ -618,7 +618,7 @@ int run_mfq_http_transport(
 
 
         try {
-            const size_t released = engine.session({mfq::engine::SessionCommand::Kind::clear}).count;
+            const size_t released = engine.session({tyloi::engine::SessionCommand::Kind::clear}).count;
             json result = {
                 {"status", "ok"},
                 {"released_snapshots", released},
@@ -635,7 +635,7 @@ int run_mfq_http_transport(
     server.Post("/runtime/cache/refresh", [&](const httplib::Request&, httplib::Response& res) {
         try {
             json result = {{"status", "ok"},
-                {"removed_blocks", engine.session({mfq::engine::SessionCommand::Kind::refresh}).count}};
+                {"removed_blocks", engine.session({tyloi::engine::SessionCommand::Kind::refresh}).count}};
             add_session_metrics(result);
             set_json(res, result);
         } catch (const std::exception& error) {
@@ -648,7 +648,7 @@ int run_mfq_http_transport(
             const auto body = parse_body(req);
             const auto bytes = integer_field(body, "target_bytes", 0);
             if (bytes < 0) throw ApiError(400, "invalid_request_error", "target_bytes must be non-negative");
-            mfq::engine::SessionCommand command{mfq::engine::SessionCommand::Kind::memory_budget, {}, {}, static_cast<uint64_t>(bytes)};
+            tyloi::engine::SessionCommand command{tyloi::engine::SessionCommand::Kind::memory_budget, {}, {}, static_cast<uint64_t>(bytes)};
             if (body.contains("weight_target_bytes")) {
                 const auto weight = integer_field(body, "weight_target_bytes", 0);
                 if (weight < 0) throw ApiError(400, "invalid_request_error", "weight_target_bytes must be non-negative");
@@ -686,14 +686,14 @@ int run_mfq_http_transport(
                 target_bytes = body["target_bytes"].get<std::uint64_t>();
             }
             const auto kind = req.path == "/runtime/cache/budget"
-                ? mfq::engine::SessionCommand::Kind::budget : mfq::engine::SessionCommand::Kind::trim;
-            mfq::engine::SessionCommand command{kind, {}, {}, target_bytes};
-            if (kind == mfq::engine::SessionCommand::Kind::budget && body.contains("disk_target_bytes")) {
+                ? tyloi::engine::SessionCommand::Kind::budget : tyloi::engine::SessionCommand::Kind::trim;
+            tyloi::engine::SessionCommand command{kind, {}, {}, target_bytes};
+            if (kind == tyloi::engine::SessionCommand::Kind::budget && body.contains("disk_target_bytes")) {
                 const auto disk = integer_field(body, "disk_target_bytes", 0);
                 if (disk < 0) throw ApiError(400, "invalid_request_error", "disk_target_bytes must be non-negative");
                 command.disk_bytes = static_cast<uint64_t>(disk);
             }
-            if (kind == mfq::engine::SessionCommand::Kind::budget && body.contains("ram_target_bytes")) {
+            if (kind == tyloi::engine::SessionCommand::Kind::budget && body.contains("ram_target_bytes")) {
                 const auto ram = integer_field(body, "ram_target_bytes", 0);
                 if (ram < 0) throw ApiError(400, "invalid_request_error", "ram_target_bytes must be non-negative");
                 command.ram_bytes = static_cast<uint64_t>(ram);
@@ -756,7 +756,7 @@ int run_mfq_http_transport(
                     "source and target sessions must differ",
                     "target_session_id");
             }
-            const size_t copied = engine.session({mfq::engine::SessionCommand::Kind::fork, source_session_id, target_session_id}).count;
+            const size_t copied = engine.session({tyloi::engine::SessionCommand::Kind::fork, source_session_id, target_session_id}).count;
             set_json(res, {
                 {"status", "ok"},
                 {"copied_snapshots", copied},
@@ -775,7 +775,7 @@ int run_mfq_http_transport(
 
             try {
                 const std::string session_id = req.matches[1].str();
-                const size_t released = engine.session({mfq::engine::SessionCommand::Kind::close, session_id}).count;
+                const size_t released = engine.session({tyloi::engine::SessionCommand::Kind::close, session_id}).count;
                 set_json(res, {
                     {"status", "ok"},
                     {"released_snapshots", released},
@@ -849,7 +849,7 @@ int run_mfq_http_transport(
     server.Post("/runtime/count_tokens", [&](const httplib::Request& req, httplib::Response& res) {
         if (!authorized(req, res, config.api_key)) return;
         try {
-            set_json(res, token_count_json(std::get<mfq::engine::TokenCount>(
+            set_json(res, token_count_json(std::get<tyloi::engine::TokenCount>(
                 engine.control(parse_token_count_request(parse_body(req))))));
         } catch (const ApiError& error) { handle_api_error(res, error); }
         catch (const std::invalid_argument& error) { set_json(res, error_body(error.what(), "invalid_request_error"), 400); }
@@ -861,7 +861,7 @@ int run_mfq_http_transport(
         try {
             if (!engine.info().probability)
                 throw ApiError(501, "probability_unavailable", "probability scoring is unavailable for this model");
-            set_json(res, likelihood_result_json(std::get<mfq::engine::LikelihoodResult>(
+            set_json(res, likelihood_result_json(std::get<tyloi::engine::LikelihoodResult>(
                 engine.control(parse_score_request(parse_body(req))))));
         } catch (const ApiError& error) { handle_api_error(res, error); }
         catch (const std::invalid_argument& error) { set_json(res, error_body(error.what(), "invalid_request_error"), 400); }
@@ -986,7 +986,7 @@ int run_mfq_http_transport(
                 });
         } catch (const ApiError & error) {
             handle_api_error(res, error);
-        } catch (const mfq::engine::InferenceInputError & error) {
+        } catch (const tyloi::engine::InferenceInputError & error) {
             handle_api_error(res, api_error(error));
         } catch (const std::exception & error) {
             set_json(res, error_body(error.what(), "server_error"), 500);
@@ -1029,7 +1029,7 @@ public:
     explicit MfqHttpTransport(MfqHttpRuntimeTransportConfig config)
         : config_(std::move(config)) {}
 
-    int run(const mfq::engine::Engine & engine) override {
+    int run(const tyloi::engine::Engine & engine) override {
         return run_mfq_http_transport(config_, engine);
     }
 

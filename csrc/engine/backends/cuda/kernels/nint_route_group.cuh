@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nint.cuh"
 
-namespace mfq::cuda::packed_nint {
+namespace tyloi::cuda::packed_nint {
 
 // A checked fixed-width row can load its entire subgroup once. Normalizing
 // the word window also keeps byte/bit cursor arithmetic out of the dot loop.

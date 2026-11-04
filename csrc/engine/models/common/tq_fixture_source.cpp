@@ -10,7 +10,7 @@
 #include <limits>
 #include <unordered_set>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 using json=nlohmann::json;
 constexpr std::uint64_t gamma=0x9e3779b97f4a7c15ULL;
@@ -237,4 +237,4 @@ public:
 std::shared_ptr<const ModelSource> open_tq_fixture_source(const std::filesystem::path& path) {
     return std::make_shared<Fixture>(path);
 }
-} // namespace mfq
+} // namespace tyloi

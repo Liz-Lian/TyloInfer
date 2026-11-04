@@ -1,6 +1,6 @@
 #include "metrics.h"
 
-namespace mfq::engine::mtp {
+namespace tyloi::engine::mtp {
 
 void append_generation_metrics(
         std::vector<std::pair<std::string, double>>& metrics,
@@ -48,4 +48,4 @@ void append_generation_metrics(
     }
 }
 
-} // namespace mfq::engine::mtp
+} // namespace tyloi::engine::mtp

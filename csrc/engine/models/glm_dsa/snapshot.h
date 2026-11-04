@@ -4,11 +4,11 @@
 
 #include <cstdint>
 
-namespace mfq::models::glm_dsa {
+namespace tyloi::models::glm_dsa {
 
 struct BlockSnapshot {
-    mfq_tensor_backend::Tensor kv_cache;
-    mfq_tensor_backend::Tensor index_cache;
+    ::tyloi::Tensor kv_cache;
+    ::tyloi::Tensor index_cache;
     int64_t kv_capacity = 0;
     int64_t index_capacity = 0;
     bool full_indexer = false;
@@ -20,4 +20,4 @@ struct BlockSnapshot {
     }
 };
 
-} // namespace mfq::models::glm_dsa
+} // namespace tyloi::models::glm_dsa

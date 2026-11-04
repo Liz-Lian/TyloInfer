@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace mfq {
+namespace tyloi {
 struct HostMemorySample {
     std::uint64_t resident_bytes = 0;
     std::uint64_t available_bytes = 0;

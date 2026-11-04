@@ -6,7 +6,7 @@
 #include <string_view>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // CUDA resolves semantic implementation IDs from model_graph.json.  These are
 // execution implementations, not checkpoint/model aliases.
@@ -216,4 +216,4 @@ inline CudaCapabilityMatrix cuda_runtime_capabilities(
     return result;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

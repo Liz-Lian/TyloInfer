@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 std::uint64_t environment_uint64(
         const char* name, std::uint64_t fallback) {
@@ -129,4 +129,4 @@ ContinuousBatchConfig resolve_batch_config(int capacity, std::int64_t prefill_ch
     return config;
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

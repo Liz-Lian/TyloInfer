@@ -17,22 +17,22 @@
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 #include "engine/backends/cuda/executor/executor.h"
 
-mfq::ops::RopeTable RopeCache::view() const {
+tyloi::ops::RopeTable RopeCache::view() const {
     return {cos, sin, sections, empty_sections, interleaved_order, interleaved_inverse, rotary_dim};
 }
 
-mfq::Tensor mfq::cuda::ops::rope(mfq::Tensor input, mfq::Tensor positions,
-    const mfq::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
+tyloi::Tensor tyloi::cuda::ops::rope(tyloi::Tensor input, tyloi::Tensor positions,
+    const tyloi::ops::RopeTable& table, bool bf16, bool grid_mrope_positions) {
     MfqCudaGuard guard(input.device().index);
     RopeCache cache;
-    cache.cos = mfq_tensor_backend::Tensor(table.cos);
-    cache.sin = mfq_tensor_backend::Tensor(table.sin);
-    cache.sections = mfq_tensor_backend::Tensor(table.sections);
-    cache.empty_sections = mfq_tensor_backend::Tensor(table.empty_sections);
-    cache.interleaved_order = mfq_tensor_backend::Tensor(table.interleaved_order);
-    cache.interleaved_inverse = mfq_tensor_backend::Tensor(table.interleaved_inverse);
+    cache.cos = table.cos;
+    cache.sin = table.sin;
+    cache.sections = table.sections;
+    cache.empty_sections = table.empty_sections;
+    cache.interleaved_order = table.interleaved_order;
+    cache.interleaved_inverse = table.interleaved_inverse;
     cache.rotary_dim = table.rotary_dim;
-    auto x = mfq_tensor_backend::Tensor(input), pos = mfq_tensor_backend::Tensor(positions);
+    auto x = input, pos = positions;
     return bf16 ? cache.apply_bf16(x.is_cuda() && Executor::current().attention_options().fused_rope, x, pos)
                 : cache.apply(x, pos, grid_mrope_positions);
 }
@@ -44,8 +44,8 @@ RopeCache::RopeCache(
         double base,
         int64_t frequency_dim,
         int64_t active_pairs,
-        mfq_tensor_backend::Device device,
-        bool official_reciprocal_frequencies, mfq::ops::YarnScaling yarn)
+        ::tyloi::Device device,
+        bool official_reciprocal_frequencies, tyloi::ops::YarnScaling yarn)
     : rotary_dim(dim) {
     int64_t half = rotary_dim / 2;
     const int64_t denominator = frequency_dim > 0 ? frequency_dim : rotary_dim;
@@ -53,15 +53,15 @@ RopeCache::RopeCache(
     if (active_pairs > half) {
         throw std::runtime_error("RoPE active pair count exceeds rotary dimension");
     }
-    auto opts = mfq_tensor_backend::TensorOptions().device(device).dtype(mfq_tensor_backend::kFloat32);
-    auto pos = mfq_tensor_backend::arange(max_positions, opts);
-    auto ar = mfq_tensor_backend::arange(0, rotary_dim, 2, opts);
-    auto freq = mfq_tensor_backend::pow(
-        mfq_tensor_backend::full({half}, base, opts),
+    auto opts = ::tyloi::TensorOptions().device(device).dtype(::tyloi::kFloat32);
+    auto pos = ::tyloi::cuda::arange(max_positions, opts);
+    auto ar = ::tyloi::cuda::arange(0, rotary_dim, 2, opts);
+    auto freq = ::tyloi::cuda::pow(
+        ::tyloi::cuda::full({half}, base, opts),
         -ar / (double)denominator);
     if (official_reciprocal_frequencies) {
-        auto cpu_opts = mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32);
+        auto cpu_opts = ::tyloi::TensorOptions()
+            .device(::tyloi::kCPU).dtype(::tyloi::kFloat32);
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         std::vector<float> official_values(static_cast<size_t>(half));
         const float official_base = static_cast<float>(base);
@@ -72,30 +72,30 @@ RopeCache::RopeCache(
             official_values[static_cast<size_t>(index)] =
                 1.0f / std::pow(official_base, exponent);
         }
-        auto official_freq = mfq_tensor_backend::tensor(
+        auto official_freq = ::tyloi::cuda::tensor(
             official_values, cpu_opts);
 #else
-        auto exponent = mfq_tensor_backend::arange(0, rotary_dim, 2, cpu_opts) /
+        auto exponent = ::tyloi::cuda::arange(0, rotary_dim, 2, cpu_opts) /
             (double)denominator;
-        auto official_freq = mfq_tensor_backend::reciprocal(
-            mfq_tensor_backend::pow(mfq_tensor_backend::full({half}, base, cpu_opts), exponent));
+        auto official_freq = ::tyloi::cuda::reciprocal(
+            ::tyloi::cuda::pow(::tyloi::cuda::full({half}, base, cpu_opts), exponent));
 #endif
         freq.copy_(official_freq);
     }
     if(yarn.enabled()) {
         std::vector<float> values(static_cast<std::size_t>(half));
-        for(int pair=0;pair<half;++pair)values[pair]=float(mfq::cuda::yarn_frequency(yarn, pair,denominator,base));
-        freq.copy_(mfq_tensor_backend::tensor(values).to(device));
+        for(int pair=0;pair<half;++pair)values[pair]=float(tyloi::cuda::yarn_frequency(yarn, pair,denominator,base));
+        freq.copy_(::tyloi::cuda::tensor(values).to(device));
     }
     if (active_pairs < half) {
-        auto pair = mfq_tensor_backend::arange(half, opts);
-        freq = mfq_tensor_backend::where(pair < active_pairs, freq, mfq_tensor_backend::zeros_like(freq));
+        auto pair = ::tyloi::cuda::arange(half, opts);
+        freq = ::tyloi::cuda::where(pair < active_pairs, freq, ::tyloi::cuda::zeros_like(freq));
     }
     auto ang = pos.unsqueeze(1) * freq.unsqueeze(0);
-    cos = mfq_tensor_backend::cos(ang).contiguous();
-    sin = mfq_tensor_backend::sin(ang).contiguous();
-    if(yarn.enabled()) { cos=cos*mfq::cuda::yarn_attention_factor(yarn);sin=sin*mfq::cuda::yarn_attention_factor(yarn); }
-    sections = mfq_tensor_backend::empty({0}, mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCPU));
+    cos = ::tyloi::cuda::cos(ang).contiguous();
+    sin = ::tyloi::cuda::sin(ang).contiguous();
+    if(yarn.enabled()) { cos=cos*tyloi::cuda::yarn_attention_factor(yarn);sin=sin*tyloi::cuda::yarn_attention_factor(yarn); }
+    sections = ::tyloi::cuda::empty({0}, ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCPU));
     empty_sections = sections;
 }
 
@@ -103,7 +103,7 @@ void RopeCache::configure_mrope(
         const std::vector<int64_t>& configured_sections,
         bool interleaved,
         int64_t configured_rotary_dim,
-        mfq_tensor_backend::Device device) {
+        ::tyloi::Device device) {
         if (configured_sections.empty()) return;
         auto execution_sections = configured_sections;
         if (interleaved) {
@@ -130,34 +130,34 @@ void RopeCache::configure_mrope(
                 inverse[static_cast<size_t>(order[index])] =
                     static_cast<int64_t>(index);
             }
-            interleaved_order = mfq_tensor_backend::tensor(
-                order, mfq_tensor_backend::TensorOptions()
-                    .dtype(mfq_tensor_backend::kInt64)
-                    .device(mfq_tensor_backend::kCPU)).to(device);
-            interleaved_inverse = mfq_tensor_backend::tensor(
-                inverse, mfq_tensor_backend::TensorOptions()
-                    .dtype(mfq_tensor_backend::kInt64)
-                    .device(mfq_tensor_backend::kCPU)).to(device);
+            interleaved_order = ::tyloi::cuda::tensor(
+                order, ::tyloi::TensorOptions()
+                    .dtype(::tyloi::kInt64)
+                    .device(::tyloi::kCPU)).to(device);
+            interleaved_inverse = ::tyloi::cuda::tensor(
+                inverse, ::tyloi::TensorOptions()
+                    .dtype(::tyloi::kInt64)
+                    .device(::tyloi::kCPU)).to(device);
         }
-        sections = mfq_tensor_backend::tensor(
+        sections = ::tyloi::cuda::tensor(
             execution_sections,
-            mfq_tensor_backend::TensorOptions()
-                .dtype(mfq_tensor_backend::kInt64)
-                .device(mfq_tensor_backend::kCPU));
+            ::tyloi::TensorOptions()
+                .dtype(::tyloi::kInt64)
+                .device(::tyloi::kCPU));
     }
 
-mfq_tensor_backend::Tensor RopeCache::apply(
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor pos,
+::tyloi::Tensor RopeCache::apply(
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor pos,
         bool grid_mrope_positions) const {
         if (!x.is_cuda()) {
             TYLOINFER_RUNTIME_CHECK(
                 !cos.is_cuda() && !sin.is_cuda(),
                 "CPU RoPE requires a CPU-resident table");
-            auto positions = pos.contiguous().to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64)
+            auto positions = pos.contiguous().to(::tyloi::kCPU, ::tyloi::kInt64)
                 .clamp(0, cos.size(0) - 1);
-            mfq_tensor_backend::Tensor selected_cos;
-            mfq_tensor_backend::Tensor selected_sin;
+            ::tyloi::Tensor selected_cos;
+            ::tyloi::Tensor selected_sin;
             if (positions.dim() == 1) {
                 selected_cos = cos.index_select(0, positions);
                 selected_sin = sin.index_select(0, positions);
@@ -172,8 +172,8 @@ mfq_tensor_backend::Tensor RopeCache::apply(
                     .unsqueeze(1);
             } else if (grid_mrope_positions && sections.numel() == 3) {
                 const int64_t * section = sections.data_ptr<int64_t>();
-                std::vector<mfq_tensor_backend::Tensor> cos_parts;
-                std::vector<mfq_tensor_backend::Tensor> sin_parts;
+                std::vector<::tyloi::Tensor> cos_parts;
+                std::vector<::tyloi::Tensor> sin_parts;
                 int64_t offset = 0;
                 for (int axis = 0; axis < 3; ++axis) {
                     const int64_t count = section[axis];
@@ -184,13 +184,13 @@ mfq_tensor_backend::Tensor RopeCache::apply(
                         sin.index_select(0, active).narrow(1, offset, count));
                     offset += count;
                 }
-                selected_cos = mfq_tensor_backend::cat(cos_parts, 1);
-                selected_sin = mfq_tensor_backend::cat(sin_parts, 1);
+                selected_cos = ::tyloi::cuda::cat(cos_parts, 1);
+                selected_sin = ::tyloi::cuda::cat(sin_parts, 1);
             } else {
                 throw std::runtime_error(
                     "multi-axis CPU RoPE requires three position sections");
             }
-            auto xf = x.contiguous().to(mfq_tensor_backend::kFloat32);
+            auto xf = x.contiguous().to(::tyloi::kFloat32);
             const int64_t half = rotary_dim / 2;
             auto first = xf.narrow(-1, 0, half);
             auto second = xf.narrow(-1, half, half);
@@ -201,33 +201,33 @@ mfq_tensor_backend::Tensor RopeCache::apply(
                 second * selected_cos + first * selected_sin);
             return output;
         }
-        auto source = x.contiguous().to(mfq_tensor_backend::kFloat32);
+        auto source = x.contiguous().to(::tyloi::kFloat32);
         auto active_cos = cos;
         auto active_sin = sin;
         const bool interleaved = grid_mrope_positions &&
             interleaved_order.defined();
         if (interleaved) {
             const int64_t half = rotary_dim / 2;
-            std::vector<mfq_tensor_backend::Tensor> parts{
+            std::vector<::tyloi::Tensor> parts{
                 source.narrow(-1, 0, half).index_select(-1, interleaved_order),
                 source.narrow(-1, half, half).index_select(-1, interleaved_order)};
             if (source.size(-1) > rotary_dim) {
                 parts.push_back(source.narrow(
                     -1, rotary_dim, source.size(-1) - rotary_dim));
             }
-            source = mfq_tensor_backend::cat(parts, -1).contiguous();
+            source = ::tyloi::cuda::cat(parts, -1).contiguous();
             active_cos = cos.index_select(1, interleaved_order).contiguous();
             active_sin = sin.index_select(1, interleaved_order).contiguous();
         }
         auto output = rope_table_cuda(
             source,
             pos.contiguous().to(
-                mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64),
+                ::tyloi::kCUDA, ::tyloi::kInt64),
             active_cos, active_sin, rotary_dim,
             grid_mrope_positions ? sections : empty_sections);
         if (interleaved) {
             const int64_t half = rotary_dim / 2;
-            std::vector<mfq_tensor_backend::Tensor> parts{
+            std::vector<::tyloi::Tensor> parts{
                 output.narrow(-1, 0, half).index_select(
                     -1, interleaved_inverse),
                 output.narrow(-1, half, half).index_select(
@@ -236,48 +236,48 @@ mfq_tensor_backend::Tensor RopeCache::apply(
                 parts.push_back(output.narrow(
                     -1, rotary_dim, output.size(-1) - rotary_dim));
             }
-            output = mfq_tensor_backend::cat(parts, -1).contiguous();
+            output = ::tyloi::cuda::cat(parts, -1).contiguous();
         }
         return output;
     }
 
-mfq_tensor_backend::Tensor RopeCache::apply_bf16(
+::tyloi::Tensor RopeCache::apply_bf16(
         bool fused,
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor pos) const {
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor pos) const {
         TYLOINFER_RUNTIME_CHECK(
             sections.numel() == 0,
             "Qwen3 BF16 RoPE does not support multi-axis sections");
         if (x.is_cuda() && pos.dim() == 1 &&
                 fused) {
             return rope_table_bf16_cuda(
-                x.contiguous().to(mfq_tensor_backend::kBFloat16),
-                pos.contiguous().to(cos.device(), mfq_tensor_backend::kInt64),
+                x.contiguous().to(::tyloi::kBFloat16),
+                pos.contiguous().to(cos.device(), ::tyloi::kInt64),
                 cos, sin, rotary_dim);
         }
-        auto positions = pos.contiguous().to(cos.device(), mfq_tensor_backend::kInt64)
+        auto positions = pos.contiguous().to(cos.device(), ::tyloi::kInt64)
             .clamp(0, cos.size(0) - 1);
-        mfq_tensor_backend::Tensor selected_cos;
-        mfq_tensor_backend::Tensor selected_sin;
+        ::tyloi::Tensor selected_cos;
+        ::tyloi::Tensor selected_sin;
         if (positions.dim() == 1) {
             selected_cos = cos.index_select(0, positions)
-                .to(mfq_tensor_backend::kBFloat16).unsqueeze(0).unsqueeze(0);
+                .to(::tyloi::kBFloat16).unsqueeze(0).unsqueeze(0);
             selected_sin = sin.index_select(0, positions)
-                .to(mfq_tensor_backend::kBFloat16).unsqueeze(0).unsqueeze(0);
+                .to(::tyloi::kBFloat16).unsqueeze(0).unsqueeze(0);
         } else if (positions.dim() == 2) {
             const int64_t batches = positions.size(0);
             const int64_t tokens = positions.size(1);
             selected_cos = cos.index_select(0, positions.reshape({-1}))
                 .reshape({batches, tokens, rotary_dim / 2})
-                .to(mfq_tensor_backend::kBFloat16).unsqueeze(1);
+                .to(::tyloi::kBFloat16).unsqueeze(1);
             selected_sin = sin.index_select(0, positions.reshape({-1}))
                 .reshape({batches, tokens, rotary_dim / 2})
-                .to(mfq_tensor_backend::kBFloat16).unsqueeze(1);
+                .to(::tyloi::kBFloat16).unsqueeze(1);
         } else {
             throw std::runtime_error(
                 "Qwen3 BF16 RoPE positions must be rank one or two");
         }
-        auto xb = x.contiguous().to(mfq_tensor_backend::kBFloat16);
+        auto xb = x.contiguous().to(::tyloi::kBFloat16);
         const int64_t half = rotary_dim / 2;
         auto first = xb.narrow(-1, 0, half);
         auto second = xb.narrow(-1, half, half);
@@ -289,9 +289,7 @@ mfq_tensor_backend::Tensor RopeCache::apply_bf16(
         return output.contiguous();
     }
 
-namespace mfq::cuda {
-namespace tb = mfq_tensor_backend;
-using Tensor = tb::Tensor;
+namespace tyloi::cuda {
 
 TailRope::TailRope(int64_t max_position_embeddings, double rope_base, int64_t compress_ratio,
                    double compress_rope_base, int64_t original_positions, double rope_factor,
@@ -301,11 +299,11 @@ TailRope::TailRope(int64_t max_position_embeddings, double rope_base, int64_t co
     const int64_t positions = std::max<int64_t>(1, max_position_embeddings);
     const double base =
         compress_ratio > 0 && compress_rope_base > 0.0 ? compress_rope_base : rope_base;
-    auto opts = mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCUDA)
-                    .dtype(mfq_tensor_backend::kFloat32);
-    auto dims = mfq_tensor_backend::arange(0, rotary_dim, 2, opts);
-    auto freqs = mfq_tensor_backend::pow(mfq_tensor_backend::full({half}, base, opts),
+    auto opts = ::tyloi::TensorOptions()
+                    .device(::tyloi::kCUDA)
+                    .dtype(::tyloi::kFloat32);
+    auto dims = ::tyloi::cuda::arange(0, rotary_dim, 2, opts);
+    auto freqs = ::tyloi::cuda::pow(::tyloi::cuda::full({half}, base, opts),
                                          -dims / static_cast<double>(rotary_dim));
     if (compress_ratio > 0 && original_positions > 0) {
         auto correction = [&](double rotations) {
@@ -318,14 +316,14 @@ TailRope::TailRope(int64_t max_position_embeddings, double rope_base, int64_t co
         const double high =
             std::min(static_cast<double>(rotary_dim - 1), std::ceil(correction(beta_slow)));
         const double denominator = high == low ? 0.001 : high - low;
-        auto ramp = mfq_tensor_backend::clamp(
-            (mfq_tensor_backend::arange(half, opts) - low) / denominator, 0.0, 1.0);
+        auto ramp = ::tyloi::cuda::clamp(
+            (::tyloi::cuda::arange(half, opts) - low) / denominator, 0.0, 1.0);
         auto smooth = 1.0 - ramp;
         freqs = freqs / rope_factor * (1.0 - smooth) + freqs * smooth;
     }
-    auto angles = mfq_tensor_backend::arange(positions, opts).unsqueeze(1) * freqs.unsqueeze(0);
-    cos_ = mfq_tensor_backend::cos(angles).contiguous();
-    sin_ = mfq_tensor_backend::sin(angles).contiguous();
+    auto angles = ::tyloi::cuda::arange(positions, opts).unsqueeze(1) * freqs.unsqueeze(0);
+    cos_ = ::tyloi::cuda::cos(angles).contiguous();
+    sin_ = ::tyloi::cuda::sin(angles).contiguous();
     negative_sin_ = (-sin_).contiguous();
 }
 
@@ -334,13 +332,13 @@ Tensor TailRope::forward(Tensor x, Tensor positions, bool inverse) const {
         throw std::runtime_error("DeepSeek V4 RoPE expects contiguous [B,H,T,D>=64]");
     }
     return dsv4_tail_rope_cuda(
-        x, positions.contiguous().to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64),
+        x, positions.contiguous().to(::tyloi::kCUDA, ::tyloi::kInt64),
         cos_, inverse ? negative_sin_ : sin_, 64);
 }
 
 RotaryEmbedding::RotaryEmbedding(int64_t dimension, int64_t maximum, double base,
                                std::vector<int64_t> sections, bool interleaved,
-                               bool fused,mfq::ops::YarnScaling yarn)
+                               bool fused,tyloi::ops::YarnScaling yarn)
     : dimension_(dimension), maximum_(maximum), base_(base), sections_(std::move(sections)),
       interleaved_(interleaved),yarn_(yarn) {
     fused_ = fused && !yarn_.enabled();
@@ -361,13 +359,13 @@ RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const Tensor& valu
     auto& cached = prepared_[value.get_device()];
     if (!cached.frequencies.defined()) {
         Prepared next;
-        auto pair = tb::arange(pairs, value.options().dtype(tb::kInt64));
-        next.frequencies = tb::pow(tb::full({pairs}, base_, value.options().dtype(tb::kFloat32)),
-            -(pair.to(tb::kFloat32) * 2) / double(dimension_));
+        auto pair = ::tyloi::cuda::arange(pairs, value.options().dtype(::tyloi::kInt64));
+        next.frequencies = ::tyloi::cuda::pow(::tyloi::cuda::full({pairs}, base_, value.options().dtype(::tyloi::kFloat32)),
+            -(pair.to(::tyloi::kFloat32) * 2) / double(dimension_));
         if(yarn_.enabled()) {
             std::vector<float> frequencies(static_cast<std::size_t>(pairs));
-            for(int j=0;j<pairs;++j)frequencies[j]=float(mfq::cuda::yarn_frequency(yarn_, j,dimension_,base_));
-            next.frequencies=tb::tensor(frequencies).to(value.device());
+            for(int j=0;j<pairs;++j)frequencies[j]=float(tyloi::cuda::yarn_frequency(yarn_, j,dimension_,base_));
+            next.frequencies=::tyloi::cuda::tensor(frequencies).to(value.device());
         }
         std::vector<int32_t> selected(static_cast<size_t>(pairs), 0);
         for (int64_t j = 0; j < pairs; ++j) if (!sections_.empty()) {
@@ -376,7 +374,7 @@ RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const Tensor& valu
                 else if (j % 3 == 2 && j < sections_[2] * 3) selected[j] = 2;
             } else selected[j] = j < sections_[0] ? 0 : (j < sections_[0] + sections_[1] ? 1 : 2);
         }
-        next.axes = tb::tensor(selected).to(value.device());
+        next.axes = ::tyloi::cuda::tensor(selected).to(value.device());
         TYLOINFER_RUNTIME_CHECK(cudaStreamSynchronize(mfq_current_cuda_stream()) == cudaSuccess,
             "warm cached rotary parameters before CUDA graph capture");
         cached = std::move(next);
@@ -387,10 +385,10 @@ RotaryEmbedding::Prepared RotaryEmbedding::prepare_parameters(const Tensor& valu
 bool RotaryEmbedding::pool_normalized_into(const Tensor& index,const Tensor& weight,const Tensor& positions,
         const Tensor& cache_positions,const Tensor& output,int64_t pool,int64_t maximum,double eps) const {
     if(!fused_ || index.dim()!=3 || index.size(0)!=1 || index.size(2)>256 || index.size(2)<dimension_ ||
-        cache_positions.numel()>32 || (index.scalar_type()!=tb::kFloat16 && index.scalar_type()!=tb::kFloat32) ||
-        (positions.scalar_type()!=tb::kInt32 && positions.scalar_type()!=tb::kInt64))return false;
+        cache_positions.numel()>32 || (index.scalar_type()!=::tyloi::kFloat16 && index.scalar_type()!=::tyloi::kFloat32) ||
+        (positions.scalar_type()!=::tyloi::kInt32 && positions.scalar_type()!=::tyloi::kInt64))return false;
     const auto prepared=prepare_parameters(index);
-    qsa_pool_rotary_cache_cuda(index,weight.to(tb::kFloat32).contiguous(),positions.contiguous(),cache_positions,
+    qsa_pool_rotary_cache_cuda(index,weight.to(::tyloi::kFloat32).contiguous(),positions.contiguous(),cache_positions,
         prepared.frequencies,prepared.axes,output,pool,maximum,maximum_,eps);
     return true;
 }
@@ -401,9 +399,9 @@ Tensor RotaryEmbedding::forward_normalized(const Tensor& value, const Tensor& we
     TYLOINFER_RUNTIME_CHECK(fused_ && value.is_cuda() && value.dim() == 4 &&
         value.size(-1) >= dimension_, "normalized rotary requires fused [B,T,H,D] input");
     const auto prepared = prepare_parameters(value);
-    auto active_positions = positions.scalar_type() == tb::kInt32 || positions.scalar_type() == tb::kInt64
-        ? positions.contiguous() : positions.to(tb::kInt32).contiguous();
-    return rotary_normalized_cached_cuda(value, weight.to(tb::kFloat32).contiguous(), active_positions,
+    auto active_positions = positions.scalar_type() == ::tyloi::kInt32 || positions.scalar_type() == ::tyloi::kInt64
+        ? positions.contiguous() : positions.to(::tyloi::kInt32).contiguous();
+    return rotary_normalized_cached_cuda(value, weight.to(::tyloi::kFloat32).contiguous(), active_positions,
         prepared.frequencies, prepared.axes, maximum_, eps, key_cache, cache_positions,
         projected_value, value_cache);
 }
@@ -418,16 +416,16 @@ std::vector<Tensor> RotaryEmbedding::forward_normalized_grouped(
     for(size_t i=0;i<values.size();++i) {
         TYLOINFER_RUNTIME_CHECK(values[i].is_cuda() && values[i].dim()==4 && values[i].size(-1)>=dimension_,
             "normalized rotary group requires [B,T,H,D] inputs");
-        active_weights.push_back(weights[i].to(tb::kFloat32).contiguous());
+        active_weights.push_back(weights[i].to(::tyloi::kFloat32).contiguous());
     }
     const auto prepared=prepare_parameters(values[0]);
-    auto active_positions=positions.scalar_type()==tb::kInt32 || positions.scalar_type()==tb::kInt64
-        ? positions.contiguous():positions.to(tb::kInt32).contiguous();
+    auto active_positions=positions.scalar_type()==::tyloi::kInt32 || positions.scalar_type()==::tyloi::kInt64
+        ? positions.contiguous():positions.to(::tyloi::kInt32).contiguous();
     return rotary_normalized_grouped_cuda(values,active_weights,active_positions,prepared.frequencies,
         prepared.axes,maximum_,eps,cache_entry,key_cache,cache_positions,projected_value,value_cache);
 }
 
-mfq_tensor_backend::Tensor RotaryEmbedding::forward(const Tensor &value, const Tensor &positions) const {
+::tyloi::Tensor RotaryEmbedding::forward(const Tensor &value, const Tensor &positions) const {
     TYLOINFER_RUNTIME_CHECK(value.is_cuda() && value.dim() == 4 && value.size(-1) >= dimension_ &&
                           positions.is_cuda() && positions.device() == value.device() &&
                           positions.dim() >= 1 && positions.dim() <= 3 &&
@@ -438,59 +436,59 @@ mfq_tensor_backend::Tensor RotaryEmbedding::forward(const Tensor &value, const T
     const auto batches = positions.dim() < 3 ? 1 : positions.size(1);
     TYLOINFER_RUNTIME_CHECK(axes > 0 && (batches == 1 || batches == b),
                       "RoPE position batch mismatch");
-    auto input = value.scalar_type() == tb::kFloat32 ? value : value.to(tb::kFloat16);
+    auto input = value.scalar_type() == ::tyloi::kFloat32 ? value : value.to(::tyloi::kFloat16);
     if(fused_) {
         const auto prepared = prepare_parameters(value);
-        return rotary_embedding_cached_cuda(input.contiguous(),positions.to(tb::kInt32).contiguous(),
+        return rotary_embedding_cached_cuda(input.contiguous(),positions.to(::tyloi::kInt32).contiguous(),
             prepared.frequencies,prepared.axes,maximum_);
     }
-    auto f = input.to(tb::kFloat32);
-    auto pair = tb::arange(pairs, value.options().dtype(tb::kInt64));
-    auto frequencies = tb::pow(tb::full({pairs}, base_, f.options()),
-                               -(pair.to(tb::kFloat32) * 2) / double(dimension_));
+    auto f = input.to(::tyloi::kFloat32);
+    auto pair = ::tyloi::cuda::arange(pairs, value.options().dtype(::tyloi::kInt64));
+    auto frequencies = ::tyloi::cuda::pow(::tyloi::cuda::full({pairs}, base_, f.options()),
+                               -(pair.to(::tyloi::kFloat32) * 2) / double(dimension_));
     if(yarn_.enabled()) {
         frequencies=prepare_parameters(value).frequencies;
     }
-    auto axis_ids = tb::zeros({pairs}, pair.options());
+    auto axis_ids = ::tyloi::cuda::zeros({pairs}, pair.options());
     if (!sections_.empty()) {
         if (interleaved_) {
             auto remainder = pair.remainder(3);
             auto a1 = (remainder == 1) & (pair < sections_[1] * 3);
             auto a2 = (remainder == 2) & (pair < sections_[2] * 3);
-            axis_ids = tb::where(a1, tb::full_like(pair, 1),
-                                 tb::where(a2, tb::full_like(pair, 2), axis_ids));
+            axis_ids = ::tyloi::cuda::where(a1, ::tyloi::cuda::full_like(pair, 1),
+                                 ::tyloi::cuda::where(a2, ::tyloi::cuda::full_like(pair, 2), axis_ids));
         } else {
-            axis_ids = tb::where(pair < sections_[0], axis_ids,
-                                 tb::where(pair < sections_[0] + sections_[1],
-                                           tb::full_like(pair, 1), tb::full_like(pair, 2)));
+            axis_ids = ::tyloi::cuda::where(pair < sections_[0], axis_ids,
+                                 ::tyloi::cuda::where(pair < sections_[0] + sections_[1],
+                                           ::tyloi::cuda::full_like(pair, 1), ::tyloi::cuda::full_like(pair, 2)));
         }
-        axis_ids = tb::where(axis_ids < axes, axis_ids, tb::zeros_like(axis_ids));
+        axis_ids = ::tyloi::cuda::where(axis_ids < axes, axis_ids, ::tyloi::cuda::zeros_like(axis_ids));
     }
     Tensor cosine, sine;
     for (int64_t axis = 0; axis < std::min<int64_t>(axes, 3); ++axis) {
         auto pos = (positions.dim() == 1 ? positions : positions.select(0, axis))
                        .reshape({batches, t})
-                       .to(tb::kInt32)
+                       .to(::tyloi::kInt32)
                        .clamp(0, maximum_ - 1)
-                       .to(tb::kFloat32);
+                       .to(::tyloi::kFloat32);
         auto angles = pos.unsqueeze(-1) * frequencies;
-        auto ca = tb::cos(angles), sa = tb::sin(angles);
+        auto ca = ::tyloi::cuda::cos(angles), sa = ::tyloi::cuda::sin(angles);
         if (axis == 0) {
             cosine = ca;
             sine = sa;
         } else {
-            cosine = tb::where(axis_ids == axis, ca, cosine);
-            sine = tb::where(axis_ids == axis, sa, sine);
+            cosine = ::tyloi::cuda::where(axis_ids == axis, ca, cosine);
+            sine = ::tyloi::cuda::where(axis_ids == axis, sa, sine);
         }
     }
     cosine = cosine.unsqueeze(1);
     sine = sine.unsqueeze(1);
-    if(yarn_.enabled()) { cosine=cosine*mfq::cuda::yarn_attention_factor(yarn_);sine=sine*mfq::cuda::yarn_attention_factor(yarn_); }
+    if(yarn_.enabled()) { cosine=cosine*tyloi::cuda::yarn_attention_factor(yarn_);sine=sine*tyloi::cuda::yarn_attention_factor(yarn_); }
     auto first = f.narrow(-1, 0, pairs), second = f.narrow(-1, pairs, pairs);
-    return tb::cat({first * cosine - second * sine, second * cosine + first * sine,
+    return ::tyloi::cuda::cat({first * cosine - second * sine, second * cosine + first * sine,
                     f.narrow(-1, dimension_, f.size(-1) - dimension_)},
                    -1)
         .to(input.scalar_type());
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

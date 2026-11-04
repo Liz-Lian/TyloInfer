@@ -16,16 +16,16 @@
 
 struct MfqMultimodalInput;
 
-namespace mfq::models {
+namespace tyloi::models {
 
 class CausalModel {
 public:
     virtual ~CausalModel() = default;
     virtual Info info() const = 0;
     virtual MfqModelCapabilities capabilities() const = 0;
-    virtual mfq::engine::Metrics metrics() const = 0;
+    virtual tyloi::engine::Metrics metrics() const = 0;
     virtual std::unique_ptr<State> make_state() const = 0;
-    virtual mfq::StepSequence<Prepared> prepare(const std::vector<std::int64_t>& tokens,
+    virtual tyloi::StepSequence<Prepared> prepare(const std::vector<std::int64_t>& tokens,
         const MfqMultimodalInput& media, State& state) const = 0;
     virtual Tensor embedding(Tensor ids, int primary = 0) const = 0;
     virtual Tensor normalize(Tensor hidden, std::int64_t batch, std::int64_t tokens) const = 0;
@@ -34,4 +34,4 @@ public:
     virtual Tensor forward(Input input, State& state, const ForwardOptions& options = {}) const = 0;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

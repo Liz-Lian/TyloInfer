@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 inline constexpr int64_t kDeadToken = -1;
 struct EngramHashSnapshot {
     int batch = 0;
@@ -243,4 +243,4 @@ class EngramHashState {
     std::int64_t speculative_position_ = -1;
 };
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

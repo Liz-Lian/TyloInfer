@@ -5,7 +5,7 @@
 #include "../common/causal_metadata.h"
 #include <utility>
 
-namespace mfq::models::glm_dsa {
+namespace tyloi::models::glm_dsa {
 
 inline void load_config(std::string_view definition, Config& c, CausalLmMetadata& m) {
     c = Config::from_json(definition);
@@ -112,4 +112,4 @@ void load_layer_weights(Block& b, Loader& ops, const Config& c, int i, const std
 }
 
 
-} // namespace mfq::models::glm_dsa
+} // namespace tyloi::models::glm_dsa

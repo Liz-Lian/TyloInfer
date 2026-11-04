@@ -9,7 +9,7 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 // A copyable snapshot is only needed for paused recurrent decode rows. KV state
 // remains owned by the aggregate state and is copied into its stable slot in place.
@@ -73,7 +73,7 @@ class Batch {
     void finish_decode(std::int64_t cache_position);
     void recover(const std::vector<RequestState *> &requests);
 
-    mfq_tensor_backend::Tensor logits_from_last_hidden(mfq_tensor_backend::Tensor hidden,
+    ::tyloi::Tensor logits_from_last_hidden(::tyloi::Tensor hidden,
                                                       const Executor::Mode&);
     std::vector<const void *> decode_state_addresses();
     BatchState capture_recurrent_slots(const std::vector<std::int32_t> &slots) const;
@@ -105,4 +105,4 @@ class Batch {
     std::vector<PagedKv::Sequence> paged_slots_;
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

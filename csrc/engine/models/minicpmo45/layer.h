@@ -5,8 +5,8 @@
 
 #include <array>
 
-namespace mfq::cuda::minicpmo45 {
-using Tensor = mfq_tensor_backend::Tensor;
+namespace tyloi::cuda::minicpmo45 {
+using Tensor = ::tyloi::Tensor;
 
 struct Layer {
     FullAttention attention;
@@ -17,4 +17,4 @@ struct Layer {
 
     std::array<Task, 2> tasks() const;
 };
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

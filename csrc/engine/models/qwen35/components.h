@@ -14,21 +14,21 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cuda::weight_loader {
+namespace tyloi::cuda::weight_loader {
 struct Loader;
 }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class Collectives;
 class Executor;
 }
 
 struct LayerPlacementConfig;
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 struct Components {
-    mfq::ModelGraph graph;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
     std::optional<grid_vision_runtime::CudaGridVisionPromptComponent>
         grid_vision;
@@ -46,11 +46,11 @@ struct Components {
 
     static constexpr bool streamed_kv() noexcept { return false; }
 
-    mfq::engine::Metrics metrics() const;
+    tyloi::engine::Metrics metrics() const;
 
-    void describe(mfq::engine::EngineInfo& info) const;
+    void describe(tyloi::engine::EngineInfo& info) const;
 
-    mfq::StepSequence<PreparedPrompt> prepare(
+    tyloi::StepSequence<PreparedPrompt> prepare(
         Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
         Projector projector, Collectives& collectives,
@@ -62,9 +62,9 @@ struct Components {
         const std::vector<int64_t>& tokens, const MfqMultimodalInput& media);
 
     template <class T>
-    mfq::engine::ControlResult control(const T&) {
+    tyloi::engine::ControlResult control(const T&) {
         throw std::invalid_argument("model has no duplex component");
     }
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

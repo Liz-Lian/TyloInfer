@@ -2,7 +2,7 @@
 #include "engine/backends/cpu/native/features.h"
 #include <cstring>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 namespace detail {
 void host_memory_copy_avx2(void*,const void*,std::size_t) noexcept;
 void host_memory_copy_finish_avx2() noexcept;
@@ -22,4 +22,4 @@ HostMemoryCopyBatch::HostMemoryCopyBatch(bool streaming) noexcept:copy_(copy_cac
     (void)streaming;
 #endif
 }
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

@@ -33,7 +33,7 @@ using namespace nvcuda;
 
 namespace {
 
-using namespace mfq::cuda::packed_nvq;
+using namespace tyloi::cuda::packed_nvq;
 
 template <int FORMAT>
 __global__ void nvq_dequant_kernel(
@@ -3725,12 +3725,12 @@ __global__ void __launch_bounds__(128) nepq_moe_grouped_tile_kernel(
 }
 
 void check_nepq_common(
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & table_pool,
-    const mfq_tensor_backend::Tensor & bank_ids,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & table_pool,
+    const ::tyloi::Tensor & bank_ids,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format) {
@@ -3744,14 +3744,14 @@ void check_nepq_common(
         (format == kNpq0S ? 2 : 3);
     TYLOINFER_RUNTIME_CHECK(sub_bits == expected_sub_bits, "NEPQ state width mismatch");
     for (const auto * tensor : {&indices, &aux, &sub_scale, &bank_ids}) {
-        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->scalar_type() == mfq_tensor_backend::kUInt8 &&
+        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->scalar_type() == ::tyloi::kUInt8 &&
                     tensor->is_contiguous(),
                     "NEPQ packed streams must be CUDA contiguous uint8");
     }
-    TYLOINFER_RUNTIME_CHECK(neuron_scale.is_cuda() && neuron_scale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(neuron_scale.is_cuda() && neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
                 neuron_scale.is_contiguous() && neuron_scale.dim() == 1,
                 "NEPQ neuron_scale must be CUDA contiguous float32 rank-1");
-    TYLOINFER_RUNTIME_CHECK(table_pool.is_cuda() && table_pool.scalar_type() == mfq_tensor_backend::kInt8 &&
+    TYLOINFER_RUNTIME_CHECK(table_pool.is_cuda() && table_pool.scalar_type() == ::tyloi::kInt8 &&
                 table_pool.is_contiguous() && table_pool.dim() == 2 &&
                 table_pool.size(0) >= 1 && table_pool.size(0) <= 256,
                 "NEPQ table pool must be CUDA contiguous int8 [1..256,stride]");
@@ -3779,11 +3779,11 @@ void check_nepq_common(
 }
 
 void check_common(
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & codebook,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -3798,12 +3798,12 @@ void check_common(
                 (sign_mode == 1 && (format == kNvq2 || format == kNvq2Exec)),
                 "index-parity sign mode is valid only for NVQ2");
     for (const auto * tensor : {&indices, &aux, &sub_scale}) {
-        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->scalar_type() == mfq_tensor_backend::kUInt8 && tensor->is_contiguous(),
+        TYLOINFER_RUNTIME_CHECK(tensor->is_cuda() && tensor->scalar_type() == ::tyloi::kUInt8 && tensor->is_contiguous(),
                     "NVQ packed streams must be CUDA contiguous uint8");
     }
-    TYLOINFER_RUNTIME_CHECK(neuron_scale.is_cuda() && neuron_scale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(neuron_scale.is_cuda() && neuron_scale.scalar_type() == ::tyloi::kFloat32 &&
                 neuron_scale.is_contiguous(), "NVQ neuron_scale must be CUDA contiguous float32");
-    TYLOINFER_RUNTIME_CHECK(codebook.is_cuda() && codebook.scalar_type() == mfq_tensor_backend::kInt8 && codebook.is_contiguous(),
+    TYLOINFER_RUNTIME_CHECK(codebook.is_cuda() && codebook.scalar_type() == ::tyloi::kInt8 && codebook.is_contiguous(),
                 "NVQ codebook must be CUDA contiguous int8");
     if (format == kNvq1L) {
         TYLOINFER_RUNTIME_CHECK(codebook.dim() == 2 && codebook.size(0) == 2048 && codebook.size(1) == 8,
@@ -3958,28 +3958,28 @@ void launch_nepq_by_format(int format, Launch && launch) {
 }
 
 int aligned_group_rows_per_block(int format) {
-    const char * value = mfq::cuda::env_lookup(
+    const char * value = tyloi::cuda::env_lookup(
         format == kNvq2JscXLGroupExec
             ? "TYLOINFER_NVQ_GROUP_ROWS_E8"
             : "TYLOINFER_NVQ_GROUP_ROWS_D4");
-    if (value == nullptr) value = mfq::cuda::env_lookup("TYLOINFER_NVQ_GROUP_ROWS");
+    if (value == nullptr) value = tyloi::cuda::env_lookup("TYLOINFER_NVQ_GROUP_ROWS");
     if (value != nullptr && value[0] == '4') return 4;
     if (value != nullptr && value[0] == '2') return 2;
     return 1;
 }
 
 int aligned_group_row_tile(int format) {
-    const char * value = mfq::cuda::env_lookup(
+    const char * value = tyloi::cuda::env_lookup(
         format == kNvq2JscXLGroupExec
             ? "TYLOINFER_NVQ_ROW_TILE_E8"
             : "TYLOINFER_NVQ_ROW_TILE_D4");
-    if (value == nullptr) value = mfq::cuda::env_lookup("TYLOINFER_NVQ_ROW_TILE");
+    if (value == nullptr) value = tyloi::cuda::env_lookup("TYLOINFER_NVQ_ROW_TILE");
     return value == nullptr ? 0 : std::atoi(value);
 }
 
 bool aligned_group_e8_down_w32r1_enabled() {
     static const bool value = [] {
-        const char * text = mfq::cuda::env_lookup("TYLOINFER_NVQ_E8_STAGE_DOWN_W32R1");
+        const char * text = tyloi::cuda::env_lookup("TYLOINFER_NVQ_E8_STAGE_DOWN_W32R1");
         return text == nullptr || text[0] != '0';
     }();
     return value;
@@ -4160,14 +4160,14 @@ void launch_aligned_group_multi2_m1(
 template <int NWARPS>
 void launch_m1_vec8_by_format(
     int format,
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & codebook,
-    const mfq_tensor_backend::Tensor & qx,
-    const mfq_tensor_backend::Tensor & xscale,
-    mfq_tensor_backend::Tensor & output,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & codebook,
+    const ::tyloi::Tensor & qx,
+    const ::tyloi::Tensor & xscale,
+    ::tyloi::Tensor & output,
     int N,
     int ng,
     int nvec,
@@ -4271,14 +4271,14 @@ void launch_m1_vec8_by_format(
 template <int NWARPS, int MAX_M>
 void launch_batch_vec8_by_format(
     int format,
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & codebook,
-    const mfq_tensor_backend::Tensor & qx,
-    const mfq_tensor_backend::Tensor & xscale,
-    mfq_tensor_backend::Tensor & output,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & codebook,
+    const ::tyloi::Tensor & qx,
+    const ::tyloi::Tensor & xscale,
+    ::tyloi::Tensor & output,
     int M,
     int N,
     int ng,
@@ -4299,14 +4299,14 @@ void launch_batch_vec8_by_format(
 }
 
 bool launch_group_vec8(
-    int format, const mfq_tensor_backend::Tensor& indices,
-    const mfq_tensor_backend::Tensor& aux, const mfq_tensor_backend::Tensor& sub_scale,
-    const mfq_tensor_backend::Tensor& neuron_scale, const mfq_tensor_backend::Tensor& codebook,
-    const mfq_tensor_backend::Tensor& qx, const mfq_tensor_backend::Tensor& xscale,
-    mfq_tensor_backend::Tensor& output,
+    int format, const ::tyloi::Tensor& indices,
+    const ::tyloi::Tensor& aux, const ::tyloi::Tensor& sub_scale,
+    const ::tyloi::Tensor& neuron_scale, const ::tyloi::Tensor& codebook,
+    const ::tyloi::Tensor& qx, const ::tyloi::Tensor& xscale,
+    ::tyloi::Tensor& output,
     int M, int N, int ng, int nvec, int nsign, int sub_bits, int sign_mode, cudaStream_t stream) {
     if (M > 4 || ng > 128 || N < 128 || N > 4096 ||
-        (sub_bits != 4 && format != kNvq1L) || mfq::cuda::env_lookup("TYLOINFER_NVQ_DENSE_REFERENCE")) return false;
+        (sub_bits != 4 && format != kNvq1L) || tyloi::cuda::env_lookup("TYLOINFER_NVQ_DENSE_REFERENCE")) return false;
     if (M == 1 && ng > 32 &&
         (format == kNvq2Jsc || format == kNvq3Jsc || format == kNvq3JscL)) return false;
     const NvqDeviceWeight weight{indices.data_ptr<uint8_t>(), indices.numel(),
@@ -4334,14 +4334,14 @@ bool launch_group_vec8(
 
 void launch_selected_batch_vec8(
     int format,
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & codebook,
-    const mfq_tensor_backend::Tensor & qx,
-    const mfq_tensor_backend::Tensor & xscale,
-    mfq_tensor_backend::Tensor & output,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & codebook,
+    const ::tyloi::Tensor & qx,
+    const ::tyloi::Tensor & xscale,
+    ::tyloi::Tensor & output,
     int M,
     int N,
     int ng,
@@ -4432,14 +4432,14 @@ void launch_selected_batch_vec8(
 
 void launch_selected_m1_vec8(
     int format,
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & codebook,
-    const mfq_tensor_backend::Tensor & qx,
-    const mfq_tensor_backend::Tensor & xscale,
-    mfq_tensor_backend::Tensor & output,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & codebook,
+    const ::tyloi::Tensor & qx,
+    const ::tyloi::Tensor & xscale,
+    ::tyloi::Tensor & output,
     int N,
     int ng,
     int nvec,
@@ -4465,11 +4465,11 @@ void launch_selected_m1_vec8(
 }
 
 NvqDeviceWeight make_device_weight(
-    const mfq_tensor_backend::Tensor & indices,
-    const mfq_tensor_backend::Tensor & aux,
-    const mfq_tensor_backend::Tensor & sub_scale,
-    const mfq_tensor_backend::Tensor & neuron_scale,
-    const mfq_tensor_backend::Tensor & codebook,
+    const ::tyloi::Tensor & indices,
+    const ::tyloi::Tensor & aux,
+    const ::tyloi::Tensor & sub_scale,
+    const ::tyloi::Tensor & neuron_scale,
+    const ::tyloi::Tensor & codebook,
     int neuron_len,
     int gs,
     int sub_bits,
@@ -4492,9 +4492,9 @@ template <int FORMAT, int NWARPS, int MAX_M, bool FAST_NVQ2_S4 = false>
 void launch_multi2_vec8(
     const NvqDeviceWeight & first,
     const NvqDeviceWeight & second,
-    const mfq_tensor_backend::Tensor & qx,
-    const mfq_tensor_backend::Tensor & xscale,
-    mfq_tensor_backend::Tensor & output,
+    const ::tyloi::Tensor & qx,
+    const ::tyloi::Tensor & xscale,
+    ::tyloi::Tensor & output,
     int M,
     cudaStream_t stream) {
     nvq_gemv_multi2_vec8_kernel<FORMAT, NWARPS, MAX_M, FAST_NVQ2_S4>
@@ -4507,9 +4507,9 @@ void launch_selected_multi2_vec8(
     int format,
     const NvqDeviceWeight & first,
     const NvqDeviceWeight & second,
-    const mfq_tensor_backend::Tensor & qx,
-    const mfq_tensor_backend::Tensor & xscale,
-    mfq_tensor_backend::Tensor & output,
+    const ::tyloi::Tensor & qx,
+    const ::tyloi::Tensor & xscale,
+    ::tyloi::Tensor & output,
     int M,
     cudaStream_t stream) {
 #define NVQ_MULTI2(F, NW, MAX_M) \
@@ -4628,13 +4628,13 @@ void launch_selected_multi2_vec8(
 
 }  // namespace
 
-mfq_tensor_backend::Tensor nepq_dequant_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids,
+::tyloi::Tensor nepq_dequant_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format) {
@@ -4649,7 +4649,7 @@ mfq_tensor_backend::Tensor nepq_dequant_cuda(
     const int nsuper = (ng + kNepqGroupsPerSupergroup - 1) /
         kNepqGroupsPerSupergroup;
     const int table_stride = static_cast<int>(table_pool.size(1));
-    auto output = mfq_tensor_backend::empty({N, K}, neuron_scale.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty({N, K}, neuron_scale.options().dtype(::tyloi::kFloat16));
     const int block = 256;
     const int grid = static_cast<int>(std::min<int64_t>(
         (static_cast<int64_t>(N) * nsign + block - 1) / block, 65535));
@@ -4670,23 +4670,23 @@ mfq_tensor_backend::Tensor nepq_dequant_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nepq_gemv_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nepq_gemv_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                 x.is_contiguous() && x.dim() == 2,
                 "NEPQ x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
@@ -4696,10 +4696,10 @@ mfq_tensor_backend::Tensor nepq_gemv_ws_cuda(
     const int K_pad = ng * kGroupSize;
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K && M >= 1 && M <= 16,
                 "NEPQ GEMV input must be [M,K] with M in [1,16]");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 &&
                 qx.is_contiguous() && qx.numel() >= static_cast<int64_t>(M) * K_pad,
                 "NEPQ qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 &&
                 xscale.is_contiguous() && xscale.numel() >= static_cast<int64_t>(M) * ng,
                 "NEPQ xscale workspace mismatch");
     const int nvec = K / 8;
@@ -4707,7 +4707,7 @@ mfq_tensor_backend::Tensor nepq_gemv_ws_cuda(
     const int nsuper = (ng + kNepqGroupsPerSupergroup - 1) /
         kNepqGroupsPerSupergroup;
     const int table_stride = static_cast<int>(table_pool.size(1));
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(M, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()),
@@ -4756,23 +4756,23 @@ mfq_tensor_backend::Tensor nepq_gemv_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nepq_mmq_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nepq_mmq_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                 x.is_contiguous() && x.dim() == 2,
                 "NEPQ x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
@@ -4782,10 +4782,10 @@ mfq_tensor_backend::Tensor nepq_mmq_ws_cuda(
     const int K_pad = ng * kGroupSize;
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K && M >= 4 && M <= 64,
                 "NEPQ MMQ input must be [M,K] with M in [4,64]");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 &&
                 qx.is_contiguous() && qx.numel() >= static_cast<int64_t>(M) * K_pad,
                 "NEPQ qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 &&
                 xscale.is_contiguous() && xscale.numel() >= static_cast<int64_t>(M) * ng,
                 "NEPQ xscale workspace mismatch");
     const int nvec = K / 8;
@@ -4793,7 +4793,7 @@ mfq_tensor_backend::Tensor nepq_mmq_ws_cuda(
     const int nsuper = (ng + kNepqGroupsPerSupergroup - 1) /
         kNepqGroupsPerSupergroup;
     const int table_stride = static_cast<int>(table_pool.size(1));
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(M, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()),
@@ -4832,21 +4832,21 @@ mfq_tensor_backend::Tensor nepq_mmq_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nepq_gemm_f16_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nepq_gemm_f16_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                 x.is_contiguous() && x.dim() == 2,
                 "NEPQ x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
@@ -4860,7 +4860,7 @@ mfq_tensor_backend::Tensor nepq_gemm_f16_cuda(
     const int nsuper = (ng + kNepqGroupsPerSupergroup - 1) /
         kNepqGroupsPerSupergroup;
     const int table_stride = static_cast<int>(table_pool.size(1));
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     const dim3 block(32, 8);
 #define NEPQ_GEMM_LAUNCH(MTILES_VALUE, NEED_CHECK_VALUE)                          \
@@ -4900,28 +4900,28 @@ mfq_tensor_backend::Tensor nepq_gemm_f16_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids,
-    mfq_tensor_backend::Tensor grouped_table_pool,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor ids,
+::tyloi::Tensor nepq_moe_grouped_matmul_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids,
+    ::tyloi::Tensor grouped_table_pool,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor ids,
     int64_t n_experts,
     int64_t out_per_expert,
     int64_t neuron_len,
     int64_t sub_bits,
     int64_t format,
-    mfq_tensor_backend::Tensor out,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale,
-    mfq_tensor_backend::Tensor ids_dst,
-    mfq_tensor_backend::Tensor expert_bounds,
-    mfq_tensor_backend::Tensor tile_bounds,
-    mfq_tensor_backend::Tensor tile_experts) {
+    ::tyloi::Tensor out,
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale,
+    ::tyloi::Tensor ids_dst,
+    ::tyloi::Tensor expert_bounds,
+    ::tyloi::Tensor tile_bounds,
+    ::tyloi::Tensor tile_experts) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
@@ -4930,7 +4930,7 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_ws_cuda(
         : static_cast<int>(table_pool.size(1));
     TYLOINFER_RUNTIME_CHECK(
         grouped_table_pool.is_cuda() && grouped_table_pool.is_contiguous() &&
-        grouped_table_pool.scalar_type() == mfq_tensor_backend::kInt8 &&
+        grouped_table_pool.scalar_type() == ::tyloi::kInt8 &&
         grouped_table_pool.dim() == 2 &&
         grouped_table_pool.size(0) == table_pool.size(0) &&
         grouped_table_pool.size(1) == expected_grouped_stride,
@@ -4941,10 +4941,10 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_ws_cuda(
                 neuron_scale.numel() == n_experts * out_per_expert,
                 "NEPQ expert shape does not match the flattened row count");
     TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.is_contiguous() &&
-                ids.scalar_type() == mfq_tensor_backend::kInt32 && ids.dim() == 2,
+                ids.scalar_type() == ::tyloi::kInt32 && ids.dim() == 2,
                 "NEPQ route IDs must be CUDA contiguous int32 [T,R]");
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
-                x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                x.scalar_type() == ::tyloi::kFloat16 &&
                 (x.dim() == 2 || x.dim() == 3) && x.size(-1) == neuron_len,
                 "NEPQ routed input must be CUDA contiguous fp16 [T,K] or [T,R,K]");
     const int tokens = static_cast<int>(ids.size(0));
@@ -4956,7 +4956,7 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_ws_cuda(
                 (routed_input && x.size(0) == tokens && x.size(1) == routes),
                 "NEPQ input leading dimensions do not match routes");
     TYLOINFER_RUNTIME_CHECK(out.is_cuda() && out.is_contiguous() &&
-                out.scalar_type() == mfq_tensor_backend::kFloat16 && out.dim() == 3 &&
+                out.scalar_type() == ::tyloi::kFloat16 && out.dim() == 3 &&
                 out.size(0) == tokens && out.size(1) == routes &&
                 out.size(2) == out_per_expert,
                 "NEPQ output must be CUDA contiguous fp16 [T,R,O]");
@@ -4966,11 +4966,11 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_ws_cuda(
     const int K_pad = ng * kGroupSize;
     const int input_rows = routed_input ? pairs : tokens;
     TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.is_contiguous() &&
-                qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.dim() == 2 &&
+                qx.scalar_type() == ::tyloi::kInt8 && qx.dim() == 2 &&
                 qx.size(0) >= input_rows && qx.size(1) >= K_pad,
                 "NEPQ routed qx workspace mismatch");
     TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.is_contiguous() &&
-                xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.dim() == 2 &&
+                xscale.scalar_type() == ::tyloi::kFloat32 && xscale.dim() == 2 &&
                 xscale.size(0) >= input_rows && xscale.size(1) >= ng,
                 "NEPQ routed xscale workspace mismatch");
     const int nvec = K / 8;
@@ -5012,18 +5012,18 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_ws_cuda(
 #undef NEPQ_MOE_SMALL_LAUNCH
     } else {
         TYLOINFER_RUNTIME_CHECK(ids_dst.is_cuda() && ids_dst.is_contiguous() &&
-                    ids_dst.scalar_type() == mfq_tensor_backend::kInt32 && ids_dst.numel() >= pairs,
+                    ids_dst.scalar_type() == ::tyloi::kInt32 && ids_dst.numel() >= pairs,
                     "NEPQ compact route map is missing");
         TYLOINFER_RUNTIME_CHECK(expert_bounds.is_cuda() && expert_bounds.is_contiguous() &&
-                    expert_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    expert_bounds.scalar_type() == ::tyloi::kInt32 &&
                     expert_bounds.numel() >= n_experts + 1,
                     "NEPQ expert bounds are missing");
         TYLOINFER_RUNTIME_CHECK(tile_bounds.is_cuda() && tile_bounds.is_contiguous() &&
-                    tile_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    tile_bounds.scalar_type() == ::tyloi::kInt32 &&
                     tile_bounds.numel() >= n_experts + 1,
                     "NEPQ tile bounds are missing");
         TYLOINFER_RUNTIME_CHECK(tile_experts.is_cuda() && tile_experts.is_contiguous() &&
-                    tile_experts.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    tile_experts.scalar_type() == ::tyloi::kInt32 &&
                     tile_experts.numel() >= pairs,
                     "NEPQ tile expert map is missing");
         constexpr int route_tile = 8;
@@ -5136,7 +5136,7 @@ __device__ __forceinline__ void nvq_moe_load_activation_tile(
             const __half * source =
                 x + static_cast<int64_t>(source_row) * K + k;
             if constexpr (ASYNC_COPY) {
-                mfq::cuda_detail::copy_16_async(destination, source);
+                tyloi::cuda_detail::copy_16_async(destination, source);
             } else {
                 *reinterpret_cast<int4 *>(destination) =
                     *reinterpret_cast<const int4 *>(source);
@@ -5232,7 +5232,7 @@ __device__ __forceinline__ void nvq_moe_grouped_f16_task(
             nvq_moe_load_activation_tile<
                 true, BM, GROUPS_PER_CHUNK, THREAD_WARPS>(
                 x, source_rows, activation_tile, k_base, K, tid);
-            mfq::cuda_detail::copy_async_commit();
+            tyloi::cuda_detail::copy_async_commit();
         }
         constexpr int kWeightStates = BN * GROUPS_PER_CHUNK;
         // BM256 doubles the activation readers. Keep both warp teams useful
@@ -5357,7 +5357,7 @@ __device__ __forceinline__ void nvq_moe_grouped_f16_task(
         }
 
         if constexpr (ASYNC_ACTIVATION) {
-            mfq::cuda_detail::copy_async_wait();
+            tyloi::cuda_detail::copy_async_wait();
         } else {
             nvq_moe_load_activation_tile<
                 false, BM, GROUPS_PER_CHUNK, THREAD_WARPS>(
@@ -5874,19 +5874,19 @@ __global__ void __launch_bounds__(256, 1) nepq_moe_grouped_f16_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_f16_cuda(
-    mfq_tensor_backend::Tensor indices, mfq_tensor_backend::Tensor aux, mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale, mfq_tensor_backend::Tensor codebook, mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor expert_local, int64_t n_experts, int64_t pool_experts,
+::tyloi::Tensor nvq_moe_grouped_matmul_pool_f16_cuda(
+    ::tyloi::Tensor indices, ::tyloi::Tensor aux, ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor codebook, ::tyloi::Tensor x,
+    ::tyloi::Tensor expert_local, int64_t n_experts, int64_t pool_experts,
     int64_t out_per_expert, int64_t neuron_len, int64_t gs,
     int64_t sub_bits, int64_t format, int64_t sign_mode,
-    mfq_tensor_backend::Tensor out, mfq_tensor_backend::Tensor ids_dst, mfq_tensor_backend::Tensor expert_bounds,
-    mfq_tensor_backend::Tensor tile_bounds, mfq_tensor_backend::Tensor tile_experts) {
+    ::tyloi::Tensor out, ::tyloi::Tensor ids_dst, ::tyloi::Tensor expert_bounds,
+    ::tyloi::Tensor tile_bounds, ::tyloi::Tensor tile_experts) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode,true);
     TYLOINFER_RUNTIME_CHECK(gs == kGroupSize, "NVQ routed FP16 requires gs24");
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
-                x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                x.scalar_type() == ::tyloi::kFloat16 &&
                 (x.dim() == 2 || x.dim() == 3) &&
                 x.size(-1) == neuron_len,
                 "NVQ routed FP16 input shape mismatch");
@@ -5927,22 +5927,22 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_f16_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
-    mfq_tensor_backend::Tensor weight_ptrs,
-    mfq_tensor_backend::Tensor weight_sizes,
-    mfq_tensor_backend::Tensor pool_params,
-    mfq_tensor_backend::Tensor expert_pool,
-    mfq_tensor_backend::Tensor expert_local,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
+    ::tyloi::Tensor weight_ptrs,
+    ::tyloi::Tensor weight_sizes,
+    ::tyloi::Tensor pool_params,
+    ::tyloi::Tensor expert_pool,
+    ::tyloi::Tensor expert_local,
+    ::tyloi::Tensor x,
     int64_t n_experts,
     int64_t out_per_expert,
     int64_t neuron_len,
     int64_t route_tile_m,
-    mfq_tensor_backend::Tensor out,
-    mfq_tensor_backend::Tensor ids_dst,
-    mfq_tensor_backend::Tensor expert_bounds,
-    mfq_tensor_backend::Tensor tile_bounds,
-    mfq_tensor_backend::Tensor tile_experts,
+    ::tyloi::Tensor out,
+    ::tyloi::Tensor ids_dst,
+    ::tyloi::Tensor expert_bounds,
+    ::tyloi::Tensor tile_bounds,
+    ::tyloi::Tensor tile_experts,
     int64_t format_group,
     bool masked_experts) {
     TYLOINFER_RUNTIME_CHECK(
@@ -5961,42 +5961,42 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
         "NVQ heterogeneous FP16 format group is invalid");
     TYLOINFER_RUNTIME_CHECK(
         weight_ptrs.is_cuda() && weight_ptrs.is_contiguous() &&
-            weight_ptrs.scalar_type() == mfq_tensor_backend::kInt64 &&
+            weight_ptrs.scalar_type() == ::tyloi::kInt64 &&
             weight_ptrs.dim() == 2 && weight_ptrs.size(0) > 0 &&
             weight_ptrs.size(1) == 5,
         "NVQ heterogeneous weight pointers must be CUDA int64 [pools,5]");
     const int pools = static_cast<int>(weight_ptrs.size(0));
     TYLOINFER_RUNTIME_CHECK(
         weight_sizes.is_cuda() && weight_sizes.is_contiguous() &&
-            weight_sizes.scalar_type() == mfq_tensor_backend::kInt64 &&
+            weight_sizes.scalar_type() == ::tyloi::kInt64 &&
             weight_sizes.dim() == 2 && weight_sizes.size(0) == pools &&
             weight_sizes.size(1) == 3,
         "NVQ heterogeneous weight sizes must be CUDA int64 [pools,3]");
     TYLOINFER_RUNTIME_CHECK(
         pool_params.is_cuda() && pool_params.is_contiguous() &&
-            pool_params.scalar_type() == mfq_tensor_backend::kInt32 &&
+            pool_params.scalar_type() == ::tyloi::kInt32 &&
             pool_params.dim() == 2 && pool_params.size(0) == pools &&
             pool_params.size(1) == 7,
         "NVQ heterogeneous pool parameters must be CUDA int32 [pools,7]");
     TYLOINFER_RUNTIME_CHECK(
         expert_pool.is_cuda() && expert_pool.is_contiguous() &&
-            expert_pool.scalar_type() == mfq_tensor_backend::kInt32 &&
+            expert_pool.scalar_type() == ::tyloi::kInt32 &&
             expert_pool.numel() == n_experts,
         "NVQ heterogeneous expert-pool map must be CUDA int32 [experts]");
     TYLOINFER_RUNTIME_CHECK(
         expert_local.is_cuda() && expert_local.is_contiguous() &&
-            expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
+            expert_local.scalar_type() == ::tyloi::kInt32 &&
             expert_local.numel() == n_experts,
         "NVQ heterogeneous expert-local map must be CUDA int32 [experts]");
     TYLOINFER_RUNTIME_CHECK(
         x.is_cuda() && x.is_contiguous() &&
-            x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            x.scalar_type() == ::tyloi::kFloat16 &&
             (x.dim() == 2 || x.dim() == 3) &&
             x.size(-1) == neuron_len,
         "NVQ heterogeneous FP16 input shape mismatch");
     TYLOINFER_RUNTIME_CHECK(
         out.is_cuda() && out.is_contiguous() &&
-            out.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            out.scalar_type() == ::tyloi::kFloat16 &&
             out.dim() == 3 && out.size(2) == out_per_expert,
         "NVQ heterogeneous output must be CUDA FP16 [tokens,routes,out]");
     const int tokens = static_cast<int>(out.size(0));
@@ -6010,22 +6010,22 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
         "NVQ heterogeneous input leading dimensions do not match output");
     TYLOINFER_RUNTIME_CHECK(
         ids_dst.is_cuda() && ids_dst.is_contiguous() &&
-            ids_dst.scalar_type() == mfq_tensor_backend::kInt32 &&
+            ids_dst.scalar_type() == ::tyloi::kInt32 &&
             ids_dst.numel() >= pairs,
         "NVQ heterogeneous compact route map is missing");
     TYLOINFER_RUNTIME_CHECK(
         expert_bounds.is_cuda() && expert_bounds.is_contiguous() &&
-            expert_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+            expert_bounds.scalar_type() == ::tyloi::kInt32 &&
             expert_bounds.numel() >= n_experts + 1,
         "NVQ heterogeneous expert bounds are missing");
     TYLOINFER_RUNTIME_CHECK(
         tile_bounds.is_cuda() && tile_bounds.is_contiguous() &&
-            tile_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+            tile_bounds.scalar_type() == ::tyloi::kInt32 &&
             tile_bounds.numel() >= n_experts + 1,
         "NVQ heterogeneous tile bounds are missing");
     TYLOINFER_RUNTIME_CHECK(
         tile_experts.is_cuda() && tile_experts.is_contiguous() &&
-            tile_experts.scalar_type() == mfq_tensor_backend::kInt32 &&
+            tile_experts.scalar_type() == ::tyloi::kInt32 &&
             tile_experts.numel() >= pairs,
         "NVQ heterogeneous tile expert map is missing");
     for (const auto * tensor : {
@@ -6124,11 +6124,11 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
     // A bounded format switch fits the wide G2 task in 64 registers, so two
     // BM128 CTAs can reside together.  Cross-group mixtures keep the full
     // switch, G4 path, and its wider K reuse.
-    const char* wide_rows_option = mfq::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_M256");
+    const char* wide_rows_option = tyloi::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_M256");
     const bool wide_rows = wide_rows_option && std::atoi(wide_rows_option) != 0;
-    const char* narrow_g2_option = mfq::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_NARROW_G2");
+    const char* narrow_g2_option = tyloi::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_NARROW_G2");
     const bool narrow_g2 = narrow_g2_option && std::atoi(narrow_g2_option) != 0;
-    const char* cohorts_option = mfq::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_COHORTS");
+    const char* cohorts_option = tyloi::cuda::env_lookup("TYLOINFER_NVQ_PREFILL_COHORTS");
     const bool cohorts = !cohorts_option || std::atoi(cohorts_option) != 0;
     // Keep the M/N geometry and Tensor Core sum order. A shorter K tile
     // lowers decode liveness and shared storage, allowing three narrow CTAs.
@@ -6208,21 +6208,21 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_f16_cuda(
     return out;
 }
 
-static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
-    mfq_tensor_backend::Tensor weight_ptrs,
-    mfq_tensor_backend::Tensor weight_sizes,
-    mfq_tensor_backend::Tensor pool_params,
-    mfq_tensor_backend::Tensor expert_pool,
-    mfq_tensor_backend::Tensor expert_local,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor ids,
+static ::tyloi::Tensor nvq_moe_grouped_matmul_hetero_impl(
+    ::tyloi::Tensor weight_ptrs,
+    ::tyloi::Tensor weight_sizes,
+    ::tyloi::Tensor pool_params,
+    ::tyloi::Tensor expert_pool,
+    ::tyloi::Tensor expert_local,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor ids,
     int64_t n_experts,
     int64_t out_per_expert,
     int64_t neuron_len,
     bool input_quantized,
-    mfq_tensor_backend::Tensor out,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale,mfq_tensor_backend::Tensor active_plan) {
+    ::tyloi::Tensor out,
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale,::tyloi::Tensor active_plan) {
     TYLOINFER_RUNTIME_CHECK(
         n_experts > 0 && n_experts <= 4096,
         "NVQ heterogeneous expert count must be in [1,4096]");
@@ -6232,34 +6232,34 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
         "NVQ heterogeneous dimensions must fit int32");
     TYLOINFER_RUNTIME_CHECK(
         weight_ptrs.is_cuda() && weight_ptrs.is_contiguous() &&
-            weight_ptrs.scalar_type() == mfq_tensor_backend::kInt64 &&
+            weight_ptrs.scalar_type() == ::tyloi::kInt64 &&
             weight_ptrs.dim() == 2 && weight_ptrs.size(0) > 0 &&
             weight_ptrs.size(1) == 5,
         "NVQ heterogeneous weight pointers must be CUDA int64 [pools,5]");
     const int pools = static_cast<int>(weight_ptrs.size(0));
     TYLOINFER_RUNTIME_CHECK(
         weight_sizes.is_cuda() && weight_sizes.is_contiguous() &&
-            weight_sizes.scalar_type() == mfq_tensor_backend::kInt64 &&
+            weight_sizes.scalar_type() == ::tyloi::kInt64 &&
             weight_sizes.dim() == 2 && weight_sizes.size(0) == pools &&
             weight_sizes.size(1) == 3,
         "NVQ heterogeneous weight sizes must be CUDA int64 [pools,3]");
     TYLOINFER_RUNTIME_CHECK(
         pool_params.is_cuda() && pool_params.is_contiguous() &&
-            pool_params.scalar_type() == mfq_tensor_backend::kInt32 &&
+            pool_params.scalar_type() == ::tyloi::kInt32 &&
             pool_params.dim() == 2 && pool_params.size(0) == pools &&
             pool_params.size(1) == 7,
         "NVQ heterogeneous pool parameters must be CUDA int32 [pools,7]");
     TYLOINFER_RUNTIME_CHECK(
         expert_pool.is_cuda() && expert_pool.is_contiguous() &&
-            expert_pool.scalar_type() == mfq_tensor_backend::kInt32 &&
+            expert_pool.scalar_type() == ::tyloi::kInt32 &&
             expert_pool.numel() == n_experts &&
             expert_local.is_cuda() && expert_local.is_contiguous() &&
-            expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
+            expert_local.scalar_type() == ::tyloi::kInt32 &&
             expert_local.numel() == n_experts,
         "NVQ heterogeneous expert maps must be CUDA int32 [experts]");
     TYLOINFER_RUNTIME_CHECK(
         ids.is_cuda() && ids.is_contiguous() &&
-            ids.scalar_type() == mfq_tensor_backend::kInt32 && ids.dim() == 2,
+            ids.scalar_type() == ::tyloi::kInt32 && ids.dim() == 2,
         "NVQ heterogeneous route IDs must be CUDA int32 [tokens,routes]");
     const int tokens = static_cast<int>(ids.size(0));
     const int routes = static_cast<int>(ids.size(1));
@@ -6269,7 +6269,7 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
         "NVQ heterogeneous MMVQ requires one to eight tokens");
     TYLOINFER_RUNTIME_CHECK(
         x.is_cuda() && x.is_contiguous() &&
-            x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            x.scalar_type() == ::tyloi::kFloat16 &&
             (x.dim() == 2 || x.dim() == 3) &&
             (input_quantized || x.size(-1) == neuron_len),
         "NVQ heterogeneous routed input shape mismatch");
@@ -6280,7 +6280,7 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
         "NVQ heterogeneous input leading dimensions do not match routes");
     TYLOINFER_RUNTIME_CHECK(
         out.is_cuda() && out.is_contiguous() &&
-            out.scalar_type() == mfq_tensor_backend::kFloat16 &&
+            out.scalar_type() == ::tyloi::kFloat16 &&
             out.dim() == 3 && out.size(0) == tokens &&
             out.size(1) == routes && out.size(2) == out_per_expert,
         "NVQ heterogeneous output must be CUDA FP16 [tokens,routes,out]");
@@ -6290,12 +6290,12 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
     const int input_rows = routed_input ? pairs : tokens;
     TYLOINFER_RUNTIME_CHECK(
         qx.is_cuda() && qx.is_contiguous() &&
-            qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.dim() == 2 &&
+            qx.scalar_type() == ::tyloi::kInt8 && qx.dim() == 2 &&
             qx.size(0) >= input_rows && qx.size(1) >= K_pad,
         "NVQ heterogeneous qx workspace mismatch");
     TYLOINFER_RUNTIME_CHECK(
         xscale.is_cuda() && xscale.is_contiguous() &&
-            xscale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+            xscale.scalar_type() == ::tyloi::kFloat32 &&
             xscale.dim() == 2 && xscale.size(0) >= input_rows &&
             xscale.size(1) >= ng,
         "NVQ heterogeneous xscale workspace mismatch");
@@ -6308,7 +6308,7 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
     }
 
     if(active_plan.defined())TYLOINFER_RUNTIME_CHECK(active_plan.is_cuda() && active_plan.is_contiguous() &&
-        active_plan.scalar_type()==mfq_tensor_backend::kInt32 && active_plan.device()==x.device() &&
+        active_plan.scalar_type()==::tyloi::kInt32 && active_plan.device()==x.device() &&
         active_plan.numel()==1+int64_t(pairs)*3,"NVQ active route plan geometry/device mismatch");
     const cudaStream_t stream = mfq_current_cuda_stream();
     if (!input_quantized) {
@@ -6328,9 +6328,9 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
         reinterpret_cast<__half *>(out.data_ptr<mfq_half>()), pairs, routes,   \
         static_cast<int>(n_experts), pools, static_cast<int>(out_per_expert),  \
         routed_input)
-    const char* grouped=mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
+    const char* grouped=tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
     if(ng<=128 && out_per_expert<=4096 && (!grouped || grouped[0]!='0')) {
-        mfq::cuda::NvqRoutedReuseParams reuse;
+        tyloi::cuda::NvqRoutedReuseParams reuse;
         reuse.pointers=weight_ptrs.data_ptr<int64_t>();reuse.sizes=weight_sizes.data_ptr<int64_t>();
         reuse.params=pool_params.data_ptr<int32_t>();reuse.expert_pool=expert_pool.data_ptr<int32_t>();
         reuse.expert_local=expert_local.data_ptr<int32_t>();reuse.ids=ids.data_ptr<int32_t>();
@@ -6339,7 +6339,7 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
         reuse.output=reinterpret_cast<half*>(out.data_ptr<mfq_half>());
         reuse.experts=int(n_experts);reuse.pools=pools;reuse.rows=int(out_per_expert);
         reuse.routes=routes;reuse.pairs=pairs;reuse.down=routed_input;
-        if(!mfq::cuda::nvq_launch_routed_reuse(reuse,stream))
+        if(!tyloi::cuda::nvq_launch_routed_reuse(reuse,stream))
             nvq_moe_groups_hetero_kernel<<<dim3((out_per_expert+3)/4,pairs),dim3(32,4),0,stream>>>(
             weight_ptrs.data_ptr<int64_t>(),weight_sizes.data_ptr<int64_t>(),pool_params.data_ptr<int32_t>(),
             expert_pool.data_ptr<int32_t>(),expert_local.data_ptr<int32_t>(),ids.data_ptr<int32_t>(),
@@ -6363,7 +6363,7 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
     else {
         // Keep each row's four-warp accumulation and reduction unchanged.
         // The opt-in sweep varies only the number of rows sharing a CTA.
-        const auto* requested=mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_ROW_TILE");
+        const auto* requested=tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_ROW_TILE");
         const int rows=tokens==1 && requested ? std::atoi(requested) : 2;
         switch(rows) {
             case 1: NVQ_MOE_HETERO_MMVQ_LAUNCH(4,1);break;
@@ -6379,39 +6379,39 @@ static mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_impl(
     return out;
 }
 
-mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_hetero_ws_cuda(
-    mfq_tensor_backend::Tensor weight_ptrs,mfq_tensor_backend::Tensor weight_sizes,
-    mfq_tensor_backend::Tensor pool_params,mfq_tensor_backend::Tensor expert_pool,
-    mfq_tensor_backend::Tensor expert_local,mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor ids,
+::tyloi::Tensor nvq_moe_grouped_matmul_hetero_ws_cuda(
+    ::tyloi::Tensor weight_ptrs,::tyloi::Tensor weight_sizes,
+    ::tyloi::Tensor pool_params,::tyloi::Tensor expert_pool,
+    ::tyloi::Tensor expert_local,::tyloi::Tensor x,::tyloi::Tensor ids,
     int64_t n_experts,int64_t out_per_expert,int64_t neuron_len,bool input_quantized,
-    mfq_tensor_backend::Tensor out,mfq_tensor_backend::Tensor qx,mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor out,::tyloi::Tensor qx,::tyloi::Tensor xscale) {
     return nvq_moe_grouped_matmul_hetero_impl(weight_ptrs,weight_sizes,pool_params,expert_pool,expert_local,
         x,ids,n_experts,out_per_expert,neuron_len,input_quantized,out,qx,xscale,{});
 }
-mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_active_ws_cuda(
-    mfq_tensor_backend::Tensor weight_ptrs,mfq_tensor_backend::Tensor weight_sizes,
-    mfq_tensor_backend::Tensor pool_params,mfq_tensor_backend::Tensor expert_pool,
-    mfq_tensor_backend::Tensor expert_local,mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor ids,
+::tyloi::Tensor nvq_moe_grouped_matmul_active_ws_cuda(
+    ::tyloi::Tensor weight_ptrs,::tyloi::Tensor weight_sizes,
+    ::tyloi::Tensor pool_params,::tyloi::Tensor expert_pool,
+    ::tyloi::Tensor expert_local,::tyloi::Tensor x,::tyloi::Tensor ids,
     int64_t n_experts,int64_t out_per_expert,int64_t neuron_len,bool input_quantized,
-    mfq_tensor_backend::Tensor out,mfq_tensor_backend::Tensor qx,mfq_tensor_backend::Tensor xscale,
-    mfq_tensor_backend::Tensor active_plan) {
+    ::tyloi::Tensor out,::tyloi::Tensor qx,::tyloi::Tensor xscale,
+    ::tyloi::Tensor active_plan) {
     TYLOINFER_RUNTIME_CHECK(active_plan.defined(),"NVQ active route plan required");
     return nvq_moe_grouped_matmul_hetero_impl(weight_ptrs,weight_sizes,pool_params,expert_pool,expert_local,
         x,ids,n_experts,out_per_expert,neuron_len,input_quantized,out,qx,xscale,active_plan);
 }
 
-mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_f16_cuda(
-    mfq_tensor_backend::Tensor indices, mfq_tensor_backend::Tensor aux, mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale, mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids, mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor expert_local,
+::tyloi::Tensor nepq_moe_grouped_matmul_pool_f16_cuda(
+    ::tyloi::Tensor indices, ::tyloi::Tensor aux, ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale, ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids, ::tyloi::Tensor x, ::tyloi::Tensor expert_local,
     int64_t n_experts, int64_t pool_experts, int64_t out_per_expert,
     int64_t neuron_len, int64_t sub_bits, int64_t format,
-    mfq_tensor_backend::Tensor out, mfq_tensor_backend::Tensor ids_dst, mfq_tensor_backend::Tensor expert_bounds,
-    mfq_tensor_backend::Tensor tile_bounds, mfq_tensor_backend::Tensor tile_experts) {
+    ::tyloi::Tensor out, ::tyloi::Tensor ids_dst, ::tyloi::Tensor expert_bounds,
+    ::tyloi::Tensor tile_bounds, ::tyloi::Tensor tile_experts) {
     check_nepq_common(indices, aux, sub_scale, neuron_scale, table_pool,
                       bank_ids, neuron_len, sub_bits, format);
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
-                x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                x.scalar_type() == ::tyloi::kFloat16 &&
                 (x.dim() == 2 || x.dim() == 3) &&
                 x.size(-1) == neuron_len,
                 "NEPQ routed FP16 input shape mismatch");
@@ -6454,15 +6454,15 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_f16_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor ids,
-    mfq_tensor_backend::Tensor expert_local,
+::tyloi::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor ids,
+    ::tyloi::Tensor expert_local,
     int64_t n_experts,
     int64_t pool_experts,
     int64_t out_per_expert,
@@ -6472,13 +6472,13 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
     int64_t format,
     int64_t sign_mode,
     bool input_quantized,
-    mfq_tensor_backend::Tensor out,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale,
-    mfq_tensor_backend::Tensor ids_dst,
-    mfq_tensor_backend::Tensor expert_bounds,
-    mfq_tensor_backend::Tensor tile_bounds,
-    mfq_tensor_backend::Tensor tile_experts) {
+    ::tyloi::Tensor out,
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale,
+    ::tyloi::Tensor ids_dst,
+    ::tyloi::Tensor expert_bounds,
+    ::tyloi::Tensor tile_bounds,
+    ::tyloi::Tensor tile_experts) {
     check_common(
         indices, aux, sub_scale, neuron_scale, codebook,
         neuron_len, gs, sub_bits, format, sign_mode,true);
@@ -6492,14 +6492,14 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
                 neuron_scale.numel() == pool_experts * out_per_expert,
                 "NVQ pool shape does not match the flattened row count");
     TYLOINFER_RUNTIME_CHECK(expert_local.is_cuda() && expert_local.is_contiguous() &&
-                expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
+                expert_local.scalar_type() == ::tyloi::kInt32 &&
                 expert_local.dim() == 1 && expert_local.numel() >= n_experts,
                 "NVQ expert-local map must be CUDA contiguous int32");
     TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.is_contiguous() &&
-                ids.scalar_type() == mfq_tensor_backend::kInt32 && ids.dim() == 2,
+                ids.scalar_type() == ::tyloi::kInt32 && ids.dim() == 2,
                 "NVQ route IDs must be CUDA contiguous int32 [T,R]");
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
-                x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                x.scalar_type() == ::tyloi::kFloat16 &&
                 (x.dim() == 2 || x.dim() == 3) &&
                 (input_quantized || x.size(-1) == neuron_len),
                 "NVQ routed input must be CUDA contiguous fp16 [T,K] or [T,R,K]");
@@ -6512,7 +6512,7 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
                 (routed_input && x.size(0) == tokens && x.size(1) == routes),
                 "NVQ input leading dimensions do not match routes");
     TYLOINFER_RUNTIME_CHECK(out.is_cuda() && out.is_contiguous() &&
-                out.scalar_type() == mfq_tensor_backend::kFloat16 && out.dim() == 3 &&
+                out.scalar_type() == ::tyloi::kFloat16 && out.dim() == 3 &&
                 out.size(0) == tokens && out.size(1) == routes &&
                 out.size(2) == out_per_expert,
                 "NVQ output must be CUDA contiguous fp16 [T,R,O]");
@@ -6522,11 +6522,11 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     const int input_rows = routed_input ? pairs : tokens;
     TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.is_contiguous() &&
-                qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.dim() == 2 &&
+                qx.scalar_type() == ::tyloi::kInt8 && qx.dim() == 2 &&
                 qx.size(0) >= input_rows && qx.size(1) >= K_pad,
                 "NVQ routed qx workspace mismatch");
     TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.is_contiguous() &&
-                xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.dim() == 2 &&
+                xscale.scalar_type() == ::tyloi::kFloat32 && xscale.dim() == 2 &&
                 xscale.size(0) >= input_rows && xscale.size(1) >= ng,
                 "NVQ routed xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
@@ -6555,31 +6555,31 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
     }
 
     if (tokens <= 8) {
-        const char * rows_env = mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_ROWS_PER_BLOCK");
+        const char * rows_env = tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_ROWS_PER_BLOCK");
         int rows_per_block = rows_env == nullptr ? 2 : std::atoi(rows_env);
         if (rows_per_block != 1 && rows_per_block != 2 &&
                 rows_per_block != 4 && rows_per_block != 8) {
             rows_per_block = 2;
         }
-        const char * warps_env = mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_WARPS");
+        const char * warps_env = tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_WARPS");
         int warps_override = warps_env == nullptr ? 0 : std::atoi(warps_env);
         if (warps_override != 1 && warps_override != 2 &&
                 warps_override != 4 && warps_override != 8) {
             warps_override = 0;
         }
         const char * exact_reduction_env =
-            mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_EXACT_REDUCTION");
+            tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_EXACT_REDUCTION");
         const bool exact_reduction =
             exact_reduction_env != nullptr &&
             std::atoi(exact_reduction_env) != 0;
         const char * exact_physical_env =
-            mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_EXACT_PHYSICAL_WARPS");
+            tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_EXACT_PHYSICAL_WARPS");
         const int exact_physical_warps =
             exact_physical_env != nullptr && std::atoi(exact_physical_env) == 4
             ? 4
             : 2;
         const char * share_group_env =
-            mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_SHARE_GROUP_STATE");
+            tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_SHARE_GROUP_STATE");
         const bool share_group_state =
             share_group_env != nullptr && std::atoi(share_group_env) != 0;
 #define NVQ_MOE_SMALL_LAUNCH(NWARPS_VALUE, ROWS_VALUE, SHARE_VALUE)              \
@@ -6629,18 +6629,18 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
             static_cast<int>(sign_mode), routed_input)
         launch_by_format(static_cast<int>(format), [&](auto tag) {
             constexpr int F = decltype(tag)::value;
-            const char* grouped=mfq::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
+            const char* grouped=tyloi::cuda::env_lookup("TYLOINFER_NVQ_MOE_GROUP_DOT");
             if(!exact_reduction && ng<=128 && out_per_expert<=4096 && (!grouped || grouped[0]!='0')) {
                 const NvqDeviceWeight w{indices.data_ptr<uint8_t>(),indices.numel(),aux.data_ptr<uint8_t>(),aux.numel(),
                     sub_scale.data_ptr<uint8_t>(),sub_scale.numel(),neuron_scale.data_ptr<float>(),codebook.data_ptr<int8_t>(),
                     int(codebook.numel()),int(pool_experts*out_per_expert),ng,nvec,nsign,int(sub_bits),int(sign_mode)};
-                mfq::cuda::NvqRoutedReuseParams reuse;
+                tyloi::cuda::NvqRoutedReuseParams reuse;
                 reuse.weight=w;reuse.format=F;reuse.expert_local=expert_local.data_ptr<int32_t>();
                 reuse.ids=ids.data_ptr<int32_t>();reuse.input=qx.data_ptr<int8_t>();reuse.scales=xscale.data_ptr<float>();
                 reuse.output=reinterpret_cast<half*>(out.data_ptr<mfq_half>());
                 reuse.experts=int(n_experts);reuse.local_experts=int(pool_experts);reuse.rows=int(out_per_expert);
                 reuse.routes=routes;reuse.pairs=pairs;reuse.down=routed_input;
-                if(!mfq::cuda::nvq_launch_routed_reuse(reuse,stream))
+                if(!tyloi::cuda::nvq_launch_routed_reuse(reuse,stream))
                     nvq_moe_groups_kernel<F><<<dim3((out_per_expert+3)/4,pairs),dim3(32,4),0,stream>>>(
                     w,qx.data_ptr<int8_t>(),xscale.data_ptr<float>(),ids.data_ptr<int32_t>(),expert_local.data_ptr<int32_t>(),
                     reinterpret_cast<half*>(out.data_ptr<mfq_half>()),int(n_experts),int(pool_experts),int(out_per_expert),routes,routed_input);
@@ -6695,19 +6695,19 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
 #undef NVQ_MOE_SMALL_LAUNCH
     } else {
         TYLOINFER_RUNTIME_CHECK(ids_dst.is_cuda() && ids_dst.is_contiguous() &&
-                    ids_dst.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    ids_dst.scalar_type() == ::tyloi::kInt32 &&
                     ids_dst.numel() >= pairs,
                     "NVQ compact route map is missing");
         TYLOINFER_RUNTIME_CHECK(expert_bounds.is_cuda() && expert_bounds.is_contiguous() &&
-                    expert_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    expert_bounds.scalar_type() == ::tyloi::kInt32 &&
                     expert_bounds.numel() >= n_experts + 1,
                     "NVQ expert bounds are missing");
         TYLOINFER_RUNTIME_CHECK(tile_bounds.is_cuda() && tile_bounds.is_contiguous() &&
-                    tile_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    tile_bounds.scalar_type() == ::tyloi::kInt32 &&
                     tile_bounds.numel() >= n_experts + 1,
                     "NVQ tile bounds are missing");
         TYLOINFER_RUNTIME_CHECK(tile_experts.is_cuda() && tile_experts.is_contiguous() &&
-                    tile_experts.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    tile_experts.scalar_type() == ::tyloi::kInt32 &&
                     tile_experts.numel() >= pairs,
                     "NVQ tile expert map is missing");
         constexpr int route_tile = 8;
@@ -6744,17 +6744,17 @@ mfq_tensor_backend::Tensor nvq_moe_grouped_matmul_pool_ws_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor table_pool,
-    mfq_tensor_backend::Tensor bank_ids,
-    mfq_tensor_backend::Tensor grouped_table_pool,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor ids,
-    mfq_tensor_backend::Tensor expert_local,
+::tyloi::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor table_pool,
+    ::tyloi::Tensor bank_ids,
+    ::tyloi::Tensor grouped_table_pool,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor ids,
+    ::tyloi::Tensor expert_local,
     int64_t n_experts,
     int64_t pool_experts,
     int64_t out_per_expert,
@@ -6762,13 +6762,13 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
     int64_t sub_bits,
     int64_t format,
     bool input_quantized,
-    mfq_tensor_backend::Tensor out,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale,
-    mfq_tensor_backend::Tensor ids_dst,
-    mfq_tensor_backend::Tensor expert_bounds,
-    mfq_tensor_backend::Tensor tile_bounds,
-    mfq_tensor_backend::Tensor tile_experts) {
+    ::tyloi::Tensor out,
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale,
+    ::tyloi::Tensor ids_dst,
+    ::tyloi::Tensor expert_bounds,
+    ::tyloi::Tensor tile_bounds,
+    ::tyloi::Tensor tile_experts) {
     check_nepq_common(
         indices, aux, sub_scale, neuron_scale, table_pool, bank_ids,
         neuron_len, sub_bits, format);
@@ -6777,7 +6777,7 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
         : static_cast<int>(table_pool.size(1));
     TYLOINFER_RUNTIME_CHECK(
         grouped_table_pool.is_cuda() && grouped_table_pool.is_contiguous() &&
-        grouped_table_pool.scalar_type() == mfq_tensor_backend::kInt8 &&
+        grouped_table_pool.scalar_type() == ::tyloi::kInt8 &&
         grouped_table_pool.dim() == 2 &&
         grouped_table_pool.size(0) == table_pool.size(0) &&
         grouped_table_pool.size(1) == expected_grouped_stride,
@@ -6790,14 +6790,14 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
                 neuron_scale.numel() == pool_experts * out_per_expert,
                 "NEPQ pool shape does not match the flattened row count");
     TYLOINFER_RUNTIME_CHECK(expert_local.is_cuda() && expert_local.is_contiguous() &&
-                expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
+                expert_local.scalar_type() == ::tyloi::kInt32 &&
                 expert_local.dim() == 1 && expert_local.numel() >= n_experts,
                 "NEPQ expert-local map must be CUDA contiguous int32");
     TYLOINFER_RUNTIME_CHECK(ids.is_cuda() && ids.is_contiguous() &&
-                ids.scalar_type() == mfq_tensor_backend::kInt32 && ids.dim() == 2,
+                ids.scalar_type() == ::tyloi::kInt32 && ids.dim() == 2,
                 "NEPQ route IDs must be CUDA contiguous int32 [T,R]");
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() &&
-                x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+                x.scalar_type() == ::tyloi::kFloat16 &&
                 (x.dim() == 2 || x.dim() == 3) && x.size(-1) == neuron_len,
                 "NEPQ routed input must be CUDA contiguous fp16 [T,K] or [T,R,K]");
     const int tokens = static_cast<int>(ids.size(0));
@@ -6809,7 +6809,7 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
                 (routed_input && x.size(0) == tokens && x.size(1) == routes),
                 "NEPQ input leading dimensions do not match routes");
     TYLOINFER_RUNTIME_CHECK(out.is_cuda() && out.is_contiguous() &&
-                out.scalar_type() == mfq_tensor_backend::kFloat16 && out.dim() == 3 &&
+                out.scalar_type() == ::tyloi::kFloat16 && out.dim() == 3 &&
                 out.size(0) == tokens && out.size(1) == routes &&
                 out.size(2) == out_per_expert,
                 "NEPQ output must be CUDA contiguous fp16 [T,R,O]");
@@ -6819,11 +6819,11 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
     const int K_pad = ng * kGroupSize;
     const int input_rows = routed_input ? pairs : tokens;
     TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.is_contiguous() &&
-                qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.dim() == 2 &&
+                qx.scalar_type() == ::tyloi::kInt8 && qx.dim() == 2 &&
                 qx.size(0) >= input_rows && qx.size(1) >= K_pad,
                 "NEPQ routed qx workspace mismatch");
     TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.is_contiguous() &&
-                xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.dim() == 2 &&
+                xscale.scalar_type() == ::tyloi::kFloat32 && xscale.dim() == 2 &&
                 xscale.size(0) >= input_rows && xscale.size(1) >= ng,
                 "NEPQ routed xscale workspace mismatch");
     const int nvec = K / 8;
@@ -6868,19 +6868,19 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
 #undef NEPQ_MOE_POOL_SMALL_LAUNCH
     } else {
         TYLOINFER_RUNTIME_CHECK(ids_dst.is_cuda() && ids_dst.is_contiguous() &&
-                    ids_dst.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    ids_dst.scalar_type() == ::tyloi::kInt32 &&
                     ids_dst.numel() >= pairs,
                     "NEPQ compact route map is missing");
         TYLOINFER_RUNTIME_CHECK(expert_bounds.is_cuda() && expert_bounds.is_contiguous() &&
-                    expert_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    expert_bounds.scalar_type() == ::tyloi::kInt32 &&
                     expert_bounds.numel() >= n_experts + 1,
                     "NEPQ expert bounds are missing");
         TYLOINFER_RUNTIME_CHECK(tile_bounds.is_cuda() && tile_bounds.is_contiguous() &&
-                    tile_bounds.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    tile_bounds.scalar_type() == ::tyloi::kInt32 &&
                     tile_bounds.numel() >= n_experts + 1,
                     "NEPQ tile bounds are missing");
         TYLOINFER_RUNTIME_CHECK(tile_experts.is_cuda() && tile_experts.is_contiguous() &&
-                    tile_experts.scalar_type() == mfq_tensor_backend::kInt32 &&
+                    tile_experts.scalar_type() == ::tyloi::kInt32 &&
                     tile_experts.numel() >= pairs,
                     "NEPQ tile expert map is missing");
         constexpr int route_tile = 8;
@@ -6917,12 +6917,12 @@ mfq_tensor_backend::Tensor nepq_moe_grouped_matmul_pool_ws_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor nvq_dequant_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
+::tyloi::Tensor nvq_dequant_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -6936,7 +6936,7 @@ mfq_tensor_backend::Tensor nvq_dequant_cuda(
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({N, K}, neuron_scale.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty({N, K}, neuron_scale.options().dtype(::tyloi::kFloat16));
     const int block = 128;
     const dim3 grid((nsign + block - 1) / block, std::min(N, 65535));
     cudaStream_t stream = mfq_current_cuda_stream();
@@ -7050,13 +7050,13 @@ __global__ void __launch_bounds__(32) nvq_backward_quad_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nvq_backward_quad_small_m(
-        const mfq_tensor_backend::Tensor & indices,
-        const mfq_tensor_backend::Tensor & aux,
-        const mfq_tensor_backend::Tensor & sub_scale,
-        const mfq_tensor_backend::Tensor & neuron_scale,
-        const mfq_tensor_backend::Tensor & codebook,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & partials,
+        const ::tyloi::Tensor & indices,
+        const ::tyloi::Tensor & aux,
+        const ::tyloi::Tensor & sub_scale,
+        const ::tyloi::Tensor & neuron_scale,
+        const ::tyloi::Tensor & codebook,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & partials,
         int M,
         int N,
         int K,
@@ -7184,13 +7184,13 @@ __global__ void __launch_bounds__(32) nvq_backward_vec8_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nvq_backward_vec8_small_m(
-        const mfq_tensor_backend::Tensor & indices,
-        const mfq_tensor_backend::Tensor & aux,
-        const mfq_tensor_backend::Tensor & sub_scale,
-        const mfq_tensor_backend::Tensor & neuron_scale,
-        const mfq_tensor_backend::Tensor & codebook,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & partials,
+        const ::tyloi::Tensor & indices,
+        const ::tyloi::Tensor & aux,
+        const ::tyloi::Tensor & sub_scale,
+        const ::tyloi::Tensor & neuron_scale,
+        const ::tyloi::Tensor & codebook,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & partials,
         int M,
         int N,
         int K,
@@ -7335,13 +7335,13 @@ __global__ void __launch_bounds__(256) nvq_backward_mma_m8_kernel(
 
 template <int FORMAT>
 void launch_nvq_backward_mma_m8(
-        const mfq_tensor_backend::Tensor & indices,
-        const mfq_tensor_backend::Tensor & aux,
-        const mfq_tensor_backend::Tensor & sub_scale,
-        const mfq_tensor_backend::Tensor & neuron_scale,
-        const mfq_tensor_backend::Tensor & codebook,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & indices,
+        const ::tyloi::Tensor & aux,
+        const ::tyloi::Tensor & sub_scale,
+        const ::tyloi::Tensor & neuron_scale,
+        const ::tyloi::Tensor & codebook,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int M,
         int N,
         int K,
@@ -7487,14 +7487,14 @@ __global__ void __launch_bounds__(256) nepq_backward_mma_m8_kernel(
 
 template <int FORMAT>
 void launch_nepq_backward_mma_m8(
-        const mfq_tensor_backend::Tensor & indices,
-        const mfq_tensor_backend::Tensor & aux,
-        const mfq_tensor_backend::Tensor & state_stream,
-        const mfq_tensor_backend::Tensor & neuron_scale,
-        const mfq_tensor_backend::Tensor & table_pool,
-        const mfq_tensor_backend::Tensor & bank_ids,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & indices,
+        const ::tyloi::Tensor & aux,
+        const ::tyloi::Tensor & state_stream,
+        const ::tyloi::Tensor & neuron_scale,
+        const ::tyloi::Tensor & table_pool,
+        const ::tyloi::Tensor & bank_ids,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         int M,
         int N,
         int K,
@@ -7624,14 +7624,14 @@ __global__ void __launch_bounds__(32) nepq_backward_partial_kernel(
 
 template <int FORMAT, int Rows>
 void launch_nepq_backward_small_m(
-        const mfq_tensor_backend::Tensor & indices,
-        const mfq_tensor_backend::Tensor & aux,
-        const mfq_tensor_backend::Tensor & state_stream,
-        const mfq_tensor_backend::Tensor & neuron_scale,
-        const mfq_tensor_backend::Tensor & table_pool,
-        const mfq_tensor_backend::Tensor & bank_ids,
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & partials,
+        const ::tyloi::Tensor & indices,
+        const ::tyloi::Tensor & aux,
+        const ::tyloi::Tensor & state_stream,
+        const ::tyloi::Tensor & neuron_scale,
+        const ::tyloi::Tensor & table_pool,
+        const ::tyloi::Tensor & bank_ids,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & partials,
         int M,
         int N,
         int K,
@@ -7662,8 +7662,8 @@ void launch_nepq_backward_small_m(
 
 template <typename T, typename Launch>
 void launch_backward_by_dtype(
-        const mfq_tensor_backend::Tensor & output_gradient,
-        mfq_tensor_backend::Tensor & result,
+        const ::tyloi::Tensor & output_gradient,
+        ::tyloi::Tensor & result,
         Launch && launch) {
     if constexpr (std::is_same_v<T, __half>) {
         launch(
@@ -7680,13 +7680,13 @@ void launch_backward_by_dtype(
 
 }  // namespace
 
-mfq_tensor_backend::Tensor nvq_backward_input_cuda(
-        mfq_tensor_backend::Tensor indices,
-        mfq_tensor_backend::Tensor aux,
-        mfq_tensor_backend::Tensor sub_scale,
-        mfq_tensor_backend::Tensor neuron_scale,
-        mfq_tensor_backend::Tensor codebook,
-        mfq_tensor_backend::Tensor output_gradient,
+::tyloi::Tensor nvq_backward_input_cuda(
+        ::tyloi::Tensor indices,
+        ::tyloi::Tensor aux,
+        ::tyloi::Tensor sub_scale,
+        ::tyloi::Tensor neuron_scale,
+        ::tyloi::Tensor codebook,
+        ::tyloi::Tensor output_gradient,
         int64_t neuron_len,
         int64_t gs,
         int64_t sub_bits,
@@ -7708,9 +7708,9 @@ mfq_tensor_backend::Tensor nvq_backward_input_cuda(
         "NVQ backward tensors must share one CUDA device");
     const auto dtype = output_gradient.scalar_type();
     TYLOINFER_RUNTIME_CHECK(
-        dtype == mfq_tensor_backend::kFloat16 ||
-        dtype == mfq_tensor_backend::kFloat32 ||
-        dtype == mfq_tensor_backend::kBFloat16,
+        dtype == ::tyloi::kFloat16 ||
+        dtype == ::tyloi::kFloat32 ||
+        dtype == ::tyloi::kBFloat16,
         "NVQ backward output gradient must be fp16, bf16, or fp32");
     const int M = static_cast<int>(output_gradient.size(0));
     const int N = static_cast<int>(neuron_scale.numel());
@@ -7719,7 +7719,7 @@ mfq_tensor_backend::Tensor nvq_backward_input_cuda(
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
         (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto result = mfq_tensor_backend::empty({M, K}, output_gradient.options());
+    auto result = ::tyloi::cuda::empty({M, K}, output_gradient.options());
     constexpr int threads = 256;
     const int64_t total = static_cast<int64_t>(M) * K;
     if (total == 0) {
@@ -7731,7 +7731,7 @@ mfq_tensor_backend::Tensor nvq_backward_input_cuda(
     const cudaStream_t stream = mfq_current_cuda_stream();
     // Wide down projections expose enough independent K tiles to fuse
     // decoding with WMMA; output-wide projections retain the dense path.
-    if (dtype == mfq_tensor_backend::kFloat16 && M >= 5 && M <= 8 &&
+    if (dtype == ::tyloi::kFloat16 && M >= 5 && M <= 8 &&
             static_cast<int64_t>(K) >= 2 * static_cast<int64_t>(N)) {
         launch_by_format(static_cast<int>(format), [&](auto tag) {
             constexpr int F = decltype(tag)::value;
@@ -7744,10 +7744,10 @@ mfq_tensor_backend::Tensor nvq_backward_input_cuda(
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
         return result;
     }
-    if (dtype == mfq_tensor_backend::kFloat16 && M <= 4) {
+    if (dtype == ::tyloi::kFloat16 && M <= 4) {
         constexpr int output_tile = 16;
         const int splits = (N + output_tile - 1) / output_tile;
-        auto partials = mfq_tensor_backend::empty(
+        auto partials = ::tyloi::cuda::empty(
             {splits, M, K},
             output_gradient.options());
         launch_by_format(static_cast<int>(format), [&](auto tag) {
@@ -7802,14 +7802,14 @@ mfq_tensor_backend::Tensor nvq_backward_input_cuda(
     return result;
 }
 
-mfq_tensor_backend::Tensor nepq_backward_input_cuda(
-        mfq_tensor_backend::Tensor indices,
-        mfq_tensor_backend::Tensor aux,
-        mfq_tensor_backend::Tensor state_stream,
-        mfq_tensor_backend::Tensor neuron_scale,
-        mfq_tensor_backend::Tensor table_pool,
-        mfq_tensor_backend::Tensor bank_ids,
-        mfq_tensor_backend::Tensor output_gradient,
+::tyloi::Tensor nepq_backward_input_cuda(
+        ::tyloi::Tensor indices,
+        ::tyloi::Tensor aux,
+        ::tyloi::Tensor state_stream,
+        ::tyloi::Tensor neuron_scale,
+        ::tyloi::Tensor table_pool,
+        ::tyloi::Tensor bank_ids,
+        ::tyloi::Tensor output_gradient,
         int64_t neuron_len,
         int64_t state_bits,
         int64_t format) {
@@ -7831,9 +7831,9 @@ mfq_tensor_backend::Tensor nepq_backward_input_cuda(
         "NEPQ backward tensors must share one CUDA device");
     const auto dtype = output_gradient.scalar_type();
     TYLOINFER_RUNTIME_CHECK(
-        dtype == mfq_tensor_backend::kFloat16 ||
-        dtype == mfq_tensor_backend::kFloat32 ||
-        dtype == mfq_tensor_backend::kBFloat16,
+        dtype == ::tyloi::kFloat16 ||
+        dtype == ::tyloi::kFloat32 ||
+        dtype == ::tyloi::kBFloat16,
         "NEPQ backward output gradient must be fp16, bf16, or fp32");
     const int M = static_cast<int>(output_gradient.size(0));
     const int N = static_cast<int>(neuron_scale.numel());
@@ -7844,7 +7844,7 @@ mfq_tensor_backend::Tensor nepq_backward_input_cuda(
     const int nsuper = (ng + kNepqGroupsPerSupergroup - 1) /
         kNepqGroupsPerSupergroup;
     const int table_stride = static_cast<int>(table_pool.size(1));
-    auto result = mfq_tensor_backend::empty({M, K}, output_gradient.options());
+    auto result = ::tyloi::cuda::empty({M, K}, output_gradient.options());
     constexpr int threads = 256;
     const int64_t total = static_cast<int64_t>(M) * K;
     if (total == 0) {
@@ -7856,7 +7856,7 @@ mfq_tensor_backend::Tensor nepq_backward_input_cuda(
     const cudaStream_t stream = mfq_current_cuda_stream();
     // Fuse dynamic table selection, vector decode, and WMMA when K tiles
     // provide enough parallel work; retain split reduction for output-wide MLPs.
-    if (dtype == mfq_tensor_backend::kFloat16 && M >= 5 && M <= 8 &&
+    if (dtype == ::tyloi::kFloat16 && M >= 5 && M <= 8 &&
             static_cast<int64_t>(K) >= 2 * static_cast<int64_t>(N)) {
         launch_nepq_by_format(static_cast<int>(format), [&](auto tag) {
             constexpr int F = decltype(tag)::value;
@@ -7869,10 +7869,10 @@ mfq_tensor_backend::Tensor nepq_backward_input_cuda(
         TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
         return result;
     }
-    if (dtype == mfq_tensor_backend::kFloat16 && M <= 8) {
+    if (dtype == ::tyloi::kFloat16 && M <= 8) {
         const int output_tile = M <= 4 ? 16 : 32;
         const int splits = (N + output_tile - 1) / output_tile;
-        auto partials = mfq_tensor_backend::empty(
+        auto partials = ::tyloi::cuda::empty(
             {splits, M, K}, output_gradient.options());
         launch_nepq_by_format(static_cast<int>(format), [&](auto tag) {
             constexpr int F = decltype(tag)::value;
@@ -7920,13 +7920,13 @@ mfq_tensor_backend::Tensor nepq_backward_input_cuda(
 }
 #endif
 
-mfq_tensor_backend::Tensor nvq_gemm_f16_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_gemm_f16_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -7934,7 +7934,7 @@ mfq_tensor_backend::Tensor nvq_gemm_f16_cuda(
     int64_t sign_mode) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 &&
                 x.is_contiguous() && x.dim() == 2,
                 "NVQ FP16 GEMM x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
@@ -7946,7 +7946,7 @@ mfq_tensor_backend::Tensor nvq_gemm_f16_cuda(
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     const dim3 block(32, 8);
 
@@ -7997,24 +7997,24 @@ mfq_tensor_backend::Tensor nvq_gemm_f16_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_m1_vec8_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_gemv_m1_vec8_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t nwarps,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() &&
                 x.dim() == 2 && x.size(0) == 1, "NVQ vec8 GEMV x must be CUDA contiguous fp16 [1,K]");
     TYLOINFER_RUNTIME_CHECK(nwarps == 1 || nwarps == 2 || nwarps == 4 || nwarps == 8,
                 "NVQ vec8 GEMV nwarps must be 1, 2, 4, or 8");
@@ -8023,14 +8023,14 @@ mfq_tensor_backend::Tensor nvq_gemv_m1_vec8_ws_cuda(
     const int ng = (K + static_cast<int>(gs) - 1) / static_cast<int>(gs);
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ vec8 GEMV x width must equal neuron_len");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= K_pad, "NVQ vec8 GEMV qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= ng, "NVQ vec8 GEMV xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({1, N}, x.options());
+    auto output = ::tyloi::cuda::empty({1, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(1, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), qx.data_ptr<int8_t>(),
@@ -8057,24 +8057,24 @@ mfq_tensor_backend::Tensor nvq_gemv_m1_vec8_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_batch_vec8_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_gemv_batch_vec8_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t nwarps,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() && x.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
                 "NVQ batch vec8 GEMV x must be CUDA contiguous fp16 rank-2");
     TYLOINFER_RUNTIME_CHECK(nwarps == 2 || nwarps == 4 || nwarps == 8,
                 "NVQ batch vec8 GEMV nwarps must be 2, 4, or 8");
@@ -8085,14 +8085,14 @@ mfq_tensor_backend::Tensor nvq_gemv_batch_vec8_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(M >= 2 && M <= 16, "NVQ batch vec8 GEMV supports M in [2,16]");
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ batch vec8 GEMV x width must equal neuron_len");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= static_cast<int64_t>(M) * K_pad, "NVQ batch vec8 GEMV qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= static_cast<int64_t>(M) * ng, "NVQ batch vec8 GEMV xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(M, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), qx.data_ptr<int8_t>(),
@@ -8131,23 +8131,23 @@ mfq_tensor_backend::Tensor nvq_gemv_batch_vec8_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_gemv_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() && x.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
                 "NVQ x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
     const int K = static_cast<int>(neuron_len);
@@ -8156,14 +8156,14 @@ mfq_tensor_backend::Tensor nvq_gemv_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ x width must equal neuron_len");
     TYLOINFER_RUNTIME_CHECK(M >= 1 && M <= 16, "NVQ direct GEMV supports M in [1,16]");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= static_cast<int64_t>(M) * K_pad, "NVQ qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= static_cast<int64_t>(M) * ng, "NVQ xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(M, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), qx.data_ptr<int8_t>(),
@@ -8184,24 +8184,24 @@ mfq_tensor_backend::Tensor nvq_gemv_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_qx_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
+::tyloi::Tensor nvq_gemv_qx_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() && qx.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() && qx.dim() == 2,
                 "NVQ prequantized qx must be CUDA contiguous int8 rank-2");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.dim() == 2, "NVQ prequantized xscale must be CUDA contiguous fp32 rank-2");
     const int M = static_cast<int>(qx.size(0));
     const int K = static_cast<int>(neuron_len);
@@ -8215,8 +8215,8 @@ mfq_tensor_backend::Tensor nvq_gemv_qx_ws_cuda(
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty(
-        {M, N}, neuron_scale.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty(
+        {M, N}, neuron_scale.options().dtype(::tyloi::kFloat16));
     cudaStream_t stream = mfq_current_cuda_stream();
     if (M == 1) {
         launch_selected_m1_vec8(
@@ -8233,31 +8233,31 @@ mfq_tensor_backend::Tensor nvq_gemv_qx_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_qx_residual_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
+::tyloi::Tensor nvq_gemv_qx_residual_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale,
-    mfq_tensor_backend::Tensor residual) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale,
+    ::tyloi::Tensor residual) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(
         format == kNvq2JscXLGroupExec || format == kNvq3JscLGroupExec,
         "NVQ fused residual requires an aligned group execution format");
     TYLOINFER_RUNTIME_CHECK(
-        qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 &&
+        qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 &&
         qx.is_contiguous() && qx.dim() == 2 && qx.size(0) == 1,
         "NVQ fused residual qx must be CUDA contiguous int8 [1,K]");
     TYLOINFER_RUNTIME_CHECK(
-        xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+        xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 &&
         xscale.is_contiguous() && xscale.dim() == 2 && xscale.size(0) >= 1,
         "NVQ fused residual xscale must be CUDA contiguous fp32 [1,ng]");
     const int K = static_cast<int>(neuron_len);
@@ -8267,7 +8267,7 @@ mfq_tensor_backend::Tensor nvq_gemv_qx_residual_ws_cuda(
     TYLOINFER_RUNTIME_CHECK(qx.size(1) >= K_pad, "NVQ fused residual qx width mismatch");
     TYLOINFER_RUNTIME_CHECK(xscale.size(1) >= ng, "NVQ fused residual xscale width mismatch");
     TYLOINFER_RUNTIME_CHECK(
-        residual.is_cuda() && residual.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        residual.is_cuda() && residual.scalar_type() == ::tyloi::kFloat16 &&
         residual.is_contiguous() && residual.dim() == 2 &&
         residual.size(0) == 1 && residual.size(1) == N,
         "NVQ fused residual must be CUDA contiguous fp16 [1,N]");
@@ -8276,7 +8276,7 @@ mfq_tensor_backend::Tensor nvq_gemv_qx_residual_ws_cuda(
         indices, aux, sub_scale, neuron_scale, codebook,
         K, static_cast<int>(gs), static_cast<int>(sub_bits),
         static_cast<int>(format), static_cast<int>(sign_mode));
-    auto output = mfq_tensor_backend::empty_like(residual);
+    auto output = ::tyloi::cuda::empty_like(residual);
     cudaStream_t stream = mfq_current_cuda_stream();
     const auto * residual_ptr = reinterpret_cast<const __half *>(
         residual.data_ptr<mfq_half>());
@@ -8297,18 +8297,18 @@ mfq_tensor_backend::Tensor nvq_gemv_qx_residual_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_multi2_ws_cuda(
-    mfq_tensor_backend::Tensor first_indices,
-    mfq_tensor_backend::Tensor first_aux,
-    mfq_tensor_backend::Tensor first_sub_scale,
-    mfq_tensor_backend::Tensor first_neuron_scale,
-    mfq_tensor_backend::Tensor first_codebook,
-    mfq_tensor_backend::Tensor second_indices,
-    mfq_tensor_backend::Tensor second_aux,
-    mfq_tensor_backend::Tensor second_sub_scale,
-    mfq_tensor_backend::Tensor second_neuron_scale,
-    mfq_tensor_backend::Tensor second_codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_gemv_multi2_ws_cuda(
+    ::tyloi::Tensor first_indices,
+    ::tyloi::Tensor first_aux,
+    ::tyloi::Tensor first_sub_scale,
+    ::tyloi::Tensor first_neuron_scale,
+    ::tyloi::Tensor first_codebook,
+    ::tyloi::Tensor second_indices,
+    ::tyloi::Tensor second_aux,
+    ::tyloi::Tensor second_sub_scale,
+    ::tyloi::Tensor second_neuron_scale,
+    ::tyloi::Tensor second_codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t first_sub_bits,
@@ -8317,15 +8317,15 @@ mfq_tensor_backend::Tensor nvq_gemv_multi2_ws_cuda(
     int64_t second_sub_bits,
     int64_t second_format,
     int64_t second_sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(first_indices, first_aux, first_sub_scale, first_neuron_scale, first_codebook,
                  neuron_len, gs, first_sub_bits, first_format, first_sign_mode);
     check_common(second_indices, second_aux, second_sub_scale, second_neuron_scale, second_codebook,
                  neuron_len, gs, second_sub_bits, second_format, second_sign_mode);
     TYLOINFER_RUNTIME_CHECK(first_format == second_format,
                 "NVQ multi-projection requires the same NVQ format");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() && x.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
                 "NVQ multi-projection x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
     const int K = static_cast<int>(neuron_len);
@@ -8333,10 +8333,10 @@ mfq_tensor_backend::Tensor nvq_gemv_multi2_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(M >= 1 && M <= 8, "NVQ multi-projection supports M in [1,8]");
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ multi-projection x width mismatch");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= static_cast<int64_t>(M) * K_pad,
                 "NVQ multi-projection qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= static_cast<int64_t>(M) * ng,
                 "NVQ multi-projection xscale workspace mismatch");
     const auto first = make_device_weight(
@@ -8347,7 +8347,7 @@ mfq_tensor_backend::Tensor nvq_gemv_multi2_ws_cuda(
         second_indices, second_aux, second_sub_scale, second_neuron_scale, second_codebook,
         K, static_cast<int>(gs), static_cast<int>(second_sub_bits),
         static_cast<int>(second_format), static_cast<int>(second_sign_mode));
-    auto output = mfq_tensor_backend::empty(
+    auto output = ::tyloi::cuda::empty(
         {M, first.N + second.N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(M, ng), 32, 0, stream>>>(
@@ -8359,18 +8359,18 @@ mfq_tensor_backend::Tensor nvq_gemv_multi2_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_swiglu_ws_cuda(
-    mfq_tensor_backend::Tensor gate_indices,
-    mfq_tensor_backend::Tensor gate_aux,
-    mfq_tensor_backend::Tensor gate_sub_scale,
-    mfq_tensor_backend::Tensor gate_neuron_scale,
-    mfq_tensor_backend::Tensor gate_codebook,
-    mfq_tensor_backend::Tensor up_indices,
-    mfq_tensor_backend::Tensor up_aux,
-    mfq_tensor_backend::Tensor up_sub_scale,
-    mfq_tensor_backend::Tensor up_neuron_scale,
-    mfq_tensor_backend::Tensor up_codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_gemv_swiglu_ws_cuda(
+    ::tyloi::Tensor gate_indices,
+    ::tyloi::Tensor gate_aux,
+    ::tyloi::Tensor gate_sub_scale,
+    ::tyloi::Tensor gate_neuron_scale,
+    ::tyloi::Tensor gate_codebook,
+    ::tyloi::Tensor up_indices,
+    ::tyloi::Tensor up_aux,
+    ::tyloi::Tensor up_sub_scale,
+    ::tyloi::Tensor up_neuron_scale,
+    ::tyloi::Tensor up_codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t gate_sub_bits,
@@ -8379,8 +8379,8 @@ mfq_tensor_backend::Tensor nvq_gemv_swiglu_ws_cuda(
     int64_t up_sub_bits,
     int64_t up_format,
     int64_t up_sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(gate_indices, gate_aux, gate_sub_scale, gate_neuron_scale, gate_codebook,
                  neuron_len, gs, gate_sub_bits, gate_format, gate_sign_mode);
     check_common(up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
@@ -8388,7 +8388,7 @@ mfq_tensor_backend::Tensor nvq_gemv_swiglu_ws_cuda(
     TYLOINFER_RUNTIME_CHECK(gate_format == up_format, "NVQ SwiGLU requires matching NVQ formats");
     TYLOINFER_RUNTIME_CHECK(gate_neuron_scale.numel() == up_neuron_scale.numel(),
                 "NVQ SwiGLU gate/up output widths must match");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() &&
                 x.dim() == 2 && x.size(0) == 1,
                 "NVQ SwiGLU x must be CUDA contiguous fp16 [1,K]");
     const int K = static_cast<int>(neuron_len);
@@ -8405,7 +8405,7 @@ mfq_tensor_backend::Tensor nvq_gemv_swiglu_ws_cuda(
         up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
         K, static_cast<int>(gs), static_cast<int>(up_sub_bits),
         static_cast<int>(up_format), static_cast<int>(up_sign_mode));
-    auto output = mfq_tensor_backend::empty({1, gate.N}, x.options());
+    auto output = ::tyloi::cuda::empty({1, gate.N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(1, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), qx.data_ptr<int8_t>(),
@@ -8454,18 +8454,18 @@ mfq_tensor_backend::Tensor nvq_gemv_swiglu_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
-    mfq_tensor_backend::Tensor gate_indices,
-    mfq_tensor_backend::Tensor gate_aux,
-    mfq_tensor_backend::Tensor gate_sub_scale,
-    mfq_tensor_backend::Tensor gate_neuron_scale,
-    mfq_tensor_backend::Tensor gate_codebook,
-    mfq_tensor_backend::Tensor up_indices,
-    mfq_tensor_backend::Tensor up_aux,
-    mfq_tensor_backend::Tensor up_sub_scale,
-    mfq_tensor_backend::Tensor up_neuron_scale,
-    mfq_tensor_backend::Tensor up_codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
+    ::tyloi::Tensor gate_indices,
+    ::tyloi::Tensor gate_aux,
+    ::tyloi::Tensor gate_sub_scale,
+    ::tyloi::Tensor gate_neuron_scale,
+    ::tyloi::Tensor gate_codebook,
+    ::tyloi::Tensor up_indices,
+    ::tyloi::Tensor up_aux,
+    ::tyloi::Tensor up_sub_scale,
+    ::tyloi::Tensor up_neuron_scale,
+    ::tyloi::Tensor up_codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t gate_sub_bits,
@@ -8474,8 +8474,8 @@ mfq_tensor_backend::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
     int64_t up_sub_bits,
     int64_t up_format,
     int64_t up_sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(gate_indices, gate_aux, gate_sub_scale, gate_neuron_scale, gate_codebook,
                  neuron_len, gs, gate_sub_bits, gate_format, gate_sign_mode);
     check_common(up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
@@ -8485,7 +8485,7 @@ mfq_tensor_backend::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
                 "NVQ2 ordered vec4 SwiGLU requires NVQ2 sub_bits=4 weights");
     TYLOINFER_RUNTIME_CHECK(gate_neuron_scale.numel() == up_neuron_scale.numel(),
                 "NVQ2 ordered vec4 SwiGLU gate/up output widths must match");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() &&
                 x.dim() == 2 && x.size(0) == 1 && x.size(1) == neuron_len,
                 "NVQ2 ordered vec4 SwiGLU x must be CUDA contiguous fp16 [1,K]");
     const int K = static_cast<int>(neuron_len);
@@ -8502,7 +8502,7 @@ mfq_tensor_backend::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
     const auto up = make_device_weight(
         up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
         K, static_cast<int>(gs), 4, kNvq2, static_cast<int>(up_sign_mode));
-    auto output = mfq_tensor_backend::empty({1, gate.N}, x.options());
+    auto output = ::tyloi::cuda::empty({1, gate.N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(1, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), qx.data_ptr<int8_t>(),
@@ -8518,17 +8518,17 @@ mfq_tensor_backend::Tensor nvq2_gemv_swiglu_vec4_ordered_ws_cuda(
 }
 
 void nvq_ffn_swiglu_quant_ws_cuda(
-    mfq_tensor_backend::Tensor gate_indices,
-    mfq_tensor_backend::Tensor gate_aux,
-    mfq_tensor_backend::Tensor gate_sub_scale,
-    mfq_tensor_backend::Tensor gate_neuron_scale,
-    mfq_tensor_backend::Tensor gate_codebook,
-    mfq_tensor_backend::Tensor up_indices,
-    mfq_tensor_backend::Tensor up_aux,
-    mfq_tensor_backend::Tensor up_sub_scale,
-    mfq_tensor_backend::Tensor up_neuron_scale,
-    mfq_tensor_backend::Tensor up_codebook,
-    mfq_tensor_backend::Tensor x,
+    ::tyloi::Tensor gate_indices,
+    ::tyloi::Tensor gate_aux,
+    ::tyloi::Tensor gate_sub_scale,
+    ::tyloi::Tensor gate_neuron_scale,
+    ::tyloi::Tensor gate_codebook,
+    ::tyloi::Tensor up_indices,
+    ::tyloi::Tensor up_aux,
+    ::tyloi::Tensor up_sub_scale,
+    ::tyloi::Tensor up_neuron_scale,
+    ::tyloi::Tensor up_codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t gate_sub_bits,
@@ -8538,11 +8538,11 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     int64_t up_format,
     int64_t up_sign_mode,
     int64_t down_gs,
-    mfq_tensor_backend::Tensor input_qx,
-    mfq_tensor_backend::Tensor input_xscale,
-    mfq_tensor_backend::Tensor output_qx,
-    mfq_tensor_backend::Tensor output_xscale,
-    mfq_tensor_backend::Tensor swiglu_scratch) {
+    ::tyloi::Tensor input_qx,
+    ::tyloi::Tensor input_xscale,
+    ::tyloi::Tensor output_qx,
+    ::tyloi::Tensor output_xscale,
+    ::tyloi::Tensor swiglu_scratch) {
     check_common(gate_indices, gate_aux, gate_sub_scale, gate_neuron_scale, gate_codebook,
                  neuron_len, gs, gate_sub_bits, gate_format, gate_sign_mode);
     check_common(up_indices, up_aux, up_sub_scale, up_neuron_scale, up_codebook,
@@ -8550,7 +8550,7 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     TYLOINFER_RUNTIME_CHECK(gate_format == up_format, "NVQ fused FFN requires matching gate/up formats");
     TYLOINFER_RUNTIME_CHECK(gate_neuron_scale.numel() == up_neuron_scale.numel(),
                 "NVQ fused FFN gate/up widths must match");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() &&
                 x.dim() == 2 && x.size(0) == 1 && x.size(1) == neuron_len,
                 "NVQ fused FFN x must be CUDA contiguous fp16 [1,K]");
     TYLOINFER_RUNTIME_CHECK(down_gs == 24 || down_gs == 28 || down_gs == 32,
@@ -8561,19 +8561,19 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     const int N = static_cast<int>(gate_neuron_scale.numel());
     const int down_ng = (N + static_cast<int>(down_gs) - 1) / static_cast<int>(down_gs);
     const int down_k_pad = down_ng * static_cast<int>(down_gs);
-    TYLOINFER_RUNTIME_CHECK(input_qx.is_cuda() && input_qx.scalar_type() == mfq_tensor_backend::kInt8 &&
+    TYLOINFER_RUNTIME_CHECK(input_qx.is_cuda() && input_qx.scalar_type() == ::tyloi::kInt8 &&
                 input_qx.is_contiguous() && input_qx.numel() >= K_pad,
                 "NVQ fused FFN input qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(input_xscale.is_cuda() && input_xscale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(input_xscale.is_cuda() && input_xscale.scalar_type() == ::tyloi::kFloat32 &&
                 input_xscale.is_contiguous() && input_xscale.numel() >= ng,
                 "NVQ fused FFN input xscale workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(output_qx.is_cuda() && output_qx.scalar_type() == mfq_tensor_backend::kInt8 &&
+    TYLOINFER_RUNTIME_CHECK(output_qx.is_cuda() && output_qx.scalar_type() == ::tyloi::kInt8 &&
                 output_qx.is_contiguous() && output_qx.numel() >= down_k_pad,
                 "NVQ fused FFN output qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(output_xscale.is_cuda() && output_xscale.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(output_xscale.is_cuda() && output_xscale.scalar_type() == ::tyloi::kFloat32 &&
                 output_xscale.is_contiguous() && output_xscale.numel() >= down_ng,
                 "NVQ fused FFN output xscale workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(swiglu_scratch.is_cuda() && swiglu_scratch.scalar_type() == mfq_tensor_backend::kFloat32 &&
+    TYLOINFER_RUNTIME_CHECK(swiglu_scratch.is_cuda() && swiglu_scratch.scalar_type() == ::tyloi::kFloat32 &&
                 swiglu_scratch.is_contiguous() && swiglu_scratch.numel() >= N,
                 "NVQ fused FFN SwiGLU scratch mismatch");
     const auto gate = make_device_weight(
@@ -8589,8 +8589,8 @@ void nvq_ffn_swiglu_quant_ws_cuda(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), input_qx.data_ptr<int8_t>(),
         input_xscale.data_ptr<float>(), 1, K, ng);
     bool aligned_independent_rows = false;
-    const char * vec4_env = mfq::cuda::env_lookup("TYLOINFER_NVQ_SWIGLU_VEC4");
-    if (vec4_env == nullptr) vec4_env = mfq::cuda::env_lookup("TYLOINFER_NIQ_SWIGLU_VEC4");
+    const char * vec4_env = tyloi::cuda::env_lookup("TYLOINFER_NVQ_SWIGLU_VEC4");
+    if (vec4_env == nullptr) vec4_env = tyloi::cuda::env_lookup("TYLOINFER_NIQ_SWIGLU_VEC4");
     const bool use_vec4 = vec4_env == nullptr || vec4_env[0] != '0';
     if (gate_format == kNvq2JscXLGroupExec &&
         gate_sub_bits == 4 && up_sub_bits == 4) {
@@ -8680,28 +8680,28 @@ void nvq_ffn_swiglu_quant_ws_cuda(
     TYLOINFER_RUNTIME_CHECK(cudaGetLastError() == cudaSuccess, "NVQ fused FFN kernel launch failed");
 }
 
-mfq_tensor_backend::Tensor nvq_gemv_gate_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor gate,
+::tyloi::Tensor nvq_gemv_gate_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor gate,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ gate mode must be 1(sigmoid) or 2(silu)");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() && x.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
                 "NVQ x must be CUDA contiguous fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.scalar_type() == mfq_tensor_backend::kFloat16 && gate.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.scalar_type() == ::tyloi::kFloat16 && gate.is_contiguous() &&
                 gate.sizes() == x.sizes(), "NVQ gate must be CUDA contiguous fp16 with x shape");
     const int M = static_cast<int>(x.size(0));
     const int K = static_cast<int>(neuron_len);
@@ -8710,14 +8710,14 @@ mfq_tensor_backend::Tensor nvq_gemv_gate_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ x width must equal neuron_len");
     TYLOINFER_RUNTIME_CHECK(M >= 1 && M <= 16, "NVQ gated direct GEMV supports M in [1,16]");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= static_cast<int64_t>(M) * K_pad, "NVQ qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= static_cast<int64_t>(M) * ng, "NVQ xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     if (mode == 1) {
         nvq_quantize_x_gate_gs24_kernel<1><<<dim3(M, ng), 32, 0, stream>>>(
@@ -8746,23 +8746,23 @@ mfq_tensor_backend::Tensor nvq_gemv_gate_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_mmq_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
+::tyloi::Tensor nvq_mmq_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() && x.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
                 "NVQ x must be CUDA contiguous fp16 rank-2");
     const int M = static_cast<int>(x.size(0));
     const int K = static_cast<int>(neuron_len);
@@ -8771,14 +8771,14 @@ mfq_tensor_backend::Tensor nvq_mmq_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ x width must equal neuron_len");
     TYLOINFER_RUNTIME_CHECK(M >= 4 && M <= 64, "NVQ MMA MMQ supports M in [4,64]");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= static_cast<int64_t>(M) * K_pad, "NVQ qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= static_cast<int64_t>(M) * ng, "NVQ xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     nvq_quantize_x_gs24_kernel<<<dim3(M, ng), 32, 0, stream>>>(
         reinterpret_cast<const __half *>(x.data_ptr<mfq_half>()), qx.data_ptr<int8_t>(),
@@ -8816,28 +8816,28 @@ mfq_tensor_backend::Tensor nvq_mmq_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_mmq_gate_ws_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor gate,
+::tyloi::Tensor nvq_mmq_gate_ws_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor gate,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
     int64_t format,
     int64_t sign_mode,
     int64_t mode,
-    mfq_tensor_backend::Tensor qx,
-    mfq_tensor_backend::Tensor xscale) {
+    ::tyloi::Tensor qx,
+    ::tyloi::Tensor xscale) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
     TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ gate mode must be 1(sigmoid) or 2(silu)");
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == mfq_tensor_backend::kFloat16 && x.is_contiguous() && x.dim() == 2,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.scalar_type() == ::tyloi::kFloat16 && x.is_contiguous() && x.dim() == 2,
                 "NVQ x must be CUDA contiguous fp16 rank-2");
-    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.scalar_type() == mfq_tensor_backend::kFloat16 && gate.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(gate.is_cuda() && gate.scalar_type() == ::tyloi::kFloat16 && gate.is_contiguous() &&
                 gate.sizes() == x.sizes(), "NVQ gate must be CUDA contiguous fp16 with x shape");
     const int M = static_cast<int>(x.size(0));
     const int K = static_cast<int>(neuron_len);
@@ -8846,14 +8846,14 @@ mfq_tensor_backend::Tensor nvq_mmq_gate_ws_cuda(
     const int K_pad = ng * static_cast<int>(gs);
     TYLOINFER_RUNTIME_CHECK(x.size(1) == K, "NVQ x width must equal neuron_len");
     TYLOINFER_RUNTIME_CHECK(M >= 4 && M <= 64, "NVQ gated MMA MMQ supports M in [4,64]");
-    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == mfq_tensor_backend::kInt8 && qx.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(qx.is_cuda() && qx.scalar_type() == ::tyloi::kInt8 && qx.is_contiguous() &&
                 qx.numel() >= static_cast<int64_t>(M) * K_pad, "NVQ qx workspace mismatch");
-    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == mfq_tensor_backend::kFloat32 && xscale.is_contiguous() &&
+    TYLOINFER_RUNTIME_CHECK(xscale.is_cuda() && xscale.scalar_type() == ::tyloi::kFloat32 && xscale.is_contiguous() &&
                 xscale.numel() >= static_cast<int64_t>(M) * ng, "NVQ xscale workspace mismatch");
     const int nvec = (K + (is_d4_format(format) ? 3 : 7)) /
                      (is_d4_format(format) ? 4 : 8);
     const int nsign = (K + 7) / 8;
-    auto output = mfq_tensor_backend::empty({M, N}, x.options());
+    auto output = ::tyloi::cuda::empty({M, N}, x.options());
     cudaStream_t stream = mfq_current_cuda_stream();
     if (mode == 1) {
         nvq_quantize_x_gate_gs24_kernel<1><<<dim3(M, ng), 32, 0, stream>>>(
@@ -8899,13 +8899,13 @@ mfq_tensor_backend::Tensor nvq_mmq_gate_ws_cuda(
     return output;
 }
 
-mfq_tensor_backend::Tensor nvq_embedding_lookup_cuda(
-    mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor aux,
-    mfq_tensor_backend::Tensor sub_scale,
-    mfq_tensor_backend::Tensor neuron_scale,
-    mfq_tensor_backend::Tensor codebook,
-    mfq_tensor_backend::Tensor token_ids,
+::tyloi::Tensor nvq_embedding_lookup_cuda(
+    ::tyloi::Tensor indices,
+    ::tyloi::Tensor aux,
+    ::tyloi::Tensor sub_scale,
+    ::tyloi::Tensor neuron_scale,
+    ::tyloi::Tensor codebook,
+    ::tyloi::Tensor token_ids,
     int64_t neuron_len,
     int64_t gs,
     int64_t sub_bits,
@@ -8913,7 +8913,7 @@ mfq_tensor_backend::Tensor nvq_embedding_lookup_cuda(
     int64_t sign_mode) {
     check_common(indices, aux, sub_scale, neuron_scale, codebook,
                  neuron_len, gs, sub_bits, format, sign_mode);
-    TYLOINFER_RUNTIME_CHECK(token_ids.is_cuda() && token_ids.scalar_type() == mfq_tensor_backend::kInt64 && token_ids.is_contiguous(),
+    TYLOINFER_RUNTIME_CHECK(token_ids.is_cuda() && token_ids.scalar_type() == ::tyloi::kInt64 && token_ids.is_contiguous(),
                 "NVQ token_ids must be CUDA contiguous int64");
     const int tokens = static_cast<int>(token_ids.numel());
     const int vocab = static_cast<int>(neuron_scale.numel());
@@ -8924,7 +8924,7 @@ mfq_tensor_backend::Tensor nvq_embedding_lookup_cuda(
     const int nsign = (K + 7) / 8;
     auto shape = token_ids.sizes().vec();
     shape.push_back(K);
-    auto output = mfq_tensor_backend::empty(shape, neuron_scale.options().dtype(mfq_tensor_backend::kFloat16));
+    auto output = ::tyloi::cuda::empty(shape, neuron_scale.options().dtype(::tyloi::kFloat16));
     const int64_t total = static_cast<int64_t>(tokens) * nsign;
     const int block = 256;
     const int grid = static_cast<int>(std::min<int64_t>((total + block - 1) / block, 65535));

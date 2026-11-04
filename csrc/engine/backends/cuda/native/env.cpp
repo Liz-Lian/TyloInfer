@@ -10,7 +10,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 
 // Retired knob names that still steer their renamed successor.  Consulted only
@@ -92,7 +92,7 @@ bool env_flag(const char* name, bool when_unset) {
 }
 
 std::optional<std::string> env_value(const char* name) {
-    const char* value = mfq::cuda::env_lookup(name);
+    const char* value = tyloi::cuda::env_lookup(name);
     if (value == nullptr || value[0] == '\0') return std::nullopt;
     return value;
 }
@@ -188,4 +188,4 @@ std::string env_dump() {
     return text;
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 inline constexpr const char* kTokenizerGgufAsset = "__mfq_asset__/tokenizer.gguf";
 
@@ -109,4 +109,4 @@ public:
 
 } // namespace source
 
-} // namespace mfq
+} // namespace tyloi

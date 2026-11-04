@@ -25,17 +25,17 @@
 #include <string>
 #include <utility>
 
-namespace mfq::cuda::internal {
-using mfq::engine::Generation;
+namespace tyloi::cuda::internal {
+using tyloi::engine::Generation;
 namespace generation_detail {
 
 template <class Model, class State, class Predictor> struct RequestOps {
-    using Hidden = mfq_tensor_backend::Tensor;
+    using Hidden = ::tyloi::Tensor;
     using Restore = TextSessionRestore;
     Model &model;
     State &state;
-    mfq::cuda::Executor* executor;
-    mfq::cuda::Collectives& collectives;
+    tyloi::cuda::Executor* executor;
+    tyloi::cuda::Collectives& collectives;
     const Executor::Mode mode;
     CudaProfiler& profiler;
     RoutedCache& weights;
@@ -43,15 +43,15 @@ template <class Model, class State, class Predictor> struct RequestOps {
     bool report_memory;
     bool graph_allowed;
     std::function<void()> drain;
-    const mfq::models::Info &info;
-    const mfq::ModelSource* source;
+    const tyloi::models::Info &info;
+    const tyloi::ModelSource* source;
     DecodeGraphCache &graph;
     TextSessionCache &cache;
     const CudaRuntimeConfig &config;
-    mfq::engine::mtp::State &mtp_state;
+    tyloi::engine::mtp::State &mtp_state;
     Predictor *mtp;
     std::optional<PreparedPrompt> prepared;
-    mfq::engine::Batch* batching;
+    tyloi::engine::Batch* batching;
     std::string request_id;
     std::function<void()> restore;
 
@@ -60,7 +60,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         // Request/first-token boundaries only: existing counters need no
         // events or per-token synchronization. Full summaries drain exchanges.
         static const bool enabled=[] {
-            const char* value=mfq::cuda::env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
+            const char* value=tyloi::cuda::env_lookup("TYLOINFER_TRACE_MOE_SUMMARY");
             return value && value[0] && value[0]!='0';
         }();
         if (!enabled || batching || std::uncaught_exceptions()) return;
@@ -85,7 +85,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
                 <<" read_ms="<<double(io.read_nanoseconds)/1e6<<'\n';
         }
     }
-    void prepare_request(const mfq::engine::InferenceRequest& input) {
+    void prepare_request(const tyloi::engine::InferenceRequest& input) {
         trace_expert_cache("begin");
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         generation_request(model,*this,input);
@@ -95,7 +95,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         {
             reserve_moe_workspace(weights.moe,bytes);
-            auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+            auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
             auto available=context->available_memory();
             if(available>=bytes)return;
             std::size_t hot=0;
@@ -125,30 +125,30 @@ template <class Model, class State, class Predictor> struct RequestOps {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         const bool allow_borrow=generation_borrow(model,tokens,prepared?&*prepared:nullptr);
         auto budget=moe_prefill_workspace_budget(weights.moe,allow_borrow);
-        const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
-        auto available=mfq::engine::prefill_budget_add(
-            mfq::engine::prefill_budget_add(context->available_memory(),context->workspace_available()),
+        const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
+        auto available=tyloi::engine::prefill_budget_add(
+            tyloi::engine::prefill_budget_add(context->available_memory(),context->workspace_available()),
             budget.lendable_bytes);
         const auto row_bytes=info.prefill_row_bytes;
         const auto sequence_bytes=allow_borrow
             ? std::size_t(tokens<=16384?tokens:std::min<std::size_t>(tokens,limit))*row_bytes*3/8 : 0;
         const auto reserve=moe_expert_cache_ssd_experts(weights.moe)
-            ? std::max(std::size_t(1)<<30,mfq::cuda::runtime_options::workspace_reserve_bytes())
+            ? std::max(std::size_t(1)<<30,tyloi::cuda::runtime_options::workspace_reserve_bytes())
             : std::size_t(1)<<30;
-        const auto fixed=mfq::engine::prefill_budget_add(reserve+sequence_bytes,budget.transfer_bytes);
-        const auto wanted=std::min<int64_t>({int64_t(tokens),limit,mfq::engine::max_prefill_compute_chunk});
-        const auto required=mfq::engine::prefill_budget_add(fixed,std::size_t(wanted)*row_bytes);
+        const auto fixed=tyloi::engine::prefill_budget_add(reserve+sequence_bytes,budget.transfer_bytes);
+        const auto wanted=std::min<int64_t>({int64_t(tokens),limit,tyloi::engine::max_prefill_compute_chunk});
+        const auto required=tyloi::engine::prefill_budget_add(fixed,std::size_t(wanted)*row_bytes);
         if(required>available) {
             // Expert overflow in the unused KV budget is revocable too. Ask
             // its existing owner to return pages before reducing the tile.
             reserve_workspace(required>budget.lendable_bytes?required-budget.lendable_bytes:0);
             budget=moe_prefill_workspace_budget(weights.moe,allow_borrow);
-            available=mfq::engine::prefill_budget_add(
+            available=tyloi::engine::prefill_budget_add(
                 context->available_memory()+context->workspace_available(),budget.lendable_bytes);
         }
-        const auto selected=mfq::engine::select_prefill_chunk(tokens,limit,available,fixed,row_bytes);
-        if(!selected)throw mfq::engine::InferenceInputError(
-            mfq::engine::InferenceInputErrorCode::ContextLength,
+        const auto selected=tyloi::engine::select_prefill_chunk(tokens,limit,available,fixed,row_bytes);
+        if(!selected)throw tyloi::engine::InferenceInputError(
+            tyloi::engine::InferenceInputErrorCode::ContextLength,
             "insufficient CUDA workspace for prefill computation and expert transfer buffers");
         std::cerr<<"runtime_prefill_plan mode="<<(config.prefill_chunk_auto?"auto":"limited")
             <<" tokens="<<tokens<<" limit="<<limit<<" compute_chunk="<<selected
@@ -169,11 +169,11 @@ template <class Model, class State, class Predictor> struct RequestOps {
         const bool streamed=tokens>8 && moe_expert_cache_ssd_experts(weights.moe);
         generation_prefill_begin(model,graph,streamed);
         const bool retained=streamed && lend_moe_decode_cache_for_prefill(weights.moe,
-            mfq::cuda::runtime_options::workspace_reserve_bytes());
+            tyloi::cuda::runtime_options::workspace_reserve_bytes());
         generation_prefill_end(model,*this,streamed,retained);
 #endif
         if(tokens>1024 || moe_expert_cache_ssd_experts(weights.moe))
-            reserve_workspace(mfq::cuda::runtime_options::workspace_reserve_bytes());
+            reserve_workspace(tyloi::cuda::runtime_options::workspace_reserve_bytes());
     }
     bool prepare_snapshot() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -194,7 +194,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
             if(hot>target)cache.trim_hot(target);
             const auto needed=size.peak+(std::size_t(64)<<20);
             reserve_workspace(needed);
-            const auto available=mfq::cuda::default_context(mfq_current_cuda_device())->available_memory();
+            const auto available=tyloi::cuda::default_context(mfq_current_cuda_device())->available_memory();
             if(available<needed) {
                 std::cerr<<"runtime_session_cache action=skip reason=workspace_pressure"
                     <<" requested_bytes="<<needed<<" available_bytes="<<available<<'\n';
@@ -221,7 +221,7 @@ template <class Model, class State, class Predictor> struct RequestOps {
         catch (...) { graph.invalidate(); throw; }
         if (std::uncaught_exceptions()) graph.invalidate();
     }
-    Generation plain(mfq::engine::InferenceRequest& input, mfq::engine::InferenceOutput& output,
+    Generation plain(tyloi::engine::InferenceRequest& input, tyloi::engine::InferenceOutput& output,
                      size_t reused, size_t stable) {
         if (batching) return batching->generate(request_id, input, output);
         prepare_prefill_workspace(input.prompt.size()-reused);
@@ -233,14 +233,14 @@ template <class Model, class State, class Predictor> struct RequestOps {
         }
         auto graph_options = config.decode_graph;
         graph_options.enabled &= graph_allowed;
-        return mfq::engine::generate_sequence(
+        return tyloi::engine::generate_sequence(
             CudaGenerationOps<Model, State>(model, state, executor, collectives,
                 mode, profiler, weights, serial_branches, report_memory, info, graph, input,
                 prepared ? &*prepared : nullptr,
                 graph_options,compute_chunk,&output,restore),
             output, input.prompt.size(), reused, stable,logical_chunk);
     }
-    Generation speculate(mfq::engine::InferenceRequest &input, mfq::engine::InferenceOutput &output,
+    Generation speculate(tyloi::engine::InferenceRequest &input, tyloi::engine::InferenceOutput &output,
         size_t reused, Hidden restored, Hidden *committed) {
         if constexpr (has_forward<Model, State> && !requires {
             replay(model, state, *executor, int64_t{});
@@ -265,20 +265,20 @@ template <class Model, class State, class Predictor> struct RequestOps {
 } // namespace generation_detail
 
 template <typename Model, typename State, typename Predictor>
-Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
-    mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
-    CudaProfiler& profiler, mfq::cuda::RoutedCache& weights,
+Generation generate(Model &model, State &state, tyloi::cuda::Executor* executor,
+    tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
+    CudaProfiler& profiler, tyloi::cuda::RoutedCache& weights,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
-    const mfq::models::Info &info, const mfq::ModelSource* source,
+    const tyloi::models::Info &info, const tyloi::ModelSource* source,
     DecodeGraphCache &graph, TextSessionCache &cache,
-    const CudaRuntimeConfig &config, mfq::engine::InferenceRequest &request,
-    mfq::engine::InferenceOutput &output, mfq::engine::mtp::State &mtp_state,
+    const CudaRuntimeConfig &config, tyloi::engine::InferenceRequest &request,
+    tyloi::engine::InferenceOutput &output, tyloi::engine::mtp::State &mtp_state,
     Predictor *mtp,
     std::optional<PreparedPrompt> prepared,
-    mfq::engine::Batch* batching, std::string request_id,
+    tyloi::engine::Batch* batching, std::string request_id,
     std::function<void()> restore) {
-    return mfq::engine::generate_request(
+    return tyloi::engine::generate_request(
         generation_detail::RequestOps<Model, State, Predictor>{model, state, executor, collectives, mode,
                                      profiler, weights, serial_branches, report_memory, graph_allowed,
                                      std::move(drain), info, source, graph, cache, config, mtp_state,
@@ -288,4 +288,4 @@ Generation generate(Model &model, State &state, mfq::cuda::Executor* executor,
         request,
         output);
 }
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

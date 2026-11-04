@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 // Only cold GU routes enter this grid. Four workers cover the common small
 // miss count; a worker loops over further routes without changing their slots.

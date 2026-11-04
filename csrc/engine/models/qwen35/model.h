@@ -19,10 +19,10 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
-using Tensor = mfq_tensor_backend::Tensor;
-using Config = mfq::models::qwen35::Config;
+using Tensor = ::tyloi::Tensor;
+using Config = tyloi::models::qwen35::Config;
 
 struct Full {
     FullAttention attention;
@@ -43,15 +43,15 @@ struct Layer {
     int device = 0;
     bool cpu = false;
 
-    std::array<mfq::cuda::Task, 2> tasks() const;
+    std::array<tyloi::cuda::Task, 2> tasks() const;
 };
 
 struct Model {
-    std::shared_ptr<const mfq::ModelSource> source;
-    mfq::ModelGraph graph;
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
     Config config;
-    mfq::models::CausalLmMetadata metadata;
+    tyloi::models::CausalLmMetadata metadata;
     RopeCache rope;
     RopeCache cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
@@ -60,8 +60,8 @@ struct Model {
     Tensor output_norm;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor embedding(mfq::Tensor ids, int primary = 0) const;
+    tyloi::Tensor embedding(tyloi::Tensor ids, int primary = 0) const;
 #endif
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

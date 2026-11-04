@@ -1,7 +1,7 @@
 #include "quant_dot.h"
 #include <immintrin.h>
 
-namespace mfq::cpu::detail {
+namespace tyloi::cpu::detail {
 float scaled_i8_dot_avx2(const std::int8_t* weights, const float* input, int count, float scale) {
     __m256 sum=_mm256_setzero_ps();
     const auto multiplier=_mm256_set1_ps(scale);
@@ -19,4 +19,4 @@ float scaled_i8_dot_avx2(const std::int8_t* weights, const float* input, int cou
     for (; i<count; ++i) result += (scale*weights[i])*input[i];
     return result;
 }
-} // namespace mfq::cpu::detail
+} // namespace tyloi::cpu::detail

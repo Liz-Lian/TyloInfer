@@ -7,7 +7,7 @@
 #include <vector>
 
 namespace mfq_qwen4_exp {
-using mfq_tensor_backend::Tensor;
+using ::tyloi::Tensor;
 void fill_decode_positions(const Tensor& cache_positions, const Tensor& positions,
     int64_t start, int64_t delta=0);
 
@@ -35,15 +35,15 @@ std::vector<Tensor> ple_dilated_conv_silu(
     const Tensor&, const Tensor&, const std::optional<Tensor>& state,
     int64_t dilation);
 Tensor dense_gqa_attention(
-    const Tensor&, const Tensor&, const Tensor&, int64_t offset, mfq::cuda::HotKvView hot = {});
+    const Tensor&, const Tensor&, const Tensor&, int64_t offset, tyloi::cuda::HotKvView hot = {});
 Tensor sparse_gqa_attention(
-    const Tensor&, const Tensor&, const Tensor&, const Tensor& indices, mfq::cuda::HotKvView hot = {});
+    const Tensor&, const Tensor&, const Tensor&, const Tensor& indices, tyloi::cuda::HotKvView hot = {});
 Tensor sparse_gqa_attention_gate(const Tensor&, const Tensor&, const Tensor&,
-    const Tensor& indices, const Tensor& gate, bool half_output, mfq::cuda::HotKvView hot = {});
+    const Tensor& indices, const Tensor& gate, bool half_output, tyloi::cuda::HotKvView hot = {});
 Tensor qsa_selected_tokens(const Tensor& blocks, const Tensor& positions,
     int64_t pool, int64_t budget);
 Tensor attention_gate(const Tensor& attended, const Tensor& gate, bool half_output);
 Tensor causal_gqa_attention_gate(const Tensor&, const Tensor&, const Tensor&,
-    const Tensor& positions, const Tensor& gate, int64_t columns, bool half_output, mfq::cuda::HotKvView hot = {});
+    const Tensor& positions, const Tensor& gate, int64_t columns, bool half_output, tyloi::cuda::HotKvView hot = {});
 
 } // namespace mfq_qwen4_exp

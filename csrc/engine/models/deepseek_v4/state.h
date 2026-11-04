@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::cuda::deepseek_v4 {
-using Tensor = mfq_tensor_backend::Tensor;
+namespace tyloi::cuda::deepseek_v4 {
+using Tensor = ::tyloi::Tensor;
 struct Model;
 
 struct PoolState {
@@ -44,4 +44,4 @@ private:
     struct Layout { int device; int64_t head_dim, max_positions; };
     std::vector<Layout> layout_;
 };
-} // namespace mfq::cuda::deepseek_v4
+} // namespace tyloi::cuda::deepseek_v4

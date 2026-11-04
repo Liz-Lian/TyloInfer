@@ -2,7 +2,7 @@
 #include "mfe_ffn.h"
 #include <cuda_bf16.h>
 
-namespace mfq::cuda { namespace {
+namespace tyloi::cuda { namespace {
 // The transfer wait proves that every routed projection already completed.
 // Consecutive lanes combine consecutive output columns in the original FMA order.
 template<int Tile>

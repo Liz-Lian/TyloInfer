@@ -8,7 +8,7 @@
 #include <vector>
 #include "components/io/read_span.h"
 
-namespace mfq {
+namespace tyloi {
 // Index over a canonical NVQ/NPQ tensor. Only its compact header and
 // codebook are retained; anchors and packed streams stay in the source.
 class NvqRows {
@@ -49,4 +49,4 @@ private:
     int format_=0,state_bits_=0,index_bits_=0,aux_bits_=0;
     bool group64_=false;
 };
-} // namespace mfq
+} // namespace tyloi

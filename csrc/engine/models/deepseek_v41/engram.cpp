@@ -13,8 +13,7 @@
 #include <map>
 #include <thread>
 
-namespace mfq::cuda::deepseek_v41_runtime {
-namespace tb = mfq_tensor_backend;
+namespace tyloi::cuda::deepseek_v41_runtime {
 namespace {
 struct RowPacket {
     std::vector<std::uint8_t> packed;
@@ -25,38 +24,38 @@ struct RowPacket {
 // The pinned packet and completion event follow the PLE row stage lifetime:
 // CPU publication must wait for the preceding DMA to finish reading it.
 struct RowStage {
-    mfq::cuda::HostBuffer host;
-    tb::Tensor packet;
-    mfq::cuda::Event uploaded;
+    tyloi::cuda::HostBuffer host;
+    ::tyloi::Tensor packet;
+    tyloi::cuda::Event uploaded;
     bool pending = false;
-    RowStage(std::size_t bytes, const tb::Device& device)
-        : host(bytes), packet(tb::empty({static_cast<int64_t>(bytes)},
-              tb::TensorOptions().device(device).dtype(tb::kUInt8))) {
-        mfq::cuda::charge_tensor_host_bytes(bytes);
+    RowStage(std::size_t bytes, const ::tyloi::Device& device)
+        : host(bytes), packet(::tyloi::cuda::empty({static_cast<int64_t>(bytes)},
+              ::tyloi::TensorOptions().device(device).dtype(::tyloi::kUInt8))) {
+        tyloi::cuda::charge_tensor_host_bytes(bytes);
     }
     ~RowStage() {
         if (pending) {
             try { uploaded.synchronize(); } catch (...) {}
         }
-        mfq::cuda::tensor_host_bytes.fetch_sub(host.size());
+        tyloi::cuda::tensor_host_bytes.fetch_sub(host.size());
     }
 };
 }
 
 struct EngramTable::Impl {
-    const mfq::source::Source& source;
+    const tyloi::source::Source& source;
     std::string name;
     std::uint64_t rows, value_bytes;
     int width;
     std::size_t capacity, row_bytes;
-    mfq::source::Source::TensorBatchReader read_batch;
+    tyloi::source::Source::TensorBatchReader read_batch;
     struct CacheEntry {
         std::vector<std::uint8_t> packed;
         std::list<std::int64_t>::iterator recency;
     };
     std::list<std::int64_t> recency;
     std::unordered_map<std::int64_t, CacheEntry> cache;
-    mfq::HostParallelPool read_pool{{}, false};
+    tyloi::HostParallelPool read_pool{{}, false};
     std::vector<std::int64_t> current_ids;
     std::future<RowPacket> pending;
     std::optional<RowPacket> ready;
@@ -68,17 +67,17 @@ struct EngramTable::Impl {
     std::unique_ptr<RowStage> stage;
     std::shared_ptr<NintRowPipeline> nint_pipeline;
     std::shared_ptr<NintRowStage> nint_stage;
-    std::unique_ptr<mfq::cuda::Event> nint_done;
+    std::unique_ptr<tyloi::cuda::Event> nint_done;
     bool nint_pending=false;
     std::size_t nint_stage_rows=0;
-    std::shared_ptr<mfq::TqTable> tq_table;
+    std::shared_ptr<tyloi::TqTable> tq_table;
 
-    Impl(const mfq::source::Source& data, std::string tensor, std::uint64_t count,
-         int columns, std::uint64_t values, std::size_t cache_rows,std::shared_ptr<mfq::NintRows> nint)
+    Impl(const tyloi::source::Source& data, std::string tensor, std::uint64_t count,
+         int columns, std::uint64_t values, std::size_t cache_rows,std::shared_ptr<tyloi::NintRows> nint)
         : source(data), name(std::move(tensor)), rows(count), value_bytes(values),
           width(columns), capacity(cache_rows), row_bytes(columns + columns / 32) {
-        if(mfq::is_tq_table(source,name)) {
-            tq_table=mfq::tq_table(source,name);
+        if(tyloi::is_tq_table(source,name)) {
+            tq_table=tyloi::tq_table(source,name);
             if(tq_table->rows()!=rows || tq_table->width()!=width)
                 throw std::invalid_argument("TQ Engram table shape differs");
             return;
@@ -86,7 +85,7 @@ struct EngramTable::Impl {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
         if(nint) {
             nint_pipeline=std::make_shared<NintRowPipeline>(std::vector{std::move(nint)},
-                std::make_shared<mfq::NintRowCache>(cache_rows));
+                std::make_shared<tyloi::NintRowCache>(cache_rows));
             return;
         }
 #endif
@@ -126,7 +125,7 @@ struct EngramTable::Impl {
         }
         // Values and scales occupy separate table streams. Submit all selected
         // pages together, exactly as the PLE batch reader does for NINT streams.
-        std::vector<mfq::ReadSpan> spans;
+        std::vector<tyloi::ReadSpan> spans;
         spans.reserve(misses.size() * 2);
         for (int scale = 0; scale < 2; ++scale) for (auto [id, location] : misses) {
             const auto count = scale ? width / 32 : width;
@@ -137,7 +136,7 @@ struct EngramTable::Impl {
         }
         if (!spans.empty()) {
             if (read_batch) {
-                mfq::MappedPrefetchScope prefetch(misses.size() > 128);
+                tyloi::MappedPrefetchScope prefetch(misses.size() > 128);
                 read_batch(spans);
             }
             else read_pool.run(0, spans.size(), 32,
@@ -203,8 +202,8 @@ struct EngramTable::Impl {
     }
 };
 
-EngramTable::EngramTable(const mfq::source::Source& source, std::string name, std::uint64_t,
-    std::int64_t rows, int width, std::uint64_t values, std::size_t capacity,std::shared_ptr<mfq::NintRows> nint)
+EngramTable::EngramTable(const tyloi::source::Source& source, std::string name, std::uint64_t,
+    std::int64_t rows, int width, std::uint64_t values, std::size_t capacity,std::shared_ptr<tyloi::NintRows> nint)
     : impl_(std::make_unique<Impl>(source, std::move(name), rows, width, values, capacity,std::move(nint))) {}
 EngramTable::~EngramTable() = default;
 
@@ -224,7 +223,7 @@ void EngramTable::prefetch(const std::int64_t* rows, std::size_t count) const {
 }
 
 EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens, int columns,
-                                const tb::Device& device) const {
+                                const ::tyloi::Device& device) const {
     if (batch <= 0 || tokens <= 0 || columns <= 0 || !device.is_cuda())
         throw std::invalid_argument("DeepSeek-V4.1 Engram lookup geometry disagrees");
     auto& s = *impl_;
@@ -240,7 +239,7 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
         if(!s.nint_stage || s.nint_stage_rows!=count || s.nint_stage->output().device()!=device) {
             s.nint_stage=s.nint_pipeline->make_stage(shape,device);s.nint_stage_rows=count;
         }
-        if(!s.nint_done)s.nint_done=std::make_unique<mfq::cuda::Event>(cudaEventDisableTiming);
+        if(!s.nint_done)s.nint_done=std::make_unique<tyloi::cuda::Event>(cudaEventDisableTiming);
         s.nint_pipeline->upload(*s.nint_stage,std::vector<int64_t>(rows,rows+count),shape);
         s.nint_stage->decode();
         s.nint_done->record(mfq_current_cuda_stream());s.nint_pending=true;
@@ -267,10 +266,10 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
                                    mfq_current_cuda_stream()));
     auto options = stage.packet.options();
     auto* data = stage.packet.data_ptr<std::uint8_t>();
-    auto packed = tb::from_blob(data, {static_cast<int64_t>(selected.unique),
+    auto packed = ::tyloi::cuda::from_blob(data, {static_cast<int64_t>(selected.unique),
                                       static_cast<int64_t>(s.row_bytes)}, options);
-    auto inverse = tb::from_blob(data + inverse_offset, {static_cast<int64_t>(count)},
-                                 options.dtype(tb::kInt64));
+    auto inverse = ::tyloi::cuda::from_blob(data + inverse_offset, {static_cast<int64_t>(count)},
+                                 options.dtype(::tyloi::kInt64));
     auto output = deepseek_v41_engram_rows_cuda(packed, inverse, s.width)
         .reshape({batch, tokens, static_cast<int64_t>(columns) * s.width});
     stage.uploaded.record(mfq_current_cuda_stream());
@@ -278,10 +277,10 @@ EngramTensor EngramTable::gather(const std::int64_t* rows, int batch, int tokens
     return output;
 }
 
-std::shared_ptr<EngramTable> EngramTable::load(const mfq::source::Source &model, const std::string &name,
+std::shared_ptr<EngramTable> EngramTable::load(const tyloi::source::Source &model, const std::string &name,
                                              std::int64_t expected_rows, int expected_width,
                                              std::size_t cache_capacity_rows) {
-        if(mfq::is_tq_table(model,name))return std::shared_ptr<EngramTable>(new EngramTable(model,name,0,
+        if(tyloi::is_tq_table(model,name))return std::shared_ptr<EngramTable>(new EngramTable(model,name,0,
             expected_rows,expected_width,0,cache_capacity_rows,{}));
         const auto record = require_tensor(model, name);
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -333,4 +332,4 @@ std::shared_ptr<EngramTable> EngramTable::load(const mfq::source::Source &model,
                             static_cast<int>(columns), value_bytes, cache_capacity_rows));
     }
 
-} // namespace mfq::cuda::deepseek_v41_runtime
+} // namespace tyloi::cuda::deepseek_v41_runtime

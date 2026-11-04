@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 GenerationPlan plan_generation(
         std::span<const std::int64_t> prompt,
@@ -58,4 +58,4 @@ PrefillChunk next_prefill_chunk(
     return {offset, count, offset + count == total_tokens};
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

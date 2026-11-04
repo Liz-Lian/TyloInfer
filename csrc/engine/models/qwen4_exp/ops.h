@@ -13,11 +13,11 @@
 #include <iosfwd>
 #include <vector>
 
-namespace mfq::cuda::qwen4_exp { struct Qwen4Block; }
-namespace mfq::cuda { class GatedResidual; }
+namespace tyloi::cuda::qwen4_exp { struct Qwen4Block; }
+namespace tyloi::cuda { class GatedResidual; }
 struct MtpModule;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 struct Qwen4DecodeGraph;
 class Qwen4BatchDecodeGraph;
 // A request owns recurrent, positional and attention state; weights stay shared.
@@ -34,26 +34,26 @@ class Qwen4BatchRequestState {
     struct Impl;
     std::unique_ptr<Impl> state_;
     friend class Qwen4BatchDecodeGraph;
-    friend std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(
+    friend std::vector<::tyloi::Tensor> qwen4_batch_prefill(
         Qwen4CausalLm&,const std::vector<Qwen4BatchRequestState*>&,
-        const std::vector<mfq_tensor_backend::Tensor>&);
-    friend mfq_tensor_backend::Tensor qwen4_batch_decode(
+        const std::vector<::tyloi::Tensor>&);
+    friend ::tyloi::Tensor qwen4_batch_decode(
         Qwen4CausalLm&, const std::vector<Qwen4BatchRequestState*>&,
-        mfq_tensor_backend::Tensor, const mfq_tensor_backend::Tensor&);
+        ::tyloi::Tensor, const ::tyloi::Tensor&);
 };
-std::vector<mfq_tensor_backend::Tensor> qwen4_batch_prefill(
+std::vector<::tyloi::Tensor> qwen4_batch_prefill(
     Qwen4CausalLm&,const std::vector<Qwen4BatchRequestState*>&,
-    const std::vector<mfq_tensor_backend::Tensor>&);
-mfq_tensor_backend::Tensor qwen4_batch_decode(
+    const std::vector<::tyloi::Tensor>&);
+::tyloi::Tensor qwen4_batch_decode(
     Qwen4CausalLm&, const std::vector<Qwen4BatchRequestState*>&,
-    mfq_tensor_backend::Tensor ids, const mfq_tensor_backend::Tensor& host_ids);
+    ::tyloi::Tensor ids, const ::tyloi::Tensor& host_ids);
 class Qwen4BatchDecodeGraph {
   public:
     explicit Qwen4BatchDecodeGraph(Qwen4CausalLm&);
     ~Qwen4BatchDecodeGraph();
-    std::optional<mfq_tensor_backend::Tensor> run(
+    std::optional<::tyloi::Tensor> run(
         const std::vector<Qwen4BatchRequestState*>&,
-        const mfq_tensor_backend::Tensor&,const mfq_tensor_backend::Tensor&,bool greedy=false);
+        const ::tyloi::Tensor&,const ::tyloi::Tensor&,bool greedy=false);
     void clear();
     int64_t captures() const;
     int64_t replays() const;
@@ -65,46 +65,46 @@ void qwen4_begin_router_lookahead_audit(Qwen4CausalLm&,int samples);
 void qwen4_finish_router_lookahead_audit(Qwen4CausalLm&,const std::string& prefix);
 void qwen4_set_rotary_fusion(Qwen4CausalLm&, bool enabled);
 void qwen4_set_attention_grouping(Qwen4CausalLm&, bool enabled);
-bool qwen4_prefetch_decode_ple(Qwen4CausalLm&,const mfq_tensor_backend::Tensor& host_ids);
-std::optional<mfq_tensor_backend::Tensor> qwen4_decode_graph_logits(
-    Qwen4CausalLm&,mfq_tensor_backend::Tensor,int,const mfq_tensor_backend::Tensor& host_ids={});
-std::optional<mfq_tensor_backend::Tensor> qwen4_decode_graph_hidden(
-    Qwen4CausalLm&,mfq_tensor_backend::Tensor,mfq_tensor_backend::Tensor* raw_hidden,int64_t confirmed=0,
-    bool* initialized=nullptr,const mfq_tensor_backend::Tensor& host_ids={},
-    mfq_tensor_backend::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
+bool qwen4_prefetch_decode_ple(Qwen4CausalLm&,const ::tyloi::Tensor& host_ids);
+std::optional<::tyloi::Tensor> qwen4_decode_graph_logits(
+    Qwen4CausalLm&,::tyloi::Tensor,int,const ::tyloi::Tensor& host_ids={});
+std::optional<::tyloi::Tensor> qwen4_decode_graph_hidden(
+    Qwen4CausalLm&,::tyloi::Tensor,::tyloi::Tensor* raw_hidden,int64_t confirmed=0,
+    bool* initialized=nullptr,const ::tyloi::Tensor& host_ids={},
+    ::tyloi::Tensor* logits=nullptr,std::vector<int32_t>* greedy_tokens=nullptr,bool compact_sampling=true);
 void qwen4_report_decode_graph(const Qwen4CausalLm&,std::ostream&);
 std::vector<std::pair<std::string,double>> qwen4_decode_graph_profile_metrics(const Qwen4CausalLm&,const MtpModule*);
-mfq_tensor_backend::Tensor qwen4_decode_graph_compact_topk(const Qwen4CausalLm&);
+::tyloi::Tensor qwen4_decode_graph_compact_topk(const Qwen4CausalLm&);
 void qwen4_release_decode_graphs(Qwen4CausalLm&,MtpModule*);
 void qwen4_warmup_decode_graphs(Qwen4CausalLm&,MtpModule*,int maximum_draft_depth=3);
 std::size_t qwen4_mtp_graph_reserve(const Qwen4CausalLm&,const MtpModule*,int maximum_draft_depth=5);
-mfq::models::SnapshotSize snapshot_size(const Qwen4CausalLm&,const MtpModule*);
+tyloi::models::SnapshotSize snapshot_size(const Qwen4CausalLm&,const MtpModule*);
 std::vector<std::pair<std::string,double>> qwen4_cache_memory_metrics(const Qwen4CausalLm&,const MtpModule*);
 bool qwen4_layer_major_prefill_eligible(const Qwen4CausalLm&, int64_t tokens);
 std::int64_t prefill_span(const Qwen4CausalLm&, std::size_t tokens,
                           std::int64_t chunk, std::size_t reused,
                           std::size_t stable, bool transformed, bool);
-mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
-    Qwen4CausalLm&, mfq_tensor_backend::Tensor ids, int64_t compute_chunk = 1024,
+::tyloi::Tensor qwen4_layer_major_prefill_hidden(
+    Qwen4CausalLm&, ::tyloi::Tensor ids, int64_t compute_chunk = 1024,
     bool last_only = true, const std::function<bool()>& cancelled = {},
-    mfq_tensor_backend::Tensor* raw_hidden = nullptr, bool raw_hidden_host = false);
+    ::tyloi::Tensor* raw_hidden = nullptr, bool raw_hidden_host = false);
 // Report completed prompt computation before restoring lent expert storage.
-mfq_tensor_backend::Tensor qwen4_layer_major_prefill_hidden(
-    Qwen4CausalLm&, mfq_tensor_backend::Tensor ids, int64_t compute_chunk,
+::tyloi::Tensor qwen4_layer_major_prefill_hidden(
+    Qwen4CausalLm&, ::tyloi::Tensor ids, int64_t compute_chunk,
     bool last_only, const std::function<bool()>& cancelled,
-    mfq_tensor_backend::Tensor* raw_hidden, bool raw_hidden_host,
+    ::tyloi::Tensor* raw_hidden, bool raw_hidden_host,
     const std::function<void()>& computation_finished);
 
 struct Qwen4Model : CausalResources {
-    bool adapter_prefetch_token_rows(Qwen4CausalLm&,const mfq_tensor_backend::Tensor&);
+    bool adapter_prefetch_token_rows(Qwen4CausalLm&,const ::tyloi::Tensor&);
     Qwen4Model();
     ~Qwen4Model();
     Qwen4Model(Qwen4Model&&) noexcept;
     Qwen4Model& operator=(Qwen4Model&&) noexcept;
-    template <class Backend> using CausalModel = mfq::models::qwen4_exp::CausalLm<Backend>;
-    mfq::models::qwen4_exp::Config config;
+    template <class Backend> using CausalModel = tyloi::models::qwen4_exp::CausalLm<Backend>;
+    tyloi::models::qwen4_exp::Config config;
     std::unique_ptr<GatedResidual> final_mixer;
-    mfq_tensor_backend::Tensor positions;
+    ::tyloi::Tensor positions;
     int64_t batch = 0;
     std::optional<bool> router_lookahead;
     std::unique_ptr<Qwen4DecodeGraph> graph_registry;
@@ -115,8 +115,8 @@ struct Qwen4Model : CausalResources {
     bool speculative_prefix_retention=false;
     std::vector<qwen4_exp::Qwen4Block*> loaded_blocks;
     std::function<void(std::size_t)> reserve_kv_workspace;
-    template<class Model> std::optional<mfq_tensor_backend::Tensor>
-    adapter_graph_logits(Model& model,mfq_tensor_backend::Tensor ids,int kind) {
+    template<class Model> std::optional<::tyloi::Tensor>
+    adapter_graph_logits(Model& model,::tyloi::Tensor ids,int kind) {
         if (ids.dim()==2 && ids.size(0)==1 &&
             qwen4_layer_major_prefill_eligible(model,ids.size(1))) {
             auto hidden=qwen4_layer_major_prefill_hidden(model,std::move(ids),1024,kind!=0);
@@ -129,27 +129,27 @@ struct Qwen4Model : CausalResources {
     }
 
     void adapter_validate_load_options() const;
-    void adapter_load_final_state(const mfq::cuda::weight_loader::Loader& weights,
-                                  mfq_tensor_backend::Tensor &output_norm);
-    std::unique_ptr<Block> adapter_load_block(const mfq::cuda::weight_loader::Loader& weights, int layer, int device,
+    void adapter_load_final_state(const tyloi::cuda::weight_loader::Loader& weights,
+                                  ::tyloi::Tensor &output_norm);
+    std::unique_ptr<Block> adapter_load_block(const tyloi::cuda::weight_loader::Loader& weights, int layer, int device,
                                               const std::string &type);
 
     void adapter_reset(int64_t batch);
     void adapter_begin_forward(bool capture_raw_hidden);
 
-    mfq_tensor_backend::Tensor
-    adapter_block_positions(const mfq_tensor_backend::Tensor &full_positions,
-                            const mfq_tensor_backend::Tensor &local_positions, int device) const;
-    void adapter_finish_forward(const mfq_tensor_backend::Tensor &full_positions, int64_t batch,
+    ::tyloi::Tensor
+    adapter_block_positions(const ::tyloi::Tensor &full_positions,
+                            const ::tyloi::Tensor &local_positions, int device) const;
+    void adapter_finish_forward(const ::tyloi::Tensor &full_positions, int64_t batch,
                                 int64_t tokens);
-    mfq_tensor_backend::Tensor
-    adapter_finalize_hidden(mfq_tensor_backend::Tensor hidden,
-                            const mfq_tensor_backend::Tensor &output_norm, int64_t batch,
+    ::tyloi::Tensor
+    adapter_finalize_hidden(::tyloi::Tensor hidden,
+                            const ::tyloi::Tensor &output_norm, int64_t batch,
                             int64_t tokens) const;
-    mfq_tensor_backend::Tensor adapter_last_logits(const QuantLinear &lm_head,
-                                                   mfq_tensor_backend::Tensor hidden) const;
-    mfq_tensor_backend::Tensor adapter_next_token(const QuantLinear &lm_head,
-                                                  mfq_tensor_backend::Tensor hidden) const;
+    ::tyloi::Tensor adapter_last_logits(const QuantLinear &lm_head,
+                                                   ::tyloi::Tensor hidden) const;
+    ::tyloi::Tensor adapter_next_token(const QuantLinear &lm_head,
+                                                  ::tyloi::Tensor hidden) const;
     void adapter_rollback_speculative(int64_t keep);
     void adapter_commit_speculative() { speculative_prefix_retention=false; }
 };
@@ -161,8 +161,8 @@ template <> struct CudaSessionCodec<Qwen4Model> {
     static void restore(Qwen4CausalLm&,const TextSessionState&);
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::models {
+namespace tyloi::models {
 extern template struct qwen4_exp::CausalLm<cuda::CudaCausalOps<cuda::Qwen4Model>>;
-} // namespace mfq::models
+} // namespace tyloi::models

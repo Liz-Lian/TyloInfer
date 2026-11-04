@@ -5,7 +5,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace mfq::state {
+namespace tyloi::state {
 
 struct KvQuantization {
     double bits = 0;
@@ -39,4 +39,4 @@ KvView allocate_kv(std::int64_t batch, std::int64_t heads, std::int64_t capacity
                    std::int64_t head_dim, bool ring, Device device, ScalarType dtype,
                    KvQuantization settings = {});
 
-} // namespace mfq::state
+} // namespace tyloi::state

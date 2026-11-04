@@ -30,14 +30,14 @@ int select_nint_prefill_route_tile(
         : 8;
 }
 
-const mfq_tensor_backend::Tensor & nint_route_tile_bounds(
+const ::tyloi::Tensor & nint_route_tile_bounds(
         const MoeRoutePlan & route, int tile_m) {
     return tile_m == 128
         ? route.wide_tile_bounds
         : (tile_m == 8 ? route.tile_bounds : route.mma_tile_bounds);
 }
 
-const mfq_tensor_backend::Tensor & nint_route_tile_experts(
+const ::tyloi::Tensor & nint_route_tile_experts(
         const MoeRoutePlan & route, int tile_m) {
     return tile_m == 128
         ? route.wide_tile_experts
@@ -46,12 +46,12 @@ const mfq_tensor_backend::Tensor & nint_route_tile_experts(
 #endif
 
 static void copy_route_tensor(
-        mfq::cuda::Collectives& collectives,
-        mfq_tensor_backend::Tensor& destination,
-        const mfq_tensor_backend::Tensor& source,
+        tyloi::cuda::Collectives& collectives,
+        ::tyloi::Tensor& destination,
+        const ::tyloi::Tensor& source,
         int device) {
     if (!source.defined()) {
-        destination = mfq_tensor_backend::Tensor();
+        destination = ::tyloi::Tensor();
     } else if (source.is_cuda() && source.get_device() == device) {
         destination = source.contiguous();
     } else {
@@ -60,7 +60,7 @@ static void copy_route_tensor(
 }
 
 const MoeRoutePlan& moe_route_to_device(
-        mfq::cuda::Collectives& collectives,
+        tyloi::cuda::Collectives& collectives,
         const MoeRoutePlan& source,
         int device) {
     auto& replica = (*source.device_replicas)[device];
@@ -99,8 +99,8 @@ const MoeRoutePlan& moe_route_to_device(
     return *replica;
 }
 
-MoeRoutePlan build_moe_route_plan(mfq_tensor_backend::Tensor ids, int n_experts) {
-    if (!ids.is_cuda() || ids.scalar_type() != mfq_tensor_backend::kInt32 || ids.dim() != 2) {
+MoeRoutePlan build_moe_route_plan(::tyloi::Tensor ids, int n_experts) {
+    if (!ids.is_cuda() || ids.scalar_type() != ::tyloi::kInt32 || ids.dim() != 2) {
         throw std::runtime_error("MoE ids must be CUDA int32 [tokens, routes]");
     }
     MoeRoutePlan result;
@@ -108,7 +108,7 @@ MoeRoutePlan build_moe_route_plan(mfq_tensor_backend::Tensor ids, int n_experts)
         1, std::memory_order_relaxed);
     result.ids = ids.contiguous();
     result.n_experts = n_experts;
-    auto empty = mfq_tensor_backend::empty({0}, result.ids.options());
+    auto empty = ::tyloi::cuda::empty({0}, result.ids.options());
     result.ids_dst = empty;
     result.expert_bounds = empty;
     result.tile_bounds = empty;

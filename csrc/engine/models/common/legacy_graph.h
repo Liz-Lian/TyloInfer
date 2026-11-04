@@ -5,7 +5,7 @@
 #include <functional>
 #include <string_view>
 
-namespace mfq {
+namespace tyloi {
 
 // The only C++ compatibility boundary for artifacts written before
 // model_graph.json. Backends must consume the returned semantic graph and must
@@ -15,4 +15,4 @@ ModelGraph synthesize_legacy_model_graph(
     std::string_view model_config_json,
     const std::function<bool(std::string_view)>& contains_tensor);
 
-} // namespace mfq
+} // namespace tyloi

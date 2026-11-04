@@ -5,7 +5,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace mfq {
+namespace tyloi {
 // Canonical encoded rows stay immutable while a consumer holds their lease.
 class NintRowCache {
 public:

@@ -21,16 +21,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
-
-using mfq::Device;
-using mfq::DeviceType;
-using mfq::IntArrayRef;
-using mfq::ScalarType;
-using mfq::TensorOptions;
-using mfq::TensorStorage;
-using mfq::TensorView;
-using mfq::make_contiguous_view;
+namespace tyloi::cuda {
 
 // Owned CPU tensors and pinned transfer buffers; tensor views share storage
 // and must not double-count it. File/codec buffers and driver memory are
@@ -42,282 +33,45 @@ inline void charge_tensor_host_bytes(std::size_t bytes) {
     while (peak<used && !tensor_host_peak_bytes.compare_exchange_weak(peak,used)) {}
 }
 
-inline constexpr ScalarType kBool = ScalarType::boolean;
-inline constexpr ScalarType kUInt8 = ScalarType::uint8;
-inline constexpr ScalarType kInt8 = ScalarType::int8;
-inline constexpr ScalarType kInt16 = ScalarType::int16;
-inline constexpr ScalarType kInt32 = ScalarType::int32;
-inline constexpr ScalarType kInt64 = ScalarType::int64;
-inline constexpr ScalarType kFloat16 = ScalarType::float16;
-inline constexpr ScalarType kHalf = ScalarType::float16;
-inline constexpr ScalarType kBFloat16 = ScalarType::bfloat16;
-inline constexpr ScalarType kFloat32 = ScalarType::float32;
-inline constexpr ScalarType kFloat64 = ScalarType::float64;
-inline constexpr ScalarType kFloat8E4M3FN = ScalarType::float8_e4m3fn;
-inline constexpr DeviceType kCPU = DeviceType::cpu;
-inline constexpr DeviceType kCUDA = DeviceType::cuda;
-
-namespace indexing {
-
-struct NoneType final {};
-inline constexpr NoneType None{};
-
-class Slice final {
-public:
-    Slice() = default;
-    Slice(std::int64_t start, std::int64_t end, std::int64_t step = 1)
-        : start_(start), end_(end), step_(step), has_start_(true), has_end_(true) {}
-    Slice(std::int64_t start, NoneType, std::int64_t step = 1)
-        : start_(start), step_(step), has_start_(true) {}
-
-    bool has_start() const noexcept { return has_start_; }
-    bool has_end() const noexcept { return has_end_; }
-    std::int64_t start() const noexcept { return start_; }
-    std::int64_t end() const noexcept { return end_; }
-    std::int64_t step() const noexcept { return step_; }
-
-private:
-    std::int64_t start_ = 0;
-    std::int64_t end_ = 0;
-    std::int64_t step_ = 1;
-    bool has_start_ = false;
-    bool has_end_ = false;
-};
-
-}  // namespace indexing
-
-class TensorIndex;
-
-class Tensor : public mfq::Tensor {
-public:
-    using mfq::Tensor::Tensor;
-    Tensor() = default;
-    explicit Tensor(const mfq::Tensor& tensor) : mfq::Tensor(tensor) {}
-    explicit Tensor(mfq::Tensor&& tensor) : mfq::Tensor(std::move(tensor)) {}
-
-    Tensor reshape(std::span<const std::int64_t> shape) const;
-    Tensor reshape(std::initializer_list<std::int64_t> shape) const {
-        return reshape(std::span<const std::int64_t>(shape.begin(), shape.size()));
-    }
-    Tensor view(std::span<const std::int64_t> shape) const { return reshape(shape); }
-    Tensor view(std::initializer_list<std::int64_t> shape) const { return reshape(shape); }
-    Tensor transpose(std::int64_t first, std::int64_t second) const;
-    Tensor permute(std::span<const std::int64_t> order) const;
-    Tensor permute(std::initializer_list<std::int64_t> order) const {
-        return permute(std::span<const std::int64_t>(order.begin(), order.size()));
-    }
-    Tensor unsqueeze(std::int64_t dimension) const;
-    Tensor squeeze(std::int64_t dimension) const;
-    Tensor squeeze() const;
-    Tensor flatten(std::int64_t start = 0, std::int64_t end = -1) const;
-    Tensor narrow(std::int64_t dimension, std::int64_t start, std::int64_t length) const;
-    Tensor select(std::int64_t dimension, std::int64_t index) const;
-    Tensor slice(
-        std::int64_t dimension,
-        std::int64_t start,
-        std::int64_t end,
-        std::int64_t step = 1) const;
-    Tensor index(std::initializer_list<TensorIndex> indices) const;
-    Tensor operator[](std::int64_t index) const { return select(0, index); }
-    Tensor index_select(std::int64_t dimension, const Tensor& indices) const;
-    Tensor gather(std::int64_t dimension, const Tensor& indices) const;
-    Tensor expand(std::span<const std::int64_t> shape) const;
-    Tensor expand(std::initializer_list<std::int64_t> shape) const {
-        return expand(std::span<const std::int64_t>(shape.begin(), shape.size()));
-    }
-    Tensor repeat(std::span<const std::int64_t> repeats) const;
-    Tensor repeat(std::initializer_list<std::int64_t> repeats) const {
-        return repeat(std::span<const std::int64_t>(repeats.begin(), repeats.size()));
-    }
-    Tensor repeat_interleave(std::int64_t repeats, std::int64_t dimension) const;
-    Tensor unfold(
-        std::int64_t dimension,
-        std::int64_t size,
-        std::int64_t step) const;
-    std::vector<Tensor> split_with_sizes(
-        std::span<const std::int64_t> sections,
-        std::int64_t dimension = 0) const;
-    std::vector<Tensor> split_with_sizes(
-        std::initializer_list<std::int64_t> sections,
-        std::int64_t dimension = 0) const {
-        return split_with_sizes(
-            std::span<const std::int64_t>(sections.begin(), sections.size()),
-            dimension);
-    }
-    std::vector<Tensor> chunk(std::int64_t chunks, std::int64_t dimension = 0) const;
-    Tensor mean(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor mean() const;
-    Tensor sum(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor sum() const;
-    Tensor max() const;
-    Tensor amax(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor norm() const;
-    Tensor abs() const;
-    Tensor square() const;
-    Tensor exp() const;
-    Tensor sqrt() const;
-    Tensor clamp(double minimum, double maximum) const;
-    Tensor clamp_min(double minimum) const;
-    Tensor clamp_max(double maximum) const;
-    Tensor remainder(double divisor) const;
-    Tensor argmax(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor eq(const Tensor& other) const;
-    Tensor eq(double other) const;
-    Tensor ne(const Tensor& other) const;
-    Tensor ne(double other) const;
-    Tensor all() const;
-    Tensor all(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor any(std::int64_t dimension, bool keep_dimension = false) const;
-    Tensor logical_not() const;
-    Tensor detach() const { return *this; }
-    bool equal(const Tensor& other) const;
-    Tensor masked_select(const Tensor& mask) const;
-    Tensor tril(std::int64_t diagonal = 0) const;
-    Tensor masked_fill(const Tensor& mask, double value) const;
-    Tensor& masked_fill_(const Tensor& mask, double value);
-    Tensor reshape_as(const Tensor& other) const { return reshape(other.sizes()); }
-
-    Tensor contiguous() const;
-    Tensor clone() const;
-    Tensor to(ScalarType type) const;
-    Tensor to(Device device) const;
-    Tensor to(DeviceType device) const { return to(Device{device, 0}); }
-    Tensor to(Device device, bool, bool) const { return to(device); }
-    Tensor to(const TensorOptions& options, bool = false, bool = false) const {
-        const auto destination = options.has_device() ? options.target_device() : device();
-        const auto type = options.has_dtype() ? options.scalar_type() : scalar_type();
-        auto moved = destination == device()
-            ? *this
-            : to(destination);
-        return type == moved.scalar_type()
-            ? moved
-            : moved.to(type);
-    }
-    Tensor to(DeviceType device, ScalarType type) const {
-        return to(Device{device, 0}, type);
-    }
-    Tensor to(Device device, ScalarType type) const {
-        if (device != this->device() && type != scalar_type()) {
-            return to(type).to(device);
-        }
-        auto moved = device == this->device() ? *this : to(device);
-        return type == moved.scalar_type() ? moved : moved.to(type);
-    }
-    Tensor cpu() const { return to(Device{DeviceType::cpu, 0}); }
-
-    Tensor& copy_(const Tensor& source, bool non_blocking = false);
-    Tensor& zero_();
-    Tensor& fill_(double value);
-    Tensor& add_(const Tensor& value);
-    Tensor& scatter_add_(std::int64_t dimension, const Tensor& index, const Tensor& source);
-    Tensor& scatter_(std::int64_t dimension, const Tensor& index, const Tensor& source);
-    Tensor& index_copy_(std::int64_t dimension, const Tensor& index, const Tensor& source);
-    Tensor& index_fill_(std::int64_t dimension, const Tensor& index, double value);
-    Tensor& index_put_(std::initializer_list<TensorIndex> indices, const Tensor& value);
-    Tensor& index_put_(std::initializer_list<TensorIndex> indices, double value);
-
-    template <typename T>
-    T item() const {
-        if (!defined() || numel() != 1) {
-            throw std::invalid_argument("item() requires a defined scalar tensor");
-        }
-        const Tensor host = is_cpu() && is_contiguous() ? *this : cpu().contiguous();
-        return scalar_cast<T>(host.data_ptr(), host.scalar_type());
-    }
-
-private:
-    template <typename T>
-    static T scalar_cast(const void* pointer, ScalarType type) {
-        switch (type) {
-            case ScalarType::boolean: return static_cast<T>(*static_cast<const bool*>(pointer));
-            case ScalarType::uint8: return static_cast<T>(*static_cast<const std::uint8_t*>(pointer));
-            case ScalarType::int8: return static_cast<T>(*static_cast<const std::int8_t*>(pointer));
-            case ScalarType::int16: return static_cast<T>(*static_cast<const std::int16_t*>(pointer));
-            case ScalarType::int32: return static_cast<T>(*static_cast<const std::int32_t*>(pointer));
-            case ScalarType::int64: return static_cast<T>(*static_cast<const std::int64_t*>(pointer));
-            case ScalarType::float32: return static_cast<T>(*static_cast<const float*>(pointer));
-            case ScalarType::float64: return static_cast<T>(*static_cast<const double*>(pointer));
-            case ScalarType::float16: {
-                const auto bits = *static_cast<const std::uint16_t*>(pointer);
-                const auto sign = static_cast<std::uint32_t>(bits & 0x8000u) << 16;
-                auto exponent = static_cast<std::uint32_t>((bits >> 10) & 0x1fu);
-                auto mantissa = static_cast<std::uint32_t>(bits & 0x03ffu);
-                std::uint32_t value = 0;
-                if (exponent == 0) {
-                    if (mantissa != 0) {
-                        exponent = 127 - 15 + 1;
-                        while ((mantissa & 0x0400u) == 0) {
-                            mantissa <<= 1;
-                            --exponent;
-                        }
-                        mantissa &= 0x03ffu;
-                        value = sign | (exponent << 23) | (mantissa << 13);
-                    } else {
-                        value = sign;
-                    }
-                } else if (exponent == 0x1fu) {
-                    value = sign | 0x7f800000u | (mantissa << 13);
-                } else {
-                    value = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13);
-                }
-                float decoded = 0.0f;
-                std::memcpy(&decoded, &value, sizeof(decoded));
-                return static_cast<T>(decoded);
-            }
-            case ScalarType::bfloat16: {
-                const auto value = static_cast<std::uint32_t>(
-                    *static_cast<const std::uint16_t*>(pointer)) << 16;
-                float decoded = 0.0f;
-                std::memcpy(&decoded, &value, sizeof(decoded));
-                return static_cast<T>(decoded);
-            }
-            case ScalarType::float8_e4m3fn: {
-                const auto bits = *static_cast<const std::uint8_t*>(pointer);
-                const double sign = (bits & 0x80u) != 0 ? -1.0 : 1.0;
-                const auto exponent = static_cast<int>((bits >> 3) & 0x0fu);
-                const auto mantissa = static_cast<int>(bits & 0x07u);
-                if (exponent == 0) {
-                    return static_cast<T>(sign * std::ldexp(
-                        static_cast<double>(mantissa) / 8.0, -6));
-                }
-                if (exponent == 0x0f && mantissa == 0x07) {
-                    return static_cast<T>(std::numeric_limits<double>::quiet_NaN());
-                }
-                return static_cast<T>(sign * std::ldexp(
-                    1.0 + static_cast<double>(mantissa) / 8.0,
-                    exponent - 7));
-            }
-        }
-        throw std::invalid_argument("unknown tensor scalar type");
-    }
-};
-
-class TensorIndex final {
-public:
-    enum class Kind : std::uint8_t { integer, slice, tensor };
-
-    TensorIndex(std::int64_t value) : kind_(Kind::integer), integer_(value) {}
-    TensorIndex(int value) : TensorIndex(static_cast<std::int64_t>(value)) {}
-    TensorIndex(const indexing::Slice& value) : kind_(Kind::slice), slice_(value) {}
-    TensorIndex(const Tensor& value)
-        : kind_(Kind::tensor), tensor_(std::make_shared<Tensor>(value)) {}
-
-    Kind kind() const noexcept { return kind_; }
-    std::int64_t integer() const noexcept { return integer_; }
-    const indexing::Slice& slice() const noexcept { return slice_; }
-    const Tensor& tensor() const { return *tensor_; }
-
-private:
-    Kind kind_ = Kind::integer;
-    std::int64_t integer_ = 0;
-    indexing::Slice slice_{};
-    std::shared_ptr<Tensor> tensor_;
-};
-
 class NoGradGuard final {
 public:
     NoGradGuard() = default;
 };
+
+Tensor contiguous(const Tensor& input);
+Tensor clone(const Tensor& input);
+Tensor cast(const Tensor& input, ScalarType type);
+Tensor cast(const Tensor& input, ScalarType type, Device target);
+Tensor copy(const Tensor& input, Device target);
+void copy_into(Tensor& destination, const Tensor& source);
+
+Tensor reshape(const Tensor& input, std::span<const std::int64_t> shape);
+Tensor transpose(const Tensor& input, std::int64_t first, std::int64_t second);
+Tensor permute(const Tensor& input, std::span<const std::int64_t> order);
+Tensor unsqueeze(const Tensor& input, std::int64_t dimension);
+Tensor squeeze(const Tensor& input, std::int64_t dimension);
+Tensor squeeze(const Tensor& input);
+Tensor flatten(const Tensor& input, std::int64_t start, std::int64_t end);
+Tensor narrow(const Tensor& input, std::int64_t dimension, std::int64_t start, std::int64_t length);
+Tensor select(const Tensor& input, std::int64_t dimension, std::int64_t index);
+Tensor slice(const Tensor& input, std::int64_t dimension, std::int64_t start, std::int64_t end, std::int64_t step);
+Tensor index(const Tensor& input, std::initializer_list<TensorIndex> indices);
+Tensor expand(const Tensor& input, std::span<const std::int64_t> shape);
+Tensor unfold(const Tensor& input, std::int64_t dimension, std::int64_t window, std::int64_t step);
+std::vector<Tensor> split_with_sizes(const Tensor& input, std::span<const std::int64_t> sections, std::int64_t dimension);
+std::vector<Tensor> chunk(const Tensor& input, std::int64_t chunks, std::int64_t dimension);
+
+Tensor binary_cuda(const Tensor& left, const Tensor& right, int operation);
+Tensor scalar_binary_cuda(const Tensor& left, double right, int operation, bool scalar_first = false);
+Tensor index_select_cuda(const Tensor& source, std::int64_t dimension, const Tensor& indices);
+Tensor gather_cuda(const Tensor& source, std::int64_t dimension, const Tensor& indices);
+Tensor repeat_cuda(const Tensor& source, std::span<const std::int64_t> repeats);
+Tensor repeat_interleave_cuda(const Tensor& source, std::int64_t repeats, std::int64_t dimension);
+Tensor masked_select_cuda(const Tensor& source, const Tensor& mask);
+void scatter_cuda(Tensor& destination, std::int64_t dimension, const Tensor& index, const Tensor& source, bool add);
+void index_copy_cuda(Tensor& destination, std::int64_t dimension, const Tensor& index, const Tensor& source);
+void index_fill_cuda(Tensor& destination, std::int64_t dimension, const Tensor& index, double value);
+void masked_fill_cuda(Tensor& destination, const Tensor& mask, double value);
 
 Tensor empty(std::span<const std::int64_t> shape, const TensorOptions& options = {});
 Tensor empty(std::initializer_list<std::int64_t> shape, const TensorOptions& options = {});
@@ -425,7 +179,7 @@ inline Tensor softmax(
     const Tensor& input,
     std::int64_t dimension,
     ScalarType dtype) {
-    return softmax(input, dimension).to(dtype);
+    return cast(softmax(input, dimension), dtype);
 }
 Tensor log_softmax(const Tensor& input, std::int64_t dimension);
 Tensor logsumexp(const Tensor& input, std::int64_t dimension, bool keep_dimension = false);
@@ -525,35 +279,6 @@ struct NativeIValue final {
 std::vector<char> pickle_save(const Tensor& value);
 NativeIValue pickle_load(const std::vector<char>& bytes);
 
-Tensor operator+(const Tensor& left, const Tensor& right);
-Tensor operator+(const Tensor& left, double right);
-Tensor operator+(double left, const Tensor& right);
-Tensor operator-(const Tensor& left, const Tensor& right);
-Tensor operator-(const Tensor& left, double right);
-Tensor operator-(double left, const Tensor& right);
-Tensor operator-(const Tensor& value);
-Tensor operator*(const Tensor& left, const Tensor& right);
-Tensor operator*(const Tensor& left, double right);
-Tensor operator*(double left, const Tensor& right);
-Tensor operator/(const Tensor& left, const Tensor& right);
-Tensor operator/(const Tensor& left, double right);
-Tensor operator/(double left, const Tensor& right);
-Tensor operator<(const Tensor& left, const Tensor& right);
-Tensor operator<(const Tensor& left, double right);
-Tensor operator<=(const Tensor& left, const Tensor& right);
-Tensor operator<=(const Tensor& left, double right);
-Tensor operator>(const Tensor& left, const Tensor& right);
-Tensor operator>(const Tensor& left, double right);
-Tensor operator>=(const Tensor& left, const Tensor& right);
-Tensor operator>=(const Tensor& left, double right);
-Tensor operator&(const Tensor& left, const Tensor& right);
-Tensor operator|(const Tensor& left, const Tensor& right);
-Tensor operator~(const Tensor& value);
-Tensor operator==(const Tensor& left, const Tensor& right);
-Tensor operator==(const Tensor& left, double right);
-Tensor operator!=(const Tensor& left, const Tensor& right);
-Tensor operator!=(const Tensor& left, double right);
-
 template <typename Value>
 ScalarType scalar_type_for();
 
@@ -574,11 +299,11 @@ Tensor tensor(std::span<const Value> values, TensorOptions options = {}) {
     auto host_options = options;
     const auto target = options.target_device();
     host_options.device(kCPU).pinned_memory(target.is_cuda());
-    auto host = from_blob(
+    auto host = clone(from_blob(
         const_cast<Value*>(values.data()),
         {static_cast<std::int64_t>(values.size())},
-        host_options).clone();
-    return target.is_cuda() ? host.to(target) : host;
+        host_options));
+    return target.is_cuda() ? copy(host, target) : host;
 }
 
 template <typename Value>
@@ -591,4 +316,4 @@ Tensor tensor(std::initializer_list<Value> values, TensorOptions options = {}) {
     return tensor(std::vector<Value>(values), options);
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

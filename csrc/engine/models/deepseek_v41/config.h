@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 
 struct VisionConfig {
     std::int64_t n_layers = 0;
@@ -131,4 +131,4 @@ struct TensorNames {
     static std::string predictor(std::size_t index, std::string_view suffix);
 };
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

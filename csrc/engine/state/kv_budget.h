@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-namespace mfq::cuda {
+namespace tyloi::cuda {
 inline double kv_resident_fraction(int64_t context) {
     constexpr double x[]{0,131072,262144,1048576},y[]{1,.6,.3,.1};
     if(context<=0)return 1;if(context>=1048576)return .1;

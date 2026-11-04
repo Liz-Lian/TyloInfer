@@ -10,26 +10,26 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-inline mfq_tensor_backend::Tensor vision_non_causal_attention(
-        mfq_tensor_backend::Tensor query, mfq_tensor_backend::Tensor key,
-        mfq_tensor_backend::Tensor value,
-        MfqOptional<mfq_tensor_backend::Tensor> additive_mask, double scale) {
-    auto scores = mfq_tensor_backend::matmul(query, key.transpose(-2, -1)) * scale;
+inline ::tyloi::Tensor vision_non_causal_attention(
+        ::tyloi::Tensor query, ::tyloi::Tensor key,
+        ::tyloi::Tensor value,
+        MfqOptional<::tyloi::Tensor> additive_mask, double scale) {
+    auto scores = ::tyloi::cuda::matmul(query, key.transpose(-2, -1)) * scale;
     if (additive_mask.has_value()) {
         scores = scores + additive_mask.value().to(scores.scalar_type());
     }
-    auto probabilities = mfq_tensor_backend::softmax(scores, -1, mfq_tensor_backend::kFloat32)
+    auto probabilities = ::tyloi::cuda::softmax(scores, -1, ::tyloi::kFloat32)
                              .to(value.scalar_type());
-    return mfq_tensor_backend::matmul(probabilities, value).contiguous();
+    return ::tyloi::cuda::matmul(probabilities, value).contiguous();
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::vision {
+namespace tyloi::cuda::vision {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 inline Tensor apply_axial_rope(
     const Tensor& input,
@@ -66,19 +66,19 @@ inline Tensor apply_axial_rope(
             }
         }
     }
-    const auto cpu = mfq_tensor_backend::TensorOptions()
-                         .dtype(mfq_tensor_backend::kFloat32)
-                         .device(mfq_tensor_backend::kCPU);
-    auto cos = mfq_tensor_backend::tensor(cosine, cpu)
+    const auto cpu = ::tyloi::TensorOptions()
+                         .dtype(::tyloi::kFloat32)
+                         .device(::tyloi::kCPU);
+    auto cos = ::tyloi::cuda::tensor(cosine, cpu)
                    .reshape({tokens, 1, head_dim})
                    .to(input.device());
-    auto sin = mfq_tensor_backend::tensor(sine, cpu)
+    auto sin = ::tyloi::cuda::tensor(sine, cpu)
                    .reshape({tokens, 1, head_dim})
                    .to(input.device());
-    auto source = input.to(mfq_tensor_backend::kFloat32);
+    auto source = input.to(::tyloi::kFloat32);
     auto first = source.narrow(-1, 0, half);
     auto second = source.narrow(-1, half, half);
-    auto rotated = mfq_tensor_backend::cat({-second, first}, -1);
+    auto rotated = ::tyloi::cuda::cat({-second, first}, -1);
     return (source * cos + rotated * sin)
         .to(input.scalar_type())
         .contiguous();
@@ -103,9 +103,9 @@ inline Tensor segmented_attention(
                 .contiguous();
         };
         auto attended = attention_cuda(
-            segment(query).to(mfq_tensor_backend::kFloat16),
-            segment(key).to(mfq_tensor_backend::kFloat16),
-            segment(value).to(mfq_tensor_backend::kFloat16),
+            segment(query).to(::tyloi::kFloat16),
+            segment(key).to(::tyloi::kFloat16),
+            segment(value).to(::tyloi::kFloat16),
             1.0 / std::sqrt(static_cast<double>(query.size(2))),
             false);
         outputs.push_back(
@@ -118,30 +118,27 @@ inline Tensor segmented_attention(
     }
     return outputs.size() == 1
         ? outputs.front()
-        : mfq_tensor_backend::cat(outputs, 0);
+        : ::tyloi::cuda::cat(outputs, 0);
 }
 
-} // namespace mfq::cuda::vision
+} // namespace tyloi::cuda::vision
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::cuda::ops {
-inline mfq::Tensor attention(mfq::Tensor query, mfq::Tensor key, mfq::Tensor value,
-                             const std::optional<mfq::Tensor>& mask, double scale) {
+namespace tyloi::cuda::ops {
+inline tyloi::Tensor attention(tyloi::Tensor query, tyloi::Tensor key, tyloi::Tensor value,
+                             const std::optional<tyloi::Tensor>& mask, double scale) {
     MfqCudaGuard guard(query.device().index);
-    std::optional<mfq_tensor_backend::Tensor> native_mask;
-    if (mask) native_mask.emplace(*mask);
-    return vision_non_causal_attention(mfq_tensor_backend::Tensor(query), mfq_tensor_backend::Tensor(key),
-                                       mfq_tensor_backend::Tensor(value), native_mask, scale);
+    return vision_non_causal_attention(query, key, value, mask, scale);
 }
-inline mfq::Tensor axial_rope(mfq::Tensor input, const std::vector<std::int32_t>& positions, double theta) {
+inline tyloi::Tensor axial_rope(tyloi::Tensor input, const std::vector<std::int32_t>& positions, double theta) {
     MfqCudaGuard guard(input.device().index);
-    return vision::apply_axial_rope(mfq_tensor_backend::Tensor(input), positions, theta);
+    return vision::apply_axial_rope(input, positions, theta);
 }
-inline mfq::Tensor segmented_attention(mfq::Tensor query, mfq::Tensor key, mfq::Tensor value,
+inline tyloi::Tensor segmented_attention(tyloi::Tensor query, tyloi::Tensor key, tyloi::Tensor value,
                                        const std::vector<std::int32_t>& lengths) {
     MfqCudaGuard guard(query.device().index);
-    return vision::segmented_attention(mfq_tensor_backend::Tensor(query), mfq_tensor_backend::Tensor(key),
-                                       mfq_tensor_backend::Tensor(value), lengths);
+    return vision::segmented_attention(query, key,
+                                       value, lengths);
 }
 }
 #endif

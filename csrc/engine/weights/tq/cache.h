@@ -11,8 +11,8 @@
 #include <utility>
 #include <unordered_map>
 
-namespace mfq { class TqTable; }
-namespace mfq::cuda { class Event; }
+namespace tyloi { class TqTable; }
+namespace tyloi::cuda { class Event; }
 class TqExec;
 
 // Selected weights own their backing after eviction; uploads retain host data
@@ -23,10 +23,10 @@ public:
             bool retain_all, std::shared_ptr<TqExec> exec);
     ~TqCache();
 
-    std::uint64_t add(std::shared_ptr<const mfq::TqTable>, std::int64_t rows);
+    std::uint64_t add(std::shared_ptr<const tyloi::TqTable>, std::int64_t rows);
     std::vector<TqWeight> get(std::uint64_t source, const std::int64_t* ids,
                               std::size_t count, int device);
-    mfq_tensor_backend::Tensor views(std::uint64_t source, const std::int64_t* ids,
+    ::tyloi::Tensor views(std::uint64_t source, const std::int64_t* ids,
                                       const std::vector<TqWeight>& weights, int device);
     std::size_t budget();
     void resize(std::size_t bytes);
@@ -37,7 +37,7 @@ private:
     struct HostImage;
     struct Stage;
     struct HostTransfer {
-        std::shared_ptr<mfq::cuda::Event> ready;
+        std::shared_ptr<tyloi::cuda::Event> ready;
         std::vector<std::shared_ptr<HostImage>> images;
         ~HostTransfer() noexcept;
     };
@@ -53,14 +53,14 @@ private:
     };
     struct DeviceEntry {
         TqWeight weight;
-        std::shared_ptr<mfq::cuda::Event> uploaded;
+        std::shared_ptr<tyloi::cuda::Event> uploaded;
         cudaStream_t producer = nullptr;
         std::size_t source_bytes = 0;
     };
     struct ViewTable {
         int device;
         cudaStream_t stream;
-        mfq_tensor_backend::Tensor views;
+        ::tyloi::Tensor views;
         std::vector<std::uintptr_t> images;
         std::vector<std::uint8_t> bytes;
     };
@@ -69,14 +69,14 @@ private:
         unsigned index = 0;
     };
     struct Source {
-        std::shared_ptr<const mfq::TqTable> table;
+        std::shared_ptr<const tyloi::TqTable> table;
         std::int64_t rows;
     };
 
     // Streams outlive every cached tensor and its final consumer fence.
     std::shared_ptr<TqExec> tq_;
-    mfq::weights::Lru<std::uint64_t, std::shared_ptr<HostImage>> host_;
-    mfq::weights::Lru<DeviceKey, DeviceEntry, DeviceKeyHash> device_;
+    tyloi::weights::Lru<std::uint64_t, std::shared_ptr<HostImage>> host_;
+    tyloi::weights::Lru<DeviceKey, DeviceEntry, DeviceKeyHash> device_;
     std::unordered_map<std::uint64_t, std::vector<ViewTable>> view_tables_;
     std::size_t payload_bytes_ = 0, process_host_limit_ = 0;
     std::uint64_t source_reads_ = 0;
@@ -91,5 +91,5 @@ private:
 
     std::size_t reserve_host_locked(std::size_t bytes);
     void report() const;
-    void upload(const mfq_tensor_backend::Tensor&, const std::vector<std::uint8_t>&);
+    void upload(const ::tyloi::Tensor&, const std::vector<std::uint8_t>&);
 };

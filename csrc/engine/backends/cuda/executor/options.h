@@ -7,7 +7,7 @@
 
 struct MoeOptions;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct CudaDecodeGraphConfig {
     bool enabled = true;
@@ -15,9 +15,9 @@ struct CudaDecodeGraphConfig {
     std::int32_t minimum_generation_tokens = 16;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::runtime_options {
+namespace tyloi::cuda::runtime_options {
 MoeOptions moe(MoeOptions options);
 struct QsaKvOffloadOptions {
     std::size_t gpu_budget_bytes = 0;
@@ -159,4 +159,4 @@ std::optional<bool> gr_dense_bf16_direct();
 std::optional<int> mfe_token_group_capacity();
 std::optional<std::int64_t> moe_ram_pin_bytes();
 std::optional<std::int64_t> moe_ram_pin_reserve_bytes();
-} // namespace mfq::cuda::runtime_options
+} // namespace tyloi::cuda::runtime_options

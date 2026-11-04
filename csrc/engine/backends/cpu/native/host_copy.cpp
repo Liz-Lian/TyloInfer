@@ -12,7 +12,7 @@
 #include <emmintrin.h>
 #endif
 
-namespace mfq {
+namespace tyloi {
 namespace {
 void copy_upload(void* target,const void* origin,std::size_t bytes) {
 #if defined(__x86_64__) || defined(_M_X64)

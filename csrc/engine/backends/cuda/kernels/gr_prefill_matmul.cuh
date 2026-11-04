@@ -4,8 +4,8 @@
 // FP32 batched GR projection from compressed NINT weights. The only decoded
 // weights are a small shared-memory tile reused by sixty-four token rows.
 namespace {
-bool gr_prefill_selected(const mfq_tensor_backend::Tensor& input) {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
+bool gr_prefill_selected(const ::tyloi::Tensor& input) {
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     return (!option || std::atoi(option)!=0) && input.dim()>0 && input.size(-1)>0 &&
         input.numel()/input.size(-1)>=32;
 }
@@ -119,10 +119,9 @@ __global__ __launch_bounds__(BM*TileN/(RegisterN*RegisterM),1) void gr_prefill_m
     }
 }
 
-mfq_tensor_backend::Tensor gr_prefill_matmul(const NintWeight& weight,
-        const mfq_tensor_backend::Tensor& input) {
-    namespace tb=mfq_tensor_backend;
-    auto x=input.scalar_type()==tb::kFloat16 ? input.contiguous() : input.to(tb::kFloat32).contiguous();
+::tyloi::Tensor gr_prefill_matmul(const NintWeight& weight,
+        const ::tyloi::Tensor& input) {
+    auto x=input.scalar_type()==::tyloi::kFloat16 ? input.contiguous() : input.to(::tyloi::kFloat32).contiguous();
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.size(-1)==weight.neuron_len && weight.q_packed.is_cuda() &&
         input.device()==weight.q_packed.device() && weight.gs>0 && weight.neuron_len>0 &&
         weight.neuron_len<=std::numeric_limits<int>::max() && weight.out>0 && weight.out<=std::numeric_limits<int>::max() &&
@@ -130,18 +129,18 @@ mfq_tensor_backend::Tensor gr_prefill_matmul(const NintWeight& weight,
         "GR prefill projection geometry mismatch");
     const auto rows=x.numel()/weight.neuron_len;
     if(gr_prefill_blas_selected(weight,input))return gr_prefill_blas_fp32(weight,x);
-    const auto* trace_geometry=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_GEOMETRY_TRACE");
+    const auto* trace_geometry=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_GEOMETRY_TRACE");
     if(trace_geometry && trace_geometry[0]=='1') {
         thread_local std::map<std::array<int64_t,5>,bool> seen;
-        const std::array<int64_t,5> shape={weight.out,weight.neuron_len,weight.gs,int64_t(x.scalar_type()==tb::kFloat16),int64_t(weight.q8_zero)};
+        const std::array<int64_t,5> shape={weight.out,weight.neuron_len,weight.gs,int64_t(x.scalar_type()==::tyloi::kFloat16),int64_t(weight.q8_zero)};
         if(seen.emplace(shape,true).second)std::fprintf(stderr,
             "gr_prefill_geometry rows=%lld outputs=%lld width=%lld gs=%lld half=%d zero=%d\n",
             (long long)rows,(long long)weight.out,(long long)weight.neuron_len,(long long)weight.gs,
-            int(x.scalar_type()==tb::kFloat16),int(weight.q8_zero));
+            int(x.scalar_type()==::tyloi::kFloat16),int(weight.q8_zero));
     }
     TYLOINFER_RUNTIME_CHECK(rows<=65535*16,"GR prefill projection exceeds CUDA grid geometry");
     MfqCudaGuard guard(input.device());
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     int major=0;
     const bool requested_tf32=option && std::atoi(option)==2;
     const bool requested_half2=option && std::atoi(option)==3;
@@ -157,17 +156,17 @@ mfq_tensor_backend::Tensor gr_prefill_matmul(const NintWeight& weight,
     if(compact_k)mode=mode==19?6:17;
     if(mode==16 || mode==17 || mode==18) {
         const bool expansion=weight.out>=weight.neuron_len;
-        mode=expansion?(mode>=17?(x.scalar_type()==tb::kFloat32?14:(mode==18?15:9)):(x.scalar_type()==tb::kFloat32?5:9))
+        mode=expansion?(mode>=17?(x.scalar_type()==::tyloi::kFloat32?14:(mode==18?15:9)):(x.scalar_type()==::tyloi::kFloat32?5:9))
             :(rows>=2048?9:rows>=128?(mode==17?11:13):1);
     }
-    if(mode==12)mode=weight.out>=weight.neuron_len?(x.scalar_type()==tb::kFloat32?5:9):(rows>=2048?9:rows>=128?11:1);
-    if(mode==6)mode=weight.out>=weight.neuron_len?(x.scalar_type()==tb::kFloat32?5:9):(rows>=2048?9:1);
+    if(mode==12)mode=weight.out>=weight.neuron_len?(x.scalar_type()==::tyloi::kFloat32?5:9):(rows>=2048?9:rows>=128?11:1);
+    if(mode==6)mode=weight.out>=weight.neuron_len?(x.scalar_type()==::tyloi::kFloat32?5:9):(rows>=2048?9:1);
     const int exact_tile=mode==4?128:mode==5?256:64;
     if(requested_tf32 || requested_half2)TYLOINFER_CUDA_CHECK(cudaDeviceGetAttribute(&major,cudaDevAttrComputeCapabilityMajor,input.get_device()));
     const bool tf32=requested_tf32 && major>=8;
     const bool half2=requested_half2 && major>=7;
     auto shape=input.sizes().vec();shape.back()=weight.out;
-    auto output=tb::empty(shape,input.options().dtype(tb::kFloat32));
+    auto output=::tyloi::cuda::empty(shape,input.options().dtype(::tyloi::kFloat32));
     const auto typed=[&](auto tag,auto aligned_tag,auto zero_tag) {
         using Input=decltype(tag);constexpr bool aligned=decltype(aligned_tag)::value,zero=decltype(zero_tag)::value;
         if(pipeline_mode && rows>=128 && gr_prefill_pipeline_supported(x)) {
@@ -225,7 +224,7 @@ mfq_tensor_backend::Tensor gr_prefill_matmul(const NintWeight& weight,
         else if(weight.aligned_q8)typed(tag,std::true_type{},std::false_type{});
         else typed(tag,std::false_type{},std::false_type{});
     };
-    if(x.scalar_type()==tb::kFloat16)launch(__half{});else launch(float{});
+    if(x.scalar_type()==::tyloi::kFloat16)launch(__half{});else launch(float{});
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
 }
 } // namespace

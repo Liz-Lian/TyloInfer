@@ -2,15 +2,15 @@
 
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 namespace {
-mfq_tensor_backend::Tensor storage(const mfq_tensor_backend::Tensor& target,
-                                   const mfq_tensor_backend::Tensor& source) {
+::tyloi::Tensor storage(const ::tyloi::Tensor& target,
+                                   const ::tyloi::Tensor& source) {
     if (target.defined() && target.sizes() == source.sizes() &&
         target.scalar_type() == source.scalar_type() && target.device() == source.device())
         return target;
-    return mfq_tensor_backend::empty(source.sizes(), source.options());
+    return ::tyloi::cuda::empty(source.sizes(), source.options());
 }
 } // namespace
 
@@ -76,4 +76,4 @@ void Recurrent::commit() noexcept {
     tokens_ = 0;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

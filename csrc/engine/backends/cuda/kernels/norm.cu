@@ -424,46 +424,46 @@ __global__ void l2_norm_kernel(const float* __restrict__ x, float* __restrict__ 
     }
 }
 
-mfq_tensor_backend::Tensor rms_norm_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps)
+::tyloi::Tensor rms_norm_cuda(::tyloi::Tensor x, ::tyloi::Tensor weight, double eps)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "rms_norm: x must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == mfq_tensor_backend::kFloat32, "weight must be cuda f32");
+    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == ::tyloi::kFloat32, "weight must be cuda f32");
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     rms_norm_kernel<NORM_BD><<<N, NORM_BD, 0, mfq_current_cuda_stream()>>>(
         x.data_ptr<float>(), weight.data_ptr<float>(), out.data_ptr<float>(),
         N, D, (float)eps, 0.0f);
     return out;
 }
 
-mfq_tensor_backend::Tensor rms_norm_offset_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps, double weight_offset)
+::tyloi::Tensor rms_norm_offset_cuda(::tyloi::Tensor x, ::tyloi::Tensor weight, double eps, double weight_offset)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "rms_norm_offset: x must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == mfq_tensor_backend::kFloat32, "weight must be cuda f32");
+    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.scalar_type() == ::tyloi::kFloat32, "weight must be cuda f32");
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     rms_norm_kernel<NORM_BD><<<N, NORM_BD, 0, mfq_current_cuda_stream()>>>(
         x.data_ptr<float>(), weight.data_ptr<float>(), out.data_ptr<float>(),
         N, D, (float)eps, (float)weight_offset);
     return out;
 }
 
-mfq_tensor_backend::Tensor rms_norm_f16_cuda(mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, double eps,
+::tyloi::Tensor rms_norm_f16_cuda(::tyloi::Tensor x, ::tyloi::Tensor weight, double eps,
                                 double weight_offset)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat16,
                 "rms_norm_f16: x must be cuda contiguous f16");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                    weight.scalar_type() == mfq_tensor_backend::kFloat32,
+                    weight.scalar_type() == ::tyloi::kFloat32,
                 "rms_norm_f16: weight must be cuda contiguous f32");
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
     TYLOINFER_RUNTIME_CHECK(weight.numel() == D, "rms_norm_f16: weight length mismatch");
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     const auto input_address = reinterpret_cast<std::uintptr_t>(x.data_ptr());
     const auto weight_address =
         reinterpret_cast<std::uintptr_t>(weight.data_ptr());
@@ -488,12 +488,11 @@ mfq_tensor_backend::Tensor rms_norm_f16_cuda(mfq_tensor_backend::Tensor x, mfq_t
     return out;
 }
 
-mfq_tensor_backend::Tensor gdn_rms_norm_gate_cuda(mfq_tensor_backend::Tensor attended,
-    mfq_tensor_backend::Tensor gate,mfq_tensor_backend::Tensor weight,double eps,
+::tyloi::Tensor gdn_rms_norm_gate_cuda(::tyloi::Tensor attended,
+    ::tyloi::Tensor gate,::tyloi::Tensor weight,double eps,
     bool silu_gate,bool output_half) {
-    namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(attended.is_cuda() && attended.is_contiguous() && attended.dim()==4 &&
-        attended.scalar_type()==tb::kFloat32 && attended.size(0)>0 && attended.size(1)>0 &&
+        attended.scalar_type()==::tyloi::kFloat32 && attended.size(0)>0 && attended.size(1)>0 &&
         attended.size(2)>0 && attended.size(3)>0 && std::isfinite(eps) && eps>0,
         "gdn_rms_norm_gate: expected nonempty contiguous CUDA f32 [batch,heads,tokens,width]");
     const auto batch=attended.size(0),heads=attended.size(1),tokens=attended.size(2),width=attended.size(3);
@@ -505,16 +504,16 @@ mfq_tensor_backend::Tensor gdn_rms_norm_gate_cuda(mfq_tensor_backend::Tensor att
         gate.dim()==3 && gate.size(0)==batch && gate.size(1)==tokens && gate.size(2)==heads*width &&
         gate.stride(2)==1 && gate.stride(1)>=heads*width &&
         (batch==1 || gate.stride(0)>=tokens*gate.stride(1)) &&
-        (gate.scalar_type()==tb::kFloat16 || gate.scalar_type()==tb::kFloat32),
+        (gate.scalar_type()==::tyloi::kFloat16 || gate.scalar_type()==::tyloi::kFloat32),
         "gdn_rms_norm_gate: expected row-strided CUDA f16/f32 [batch,tokens,heads*width] gate");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.device()==attended.device() && weight.is_contiguous() &&
-        weight.scalar_type()==tb::kFloat32 && weight.dim()==1 && weight.numel()==width,
+        weight.scalar_type()==::tyloi::kFloat32 && weight.dim()==1 && weight.numel()==width,
         "gdn_rms_norm_gate: expected CUDA f32 width-vector weight");
     MfqCudaGuard guard(attended.device());
-    auto output=tb::empty({batch,tokens,heads*width},attended.options().dtype(output_half?tb::kFloat16:tb::kFloat32));
+    auto output=::tyloi::cuda::empty({batch,tokens,heads*width},attended.options().dtype(output_half?::tyloi::kFloat16: ::tyloi::kFloat32));
     // Match the arithmetic selected after the old mandatory contiguous copy.
-    const bool double_sigmoid=gate.scalar_type()==tb::kFloat32 && tokens>1 && heads>1;
-    const auto* warp_setting=mfq::cuda::env_lookup("TYLOINFER_GDN_NORM_WARP_REDUCTION");
+    const bool double_sigmoid=gate.scalar_type()==::tyloi::kFloat32 && tokens>1 && heads>1;
+    const auto* warp_setting=tyloi::cuda::env_lookup("TYLOINFER_GDN_NORM_WARP_REDUCTION");
     const bool warp_tail=warp_setting?warp_setting[0]=='1':width==128 && tokens>=2 && tokens<=8;
     const auto launch=[&]<class Gate,class Output,int Threads>() {
         const auto select=[&](auto tail) {
@@ -535,7 +534,7 @@ mfq_tensor_backend::Tensor gdn_rms_norm_gate_cuda(mfq_tensor_backend::Tensor att
         if(output_half)dispatch_width.template operator()<Gate,mfq_half>();
         else dispatch_width.template operator()<Gate,float>();
     };
-    if(gate.scalar_type()==tb::kFloat16)dispatch_output.template operator()<mfq_half>();
+    if(gate.scalar_type()==::tyloi::kFloat16)dispatch_output.template operator()<mfq_half>();
     else dispatch_output.template operator()<float>();
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
@@ -619,28 +618,27 @@ __global__ void grouped_gated_rms_norm_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor grouped_gated_rms_norm_cuda(
-    mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor gate,
-    mfq_tensor_backend::Tensor weight, int64_t group_size, double eps)
+::tyloi::Tensor grouped_gated_rms_norm_cuda(
+    ::tyloi::Tensor x, ::tyloi::Tensor gate,
+    ::tyloi::Tensor weight, int64_t group_size, double eps)
 {
-    namespace tb = mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() > 0 &&
         gate.is_cuda() && gate.is_contiguous() && gate.device() == x.device() &&
         gate.sizes() == x.sizes(),
         "grouped_gated_rms_norm: x and gate must be matching contiguous CUDA tensors");
-    TYLOINFER_RUNTIME_CHECK((x.scalar_type() == tb::kFloat32 || x.scalar_type() == tb::kFloat16 ||
-        x.scalar_type() == tb::kBFloat16) &&
-        (gate.scalar_type() == tb::kFloat32 || gate.scalar_type() == tb::kFloat16 ||
-        gate.scalar_type() == tb::kBFloat16),
+    TYLOINFER_RUNTIME_CHECK((x.scalar_type() == ::tyloi::kFloat32 || x.scalar_type() == ::tyloi::kFloat16 ||
+        x.scalar_type() == ::tyloi::kBFloat16) &&
+        (gate.scalar_type() == ::tyloi::kFloat32 || gate.scalar_type() == ::tyloi::kFloat16 ||
+        gate.scalar_type() == ::tyloi::kBFloat16),
         "grouped_gated_rms_norm: x and gate dtypes must be f32, f16 or bf16");
     const int64_t total_width = x.size(-1);
     TYLOINFER_RUNTIME_CHECK(group_size > 0 && total_width % group_size == 0,
         "grouped_gated_rms_norm: group_size must divide the last dimension");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-        weight.device() == x.device() && weight.scalar_type() == tb::kFloat32 &&
+        weight.device() == x.device() && weight.scalar_type() == ::tyloi::kFloat32 &&
         weight.dim() == 1 && weight.numel() == total_width,
         "grouped_gated_rms_norm: weight must be contiguous CUDA f32 of the input width");
-    auto output = tb::empty_like(x);
+    auto output = ::tyloi::cuda::empty_like(x);
     const int64_t blocks = x.numel() / group_size;
     if (blocks == 0) return output;
     const auto launch = [&]<class Value, class Gate>() {
@@ -653,34 +651,33 @@ mfq_tensor_backend::Tensor grouped_gated_rms_norm_cuda(
     };
     const auto dispatch_gate = [&]<class Value>() {
         switch (gate.scalar_type()) {
-        case tb::kFloat32: launch.template operator()<Value, float>(); break;
-        case tb::kFloat16: launch.template operator()<Value, __half>(); break;
+        case ::tyloi::kFloat32: launch.template operator()<Value, float>(); break;
+        case ::tyloi::kFloat16: launch.template operator()<Value, __half>(); break;
         default: launch.template operator()<Value, __nv_bfloat16>(); break;
         }
     };
     switch (x.scalar_type()) {
-    case tb::kFloat32: dispatch_gate.template operator()<float>(); break;
-    case tb::kFloat16: dispatch_gate.template operator()<__half>(); break;
+    case ::tyloi::kFloat32: dispatch_gate.template operator()<float>(); break;
+    case ::tyloi::kFloat16: dispatch_gate.template operator()<__half>(); break;
     default: dispatch_gate.template operator()<__nv_bfloat16>(); break;
     }
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
 
-mfq_tensor_backend::Tensor grouped_rms_norm_cuda(mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor weight, int64_t group, double eps, double weight_offset)
+::tyloi::Tensor grouped_rms_norm_cuda(::tyloi::Tensor x,
+    ::tyloi::Tensor weight, int64_t group, double eps, double weight_offset)
 {
-    namespace tb = mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() > 0 && group > 0 &&
         x.size(-1) > 0 && x.size(-1) % group == 0 &&
-        (x.scalar_type() == tb::kFloat16 || x.scalar_type() == tb::kFloat32),
+        (x.scalar_type() == ::tyloi::kFloat16 || x.scalar_type() == ::tyloi::kFloat32),
         "grouped_rms_norm: input must be contiguous cuda f16/f32 with complete groups");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.device() == x.device() && weight.is_contiguous() &&
-        weight.scalar_type() == tb::kFloat32 && weight.dim() == 1 && weight.numel() == x.size(-1),
+        weight.scalar_type() == ::tyloi::kFloat32 && weight.dim() == 1 && weight.numel() == x.size(-1),
         "grouped_rms_norm: weight must be contiguous cuda f32 with input width");
     const int rows = static_cast<int>(x.numel() / group);
     const int width = static_cast<int>(group), weight_rows = static_cast<int>(x.size(-1) / group);
-    auto output = tb::empty_like(x);
+    auto output = ::tyloi::cuda::empty_like(x);
     if (rows == 0) return output;
     const auto launch=[&]<class Value,int Threads>() {
         grouped_rms_norm_kernel<Value,Threads><<<rows,Threads,0,mfq_current_cuda_stream()>>>(
@@ -693,20 +690,20 @@ mfq_tensor_backend::Tensor grouped_rms_norm_cuda(mfq_tensor_backend::Tensor x,
         else if(width<=128)launch.template operator()<Value,128>();
         else launch.template operator()<Value,256>();
     };
-    if(x.scalar_type()==tb::kFloat16)dispatch.template operator()<mfq_half>();
+    if(x.scalar_type()==::tyloi::kFloat16)dispatch.template operator()<mfq_half>();
     else dispatch.template operator()<float>();
     return output;
 }
 
-mfq_tensor_backend::Tensor qwen_rms_norm_bf16_cuda(
-    mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor weight, double eps,
+::tyloi::Tensor qwen_rms_norm_bf16_cuda(
+    ::tyloi::Tensor input, ::tyloi::Tensor weight, double eps,
     double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() &&
-                    input.scalar_type() == mfq_tensor_backend::kBFloat16,
+                    input.scalar_type() == ::tyloi::kBFloat16,
                 "qwen_rms_norm_bf16: input must be cuda contiguous bf16");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                    weight.scalar_type() == mfq_tensor_backend::kFloat32,
+                    weight.scalar_type() == ::tyloi::kFloat32,
                 "qwen_rms_norm_bf16: weight must be cuda contiguous f32");
     const int D = (int)input.size(-1);
     const int64_t count = input.numel();
@@ -714,7 +711,7 @@ mfq_tensor_backend::Tensor qwen_rms_norm_bf16_cuda(
                 "qwen_rms_norm_bf16: weight length mismatch");
     const int N = (int)(count / D);
     auto stream = mfq_current_cuda_stream();
-    auto output = mfq_tensor_backend::empty_like(input);
+    auto output = ::tyloi::cuda::empty_like(input);
     qwen_rms_norm_bf16_kernel<NORM_BD><<<N, NORM_BD, 0, stream>>>(
         reinterpret_cast<const __nv_bfloat16*>(input.data_ptr<mfq_bfloat16>()),
         weight.data_ptr<float>(),
@@ -723,20 +720,20 @@ mfq_tensor_backend::Tensor qwen_rms_norm_bf16_cuda(
     return output;
 }
 
-std::vector<mfq_tensor_backend::Tensor> qwen_rms_norm_pair_bf16_cuda(
-    mfq_tensor_backend::Tensor first, mfq_tensor_backend::Tensor second,
-    mfq_tensor_backend::Tensor first_weight, mfq_tensor_backend::Tensor second_weight,
+std::vector<::tyloi::Tensor> qwen_rms_norm_pair_bf16_cuda(
+    ::tyloi::Tensor first, ::tyloi::Tensor second,
+    ::tyloi::Tensor first_weight, ::tyloi::Tensor second_weight,
     double eps, double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(first.is_cuda() && first.is_contiguous() &&
-                    first.scalar_type() == mfq_tensor_backend::kBFloat16 &&
+                    first.scalar_type() == ::tyloi::kBFloat16 &&
                     second.is_cuda() && second.is_contiguous() &&
-                    second.scalar_type() == mfq_tensor_backend::kBFloat16,
+                    second.scalar_type() == ::tyloi::kBFloat16,
                 "paired Qwen RMSNorm inputs must be cuda contiguous bf16");
     TYLOINFER_RUNTIME_CHECK(first_weight.is_cuda() && first_weight.is_contiguous() &&
-                    first_weight.scalar_type() == mfq_tensor_backend::kFloat32 &&
+                    first_weight.scalar_type() == ::tyloi::kFloat32 &&
                     second_weight.is_cuda() && second_weight.is_contiguous() &&
-                    second_weight.scalar_type() == mfq_tensor_backend::kFloat32,
+                    second_weight.scalar_type() == ::tyloi::kFloat32,
                 "paired Qwen RMSNorm weights must be cuda contiguous f32");
     const int D = (int)first.size(-1);
     TYLOINFER_RUNTIME_CHECK(D > 0 && second.size(-1) == D &&
@@ -745,8 +742,8 @@ std::vector<mfq_tensor_backend::Tensor> qwen_rms_norm_pair_bf16_cuda(
     const int64_t first_count = first.numel();
     const int64_t total_count = first_count + second.numel();
     const int64_t total_rows = total_count / D;
-    auto squared = mfq_tensor_backend::empty(
-        {total_rows, D}, first.options().dtype(mfq_tensor_backend::kFloat32));
+    auto squared = ::tyloi::cuda::empty(
+        {total_rows, D}, first.options().dtype(::tyloi::kFloat32));
     const int blocks = (int)std::min<int64_t>(
         (total_count + NORM_BD - 1) / NORM_BD, 65535);
     auto stream = mfq_current_cuda_stream();
@@ -755,8 +752,8 @@ std::vector<mfq_tensor_backend::Tensor> qwen_rms_norm_pair_bf16_cuda(
         reinterpret_cast<const __nv_bfloat16*>(second.data_ptr<mfq_bfloat16>()),
         squared.data_ptr<float>(), first_count, total_count);
     auto mean = squared.mean(-1, true);
-    auto first_output = mfq_tensor_backend::empty_like(first);
-    auto second_output = mfq_tensor_backend::empty_like(second);
+    auto first_output = ::tyloi::cuda::empty_like(first);
+    auto second_output = ::tyloi::cuda::empty_like(second);
     qwen_rms_norm_pair_bf16_finalize_kernel<<<blocks, NORM_BD, 0, stream>>>(
         reinterpret_cast<const __nv_bfloat16*>(first.data_ptr<mfq_bfloat16>()),
         reinterpret_cast<const __nv_bfloat16*>(second.data_ptr<mfq_bfloat16>()),
@@ -770,15 +767,15 @@ std::vector<mfq_tensor_backend::Tensor> qwen_rms_norm_pair_bf16_cuda(
     return {first_output, second_output};
 }
 
-mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor v,
-    mfq_tensor_backend::Tensor q_weight, mfq_tensor_backend::Tensor k_weight,
-    mfq_tensor_backend::Tensor rope_pos, mfq_tensor_backend::Tensor write_pos,
-    mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin,
-    mfq_tensor_backend::Tensor k_cache, mfq_tensor_backend::Tensor v_cache,
+::tyloi::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor v,
+    ::tyloi::Tensor q_weight, ::tyloi::Tensor k_weight,
+    ::tyloi::Tensor rope_pos, ::tyloi::Tensor write_pos,
+    ::tyloi::Tensor cos, ::tyloi::Tensor sin,
+    ::tyloi::Tensor k_cache, ::tyloi::Tensor v_cache,
     double eps, double weight_offset)
 {
-    const auto bf16 = mfq_tensor_backend::kBFloat16;
+    const auto bf16 = ::tyloi::kBFloat16;
     TYLOINFER_RUNTIME_CHECK(q.is_cuda() && k.is_cuda() && v.is_cuda() &&
                     q.is_contiguous() && k.is_contiguous() && v.is_contiguous() &&
                     q.scalar_type() == bf16 && k.scalar_type() == bf16 &&
@@ -791,8 +788,8 @@ mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
                 "minicpm_qk_norm_rope_kv: expected Bx32x1x128 Q and Bx8x1x128 K/V");
     TYLOINFER_RUNTIME_CHECK(q_weight.is_cuda() && k_weight.is_cuda() &&
                     q_weight.is_contiguous() && k_weight.is_contiguous() &&
-                    q_weight.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                    k_weight.scalar_type() == mfq_tensor_backend::kFloat32 &&
+                    q_weight.scalar_type() == ::tyloi::kFloat32 &&
+                    k_weight.scalar_type() == ::tyloi::kFloat32 &&
                     q_weight.numel() == 128 && k_weight.numel() == 128,
                 "minicpm_qk_norm_rope_kv: norm weights must be cuda contiguous f32[128]");
     TYLOINFER_RUNTIME_CHECK(k_cache.is_cuda() && v_cache.is_cuda() &&
@@ -804,19 +801,19 @@ mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
                 "minicpm_qk_norm_rope_kv: cache shape mismatch");
     TYLOINFER_RUNTIME_CHECK(rope_pos.is_cuda() && write_pos.is_cuda() &&
                     rope_pos.is_contiguous() && write_pos.is_contiguous() &&
-                    rope_pos.scalar_type() == mfq_tensor_backend::kInt64 &&
-                    write_pos.scalar_type() == mfq_tensor_backend::kInt64 &&
+                    rope_pos.scalar_type() == ::tyloi::kInt64 &&
+                    write_pos.scalar_type() == ::tyloi::kInt64 &&
                     rope_pos.numel() == 1 && write_pos.numel() == 1,
                 "minicpm_qk_norm_rope_kv: positions must be cuda contiguous int64[1]");
     TYLOINFER_RUNTIME_CHECK(cos.is_cuda() && sin.is_cuda() && cos.is_contiguous() &&
-                    sin.is_contiguous() && cos.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                    sin.scalar_type() == mfq_tensor_backend::kFloat32 && cos.sizes() == sin.sizes() &&
+                    sin.is_contiguous() && cos.scalar_type() == ::tyloi::kFloat32 &&
+                    sin.scalar_type() == ::tyloi::kFloat32 && cos.sizes() == sin.sizes() &&
                     cos.dim() == 2 && cos.size(1) == 64,
                 "minicpm_qk_norm_rope_kv: cos/sin must be matching f32 tables");
 
     constexpr int D = 128;
     auto stream = mfq_current_cuda_stream();
-    auto q_out = mfq_tensor_backend::empty_like(q);
+    auto q_out = ::tyloi::cuda::empty_like(q);
     const int B = (int)q.size(0);
     minicpm_qk_norm_rope_cache_write_bf16_kernel<<<
         B * 32, 128, 0, stream>>>(
@@ -834,29 +831,29 @@ mfq_tensor_backend::Tensor minicpm_qk_norm_rope_cache_write_bf16_cuda(
     return q_out;
 }
 
-std::vector<mfq_tensor_backend::Tensor> rms_norm_pair_f16_f32_offset_cuda(
-    mfq_tensor_backend::Tensor first,
-    mfq_tensor_backend::Tensor second,
-    mfq_tensor_backend::Tensor first_weight,
-    mfq_tensor_backend::Tensor second_weight,
+std::vector<::tyloi::Tensor> rms_norm_pair_f16_f32_offset_cuda(
+    ::tyloi::Tensor first,
+    ::tyloi::Tensor second,
+    ::tyloi::Tensor first_weight,
+    ::tyloi::Tensor second_weight,
     double eps,
     double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(
         first.is_cuda() && first.is_contiguous() &&
-        first.scalar_type() == mfq_tensor_backend::kFloat16,
+        first.scalar_type() == ::tyloi::kFloat16,
         "paired RMSNorm first input must be CUDA contiguous fp16");
     TYLOINFER_RUNTIME_CHECK(
         second.is_cuda() && second.is_contiguous() &&
-        second.scalar_type() == mfq_tensor_backend::kFloat16,
+        second.scalar_type() == ::tyloi::kFloat16,
         "paired RMSNorm second input must be CUDA contiguous fp16");
     TYLOINFER_RUNTIME_CHECK(
         first_weight.is_cuda() && first_weight.is_contiguous() &&
-        first_weight.scalar_type() == mfq_tensor_backend::kFloat32,
+        first_weight.scalar_type() == ::tyloi::kFloat32,
         "paired RMSNorm first weight must be CUDA contiguous fp32");
     TYLOINFER_RUNTIME_CHECK(
         second_weight.is_cuda() && second_weight.is_contiguous() &&
-        second_weight.scalar_type() == mfq_tensor_backend::kFloat32,
+        second_weight.scalar_type() == ::tyloi::kFloat32,
         "paired RMSNorm second weight must be CUDA contiguous fp32");
     const int D = (int)first.size(-1);
     TYLOINFER_RUNTIME_CHECK(second.size(-1) == D, "paired RMSNorm widths must match");
@@ -865,9 +862,9 @@ std::vector<mfq_tensor_backend::Tensor> rms_norm_pair_f16_f32_offset_cuda(
         "paired RMSNorm weight lengths must match the input width");
     const int first_rows = (int)(first.numel() / D);
     const int second_rows = (int)(second.numel() / D);
-    auto output_options = first.options().dtype(mfq_tensor_backend::kFloat32);
-    auto first_out = mfq_tensor_backend::empty(first.sizes(), output_options);
-    auto second_out = mfq_tensor_backend::empty(second.sizes(), output_options);
+    auto output_options = first.options().dtype(::tyloi::kFloat32);
+    auto first_out = ::tyloi::cuda::empty(first.sizes(), output_options);
+    auto second_out = ::tyloi::cuda::empty(second.sizes(), output_options);
     rms_norm_pair_f16_f32_kernel<NORM_BD><<<
         first_rows + second_rows, NORM_BD, 0,
         mfq_current_cuda_stream()>>>(
@@ -878,13 +875,13 @@ std::vector<mfq_tensor_backend::Tensor> rms_norm_pair_f16_f32_offset_cuda(
     return {first_out, second_out};
 }
 
-mfq_tensor_backend::Tensor l2_norm_cuda(mfq_tensor_backend::Tensor x, double eps)
+::tyloi::Tensor l2_norm_cuda(::tyloi::Tensor x, double eps)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat32,
                 "l2_norm: x must be cuda contiguous f32");
     int D = (int)x.size(-1);
     int N = (int)(x.numel() / D);
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     l2_norm_kernel<NORM_BD><<<N, NORM_BD, 0, mfq_current_cuda_stream()>>>(
         x.data_ptr<float>(), out.data_ptr<float>(), N, D, (float)eps);
     return out;

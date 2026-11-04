@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 class HostParallelPool;
 class MfeQuantRangeUnsupported : public std::runtime_error {
 public: using std::runtime_error::runtime_error;
@@ -67,8 +67,8 @@ private:
     struct Pool {
         std::string dtype;
         std::vector<std::int32_t> ids;
-        std::shared_ptr<mfq::NintRows> nint;
-        std::shared_ptr<mfq::NvqRows> nvq;
+        std::shared_ptr<tyloi::NintRows> nint;
+        std::shared_ptr<tyloi::NvqRows> nvq;
         // MXT1 stores field-major rows; retain offsets, never pool payloads.
         std::size_t mx_values=0, mx_scales=0;
         std::size_t offset=0, bytes=0;
@@ -81,4 +81,4 @@ private:
     std::vector<Pool> pools_;
     std::vector<Expert> owners_;
 };
-} // namespace mfq
+} // namespace tyloi

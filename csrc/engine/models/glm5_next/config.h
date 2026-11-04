@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::glm5_next {
+namespace tyloi::models::glm5_next {
 
 struct Config {
     int64_t vocab, hidden, intermediate, layers, maximum;
@@ -31,8 +31,8 @@ struct Config {
     bool dense_layer(int64_t layer, bool predictor = false) const {
         return !predictor && mlp_types.at(layer) == "dense";
     }
-    mfq::ops::MoeRouting routing() const {
-        return {mfq::ops::RouterActivation::sigmoid, normalize_routes, false, router_scale};
+    tyloi::ops::MoeRouting routing() const {
+        return {tyloi::ops::RouterActivation::sigmoid, normalize_routes, false, router_scale};
     }
     static Config from_json(std::string_view payload);
 
@@ -132,4 +132,4 @@ struct Config {
     }
 };
 
-} // namespace mfq::models::glm5_next
+} // namespace tyloi::models::glm5_next

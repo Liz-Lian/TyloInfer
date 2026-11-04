@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 class Scheduler {
 public:
@@ -72,4 +72,4 @@ private:
     std::deque<std::string> order_;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

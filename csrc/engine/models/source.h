@@ -4,7 +4,7 @@
 #include "common/legacy_names.h"
 #include "common/model_graph.h"
 
-namespace mfq {
+namespace tyloi {
 
 // Canonical model names, layout and graph interpretation over retained input bytes.
 class ModelSource : public source::Source {
@@ -17,4 +17,4 @@ public:
 std::shared_ptr<const ModelSource> open_model_source(
     const std::filesystem::path& path);
 
-} // namespace mfq
+} // namespace tyloi

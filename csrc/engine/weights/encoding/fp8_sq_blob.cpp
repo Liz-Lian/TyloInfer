@@ -2,7 +2,7 @@
 
 #include "bytes.h"
 
-namespace mfq::fp8sq {
+namespace tyloi::fp8sq {
 
 std::vector<std::byte> block128_prefix(
     const std::vector<std::int64_t>& shape,
@@ -78,4 +78,4 @@ std::vector<std::byte> block128_prefix(
     return result;
 }
 
-} // namespace mfq::fp8sq
+} // namespace tyloi::fp8sq

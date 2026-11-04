@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq::archive {
+namespace tyloi::archive {
 
 struct Header {
     std::uint32_t version = 0;
@@ -78,4 +78,4 @@ private:
     Index output_;
 };
 
-} // namespace mfq::archive
+} // namespace tyloi::archive

@@ -20,7 +20,7 @@
 #include <utility>
 #include <stdexcept>
 
-namespace mfq::models {
+namespace tyloi::models {
 namespace {
 
 using json = nlohmann::json;
@@ -388,4 +388,4 @@ std::optional<ModelGraph> HfSource::model_graph() const {
         reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
-} // namespace mfq::models
+} // namespace tyloi::models

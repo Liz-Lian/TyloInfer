@@ -10,7 +10,7 @@
 #include <span>
 #include <vector>
 
-namespace mfq::models::minicpmo45 {
+namespace tyloi::models::minicpmo45 {
 
 struct MediaBound {
     int64_t batch = 0, source = 0, begin = 0, end = 0;
@@ -41,7 +41,7 @@ template <class Tensor> struct MultimodalResult {
 // The model owns modality order, resampling, and replacement geometry. Device
 // copies and the actual slice/scatter operations are supplied by the backend.
 template <class Ops>
-mfq::StepSequence<MultimodalResult<typename Ops::Tensor>>
+tyloi::StepSequence<MultimodalResult<typename Ops::Tensor>>
 encode(Ops &ops, MultimodalInputs<typename Ops::Tensor> &input) {
     if (ops.rank(input.ids) == 1)
         input.ids = ops.batch_ids(std::move(input.ids));
@@ -49,7 +49,7 @@ encode(Ops &ops, MultimodalInputs<typename Ops::Tensor> &input) {
     input.ids = ops.device_ids(std::move(input.ids));
     MultimodalResult<typename Ops::Tensor> result;
     result.input_embeddings = ops.embed(input.ids);
-    co_yield mfq::StepState::advanced;
+    co_yield tyloi::StepState::advanced;
     auto check_bound = [&](const MediaBound &bound, const auto &encoded, int64_t length) {
         require_model(bound.batch >= 0 && bound.batch < ops.size(input.ids, 0) &&
                           bound.source >= 0 && bound.source < ops.size(encoded, 0) &&
@@ -67,11 +67,11 @@ encode(Ops &ops, MultimodalInputs<typename Ops::Tensor> &input) {
             else co_yield step.state;
         }
         result.image_embeddings = ops.resample(result.vision_states, input.target_sizes);
-        co_yield mfq::StepState::advanced;
+        co_yield tyloi::StepState::advanced;
         for (const auto &bound : input.images) {
             check_bound(bound, result.image_embeddings, ops.size(result.image_embeddings, 1));
             ops.scatter(result.input_embeddings, result.image_embeddings, bound);
-            co_yield mfq::StepState::advanced;
+            co_yield tyloi::StepState::advanced;
         }
     }
     if (!input.audios.empty()) {
@@ -89,7 +89,7 @@ encode(Ops &ops, MultimodalInputs<typename Ops::Tensor> &input) {
                           "audio bound source is out of range");
             check_bound(bound, result.audio_embeddings, lengths[bound.source]);
             ops.scatter(result.input_embeddings, result.audio_embeddings, bound);
-            co_yield mfq::StepState::advanced;
+            co_yield tyloi::StepState::advanced;
         }
     }
     co_yield std::move(result);
@@ -185,29 +185,29 @@ auto encoder_attention(Tensor hidden, bool cached, Query query, Key key, Value v
 
 template <class Tensor, class Layers, class Conv1, class Gelu, class Conv2, class Prepare,
           class Layer, class Normalize, class Project1, class Relu, class Project2, class Pool>
-mfq::StepSequence<Tensor> audio_encoder(Tensor features, Layers &layers, Conv1 conv1, Gelu gelu, Conv2 conv2,
+tyloi::StepSequence<Tensor> audio_encoder(Tensor features, Layers &layers, Conv1 conv1, Gelu gelu, Conv2 conv2,
                    Prepare prepare, Layer layer, Normalize normalize, Project1 project1, Relu relu,
                    Project2 project2, Pool pool) {
     auto hidden = gelu(conv1(std::move(features)));
     hidden = gelu(conv2(std::move(hidden)));
     auto prepared = prepare(std::move(hidden));
     hidden = std::move(prepared[0]);
-    co_yield mfq::StepState::advanced;
+    co_yield tyloi::StepState::advanced;
     for (auto& block : layers) {
         hidden = layer(block, std::move(hidden), prepared[1]);
-        co_yield mfq::StepState::advanced;
+        co_yield tyloi::StepState::advanced;
     }
-    co_yield pool(mfq::ops::mlp(normalize(std::move(hidden)), project1, relu, project2));
+    co_yield pool(project2(relu(project1(normalize(std::move(hidden))))));
 }
 
 template <class Tensor, class Layers, class Patch, class Prepare, class Layer, class Normalize>
-mfq::StepSequence<Tensor> vision_encoder(Tensor pixels, Layers &layers, Patch patch, Prepare prepare, Layer layer,
+tyloi::StepSequence<Tensor> vision_encoder(Tensor pixels, Layers &layers, Patch patch, Prepare prepare, Layer layer,
                     Normalize normalize) {
     auto hidden = prepare(patch(std::move(pixels)));
-    co_yield mfq::StepState::advanced;
+    co_yield tyloi::StepState::advanced;
     for (const auto& block : layers) {
         hidden = layer(block, std::move(hidden));
-        co_yield mfq::StepState::advanced;
+        co_yield tyloi::StepState::advanced;
     }
     co_yield normalize(std::move(hidden));
 }
@@ -243,4 +243,4 @@ auto tts_forward(Tensor embeddings, int64_t batch, int64_t tokens, int64_t capac
     return normalize(std::move(hidden));
 }
 
-} // namespace mfq::models::minicpmo45
+} // namespace tyloi::models::minicpmo45

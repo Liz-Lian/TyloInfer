@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // Engine-owned parser state. append/finish only return values.
 class InferenceOutput {
@@ -40,4 +40,4 @@ private:
     bool stopped_ = false, finished_ = false;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

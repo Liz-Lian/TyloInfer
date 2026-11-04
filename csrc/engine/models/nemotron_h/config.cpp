@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq::models::nemotron_h {
+namespace tyloi::models::nemotron_h {
 namespace {
 
 using json = nlohmann::json;
@@ -243,4 +243,4 @@ Config Config::from_json(std::string_view payload, const ModelGraph&) {
     return config;
 }
 
-} // namespace mfq::models::nemotron_h
+} // namespace tyloi::models::nemotron_h

@@ -10,34 +10,34 @@
 
 #include "engine/generate_impl.h"
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 #define TYLOINFER_INSTANTIATE_FLOW(MODEL, STATE)                                                                \
-    template Generation generate(MODEL &, STATE &, mfq::cuda::Executor*, mfq::cuda::Collectives&, \
-        mfq::cuda::Executor::Mode, CudaProfiler&, mfq::cuda::RoutedCache&, bool&, bool, bool,       \
+    template Generation generate(MODEL &, STATE &, tyloi::cuda::Executor*, tyloi::cuda::Collectives&, \
+        tyloi::cuda::Executor::Mode, CudaProfiler&, tyloi::cuda::RoutedCache&, bool&, bool, bool,       \
         std::function<void()>,                                                                      \
-        const mfq::models::Info &, const mfq::ModelSource*,                                          \
+        const tyloi::models::Info &, const tyloi::ModelSource*,                                          \
         DecodeGraphCache &,                                                                        \
         TextSessionCache &,                                                                        \
         const CudaRuntimeConfig &,                                                                 \
-        mfq::engine::InferenceRequest &,                                                           \
-        mfq::engine::InferenceOutput &,                                                            \
-        mfq::engine::mtp::State &,                                                                  \
+        tyloi::engine::InferenceRequest &,                                                           \
+        tyloi::engine::InferenceOutput &,                                                            \
+        tyloi::engine::mtp::State &,                                                                  \
         MtpModule *,                                                                               \
         std::optional<PreparedPrompt>,                                                         \
-        mfq::engine::Batch*, std::string,                    \
+        tyloi::engine::Batch*, std::string,                    \
         std::function<void()>);
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::Model, mfq::cuda::minicpmo45::State)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::minicpmo45::text::Model, mfq::cuda::minicpmo45::text::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::Model, tyloi::cuda::minicpmo45::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::minicpmo45::text::Model, tyloi::cuda::minicpmo45::text::State)
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-TYLOINFER_INSTANTIATE_FLOW(mfq::models::CausalModel, mfq::models::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::models::CausalModel, tyloi::models::State)
 #else
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::gemma4::Model, mfq::cuda::gemma4::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::gemma4::Model, tyloi::cuda::gemma4::State)
 #endif
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm_dsa::Model, mfq::cuda::glm_dsa::State)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::glm5_next::Model, mfq::cuda::glm5_next::State)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::Qwen4CausalLm, mfq::cuda::Qwen4CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::deepseek_v4::Model, mfq::cuda::deepseek_v4::State)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::DeepseekV41CausalLm, mfq::cuda::DeepseekV41CausalLm)
-TYLOINFER_INSTANTIATE_FLOW(mfq::cuda::nemotron_h::Model, mfq::cuda::nemotron_h::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm_dsa::Model, tyloi::cuda::glm_dsa::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::glm5_next::Model, tyloi::cuda::glm5_next::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::Qwen4CausalLm, tyloi::cuda::Qwen4CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::deepseek_v4::Model, tyloi::cuda::deepseek_v4::State)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::DeepseekV41CausalLm, tyloi::cuda::DeepseekV41CausalLm)
+TYLOINFER_INSTANTIATE_FLOW(tyloi::cuda::nemotron_h::Model, tyloi::cuda::nemotron_h::State)
 #undef TYLOINFER_INSTANTIATE_FLOW
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

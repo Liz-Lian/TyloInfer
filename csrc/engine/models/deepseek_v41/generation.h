@@ -8,13 +8,13 @@
 
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template<class Ops, class Finish>
-std::tuple<mfq_tensor_backend::Tensor, bool, bool> generation_prefill(
-        DeepseekV41CausalLm& model, Ops& ops, const mfq::engine::PrefillChunk&,
-        mfq_tensor_backend::Tensor& ids, const Finish&) {
-    mfq_tensor_backend::Tensor hidden;
+std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
+        DeepseekV41CausalLm& model, Ops& ops, const tyloi::engine::PrefillChunk&,
+        ::tyloi::Tensor& ids, const Finish&) {
+    ::tyloi::Tensor hidden;
     if(!ops.prepared || !ops.prepared->transformed())
         hidden=deepseek_v41_prefill_hidden(model,ids,ops.prefill_compute_chunk,
             [&] {return ops.output && ops.output->stopped();});
@@ -33,9 +33,9 @@ void generation_prefill_end(DeepseekV41CausalLm&, Ops& ops, bool streamed, bool 
         // request. Retire consumers before a new grouped prefill;
         // otherwise these arenas can reduce its ring to one expert.
         release_moe_decode_buffers(ops.weights.moe);
-        mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
+        tyloi::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
     }
 #endif
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

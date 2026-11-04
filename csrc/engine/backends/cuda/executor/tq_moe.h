@@ -17,11 +17,11 @@ bool tq_graph_supports_tokens(std::int64_t tokens) noexcept;
 // range; each row retains its own bit width, scale and encoded data.
 struct TqMoeBanks {
     std::shared_ptr<TqRoutedWeight> gate, up, down;
-    std::vector<mfq::TensorParallelSlice> slices;
+    std::vector<tyloi::TensorParallelSlice> slices;
 
-    mfq_tensor_backend::Tensor forward(
-        TqExec&, mfq_tensor_backend::Tensor input,
-        mfq_tensor_backend::Tensor ids, mfq_tensor_backend::Tensor weights,
+    ::tyloi::Tensor forward(
+        TqExec&, ::tyloi::Tensor input,
+        ::tyloi::Tensor ids, ::tyloi::Tensor weights,
         float swiglu_limit = 0, CudaProfiler* profiler = nullptr,
         std::int64_t expert_begin = 0, std::int64_t expert_end = -1) const;
 };

@@ -28,15 +28,15 @@ inline int moe_decode_transfer_slots(int rows, int routes) {
 }
 inline constexpr std::size_t moe_ssd_residency_stage_limit_bytes=std::size_t(256)<<20;
 inline bool moe_predictor_transfer_cache_enabled() {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_TRANSFER_CACHE");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_PREDICTOR_TRANSFER_CACHE");
     return !option || option[0]!='0';
 }
 inline std::string moe_packed_transfer_prefix(int projection,bool predictor) {
     return std::string("decodepacked:")+(predictor && moe_predictor_transfer_cache_enabled()?"mtp:":"")+
         std::to_string(projection)+":";
 }
-namespace mfq::cuda {class KvExpertLoan;}
-void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<mfq::cuda::KvExpertLoan> loan);
+namespace tyloi::cuda {class KvExpertLoan;}
+void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache,std::shared_ptr<tyloi::cuda::KvExpertLoan> loan);
 
 // The owner outlives every temporary tensor allocated from the borrowed tails.
 // Destruction restores experts on cancellation/exception as well as success.
@@ -141,21 +141,21 @@ void print_moe_expert_cache_stats(
     std::ostream& output);
 void set_moe_expert_cache_profile(
     MoeExpertCache& cache,
-    mfq::MoeCacheProfile profile);
+    tyloi::MoeCacheProfile profile);
 
-namespace mfq::cuda { struct Experts; }
+namespace tyloi::cuda { struct Experts; }
 struct MixedMoeRuntime;
-namespace mfq::cuda { class MfeMxfp4ExpertStore; }
+namespace tyloi::cuda { class MfeMxfp4ExpertStore; }
 
-mfq::cuda::Experts cache_moe_weight(
+tyloi::cuda::Experts cache_moe_weight(
     const std::shared_ptr<MoeExpertCache>& cache,
     const std::string& name,
     const std::shared_ptr<MixedMoeRuntime>& runtime,
     int minimum_slots,
     int layer_id,
     const std::string& projection_role,
-    std::shared_ptr<mfq::cuda::MfeMxfp4ExpertStore> range_store = {});
+    std::shared_ptr<tyloi::cuda::MfeMxfp4ExpertStore> range_store = {});
 
-mfq::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
+tyloi::cuda::Experts cache_quant_moe_weight(const std::shared_ptr<MoeExpertCache>& cache,
     const std::string& name,std::shared_ptr<MoeQuantRangeSource> source,
     int minimum_slots,int layer_id,const std::string& projection_role);

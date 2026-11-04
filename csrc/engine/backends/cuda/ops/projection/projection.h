@@ -4,19 +4,19 @@
 #include "engine/backends/cuda/ops/ffn/moe.h"
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::cuda::ops {
-mfq::Tensor embedding(mfq::Tensor ids, const weights::Weights& weight);
-mfq::Tensor project(mfq::Tensor input, const weights::Weights& weight);
-mfq::Tensor linear(mfq::Tensor input, const weights::Weights& weight, const mfq::Tensor& bias);
-mfq::Tensor affine(mfq::Tensor input, const weights::Weights& weight, const mfq::Tensor& bias);
-std::vector<mfq::Tensor> project_group(mfq::Tensor input, const weights::Weights& group);
-mfq::Tensor sigmoid_project(mfq::Tensor input, mfq::Tensor gate, const weights::Weights& weight);
+namespace tyloi::cuda::ops {
+tyloi::Tensor embedding(tyloi::Tensor ids, const weights::Weights& weight);
+tyloi::Tensor project(tyloi::Tensor input, const weights::Weights& weight);
+tyloi::Tensor linear(tyloi::Tensor input, const weights::Weights& weight, const tyloi::Tensor& bias);
+tyloi::Tensor affine(tyloi::Tensor input, const weights::Weights& weight, const tyloi::Tensor& bias);
+std::vector<tyloi::Tensor> project_group(tyloi::Tensor input, const weights::Weights& group);
+tyloi::Tensor sigmoid_project(tyloi::Tensor input, tyloi::Tensor gate, const weights::Weights& weight);
 }
 #endif
 
 struct TqMoeBanks;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Branches;
 struct Experts;
@@ -57,38 +57,38 @@ public:
     int primary_device() const { return primary_; }
     MoeScratchCache& moe_scratch() const { return moe_scratch_; }
 
-    mfq_tensor_backend::Tensor run(const QuantLinear& weight, mfq_tensor_backend::Tensor input) const;
-    std::vector<mfq_tensor_backend::Tensor> run(
-        const Projections& projections, mfq_tensor_backend::Tensor input) const;
-    std::vector<mfq_tensor_backend::Tensor> run(
-        const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor gated(const QuantLinear& weight, mfq_tensor_backend::Tensor input,
-                                    mfq_tensor_backend::Tensor gate, InputGateMode mode) const;
-    mfq_tensor_backend::Tensor groupwise(const QuantLinear& weight,
-                                       mfq_tensor_backend::Tensor input, int64_t groups) const;
-    mfq_tensor_backend::Tensor low_rank(mfq_tensor_backend::Tensor attention,
+    ::tyloi::Tensor run(const QuantLinear& weight, ::tyloi::Tensor input) const;
+    std::vector<::tyloi::Tensor> run(
+        const Projections& projections, ::tyloi::Tensor input) const;
+    std::vector<::tyloi::Tensor> run(
+        const QuantLinearGroup& group, ::tyloi::Tensor input) const;
+    ::tyloi::Tensor gated(const QuantLinear& weight, ::tyloi::Tensor input,
+                                    ::tyloi::Tensor gate, InputGateMode mode) const;
+    ::tyloi::Tensor groupwise(const QuantLinear& weight,
+                                       ::tyloi::Tensor input, int64_t groups) const;
+    ::tyloi::Tensor low_rank(::tyloi::Tensor attention,
                                       const QuantLinear& output_a, const QuantLinear& output_b,
                                       int64_t groups, bool groupwise, bool profile) const;
-    mfq_tensor_backend::Tensor swiglu(const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor geglu(const QuantLinearGroup& group, mfq_tensor_backend::Tensor input) const;
-    std::vector<mfq_tensor_backend::Tensor> grouped(
-        const QuantLinearProjectionRefs& projections, mfq_tensor_backend::Tensor input) const;
+    ::tyloi::Tensor swiglu(const QuantLinearGroup& group, ::tyloi::Tensor input) const;
+    ::tyloi::Tensor geglu(const QuantLinearGroup& group, ::tyloi::Tensor input) const;
+    std::vector<::tyloi::Tensor> grouped(
+        const QuantLinearProjectionRefs& projections, ::tyloi::Tensor input) const;
 
-    mfq_tensor_backend::Tensor run(
-        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::Tensor run(
+        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
         bool prequantized = false, int epilogue = 0) const;
-    mfq_tensor_backend::Tensor glu(
-        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::Tensor glu(
+        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
         bool gelu) const;
-    mfq_tensor_backend::Tensor gated(
-        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::Tensor gated(
+        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
         bool gelu) const;
-    mfq_tensor_backend::Tensor clamped(
-        const Experts& weight, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::Tensor clamped(
+        const Experts& weight, ::tyloi::Tensor input, const MoeRoutePlan& route,
         double limit) const;
-    mfq_tensor_backend::Tensor run(
-        const TqMoeBanks& banks, mfq_tensor_backend::Tensor input,
-        mfq_tensor_backend::Tensor ids, mfq_tensor_backend::Tensor weights,
+    ::tyloi::Tensor run(
+        const TqMoeBanks& banks, ::tyloi::Tensor input,
+        ::tyloi::Tensor ids, ::tyloi::Tensor weights,
         float swiglu_limit = 0) const;
 
 private:
@@ -104,17 +104,17 @@ private:
     const bool& serial_;
     const bool& projection_major_;
 
-    mfq_tensor_backend::Tensor sharded(const QuantLinear& weight, mfq_tensor_backend::Tensor input,
-                                      MfqOptional<mfq_tensor_backend::Tensor> gate, InputGateMode mode) const;
-    std::vector<mfq_tensor_backend::Tensor> run(
-        const NintLinearGroup& group, mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor swiglu(const NintLinearGroup& group, mfq_tensor_backend::Tensor input) const;
-    mfq_tensor_backend::Tensor geglu(const NintLinearGroup& group, mfq_tensor_backend::Tensor input) const;
+    ::tyloi::Tensor sharded(const QuantLinear& weight, ::tyloi::Tensor input,
+                                      MfqOptional<::tyloi::Tensor> gate, InputGateMode mode) const;
+    std::vector<::tyloi::Tensor> run(
+        const NintLinearGroup& group, ::tyloi::Tensor input) const;
+    ::tyloi::Tensor swiglu(const NintLinearGroup& group, ::tyloi::Tensor input) const;
+    ::tyloi::Tensor geglu(const NintLinearGroup& group, ::tyloi::Tensor input) const;
 };
 
-mfq_tensor_backend::Tensor embed(const QuantLinear& weight, mfq_tensor_backend::Tensor ids,
+::tyloi::Tensor embed(const QuantLinear& weight, ::tyloi::Tensor ids,
     Collectives& copies, CudaProfiler& profiler, int device);
-mfq_tensor_backend::Tensor logits(const QuantLinear& weight, mfq_tensor_backend::Tensor hidden,
+::tyloi::Tensor logits(const QuantLinear& weight, ::tyloi::Tensor hidden,
     const Projector& project, CudaProfiler& profiler, double softcap);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

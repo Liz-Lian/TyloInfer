@@ -10,12 +10,12 @@
 #include <optional>
 #include <vector>
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 
 class DepthController {
 public:
     explicit DepthController(int maximum_depth = 3, int initial_depth = 2)
-        : maximum_depth_(std::clamp(maximum_depth, 1, mfq::engine::mtp::kMaximumDraftDepth)),
+        : maximum_depth_(std::clamp(maximum_depth, 1, tyloi::engine::mtp::kMaximumDraftDepth)),
           current_depth_(std::clamp(initial_depth, 1, maximum_depth_)),
           acceptance_(static_cast<std::size_t>(maximum_depth_), 0.6),
           warmup_accepts_(static_cast<std::size_t>(maximum_depth_), 0),
@@ -291,7 +291,7 @@ private:
     std::vector<int> warmup_;
 };
 
-class Policy final : public mfq::engine::mtp::DepthPolicy {
+class Policy final : public tyloi::engine::mtp::DepthPolicy {
 public:
     explicit Policy(int maximum_depth) : controller_(maximum_depth) {}
 
@@ -314,4 +314,4 @@ private:
     DepthController controller_;
 };
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

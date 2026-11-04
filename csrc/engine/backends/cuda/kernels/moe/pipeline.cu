@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <algorithm>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 __device__ void publish_host_flag(std::uint32_t* flag) {
     // Aligned stores also work on mapped host memory without native PCIe
@@ -401,7 +401,7 @@ void moe_snapshot_mapped(const void* table,const uint32_t* cancelled,void* snaps
         static_cast<uint64_t*>(snapshot),capacity);
 }
 void moe_copy_mapped(const void* table,const uint32_t* cancelled,int blocks,int threads,cudaStream_t stream) {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MOE_COPY_RANGES");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MOE_COPY_RANGES");
     if(option && option[0]=='1')copy_mapped_ranges<<<blocks,std::min(threads,256),0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
     else copy_mapped<<<blocks,threads,0,stream>>>(static_cast<const uint64_t*>(table),cancelled);
 }

@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq::hf {
+namespace tyloi::hf {
 
 void Record::read(
     const Safetensors& files,
@@ -85,4 +85,4 @@ std::optional<TensorFileRange> Record::file_range(
     return std::nullopt;
 }
 
-} // namespace mfq::hf
+} // namespace tyloi::hf

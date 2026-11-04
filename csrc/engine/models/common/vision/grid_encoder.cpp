@@ -6,10 +6,10 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace mfq::cuda::grid_vision_runtime {
+namespace tyloi::cuda::grid_vision_runtime {
 namespace {
 
-mfq_tensor_backend::Tensor required_vector(const weight_loader::Loader& weights,
+::tyloi::Tensor required_vector(const weight_loader::Loader& weights,
                        GridVisionTensorRole role, int64_t width, size_t block = 0) {
     const auto name = grid_vision_canonical_name(role, block);
     auto value = weights.tensor(name);
@@ -95,18 +95,18 @@ CudaGridVisionEncoder CudaGridVisionEncoder::load(const weight_loader::Loader& w
                                  std::move(position_weight), std::move(blocks));
 }
 
-mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
+tyloi::StepSequence<Tensor> CudaGridVisionEncoder::encode(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     Projector projector,
 #endif
     Tensor pixels,
     const std::vector<GridShape> &grids) const {
-    return mfq::models::grid_vision::encode(
+    return tyloi::models::grid_vision::encode(
         std::move(pixels), config_, grids, blocks_,
         [this](Tensor input, int64_t count) {
             if (input.dim() == 5)
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                input = mfq::ops::reshape(input, {input.size(0), -1});
+                input = tyloi::ops::reshape(input, {input.size(0), -1});
 #else
                 input = input.reshape({input.size(0), -1});
 #endif
@@ -116,61 +116,57 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
                     "grid-ViT pixel values must be flattened CxTxHxW patches");
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto weight = mfq::ops::cast(patch_weight_, patch_weight_.scalar_type(), mfq::Device{mfq::DeviceType::cuda, 0});
-                weight = mfq::ops::reshape(std::move(weight), {config_.hidden_size, config_.patch_width()});
-                auto output = mfq::ops::matmul(mfq::ops::cast(input, weight.scalar_type()),
-                                               mfq::ops::transpose(weight, 0, 1));
-                auto bias = mfq::ops::cast(patch_bias_, patch_bias_.scalar_type(), mfq::Device{mfq::DeviceType::cuda, 0});
-                bias = mfq::ops::cast(std::move(bias), output.scalar_type());
-                return mfq::ops::add(std::move(output), std::move(bias));
+                auto weight = tyloi::ops::cast(patch_weight_, patch_weight_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
+                weight = tyloi::ops::reshape(std::move(weight), {config_.hidden_size, config_.patch_width()});
+                auto output = tyloi::ops::matmul(tyloi::ops::cast(input, weight.scalar_type()),
+                                               tyloi::ops::transpose(weight, 0, 1));
+                auto bias = tyloi::ops::cast(patch_bias_, patch_bias_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
+                bias = tyloi::ops::cast(std::move(bias), output.scalar_type());
+                return tyloi::ops::add(std::move(output), std::move(bias));
 #else
-                auto weight = patch_weight_.to(mfq_tensor_backend::kCUDA)
+                auto weight = patch_weight_.to(::tyloi::kCUDA)
                                   .reshape({config_.hidden_size, config_.patch_width()});
-                auto output = mfq_tensor_backend::matmul(input.to(weight.scalar_type()),
+                auto output = ::tyloi::cuda::matmul(input.to(weight.scalar_type()),
                                                          weight.transpose(0, 1));
-                return output + patch_bias_.to(mfq_tensor_backend::kCUDA)
+                return output + patch_bias_.to(::tyloi::kCUDA)
                                    .to(output.scalar_type());
 #endif
             };
             if (!host_weights()) return run();
             auto loan = weights_.borrow(patch_weight_.nbytes() + patch_bias_.nbytes() +
                        std::size_t(count * config_.hidden_size) * 16);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return Tensor(loan.finish(mfq_tensor_backend::Tensor(run())));
-#else
             return loan.finish(run());
-#endif
         },
         [this](const LearnedPositionInterpolation &interpolation) {
             auto run = [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                auto position_weight = mfq::ops::cast(position_weight_, position_weight_.scalar_type(), mfq::Device{mfq::DeviceType::cuda, 0});
-                Tensor index = mfq::ops::tensor(interpolation.indices, mfq::Device{mfq::DeviceType::cpu, 0});
-                index = mfq::ops::cast(std::move(index), mfq_tensor_backend::kInt32, position_weight.device());
-                index = mfq::ops::cast(std::move(index), mfq_tensor_backend::kInt64);
-                Tensor weights = mfq::ops::tensor(interpolation.weights, mfq::Device{mfq::DeviceType::cpu, 0});
-                weights = mfq::ops::reshape(std::move(weights), {interpolation.patch_count, 4, 1});
-                weights = mfq::ops::cast(std::move(weights), mfq_tensor_backend::kFloat32, position_weight.device());
-                auto selected = mfq::ops::index_select(position_weight, 0, mfq::ops::reshape(std::move(index), {-1}));
-                selected = mfq::ops::reshape(std::move(selected), {interpolation.patch_count, 4, config_.hidden_size});
-                return mfq::ops::sum(mfq::ops::multiply(std::move(selected), std::move(weights)), 1);
+                auto position_weight = tyloi::ops::cast(position_weight_, position_weight_.scalar_type(), tyloi::Device{tyloi::DeviceType::cuda, 0});
+                Tensor index = tyloi::ops::tensor(interpolation.indices, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                index = tyloi::ops::cast(std::move(index), ::tyloi::kInt32, position_weight.device());
+                index = tyloi::ops::cast(std::move(index), ::tyloi::kInt64);
+                Tensor weights = tyloi::ops::tensor(interpolation.weights, tyloi::Device{tyloi::DeviceType::cpu, 0});
+                weights = tyloi::ops::reshape(std::move(weights), {interpolation.patch_count, 4, 1});
+                weights = tyloi::ops::cast(std::move(weights), ::tyloi::kFloat32, position_weight.device());
+                auto selected = tyloi::ops::index_select(position_weight, 0, tyloi::ops::reshape(std::move(index), {-1}));
+                selected = tyloi::ops::reshape(std::move(selected), {interpolation.patch_count, 4, config_.hidden_size});
+                return tyloi::ops::sum(tyloi::ops::multiply(std::move(selected), std::move(weights)), 1);
 #else
-                auto position_weight = position_weight_.to(mfq_tensor_backend::kCUDA);
-                auto index = mfq_tensor_backend::tensor(
+                auto position_weight = position_weight_.to(::tyloi::kCUDA);
+                auto index = ::tyloi::cuda::tensor(
                                  interpolation.indices,
-                                 mfq_tensor_backend::TensorOptions()
-                                     .dtype(mfq_tensor_backend::kInt32)
-                                     .device(mfq_tensor_backend::kCPU))
+                                 ::tyloi::TensorOptions()
+                                     .dtype(::tyloi::kInt32)
+                                     .device(::tyloi::kCPU))
                                  .to(position_weight.device())
-                                 .to(mfq_tensor_backend::kInt64);
-                auto weights = mfq_tensor_backend::tensor(
+                                 .to(::tyloi::kInt64);
+                auto weights = ::tyloi::cuda::tensor(
                                    interpolation.weights,
-                                   mfq_tensor_backend::TensorOptions()
-                                       .dtype(mfq_tensor_backend::kFloat32)
-                                       .device(mfq_tensor_backend::kCPU))
+                                   ::tyloi::TensorOptions()
+                                       .dtype(::tyloi::kFloat32)
+                                       .device(::tyloi::kCPU))
                                    .reshape({interpolation.patch_count, 4, 1})
                                    .to(position_weight.device());
-                return mfq_tensor_backend::sum(
+                return ::tyloi::cuda::sum(
                     position_weight.index_select(0, index.reshape({-1}))
                             .reshape({interpolation.patch_count, 4, config_.hidden_size}) *
                         weights,
@@ -180,16 +176,12 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
             if (!host_weights()) return run();
             auto loan = weights_.borrow(position_weight_.nbytes() +
                        std::size_t(interpolation.patch_count * config_.hidden_size) * 48);
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return Tensor(loan.finish(mfq_tensor_backend::Tensor(run())));
-#else
             return loan.finish(run());
-#endif
         },
         [](Tensor hidden, Tensor learned) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
             auto dtype = hidden.scalar_type();
-            return mfq::ops::add(std::move(hidden), mfq::ops::cast(std::move(learned), dtype));
+            return tyloi::ops::add(std::move(hidden), tyloi::ops::cast(std::move(learned), dtype));
 #else
             return hidden + learned.to(hidden.scalar_type());
 #endif
@@ -217,11 +209,7 @@ mfq::StepSequence<Tensor> CudaGridVisionEncoder::encode(
 #endif
                         value, layout.positions, layout.segment_lengths);
                 }
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return Tensor(loan.finish(mfq_tensor_backend::Tensor(std::move(output))));
-#else
                 return loan.finish(std::move(output));
-#endif
             }
             return block(
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -292,4 +280,4 @@ CudaGridVisionPromptComponent::CudaGridVisionPromptComponent(
       input_contract_(std::move(input_contract)),
       position_policy_(std::move(position_policy)) {}
 
-} // namespace mfq::cuda::grid_vision_runtime
+} // namespace tyloi::cuda::grid_vision_runtime

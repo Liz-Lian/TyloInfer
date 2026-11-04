@@ -8,7 +8,7 @@
 #include <cmath>
 #include <utility>
 
-namespace mfq::models::grid_vision {
+namespace tyloi::models::grid_vision {
 
 template <class Tensor, class Project, class Split, class Rope, class Attend, class Output>
 auto attention(Tensor hidden, Project project, Split split, Rope rope, Attend attend,
@@ -20,7 +20,7 @@ auto attention(Tensor hidden, Project project, Split split, Rope rope, Attend at
 }
 
 template <class Tensor, class Layers, class Patch, class Position, class Add, class Layer>
-mfq::StepSequence<Tensor> encode(Tensor pixels, const GridVisionConfig &config, std::vector<GridShape> grids,
+tyloi::StepSequence<Tensor> encode(Tensor pixels, const GridVisionConfig &config, std::vector<GridShape> grids,
             Layers &layers, Patch patch, Position position, Add add, Layer layer) {
     const auto layout =
         make_grid_vision_layout(grids, static_cast<int32_t>(config.spatial_merge_size));
@@ -30,10 +30,10 @@ mfq::StepSequence<Tensor> encode(Tensor pixels, const GridVisionConfig &config, 
         grids, static_cast<int32_t>(config.spatial_merge_size), side);
     auto hidden = patch(std::move(pixels), layout.patch_count);
     hidden = add(std::move(hidden), position(interpolation));
-    co_yield mfq::StepState::advanced;
+    co_yield tyloi::StepState::advanced;
     for (const auto& block : layers) {
         hidden = layer(block, std::move(hidden), layout);
-        co_yield mfq::StepState::advanced;
+        co_yield tyloi::StepState::advanced;
     }
     co_yield std::move(hidden);
 }
@@ -75,4 +75,4 @@ auto prepare(const std::vector<int64_t> &ids, Tensor merged, int64_t merged_coun
     return Prepared<Tensor>{std::move(embeddings), positions(semantic), semantic.decode_delta};
 }
 
-} // namespace mfq::models::grid_vision
+} // namespace tyloi::models::grid_vision

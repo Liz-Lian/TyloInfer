@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 static std::uint64_t u64(const std::vector<std::uint8_t>& data, std::size_t& offset) {
@@ -204,4 +204,4 @@ Data unpack(
 }
 
 } // namespace mxfp4
-} // namespace mfq
+} // namespace tyloi

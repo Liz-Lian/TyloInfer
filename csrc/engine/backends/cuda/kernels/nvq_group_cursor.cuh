@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 struct NvqPackedCursor {
     int64_t byte;
     int shift;

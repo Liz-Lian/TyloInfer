@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-namespace mfq {
+namespace tyloi {
 
 inline bool supported_tensor_dtype(std::string_view dtype) noexcept {
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -16,4 +16,4 @@ inline bool supported_tensor_dtype(std::string_view dtype) noexcept {
         || dtype == "MXFP4" || dtype == "MXFP8" || dtype == "BLOB";
 }
 
-} // namespace mfq
+} // namespace tyloi

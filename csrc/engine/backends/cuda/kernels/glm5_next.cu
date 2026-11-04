@@ -5,8 +5,7 @@
 #include <cmath>
 
 namespace mfq_glm5_next {
-namespace tb = mfq_tensor_backend;
-using tb::Tensor;
+using ::tyloi::Tensor;
 
 std::vector<Tensor> mhc_pre(const Tensor& input, const Tensor& function,
     const Tensor& base, const Tensor& scale, int64_t iterations, double hc_eps, double rms_eps) {
@@ -20,17 +19,17 @@ std::vector<Tensor> mhc_pre(const Tensor& input, const Tensor& function,
         scale.dim() == 1 && scale.size(0) == 3 && iterations > 0,
         "GLM mHC parameters disagree");
     MfqCudaGuard guard(input.device());
-    auto flat = input.to(tb::kFloat32).reshape({input.size(0), input.size(1), streams * hidden});
-    flat = flat * tb::rsqrt((flat * flat).mean(-1, true) + rms_eps);
-    auto logits = tb::matmul(flat, function.to(tb::kFloat32).transpose(-1, -2));
-    auto pre = tb::sigmoid(logits.narrow(-1, 0, streams) * scale.select(0, 0) +
+    auto flat = input.to(::tyloi::kFloat32).reshape({input.size(0), input.size(1), streams * hidden});
+    flat = flat * ::tyloi::cuda::rsqrt((flat * flat).mean(-1, true) + rms_eps);
+    auto logits = ::tyloi::cuda::matmul(flat, function.to(::tyloi::kFloat32).transpose(-1, -2));
+    auto pre = ::tyloi::cuda::sigmoid(logits.narrow(-1, 0, streams) * scale.select(0, 0) +
         base.narrow(0, 0, streams)) + hc_eps;
-    auto post = 2.0 * tb::sigmoid(logits.narrow(-1, streams, streams) * scale.select(0, 1) +
+    auto post = 2.0 * ::tyloi::cuda::sigmoid(logits.narrow(-1, streams, streams) * scale.select(0, 1) +
         base.narrow(0, streams, streams));
     auto combination_logits = logits.narrow(-1, 2 * streams, streams * streams)
         .reshape({input.size(0), input.size(1), streams, streams}) * scale.select(0, 2) +
         base.narrow(0, 2 * streams, streams * streams).reshape({streams, streams});
-    auto combination = tb::softmax(combination_logits, -1) + hc_eps;
+    auto combination = ::tyloi::cuda::softmax(combination_logits, -1) + hc_eps;
     combination = combination / (combination.sum(-2, true) + hc_eps);
     for (int64_t i = 1; i < iterations; ++i) {
         combination = combination / (combination.sum(-1, true) + hc_eps);
@@ -67,15 +66,15 @@ Tensor kda_forget_gate(const Tensor& input, const Tensor& fa, const Tensor& fb,
     MfqCudaGuard guard(input.device());
     auto reduced = mfq_selected_attention::promoted_matmul(input, fa.transpose(-1, -2));
     auto gate = mfq_selected_attention::promoted_matmul(
-        reduced, fb.transpose(-1, -2)).to(tb::kFloat32) + bias.to(tb::kFloat32);
+        reduced, fb.transpose(-1, -2)).to(::tyloi::kFloat32) + bias.to(::tyloi::kFloat32);
     auto shape = input.sizes().vec();
     shape.back() = heads;
     shape.push_back(width);
     gate = gate.reshape(shape);
     std::vector<int64_t> rate_shape(shape.size(), 1);
     rate_shape[shape.size() - 2] = heads;
-    auto rate = a_log.to(tb::kFloat32).exp().reshape(rate_shape);
-    return lower_bound * tb::sigmoid(rate * gate);
+    auto rate = a_log.to(::tyloi::kFloat32).exp().reshape(rate_shape);
+    return lower_bound * ::tyloi::cuda::sigmoid(rate * gate);
 }
 
 Tensor kpool_scores(const Tensor& query, const Tensor& pooled, const Tensor& weights) {
@@ -86,7 +85,7 @@ Tensor kpool_scores(const Tensor& query, const Tensor& pooled, const Tensor& wei
     MfqCudaGuard guard(query.device());
     auto scores = mfq_selected_attention::dots(query, pooled) /
         std::sqrt(double(query.size(3)));
-    auto head_weights = weights.to(tb::kFloat32) / std::sqrt(double(query.size(2)));
+    auto head_weights = weights.to(::tyloi::kFloat32) / std::sqrt(double(query.size(2)));
     return (scores * head_weights.unsqueeze(-1)).sum(-2);
 }
 
@@ -98,11 +97,11 @@ Tensor kpool_states(const Tensor& keys, const Tensor& gates,
         "GLM k-pool parameter dimensions disagree");
     MfqCudaGuard guard(keys.device());
     const auto complete = keys.size(1) / pool;
-    if (complete == 0) return tb::zeros({keys.size(0), 0, keys.size(2)}, keys.options());
+    if (complete == 0) return ::tyloi::cuda::zeros({keys.size(0), 0, keys.size(2)}, keys.options());
     const std::vector<int64_t> shape{keys.size(0), complete, pool, keys.size(2)};
     auto grouped_keys = keys.narrow(1, 0, complete * pool).reshape(shape);
     auto grouped_gates = gates.narrow(1, 0, complete * pool).reshape(shape);
-    auto probabilities = tb::softmax(grouped_gates.to(tb::kFloat32) +
+    auto probabilities = ::tyloi::cuda::softmax(grouped_gates.to(::tyloi::kFloat32) +
         ape.unsqueeze(0).unsqueeze(0), -2);
     return (probabilities.to(keys.scalar_type()) * grouped_keys).sum(-2);
 }

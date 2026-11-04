@@ -14,51 +14,51 @@
 #include <optional>
 #include <utility>
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 class TextSessionCache;
 }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class Collectives;
 struct RoutedCache;
 }
 
-namespace mfq { class ModelSource; }
+namespace tyloi { class ModelSource; }
 
 struct CudaProfiler;
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
 template <typename Model, typename State, typename Predictor = MtpModule>
-mfq::engine::Generation generate(
-    Model& model, State& state, mfq::cuda::Executor* executor,
-    mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
-    CudaProfiler& profiler, mfq::cuda::RoutedCache& weights,
+tyloi::engine::Generation generate(
+    Model& model, State& state, tyloi::cuda::Executor* executor,
+    tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
+    CudaProfiler& profiler, tyloi::cuda::RoutedCache& weights,
     bool& serial_branches, bool report_memory, bool graph_allowed,
     std::function<void()> drain,
-    const mfq::models::Info& info, const mfq::ModelSource* source,
+    const tyloi::models::Info& info, const tyloi::ModelSource* source,
     DecodeGraphCache& graph, TextSessionCache& cache,
-    const CudaRuntimeConfig& config, mfq::engine::InferenceRequest& request,
-    mfq::engine::InferenceOutput& output, mfq::engine::mtp::State& mtp_state,
+    const CudaRuntimeConfig& config, tyloi::engine::InferenceRequest& request,
+    tyloi::engine::InferenceOutput& output, tyloi::engine::mtp::State& mtp_state,
     Predictor* mtp = nullptr,
     std::optional<PreparedPrompt> prepared = {},
-    mfq::engine::Batch* batching = nullptr,
+    tyloi::engine::Batch* batching = nullptr,
     std::string request_id = {}, std::function<void()> restore = {});
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
 // Creation and every resume run inside the owner's CUDA device/context scope.
 template <typename Model, typename State>
-mfq::engine::Generation run_mtp_generation(
-    Model& model, State& state, mfq::cuda::Executor* executor,
-    mfq::cuda::Collectives& collectives, mfq::cuda::Executor::Mode mode,
-    mfq::cuda::RoutedCache& weights,
-    const mfq::models::Info& info, const mfq::ModelSource* source,
-    MtpModule& mtp, mfq::engine::mtp::State& mtp_state,
-    mfq::engine::InferenceRequest& request,
-    mfq::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
-    const mfq::cuda::PreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,
-    mfq_tensor_backend::Tensor restored_last_hidden = {},
-    mfq_tensor_backend::Tensor* session_last_hidden = nullptr,
+tyloi::engine::Generation run_mtp_generation(
+    Model& model, State& state, tyloi::cuda::Executor* executor,
+    tyloi::cuda::Collectives& collectives, tyloi::cuda::Executor::Mode mode,
+    tyloi::cuda::RoutedCache& weights,
+    const tyloi::models::Info& info, const tyloi::ModelSource* source,
+    MtpModule& mtp, tyloi::engine::mtp::State& mtp_state,
+    tyloi::engine::InferenceRequest& request,
+    tyloi::engine::InferenceOutput& output, int64_t prefill_chunk_size = 2048,
+    const tyloi::cuda::PreparedPrompt* prepared = nullptr, std::size_t reused_tokens = 0,
+    ::tyloi::Tensor restored_last_hidden = {},
+    ::tyloi::Tensor* session_last_hidden = nullptr,
     std::size_t stable_prefix_tokens = 0,
     std::function<void()> restore = {});

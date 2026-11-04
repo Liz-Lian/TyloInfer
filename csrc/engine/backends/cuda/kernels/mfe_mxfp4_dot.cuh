@@ -2,7 +2,7 @@
 #include "mfe_ffn.h"
 #include "mx_float_decode.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 __device__ __forceinline__ float mfe_mxfp4_scale(uint8_t code) {
     return mx::decode_e8m0(code);
 }

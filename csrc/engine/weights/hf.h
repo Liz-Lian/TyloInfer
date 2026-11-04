@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 class Safetensors;
 
@@ -27,4 +27,4 @@ Record prepare(
 Record experts(std::string name, const std::map<std::size_t, const Record*>& records);
 
 } // namespace hf
-} // namespace mfq
+} // namespace tyloi

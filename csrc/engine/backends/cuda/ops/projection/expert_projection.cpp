@@ -12,9 +12,8 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-using Tensor = mfq_tensor_backend::Tensor;
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace {
@@ -117,7 +116,7 @@ Tensor Projector::gated(const Experts& weight, Tensor input,
             *moe_scratch_.get(weight.cached_source, input), options, mmq_, options.heterogeneous, input, route, gelu);
     }
     if (!input.is_cuda() || !input.is_contiguous() ||
-        input.scalar_type() != mfq_tensor_backend::kFloat16 ||
+        input.scalar_type() != ::tyloi::kFloat16 ||
         input.dim() != 3 || input.size(2) != 2 * weight.neuron_len)
         throw std::runtime_error("fused MFE GLU input has an unsupported layout");
     auto hidden = gelu ? moe_geglu_split_cuda(input) : moe_swiglu_split_cuda(input);
@@ -172,4 +171,4 @@ Tensor Projector::run(const TqMoeBanks& banks, Tensor input, Tensor ids,
                             options_.reduce_to_primary, options_.fp16_reduce);
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

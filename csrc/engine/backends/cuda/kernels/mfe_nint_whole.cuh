@@ -5,7 +5,7 @@
 #include <climits>
 #include <type_traits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // Preserve the original MFE group order, affine scaling and two-row warp
 // reduction. Only fixed q4/q5/q6 pairs with a proven payload extent use this.
 __device__ __forceinline__ bool mfe_nint_try_whole_pair(const MfePackedProjection& d,int local,

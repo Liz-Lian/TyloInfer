@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace mfq_glm5_next {
-using mfq_tensor_backend::Tensor;
+using ::tyloi::Tensor;
 
 std::vector<Tensor> mhc_pre(
     const Tensor&, const Tensor&, const Tensor&, const Tensor&,

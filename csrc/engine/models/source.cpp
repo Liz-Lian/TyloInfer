@@ -8,7 +8,7 @@
 
 #include <cstdlib>
 
-namespace mfq {
+namespace tyloi {
 
 std::shared_ptr<const ModelSource> open_model_source(
         const std::filesystem::path& path) {
@@ -35,4 +35,4 @@ std::shared_ptr<const ModelSource> open_model_source(
     return std::make_shared<models::MfqSource>(path);
 }
 
-} // namespace mfq
+} // namespace tyloi

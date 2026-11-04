@@ -5,7 +5,7 @@
 #include <cstring>
 #include <immintrin.h>
 
-namespace mfq::cpu::detail {
+namespace tyloi::cpu::detail {
 namespace {
 inline std::uint32_t bits_at(const std::uint8_t* data,std::int64_t bytes,
         std::int64_t bit,int bits) {
@@ -265,4 +265,4 @@ NvqRowsDot nvq_dense_rows_dot_avx2(int format) noexcept {
         default:return nullptr;
     }
 }
-} // namespace mfq::cpu::detail
+} // namespace tyloi::cpu::detail

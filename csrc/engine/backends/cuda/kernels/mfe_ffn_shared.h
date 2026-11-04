@@ -1,7 +1,7 @@
 #pragma once
 #include "mfe_ffn.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 struct MfePrepareSharedGate;
 // Independent input buffers let shared math start beside route preparation.
 void mfe_ffn_shared_prepare_input(const __half*,int,const MfeInputQuantization*,int,int,cudaStream_t);

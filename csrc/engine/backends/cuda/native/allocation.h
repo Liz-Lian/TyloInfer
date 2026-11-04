@@ -3,10 +3,10 @@
 #include <memory>
 #include <vector>
 
-namespace mfq { struct TensorStorage; }
+namespace tyloi { struct TensorStorage; }
 
-namespace mfq::cuda {
-using mfq::TensorStorage;
+namespace tyloi::cuda {
+using tyloi::TensorStorage;
 
 class AllocationScope {
 public:

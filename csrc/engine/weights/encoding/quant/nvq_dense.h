@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::nvq::dense {
+namespace tyloi::nvq::dense {
 #if defined(__BYTE_ORDER__)
 static_assert(__BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__);
 #elif !defined(_WIN32)

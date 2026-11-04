@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq::models::nemotron_h {
+namespace tyloi::models::nemotron_h {
 namespace {
 
 using json = nlohmann::json;
@@ -206,4 +206,4 @@ RadioPositionInterpolation make_radio_position_interpolation(
     return result;
 }
 
-} // namespace mfq::models::nemotron_h
+} // namespace tyloi::models::nemotron_h

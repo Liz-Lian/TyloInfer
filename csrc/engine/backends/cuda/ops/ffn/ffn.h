@@ -10,7 +10,7 @@ class MoeFfnPipeline;
 struct TqMoeBanks;
 struct MoeRoutePlan;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Executor;
 struct Mlp;
@@ -42,7 +42,7 @@ public:
     std::unique_ptr<Ffn> important_neurons;
     bool geglu = false;
     // Dense Ffn and shared/routed experts share the explicit activation label.
-    mfq::ops::MlpActivation activation = mfq::ops::MlpActivation::silu_gated;
+    tyloi::ops::MlpActivation activation = tyloi::ops::MlpActivation::silu_gated;
     bool is_moe = false;
     bool moe_split_gate_up = false;
     // Routed experts without a gate projection use the activation above.
@@ -58,17 +58,17 @@ public:
     std::shared_ptr<MixedMoeRuntime> cpu_moe_up;
     std::shared_ptr<MixedMoeRuntime> cpu_moe_down;
     // Dense (F32/F16/BF16) routed expert banks: [experts,out,in].
-    mfq_tensor_backend::Tensor moe_dense_gate;
-    mfq_tensor_backend::Tensor moe_dense_up;
-    mfq_tensor_backend::Tensor moe_dense_down;
+    ::tyloi::Tensor moe_dense_gate;
+    ::tyloi::Tensor moe_dense_up;
+    ::tyloi::Tensor moe_dense_down;
     // Optional latent projections around the routed branch only.
     QuantLinear moe_latent_in;
     QuantLinear moe_latent_out;
-    mfq_tensor_backend::Tensor moe_router;
+    ::tyloi::Tensor moe_router;
     std::shared_ptr<const QuantLinear> moe_router_projection;
-    mfq_tensor_backend::Tensor moe_shared_gate;
-    mfq_tensor_backend::Tensor moe_router_bias;
-    mfq_tensor_backend::Tensor moe_hash_ids;
+    ::tyloi::Tensor moe_shared_gate;
+    ::tyloi::Tensor moe_router_bias;
+    ::tyloi::Tensor moe_hash_ids;
     std::unique_ptr<Ffn> shared;
     int moe_top_k = 0;
     bool moe_use_sigmoid = false;
@@ -82,50 +82,50 @@ public:
     std::weak_ptr<MoeFfnPipeline> moe_pipeline;
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq_tensor_backend::Tensor forward(
-        mfq_tensor_backend::Tensor input, const Mode& mode,
-        MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt,
-        MfqOptional<mfq_tensor_backend::Tensor> router_bias = mfq_nullopt) const;
+    ::tyloi::Tensor forward(
+        ::tyloi::Tensor input, const Mode& mode,
+        MfqOptional<::tyloi::Tensor> input_ids = mfq_nullopt,
+        MfqOptional<::tyloi::Tensor> router_bias = mfq_nullopt) const;
     void prefetch(
-        const mfq_tensor_backend::Tensor& input, const Mode& mode,
-        bool enabled, MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt) const;
+        const ::tyloi::Tensor& input, const Mode& mode,
+        bool enabled, MfqOptional<::tyloi::Tensor> input_ids = mfq_nullopt) const;
 #else
-    mfq_tensor_backend::Tensor forward(
-        mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
-        MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt,
-        MfqOptional<mfq_tensor_backend::Tensor> router_bias = mfq_nullopt) const;
+    ::tyloi::Tensor forward(
+        ::tyloi::Tensor input, Executor& executor, const Mode& mode,
+        MfqOptional<::tyloi::Tensor> input_ids = mfq_nullopt,
+        MfqOptional<::tyloi::Tensor> router_bias = mfq_nullopt) const;
     void prefetch(
-        const mfq_tensor_backend::Tensor& input, Executor& executor, const Mode& mode,
-        bool enabled, MfqOptional<mfq_tensor_backend::Tensor> input_ids = mfq_nullopt) const;
+        const ::tyloi::Tensor& input, Executor& executor, const Mode& mode,
+        bool enabled, MfqOptional<::tyloi::Tensor> input_ids = mfq_nullopt) const;
 #endif
 
 private:
-    mfq_tensor_backend::Tensor forward_impl(
-        mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
-        const Projector& project, MfqOptional<mfq_tensor_backend::Tensor> input_ids,
+    ::tyloi::Tensor forward_impl(
+        ::tyloi::Tensor input, Executor& executor, const Mode& mode,
+        const Projector& project, MfqOptional<::tyloi::Tensor> input_ids,
         bool allow_important_neurons,
-        MfqOptional<mfq_tensor_backend::Tensor> router_bias) const;
-    mfq_tensor_backend::Tensor forward_experts(
-        mfq_tensor_backend::Tensor input, Executor& executor, const Mode& mode,
+        MfqOptional<::tyloi::Tensor> router_bias) const;
+    ::tyloi::Tensor forward_experts(
+        ::tyloi::Tensor input, Executor& executor, const Mode& mode,
         const Projector& project, const MoeRoutePlan& route,
-        mfq_tensor_backend::Tensor route_weights) const;
+        ::tyloi::Tensor route_weights) const;
 };
 
 Mlp dense(const Ffn& ffn);
 bool uses_expert_cache(const Ffn& ffn);
 bool expert_parallel(const Ffn& ffn);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::cuda::ops {
-mfq::Tensor mlp(mfq::Tensor input, const mfq::weights::Weights& gate_up,
-                const mfq::weights::Weights& down, mfq::ops::MlpActivation activation,
+namespace tyloi::cuda::ops {
+tyloi::Tensor mlp(tyloi::Tensor input, const tyloi::weights::Weights& gate_up,
+                const tyloi::weights::Weights& down, tyloi::ops::MlpActivation activation,
                 double swiglu_limit);
-mfq::ops::SelectedExperts topk(mfq::Tensor logits, std::int64_t count, const mfq::ops::MoeRouting& routing);
-mfq::Tensor expert_scale(mfq::Tensor weights, mfq::Tensor ids, const mfq::Tensor& scales);
-mfq::Tensor weighted_reduce(mfq::Tensor pairs, mfq::Tensor weights);
-mfq::ops::RoutedGeglu routed_geglu(mfq::Tensor input, mfq::Tensor ids,
-    const mfq::weights::Weights& gate_up, const mfq::weights::Weights& down, bool trace);
+tyloi::ops::SelectedExperts topk(tyloi::Tensor logits, std::int64_t count, const tyloi::ops::MoeRouting& routing);
+tyloi::Tensor expert_scale(tyloi::Tensor weights, tyloi::Tensor ids, const tyloi::Tensor& scales);
+tyloi::Tensor weighted_reduce(tyloi::Tensor pairs, tyloi::Tensor weights);
+tyloi::ops::RoutedGeglu routed_geglu(tyloi::Tensor input, tyloi::Tensor ids,
+    const tyloi::weights::Weights& gate_up, const tyloi::weights::Weights& down, bool trace);
 }
 #endif

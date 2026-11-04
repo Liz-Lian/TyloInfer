@@ -10,11 +10,11 @@
 #include <string>
 #include <string_view>
 
-namespace mfq { class ModelSource; }
+namespace tyloi { class ModelSource; }
 struct CudaExecutionContext;
 
 struct TransformerWeightLoader {
-    const mfq::cuda::weight_loader::Loader& weights;
+    const tyloi::cuda::weight_loader::Loader& weights;
     bool preserve_projection_boundaries = false;
     bool cpu_offloaded = false;
     std::size_t shared_gate_up_compatible_prefix = 2;
@@ -22,20 +22,20 @@ struct TransformerWeightLoader {
     bool keep_quantized_router = false;
 
     bool has(const std::string& name) const;
-    mfq_tensor_backend::Tensor dense(const std::string& name) const;
-    mfq_tensor_backend::Tensor router_parameter(const std::string& name) const;
+    ::tyloi::Tensor dense(const std::string& name) const;
+    ::tyloi::Tensor router_parameter(const std::string& name) const;
     QuantLinear linear(const std::string& name) const;
     QuantLinearGroup projections(const std::vector<std::string>& names) const;
     QuantLinearGroup gate_up(const std::vector<std::string>& names, const QuantLinear& down) const;
-    void qkv(mfq::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
-    void output(mfq::cuda::FullAttention& attention, const std::string& name) const;
-    void important_neurons(int64_t hidden, int64_t intermediate, mfq::cuda::Ffn& ffn,
+    void qkv(tyloi::cuda::FullAttention& attention, const std::vector<std::string>& names) const;
+    void output(tyloi::cuda::FullAttention& attention, const std::string& name) const;
+    void important_neurons(int64_t hidden, int64_t intermediate, tyloi::cuda::Ffn& ffn,
         const std::string& down, const std::string& gate, const std::string& up) const;
-    void experts(mfq::cuda::Ffn& ffn, mfq::models::ExpertProjection projection,
+    void experts(tyloi::cuda::Ffn& ffn, tyloi::models::ExpertProjection projection,
                  const std::string& name, int layer) const;
-    mfq::cuda::Experts headwise(const std::string& name) const;
-    static auto shape(const mfq_tensor_backend::Tensor& value) { return value.sizes().vec(); }
-    static int64_t elements(const mfq_tensor_backend::Tensor& value) { return value.numel(); }
+    tyloi::cuda::Experts headwise(const std::string& name) const;
+    static auto shape(const ::tyloi::Tensor& value) { return value.sizes().vec(); }
+    static int64_t elements(const ::tyloi::Tensor& value) { return value.numel(); }
 };
 struct MoeWeightLoadOptions {
     int layer;
@@ -46,34 +46,34 @@ struct MoeWeightLoadOptions {
     std::size_t shared_gate_up_compatible_prefix = 2;
 };
 
-mfq::cuda::Ffn load_moe_weights(
-    const mfq::cuda::weight_loader::Loader& weights,
+tyloi::cuda::Ffn load_moe_weights(
+    const tyloi::cuda::weight_loader::Loader& weights,
     std::string_view prefix,
     const MoeWeightLoadOptions& options);
 void load_important_neuron_branch(
-    const mfq::cuda::weight_loader::Loader& weights,
+    const tyloi::cuda::weight_loader::Loader& weights,
     int64_t hidden_size,
     int64_t intermediate_size,
-    mfq::cuda::Ffn& ffn,
+    tyloi::cuda::Ffn& ffn,
     const std::string& down_name,
     const std::string& gate_name,
     const std::string& up_name);
 
 void validate_native_placement(const ParallelConfig&, const LayerPlacementConfig&, int gpu_layers);
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-std::string configure_yarn(mfq::ops::YarnScaling& yarn, bool extend, std::string definition,
+std::string configure_yarn(tyloi::ops::YarnScaling& yarn, bool extend, std::string definition,
                            std::string_view backbone, int64_t context);
 
-void validate_model_source(const mfq::ModelSource& source);
+void validate_model_source(const tyloi::ModelSource& source);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 template <typename Model>
 Model load_causal_lm(CudaExecutionContext& execution, const std::string& model_path,
                     const std::string& config_path, std::int64_t context_size_override = 0,
                     bool load_blocks = true, bool defer_moe_cache_finalize = false,
-                    std::shared_ptr<const mfq::ModelSource> source = {}, bool load_input_output = true);
-} // namespace mfq::cuda
+                    std::shared_ptr<const tyloi::ModelSource> source = {}, bool load_input_output = true);
+} // namespace tyloi::cuda

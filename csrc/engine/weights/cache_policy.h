@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 struct MoeCacheKey {
     int source = -1;
@@ -396,4 +396,4 @@ inline std::unordered_map<std::string, int> plan_moe_arena_slots(
     return result;
 }
 
-} // namespace mfq
+} // namespace tyloi

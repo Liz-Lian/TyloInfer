@@ -8,7 +8,7 @@
 #include <optional>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template<class Model> bool mtp_stream_prompt_history(Model&, int64_t, const char*) { return false; }
 template<class Model> bool mtp_host_prompt_history(Model&, int64_t) { return false; }
@@ -42,4 +42,4 @@ void mtp_predictor_prefill(Model&, Ops& ops, Tensor& hidden, Tensor& ids, Tensor
     (void)ops.predictor_step(std::move(hidden),std::move(ids),std::move(positions));
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

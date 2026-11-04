@@ -2,16 +2,16 @@
 
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 PagedSessionBindings::PagedSessionBindings(
-        std::shared_ptr<mfq::cache::PagedPrefixCache> cache,
+        std::shared_ptr<tyloi::cache::PagedPrefixCache> cache,
         std::size_t max_sessions)
     : cache_(std::move(cache)), max_sessions_(max_sessions) {}
 
 void PagedSessionBindings::bind(
         const std::string& session_id,
-        std::vector<mfq::cache::BlockHash> blocks,
+        std::vector<tyloi::cache::BlockHash> blocks,
         std::size_t tokens) {
     if (!cache_ || session_id.empty() || max_sessions_ == 0) return;
     close(session_id);
@@ -74,4 +74,4 @@ void PagedSessionBindings::sync_metrics() noexcept {
     tokens_.store(tokens);
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

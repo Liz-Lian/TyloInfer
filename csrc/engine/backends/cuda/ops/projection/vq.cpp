@@ -15,15 +15,15 @@
 
 namespace {
 struct NvqScratch {
-    mfq_tensor_backend::Tensor qx;
-    mfq_tensor_backend::Tensor xscale;
+    ::tyloi::Tensor qx;
+    ::tyloi::Tensor xscale;
 };
 NvqScratch scratch(const NvqWeight& weight, int rows) {
     const int K_pad = (int)(weight.ng * weight.gs);
     const auto options = weight.indices_packed.options();
     return {
-        mfq_tensor_backend::empty({rows, K_pad}, options.dtype(mfq_tensor_backend::kInt8)),
-        mfq_tensor_backend::empty({rows, weight.ng}, options.dtype(mfq_tensor_backend::kFloat32))};
+        ::tyloi::cuda::empty({rows, K_pad}, options.dtype(::tyloi::kInt8)),
+        ::tyloi::cuda::empty({rows, weight.ng}, options.dtype(::tyloi::kFloat32))};
 }
 }
 
@@ -38,7 +38,7 @@ static NvqMatmulPath select_nvq_matmul_path(const NvqWeight & w, int M) {
     // Short batches of small expert matrices use vector decode followed by
     // FP32-accumulating GEMM. The decision depends on matrix geometry.
     if (M >= 9 && M <= 16 && w.out <= 4096 && w.neuron_len <= 4096 &&
-            !mfq::cuda::runtime_options::nvq_dense_reference()) {
+            !tyloi::cuda::runtime_options::nvq_dense_reference()) {
         return NvqMatmulPath::DequantGemm;
     }
     const bool e8_family =
@@ -174,7 +174,7 @@ static int cpu_nvq_parity7(uint32_t value) {
     return static_cast<int>(value & 1u);
 }
 
-using CpuNvqDecodeView=mfq::cpu::NvqDecodeView;
+using CpuNvqDecodeView=tyloi::cpu::NvqDecodeView;
 
 static inline uint32_t cpu_nvq_bits(const uint8_t* data, int64_t bytes,
         int64_t bit, int bits) {
@@ -290,12 +290,12 @@ CpuProjectionRows make_cpu_projection_rows(const NvqWeight& w) {
         v.multipliers[state]=cpu_nvq_scale(metadata,format,1.0f,state);
         v.banks[state]=format==7 ? metadata+64+state*32 : format==9 ? metadata+64+state*64*8 : cpu_nvq_codebook(metadata,format,state);
     }
-    p.nvq_rows=w.dense_groups ? mfq::cpu::nvq_dense_rows_dot_kernel(format) :
-        (format==1 || format==8) && v.aux_bytes==0?nullptr:mfq::cpu::nvq_rows_dot_kernel(format);
+    p.nvq_rows=w.dense_groups ? tyloi::cpu::nvq_dense_rows_dot_kernel(format) :
+        (format==1 || format==8) && v.aux_bytes==0?nullptr:tyloi::cpu::nvq_rows_dot_kernel(format);
     TYLOINFER_RUNTIME_CHECK(!w.dense_groups || p.nvq_rows,"compact NVQ CPU decoder unavailable");
     if(!p.nvq_rows) {
         const auto decoder=cpu_nvq_decoder(format);
-        const auto dot=mfq::cpu::scaled_i8_dot_kernel();
+        const auto dot=tyloi::cpu::scaled_i8_dot_kernel();
         p.scalar_rows=[v,decoder,dot,format](const float* x,int batch,int stride,float* y,int out,int begin,int end) {
             for(int row=begin;row<end;++row) {
                 for(int t=0;t<batch;++t) y[t*out+row]=0;
@@ -312,9 +312,9 @@ CpuProjectionRows make_cpu_projection_rows(const NvqWeight& w) {
     }
     return p;
 }
-static mfq_tensor_backend::Tensor nvq_matmul_cpu(
+static ::tyloi::Tensor nvq_matmul_cpu(
         const NvqWeight & w,
-        mfq_tensor_backend::Tensor x) {
+        ::tyloi::Tensor x) {
     TYLOINFER_RUNTIME_CHECK(!x.is_cuda(), "CPU NVQ GEMV requires CPU activations");
     TYLOINFER_RUNTIME_CHECK(
         !w.indices_packed.is_cuda() && !w.sub_scale_packed.is_cuda() &&
@@ -322,10 +322,10 @@ static mfq_tensor_backend::Tensor nvq_matmul_cpu(
         "CPU NVQ GEMV requires CPU-resident weights");
     TYLOINFER_RUNTIME_CHECK(w.gs == 24,
         "CPU NVQ GEMV currently requires 24-value groups");
-    x = pad_last(x.contiguous().to(mfq_tensor_backend::kFloat32), w.neuron_len).contiguous();
+    x = pad_last(x.contiguous().to(::tyloi::kFloat32), w.neuron_len).contiguous();
     const int64_t rows = x.size(0);
     const float* input = x.data_ptr<float>();
-    const auto dot = mfq::cpu::scaled_i8_dot_kernel();
+    const auto dot = tyloi::cpu::scaled_i8_dot_kernel();
     const int64_t outputs = w.out;
     const uint8_t * scales = w.sub_scale_packed.data_ptr<uint8_t>();
     const float * anchors = w.neuron_scale.data_ptr<float>();
@@ -333,8 +333,8 @@ static mfq_tensor_backend::Tensor nvq_matmul_cpu(
     const int64_t scale_bytes = w.sub_scale_packed.numel();
     const int format=static_cast<int>(w.kernel_format);
     const auto decoder=cpu_nvq_decoder(format);
-    const auto fused_rows=w.dense_groups ? mfq::cpu::nvq_dense_rows_dot_kernel(format) :
-        (format==1 || format==8) && w.aux_packed.numel()==0?nullptr:mfq::cpu::nvq_rows_dot_kernel(format);
+    const auto fused_rows=w.dense_groups ? tyloi::cpu::nvq_dense_rows_dot_kernel(format) :
+        (format==1 || format==8) && w.aux_packed.numel()==0?nullptr:tyloi::cpu::nvq_rows_dot_kernel(format);
     TYLOINFER_RUNTIME_CHECK(!w.dense_groups || fused_rows,"compact NVQ CPU decoder unavailable");
     const int vector_size=cpu_nvq_d4(format) ? 4 : 8;
     TYLOINFER_RUNTIME_CHECK(w.sub_bits>0 && w.sub_bits<=4,"CPU NVQ state width must be 1..4");
@@ -351,16 +351,16 @@ static mfq_tensor_backend::Tensor nvq_matmul_cpu(
         view.states=scales; view.state_bytes=scale_bytes;
         view.anchors=anchors; view.width=w.neuron_len;
         view.state_bits=static_cast<int>(w.sub_bits);
-        auto result=mfq_tensor_backend::empty({rows,outputs},
-            mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
+        auto result=::tyloi::cuda::empty({rows,outputs},
+            ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat32));
         auto* output=result.data_ptr<float>();
         mfq_parallel_for(0,outputs,1,[&](int64_t begin,int64_t end) {
             fused_rows(view,input,rows,w.neuron_len,output,outputs,begin,end);
         });
-        return result.to(mfq_tensor_backend::kFloat16);
+        return result.to(::tyloi::kFloat16);
     }
-    auto result=mfq_tensor_backend::empty({rows,outputs},
-        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat16));
+    auto result=::tyloi::cuda::empty({rows,outputs},
+        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat16));
     auto* output=result.data_ptr<mfq_half>();
     mfq_parallel_for(0, outputs, 1, [&](int64_t begin, int64_t end) {
         std::vector<float> accumulators(static_cast<size_t>(rows));
@@ -389,12 +389,12 @@ static mfq_tensor_backend::Tensor nvq_matmul_cpu(
     });
     return result;
 }
-mfq_tensor_backend::Tensor nvq_matmul(
+::tyloi::Tensor nvq_matmul(
         CudaProfiler& profiler,
         const NvqWeight& w,
-        mfq_tensor_backend::Tensor x) {
+        ::tyloi::Tensor x) {
     if (!x.is_cuda()) return nvq_matmul_cpu(w, std::move(x));
-    x = x.contiguous().to(mfq_tensor_backend::kFloat16);
+    x = x.contiguous().to(::tyloi::kFloat16);
     x = pad_last(x, w.neuron_len);
     int M = (int)x.size(0);
     const NvqMatmulPath path = select_nvq_matmul_path(w, M);
@@ -430,24 +430,24 @@ mfq_tensor_backend::Tensor nvq_matmul(
     });
 }
 
-mfq_tensor_backend::Tensor nvq_matmul_input_mul(
+::tyloi::Tensor nvq_matmul_input_mul(
     CudaProfiler& profiler,
     const NvqWeight & w,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor gate,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor gate,
     int mode) {
     TYLOINFER_RUNTIME_CHECK(mode == 1 || mode == 2, "NVQ input gate mode must be 1(sigmoid) or 2(silu)");
     if (!x.is_cuda()) {
-        x = x.contiguous().to(mfq_tensor_backend::kFloat16);
-        gate = gate.contiguous().to(mfq_tensor_backend::kFloat16);
+        x = x.contiguous().to(::tyloi::kFloat16);
+        gate = gate.contiguous().to(::tyloi::kFloat16);
         TYLOINFER_RUNTIME_CHECK(x.sizes() == gate.sizes(), "NVQ x and gate shapes must match");
         auto value = mode == 1
-            ? x * mfq_tensor_backend::sigmoid(gate)
-            : x * mfq_tensor_backend::silu(gate);
+            ? x * ::tyloi::cuda::sigmoid(gate)
+            : x * ::tyloi::cuda::silu(gate);
         return nvq_matmul_cpu(w, value);
     }
-    x = x.contiguous().to(mfq_tensor_backend::kFloat16);
-    gate = gate.contiguous().to(mfq_tensor_backend::kFloat16);
+    x = x.contiguous().to(::tyloi::kFloat16);
+    gate = gate.contiguous().to(::tyloi::kFloat16);
     TYLOINFER_RUNTIME_CHECK(x.sizes() == gate.sizes(), "NVQ x and gate shapes must match");
     x = pad_last(x, w.neuron_len);
     gate = pad_last(gate, w.neuron_len);
@@ -471,7 +471,7 @@ mfq_tensor_backend::Tensor nvq_matmul_input_mul(
                 w.sub_bits, w.kernel_format, w.sign_mode, mode, ws.qx, ws.xscale);
         });
     }
-    mfq_tensor_backend::Tensor value = mode == 1 ? x * mfq_tensor_backend::sigmoid(gate) : x * mfq_tensor_backend::silu(gate);
+    ::tyloi::Tensor value = mode == 1 ? x * ::tyloi::cuda::sigmoid(gate) : x * ::tyloi::cuda::silu(gate);
     return nvq_matmul(profiler, w, value);
 }
 
@@ -483,18 +483,18 @@ bool nvq_pair_compatible(const NvqWeight & first, const NvqWeight & second) {
 
 
 
-mfq_tensor_backend::Tensor nvq_matmul_multi2(
+::tyloi::Tensor nvq_matmul_multi2(
     CudaProfiler& profiler,
     const NvqWeight & first,
     const NvqWeight & second,
-    mfq_tensor_backend::Tensor x) {
+    ::tyloi::Tensor x) {
     if (!nvq_pair_compatible(first, second)) {
         throw std::runtime_error("NVQ multi-projection requires compatible formats and input layouts");
     }
-    x = pad_last(x.contiguous().to(mfq_tensor_backend::kFloat16), first.neuron_len);
+    x = pad_last(x.contiguous().to(::tyloi::kFloat16), first.neuron_len);
     const int M = (int)x.size(0);
     if (M > 8) {
-        return mfq_tensor_backend::cat(
+        return ::tyloi::cuda::cat(
             {nvq_matmul(profiler, first, x),
              nvq_matmul(profiler, second, x)}, -1);
     }
@@ -512,19 +512,19 @@ mfq_tensor_backend::Tensor nvq_matmul_multi2(
     });
 }
 
-mfq_tensor_backend::Tensor nvq_matmul_swiglu(
+::tyloi::Tensor nvq_matmul_swiglu(
     CudaProfiler& profiler,
     const NvqWeight & gate,
     const NvqWeight & up,
-    mfq_tensor_backend::Tensor x) {
+    ::tyloi::Tensor x) {
     if (!nvq_pair_compatible(gate, up) || gate.out != up.out) {
         throw std::runtime_error("NVQ SwiGLU requires compatible equal-width gate/up weights");
     }
-    x = pad_last(x.contiguous().to(mfq_tensor_backend::kFloat16), gate.neuron_len);
+    x = pad_last(x.contiguous().to(::tyloi::kFloat16), gate.neuron_len);
     if (x.size(0) != 1) {
         auto pair = nvq_matmul_multi2(profiler, gate, up, x);
         auto parts = pair.split_with_sizes({gate.out, up.out}, -1);
-        return mfq_tensor_backend::silu(parts[0]) * parts[1];
+        return ::tyloi::cuda::silu(parts[0]) * parts[1];
     }
     auto ws = scratch(gate, 1);
     return profiler.measure("nvq.gemv_swiglu", [&]() {
@@ -540,17 +540,17 @@ mfq_tensor_backend::Tensor nvq_matmul_swiglu(
     });
 }
 
-mfq_tensor_backend::Tensor nvq_ffn_swiglu_down(
+::tyloi::Tensor nvq_ffn_swiglu_down(
     CudaProfiler& profiler,
     const NvqWeight & gate,
     const NvqWeight & up,
     const NvqWeight & down,
-    mfq_tensor_backend::Tensor x,
-    MfqOptional<mfq_tensor_backend::Tensor> residual) {
+    ::tyloi::Tensor x,
+    MfqOptional<::tyloi::Tensor> residual) {
     if (!nvq_pair_compatible(gate, up) || gate.out != up.out || gate.out != down.neuron_len) {
         throw std::runtime_error("NVQ fused FFN weight layouts are incompatible");
     }
-    x = pad_last(x.contiguous().to(mfq_tensor_backend::kFloat16), gate.neuron_len);
+    x = pad_last(x.contiguous().to(::tyloi::kFloat16), gate.neuron_len);
     if (x.size(0) != 1 || (down.gs != 24 && down.gs != 28 && down.gs != 32)) {
         auto output = nvq_matmul(
             profiler, down,
@@ -561,8 +561,8 @@ mfq_tensor_backend::Tensor nvq_ffn_swiglu_down(
     }
     auto input_ws = scratch(gate, 1);
     auto output_ws = scratch(down, 1);
-    auto swiglu_scratch = mfq_tensor_backend::empty(
-        {gate.out}, gate.indices_packed.options().dtype(mfq_tensor_backend::kFloat32));
+    auto swiglu_scratch = ::tyloi::cuda::empty(
+        {gate.out}, gate.indices_packed.options().dtype(::tyloi::kFloat32));
     profiler.measure("nvq.ffn_swiglu_quant", [&]() {
         nvq_ffn_swiglu_quant_ws_cuda(
             gate.indices_packed, gate.aux_packed, gate.sub_scale_packed,
@@ -595,13 +595,13 @@ mfq_tensor_backend::Tensor nvq_ffn_swiglu_down(
     });
 }
 
-mfq_tensor_backend::Tensor nvq_embedding(const NvqWeight & w, mfq_tensor_backend::Tensor token_ids) {
+::tyloi::Tensor nvq_embedding(const NvqWeight & w, ::tyloi::Tensor token_ids) {
     return nvq_embedding_lookup_cuda(
         w.indices_packed, w.aux_packed, w.sub_scale_packed,
         w.neuron_scale, w.codebook, token_ids, w.neuron_len, w.gs,
         w.sub_bits, w.kernel_format, w.sign_mode);
 }
-mfq_tensor_backend::Tensor nvq_dequant(const NvqWeight & w) {
+::tyloi::Tensor nvq_dequant(const NvqWeight & w) {
     return nvq_dequant_cuda(
         w.indices_packed, w.aux_packed, w.sub_scale_packed,
         w.neuron_scale, w.codebook, w.neuron_len, w.gs,

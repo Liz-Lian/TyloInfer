@@ -18,7 +18,7 @@
 #endif
 #endif
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 Collectives::~Collectives() {
     reset();
@@ -120,15 +120,15 @@ void Collectives::configure(
         static_cast<int>(devices_.size()),
         devices_.data()));
     // Warm both directions before graph capture triggers NCCL's lazy setup.
-    std::vector<mfq_tensor_backend::Tensor> p2p_warmup_buffers;
+    std::vector<::tyloi::Tensor> p2p_warmup_buffers;
     p2p_warmup_buffers.reserve(devices_.size());
     for (const int device : devices_) {
         MfqCudaGuard guard(device);
-        p2p_warmup_buffers.push_back(mfq_tensor_backend::empty(
-            {1}, mfq_tensor_backend::TensorOptions()
-                .device(mfq_tensor_backend::Device(
-                    mfq_tensor_backend::kCUDA, device))
-                .dtype(mfq_tensor_backend::kUInt8)));
+        p2p_warmup_buffers.push_back(::tyloi::cuda::empty(
+            {1}, ::tyloi::TensorOptions()
+                .device(::tyloi::Device(
+                    ::tyloi::kCUDA, device))
+                .dtype(::tyloi::kUInt8)));
     }
     for (size_t peer = 1; peer < devices_.size(); ++peer) {
         TYLOINFER_NCCL_CHECK(ncclGroupStart());
@@ -154,10 +154,10 @@ void Collectives::configure(
 #endif
 }
 
-mfq_tensor_backend::Tensor Collectives::copy(mfq_tensor_backend::Tensor value, int device,
-                                                  mfq_tensor_backend::Tensor reusable) {
+::tyloi::Tensor Collectives::copy(::tyloi::Tensor value, int device,
+                                                  ::tyloi::Tensor reusable) {
     if (value.is_cuda() && value.get_device() == device) {
-        return value.contiguous();
+        return ::tyloi::cuda::contiguous(value);
     }
     const auto reusable_matches = [&]() {
         return reusable.defined() && reusable.is_cuda() &&
@@ -169,11 +169,11 @@ mfq_tensor_backend::Tensor Collectives::copy(mfq_tensor_backend::Tensor value, i
     const auto destination_tensor = [&]() {
         if (reusable_matches()) return reusable;
         MfqCudaGuard destination_guard(device);
-        return mfq_tensor_backend::empty(
+        return ::tyloi::cuda::empty(
             value.sizes(),
             value.options().device(
-                mfq_tensor_backend::Device(
-                    mfq_tensor_backend::kCUDA, device)));
+                ::tyloi::Device(
+                    ::tyloi::kCUDA, device)));
     };
     if (value.numel() == 0) {
         return destination_tensor();
@@ -198,7 +198,7 @@ mfq_tensor_backend::Tensor Collectives::copy(mfq_tensor_backend::Tensor value, i
                     source_stream.stream(), &capture_status));
             }
             if (capture_status != cudaStreamCaptureStatusNone) {
-                auto source = value.contiguous();
+                auto source = ::tyloi::cuda::contiguous(value);
                 auto destination = destination_tensor();
                 const auto source_rank = static_cast<size_t>(
                     source_rank_it - runtime.devices_.begin());
@@ -260,16 +260,15 @@ mfq_tensor_backend::Tensor Collectives::copy(mfq_tensor_backend::Tensor value, i
 #endif
     MfqCudaGuard guard(device);
     if (reusable_matches()) {
-        reusable.copy_(value, true);
+        ::tyloi::cuda::copy_into(reusable, value);
         return reusable;
     }
-    return value.to(
-        value.options().device(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device)),
-        true, false).contiguous();
+    return ::tyloi::cuda::contiguous(
+        ::tyloi::cuda::copy(value, ::tyloi::Device(::tyloi::kCUDA, device)));
 }
 
-mfq_tensor_backend::Tensor Collectives::sum(
-        std::vector<mfq_tensor_backend::Tensor> outputs, int primary,
+::tyloi::Tensor Collectives::sum(
+        std::vector<::tyloi::Tensor> outputs, int primary,
         bool reduce_to_primary, bool allow_fp16) {
     if (outputs.empty()) {
         throw std::runtime_error(
@@ -288,7 +287,7 @@ mfq_tensor_backend::Tensor Collectives::sum(
             allow_fp16 &&
             reduce_to_primary &&
             outputs.size() == 2 &&
-            output_dtype == mfq_tensor_backend::kFloat16;
+            output_dtype == ::tyloi::kFloat16;
         const auto primary_rank_it = std::find(
             runtime.devices_.begin(), runtime.devices_.end(), primary);
         if (primary_rank_it == runtime.devices_.end()) {
@@ -308,7 +307,7 @@ mfq_tensor_backend::Tensor Collectives::sum(
             }
             MfqCudaGuard guard(device);
             if (fp16_reduce) {
-                outputs[index] = outputs[index].contiguous();
+                outputs[index] = ::tyloi::cuda::contiguous(outputs[index]);
             }
             const auto producer =
                 mfq_get_current_cuda_stream(device);
@@ -324,12 +323,12 @@ mfq_tensor_backend::Tensor Collectives::sum(
                 auto & buffer = runtime.reduction_buffers_[index];
                 if (!buffer.defined() || buffer.sizes().vec() != shape ||
                         buffer.get_device() != device ||
-                        buffer.scalar_type() != mfq_tensor_backend::kFloat32) {
-                    buffer = mfq_tensor_backend::empty(
+                        buffer.scalar_type() != ::tyloi::kFloat32) {
+                    buffer = ::tyloi::cuda::empty(
                         shape,
-                        outputs[index].options().dtype(mfq_tensor_backend::kFloat32));
+                        outputs[index].options().dtype(::tyloi::kFloat32));
                 }
-                buffer.copy_(outputs[index], true);
+                ::tyloi::cuda::copy_into(buffer, outputs[index]);
                 mfq_cuda_record_stream(outputs[index], communication);
             }
         }
@@ -363,7 +362,7 @@ mfq_tensor_backend::Tensor Collectives::sum(
         }
         TYLOINFER_NCCL_CHECK(ncclGroupEnd());
 
-        mfq_tensor_backend::Tensor result;
+        ::tyloi::Tensor result;
         for (size_t index = 0; index < outputs.size(); ++index) {
             MfqCudaGuard guard(runtime.devices_[index]);
             const auto communication = runtime.streams_[index];
@@ -372,8 +371,8 @@ mfq_tensor_backend::Tensor Collectives::sum(
                     result = outputs[index];
                 } else {
                     MfqCudaStreamGuard stream_guard(communication);
-                    result = runtime.reduction_buffers_[index]
-                        .to(output_dtype).contiguous();
+                    result = ::tyloi::cuda::contiguous(
+                        ::tyloi::cuda::cast(runtime.reduction_buffers_[index], output_dtype));
                 }
             }
             TYLOINFER_CUDA_CHECK(cudaEventRecord(
@@ -390,17 +389,15 @@ mfq_tensor_backend::Tensor Collectives::sum(
     MfqCudaGuard primary_guard(primary);
     const auto output_dtype =
         outputs.front().scalar_type();
-    mfq_tensor_backend::Tensor reduced;
+    ::tyloi::Tensor reduced;
     for (auto & output : outputs) {
-        auto partial =
-            copy(output, primary)
-                .to(mfq_tensor_backend::kFloat32);
+        auto partial = ::tyloi::cuda::cast(copy(output, primary), ::tyloi::kFloat32);
         if (!reduced.defined()) {
             reduced = std::move(partial);
         } else {
             reduced.add_(partial);
         }
     }
-    return reduced.to(output_dtype).contiguous();
+    return ::tyloi::cuda::contiguous(::tyloi::cuda::cast(reduced, output_dtype));
 }
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

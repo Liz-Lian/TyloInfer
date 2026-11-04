@@ -56,23 +56,23 @@ public:
     MoeHostExpertCache& operator=(const MoeHostExpertCache&)=delete;
     // An unconfirmed prediction (touch=false) cannot evict reused images.
     // A later demand can admit that same payload without reading it again.
-    Lease acquire(mfq::MoeCacheKey key,std::size_t bytes,const Load& load,bool retain=true,bool touch=true);
+    Lease acquire(tyloi::MoeCacheKey key,std::size_t bytes,const Load& load,bool retain=true,bool touch=true);
     // A prefill scan may fill unused capacity, without evicting existing
     // experts or promoting scan hits. Returns empty without loading if full.
-    Lease acquire_scan(mfq::MoeCacheKey key,std::size_t bytes,const Load& load);
+    Lease acquire_scan(tyloi::MoeCacheKey key,std::size_t bytes,const Load& load);
     // Returns false without invoking copy when the managed budget cannot fit.
-    bool demote(mfq::MoeCacheKey key,std::size_t bytes,const Load& copy);
-    void promote(mfq::MoeCacheKey key);
-    void erase(mfq::MoeCacheKey key);
+    bool demote(tyloi::MoeCacheKey key,std::size_t bytes,const Load& copy);
+    void promote(tyloi::MoeCacheKey key);
+    void erase(tyloi::MoeCacheKey key);
     // Drop only idle negative-key backup images, oldest first. Active leases
     // and the last CPU copies of routed experts are never reclaimed here.
     std::size_t reclaim_optional(std::size_t bytes);
-    bool contains(mfq::MoeCacheKey key) const;
+    bool contains(tyloi::MoeCacheKey key) const;
     // Read an already cached immutable image without invoking a loader.
-    Lease find(mfq::MoeCacheKey key,bool touch=true);
+    Lease find(tyloi::MoeCacheKey key,bool touch=true);
     // A dispatch preflight must not wait for another key's RAM publication.
     // Busy keys remain eligible for the normal parallel acquisition path.
-    Lease try_find(mfq::MoeCacheKey key,bool touch=true,bool consume=true);
+    Lease try_find(tyloi::MoeCacheKey key,bool touch=true,bool consume=true);
     MoeHostExpertCacheStats stats() const;
     // A streaming scan must not evict repeatedly consumed decoded images.
     void enable_reuse_priority();
@@ -85,7 +85,7 @@ public:
     // are ordered by token and layer; repeated keys represent real reuse by
     // separate accepted tokens and must not be deduplicated across tokens.
     void begin_speculative_learning();
-    void commit_speculative_learning(const std::vector<mfq::MoeCacheKey>& accepted);
+    void commit_speculative_learning(const std::vector<tyloi::MoeCacheKey>& accepted);
     void discard_speculative_learning() noexcept;
     // Complete-residency mode cannot evict the last copy of an expert.
     void preserve_resident_experts();
@@ -95,7 +95,7 @@ public:
     public:
         // Reuse-only GPU observers also confirm reuse of an existing RAM
         // backup, even when GPU hits never read that backup directly.
-        explicit DeviceCacheHints(std::vector<mfq::MoeCacheKey> keys,bool confirmed_reuse=false);
+        explicit DeviceCacheHints(std::vector<tyloi::MoeCacheKey> keys,bool confirmed_reuse=false);
         ~DeviceCacheHints();
         void publish(std::size_t index,bool resident);
     private:
@@ -107,10 +107,10 @@ public:
     // one-use images. Keep repeatedly consumed RAM backups of revocable GPU
     // storage. Hints affect placement only; the checkpoint is authoritative.
     void set_device_cache_hints(std::shared_ptr<DeviceCacheHints> hints);
-    bool exchange(mfq::MoeCacheKey incoming,mfq::MoeCacheKey outgoing,
+    bool exchange(tyloi::MoeCacheKey incoming,tyloi::MoeCacheKey outgoing,
         const Lease& expected,const std::function<MixedMoePool(const MixedMoePool&)>& copy);
     struct Exchange {
-        mfq::MoeCacheKey incoming, outgoing;
+        tyloi::MoeCacheKey incoming, outgoing;
         const Lease* expected = nullptr;
         std::function<MixedMoePool(const MixedMoePool&)> copy;
         std::function<void(const MixedMoePool&)> restore;
@@ -125,7 +125,7 @@ public:
                         const std::function<void()>& publish = {},
                         const std::function<void()>& prepare = {},bool independent_readers=false);
 private:
-    Lease load(mfq::MoeCacheKey key,std::size_t bytes,const Load& loader,bool retain,bool scan,bool touch);
+    Lease load(tyloi::MoeCacheKey key,std::size_t bytes,const Load& loader,bool retain,bool scan,bool touch);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

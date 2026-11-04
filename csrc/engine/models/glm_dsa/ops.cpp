@@ -19,9 +19,9 @@
 #include <iostream>
 #include <span>
 
-using mfq_tensor_backend::indexing::Slice;
+using ::tyloi::indexing::Slice;
 
-namespace mfq::models::glm_dsa {
+namespace tyloi::models::glm_dsa {
 template <class Input, class QueryNorm, class Query, class Prepare, class Cache, class Index,
           class Absorb, class Attend, class Unembed, class Output>
 auto attention(bool full_indexer, Input input, QueryNorm query_norm, Query query, Prepare prepare,
@@ -54,10 +54,10 @@ auto indexed_attention(bool indexed, int64_t tokens, int64_t prefix, int64_t spa
 }
 
 
-} // namespace mfq::models::glm_dsa
+} // namespace tyloi::models::glm_dsa
 
 
-namespace mfq::cuda::glm_dsa {
+namespace tyloi::cuda::glm_dsa {
 
 State::State(const Model& model) : layers(model.layers.size()) {
     layout_.reserve(model.layers.size());
@@ -110,8 +110,8 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
     state.tokens = tokens;
     state.cache_pos = cache_pos;
     state.decode_position_delta = decode_position_delta;
-    state.payload = std::vector<mfq::models::glm_dsa::BlockSnapshot>{};
-    auto& saved_layers = std::get<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(state.payload);
+    state.payload = std::vector<tyloi::models::glm_dsa::BlockSnapshot>{};
+    auto& saved_layers = std::get<std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(state.payload);
     saved_layers.reserve(layers.size());
     for (size_t i = 0; i < layers.size(); ++i) {
         MfqCudaGuard guard(layout_[i].device);
@@ -119,7 +119,7 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
         if (!layer.kv_cache.defined() || layer.kv_cache.dim() != 4 ||
             layer.kv_cache.size(0) != 1 || cache_pos > layer.kv_cache.size(2))
             throw std::runtime_error("GLM DSA session MLA cache is unavailable");
-        mfq::models::glm_dsa::BlockSnapshot saved;
+        tyloi::models::glm_dsa::BlockSnapshot saved;
         saved.full_indexer = layout_[i].full_indexer;
         saved.kv_capacity = layer.kv_cache.size(2);
         saved.kv_cache = layer.kv_cache.narrow(2, 0, cache_pos).clone();
@@ -138,7 +138,7 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
 }
 
 void State::restore_text_session_state(const TextSessionState& state) {
-    const auto* saved_layers = std::get_if<std::vector<mfq::models::glm_dsa::BlockSnapshot>>(&state.payload);
+    const auto* saved_layers = std::get_if<std::vector<tyloi::models::glm_dsa::BlockSnapshot>>(&state.payload);
     if (!supports_text_session_state() || state.kind() != TextSessionStateKind::GlmDsa ||
         state.cache_pos <= 0 || static_cast<size_t>(state.cache_pos) != state.tokens.size() ||
         saved_layers == nullptr || saved_layers->size() != layers.size())
@@ -188,12 +188,12 @@ static void validate_geometry(const Config& config) {
 
 namespace {
 Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
-    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
-    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+    tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
                                "token IDs must not be empty");
-    return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
+    return collectives.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
 } // namespace
@@ -204,27 +204,27 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config, int
     Layer layer;
     layer.device = weights.placement.device;
     TransformerWeightLoader loader{weights};
-    mfq::models::glm_dsa::load_layer_weights(layer, loader, config, index, type);
+    tyloi::models::glm_dsa::load_layer_weights(layer, loader, config, index, type);
     return layer;
 }
 
-Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            int64_t context) {
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = mfq::models::graph(*model.source);
+    model.graph = tyloi::models::graph(*model.source);
     model.plan = cuda_model_plan(model.graph);
-    mfq::models::require_model(model.graph.backbone == "glm_dsa",
+    tyloi::models::require_model(model.graph.backbone == "glm_dsa",
                                "model backbone does not match the requested causal model");
     auto& c = model.config;
     auto& m = model.metadata;
-    mfq::models::glm_dsa::load_config(definition, c, m);
+    tyloi::models::glm_dsa::load_config(definition, c, m);
     validate_geometry(c);
-    mfq::models::require_model(c.num_hidden_layers == model.graph.topology.text_layers,
+    tyloi::models::require_model(c.num_hidden_layers == model.graph.topology.text_layers,
                                "model graph/config text-layer topology mismatch");
     if (context > 0) {
-        mfq::models::require_model(context <= m.max_position_embeddings,
+        tyloi::models::require_model(context <= m.max_position_embeddings,
                                    "--ctx-size exceeds max_position_embeddings");
         c.max_position_embeddings = m.max_position_embeddings = context;
     }
@@ -232,7 +232,7 @@ Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view defi
 }
 
 void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConfig& placement,
-          int gpu_layers, bool load_layers, bool load_input_output, const mfq::ops::YarnScaling& yarn) {
+          int gpu_layers, bool load_layers, bool load_input_output, const tyloi::ops::YarnScaling& yarn) {
     const auto& c = model.config;
     placement.prepare(c.num_hidden_layers);
     const int cpu_layers = gpu_layers < 0 ? 0 :
@@ -245,7 +245,7 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
     MfqCudaGuard guard(placement.primary_device());
     const auto make_rope = [&](int device) {
         return RopeCache(c.max_position_embeddings, c.rotary_dim, c.rope_base, 0, -1,
-                         mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, device),
+                         ::tyloi::Device(::tyloi::kCUDA, device),
                          model.metadata.rope_interleaved, yarn);
     };
     model.rope = make_rope(placement.primary_device());
@@ -317,49 +317,48 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped
 }
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
-    namespace tb = mfq_tensor_backend;
     MfqCudaGuard guard(mode.primary);
     auto ids = normalize_ids(collectives, mode.primary, Tensor(std::move(input.ids)));
     auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
-    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+    tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
                                    embeddings.size(1) == T &&
                                    embeddings.size(2) == model.metadata.hidden_size,
                                "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    mfq::models::require_model(input.confirmed >= 0 && input.confirmed == 0,
+    tyloi::models::require_model(input.confirmed >= 0 && input.confirmed == 0,
                                "unsupported speculative backbone geometry");
     if (state.cache_pos == 0) state.reset(B);
 
-    const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary))
-                             .dtype(tb::kInt64);
+    const auto options = ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, mode.primary))
+                             .dtype(::tyloi::kInt64);
     auto physical = input.cache_positions.has_value()
-        ? collectives.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
-        : tb::arange(state.cache_pos, state.cache_pos + T, options);
+        ? collectives.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto semantic = input.positions.has_value()
-        ? collectives.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
+        ? collectives.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
-    mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
+    tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
                                    (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
                                "cache_positions must have shape [tokens] or [batch,tokens]");
-    mfq::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
+    tyloi::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
                                    (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
                                "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.attention_mask.has_value()) {
         const auto& mask = *input.attention_mask;
-        mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
+        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
                                        mask.size(1) >= state.cache_pos + T,
                                    "attention_mask must cover [batch,cached_plus_current_tokens]");
     }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
-        input.lengths = tb::full({B}, state.cache_pos + 1, options);
+        input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
     AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
                        input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
     const auto trace = [&](const Tensor& value) {
         if (input.trace)
-            input.trace->push_back(collectives.copy(value, mode.primary).to(tb::kFloat32).clone());
+            input.trace->push_back(collectives.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace(hidden);
     for (std::size_t index = 0; index < model.layers.size(); ++index) {
@@ -426,7 +425,7 @@ void update_indexer(const Config& c, Selection& selection, const Tensor& index_c
                     int64_t planned_kv_length) {
     const int64_t logical_len = cache_pos + T;
     if (logical_len <= c.index_topk) {
-        selection.topk_indices = mfq_tensor_backend::Tensor();
+        selection.topk_indices = ::tyloi::Tensor();
         selection.dense_prefix_rows = T;
         return;
     }
@@ -438,10 +437,10 @@ void update_indexer(const Config& c, Selection& selection, const Tensor& index_c
                                                       seq_len.value(), planned_len);
         });
         auto selected = profiler.measure("glm.indexer_topk", [&]() {
-            return mfq_tensor_backend::topk(scores, c.index_topk, -1, true, false);
+            return ::tyloi::cuda::topk(scores, c.index_topk, -1, true, false);
         });
         selection.topk_indices =
-            std::get<1>(selected).to(mfq_tensor_backend::kInt32).contiguous();
+            std::get<1>(selected).to(::tyloi::kInt32).contiguous();
         selection.dense_prefix_rows = 0;
         return;
     }
@@ -450,14 +449,14 @@ void update_indexer(const Config& c, Selection& selection, const Tensor& index_c
         std::max<int64_t>(0, std::min<int64_t>(T, c.index_topk - cache_pos));
     const int64_t sparse_rows = T - prefix_rows;
     if (sparse_rows <= 0) {
-        selection.topk_indices = mfq_tensor_backend::Tensor();
+        selection.topk_indices = ::tyloi::Tensor();
         selection.dense_prefix_rows = T;
         return;
     }
-    auto indices = mfq_tensor_backend::empty({B, sparse_rows, c.index_topk},
-                                             mfq_tensor_backend::TensorOptions()
-                                                 .device(mfq_tensor_backend::kCUDA)
-                                                 .dtype(mfq_tensor_backend::kInt32));
+    auto indices = ::tyloi::cuda::empty({B, sparse_rows, c.index_topk},
+                                             ::tyloi::TensorOptions()
+                                                 .device(::tyloi::kCUDA)
+                                                 .dtype(::tyloi::kInt32));
     constexpr int64_t kMaxScoreElements = 32 * 1024 * 1024;
     int64_t rows_per_chunk =
         std::max<int64_t>(1, kMaxScoreElements / std::max<int64_t>(1, B * logical_len));
@@ -473,10 +472,10 @@ void update_indexer(const Config& c, Selection& selection, const Tensor& index_c
                                                cache_pos + prefix_rows + start, logical_len);
         });
         auto selected = profiler.measure("glm.indexer_topk", [&]() {
-            return mfq_tensor_backend::topk(scores, c.index_topk, -1, true, false);
+            return ::tyloi::cuda::topk(scores, c.index_topk, -1, true, false);
         });
         indices.narrow(1, start, count)
-            .copy_(std::get<1>(selected).to(mfq_tensor_backend::kInt32));
+            .copy_(std::get<1>(selected).to(::tyloi::kInt32));
     }
     selection.topk_indices = indices;
     selection.dense_prefix_rows = prefix_rows;
@@ -527,32 +526,27 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
     constexpr int64_t kValue = 256;
     const int64_t logical_len = cache_pos + T;
     if (!kv_cache.defined()) {
-        auto options = mfq_tensor_backend::TensorOptions()
-                           .device(mfq_tensor_backend::kCUDA)
-                           .dtype(mfq_tensor_backend::kFloat16);
+        auto options = ::tyloi::TensorOptions()
+                           .device(::tyloi::kCUDA)
+                           .dtype(::tyloi::kFloat16);
         kv_cache =
-            mfq_tensor_backend::empty({B, 1, c.max_position_embeddings, kMlaWidth}, options);
+            ::tyloi::cuda::empty({B, 1, c.max_position_embeddings, kMlaWidth}, options);
         if (full_indexer) {
-            index_cache = mfq_tensor_backend::empty(
+            index_cache = ::tyloi::cuda::empty(
                 {B, c.max_position_embeddings, c.index_head_dim}, options);
         }
     }
 
-    x = x.to(mfq_tensor_backend::kFloat16).contiguous();
-    return mfq::ops::attention_layer(
-        std::move(x),
-        [&](mfq_tensor_backend::Tensor x) {
-            return profiler.measure("glm.attn_norm", [&]() {
-                return rms_norm_f16_cuda(x.reshape({B * T, H}), attn_norm, c.rms_norm_eps, 0.0)
-                    .reshape({B, T, H});
-            });
-        },
-        [&](mfq_tensor_backend::Tensor xn) {
-            using Tensor = mfq_tensor_backend::Tensor;
-            struct Projection {
-                Tensor query, rotary, rows;
-            };
-            return mfq::models::glm_dsa::attention(
+    x = x.to(::tyloi::kFloat16).contiguous();
+    auto xn = profiler.measure("glm.attn_norm", [&]() {
+        return rms_norm_f16_cuda(x.reshape({B * T, H}), attn_norm, c.rms_norm_eps, 0.0)
+            .reshape({B, T, H});
+    });
+    using Tensor = ::tyloi::Tensor;
+    struct Projection {
+        Tensor query, rotary, rows;
+    };
+    auto attn_out = tyloi::models::glm_dsa::attention(
                 full_indexer,
                 [&] {
                     return profiler.measure(
@@ -561,7 +555,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                 [&](Tensor projected) {
                     return profiler.measure("glm.q_a_norm", [&]() {
                         return rms_norm_f16_cuda(projected.reshape({B * T, c.q_lora_rank})
-                                                     .to(mfq_tensor_backend::kFloat16)
+                                                     .to(::tyloi::kFloat16)
                                                      .contiguous(),
                                                  q_a_norm, 1e-6, 0.0)
                             .reshape({B, T, c.q_lora_rank});
@@ -572,7 +566,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                                             [&]() { return project.run(q_proj, qr); });
                 },
                 [&](Tensor key_value, Tensor query) {
-                    auto q_main = query.to(mfq_tensor_backend::kFloat16)
+                    auto q_main = query.to(::tyloi::kFloat16)
                                       .reshape({B, T, kHeads, kNope + kRope});
                     auto q_nope =
                         q_main.index({Slice(), Slice(), Slice(), Slice(0, kNope)}).contiguous();
@@ -585,7 +579,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                                                          rope.sin, kRope);
                     });
 
-                    auto compressed = key_value.to(mfq_tensor_backend::kFloat16)
+                    auto compressed = key_value.to(::tyloi::kFloat16)
                                           .reshape({B, T, kLatent + kRope});
                     auto kv_latent = profiler.measure("glm.kv_a_norm", [&]() {
                         auto raw = compressed.index({Slice(), Slice(), Slice(0, kLatent)})
@@ -604,7 +598,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                                                          rope.sin, kRope);
                     });
                     auto kv_rows =
-                        mfq_tensor_backend::cat(
+                        ::tyloi::cuda::cat(
                             {kv_latent, k_pe.permute({0, 2, 1, 3}).reshape({B, T, kRope})}, -1)
                             .contiguous();
                     return Projection{q_nope, q_pe, kv_rows};
@@ -619,7 +613,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                 [&](Tensor index_key, Tensor index_weight, Tensor index_query) {
                     auto index_k = profiler.measure("glm.indexer_k_norm", [&]() {
                         return glm_dsa_indexer_layer_norm_cuda(
-                            index_key.to(mfq_tensor_backend::kFloat16)
+                            index_key.to(::tyloi::kFloat16)
                                 .reshape({B, T, c.index_head_dim})
                                 .contiguous(),
                             index_k_norm, index_k_bias, 1e-5);
@@ -635,7 +629,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                     profiler.measure("glm.indexer_k_write", [&]() {
                         return glm_dsa_cache_write_cuda(index_cache, index_k, pos.contiguous());
                     });
-                    auto index_q = index_query.to(mfq_tensor_backend::kFloat16)
+                    auto index_q = index_query.to(::tyloi::kFloat16)
                                        .reshape({B, T, c.index_n_heads, c.index_head_dim})
                                        .permute({0, 2, 1, 3})
                                        .contiguous();
@@ -644,7 +638,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                                   .permute({0, 2, 1, 3})
                                   .contiguous();
                     auto index_weights = index_weight.reshape({B, T, c.index_n_heads})
-                                             .to(mfq_tensor_backend::kFloat32)
+                                             .to(::tyloi::kFloat32)
                                              .contiguous();
                     update_indexer(c, selection, index_cache, profiler, index_q, index_weights,
                                    B, T, cache_pos, seq_len, planned_kv_length);
@@ -659,8 +653,8 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                                      })
                             .permute({0, 2, 1, 3})
                             .contiguous();
-                    auto q_mla = mfq_tensor_backend::cat({q_absorbed, p.rotary}, -1)
-                                     .to(mfq_tensor_backend::kFloat32)
+                    auto q_mla = ::tyloi::cuda::cat({q_absorbed, p.rotary}, -1)
+                                     .to(::tyloi::kFloat32)
                                      .contiguous();
                     return q_mla;
                 },
@@ -670,7 +664,7 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                     const int64_t prefix = selection.dense_prefix_rows;
                     const int64_t sparse_rows =
                         indexed ? selection.topk_indices.size(1) : 0;
-                    return mfq::models::glm_dsa::indexed_attention(
+                    return tyloi::models::glm_dsa::indexed_attention(
                         indexed, T, prefix, sparse_rows,
                         [&] {
                             return profiler.measure("glm.attention_dense", [&]() {
@@ -696,14 +690,14 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                             });
                         },
                         [](Tensor first, Tensor rest) {
-                            return mfq_tensor_backend::cat({first, rest}, 1);
+                            return ::tyloi::cuda::cat({first, rest}, 1);
                         });
                 },
                 [&](Tensor attended) {
                     return profiler.measure("glm.unembed_out", [&]() {
                         return headwise_project(
                             project, scratch, unembed_out,
-                            attended.to(mfq_tensor_backend::kFloat16).contiguous(), B, T,
+                            attended.to(::tyloi::kFloat16).contiguous(), B, T,
                             kHeads);
                     });
                 },
@@ -712,42 +706,31 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Selection& selection
                         return project.run(o_proj, value_heads.reshape({B, T, kHeads * kValue}).contiguous());
                     });
                 });
-        },
-        [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn_out) {
-            return mfq::ops::residual_ffn(
-                std::move(residual), std::move(attn_out),
-                [&](mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn_out) {
-                    auto attn_pair = profiler.measure("glm.attn_residual_ffn_norm", [&]() {
-                        return acc_rms_norm_f16_cuda(residual.reshape({B * T, H}),
-                                                     attn_out.reshape({B * T, H})
-                                                         .to(mfq_tensor_backend::kFloat16)
-                                                         .contiguous(),
-                                                     ffn_norm, c.rms_norm_eps, 0.0);
-                    });
-                    return std::array<mfq_tensor_backend::Tensor, 2>{
-                        attn_pair[0].reshape({B, T, H}), attn_pair[1].reshape({B * T, H})};
-                },
-                [&](mfq_tensor_backend::Tensor hidden, mfq_tensor_backend::Tensor ffn_input) {
-                    return mfq::ops::feed_forward(
-                        std::move(hidden), std::move(ffn_input),
-                        [](const auto &, const auto &) {
-                            return std::optional<mfq_tensor_backend::Tensor>{};
-                        },
-                        [&](mfq_tensor_backend::Tensor ffn_input) {
-#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                            return ffn.forward(ffn_input, mode.ffn).reshape({B * T, H});
-#else
-                            return ffn.forward(ffn_input, executor, mode.ffn).reshape({B * T, H});
-#endif
-                        },
-                        [&](mfq_tensor_backend::Tensor hidden,
-                            mfq_tensor_backend::Tensor ffn_out) {
-                            return profiler.measure("glm.ffn_residual", [&]() {
-                                return acc_cuda(hidden.reshape({B * T, H}), ffn_out)
-                                    .reshape({B, T, H});
-                            });
-                        });
-                });
+    xn = {};
+    std::array<Tensor, 2> prepared;
+    {
+        auto attn_pair = profiler.measure("glm.attn_residual_ffn_norm", [&]() {
+            return acc_rms_norm_f16_cuda(x.reshape({B * T, H}),
+                                         attn_out.reshape({B * T, H})
+                                             .to(::tyloi::kFloat16)
+                                             .contiguous(),
+                                         ffn_norm, c.rms_norm_eps, 0.0);
         });
+        prepared = std::array<::tyloi::Tensor, 2>{
+            attn_pair[0].reshape({B, T, H}), attn_pair[1].reshape({B * T, H})};
+    }
+    x = {};
+    attn_out = {};
+    auto hidden = std::move(prepared[0]);
+    auto ffn_input = std::move(prepared[1]);
+#ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
+    auto ffn_out = ffn.forward(ffn_input, mode.ffn).reshape({B * T, H});
+#else
+    auto ffn_out = ffn.forward(ffn_input, executor, mode.ffn).reshape({B * T, H});
+#endif
+    ffn_input = {};
+    return profiler.measure("glm.ffn_residual", [&]() {
+        return acc_cuda(hidden.reshape({B * T, H}), ffn_out).reshape({B, T, H});
+    });
 }
-} // namespace mfq::cuda::glm_dsa
+} // namespace tyloi::cuda::glm_dsa

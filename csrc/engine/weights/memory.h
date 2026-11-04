@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class WeightMemoryLedger {
     struct Payload { std::weak_ptr<void> owner; std::size_t bytes; };

@@ -2,7 +2,7 @@
 #include "mfe_ffn.h"
 #include <climits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 inline bool mfe_e8_narrow_view_eligible(const MfePackedProjection& d,bool allow_empty=true) {
     if(d.family!=2 || (d.format!=5 && d.format!=13 && d.format!=14))return true;
     if(d.local_experts<0 || d.output_rows<=0 || d.input_width<=0 || d.groups<=0 || d.nvec<=0 ||

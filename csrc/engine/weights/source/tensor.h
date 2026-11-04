@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 struct TensorMetadata {
     std::string name;
@@ -29,4 +29,4 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-} // namespace mfq
+} // namespace tyloi

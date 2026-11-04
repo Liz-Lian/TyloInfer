@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // CUDA 13 Driver API, resolved by ABI version while retaining CUDA 12 builds.
 // https://docs.nvidia.com/cuda/archive/13.0.0/cuda-driver-api/group__CUDA__MEM.html
 // The Windows source-alias requirement follows Strata's MIT dma_batch.hpp.
@@ -53,7 +53,7 @@ public:
         if(!mode || copies.empty() || !entry())return false;
         constexpr std::size_t capacity=128;
         if(copies.size()>capacity) {
-            const auto* multiple=mfq::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_MULTI_BATCH");
+            const auto* multiple=tyloi::cuda::env_lookup("TYLOINFER_MOE_NATIVE_DMA_MULTI_BATCH");
             if(multiple && multiple[0]=='0')return false;
         }
         struct Packet {

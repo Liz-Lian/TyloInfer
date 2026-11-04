@@ -16,26 +16,26 @@
 #include <unordered_set>
 #include <utility>
 
-namespace mfq::engine { class Engine; }
+namespace tyloi::engine { class Engine; }
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-struct CudaContinuousBatchConfig : mfq::engine::ContinuousBatchConfig {
+struct CudaContinuousBatchConfig : tyloi::engine::ContinuousBatchConfig {
     bool greedy = true;
     bool cuda_graph = true;
     bool paged_kv = true;
     std::int32_t cuda_graph_minimum_tokens = 16;
 };
 
-struct CudaRuntimeConfig : mfq::engine::RuntimeConfig {
+struct CudaRuntimeConfig : tyloi::engine::RuntimeConfig {
     bool prefill_chunk_auto = true;
     CudaDecodeGraphConfig decode_graph;
     CudaContinuousBatchConfig continuous_batch;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Read once at owner construction; controls read on access stay in options.h.
 struct CudaLoadConfig {
@@ -106,12 +106,12 @@ struct CudaEngineOptions : CudaLoadOptions {
     int64_t prefill_chunk_size = 0;
 };
 
-std::unique_ptr<mfq::engine::Engine> load_cuda_engine(CudaEngineOptions options);
-void reload_cuda_engine(mfq::engine::Engine& engine, CudaEngineOptions options);
+std::unique_ptr<tyloi::engine::Engine> load_cuda_engine(CudaEngineOptions options);
+void reload_cuda_engine(tyloi::engine::Engine& engine, CudaEngineOptions options);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 CudaRuntimeConfig resolve_cuda_runtime_config(const CudaEngineOptions& options);
 void setup_cuda_load(
@@ -119,9 +119,9 @@ void setup_cuda_load(
     CudaLoadConfig& config, Executor& executor, RoutedCache& weights,
     std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload);
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 void finalize_kv(KvMemoryManager* kv, RoutedCache& weights,
     std::shared_ptr<KvOffloadStore>& offload);
@@ -129,4 +129,4 @@ std::chrono::steady_clock::time_point finish_load(
     KvMemoryManager* kv, RoutedCache& weights, std::size_t graph_reserve,
     bool report_memory);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

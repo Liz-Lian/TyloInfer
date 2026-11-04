@@ -4,13 +4,13 @@
 
 #include <cstdint>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 struct BiasWeight {
     QuantLinear weight;
-    mfq_tensor_backend::Tensor bias;
+    ::tyloi::Tensor bias;
 };
 
 BiasWeight bias_rows(const BiasWeight& value, int64_t begin, int64_t count);
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 struct PrefixMatch {
     std::size_t matched_tokens = 0;
@@ -67,4 +67,4 @@ private:
     std::atomic<std::uint64_t> hit_tokens_{0};
 };
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

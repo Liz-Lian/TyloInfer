@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mfq::cuda { namespace {
+namespace tyloi::cuda { namespace {
 template<uint32_t Formats,int Warps,bool Worklist=false>
 __global__ void __launch_bounds__(32*Warps,Worklist?3:Warps<=16?32/Warps:1) mfe_ffn_gu_group_quant_kernel(
         MfeFfnBatch b,int partition,const int32_t* worklist=nullptr) {

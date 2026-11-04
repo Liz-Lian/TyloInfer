@@ -8,7 +8,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq::source {
+namespace tyloi::source {
 namespace {
 
 constexpr std::uint64_t kMaxJsonSidecarBytes = std::uint64_t{256} << 20;
@@ -59,4 +59,4 @@ nlohmann::json parse_json(
     }
 }
 
-} // namespace mfq::source
+} // namespace tyloi::source

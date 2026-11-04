@@ -5,14 +5,12 @@
 #include "engine/backends/cuda/native/collectives.h"
 #include "engine/backends/cuda/kernels/mfq_cuda_norm_ops.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-namespace tb = mfq_tensor_backend;
-using Tensor = tb::Tensor;
 
 namespace {
 void record(Trace* trace, const char* name, const Tensor& value) {
-    if (trace) trace->emplace_back(name, value.to(tb::kFloat32).contiguous().clone());
+    if (trace) trace->emplace_back(name, value.to(::tyloi::kFloat32).contiguous().clone());
 }
 } // namespace
 
@@ -50,31 +48,36 @@ Tensor Dense::forward(const Projector& project, CudaProfiler& profiler,
     Tensor output;
     if (bf16) {
         output = mlp.bf16(project, profiler, options.bf16_swiglu, input)
-            .to(tb::kBFloat16).contiguous();
+            .to(::tyloi::kBFloat16).contiguous();
     } else {
-        if (input.scalar_type() != tb::kFloat16)
-            input = profiler.measure("ffn.input_cast", [&] { return input.to(tb::kFloat16); });
+        if (input.scalar_type() != ::tyloi::kFloat16)
+            input = profiler.measure("ffn.input_cast", [&] { return input.to(::tyloi::kFloat16); });
         if (important) {
             const bool fp32 = batch * tokens >= 16 && mmq.mode == KlMmqMode::Fp16 &&
                 options.important_fp32;
-            output = mfq::ops::additive_branches(
-                [&](size_t index) {
+            auto run_branch = [&](size_t index) {
                     const auto& op = index == 0 ? mlp : *important;
                     return fp32 ? op.kld(project, profiler, mmq, input)
                                 : run_mlp(op, input, project, profiler, mmq, tq, collectives, parallel, options);
-                },
-                [&](auto& branch, auto& outputs) {
-                    return !fp32 && decode_branches(parallel.parallel, serial, batch * tokens) &&
-                        options.important_parallel && branches.run(2, branch, outputs);
-                },
-                [&](Tensor first, Tensor second) {
-                    if (fp32)
-                        return profiler.measure("ffn.in.combine.fp32", [&] {
-                            return (first + second).to(tb::kFloat16).contiguous();
-                        });
-                    return profiler.measure("ffn.in.combine", [&] {
-                        return acc_cuda(first.contiguous(), second.contiguous());
-                    });
+            };
+            std::vector<Tensor> outputs;
+            const bool ran_parallel = !fp32 && decode_branches(parallel.parallel, serial, batch * tokens) &&
+                options.important_parallel && branches.run(2, run_branch, outputs);
+            if (!ran_parallel) {
+                outputs.push_back(run_branch(0));
+                outputs.push_back(run_branch(1));
+            }
+            if (outputs.size() != 2)
+                throw std::runtime_error("additive FFN requires two branch outputs");
+            auto first = std::move(outputs[0]);
+            auto second = std::move(outputs[1]);
+            if (fp32)
+                output = profiler.measure("ffn.in.combine.fp32", [&] {
+                    return (first + second).to(::tyloi::kFloat16).contiguous();
+                });
+            else
+                output = profiler.measure("ffn.in.combine", [&] {
+                    return acc_cuda(first.contiguous(), second.contiguous());
                 });
         } else {
             output = run_mlp(mlp, input, project, profiler, mmq, tq, collectives, parallel, options);
@@ -88,4 +91,4 @@ Tensor Dense::forward(const Projector& project, CudaProfiler& profiler,
             std::move(residual), std::move(output));
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

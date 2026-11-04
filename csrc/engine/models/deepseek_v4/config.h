@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::deepseek_v4 {
+namespace tyloi::models::deepseek_v4 {
 
 struct Config : ModelConfig {
     std::vector<std::int64_t> compress_ratios;
@@ -44,4 +44,4 @@ struct Config : ModelConfig {
 
 };
 
-} // namespace mfq::models::deepseek_v4
+} // namespace tyloi::models::deepseek_v4

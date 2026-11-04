@@ -5,7 +5,7 @@
 #include <cmath>
 #include <limits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 template <typename Value>
@@ -390,7 +390,7 @@ Tensor scalar_binary_cuda(
     const Tensor& left,
     double right,
     int operation,
-    bool scalar_first = false) {
+    bool scalar_first) {
     if (!left.is_cuda()) {
         throw std::invalid_argument("native scalar CUDA op requires a CUDA tensor");
     }
@@ -427,34 +427,42 @@ Tensor scalar_binary_cuda(
     return output;
 }
 
-Tensor operator+(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 0); }
-Tensor operator+(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 0); }
-Tensor operator+(double left, const Tensor& right) { return scalar_binary_cuda(right, left, 0, true); }
-Tensor operator-(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 1); }
-Tensor operator-(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 1); }
-Tensor operator-(double left, const Tensor& right) { return scalar_binary_cuda(right, left, 1, true); }
-Tensor operator-(const Tensor& value) { return scalar_binary_cuda(value, -1.0, 2); }
-Tensor operator*(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 2); }
-Tensor operator*(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 2); }
-Tensor operator*(double left, const Tensor& right) { return scalar_binary_cuda(right, left, 2, true); }
-Tensor operator/(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 3); }
-Tensor operator/(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 3); }
-Tensor operator/(double left, const Tensor& right) { return scalar_binary_cuda(right, left, 3, true); }
-Tensor operator<(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 4); }
-Tensor operator<(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 4); }
-Tensor operator<=(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 5); }
-Tensor operator<=(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 5); }
-Tensor operator>(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 6); }
-Tensor operator>(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 6); }
-Tensor operator>=(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 7); }
-Tensor operator>=(const Tensor& left, double right) { return scalar_binary_cuda(left, right, 7); }
-Tensor operator&(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 8); }
-Tensor operator|(const Tensor& left, const Tensor& right) { return binary_cuda(left, right, 9); }
+}  // namespace tyloi::cuda
+
+namespace tyloi {
+
+Tensor operator+(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 0); }
+Tensor operator+(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 0); }
+Tensor operator+(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 0, true); }
+Tensor operator-(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 1); }
+Tensor operator-(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 1); }
+Tensor operator-(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 1, true); }
+Tensor operator-(const Tensor& value) { return cuda::scalar_binary_cuda(value, -1.0, 2); }
+Tensor operator*(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 2); }
+Tensor operator*(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 2); }
+Tensor operator*(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 2, true); }
+Tensor operator/(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 3); }
+Tensor operator/(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 3); }
+Tensor operator/(double left, const Tensor& right) { return cuda::scalar_binary_cuda(right, left, 3, true); }
+Tensor operator<(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 4); }
+Tensor operator<(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 4); }
+Tensor operator<=(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 5); }
+Tensor operator<=(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 5); }
+Tensor operator>(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 6); }
+Tensor operator>(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 6); }
+Tensor operator>=(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 7); }
+Tensor operator>=(const Tensor& left, double right) { return cuda::scalar_binary_cuda(left, right, 7); }
+Tensor operator&(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 8); }
+Tensor operator|(const Tensor& left, const Tensor& right) { return cuda::binary_cuda(left, right, 9); }
 Tensor operator~(const Tensor& value) { return value.logical_not(); }
 Tensor operator==(const Tensor& left, const Tensor& right) { return left.eq(right); }
 Tensor operator==(const Tensor& left, double right) { return left.eq(right); }
 Tensor operator!=(const Tensor& left, const Tensor& right) { return left.ne(right); }
 Tensor operator!=(const Tensor& left, double right) { return left.ne(right); }
+
+}  // namespace tyloi
+
+namespace tyloi::cuda {
 
 Tensor sin(const Tensor& input) { return unary_cuda(input, 9); }
 Tensor cos(const Tensor& input) { return unary_cuda(input, 10); }
@@ -474,14 +482,14 @@ Tensor gelu(const Tensor& input, const std::string& approximation) {
     if(approximation!="none" && approximation!="tanh")throw std::invalid_argument("unknown GELU approximation");
     return unary_cuda(input,approximation=="tanh"?27:23);
 }
-Tensor exp(const Tensor& input) { return input.exp(); }
-Tensor sqrt(const Tensor& input) { return input.sqrt(); }
+Tensor exp(const Tensor& input) { return unary_cuda(input, 2); }
+Tensor sqrt(const Tensor& input) { return unary_cuda(input, 3); }
 Tensor pow(const Tensor& input, double exponent) { return unary_cuda(input, 24, exponent); }
 Tensor pow(const Tensor& input, const Tensor& exponent) { return binary_cuda(input, exponent, 12); }
-Tensor remainder(const Tensor& input, double divisor) { return input.remainder(divisor); }
-Tensor clamp(const Tensor& input, double minimum, double maximum) { return input.clamp(minimum, maximum); }
-Tensor clamp_min(const Tensor& input, double minimum) { return input.clamp_min(minimum); }
-Tensor clamp_max(const Tensor& input, double maximum) { return input.clamp_max(maximum); }
+Tensor remainder(const Tensor& input, double divisor) { return unary_cuda(input, 7, divisor); }
+Tensor clamp(const Tensor& input, double minimum, double maximum) { return unary_cuda(input, 4, minimum, maximum); }
+Tensor clamp_min(const Tensor& input, double minimum) { return unary_cuda(input, 5, minimum); }
+Tensor clamp_max(const Tensor& input, double maximum) { return unary_cuda(input, 6, maximum); }
 Tensor isfinite(const Tensor& input) { return unary_cuda(input, 25); }
 Tensor isneginf(const Tensor& input) { return unary_cuda(input, 26); }
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

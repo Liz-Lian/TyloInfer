@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 // Models supply their own token-to-row mapping; generation and MTP share the
 // scheduling hook without knowing the embedding format or architecture.
 template<class Model,class Ids>

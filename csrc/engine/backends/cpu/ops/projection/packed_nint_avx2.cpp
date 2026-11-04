@@ -4,7 +4,7 @@
 #include <cstring>
 #include <immintrin.h>
 
-namespace mfq::cpu::detail {
+namespace tyloi::cpu::detail {
 namespace {
 __m256i decode8(const PackedNintView& w, std::uint64_t bit, int bits, int valid=8) {
     const auto byte = static_cast<std::size_t>(bit >> 3);
@@ -156,4 +156,4 @@ void packed_nint_avx2_rows(const PackedNintView& w, const float* input,
         }
     }
 }
-} // namespace mfq::cpu::detail
+} // namespace tyloi::cpu::detail

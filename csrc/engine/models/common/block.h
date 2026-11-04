@@ -10,17 +10,17 @@ struct CudaExecutionContext;
 
 struct Block {
     struct Context {
-        mfq_tensor_backend::Tensor token_ids;
-        mfq_tensor_backend::Tensor host_token_ids;
-        mfq_tensor_backend::Tensor positions;
-        mfq_tensor_backend::Tensor full_positions;
+        ::tyloi::Tensor token_ids;
+        ::tyloi::Tensor host_token_ids;
+        ::tyloi::Tensor positions;
+        ::tyloi::Tensor full_positions;
         int64_t cache_position = 0;
         int64_t confirmed_prefix = 0;
         int64_t planned_kv_length = 0;
         int64_t decode_attention_parts = 0;
-        MfqOptional<mfq_tensor_backend::Tensor> sequence_lengths = mfq_nullopt;
-        MfqOptional<mfq_tensor_backend::Tensor> cache_positions = mfq_nullopt;
-        MfqOptional<mfq_tensor_backend::Tensor> attention_mask = mfq_nullopt;
+        MfqOptional<::tyloi::Tensor> sequence_lengths = mfq_nullopt;
+        MfqOptional<::tyloi::Tensor> cache_positions = mfq_nullopt;
+        MfqOptional<::tyloi::Tensor> attention_mask = mfq_nullopt;
     };
 
     int cuda_device = 0;
@@ -28,27 +28,27 @@ struct Block {
 
     virtual ~Block() = default;
     virtual void reset(int64_t batch) = 0;
-    virtual void set_token_ids(const mfq_tensor_backend::Tensor&) {}
-    virtual void prefetch_token_ids(const mfq_tensor_backend::Tensor&) {}
+    virtual void set_token_ids(const ::tyloi::Tensor&) {}
+    virtual void prefetch_token_ids(const ::tyloi::Tensor&) {}
     virtual bool supports_speculation() const noexcept { return false; }
-    virtual std::vector<mfq_tensor_backend::Tensor*> graph_warmup_state() { return {}; }
+    virtual std::vector<::tyloi::Tensor*> graph_warmup_state() { return {}; }
     virtual void begin_speculative(int64_t) {}
     virtual void commit_speculative() {}
     virtual void rollback_speculative(int64_t) {}
-    virtual mfq_tensor_backend::Tensor forward(
+    virtual ::tyloi::Tensor forward(
         CudaExecutionContext& execution,
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor positions,
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor positions,
         int64_t cache_position,
-        const MfqOptional<mfq_tensor_backend::Tensor>& sequence_lengths,
+        const MfqOptional<::tyloi::Tensor>& sequence_lengths,
         const RopeCache& rope,
-        const MfqOptional<mfq_tensor_backend::Tensor>& cache_positions = mfq_nullopt,
-        const MfqOptional<mfq_tensor_backend::Tensor>& attention_mask = mfq_nullopt) = 0;
-    virtual mfq_tensor_backend::Tensor forward_context(
+        const MfqOptional<::tyloi::Tensor>& cache_positions = mfq_nullopt,
+        const MfqOptional<::tyloi::Tensor>& attention_mask = mfq_nullopt) = 0;
+    virtual ::tyloi::Tensor forward_context(
         CudaExecutionContext& execution,
-        mfq_tensor_backend::Tensor x,
+        ::tyloi::Tensor x,
         const Context& context,
         const RopeCache& rope);
 };
 
-using mfq_tensor_backend::indexing::Slice;
+using ::tyloi::indexing::Slice;

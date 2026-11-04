@@ -3,7 +3,7 @@
 
 MoePrefillWorkspaceBudget moe_prefill_workspace_budget(const std::shared_ptr<MoeExpertCache>& cache, bool allow_borrow) { return {}; }
 
-void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache, std::shared_ptr<mfq::cuda::KvExpertLoan> loan) {}
+void set_moe_kv_expert_loan(const std::shared_ptr<MoeExpertCache>& cache, std::shared_ptr<tyloi::cuda::KvExpertLoan> loan) {}
 
 std::size_t moe_prefill_transfer_bytes(const std::shared_ptr<MoeExpertCache>& cache, bool predictor) { return {}; }
 
@@ -79,12 +79,12 @@ std::size_t finish_moe_pipeline_comparison(const std::shared_ptr<MoeExpertCache>
 
 void print_moe_expert_cache_stats(const std::shared_ptr<MoeExpertCache>& cache, std::ostream& output) {}
 
-void set_moe_expert_cache_profile(MoeExpertCache& cache, mfq::MoeCacheProfile profile) {}
+void set_moe_expert_cache_profile(MoeExpertCache& cache, tyloi::MoeCacheProfile profile) {}
 
-mfq::cuda::WeightLoan::~WeightLoan() = default;
-std::size_t mfq::cuda::WeightLoan::begin(std::size_t) { return 0; }
-void mfq::cuda::WeightLoan::suspend() {}
-void mfq::cuda::WeightLoan::finish() {}
+tyloi::cuda::WeightLoan::~WeightLoan() = default;
+std::size_t tyloi::cuda::WeightLoan::begin(std::size_t) { return 0; }
+void tyloi::cuda::WeightLoan::suspend() {}
+void tyloi::cuda::WeightLoan::finish() {}
 MoePrefillLayerPriority::MoePrefillLayerPriority(std::shared_ptr<MoeExpertCache> cache, int, int)
     : cache_(std::move(cache)) {}
 MoePrefillLayerPriority::~MoePrefillLayerPriority() = default;

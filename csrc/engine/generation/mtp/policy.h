@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::engine::mtp {
+namespace tyloi::engine::mtp {
 
 inline constexpr int kMaximumDraftDepth = 5;
 
@@ -388,4 +388,4 @@ inline ChainVerification verify_stochastic_chain(
     return {drafts.size(), sample(targets.back(), sample_uniform), true};
 }
 
-}  // namespace mfq::engine::mtp
+}  // namespace tyloi::engine::mtp

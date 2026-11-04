@@ -31,21 +31,21 @@ __global__ void acc_bf16_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor acc_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b)
+::tyloi::Tensor acc_cuda(::tyloi::Tensor a, ::tyloi::Tensor b)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc: a must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc: b must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(a.scalar_type() == b.scalar_type(), "acc: a/b dtype mismatch");
     TYLOINFER_RUNTIME_CHECK(
-        a.scalar_type() == mfq_tensor_backend::kFloat16 ||
-            a.scalar_type() == mfq_tensor_backend::kFloat32 ||
-            a.scalar_type() == mfq_tensor_backend::kBFloat16,
+        a.scalar_type() == ::tyloi::kFloat16 ||
+            a.scalar_type() == ::tyloi::kFloat32 ||
+            a.scalar_type() == ::tyloi::kBFloat16,
         "acc: dtype must be f16, f32, or bf16");
     TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc: a/b shape mismatch");
     int n = (int)a.numel();
-    auto out = mfq_tensor_backend::empty_like(a);
+    auto out = ::tyloi::cuda::empty_like(a);
     constexpr int BD = 256;
-    if (a.scalar_type() == mfq_tensor_backend::kBFloat16) {
+    if (a.scalar_type() == ::tyloi::kBFloat16) {
         acc_bf16_kernel<<<
             (n + BD - 1) / BD, BD, 0, mfq_current_cuda_stream()>>>(
             reinterpret_cast<const __nv_bfloat16*>(
@@ -149,16 +149,16 @@ __global__ void acc_rms_norm_kernel(const scalar_t* __restrict__ a,
     }
 }
 
-std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b,
-                                             mfq_tensor_backend::Tensor weight, double eps,
+std::vector<::tyloi::Tensor> acc_rms_norm_cuda(::tyloi::Tensor a, ::tyloi::Tensor b,
+                                             ::tyloi::Tensor weight, double eps,
                                              double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc_rms_norm: a must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc_rms_norm: b must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
                 "acc_rms_norm: weight must be cuda contiguous f32");
     TYLOINFER_RUNTIME_CHECK(a.scalar_type() == b.scalar_type(), "acc_rms_norm: a/b dtype mismatch");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == mfq_tensor_backend::kFloat16 || a.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == ::tyloi::kFloat16 || a.scalar_type() == ::tyloi::kFloat32,
                 "acc_rms_norm: dtype must be f16 or f32");
     TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc_rms_norm: a/b shape mismatch");
     TYLOINFER_RUNTIME_CHECK(a.dim() >= 1, "acc_rms_norm: a must have at least one dim");
@@ -166,8 +166,8 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_cuda(mfq_tensor_backend::Te
     int N = (int)(a.numel() / D);
     TYLOINFER_RUNTIME_CHECK(weight.numel() == D, "acc_rms_norm: weight length mismatch");
 
-    auto sum = mfq_tensor_backend::empty_like(a);
-    auto norm = mfq_tensor_backend::empty(a.sizes(), a.options().dtype(mfq_tensor_backend::kFloat32));
+    auto sum = ::tyloi::cuda::empty_like(a);
+    auto norm = ::tyloi::cuda::empty(a.sizes(), a.options().dtype(::tyloi::kFloat32));
     TYLOINFER_DISPATCH_FLOATING_TYPES_AND_HALF(a.scalar_type(), "acc_rms_norm_cuda", [&] {
         constexpr bool reuse_stored_sum = std::is_same_v<scalar_t, float>;
         acc_rms_norm_kernel<scalar_t, float, ACC_RMS_BD, reuse_stored_sum><<<N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
@@ -178,15 +178,15 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_cuda(mfq_tensor_backend::Te
     return {sum, norm};
 }
 
-std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b,
-                                                 mfq_tensor_backend::Tensor weight, double eps,
+std::vector<::tyloi::Tensor> acc_rms_norm_f16_cuda(::tyloi::Tensor a, ::tyloi::Tensor b,
+                                                 ::tyloi::Tensor weight, double eps,
                                                  double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous(), "acc_rms_norm_f16: a must be cuda contiguous");
     TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous(), "acc_rms_norm_f16: b must be cuda contiguous");
-    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32,
                 "acc_rms_norm_f16: weight must be cuda contiguous f32");
-    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == mfq_tensor_backend::kFloat16 && b.scalar_type() == mfq_tensor_backend::kFloat16,
+    TYLOINFER_RUNTIME_CHECK(a.scalar_type() == ::tyloi::kFloat16 && b.scalar_type() == ::tyloi::kFloat16,
                 "acc_rms_norm_f16: a/b must be f16");
     TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes(), "acc_rms_norm_f16: a/b shape mismatch");
     TYLOINFER_RUNTIME_CHECK(a.dim() >= 1, "acc_rms_norm_f16: a must have at least one dim");
@@ -194,8 +194,8 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend
     int N = (int)(a.numel() / D);
     TYLOINFER_RUNTIME_CHECK(weight.numel() == D, "acc_rms_norm_f16: weight length mismatch");
 
-    auto sum = mfq_tensor_backend::empty_like(a);
-    auto norm = mfq_tensor_backend::empty_like(a);
+    auto sum = ::tyloi::cuda::empty_like(a);
+    auto norm = ::tyloi::cuda::empty_like(a);
     acc_rms_norm_kernel<mfq_half, mfq_half, ACC_RMS_BD, false><<<N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
         a.data_ptr<mfq_half>(), b.data_ptr<mfq_half>(), weight.data_ptr<float>(),
         sum.data_ptr<mfq_half>(), norm.data_ptr<mfq_half>(), N, D,
@@ -203,18 +203,18 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_f16_cuda(mfq_tensor_backend
     return {sum, norm};
 }
 
-std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_bf16_cuda(
-    mfq_tensor_backend::Tensor a, mfq_tensor_backend::Tensor b,
-    mfq_tensor_backend::Tensor weight, double eps, double weight_offset)
+std::vector<::tyloi::Tensor> acc_rms_norm_bf16_cuda(
+    ::tyloi::Tensor a, ::tyloi::Tensor b,
+    ::tyloi::Tensor weight, double eps, double weight_offset)
 {
     TYLOINFER_RUNTIME_CHECK(a.is_cuda() && a.is_contiguous() &&
-                    a.scalar_type() == mfq_tensor_backend::kBFloat16,
+                    a.scalar_type() == ::tyloi::kBFloat16,
                 "acc_rms_norm_bf16: a must be cuda contiguous bf16");
     TYLOINFER_RUNTIME_CHECK(b.is_cuda() && b.is_contiguous() &&
-                    b.scalar_type() == mfq_tensor_backend::kBFloat16,
+                    b.scalar_type() == ::tyloi::kBFloat16,
                 "acc_rms_norm_bf16: b must be cuda contiguous bf16");
     TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                    weight.scalar_type() == mfq_tensor_backend::kFloat32,
+                    weight.scalar_type() == ::tyloi::kFloat32,
                 "acc_rms_norm_bf16: weight must be cuda contiguous f32");
     TYLOINFER_RUNTIME_CHECK(a.sizes() == b.sizes() && a.dim() >= 1,
                 "acc_rms_norm_bf16: a/b shape mismatch");
@@ -222,8 +222,8 @@ std::vector<mfq_tensor_backend::Tensor> acc_rms_norm_bf16_cuda(
     const int N = (int)(a.numel() / D);
     TYLOINFER_RUNTIME_CHECK(D > 0 && weight.numel() == D,
                 "acc_rms_norm_bf16: weight length mismatch");
-    auto sum = mfq_tensor_backend::empty_like(a);
-    auto norm = mfq_tensor_backend::empty_like(a);
+    auto sum = ::tyloi::cuda::empty_like(a);
+    auto norm = ::tyloi::cuda::empty_like(a);
     acc_rms_norm_bf16_kernel<ACC_RMS_BD><<<
         N, ACC_RMS_BD, 0, mfq_current_cuda_stream()>>>(
         reinterpret_cast<const __nv_bfloat16*>(a.data_ptr<mfq_bfloat16>()),
@@ -293,16 +293,16 @@ __global__ void gemma4_attn_residual_pre_norms_f16_kernel(
     }
 }
 
-std::vector<mfq_tensor_backend::Tensor> gemma4_attn_residual_pre_norms_f16_cuda(
-    mfq_tensor_backend::Tensor residual, mfq_tensor_backend::Tensor attn,
-    mfq_tensor_backend::Tensor attn_post_weight, mfq_tensor_backend::Tensor dense_pre_weight,
-    mfq_tensor_backend::Tensor router_weight, mfq_tensor_backend::Tensor moe_pre_weight, double eps)
+std::vector<::tyloi::Tensor> gemma4_attn_residual_pre_norms_f16_cuda(
+    ::tyloi::Tensor residual, ::tyloi::Tensor attn,
+    ::tyloi::Tensor attn_post_weight, ::tyloi::Tensor dense_pre_weight,
+    ::tyloi::Tensor router_weight, ::tyloi::Tensor moe_pre_weight, double eps)
 {
     TYLOINFER_RUNTIME_CHECK(residual.is_cuda() && residual.is_contiguous() &&
-                    residual.scalar_type() == mfq_tensor_backend::kFloat16,
+                    residual.scalar_type() == ::tyloi::kFloat16,
                 "gemma4 fused pre norms: residual must be cuda contiguous f16");
     TYLOINFER_RUNTIME_CHECK(attn.is_cuda() && attn.is_contiguous() &&
-                    attn.scalar_type() == mfq_tensor_backend::kFloat16,
+                    attn.scalar_type() == ::tyloi::kFloat16,
                 "gemma4 fused pre norms: attention output must be cuda contiguous f16");
     TYLOINFER_RUNTIME_CHECK(residual.sizes() == attn.sizes(),
                 "gemma4 fused pre norms: activation shape mismatch");
@@ -312,14 +312,14 @@ std::vector<mfq_tensor_backend::Tensor> gemma4_attn_residual_pre_norms_f16_cuda(
     const int N = (int)(residual.numel() / D);
     for (const auto& weight : {attn_post_weight, dense_pre_weight, router_weight, moe_pre_weight}) {
         TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                        weight.scalar_type() == mfq_tensor_backend::kFloat32 && weight.numel() == D,
+                        weight.scalar_type() == ::tyloi::kFloat32 && weight.numel() == D,
                     "gemma4 fused pre norms: weights must be cuda contiguous f32[D]");
     }
 
-    auto residual_out = mfq_tensor_backend::empty_like(residual);
-    auto dense_out = mfq_tensor_backend::empty_like(residual);
-    auto router_out = mfq_tensor_backend::empty(residual.sizes(), residual.options().dtype(mfq_tensor_backend::kFloat32));
-    auto moe_out = mfq_tensor_backend::empty_like(residual);
+    auto residual_out = ::tyloi::cuda::empty_like(residual);
+    auto dense_out = ::tyloi::cuda::empty_like(residual);
+    auto router_out = ::tyloi::cuda::empty(residual.sizes(), residual.options().dtype(::tyloi::kFloat32));
+    auto moe_out = ::tyloi::cuda::empty_like(residual);
     constexpr int BD = ACC_RMS_BD;
     const size_t shared_bytes = (size_t)D * sizeof(mfq_half);
     gemma4_attn_residual_pre_norms_f16_kernel<BD>
@@ -394,14 +394,14 @@ __global__ void gemma4_ffn_merge_f16_kernel(
     }
 }
 
-mfq_tensor_backend::Tensor gemma4_ffn_merge_f16_cuda(
-    mfq_tensor_backend::Tensor dense, mfq_tensor_backend::Tensor moe, mfq_tensor_backend::Tensor residual,
-    mfq_tensor_backend::Tensor dense_post_weight, mfq_tensor_backend::Tensor moe_post_weight,
-    mfq_tensor_backend::Tensor final_post_weight, mfq_tensor_backend::Tensor layer_scale, double eps)
+::tyloi::Tensor gemma4_ffn_merge_f16_cuda(
+    ::tyloi::Tensor dense, ::tyloi::Tensor moe, ::tyloi::Tensor residual,
+    ::tyloi::Tensor dense_post_weight, ::tyloi::Tensor moe_post_weight,
+    ::tyloi::Tensor final_post_weight, ::tyloi::Tensor layer_scale, double eps)
 {
     for (const auto& value : {dense, moe, residual}) {
         TYLOINFER_RUNTIME_CHECK(value.is_cuda() && value.is_contiguous() &&
-                        value.scalar_type() == mfq_tensor_backend::kFloat16,
+                        value.scalar_type() == ::tyloi::kFloat16,
                     "gemma4 fused FFN merge: activations must be cuda contiguous f16");
     }
     TYLOINFER_RUNTIME_CHECK(dense.sizes() == moe.sizes() && dense.sizes() == residual.sizes(),
@@ -412,14 +412,14 @@ mfq_tensor_backend::Tensor gemma4_ffn_merge_f16_cuda(
     const int N = (int)(dense.numel() / D);
     for (const auto& weight : {dense_post_weight, moe_post_weight, final_post_weight}) {
         TYLOINFER_RUNTIME_CHECK(weight.is_cuda() && weight.is_contiguous() &&
-                        weight.scalar_type() == mfq_tensor_backend::kFloat32 && weight.numel() == D,
+                        weight.scalar_type() == ::tyloi::kFloat32 && weight.numel() == D,
                     "gemma4 fused FFN merge: weights must be cuda contiguous f32[D]");
     }
     TYLOINFER_RUNTIME_CHECK(layer_scale.is_cuda() && layer_scale.is_contiguous() &&
-                    layer_scale.scalar_type() == mfq_tensor_backend::kFloat16 && layer_scale.numel() == 1,
+                    layer_scale.scalar_type() == ::tyloi::kFloat16 && layer_scale.numel() == 1,
                 "gemma4 fused FFN merge: layer scale must be cuda contiguous f16[1]");
 
-    auto out = mfq_tensor_backend::empty_like(dense);
+    auto out = ::tyloi::cuda::empty_like(dense);
     constexpr int BD = ACC_RMS_BD;
     const size_t shared_bytes = (size_t)D * sizeof(mfq_half);
     gemma4_ffn_merge_f16_kernel<BD>
@@ -447,20 +447,20 @@ __global__ void decode_graph_commit_kernel(const int64_t* __restrict__ next,
     step[0] = idx + 1;
 }
 
-void decode_graph_commit_cuda(mfq_tensor_backend::Tensor next, mfq_tensor_backend::Tensor generated, mfq_tensor_backend::Tensor step,
-                              mfq_tensor_backend::Tensor input, mfq_tensor_backend::Tensor pos, mfq_tensor_backend::Tensor len)
+void decode_graph_commit_cuda(::tyloi::Tensor next, ::tyloi::Tensor generated, ::tyloi::Tensor step,
+                              ::tyloi::Tensor input, ::tyloi::Tensor pos, ::tyloi::Tensor len)
 {
-    TYLOINFER_RUNTIME_CHECK(next.is_cuda() && next.is_contiguous() && next.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(next.is_cuda() && next.is_contiguous() && next.scalar_type() == ::tyloi::kInt64,
                 "decode_graph_commit: next must be cuda int64 contiguous");
-    TYLOINFER_RUNTIME_CHECK(generated.is_cuda() && generated.is_contiguous() && generated.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(generated.is_cuda() && generated.is_contiguous() && generated.scalar_type() == ::tyloi::kInt64,
                 "decode_graph_commit: generated must be cuda int64 contiguous");
-    TYLOINFER_RUNTIME_CHECK(step.is_cuda() && step.is_contiguous() && step.scalar_type() == mfq_tensor_backend::kInt64 && step.numel() == 1,
+    TYLOINFER_RUNTIME_CHECK(step.is_cuda() && step.is_contiguous() && step.scalar_type() == ::tyloi::kInt64 && step.numel() == 1,
                 "decode_graph_commit: step must be cuda int64[1]");
-    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.scalar_type() == mfq_tensor_backend::kInt64 && input.numel() == 1,
+    TYLOINFER_RUNTIME_CHECK(input.is_cuda() && input.is_contiguous() && input.scalar_type() == ::tyloi::kInt64 && input.numel() == 1,
                 "decode_graph_commit: input must be cuda int64[1]");
-    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == mfq_tensor_backend::kInt64 && pos.numel() == 1,
+    TYLOINFER_RUNTIME_CHECK(pos.is_cuda() && pos.is_contiguous() && pos.scalar_type() == ::tyloi::kInt64 && pos.numel() == 1,
                 "decode_graph_commit: pos must be cuda int64[1]");
-    TYLOINFER_RUNTIME_CHECK(len.is_cuda() && len.is_contiguous() && len.scalar_type() == mfq_tensor_backend::kInt64 && len.numel() == 1,
+    TYLOINFER_RUNTIME_CHECK(len.is_cuda() && len.is_contiguous() && len.scalar_type() == ::tyloi::kInt64 && len.numel() == 1,
                 "decode_graph_commit: len must be cuda int64[1]");
     decode_graph_commit_kernel<<<1, 1, 0, mfq_current_cuda_stream()>>>(
         next.data_ptr<int64_t>(), generated.data_ptr<int64_t>(), step.data_ptr<int64_t>(),

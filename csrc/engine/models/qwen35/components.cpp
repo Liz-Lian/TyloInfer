@@ -18,9 +18,9 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
-mfq::engine::Metrics Components::metrics() const {
+tyloi::engine::Metrics Components::metrics() const {
     const auto component_state = state();
     const auto quantization = cuda_kv_quantization();
     return {
@@ -35,7 +35,7 @@ mfq::engine::Metrics Components::metrics() const {
         {"mtp_available", double(component_state.mtp_available)}};
 }
 
-void Components::describe(mfq::engine::EngineInfo& info) const {
+void Components::describe(tyloi::engine::EngineInfo& info) const {
     const auto component_state = state();
     info.multimodal = component_state.vision_available;
     const auto caps = cuda_runtime_capabilities(
@@ -46,7 +46,7 @@ void Components::describe(mfq::engine::EngineInfo& info) const {
         caps.full_duplex, caps.mtp, "model-graph+cuda-adapters"};
 }
 
-mfq::StepSequence<PreparedPrompt> Components::prepare(
+tyloi::StepSequence<PreparedPrompt> Components::prepare(
     Model& language, MediaCache& images,
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
     Projector projector, Collectives& collectives,
@@ -128,4 +128,4 @@ Components Components::load(
     return components;
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

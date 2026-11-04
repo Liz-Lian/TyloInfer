@@ -9,7 +9,7 @@
 #include <optional>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 inline bool decode_branches(bool enabled, bool serial, int64_t rows) {
     // Graph allocations stay on the capture stream until branch lifetime tracking supports them.
@@ -71,7 +71,7 @@ public:
     }
 
     template<class Fn>
-    bool run(std::size_t count, Fn&& fn, std::vector<mfq_tensor_backend::Tensor>& outputs) {
+    bool run(std::size_t count, Fn&& fn, std::vector<::tyloi::Tensor>& outputs) {
         if (count < 2) return false;
         const auto parent = mfq_get_current_cuda_stream();
         auto& sets = devices_[parent.device_index()];
@@ -116,4 +116,4 @@ public:
     }
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

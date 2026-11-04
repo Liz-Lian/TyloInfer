@@ -145,35 +145,33 @@ __global__ __launch_bounds__(512,1) void gr_prefill_mix_kernel(const Input* inpu
     }
 }
 
-bool gr_prefill_mix_selected(const NintWeight& weight,const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& normalized,int64_t streams) {
-    namespace tb=mfq_tensor_backend;
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
-    const auto* projection=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
+bool gr_prefill_mix_selected(const NintWeight& weight,const ::tyloi::Tensor& input,
+        const ::tyloi::Tensor& normalized,int64_t streams) {
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
+    const auto* projection=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_MATMUL");
     if(projection && (std::atoi(projection)==2 || std::atoi(projection)==3))return false;
     if(!option && (weight.out<weight.neuron_len || input.numel()/input.size(-1)<128))return false;
-    const auto supported=[](const tb::Tensor& t){return t.scalar_type()==tb::kFloat16 || t.scalar_type()==tb::kFloat32;};
+    const auto supported=[](const ::tyloi::Tensor& t){return t.scalar_type()==::tyloi::kFloat16 || t.scalar_type()==::tyloi::kFloat32;};
     return (!option || std::atoi(option)!=0) && streams==4 && input.is_contiguous() && normalized.is_contiguous()
         && supported(input) && supported(normalized);
 }
 
-mfq_tensor_backend::Tensor gr_prefill_fused_mix(const NintWeight& weight,
-        const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& normalized) {
-    namespace tb=mfq_tensor_backend;
+::tyloi::Tensor gr_prefill_fused_mix(const NintWeight& weight,
+        const ::tyloi::Tensor& input,const ::tyloi::Tensor& normalized) {
     MfqCudaGuard guard(input.device());
     const auto rows=input.numel()/weight.neuron_len,hidden=weight.out/4;
     TYLOINFER_RUNTIME_CHECK(rows<=65535*int64_t(128) && hidden<=std::numeric_limits<int>::max() &&
         weight.neuron_len<=std::numeric_limits<int>::max() && weight.ng<=std::numeric_limits<int>::max(),
         "fused GR prefill exceeds CUDA launch geometry");
     auto shape=input.sizes().vec();shape.back()=hidden;
-    const auto dtype=input.scalar_type()==tb::kFloat32 || normalized.scalar_type()==tb::kFloat32?tb::kFloat32:tb::kFloat16;
-    auto output=tb::empty(shape,input.options().dtype(dtype));
+    const auto dtype=input.scalar_type()==::tyloi::kFloat32 || normalized.scalar_type()==::tyloi::kFloat32?::tyloi::kFloat32: ::tyloi::kFloat16;
+    auto output=::tyloi::cuda::empty(shape,input.options().dtype(dtype));
     const auto typed=[&](auto input_tag,auto value_tag,auto aligned_tag,auto zero_tag,auto swizzle_tag) {
         using Input=decltype(input_tag);using Value=decltype(value_tag);
         using Output=std::conditional_t<std::is_same_v<Input,float> || std::is_same_v<Value,float>,float,__half>;
         constexpr bool aligned=decltype(aligned_tag)::value,zero=decltype(zero_tag)::value,swizzle=decltype(swizzle_tag)::value;
         {
-            const auto* pipeline_option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
+            const auto* pipeline_option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
             if((!pipeline_option || std::atoi(pipeline_option)==10 || std::atoi(pipeline_option)==12) && gr_prefill_pipeline_supported(input)) {
                 launch_gr_prefill_pipeline<true,Input,Value,aligned,zero>(weight,input,normalized,output);return;
             }
@@ -203,7 +201,7 @@ mfq_tensor_backend::Tensor gr_prefill_fused_mix(const NintWeight& weight,
         };
         if constexpr(swizzle)invoke(std::integral_constant<int,128>{},std::integral_constant<int,32>{},std::false_type{},std::false_type{},std::false_type{},std::integral_constant<int,4>{});
         else {
-            const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
+            const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
             const int requested_mode=option?std::atoi(option):(std::is_same<Input,__half>::value?12:10);
             const int mode=requested_mode==10 || requested_mode==12?6:requested_mode;
             if(mode==8)invoke(std::integral_constant<int,128>{},std::integral_constant<int,32>{},std::false_type{},std::true_type{},std::true_type{},std::integral_constant<int,2>{});
@@ -221,13 +219,13 @@ mfq_tensor_backend::Tensor gr_prefill_fused_mix(const NintWeight& weight,
             else if(weight.aligned_q8)typed(input_tag,value_tag,std::true_type{},std::false_type{},swizzle_tag);
             else typed(input_tag,value_tag,std::false_type{},std::false_type{},swizzle_tag);
         };
-        const auto* option=mfq::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
+        const auto* option=tyloi::cuda::env_lookup("TYLOINFER_GR_PREFILL_FUSED_MIX");
         if(option && std::atoi(option)==2)dispatch(std::true_type{});else dispatch(std::false_type{});
     };
-    if(input.scalar_type()==tb::kFloat16) {
-        if(normalized.scalar_type()==tb::kFloat16)launch(__half{},__half{});else launch(__half{},float{});
+    if(input.scalar_type()==::tyloi::kFloat16) {
+        if(normalized.scalar_type()==::tyloi::kFloat16)launch(__half{},__half{});else launch(__half{},float{});
     } else {
-        if(normalized.scalar_type()==tb::kFloat16)launch(float{},__half{});else launch(float{},float{});
+        if(normalized.scalar_type()==::tyloi::kFloat16)launch(float{},__half{});else launch(float{},float{});
     }
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
 }

@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 thread_local std::int64_t preserving_gemm_rows=0;
@@ -317,7 +317,7 @@ Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
     }
     const auto left_batch_stride = regular_batch_stride(left, batch_shape);
     const auto right_batch_stride = regular_batch_stride(right, batch_shape);
-    const char* strided_disabled = mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_STRIDED_BATCH_MATMUL");
+    const char* strided_disabled = tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_STRIDED_BATCH_MATMUL");
     if (batches > 1 && batches <= std::numeric_limits<int>::max() &&
         left_batch_stride && right_batch_stride &&
         (strided_disabled == nullptr || strided_disabled[0] != '1')) {
@@ -340,7 +340,7 @@ Tensor matmul(const Tensor& left_source, const Tensor& right_source) {
     }
 
     const char* parallel_batch_disabled =
-        mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_PARALLEL_BATCH_MATMUL");
+        tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_PARALLEL_BATCH_MATMUL");
     cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
     const bool parallel_batch_eligible =
         !row_pipeline_handle && batches >= static_cast<std::int64_t>(
@@ -506,7 +506,7 @@ Tensor scaled_dot_product_attention(
     }
     // Bound score storage to one query tile. Each tile still uses GEMM and the
     // existing dtype-specific softmax, preserving reduced-precision semantics.
-    const char* tiled_disabled = mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_TILED_SDPA");
+    const char* tiled_disabled = tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_TILED_SDPA");
     if (query_source.dim() == 4 && query_source.size(-2) > 128 &&
         key_source.size(0) == query_source.size(0) &&
         value_source.size(0) == query_source.size(0) &&
@@ -558,7 +558,7 @@ Tensor scaled_dot_product_attention(
     if (grouped_view) scores = scores.reshape({scores.size(0), query_source.size(1),
         query_source.size(-2), key_source.size(-2)});
     const char* fused_causal_scale_disabled =
-        mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_FUSED_CAUSAL_SCALE");
+        tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_FUSED_CAUSAL_SCALE");
     const bool fused_causal_scale = causal && !mask.has_value() &&
         scores.scalar_type() == kBFloat16 && scores.is_contiguous() &&
         scores.dim() >= 2 && scores.size(-2) > 0 && scores.size(-1) > 0 &&
@@ -612,4 +612,4 @@ Tensor scaled_dot_product_attention(
     return matmul(probabilities, value);
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

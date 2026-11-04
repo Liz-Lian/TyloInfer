@@ -3,7 +3,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 constexpr int kNvq1L = 1;
 constexpr int kNvq2 = 2;
 constexpr int kNvq3 = 3;

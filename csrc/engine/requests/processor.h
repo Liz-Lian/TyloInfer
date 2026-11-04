@@ -11,9 +11,9 @@
 #include <unordered_set>
 #include <vector>
 
-namespace mfq { class ModelSource; }
+namespace tyloi { class ModelSource; }
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // Engine-owned input preparation: template application, tokenization, and constraints.
 class TextProcessor {
@@ -56,4 +56,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

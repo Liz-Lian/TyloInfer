@@ -10,13 +10,13 @@
 #include <algorithm>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template<class Ops, class Finish>
-std::tuple<mfq_tensor_backend::Tensor, bool, bool> generation_prefill(
-        Qwen4CausalLm& model, Ops& ops, const mfq::engine::PrefillChunk& chunk,
-        mfq_tensor_backend::Tensor& ids, const Finish& finish_prefill) {
-    using Tensor = mfq_tensor_backend::Tensor;
+std::tuple<::tyloi::Tensor, bool, bool> generation_prefill(
+        Qwen4CausalLm& model, Ops& ops, const tyloi::engine::PrefillChunk& chunk,
+        ::tyloi::Tensor& ids, const Finish& finish_prefill) {
+    using Tensor = ::tyloi::Tensor;
     auto& weights=ops.weights;
     auto& state=ops.state;
     auto* prepared=ops.prepared;
@@ -65,7 +65,7 @@ std::optional<int64_t> generation_decode(Qwen4CausalLm& model, Ops& ops) {
     if(ops.known_token_host.defined()) {
         const bool greedy=ops.sampler.greedy() && !ops.has_penalties && !ops.constraint;
         if(auto result=qwen4_decode_graph_logits(model,ops.pending.reshape({1,1}),greedy?2:1,ops.known_token_host)) {
-            ops.pending=greedy?std::move(*result):mfq::engine::sample_logits(ops.sampler,
+            ops.pending=greedy?std::move(*result):tyloi::engine::sample_logits(ops.sampler,
                 result->contiguous().view({1,-1}),ops.counts,ops.constraint);
             return ops.pending.template item<int64_t>();
         }
@@ -74,7 +74,7 @@ std::optional<int64_t> generation_decode(Qwen4CausalLm& model, Ops& ops) {
 }
 
 template<class Ops>
-void generation_request(Qwen4CausalLm& model, Ops& ops, const mfq::engine::InferenceRequest& input) {
+void generation_request(Qwen4CausalLm& model, Ops& ops, const tyloi::engine::InferenceRequest& input) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     model.decode_reserve_until=std::min<int64_t>(ops.info.max_context,
         int64_t(input.prompt.size())+std::min<int64_t>(input.sampling.max_tokens,256));
@@ -83,7 +83,7 @@ void generation_request(Qwen4CausalLm& model, Ops& ops, const mfq::engine::Infer
         if(ops.state.cache_pos==0 && !model.graph_registry)
             release_moe_decode_buffers(ops.weights.moe);
         else release_moe_prefill_buffers(ops.weights.moe);
-        mfq::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
+        tyloi::cuda::default_context(mfq_current_cuda_device())->reclaim_idle_memory();
     }
 #endif
 }
@@ -93,4 +93,4 @@ inline bool generation_borrow(Qwen4CausalLm& model, std::size_t tokens, const Pr
         (!prepared || !prepared->transformed());
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

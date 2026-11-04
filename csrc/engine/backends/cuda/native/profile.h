@@ -12,11 +12,11 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Trace = mfq::ops::Trace;
+using Trace = tyloi::ops::Trace;
 #else
-using Trace = std::vector<std::pair<std::string, mfq_tensor_backend::Tensor>>;
+using Trace = std::vector<std::pair<std::string, ::tyloi::Tensor>>;
 #endif
 }
 
@@ -97,7 +97,7 @@ struct CudaProfiler {
     void report(const std::string& title);
 };
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 class PrefillCudaTimer {
 public:
@@ -116,4 +116,4 @@ private:
     cudaEvent_t finished_ = nullptr;
 };
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

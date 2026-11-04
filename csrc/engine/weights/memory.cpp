@@ -2,7 +2,7 @@
 
 #include "engine/backends/cuda/native/tensor/tensor.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 thread_local WeightMemoryLedger* loading_weight_memory = nullptr;
 }

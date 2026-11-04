@@ -6,7 +6,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 template <class Model, class Guard> void reset_model(Model &model, int64_t batch, Guard guard) {
     model.cache_pos = model.decode_position_delta = 0;
@@ -173,4 +173,4 @@ template <class Ops> auto causal_forward(Ops &ops) {
         model.cache_pos += T;
     return ops.finish(std::move(hidden), B, T);
 }
-} // namespace mfq::models
+} // namespace tyloi::models

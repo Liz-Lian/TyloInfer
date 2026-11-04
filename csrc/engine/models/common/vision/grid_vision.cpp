@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 int checked_int(std::int64_t value, const char* name) {
@@ -279,4 +279,4 @@ GridMropePositions build_grid_mrope_positions(
     return result;
 }
 
-} // namespace mfq
+} // namespace tyloi

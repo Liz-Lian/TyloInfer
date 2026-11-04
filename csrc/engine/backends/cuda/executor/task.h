@@ -14,7 +14,7 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Ffn;
 
@@ -24,7 +24,7 @@ using Slot = size_t;
 
 struct Norm {
     Slot input, output;
-    mfq_tensor_backend::Tensor weight;
+    ::tyloi::Tensor weight;
     double eps, offset;
 };
 
@@ -52,7 +52,7 @@ struct Attention {
     Slot input, residual, output;
     const FullAttention& weights;
     size_t state;
-    mfq_tensor_backend::Tensor* residual_out = nullptr;
+    ::tyloi::Tensor* residual_out = nullptr;
 };
 
 struct Linear {
@@ -69,20 +69,20 @@ struct Replay {
 
 struct Dense {
     Slot residual, input, output;
-    mfq::cuda::Dense weights;
+    tyloi::cuda::Dense weights;
 };
 
 struct FullFfn {
     Slot residual, input, output;
     const Ffn& weights;
-    mfq_tensor_backend::Tensor norm;
+    ::tyloi::Tensor norm;
     const FullAttention& attention;
 };
 
 struct LinearFfn {
     Slot residual, input, output;
     const Ffn& weights;
-    mfq_tensor_backend::Tensor norm;
+    ::tyloi::Tensor norm;
     const LinearAttention& attention;
 };
 
@@ -104,12 +104,12 @@ struct LinearStateView {
 };
 
 struct Inputs {
-    std::vector<mfq_tensor_backend::Tensor> values;
+    std::vector<::tyloi::Tensor> values;
     std::optional<size_t> output = 0;
     std::span<const AttentionKvView> kv;
     AttentionStep attention;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    std::optional<mfq::ops::RopeTable> rope;
+    std::optional<tyloi::ops::RopeTable> rope;
 #else
     const RopeCache* rope = nullptr;
 #endif
@@ -120,4 +120,4 @@ struct Inputs {
     size_t scratch_offset = 0;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

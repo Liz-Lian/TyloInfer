@@ -12,9 +12,9 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq::cuda::glm_dsa {
-using Tensor = mfq_tensor_backend::Tensor;
-using Config = mfq::models::glm_dsa::Config;
+namespace tyloi::cuda::glm_dsa {
+using Tensor = ::tyloi::Tensor;
+using Config = tyloi::models::glm_dsa::Config;
 
 struct Layer {
     Config config;
@@ -29,15 +29,15 @@ struct Layer {
 };
 
 struct Model {
-    std::shared_ptr<const mfq::ModelSource> source;
-    mfq::ModelGraph graph;
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
     Config config;
-    mfq::models::CausalLmMetadata metadata;
+    tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
     Tensor output_norm;
     RopeCache rope;
     std::unordered_map<int, RopeCache> device_ropes;
     std::vector<Layer> layers;
 };
-} // namespace mfq::cuda::glm_dsa
+} // namespace tyloi::cuda::glm_dsa

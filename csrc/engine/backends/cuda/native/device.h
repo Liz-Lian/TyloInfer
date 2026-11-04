@@ -5,7 +5,7 @@
 
 #include <stdexcept>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Error final : public std::runtime_error {
 public:
@@ -16,7 +16,7 @@ void check(cudaError_t status, const char* expression, const char* file, int lin
 void check(cublasStatus_t status, const char* expression, const char* file, int line);
 
 #define TYLOINFER_NATIVE_CUDA_CHECK(expression) \
-    ::mfq::cuda::check((expression), #expression, __FILE__, __LINE__)
+    ::tyloi::cuda::check((expression), #expression, __FILE__, __LINE__)
 
 class DeviceGuard final {
 public:
@@ -49,4 +49,4 @@ void on_device_noexcept(int device, Function&& function) noexcept {
 
 }  // namespace internal
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

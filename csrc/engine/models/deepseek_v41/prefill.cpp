@@ -4,15 +4,15 @@
 #include "engine/weights/moe/expert_cache.h"
 #include <cstring>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
-using Tensor = mfq_tensor_backend::Tensor;
-using HashBatch = mfq::models::deepseek_v41::EngramHashBatch;
+using Tensor = ::tyloi::Tensor;
+using HashBatch = tyloi::models::deepseek_v41::EngramHashBatch;
 
 Tensor append_tail(const Tensor& previous, const Tensor& current, int64_t window) {
     if (current.size(1) >= window)
         return current.narrow(1, current.size(1) - window, window).clone();
-    auto combined = previous.defined() ? mfq_tensor_backend::cat({previous, current}, 1) : current;
+    auto combined = previous.defined() ? ::tyloi::cuda::cat({previous, current}, 1) : current;
     const auto count = std::min(window, combined.size(1));
     return combined.narrow(1, combined.size(1) - count, count).clone();
 }
@@ -56,7 +56,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     auto scope = model.execution_scope();
     ids = model.device_ids(std::move(ids));
     const auto batch = ids.size(0), tokens = ids.size(1);
-    const auto* profile=mfq::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
+    const auto* profile=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_SSD_EXPERTS");
     const bool trace=profile && profile[0]=='1';
     if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=prepare tokens="<<tokens<<'\n';
     TYLOINFER_RUNTIME_CHECK(model.shared && batch > 0 && tokens > 0 && compute_chunk > 0 &&
@@ -78,7 +78,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
         model.reset(batch);
         return true;
     };
-    const auto* profile_layer=mfq::cuda::env_lookup("TYLOINFER_PROFILE_DSV41_LAYER");
+    const auto* profile_layer=tyloi::cuda::env_lookup("TYLOINFER_PROFILE_DSV41_LAYER");
     const auto apply_layer=[&](auto& ops,int64_t layer,Tensor hidden) {
         auto& profiler=model.execution->executor().profiler();
         const bool selected=profile_layer && layer==std::atoi(profile_layer);
@@ -144,7 +144,7 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     ops.cache_positions = ops.position_range(replay_begin, replay_tokens);
     ops.pos = ops.full_positions = ops.cache_positions;
     if (model.execution->config.moe_pipeline)
-        ops.cpu_ids = ops.ids.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous();
+        ops.cpu_ids = ops.ids.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
     for (int64_t layer = split; layer < model.num_hidden_layers(); ++layer) {
         if (cancelled()) return {};
         if(trace)std::cerr<<"runtime_deepseek_v41_prefill phase=decoder layer="<<layer<<" tokens="<<replay_tokens<<'\n';
@@ -160,4 +160,4 @@ Tensor deepseek_v41_prefill_hidden(DeepseekV41CausalLm& model, Tensor ids,
     ops.raw_hidden = raw_hidden;
     return ops.finish(std::move(tail_hidden), batch, replay_tokens);
 }
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

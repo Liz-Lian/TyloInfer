@@ -11,7 +11,6 @@
 #include <cub/block/block_radix_sort.cuh>
 
 namespace mfq_qwen4_exp {
-namespace tb = mfq_tensor_backend;
 
 namespace {
 template<class Value,class Position>
@@ -40,29 +39,29 @@ __global__ void live_index_pool_kernel(const Value* index,const Position* positi
 std::vector<Tensor> live_index_pool(const Tensor& index,const Tensor& positions,
         const Tensor& cache_positions,int64_t pool,int64_t maximum) {
     TYLOINFER_RUNTIME_CHECK(index.is_cuda() && index.dim()==3 && index.size(0)==1 &&
-        (index.scalar_type()==tb::kFloat16 || index.scalar_type()==tb::kFloat32) &&
+        (index.scalar_type()==::tyloi::kFloat16 || index.scalar_type()==::tyloi::kFloat32) &&
         positions.device()==index.device() && cache_positions.device()==index.device() &&
         positions.dim()>=1 && positions.dim()<=3 &&
-        (positions.scalar_type()==tb::kInt32 || positions.scalar_type()==tb::kInt64) &&
+        (positions.scalar_type()==::tyloi::kInt32 || positions.scalar_type()==::tyloi::kInt64) &&
         cache_positions.dim()==1 && cache_positions.numel()>0 && cache_positions.is_contiguous() &&
-        cache_positions.scalar_type()==tb::kInt64 && positions.size(-1)==cache_positions.numel() &&
+        cache_positions.scalar_type()==::tyloi::kInt64 && positions.size(-1)==cache_positions.numel() &&
         pool>0 && pool<=INT_MAX && maximum>0 && maximum<=index.size(1) &&
         index.size(2)>0 && index.size(2)<=INT_MAX && cache_positions.numel()<=INT_MAX,
         "live QSA pool has incompatible index/position geometry");
     const MfqCudaGuard guard(index.device());
     auto pos=positions.contiguous();
-    auto pooled=tb::empty({1,cache_positions.numel(),index.size(2)},index.options());
-    auto blocks=tb::empty_like(cache_positions),block_positions=tb::empty_like(pos);
+    auto pooled=::tyloi::cuda::empty({1,cache_positions.numel(),index.size(2)},index.options());
+    auto blocks=::tyloi::cuda::empty_like(cache_positions),block_positions=::tyloi::cuda::empty_like(pos);
     const auto launch=[&](auto* source,auto* output,auto* p,auto* bp) {
         live_index_pool_kernel<<<unsigned(cache_positions.numel()),128,0,mfq_current_cuda_stream()>>>(
             source,p,cache_positions.data_ptr<int64_t>(),output,blocks.data_ptr<int64_t>(),bp,
             int(cache_positions.numel()),int(index.size(2)),int(pool),maximum,pos.numel(),index.stride(1),index.stride(2));
     };
     const auto typed=[&](auto* source,auto* output) {
-        if(pos.scalar_type()==tb::kInt64)launch(source,output,pos.data_ptr<int64_t>(),block_positions.data_ptr<int64_t>());
+        if(pos.scalar_type()==::tyloi::kInt64)launch(source,output,pos.data_ptr<int64_t>(),block_positions.data_ptr<int64_t>());
         else launch(source,output,pos.data_ptr<int32_t>(),block_positions.data_ptr<int32_t>());
     };
-    if(index.scalar_type()==tb::kFloat16)typed(index.data_ptr<mfq_half>(),pooled.data_ptr<mfq_half>());
+    if(index.scalar_type()==::tyloi::kFloat16)typed(index.data_ptr<mfq_half>(),pooled.data_ptr<mfq_half>());
     else typed(index.data_ptr<float>(),pooled.data_ptr<float>());
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return {pooled,blocks,block_positions};
@@ -81,16 +80,16 @@ __global__ void fill_decode_positions_kernel(int64_t* cache,Position* positions,
 
 void fill_decode_positions(const Tensor& cache,const Tensor& positions,int64_t start,int64_t delta) {
     TYLOINFER_RUNTIME_CHECK(cache.is_cuda() && positions.is_cuda() && cache.is_contiguous() &&
-        positions.is_contiguous() && cache.scalar_type()==tb::kInt64 && cache.numel()>0 &&
+        positions.is_contiguous() && cache.scalar_type()==::tyloi::kInt64 && cache.numel()>0 &&
         positions.numel()%cache.numel()==0 && positions.numel()>=cache.numel(),
         "decode position buffers have incompatible geometry");
     const auto launch=[&](auto* output) {
         fill_decode_positions_kernel<<<1,32,0,mfq_current_cuda_stream()>>>(cache.data_ptr<int64_t>(),output,
             cache.numel(),positions.numel(),start,delta);
     };
-    if(positions.scalar_type()==tb::kInt32)launch(positions.data_ptr<int32_t>());
+    if(positions.scalar_type()==::tyloi::kInt32)launch(positions.data_ptr<int32_t>());
     else {
-        TYLOINFER_RUNTIME_CHECK(positions.scalar_type()==tb::kInt64,"decode positions must use int32 or int64");
+        TYLOINFER_RUNTIME_CHECK(positions.scalar_type()==::tyloi::kInt64,"decode positions must use int32 or int64");
         launch(positions.data_ptr<int64_t>());
     }
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
@@ -112,12 +111,12 @@ template<bool Injection>
 Tensor gated_residual_activation(const Tensor& input,int64_t streams) {
     mfq_selected_attention::values({&input});
     TYLOINFER_RUNTIME_CHECK(streams>0,"gated-residual stream count must be positive");
-    if(input.is_contiguous() && (input.scalar_type()==tb::kFloat16 || input.scalar_type()==tb::kFloat32)) {
+    if(input.is_contiguous() && (input.scalar_type()==::tyloi::kFloat16 || input.scalar_type()==::tyloi::kFloat32)) {
         MfqCudaGuard guard(input.device());
-        auto output=tb::empty_like(input);const auto count=input.numel();
+        auto output=::tyloi::cuda::empty_like(input);const auto count=input.numel();
         if(!count)return output;
         const int blocks=int((count+255)/256);
-        if(input.scalar_type()==tb::kFloat16)
+        if(input.scalar_type()==::tyloi::kFloat16)
             gated_residual_activation_kernel<mfq_half,Injection><<<blocks,256,0,mfq_current_cuda_stream()>>>(
                 input.data_ptr<mfq_half>(),output.data_ptr<mfq_half>(),count,float(streams));
         else
@@ -127,8 +126,8 @@ Tensor gated_residual_activation(const Tensor& input,int64_t streams) {
         return output;
     }
     auto low=input/streams;
-    if constexpr(Injection)return 2.0*tb::sigmoid(low);
-    else return low*tb::sigmoid(low);
+    if constexpr(Injection)return 2.0*::tyloi::cuda::sigmoid(low);
+    else return low*::tyloi::cuda::sigmoid(low);
 }
 
 template<class Gate, class Value>
@@ -225,27 +224,27 @@ Tensor gated_residual_mix(const Tensor& projection,const Tensor& normalized,int6
     TYLOINFER_RUNTIME_CHECK(projection.sizes()==normalized.sizes() && streams>0 && normalized.dim()>0 &&
         normalized.size(-1)>0 && normalized.size(-1)%streams==0,"gated-residual mix shape disagrees");
     auto shape=normalized.sizes().vec();const int hidden=int(shape.back()/streams);shape.back()=hidden;
-    const auto half_or_float=[](const Tensor& x){return x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32;};
+    const auto half_or_float=[](const Tensor& x){return x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32;};
     if(projection.is_contiguous() && normalized.is_contiguous() && half_or_float(projection) && half_or_float(normalized)) {
         MfqCudaGuard guard(normalized.device());
-        const auto dtype=projection.scalar_type()==tb::kFloat32 || normalized.scalar_type()==tb::kFloat32?tb::kFloat32:tb::kFloat16;
-        auto output=tb::empty(shape,normalized.options().dtype(dtype));const auto count=output.numel();
+        const auto dtype=projection.scalar_type()==::tyloi::kFloat32 || normalized.scalar_type()==::tyloi::kFloat32?::tyloi::kFloat32: ::tyloi::kFloat16;
+        auto output=::tyloi::cuda::empty(shape,normalized.options().dtype(dtype));const auto count=output.numel();
         if(count==0)return output;
         const int blocks=int((count+255)/256);
-        if(dtype==tb::kFloat16)
+        if(dtype==::tyloi::kFloat16)
             gated_residual_mix_kernel<<<blocks,256,0,mfq_current_cuda_stream()>>>(projection.data_ptr<mfq_half>(),normalized.data_ptr<mfq_half>(),output.data_ptr<mfq_half>(),count,hidden,int(streams));
-        else if(projection.scalar_type()==tb::kFloat16)
+        else if(projection.scalar_type()==::tyloi::kFloat16)
             gated_residual_mix_kernel<<<blocks,256,0,mfq_current_cuda_stream()>>>(projection.data_ptr<mfq_half>(),normalized.data_ptr<float>(),output.data_ptr<float>(),count,hidden,int(streams));
-        else if(normalized.scalar_type()==tb::kFloat16)
+        else if(normalized.scalar_type()==::tyloi::kFloat16)
             gated_residual_mix_kernel<<<blocks,256,0,mfq_current_cuda_stream()>>>(projection.data_ptr<float>(),normalized.data_ptr<mfq_half>(),output.data_ptr<float>(),count,hidden,int(streams));
         else
             gated_residual_mix_kernel<<<blocks,256,0,mfq_current_cuda_stream()>>>(projection.data_ptr<float>(),normalized.data_ptr<float>(),output.data_ptr<float>(),count,hidden,int(streams));
         return output;
     }
     auto grouped=shape;grouped.back()=streams;grouped.push_back(hidden);
-    return (tb::sigmoid(projection).reshape(grouped)*normalized.reshape(grouped)).mean(-2);
+    return (::tyloi::cuda::sigmoid(projection).reshape(grouped)*normalized.reshape(grouped)).mean(-2);
 }
-using tb::Tensor;
+using ::tyloi::Tensor;
 
 Tensor grouped_rms_norm(const Tensor& value, const Tensor& weight,
                         int64_t group, double eps) {
@@ -254,14 +253,14 @@ Tensor grouped_rms_norm(const Tensor& value, const Tensor& weight,
         value.size(-1) % group == 0 && weight.dim() == 1 && weight.size(0) == value.size(-1),
         "Qwen4 grouped RMSNorm dimensions disagree");
     MfqCudaGuard guard(value.device());
-    if (value.is_contiguous() && (value.scalar_type() == tb::kFloat16 || value.scalar_type() == tb::kFloat32))
-        return grouped_rms_norm_cuda(value, weight.to(tb::kFloat32).contiguous(), group, eps, 1.0);
+    if (value.is_contiguous() && (value.scalar_type() == ::tyloi::kFloat16 || value.scalar_type() == ::tyloi::kFloat32))
+        return grouped_rms_norm_cuda(value, weight.to(::tyloi::kFloat32).contiguous(), group, eps, 1.0);
     auto shape = value.sizes().vec();
     shape.back() /= group;
     shape.push_back(group);
-    auto source = value.to(tb::kFloat32).reshape(shape);
-    auto normalized = source * tb::rsqrt((source * source).mean(-1, true) + eps);
-    return (normalized.reshape(value.sizes()) * (1.0 + weight.to(tb::kFloat32)))
+    auto source = value.to(::tyloi::kFloat32).reshape(shape);
+    auto normalized = source * ::tyloi::cuda::rsqrt((source * source).mean(-1, true) + eps);
+    return (normalized.reshape(value.sizes()) * (1.0 + weight.to(::tyloi::kFloat32)))
         .to(value.scalar_type());
 }
 
@@ -304,11 +303,11 @@ Tensor gated_residual_post(const Tensor& branch, const Tensor& residual,
     MfqCudaGuard guard(branch.device());
     if(branch.is_contiguous() && residual.is_contiguous() && injection.is_contiguous() &&
         branch.scalar_type()==residual.scalar_type() && branch.scalar_type()==injection.scalar_type() &&
-        (branch.scalar_type()==tb::kFloat16 || branch.scalar_type()==tb::kFloat32)) {
-        auto output=tb::empty_like(residual);const auto count=output.numel();
+        (branch.scalar_type()==::tyloi::kFloat16 || branch.scalar_type()==::tyloi::kFloat32)) {
+        auto output=::tyloi::cuda::empty_like(residual);const auto count=output.numel();
         if(count==0)return output;
         const int blocks=int((count+255)/256),hidden=int(branch.size(-1));
-        if(branch.scalar_type()==tb::kFloat16)
+        if(branch.scalar_type()==::tyloi::kFloat16)
             gated_residual_post_kernel<<<blocks,256,0,mfq_current_cuda_stream()>>>(branch.data_ptr<mfq_half>(),residual.data_ptr<mfq_half>(),injection.data_ptr<mfq_half>(),output.data_ptr<mfq_half>(),count,hidden,int(streams));
         else
             gated_residual_post_kernel<<<blocks,256,0,mfq_current_cuda_stream()>>>(branch.data_ptr<float>(),residual.data_ptr<float>(),injection.data_ptr<float>(),output.data_ptr<float>(),count,hidden,int(streams));
@@ -329,21 +328,21 @@ std::vector<Tensor> gated_residual_post_norm(const Tensor& branch,const Tensor& 
     shape.back()=streams;
     TYLOINFER_RUNTIME_CHECK(injection.sizes().vec()==shape,"Qwen4 residual/norm injection shape disagrees");
     const auto supported=[](const Tensor& x){return x.is_contiguous() &&
-        (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32);};
+        (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32);};
     if(!supported(branch) || !supported(residual) || !supported(injection)) {
         auto updated=gated_residual_post(branch,residual,injection,streams);
         return {updated,grouped_rms_norm(updated,norm,branch.size(-1),eps)};
     }
     MfqCudaGuard guard(branch.device());
-    const auto dtype=branch.scalar_type()==tb::kFloat32 || residual.scalar_type()==tb::kFloat32 ||
-        injection.scalar_type()==tb::kFloat32?tb::kFloat32:tb::kFloat16;
-    auto updated=tb::empty(residual.sizes(),residual.options().dtype(dtype));
-    auto normalized=tb::empty_like(updated);
+    const auto dtype=branch.scalar_type()==::tyloi::kFloat32 || residual.scalar_type()==::tyloi::kFloat32 ||
+        injection.scalar_type()==::tyloi::kFloat32?::tyloi::kFloat32: ::tyloi::kFloat16;
+    auto updated=::tyloi::cuda::empty(residual.sizes(),residual.options().dtype(dtype));
+    auto normalized=::tyloi::cuda::empty_like(updated);
     if(updated.numel()) {
-        auto weight=norm.to(tb::kFloat32).contiguous();
+        auto weight=norm.to(::tyloi::kFloat32).contiguous();
         const int hidden=int(branch.size(-1)),count=int(streams);
-        const int mode=(branch.scalar_type()==tb::kFloat32?4:0) |
-            (residual.scalar_type()==tb::kFloat32?2:0) | (injection.scalar_type()==tb::kFloat32?1:0);
+        const int mode=(branch.scalar_type()==::tyloi::kFloat32?4:0) |
+            (residual.scalar_type()==::tyloi::kFloat32?2:0) | (injection.scalar_type()==::tyloi::kFloat32?1:0);
         switch(mode) {
         case 0:launch_residual_post_norm<mfq_half,mfq_half,mfq_half>(branch,residual,injection,weight,updated,normalized,hidden,count,eps);break;
         case 1:launch_residual_post_norm<mfq_half,mfq_half,float>(branch,residual,injection,weight,updated,normalized,hidden,count,eps);break;
@@ -362,13 +361,13 @@ std::vector<Tensor> gated_residual_post_norm(const Tensor& branch,const Tensor& 
 Tensor block_scores(const Tensor& query, const Tensor& pooled) {
     mfq_selected_attention::values({&query, &pooled});
     MfqCudaGuard guard(query.device());
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_QSA_PREFILL_SCORE_GEMM");
     if(query.size(1)>=32 && option && option[0]=='1') {
         // Each index head owns a token matrix. This replaces thousands of
         // four-row GEMMs with a few large GEMMs and retains head reduction.
-        auto q=query.to(tb::kFloat32).permute({0,2,1,3}).contiguous();
-        auto keys=pooled.to(tb::kFloat32).transpose(-1,-2).unsqueeze(1);
-        auto products=tb::matmul(q,keys).permute({0,2,1,3}).clamp_min(0.0);
+        auto q=query.to(::tyloi::kFloat32).permute({0,2,1,3}).contiguous();
+        auto keys=pooled.to(::tyloi::kFloat32).transpose(-1,-2).unsqueeze(1);
+        auto products=::tyloi::cuda::matmul(q,keys).permute({0,2,1,3}).clamp_min(0.0);
         return products.sum(-2)/std::sqrt(double(query.size(-1)));
     }
     return mfq_selected_attention::dots(query, pooled).sum(-2) /
@@ -403,18 +402,18 @@ Tensor live_block_scores(const Tensor& query,const Tensor& pooled,const Tensor& 
     mfq_selected_attention::values({&query,&pooled});
     TYLOINFER_RUNTIME_CHECK(query.dim()==4 && query.size(0)==1 && pooled.dim()==3 && pooled.size(0)==1 &&
         query.size(3)==pooled.size(2) && query.size(2)>0 && query.size(3)>0 && pool>0 &&
-        positions.is_cuda() && positions.is_contiguous() && positions.scalar_type()==tb::kInt64 &&
+        positions.is_cuda() && positions.is_contiguous() && positions.scalar_type()==::tyloi::kInt64 &&
         positions.numel()==query.size(1),"invalid live QSA score geometry");
-    const bool supported=(query.scalar_type()==tb::kFloat16 || query.scalar_type()==tb::kFloat32) &&
-        (pooled.scalar_type()==tb::kFloat16 || pooled.scalar_type()==tb::kFloat32);
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_QSA_LIVE_SCORES");
+    const bool supported=(query.scalar_type()==::tyloi::kFloat16 || query.scalar_type()==::tyloi::kFloat32) &&
+        (pooled.scalar_type()==::tyloi::kFloat16 || pooled.scalar_type()==::tyloi::kFloat32);
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_QSA_LIVE_SCORES");
     if(!supported || (option && option[0]=='0')) {
         auto scores=block_scores(query,pooled);
-        auto ends=(tb::arange(pooled.size(1),positions.options())*pool+pool-1).reshape({1,1,-1});
-        return tb::where(ends<=positions.reshape({1,-1,1}),scores,tb::full_like(scores,-1e30));
+        auto ends=(::tyloi::cuda::arange(pooled.size(1),positions.options())*pool+pool-1).reshape({1,1,-1});
+        return ::tyloi::cuda::where(ends<=positions.reshape({1,-1,1}),scores,::tyloi::cuda::full_like(scores,-1e30));
     }
     MfqCudaGuard guard(query.device());
-    auto out=tb::empty({1,query.size(1),pooled.size(1)},query.options().dtype(tb::kFloat32));
+    auto out=::tyloi::cuda::empty({1,query.size(1),pooled.size(1)},query.options().dtype(::tyloi::kFloat32));
     if(!out.numel())return out;
     const dim3 grid(unsigned((pooled.size(1)+3)/4),unsigned(query.size(1)));
     const auto launch=[&](auto* q,auto* k) {
@@ -422,11 +421,11 @@ Tensor live_block_scores(const Tensor& query,const Tensor& pooled,const Tensor& 
             out.data_ptr<float>(),int(pooled.size(1)),int(query.size(2)),int(query.size(3)),int(pool),
             query.stride(1),query.stride(2),query.stride(3),pooled.stride(1),pooled.stride(2));
     };
-    if(query.scalar_type()==tb::kFloat16) {
-        if(pooled.scalar_type()==tb::kFloat16)launch(query.data_ptr<mfq_half>(),pooled.data_ptr<mfq_half>());
+    if(query.scalar_type()==::tyloi::kFloat16) {
+        if(pooled.scalar_type()==::tyloi::kFloat16)launch(query.data_ptr<mfq_half>(),pooled.data_ptr<mfq_half>());
         else launch(query.data_ptr<mfq_half>(),pooled.data_ptr<float>());
     } else {
-        if(pooled.scalar_type()==tb::kFloat16)launch(query.data_ptr<float>(),pooled.data_ptr<mfq_half>());
+        if(pooled.scalar_type()==::tyloi::kFloat16)launch(query.data_ptr<float>(),pooled.data_ptr<mfq_half>());
         else launch(query.data_ptr<float>(),pooled.data_ptr<float>());
     }
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();return out;
@@ -484,16 +483,16 @@ __global__ void live_topk_blocks_kernel(const float* source,const int64_t* ids,
 }
 
 Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t pool,int64_t count) {
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_QSA_LIVE_TOPK");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_QSA_LIVE_TOPK");
     if((option && option[0]=='0') || count>1024)
-        return std::get<1>(tb::topk(scores,count,-1,true,false));
+        return std::get<1>(::tyloi::cuda::topk(scores,count,-1,true,false));
     TYLOINFER_RUNTIME_CHECK(scores.is_cuda() && scores.is_contiguous() && scores.dim()==3 && scores.size(0)==1 &&
-        scores.scalar_type()==tb::kFloat32 && positions.is_cuda() && positions.is_contiguous() &&
-        positions.scalar_type()==tb::kInt64 && positions.numel()==scores.size(1) && pool>0 &&
+        scores.scalar_type()==::tyloi::kFloat32 && positions.is_cuda() && positions.is_contiguous() &&
+        positions.scalar_type()==::tyloi::kInt64 && positions.numel()==scores.size(1) && pool>0 &&
         count>0 && count<=scores.size(2),"invalid live QSA top-k geometry");
     MfqCudaGuard guard(scores.device());
     const int rows=int(scores.size(1)),pools=int(scores.size(2));
-    const auto* compact_option=mfq::cuda::env_lookup("TYLOINFER_QSA_TOPK_LIVE_TILE");
+    const auto* compact_option=tyloi::cuda::env_lookup("TYLOINFER_QSA_TOPK_LIVE_TILE");
     const bool compact=!compact_option || compact_option[0]!='0';
     int columns=pools,stage=0;
     auto keys=scores;Tensor ids;
@@ -502,8 +501,8 @@ Tensor live_topk_blocks(const Tensor& scores,const Tensor& positions,int64_t poo
         cudaFuncAttributeMaxDynamicSharedMemorySize,int(bytes)));
     do {
         const int tiles=(columns+4095)/4096;
-        auto next=tb::empty({1,rows,tiles*count},scores.options());
-        auto next_ids=tb::empty(next.sizes(),scores.options().dtype(tb::kInt64));
+        auto next=::tyloi::cuda::empty({1,rows,tiles*count},scores.options());
+        auto next_ids=::tyloi::cuda::empty(next.sizes(),scores.options().dtype(::tyloi::kInt64));
         live_topk_blocks_kernel<<<dim3(tiles,rows),256,bytes,mfq_current_cuda_stream()>>>(
             keys.data_ptr<float>(),ids.defined()?ids.data_ptr<int64_t>():nullptr,
             next.data_ptr<float>(),next_ids.data_ptr<int64_t>(),positions.data_ptr<int64_t>(),
@@ -534,25 +533,25 @@ std::vector<Tensor> ple_dilated_conv_silu(const Tensor& input,
         TYLOINFER_RUNTIME_CHECK(state->sizes().vec() == state_shape, "Qwen4 PLE state shape disagrees");
     }
     MfqCudaGuard guard(input.device());
-    auto previous = state ? state->to(input.scalar_type()) : tb::zeros(state_shape, input.options());
-    auto combined = tb::cat({previous, input}, 1);
-    auto output = tb::zeros(input.sizes(), input.options().dtype(tb::kFloat32));
+    auto previous = state ? state->to(input.scalar_type()) : ::tyloi::cuda::zeros(state_shape, input.options());
+    auto combined = ::tyloi::cuda::cat({previous, input}, 1);
+    auto output = ::tyloi::cuda::zeros(input.sizes(), input.options().dtype(::tyloi::kFloat32));
     for (int64_t tap = 0; tap < w.size(1); ++tap) {
-        output = output + combined.narrow(1, tap * dilation, input.size(1)).to(tb::kFloat32) *
-            w.select(1, tap).to(tb::kFloat32).unsqueeze(0).unsqueeze(0);
+        output = output + combined.narrow(1, tap * dilation, input.size(1)).to(::tyloi::kFloat32) *
+            w.select(1, tap).to(::tyloi::kFloat32).unsqueeze(0).unsqueeze(0);
     }
-    output = output * tb::sigmoid(output);
+    output = output * ::tyloi::cuda::sigmoid(output);
     auto next = combined.narrow(1, length ? combined.size(1) - length : 0, length).contiguous();
     return {output.to(input.scalar_type()), next};
 }
 
-Tensor dense_gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v, int64_t offset,mfq::cuda::HotKvView hot) {
+Tensor dense_gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v, int64_t offset,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::dense(
         q, k, v, offset, 1.0 / std::sqrt(double(q.size(3))),hot);
 }
 
 Tensor sparse_gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v,
-                            const Tensor& indices,mfq::cuda::HotKvView hot) {
+                            const Tensor& indices,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::sparse(
         q, k, v, indices, 1.0 / std::sqrt(double(q.size(3))), false,hot);
 }
@@ -562,7 +561,7 @@ Tensor attention_gate(const Tensor& attended, const Tensor& gate, bool half_outp
 }
 
 Tensor sparse_gqa_attention_gate(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& indices, const Tensor& gate, bool half_output,mfq::cuda::HotKvView hot) {
+    const Tensor& indices, const Tensor& gate, bool half_output,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::sparse_gated(q, k, v, indices, gate,
         1.0 / std::sqrt(double(q.size(3))), half_output,hot);
 }
@@ -573,7 +572,7 @@ Tensor qsa_selected_tokens(const Tensor& blocks, const Tensor& positions,
 }
 
 Tensor causal_gqa_attention_gate(const Tensor& q, const Tensor& k, const Tensor& v,
-    const Tensor& positions, const Tensor& gate, int64_t columns, bool half_output,mfq::cuda::HotKvView hot) {
+    const Tensor& positions, const Tensor& gate, int64_t columns, bool half_output,tyloi::cuda::HotKvView hot) {
     return mfq_selected_attention::causal_gated(q, k, v, positions, gate, columns,
         1.0 / std::sqrt(double(q.size(3))), half_output,true,true,hot);
 }

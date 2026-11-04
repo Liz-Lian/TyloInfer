@@ -5,7 +5,7 @@
 #include <memory>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Event final {
 public:
@@ -67,4 +67,4 @@ private:
     std::shared_ptr<Stream> owner_;
 };
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

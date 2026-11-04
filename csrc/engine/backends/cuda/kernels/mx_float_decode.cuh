@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-namespace mfq::cuda::mx {
+namespace tyloi::cuda::mx {
 __device__ __forceinline__ float decode_e8m0(std::uint8_t code) {
     if(code==255)return __int_as_float(0x7fffffff);
     return code==0?__int_as_float(0x00400000):__int_as_float(unsigned(code)<<23);

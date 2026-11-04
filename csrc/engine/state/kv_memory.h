@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 class KvExpertLoan;
 // Placement applies to raw K/V. Indexer and kernel scratch remain GPU-local.
 struct KvMemoryOptions {
@@ -26,11 +26,11 @@ KvMemoryOptions kv_memory_options();
 
 struct KvMemoryAllocation {
     struct Virtual;
-    mfq_tensor_backend::Tensor keys, values, index, pooled;
+    ::tyloi::Tensor keys, values, index, pooled;
     std::shared_ptr<KvOffloadStore> offload;
     std::shared_ptr<Virtual> virtual_keys, virtual_values;
     int64_t maximum = 0, heads = 0, key_width = 0, value_width = 0, index_width = 0, pool = 0, selected_columns = 0;
-    mfq_tensor_backend::TensorOptions options;
+    ::tyloi::TensorOptions options;
     bool host = false, ready = false;
     HotKvCache hot;
     std::weak_ptr<KvExpertLoan> expert_loan;
@@ -47,7 +47,7 @@ public:
     explicit KvMemoryManager(KvMemoryOptions options = kv_memory_options());
     std::shared_ptr<KvMemoryAllocation> add(int64_t maximum, int64_t heads,
         int64_t key_width, int64_t value_width, int64_t index_width, int64_t pool,
-        const mfq_tensor_backend::TensorOptions& options,int64_t selected_columns=0);
+        const ::tyloi::TensorOptions& options,int64_t selected_columns=0);
     // Called after dense weights and predictor load, before expert arenas.
     void finalize(std::size_t minimum_experts = 0);
     void ensure(int64_t tokens);

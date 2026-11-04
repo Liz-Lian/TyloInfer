@@ -4,7 +4,7 @@
 #include "engine/backends/cuda/ops/ffn/activation.h"
 #include "engine/backends/cuda/ops/ffn/routes.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Borrowed NINT expert pools; the caller retains scratch and any cache leases.
 struct Mfe {
@@ -14,12 +14,12 @@ struct Mfe {
     bool partial_experts;
     const std::shared_ptr<const std::vector<MfePoolWeight>>& pools;
 
-    mfq_tensor_backend::Tensor forward(
-        MfeScratch& scratch, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::Tensor forward(
+        MfeScratch& scratch, ::tyloi::Tensor input, const MoeRoutePlan& route,
         bool prequantized = false, int epilogue = 0) const;
-    mfq_tensor_backend::Tensor clamped(
-        MfeScratch& scratch, mfq_tensor_backend::Tensor input, const MoeRoutePlan& route,
+    ::tyloi::Tensor clamped(
+        MfeScratch& scratch, ::tyloi::Tensor input, const MoeRoutePlan& route,
         double limit) const;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

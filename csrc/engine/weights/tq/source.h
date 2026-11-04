@@ -10,18 +10,18 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 std::vector<std::int64_t> tq_shape(
-    const mfq::source::Source& source, std::string_view name);
+    const tyloi::source::Source& source, std::string_view name);
 
 std::shared_ptr<TqTable> tq_table(
-    const mfq::source::Source& source, std::string_view name);
+    const tyloi::source::Source& source, std::string_view name);
 
 bool is_tq_table(
-    const mfq::source::Source& source, std::string_view name);
+    const tyloi::source::Source& source, std::string_view name);
 
 std::array<std::int64_t, 2> tq_projection_shape(
-    const mfq::source::Source& source, std::string_view name);
+    const tyloi::source::Source& source, std::string_view name);
 
-} // namespace mfq
+} // namespace tyloi

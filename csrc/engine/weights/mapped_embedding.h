@@ -10,31 +10,30 @@
 // LICENSES/Strata-MIT.txt. Preserve MFQ's native floating dtype
 // and gather kernel; only the read-only embedding table changes placement.
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-namespace mfq::cuda {
+namespace tyloi::cuda {
 inline std::atomic<std::uint64_t> mapped_embedding_host_bytes{0};
 }
 #endif
-inline mfq_tensor_backend::Tensor map_embedding_storage(const mfq_tensor_backend::Tensor& cpu,int device,
+inline ::tyloi::Tensor map_embedding_storage(const ::tyloi::Tensor& cpu,int device,
         bool device_read_control=false) {
-    namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(cpu.is_cpu() && cpu.is_contiguous(),
         "mapped embedding requires contiguous CPU storage");
     const auto bytes=std::size_t(cpu.numel())*cpu.element_size();
     TYLOINFER_RUNTIME_CHECK(bytes>0,"mapped embedding table is empty");
     struct Owner {
-        mfq::cuda::HostBuffer host;
-        tb::Tensor device_copy;
+        tyloi::cuda::HostBuffer host;
+        ::tyloi::Tensor device_copy;
         std::size_t bytes;
         explicit Owner(std::size_t count):host(count,true),bytes(count) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            mfq::cuda::charge_tensor_host_bytes(bytes);
-            mfq::cuda::mapped_embedding_host_bytes.fetch_add(bytes,std::memory_order_relaxed);
+            tyloi::cuda::charge_tensor_host_bytes(bytes);
+            tyloi::cuda::mapped_embedding_host_bytes.fetch_add(bytes,std::memory_order_relaxed);
 #endif
         }
         ~Owner() {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            mfq::cuda::tensor_host_bytes.fetch_sub(bytes);
-            mfq::cuda::mapped_embedding_host_bytes.fetch_sub(bytes,std::memory_order_relaxed);
+            tyloi::cuda::tensor_host_bytes.fetch_sub(bytes);
+            tyloi::cuda::mapped_embedding_host_bytes.fetch_sub(bytes,std::memory_order_relaxed);
 #endif
         }
     };
@@ -44,7 +43,7 @@ inline mfq_tensor_backend::Tensor map_embedding_storage(const mfq_tensor_backend
     void* alias=nullptr;
     TYLOINFER_CUDA_CHECK(cudaHostGetDevicePointer(&alias,owner->host.data(),0));
     TYLOINFER_RUNTIME_CHECK(alias,"mapped embedding has no device alias");
-    const auto gpu_device=tb::Device(tb::kCUDA,device);
+    const auto gpu_device=::tyloi::Device(::tyloi::kCUDA,device);
     // Diagnostic control: retain the identical mapped allocation, but gather
     // from a GPU copy. This separates pinning/placement from remote GPU reads.
     if(device_read_control) {
@@ -52,19 +51,18 @@ inline mfq_tensor_backend::Tensor map_embedding_storage(const mfq_tensor_backend
         alias=owner->device_copy.data_ptr();
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto storage=std::make_shared<tb::TensorStorage>();
+    auto storage=std::make_shared<::tyloi::TensorStorage>();
     storage->owner=std::move(owner);storage->base=alias;storage->bytes=bytes;storage->device=gpu_device;
-    return tb::Tensor(storage,tb::make_contiguous_view(alias,cpu.sizes(),cpu.scalar_type(),gpu_device));
+    return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(alias,cpu.sizes(),cpu.scalar_type(),gpu_device));
 #else
-    return tb::from_blob(alias,cpu.sizes(),[owner](void*){},cpu.options().device(gpu_device));
+    return ::tyloi::cuda::from_blob(alias,cpu.sizes(),[owner](void*){},cpu.options().device(gpu_device));
 #endif
 }
 
-inline QuantLinear map_dense_embedding(const mfq_tensor_backend::Tensor& cpu,int device,
+inline QuantLinear map_dense_embedding(const ::tyloi::Tensor& cpu,int device,
         bool device_read_control=false) {
-    namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(cpu.dim()==2 &&
-        (cpu.scalar_type()==tb::kFloat16 || cpu.scalar_type()==tb::kBFloat16 || cpu.scalar_type()==tb::kFloat32),
+        (cpu.scalar_type()==::tyloi::kFloat16 || cpu.scalar_type()==::tyloi::kBFloat16 || cpu.scalar_type()==::tyloi::kFloat32),
         "mapped embedding requires a rank-2 floating table");
     QuantLinear result;
     result.kind=QuantLinearKind::Dense;
@@ -75,7 +73,6 @@ inline QuantLinear map_dense_embedding(const mfq_tensor_backend::Tensor& cpu,int
 }
 
 inline QuantLinear map_nint_embedding(QuantLinear result,int device,bool device_read_control=false) {
-    namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(result.is_nint() && !result.tensor_parallel() && result.nint.q_packed.is_cpu(),
         "mapped NINT embedding requires an unsharded CPU table");
     auto& w=result.nint;
@@ -84,6 +81,6 @@ inline QuantLinear map_nint_embedding(QuantLinear result,int device,bool device_
     for(auto* field:{&w.q_packed,&w.sub_scale,&w.sub_min,&w.q8_zero_scale})
         if(field->defined())*field=map_embedding_storage(*field,device,device_read_control);
     for(auto* field:{&w.row_q_bits,&w.row_q_bit_offsets,&w.neuron_scale,&w.neuron_min})
-        if(field->defined())*field=field->to(tb::Device(tb::kCUDA,device));
+        if(field->defined())*field=field->to(::tyloi::Device(::tyloi::kCUDA,device));
     return result;
 }

@@ -5,20 +5,20 @@
 #include "mfe_ffn_device.cuh"
 #include "mfe_ffn_compact.h"
 #include "mfe_ffn_token_groups.h"
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 bool mfe_group_dot_enabled() {
-    const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_GROUP_DOT");
+    const char* setting=tyloi::cuda::env_lookup("TYLOINFER_MFE_GROUP_DOT");
     return !setting || setting[0]!='0';
 }
 bool mfe_gpu_bundle_enabled() {
-    const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_GPU_BUNDLE");
+    const char* setting=tyloi::cuda::env_lookup("TYLOINFER_MFE_GPU_BUNDLE");
     return !setting || setting[0]!='0';
 }
 template<bool Grouped,uint32_t Formats=0x3fffeu,bool DefaultMath=false,bool E8Narrow=false>
 void launch_mfe_down_path(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
     if constexpr(Grouped)partition|=16;
-    const char* canonical_quad=mfq::cuda::env_lookup("TYLOINFER_MFE_CANONICAL_QUAD");
+    const char* canonical_quad=tyloi::cuda::env_lookup("TYLOINFER_MFE_CANONICAL_QUAD");
     if(b.shared && (!b.shared_dense_math || (canonical_quad && canonical_quad[0]=='1'))) {
         if(mfe_gpu_bundle_enabled()) {
             const auto warps=mfe_ffn_down_launch_warps(reinterpret_cast<const void*>(mfe_ffn_down_reduce_kernel_quad<true,Grouped,Formats,DefaultMath,E8Narrow>),
@@ -44,17 +44,17 @@ void launch_mfe_down_path(const MfeFfnBatch& b,int partition,cudaStream_t stream
 template<bool Grouped,uint32_t Formats=0x3fffeu,bool DefaultMath=false,bool E8Narrow=false>
 void launch_mfe_gate_up_path(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     if constexpr(Grouped)partition|=16;
-    const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_PARALLEL_GU");
+    const char* setting=tyloi::cuda::env_lookup("TYLOINFER_MFE_PARALLEL_GU");
     const bool parallel=!setting || setting[0]!='0';
     if(parallel) {
-        const char* shared_first=mfq::cuda::env_lookup("TYLOINFER_MFE_SHARED_FIRST");
-        const char* early=mfq::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
+        const char* shared_first=tyloi::cuda::env_lookup("TYLOINFER_MFE_SHARED_FIRST");
+        const char* early=tyloi::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
         if(b.plan_ready && b.resident_plan_overlap && (!early || early[0]!='0'))partition|=8;
         // Bit 2 changes CTA order; the lower bits retain the transfer partition.
         if(b.shared && (!shared_first || shared_first[0]!='0'))partition|=4;
         const bool bundle=mfe_gpu_bundle_enabled();
         int warps=bundle?8:4;
-        if(const char* requested=mfq::cuda::env_lookup("TYLOINFER_MFE_GU_WARPS")) {
+        if(const char* requested=tyloi::cuda::env_lookup("TYLOINFER_MFE_GU_WARPS")) {
             const int value=std::atoi(requested);
             if(value==4 || value==8 || value==16)warps=value;
         }
@@ -87,7 +87,7 @@ void launch_mfe_gate_up_math(const MfeFfnBatch& b,int partition,int width,cudaSt
 }
 // 1: both stages; 2: Gate/Up only; 3: Down only. Opt-in during evaluation.
 bool mfe_default_math_enabled(const MfeFfnBatch& b,bool down) {
-    const char* setting=mfq::cuda::env_lookup("TYLOINFER_MFE_DEFAULT_MATH");
+    const char* setting=tyloi::cuda::env_lookup("TYLOINFER_MFE_DEFAULT_MATH");
     return b.default_math && setting &&
         (setting[0]=='1' || setting[0]==(down?'3':'2'));
 }
@@ -106,7 +106,7 @@ void launch_mfe_down(const MfeFfnBatch& b,int partition,cudaStream_t stream) {
 }
 void launch_mfe_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_t stream) {
     if(mfe_ffn_compact_group_gate_up(b,partition,stream))return;
-    const auto* option=mfq::cuda::env_lookup("TYLOINFER_MFE_SEPARATE_HIDDEN_QUANT");
+    const auto* option=tyloi::cuda::env_lookup("TYLOINFER_MFE_SEPARATE_HIDDEN_QUANT");
     const bool separate=(!option || option[0]!='0') && !b.token_group_aligned_gu && b.tokens<=8;
     auto producer=b;
     if(separate)producer.completion=nullptr;
@@ -117,7 +117,7 @@ void launch_mfe_gate_up(const MfeFfnBatch& b,int partition,int width,cudaStream_
         else launch_mfe_gate_up_math<false>(producer,partition,width,stream);
     }
     if(separate) {
-        const auto* early=mfq::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
+        const auto* early=tyloi::cuda::env_lookup("TYLOINFER_MFE_EARLY_GU");
         if(b.plan_ready && b.resident_plan_overlap && (!early || early[0]!='0'))partition|=8;
         mfe_ffn_quantize_hidden(b,partition,stream);
     }
@@ -131,7 +131,7 @@ void mfe_ffn_prepare(const MfeFfnBatch& b,const MfeInputQuantization* inputs,int
 }
 void mfe_ffn_gate_up(const MfeFfnBatch& b,cudaStream_t stream) {
     if(b.plan_ready) {
-        mfq::cuda::mfe_ffn_resident(b,stream);mfq::cuda::mfe_ffn_wait_transfer(b,stream);mfq::cuda::mfe_ffn_transferred(b,stream);return;
+        tyloi::cuda::mfe_ffn_resident(b,stream);tyloi::cuda::mfe_ffn_wait_transfer(b,stream);tyloi::cuda::mfe_ffn_transferred(b,stream);return;
     }
     const int width=std::max(b.intermediate,b.shared?b.shared_intermediate:0);
     launch_mfe_gate_up(b,0,width,stream);
@@ -155,7 +155,7 @@ void mfe_ffn_down_reduce_compute(const MfeFfnBatch& b,cudaStream_t stream) {
     launch_mfe_down(b,b.plan_ready?2:0,stream);
 }
 void mfe_ffn_down_reduce(const MfeFfnBatch& b,cudaStream_t stream) {
-    mfq::cuda::mfe_ffn_wait_cpu(b,stream);
-    mfq::cuda::mfe_ffn_down_reduce_compute(b,stream);
+    tyloi::cuda::mfe_ffn_wait_cpu(b,stream);
+    tyloi::cuda::mfe_ffn_down_reduce_compute(b,stream);
 }
 }

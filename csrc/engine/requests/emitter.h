@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // Model output assembly: stop sequences and UTF-8 boundaries are independent
 // of the wire protocol and of the device executing the model.
@@ -26,4 +26,4 @@ private:
     bool stopped_ = false;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

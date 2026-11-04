@@ -25,21 +25,21 @@
 #include <string>
 #include <utility>
 
-namespace mfq::cuda::engine_detail {
+namespace tyloi::cuda::engine_detail {
 
-inline mfq::engine::Metrics runtime_metrics(
-        const mfq::engine::Metrics& component_metrics,
-        const mfq::engine::Metrics& profile_metrics,
-        std::optional<mfq::engine::Metrics> memory, bool streamed_kv,
+inline tyloi::engine::Metrics runtime_metrics(
+        const tyloi::engine::Metrics& component_metrics,
+        const tyloi::engine::Metrics& profile_metrics,
+        std::optional<tyloi::engine::Metrics> memory, bool streamed_kv,
         const MtpModule* mtp,
-        const mfq::engine::mtp::State& mtp_state, int graph_depth,
-        const ExpertSpace* space, mfq::engine::Batch* batching,
-        const mfq::ModelSource* source, WeightMemoryLedger& ledger,
+        const tyloi::engine::mtp::State& mtp_state, int graph_depth,
+        const ExpertSpace* space, tyloi::engine::Batch* batching,
+        const tyloi::ModelSource* source, WeightMemoryLedger& ledger,
         const RoutedCache& weights, KvMemoryManager* kv,
         KvOffloadStore* offload, const internal::TextSessionCache& cache,
         const Budget& budget, const LayerPlacementConfig& placement,
         const ParallelConfig& tp, const ParallelConfig& ep) {
-    using mfq::engine::Metrics;
+    using tyloi::engine::Metrics;
 
     const auto batch_metrics = batching ? batching->metrics() : Metrics{};
     const auto workspace_metrics = space ? space->metrics() : ExpertSpace::Metrics{};
@@ -57,7 +57,7 @@ inline mfq::engine::Metrics runtime_metrics(
     if (source) {
         const auto io = source->file_read_stats();
         metrics.insert(metrics.end(), {
-            {"model_io_direct", io.mode == mfq::FileReadMode::Direct ? 1.0 : 0.0},
+            {"model_io_direct", io.mode == tyloi::FileReadMode::Direct ? 1.0 : 0.0},
             {"model_io_read_calls", double(io.calls)},
             {"model_io_logical_bytes", double(io.logical_bytes)},
             {"model_io_physical_bytes", double(io.physical_bytes)},
@@ -165,7 +165,7 @@ inline mfq::engine::Metrics runtime_metrics(
             {"qsa_kv_ssd_bytes", 0.0}});
     }
     if (mtp) {
-        mfq::engine::mtp::append_generation_metrics(metrics, mtp_state.stats);
+        tyloi::engine::mtp::append_generation_metrics(metrics, mtp_state.stats);
         metrics.emplace_back("mtp_predictor_graph_replays",
             double(mtp->graph_replay_count()));
     }
@@ -174,4 +174,4 @@ inline mfq::engine::Metrics runtime_metrics(
     return metrics;
 }
 
-} // namespace mfq::cuda::engine_detail
+} // namespace tyloi::cuda::engine_detail

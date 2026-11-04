@@ -5,9 +5,8 @@
 
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-using Tensor = mfq_tensor_backend::Tensor;
 
 Tensor Executor::full_ffn(
     const Ffn& ffn, const Tensor& ffn_norm, const FullAttention& attention,
@@ -35,7 +34,7 @@ Tensor Executor::full_ffn(
     auto record_trace = [&](const char* name, const Tensor& value) {
         if (attention.attention_output_gate && trace_output)
             trace_output->emplace_back(name, value.reshape({B, T, -1})
-                .to(mfq_tensor_backend::kFloat32).contiguous().clone());
+                .to(::tyloi::kFloat32).contiguous().clone());
     };
     auto pair = full_norm(profiler, ffn_norm, attention.rms_norm_eps, attention.norm_weight_offset,
                           attention.official_bf16, attention_.fused_norm,
@@ -46,7 +45,7 @@ Tensor Executor::full_ffn(
     auto mlp = dense(ffn);
     auto ff = attention.official_bf16
         ? mlp.bf16(project_, profiler, dense_.bf16_swiglu, input)
-              .reshape({B, T, H}).to(mfq_tensor_backend::kBFloat16).contiguous()
+              .reshape({B, T, H}).to(::tyloi::kBFloat16).contiguous()
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         : ffn.forward(input, mode).reshape({B, T, H});
 #else
@@ -90,4 +89,4 @@ Tensor Executor::linear_ffn(
     return linear_add(profiler, dense_.fp32_residual, std::move(residual), std::move(ff));
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

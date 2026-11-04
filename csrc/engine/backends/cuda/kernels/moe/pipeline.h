@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime_api.h>
 #include <cstdint>
-namespace mfq::cuda {
+namespace tyloi::cuda {
 struct MoeMappedCopyDescriptor {
     uint64_t destination=0,source=0,offset=0,bytes=0;
 };

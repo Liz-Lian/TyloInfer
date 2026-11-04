@@ -7,7 +7,7 @@
 #include <memory>
 #include <string>
 
-namespace mfq { namespace source { class Source; } }
+namespace tyloi { namespace source { class Source; } }
 
 struct MoeLoadOptions {
     bool nvq2 = false;
@@ -15,24 +15,24 @@ struct MoeLoadOptions {
     bool heterogeneous = true;
 };
 
-mfq::mfe::Data load_mfe_cpu(
-    const mfq::source::Source& source, const std::string& name);
-mfq::cuda::Experts to_gpu_mfe(const mfq::mfe::Data& source);
+tyloi::mfe::Data load_mfe_cpu(
+    const tyloi::source::Source& source, const std::string& name);
+tyloi::cuda::Experts to_gpu_mfe(const tyloi::mfe::Data& source);
 std::shared_ptr<MixedMoeRuntime> make_mixed_moe_runtime(
-    const mfq::mfe::Data& source,
+    const tyloi::mfe::Data& source,
     bool cuda,
     const MoeLoadOptions& options = {});
 int64_t mixed_moe_storage_bytes(const MixedMoeRuntime& runtime);
-mfq_tensor_backend::Tensor copy_cpu_weight_to_cuda(
-    const mfq_tensor_backend::Tensor& source);
-mfq::cuda::Experts to_gpu_mixed_moe(
-    const mfq::mfe::Data& source,
+::tyloi::Tensor copy_cpu_weight_to_cuda(
+    const ::tyloi::Tensor& source);
+tyloi::cuda::Experts to_gpu_mixed_moe(
+    const tyloi::mfe::Data& source,
     const MoeLoadOptions& options = {});
-mfq::cuda::Experts to_cuda_device_moe_expert_slice(
-    const mfq::mfe::Data& source,
+tyloi::cuda::Experts to_cuda_device_moe_expert_slice(
+    const tyloi::mfe::Data& source,
     int64_t expert_begin,
     int64_t expert_end,
     int device,
     const MoeLoadOptions& options = {});
-mfq::cuda::Experts cpu_mixed_moe_metadata(
+tyloi::cuda::Experts cpu_mixed_moe_metadata(
     const std::shared_ptr<MixedMoeRuntime>& runtime);

@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class MfeMxfp4Unsupported : public std::runtime_error {
 public:
@@ -134,4 +134,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

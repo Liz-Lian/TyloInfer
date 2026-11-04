@@ -6,10 +6,10 @@
 #include <optional>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct Input {
-    using Tensor = mfq::Tensor;
+    using Tensor = tyloi::Tensor;
     using Trace = std::vector<Tensor>;
 
     Tensor ids;
@@ -26,4 +26,4 @@ struct Input {
     std::int64_t attention_parts = 0;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

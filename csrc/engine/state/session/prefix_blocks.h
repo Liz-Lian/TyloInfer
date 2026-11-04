@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 using BlockHash = std::array<std::uint8_t, 32>;
 using PagedPrefixPayload =
@@ -118,4 +118,4 @@ private:
     std::unique_ptr<Implementation> implementation_;
 };
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

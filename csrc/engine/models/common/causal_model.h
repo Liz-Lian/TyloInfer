@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 // Backends may supply a model-window graph. Others retain their existing
 // entry points without a CUDA dependency in common model policy.
 template<class Backend,class Model,class Tensor>
@@ -320,4 +320,4 @@ template <class Backend, class Derived> struct CausalModelBase : Backend, Causal
                            [](const auto &block) { return block->supports_speculation(); });
     }
 };
-} // namespace mfq::models
+} // namespace tyloi::models

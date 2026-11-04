@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models::qwen35 {
+namespace tyloi::models::qwen35 {
 
 struct Config : ModelConfig {
     TensorLayout legacy_tensor_layout;
@@ -46,11 +46,11 @@ struct Config : ModelConfig {
             return AttentionKind::linear;
         throw std::runtime_error("unsupported Qwen attention type: " + std::string(type));
     }
-    mfq::ops::MoeRouting routing() const {
+    tyloi::ops::MoeRouting routing() const {
         if (expert_gating_func == "sqrtsoftplus")
-            return {mfq::ops::RouterActivation::sqrt_softplus, norm_topk_prob, false, routed_scaling_factor};
+            return {tyloi::ops::RouterActivation::sqrt_softplus, norm_topk_prob, false, routed_scaling_factor};
         // Full softmax -> top-k -> renormalize equals softmax on selected logits.
-        return {mfq::ops::RouterActivation::softmax, false, true, 1.0};
+        return {tyloi::ops::RouterActivation::softmax, false, true, 1.0};
     }
     static bool valid_positions(int64_t rank, int64_t rows, int64_t columns, int64_t batch,
                                 int64_t tokens, bool mrope) {
@@ -69,4 +69,4 @@ struct Config : ModelConfig {
 
 };
 
-} // namespace mfq::models::qwen35
+} // namespace tyloi::models::qwen35

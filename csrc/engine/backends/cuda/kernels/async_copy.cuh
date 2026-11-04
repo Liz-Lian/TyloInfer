@@ -3,7 +3,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-namespace mfq::cuda_detail {
+namespace tyloi::cuda_detail {
 
 __device__ __forceinline__ void copy_16_async(
         __half * destination,
@@ -32,4 +32,4 @@ __device__ __forceinline__ void copy_async_wait() {
 #endif
 }
 
-}  // namespace mfq::cuda_detail
+}  // namespace tyloi::cuda_detail

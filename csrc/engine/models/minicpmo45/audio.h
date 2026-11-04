@@ -5,14 +5,14 @@
 #include "vision.h"
 
 struct MiniCPMO45WhisperAttention {
-    mfq::cuda::BiasWeight q;
-    mfq::cuda::BiasWeight k;
-    mfq::cuda::BiasWeight v;
-    mfq::cuda::BiasWeight output;
+    tyloi::cuda::BiasWeight q;
+    tyloi::cuda::BiasWeight k;
+    tyloi::cuda::BiasWeight v;
+    tyloi::cuda::BiasWeight output;
     int64_t heads = 16;
     int64_t head_dim = 64;
 
-    static MiniCPMO45WhisperAttention load(const mfq::cuda::weight_loader::Loader& weights, const std::string &prefix) {
+    static MiniCPMO45WhisperAttention load(const tyloi::cuda::weight_loader::Loader& weights, const std::string &prefix) {
         MiniCPMO45WhisperAttention result;
         result.q = weights.biased(prefix + ".query.weight", prefix + ".query.bias");
         result.k = weights.biased(prefix + ".key.weight");
@@ -21,32 +21,32 @@ struct MiniCPMO45WhisperAttention {
         return result;
     }
 
-    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
-                                       mfq_tensor_backend::Tensor input,
-                                       MfqOptional<mfq_tensor_backend::Tensor> mask,
-                                       mfq_tensor_backend::Tensor *key_cache = nullptr,
-                                       mfq_tensor_backend::Tensor *value_cache = nullptr) const {
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+                                       ::tyloi::Tensor input,
+                                       MfqOptional<::tyloi::Tensor> mask,
+                                       ::tyloi::Tensor *key_cache = nullptr,
+                                       ::tyloi::Tensor *value_cache = nullptr) const {
         const int64_t batch = input.size(0);
         const int64_t tokens = input.size(1);
-        auto reshape = [&](mfq_tensor_backend::Tensor value) {
+        auto reshape = [&](::tyloi::Tensor value) {
             return value.reshape({batch, tokens, heads, head_dim}).transpose(1, 2).contiguous();
         };
-        using Tensor = mfq_tensor_backend::Tensor;
-        return mfq::models::minicpmo45::encoder_attention(
+        using Tensor = ::tyloi::Tensor;
+        return tyloi::models::minicpmo45::encoder_attention(
             input, key_cache && value_cache,
-            [&](const Tensor &x) { return reshape(mfq::cuda::biased(projector, q, x)); },
-            [&](const Tensor &x) { return reshape(mfq::cuda::biased(projector, k, x)); },
-            [&](const Tensor &x) { return reshape(mfq::cuda::biased(projector, v, x)); },
+            [&](const Tensor &x) { return reshape(tyloi::cuda::biased(projector, q, x)); },
+            [&](const Tensor &x) { return reshape(tyloi::cuda::biased(projector, k, x)); },
+            [&](const Tensor &x) { return reshape(tyloi::cuda::biased(projector, v, x)); },
             [&](Tensor &key, Tensor &value) {
                 if (key_cache->defined()) {
-                    key = mfq_tensor_backend::cat({*key_cache, key}, 2).contiguous();
-                    value = mfq_tensor_backend::cat({*value_cache, value}, 2).contiguous();
+                    key = ::tyloi::cuda::cat({*key_cache, key}, 2).contiguous();
+                    value = ::tyloi::cuda::cat({*value_cache, value}, 2).contiguous();
                 }
                 *key_cache = key;
                 *value_cache = value;
             },
             [&](Tensor query, Tensor key, Tensor value) {
-                std::optional<mfq_tensor_backend::Tensor> attention_mask = std::nullopt;
+                std::optional<::tyloi::Tensor> attention_mask = std::nullopt;
                 if (mask.has_value()) {
                     attention_mask = mask.value().to(query.scalar_type());
                 }
@@ -56,23 +56,23 @@ struct MiniCPMO45WhisperAttention {
             },
             [&](Tensor attended) {
                 attended = attended.transpose(1, 2).reshape({batch, tokens, heads * head_dim});
-                return mfq::cuda::biased(projector, output, attended);
+                return tyloi::cuda::biased(projector, output, attended);
             });
     }
 };
 
 struct MiniCPMO45WhisperLayer {
     MiniCPMO45WhisperAttention attention;
-    mfq_tensor_backend::Tensor attention_norm_weight;
-    mfq_tensor_backend::Tensor attention_norm_bias;
-    mfq_tensor_backend::Tensor final_norm_weight;
-    mfq_tensor_backend::Tensor final_norm_bias;
-    mfq::cuda::BiasWeight fc1;
-    mfq::cuda::BiasWeight fc2;
-    mfq_tensor_backend::Tensor key_cache;
-    mfq_tensor_backend::Tensor value_cache;
+    ::tyloi::Tensor attention_norm_weight;
+    ::tyloi::Tensor attention_norm_bias;
+    ::tyloi::Tensor final_norm_weight;
+    ::tyloi::Tensor final_norm_bias;
+    tyloi::cuda::BiasWeight fc1;
+    tyloi::cuda::BiasWeight fc2;
+    ::tyloi::Tensor key_cache;
+    ::tyloi::Tensor value_cache;
 
-    static MiniCPMO45WhisperLayer load(const mfq::cuda::weight_loader::Loader& weights,
+    static MiniCPMO45WhisperLayer load(const tyloi::cuda::weight_loader::Loader& weights,
                                        int index) {
         const std::string prefix = "audio.block." + std::to_string(index);
         MiniCPMO45WhisperLayer result;
@@ -90,16 +90,16 @@ struct MiniCPMO45WhisperLayer {
     }
 
     void reset() {
-        key_cache = mfq_tensor_backend::Tensor();
-        value_cache = mfq_tensor_backend::Tensor();
+        key_cache = ::tyloi::Tensor();
+        value_cache = ::tyloi::Tensor();
     }
 
-    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
-                                       mfq_tensor_backend::Tensor input,
-                                       MfqOptional<mfq_tensor_backend::Tensor> mask,
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+                                       ::tyloi::Tensor input,
+                                       MfqOptional<::tyloi::Tensor> mask,
                                        bool use_cache) {
-        using Tensor = mfq_tensor_backend::Tensor;
-        return mfq::models::pre_norm_layer(
+        using Tensor = ::tyloi::Tensor;
+        return tyloi::models::pre_norm_layer(
             input,
             [&](const Tensor &x, int stage) {
                 return minicpmo45_layer_norm(
@@ -111,28 +111,26 @@ struct MiniCPMO45WhisperLayer {
                                          use_cache ? &value_cache : nullptr);
             },
             [&](Tensor x) {
-                return mfq::ops::mlp(
-                    x, [&](Tensor x) { return mfq::cuda::biased(projector, fc1, x); },
-                    [](Tensor x) { return mfq_tensor_backend::gelu(x); },
-                    [&](Tensor x) { return mfq::cuda::biased(projector, fc2, x); });
+                return tyloi::cuda::biased(projector, fc2,
+                    ::tyloi::cuda::gelu(tyloi::cuda::biased(projector, fc1, x)));
             },
             [](Tensor x, Tensor branch) { return (x + branch).contiguous(); });
     }
 };
 
 struct MiniCPMO45AudioEncoder {
-    mfq_tensor_backend::Tensor conv1_weight;
-    mfq_tensor_backend::Tensor conv1_bias;
-    mfq_tensor_backend::Tensor conv2_weight;
-    mfq_tensor_backend::Tensor conv2_bias;
-    mfq_tensor_backend::Tensor position_embedding;
+    ::tyloi::Tensor conv1_weight;
+    ::tyloi::Tensor conv1_bias;
+    ::tyloi::Tensor conv2_weight;
+    ::tyloi::Tensor conv2_bias;
+    ::tyloi::Tensor position_embedding;
     std::vector<MiniCPMO45WhisperLayer> layers;
-    mfq_tensor_backend::Tensor final_norm_weight;
-    mfq_tensor_backend::Tensor final_norm_bias;
-    mfq::cuda::BiasWeight projector1;
-    mfq::cuda::BiasWeight projector2;
+    ::tyloi::Tensor final_norm_weight;
+    ::tyloi::Tensor final_norm_bias;
+    tyloi::cuda::BiasWeight projector1;
+    tyloi::cuda::BiasWeight projector2;
 
-    static MiniCPMO45AudioEncoder load(const mfq::cuda::weight_loader::Loader& weights) {
+    static MiniCPMO45AudioEncoder load(const tyloi::cuda::weight_loader::Loader& weights) {
         MiniCPMO45AudioEncoder result;
         result.conv1_weight =
             weights.native("audio.patch_embedding.conv1.weight");
@@ -172,8 +170,8 @@ struct MiniCPMO45AudioEncoder {
         return layers.front().key_cache.size(2);
     }
 
-    mfq_tensor_backend::Tensor forward_streaming(const mfq::cuda::Projector& projector,
-                                                 mfq_tensor_backend::Tensor features,
+    ::tyloi::Tensor forward_streaming(const tyloi::cuda::Projector& projector,
+                                                 ::tyloi::Tensor features,
                                                  int64_t prefix_extra_frames,
                                                  int64_t suffix_extra_frames) {
         if (features.dim() != 3 || features.size(0) != 1 || features.size(1) != 80 ||
@@ -186,17 +184,17 @@ struct MiniCPMO45AudioEncoder {
             reset();
         }
 
-        using Tensor = mfq_tensor_backend::Tensor;
-        return mfq::finish_steps(mfq::models::minicpmo45::audio_encoder(
+        using Tensor = ::tyloi::Tensor;
+        return tyloi::finish_steps(tyloi::models::minicpmo45::audio_encoder(
             features, layers,
             [&](Tensor features) {
-                return mfq_tensor_backend::conv1d(
+                return ::tyloi::cuda::conv1d(
                     features.to(conv1_weight.scalar_type()), conv1_weight, conv1_bias,
                     std::vector<int64_t>{1}, std::vector<int64_t>{1}, std::vector<int64_t>{1}, 1);
             },
-            [](Tensor x) { return mfq_tensor_backend::gelu(x); },
+            [](Tensor x) { return ::tyloi::cuda::gelu(x); },
             [&](Tensor hidden) {
-                return mfq_tensor_backend::conv1d(hidden, conv2_weight, conv2_bias,
+                return ::tyloi::cuda::conv1d(hidden, conv2_weight, conv2_bias,
                                                   std::vector<int64_t>{2}, std::vector<int64_t>{1},
                                                   std::vector<int64_t>{1}, 1);
             },
@@ -225,7 +223,7 @@ struct MiniCPMO45AudioEncoder {
                 }
                 hidden = hidden + position_embedding.narrow(0, past, tokens);
                 auto attention_mask =
-                    mfq_tensor_backend::zeros({1, 1, tokens, past + tokens}, hidden.options());
+                    ::tyloi::cuda::zeros({1, 1, tokens, past + tokens}, hidden.options());
                 return std::array<Tensor, 2>{hidden, attention_mask};
             },
             [&](auto &layer, Tensor hidden, Tensor mask) {
@@ -234,53 +232,53 @@ struct MiniCPMO45AudioEncoder {
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, final_norm_weight, final_norm_bias, 1e-5);
             },
-            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector1, hidden); },
-            [](Tensor hidden) { return mfq_tensor_backend::relu(hidden); },
-            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector2, hidden); },
+            [&](Tensor hidden) { return tyloi::cuda::biased(projector, projector1, hidden); },
+            [](Tensor hidden) { return ::tyloi::cuda::relu(hidden); },
+            [&](Tensor hidden) { return tyloi::cuda::biased(projector, projector2, hidden); },
             [&](Tensor hidden) {
                 if (hidden.size(1) < 5) {
                     throw std::runtime_error(
                         "MiniCPM-o streaming audio chunk is too short for stride-5 pooling");
                 }
-                return mfq_tensor_backend::avg_pool1d(
+                return ::tyloi::cuda::avg_pool1d(
                            hidden.transpose(1, 2), std::vector<int64_t>{5}, std::vector<int64_t>{5})
                     .transpose(1, 2)
                     .contiguous();
             }));
     }
 
-    static std::vector<int64_t> pooled_lengths(mfq_tensor_backend::Tensor raw_lengths) {
+    static std::vector<int64_t> pooled_lengths(::tyloi::Tensor raw_lengths) {
         auto lengths =
-            raw_lengths.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous();
+            raw_lengths.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         const auto *values = lengths.data_ptr<int64_t>();
         std::vector<int64_t> result(static_cast<size_t>(lengths.numel()));
         for (int64_t index = 0; index < lengths.numel(); ++index) {
             result[static_cast<size_t>(index)] =
-                mfq::models::minicpmo45::pooled_audio_length(values[index]);
+                tyloi::models::minicpmo45::pooled_audio_length(values[index]);
         }
         return result;
     }
 
-    mfq::StepSequence<mfq_tensor_backend::Tensor> forward_steps(
-        mfq::cuda::Projector projector,
-        mfq_tensor_backend::Tensor features,
-        mfq_tensor_backend::Tensor raw_lengths,
+    tyloi::StepSequence<::tyloi::Tensor> forward_steps(
+        tyloi::cuda::Projector projector,
+        ::tyloi::Tensor features,
+        ::tyloi::Tensor raw_lengths,
         bool use_cache = false) {
         if (features.dim() != 3 || features.size(1) != 80 || raw_lengths.dim() != 1 ||
             raw_lengths.size(0) != features.size(0)) {
             throw std::runtime_error("MiniCPM-o audio input geometry is invalid");
         }
-        using Tensor = mfq_tensor_backend::Tensor;
-        auto encoding = mfq::models::minicpmo45::audio_encoder(
+        using Tensor = ::tyloi::Tensor;
+        auto encoding = tyloi::models::minicpmo45::audio_encoder(
             features, layers,
             [&](Tensor features) {
-                return mfq_tensor_backend::conv1d(
+                return ::tyloi::cuda::conv1d(
                     features.to(conv1_weight.scalar_type()), conv1_weight, conv1_bias,
                     std::vector<int64_t>{1}, std::vector<int64_t>{1}, std::vector<int64_t>{1}, 1);
             },
-            [](Tensor x) { return mfq_tensor_backend::gelu(x); },
+            [](Tensor x) { return ::tyloi::cuda::gelu(x); },
             [&](Tensor hidden) {
-                return mfq_tensor_backend::conv1d(hidden, conv2_weight, conv2_bias,
+                return ::tyloi::cuda::conv1d(hidden, conv2_weight, conv2_bias,
                                                   std::vector<int64_t>{2}, std::vector<int64_t>{1},
                                                   std::vector<int64_t>{1}, 1);
             },
@@ -300,32 +298,32 @@ struct MiniCPMO45AudioEncoder {
                 // Preserve the official graph: its padding comparison uses the raw
                 // Whisper feature lengths against the post-convolution sequence.
                 auto length_tensor =
-                    raw_lengths.to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64)
+                    raw_lengths.to(::tyloi::kCUDA, ::tyloi::kInt64)
                         .contiguous();
-                auto key_positions = mfq_tensor_backend::arange(
-                    past + tokens, mfq_tensor_backend::TensorOptions()
-                                       .device(mfq_tensor_backend::kCUDA)
-                                       .dtype(mfq_tensor_backend::kInt64));
+                auto key_positions = ::tyloi::cuda::arange(
+                    past + tokens, ::tyloi::TensorOptions()
+                                       .device(::tyloi::kCUDA)
+                                       .dtype(::tyloi::kInt64));
                 auto valid_keys = key_positions.unsqueeze(0) < (length_tensor + past).unsqueeze(1);
                 auto query_positions =
-                    mfq_tensor_backend::arange(past, past + tokens,
-                                               mfq_tensor_backend::TensorOptions()
-                                                   .device(mfq_tensor_backend::kCUDA)
-                                                   .dtype(mfq_tensor_backend::kInt64));
+                    ::tyloi::cuda::arange(past, past + tokens,
+                                               ::tyloi::TensorOptions()
+                                                   .device(::tyloi::kCUDA)
+                                                   .dtype(::tyloi::kInt64));
                 // Official MiniCPM-o 4.5 uses audio_chunk_length=1.0. Whisper emits
                 // 50 encoder frames per second, and every query can see its current
                 // 50-frame chunk plus all preceding chunks.
                 auto chunk_visible =
                     key_positions.unsqueeze(0) <
-                    ((query_positions / mfq::models::minicpmo45::audio_chunk_frames + 1) *
-                     mfq::models::minicpmo45::audio_chunk_frames)
+                    ((query_positions / tyloi::models::minicpmo45::audio_chunk_frames + 1) *
+                     tyloi::models::minicpmo45::audio_chunk_frames)
                         .unsqueeze(1);
                 auto visible = valid_keys.unsqueeze(1) & chunk_visible.unsqueeze(0);
                 auto attention_mask =
-                    mfq_tensor_backend::zeros({features.size(0), 1, tokens, past + tokens},
-                                              mfq_tensor_backend::TensorOptions()
-                                                  .device(mfq_tensor_backend::kCUDA)
-                                                  .dtype(mfq_tensor_backend::kFloat32))
+                    ::tyloi::cuda::zeros({features.size(0), 1, tokens, past + tokens},
+                                              ::tyloi::TensorOptions()
+                                                  .device(::tyloi::kCUDA)
+                                                  .dtype(::tyloi::kFloat32))
                         .masked_fill(visible.logical_not().unsqueeze(1),
                                      -std::numeric_limits<float>::infinity());
                 return std::array<Tensor, 2>{hidden, attention_mask};
@@ -336,11 +334,11 @@ struct MiniCPMO45AudioEncoder {
             [&](Tensor hidden) {
                 return minicpmo45_layer_norm(hidden, final_norm_weight, final_norm_bias, 1e-5);
             },
-            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector1, hidden); },
-            [](Tensor hidden) { return mfq_tensor_backend::relu(hidden); },
-            [&](Tensor hidden) { return mfq::cuda::biased(projector, projector2, hidden); },
+            [&](Tensor hidden) { return tyloi::cuda::biased(projector, projector1, hidden); },
+            [](Tensor hidden) { return ::tyloi::cuda::relu(hidden); },
+            [&](Tensor hidden) { return tyloi::cuda::biased(projector, projector2, hidden); },
             [&](Tensor hidden) {
-                return mfq_tensor_backend::avg_pool1d(
+                return ::tyloi::cuda::avg_pool1d(
                            hidden.transpose(1, 2), std::vector<int64_t>{5}, std::vector<int64_t>{5})
                     .transpose(1, 2)
                     .contiguous();
@@ -348,9 +346,9 @@ struct MiniCPMO45AudioEncoder {
         while (auto step = encoding.next()) co_yield std::move(step);
     }
 
-    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
-        mfq_tensor_backend::Tensor features, mfq_tensor_backend::Tensor lengths, bool use_cache = false) {
-        return mfq::finish_steps(
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+        ::tyloi::Tensor features, ::tyloi::Tensor lengths, bool use_cache = false) {
+        return tyloi::finish_steps(
             forward_steps(projector, std::move(features), std::move(lengths), use_cache));
     }
 };

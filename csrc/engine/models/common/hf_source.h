@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <memory>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 // Canonical runtime view of an HF checkpoint. Dense and native-MX tensors are
 // exposed with the same logical payload contract as MFQ records, so backend
@@ -48,4 +48,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

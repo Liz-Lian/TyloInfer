@@ -7,14 +7,14 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::cuda { class Collectives; }
+namespace tyloi::cuda { class Collectives; }
 
 std::vector<MfqCudaStream> make_cuda_graph_compute_streams(
     const MfqCudaStream& primary_stream,
-    const mfq::cuda::Collectives& collectives);
+    const tyloi::cuda::Collectives& collectives);
 std::vector<MfqCudaStream> cuda_graph_participant_streams(
     const std::vector<MfqCudaStream>& compute_streams,
-    const mfq::cuda::Collectives& collectives);
+    const tyloi::cuda::Collectives& collectives);
 std::vector<std::unique_ptr<MfqCudaStreamGuard>>
 activate_cuda_graph_compute_streams(
     const std::vector<MfqCudaStream>& compute_streams);
@@ -35,16 +35,16 @@ struct DecodeGraphBranchScope {
 struct DecodeGraphCache {
     decltype(mfq_get_stream_from_pool(false)) stream;
     std::vector<MfqCudaStream> compute_streams;
-    std::vector<mfq_tensor_backend::Tensor> storage;
+    std::vector<::tyloi::Tensor> storage;
     std::unique_ptr<MfqCudaGraph> graph;
-    mfq_tensor_backend::Tensor static_input;
-    mfq_tensor_backend::Tensor static_pos;
-    mfq_tensor_backend::Tensor static_len;
-    mfq_tensor_backend::Tensor static_step;
-    mfq_tensor_backend::Tensor generated;
-    mfq_tensor_backend::Tensor random;
-    mfq_tensor_backend::Tensor counts;
-    mfq_tensor_backend::Tensor static_next;
+    ::tyloi::Tensor static_input;
+    ::tyloi::Tensor static_pos;
+    ::tyloi::Tensor static_len;
+    ::tyloi::Tensor static_step;
+    ::tyloi::Tensor generated;
+    ::tyloi::Tensor random;
+    ::tyloi::Tensor counts;
+    ::tyloi::Tensor static_next;
     int64_t generated_capacity = 0;
     int64_t planned_len = 0;
     bool greedy = false;
@@ -59,20 +59,20 @@ struct DecodeGraphCache {
     bool valid = false;
 
     explicit DecodeGraphCache(int64_t context_capacity);
-    void ensure_compute_streams(const mfq::cuda::Collectives& collectives);
+    void ensure_compute_streams(const tyloi::cuda::Collectives& collectives);
     std::vector<MfqCudaStream> graph_participant_streams(
-        const mfq::cuda::Collectives& collectives) const;
+        const tyloi::cuda::Collectives& collectives) const;
     bool matches(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
-                 const std::vector<mfq_tensor_backend::Tensor>& candidate_storage) const;
+                 const std::vector<::tyloi::Tensor>& candidate_storage) const;
     void ensure_storage(int64_t vocab_size);
-    void initialize_inputs(const mfq_tensor_backend::Tensor& pending, int64_t position,
-                           const mfq_tensor_backend::Tensor& random_host);
-    void upload_random(const mfq_tensor_backend::Tensor& random_host);
+    void initialize_inputs(const ::tyloi::Tensor& pending, int64_t position,
+                           const ::tyloi::Tensor& random_host);
+    void upload_random(const ::tyloi::Tensor& random_host);
     void invalidate();
     void set_key(int64_t candidate_len, const MfqSamplingParams& sampling,
                  bool candidate_greedy,
-                 const std::vector<mfq_tensor_backend::Tensor>& candidate_storage);
+                 const std::vector<::tyloi::Tensor>& candidate_storage);
 };
 
 template <typename StateTensor, typename PositionState, typename Warmup>
@@ -83,7 +83,7 @@ void prepare_decode_graph_memory(
         MfqCudaGraph& graph,
         Warmup&& warmup,
         const std::vector<MfqCudaStream>& participant_streams = {}) {
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     struct SavedRecurrentState {
         StateTensor* target;
         Tensor value;

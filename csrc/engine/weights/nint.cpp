@@ -10,12 +10,12 @@
 #include <numeric>
 #include <stdexcept>
 
-using namespace mfq::cuda::quant_format;
+using namespace tyloi::cuda::quant_format;
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 struct NintCacheState {
     using Key=std::array<uintptr_t,11>;
-    std::map<Key,mfq_tensor_backend::Tensor> decoded;
+    std::map<Key,::tyloi::Tensor> decoded;
     NintCacheState* previous=nullptr;
 };
 namespace {
@@ -46,9 +46,9 @@ void NintCache::clear() {
 bool NintCache::active() noexcept {
     return current_cache!=nullptr;
 }
-mfq_tensor_backend::Tensor NintCache::get(
+::tyloi::Tensor NintCache::get(
         const NintWeight& w,
-        const std::function<mfq_tensor_backend::Tensor()>& decode) {
+        const std::function<::tyloi::Tensor()>& decode) {
     if(!current_cache)return decode();
     const auto key=cache_key(w);
     const auto found=current_cache->decoded.find(key);
@@ -114,7 +114,7 @@ static void copy_nint_packed_bits(
     }
 }
 
-static void require_canonical_nint_cpu(const mfq::nint::Data & source) {
+static void require_canonical_nint_cpu(const tyloi::nint::Data & source) {
     if (source.out <= 0 ||
             source.row_q_bits.size() != static_cast<size_t>(source.out) ||
             source.row_q_bit_offsets.size() != static_cast<size_t>(source.out) ||
@@ -139,8 +139,8 @@ static void require_canonical_nint_cpu(const mfq::nint::Data & source) {
     }
 }
 
-static mfq::nint::Data repack_nint_cpu_rows(
-        const mfq::nint::Data & source,
+static tyloi::nint::Data repack_nint_cpu_rows(
+        const tyloi::nint::Data & source,
         const std::vector<int64_t> & rows) {
     require_canonical_nint_cpu(source);
     if (rows.empty()) {
@@ -164,7 +164,7 @@ static mfq::nint::Data repack_nint_cpu_rows(
             static_cast<uint64_t>(std::numeric_limits<size_t>::max() - 8)) {
         throw std::runtime_error("NINT selected row payload is too large");
     }
-    mfq::nint::Data result = source;
+    tyloi::nint::Data result = source;
     result.out = static_cast<int>(rows.size());
     result.shape[0] = result.out;
     result.q_packed.assign(static_cast<size_t>((total_bits + 7u) / 8u) + 8, 0);
@@ -204,13 +204,13 @@ static mfq::nint::Data repack_nint_cpu_rows(
         result.neuron_min_h[destination] = source.neuron_min_h[source_row];
         destination_bit += row_bits;
     }
-    mfq::nint::describe(result);
+    tyloi::nint::describe(result);
     return result;
 }
 
-mfq::nint::Data slice_nint_cpu_output(
-        const mfq::nint::Data & source, int64_t begin, int64_t end) {
-    mfq::require_parallel_weight(
+tyloi::nint::Data slice_nint_cpu_output(
+        const tyloi::nint::Data & source, int64_t begin, int64_t end) {
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT");
     if (begin < 0 || begin >= end || end > source.out) {
@@ -221,16 +221,16 @@ mfq::nint::Data slice_nint_cpu_output(
     return repack_nint_cpu_rows(source, rows);
 }
 
-mfq::nint::Data slice_nint_cpu_input_groups(
-        const mfq::nint::Data & source, int64_t begin, int64_t end) {
-    mfq::require_parallel_weight(
+tyloi::nint::Data slice_nint_cpu_input_groups(
+        const tyloi::nint::Data & source, int64_t begin, int64_t end) {
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT");
     if (begin < 0 || begin >= end || end > source.ng) {
         throw std::runtime_error("invalid NINT input shard");
     }
     require_canonical_nint_cpu(source);
-    mfq::nint::Data result = source;
+    tyloi::nint::Data result = source;
     result.ng = static_cast<int>(end - begin);
     const int64_t element_begin = begin * source.gs;
     const int64_t element_end =
@@ -288,19 +288,19 @@ mfq::nint::Data slice_nint_cpu_input_groups(
             source.sub_min.data() + source_group,
             static_cast<size_t>(result.ng));
     }
-    mfq::nint::describe(result);
+    tyloi::nint::describe(result);
     return result;
 }
 
-mfq::nint8::Data slice_nint8_zero_cpu_output(
-        const mfq::nint8::Data & source, int64_t begin, int64_t end) {
-    mfq::require_parallel_weight(
+tyloi::nint8::Data slice_nint8_zero_cpu_output(
+        const tyloi::nint8::Data & source, int64_t begin, int64_t end) {
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT8-0");
     if (begin < 0 || begin >= end || end > source.out) {
         throw std::runtime_error("invalid NINT8-0 output shard");
     }
-    mfq::nint8::Data result = source;
+    tyloi::nint8::Data result = source;
     result.out = static_cast<int>(end - begin);
     result.shape[0] = result.out;
     const size_t first_group =
@@ -319,15 +319,15 @@ mfq::nint8::Data slice_nint8_zero_cpu_output(
     return result;
 }
 
-mfq::nint8::Data slice_nint8_zero_cpu_input_groups(
-        const mfq::nint8::Data & source, int64_t begin, int64_t end) {
-    mfq::require_parallel_weight(
+tyloi::nint8::Data slice_nint8_zero_cpu_input_groups(
+        const tyloi::nint8::Data & source, int64_t begin, int64_t end) {
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT8-0");
     if (begin < 0 || begin >= end || end > source.ng) {
         throw std::runtime_error("invalid NINT8-0 input shard");
     }
-    mfq::nint8::Data result = source;
+    tyloi::nint8::Data result = source;
     result.ng = static_cast<int>(end - begin);
     result.neuron_len = result.ng * 32;
     result.shape[1] = result.neuron_len;
@@ -353,7 +353,7 @@ mfq::nint8::Data slice_nint8_zero_cpu_input_groups(
     return result;
 }
 NintWeight to_device_nint(
-        const mfq::nint::Data & c, bool cuda, int device) {
+        const tyloi::nint::Data & c, bool cuda, int device) {
     if (c.bits < 1 || c.bits > 8) throw std::runtime_error("unsupported NINT bits");
     require_canonical_nint_cpu(c);
     NintWeight w;
@@ -385,8 +385,8 @@ NintWeight to_device_nint(
         const int target_device = device >= 0
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
-        const auto target = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, target_device);
+        const auto target = ::tyloi::Device(
+            ::tyloi::kCUDA, target_device);
         w.q_packed = w.q_packed.to(target).contiguous();
         w.row_q_bits = w.row_q_bits.to(target).contiguous();
         w.row_q_bit_offsets = w.row_q_bit_offsets.to(target).contiguous();
@@ -400,7 +400,7 @@ NintWeight to_device_nint(
 
 
 NintWeight to_device_mfe_nint(
-        const mfq::nint::Data & source,
+        const tyloi::nint::Data & source,
         int local_experts,
         int out_per_expert,
         bool cuda) {
@@ -462,8 +462,8 @@ NintWeight to_device_mfe_nint(
     result.row_q_bit_offsets = cpu_i64_tensor(
         relative_offsets, {source.out});
     if (cuda) {
-        const auto target = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, mfq_current_cuda_device());
+        const auto target = ::tyloi::Device(
+            ::tyloi::kCUDA, mfq_current_cuda_device());
         result.q_packed = result.q_packed.to(target).contiguous();
         result.row_q_bits = result.row_q_bits.to(target).contiguous();
         result.row_q_bit_offsets =
@@ -477,7 +477,7 @@ NintWeight to_device_mfe_nint(
 }
 
 NintWeight to_device_nint8_zero(
-        const mfq::nint8::Data & c, bool cuda, int device) {
+        const tyloi::nint8::Data & c, bool cuda, int device) {
     NintWeight w;
     w.out = c.out;
     w.ng = c.ng;
@@ -492,8 +492,8 @@ NintWeight to_device_nint8_zero(
         const int target_device = device >= 0
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
-        const auto target = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, target_device);
+        const auto target = ::tyloi::Device(
+            ::tyloi::kCUDA, target_device);
         w.q_packed = w.q_packed.to(target).contiguous();
         w.q8_zero_scale = w.q8_zero_scale.to(target).contiguous();
     }
@@ -501,26 +501,26 @@ NintWeight to_device_nint8_zero(
 }
 
 
-mfq::nint::Data select_nint_cpu_rows(
-        const mfq::nint::Data & source,
+tyloi::nint::Data select_nint_cpu_rows(
+        const tyloi::nint::Data & source,
         const std::vector<int64_t> & rows) {
-    mfq::require_parallel_weight(
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT");
     return repack_nint_cpu_rows(source, rows);
 }
 
-mfq::nint8::Data select_nint8_zero_cpu_rows(
-        const mfq::nint8::Data & source,
+tyloi::nint8::Data select_nint8_zero_cpu_rows(
+        const tyloi::nint8::Data & source,
         const std::vector<int64_t> & rows) {
-    mfq::require_parallel_weight(
+    tyloi::require_parallel_weight(
         source.shape, source.axis, source.out,
         source.neuron_len, "NINT8-0");
     if (rows.empty()) {
         throw std::runtime_error(
             "cannot create an empty NINT8-0 MoE shard");
     }
-    mfq::nint8::Data result = source;
+    tyloi::nint8::Data result = source;
     result.out = static_cast<int>(rows.size());
     result.shape[0] = result.out;
     const size_t q_row_bytes =
@@ -555,16 +555,16 @@ mfq::nint8::Data select_nint8_zero_cpu_rows(
     return result;
 }
 
-mfq_tensor_backend::Tensor dequant_nint8_zero_cpu(const mfq::nint8::Data & source) {
+::tyloi::Tensor dequant_nint8_zero_cpu(const tyloi::nint8::Data & source) {
     TYLOINFER_RUNTIME_CHECK(source.shape.size() == 2,
         "CPU NINT8-0 dense tensor must be rank 2");
     const auto quantized_tensor = cpu_u8_tensor(
         source.q, {source.out, source.ng, 32});
     const auto scales_tensor = cpu_f16_tensor(
         source.scale_h, {source.out, source.ng});
-    auto result = mfq_tensor_backend::empty(
+    auto result = ::tyloi::cuda::empty(
         source.shape,
-        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
+        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat32));
     const auto * quantized =
         reinterpret_cast<const int8_t *>(quantized_tensor.data_ptr<uint8_t>());
     const mfq_half * scales = scales_tensor.data_ptr<mfq_half>();

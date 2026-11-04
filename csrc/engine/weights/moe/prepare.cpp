@@ -72,10 +72,9 @@ std::vector<MoeActivationGeometry> moe_activation_geometry(
 }
 
 static void upload_mixed_dispatch_metadata(
-        std::initializer_list<std::pair<mfq_tensor_backend::Tensor*,mfq_tensor_backend::Tensor>> tables,
-        mfq_tensor_backend::Device device,bool asynchronous,
-        mfq_tensor_backend::Tensor& device_owner,mfq_tensor_backend::Tensor& host_owner) {
-    namespace tb=mfq_tensor_backend;
+        std::initializer_list<std::pair<::tyloi::Tensor*,::tyloi::Tensor>> tables,
+        ::tyloi::Device device,bool asynchronous,
+        ::tyloi::Tensor& device_owner,::tyloi::Tensor& host_owner) {
     std::size_t bytes=0;
     for(const auto& [target,source]:tables) {
         bytes=(bytes+15)&~std::size_t(15);
@@ -84,14 +83,14 @@ static void upload_mixed_dispatch_metadata(
     // Small metadata packets are rebuilt while previous layers are running.
     // cudaHostAlloc here interrupts that overlap. Keep pageable storage alive
     // through its upload; cross-stream publication still synchronizes below.
-    host_owner=tb::empty({int64_t(bytes)},tb::TensorOptions().dtype(tb::kUInt8));
-    device_owner=tb::empty({int64_t(bytes)},host_owner.options().device(device).pinned_memory(false));
+    host_owner=::tyloi::cuda::empty({int64_t(bytes)},::tyloi::TensorOptions().dtype(::tyloi::kUInt8));
+    device_owner=::tyloi::cuda::empty({int64_t(bytes)},host_owner.options().device(device).pinned_memory(false));
     std::memset(host_owner.data_ptr(),0,bytes);
     std::size_t offset=0;
     for(const auto& [target,source]:tables) {
         offset=(offset+15)&~std::size_t(15);
         std::memcpy(host_owner.data_ptr<uint8_t>()+offset,source.data_ptr(),source.nbytes());
-        *target=tb::from_blob(device_owner.data_ptr<uint8_t>()+offset,source.sizes(),source.options().device(device));
+        *target=::tyloi::cuda::from_blob(device_owner.data_ptr<uint8_t>()+offset,source.sizes(),source.options().device(device));
         offset+=source.nbytes();
     }
     const auto stream=mfq_current_cuda_stream();
@@ -102,13 +101,12 @@ static void upload_mixed_dispatch_metadata(
 }
 
 static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
-    namespace tb=mfq_tensor_backend;
     runtime.nint_dispatch.reset();
     if(runtime.n_experts<=0 || runtime.n_experts>4096 || runtime.neuron_len<=0 ||
         runtime.out_per_expert<=0 || runtime.out_per_expert>INT_MAX)return;
     auto dispatch=std::make_shared<MixedNintDispatch>();
     std::vector<int64_t> maps;std::vector<int32_t> params;
-    tb::Device device(tb::kCUDA,mfq_current_cuda_device());
+    ::tyloi::Device device(::tyloi::kCUDA,mfq_current_cuda_device());
     for(std::size_t i=0;i<runtime.pools.size();++i) {
         const auto& pool=runtime.pools[i];if(pool.family!=MixedMoeFamily::Nint)continue;
         const auto& w=pool.nint;
@@ -118,25 +116,25 @@ static void initialize_mixed_nint_dispatch(MixedMoeRuntime& runtime) {
             w.ng!=(runtime.neuron_len+w.gs-1)/w.gs ||
             w.q_packed.numel()%pool.local_experts || w.q_packed.numel()/pool.local_experts>INT_MAX)return;
         if(dispatch->pools.empty())device=w.q_packed.device();
-        const auto field_ok=[&](const tb::Tensor& field,auto dtype,int64_t count) {
+        const auto field_ok=[&](const ::tyloi::Tensor& field,auto dtype,int64_t count) {
             return field.defined() && field.is_cuda() && field.device()==device && field.is_contiguous() &&
                 field.scalar_type()==dtype && field.numel()>=count;
         };
-        if(!field_ok(w.q_packed,tb::kUInt8,1) || !field_ok(pool.expert_local,tb::kInt32,runtime.n_experts) ||
-            !field_ok(w.row_q_bits,tb::kUInt8,w.out) || !field_ok(w.row_q_bit_offsets,tb::kInt64,w.out) ||
-            !field_ok(w.sub_scale,tb::kUInt8,w.out*w.ng) || !field_ok(w.sub_min,tb::kUInt8,w.out*w.ng) ||
-            !field_ok(w.neuron_scale,tb::kFloat32,w.out) || !field_ok(w.neuron_min,tb::kFloat32,w.out))return;
+        if(!field_ok(w.q_packed,::tyloi::kUInt8,1) || !field_ok(pool.expert_local,::tyloi::kInt32,runtime.n_experts) ||
+            !field_ok(w.row_q_bits,::tyloi::kUInt8,w.out) || !field_ok(w.row_q_bit_offsets,::tyloi::kInt64,w.out) ||
+            !field_ok(w.sub_scale,::tyloi::kUInt8,w.out*w.ng) || !field_ok(w.sub_min,::tyloi::kUInt8,w.out*w.ng) ||
+            !field_ok(w.neuron_scale,::tyloi::kFloat32,w.out) || !field_ok(w.neuron_min,::tyloi::kFloat32,w.out))return;
         dispatch->pools.push_back(int(i));maps.push_back(reinterpret_cast<int64_t>(pool.expert_local.data_ptr<int32_t>()));
         params.insert(params.end(),{int32_t(w.ng),int32_t(w.gs),int32_t(w.q_packed.numel()/pool.local_experts)});
     }
     if(dispatch->pools.empty())return;
     std::vector<int32_t> missing(runtime.n_experts,-1);
-    const auto i32=tb::TensorOptions().dtype(tb::kInt32),i64=tb::TensorOptions().dtype(tb::kInt64);
+    const auto i32=::tyloi::TensorOptions().dtype(::tyloi::kInt32),i64=::tyloi::TensorOptions().dtype(::tyloi::kInt64);
     upload_mixed_dispatch_metadata({
-        {&dispatch->map_ptrs,tb::from_blob(maps.data(),{int64_t(maps.size())},i64)},
-        {&dispatch->pool_params,tb::from_blob(params.data(),{int64_t(dispatch->pools.size()),3},i32)},
-        {&dispatch->initial_expert_pool,tb::from_blob(missing.data(),{runtime.n_experts},i32)},
-        {&dispatch->initial_expert_local,tb::from_blob(missing.data(),{runtime.n_experts},i32)}},
+        {&dispatch->map_ptrs,::tyloi::cuda::from_blob(maps.data(),{int64_t(maps.size())},i64)},
+        {&dispatch->pool_params,::tyloi::cuda::from_blob(params.data(),{int64_t(dispatch->pools.size()),3},i32)},
+        {&dispatch->initial_expert_pool,::tyloi::cuda::from_blob(missing.data(),{runtime.n_experts},i32)},
+        {&dispatch->initial_expert_local,::tyloi::cuda::from_blob(missing.data(),{runtime.n_experts},i32)}},
         device,runtime.prefill_only,dispatch->metadata_device,dispatch->metadata_host);
     runtime.nint_dispatch=std::move(dispatch);
 }
@@ -147,7 +145,7 @@ void prepare_moe(
         const std::vector<std::vector<int32_t>>* expert_local_host) {
     if(expert_local_host && expert_local_host->size()!=runtime.pools.size())
         throw std::invalid_argument("mixed NVQ host-map pool count mismatch");
-    std::unordered_map<const void*,mfq_tensor_backend::Tensor> integer_books;
+    std::unordered_map<const void*,::tyloi::Tensor> integer_books;
     for(auto& pool:runtime.pools)if(pool.family==MixedMoeFamily::Nvq) {
         auto& w=pool.nvq;
         prepare_nvq_decode_records(w);
@@ -187,8 +185,8 @@ void prepare_moe(
     weight_sizes.reserve(static_cast<size_t>(nvq_pools) * 3);
     pool_params.reserve(static_cast<size_t>(nvq_pools) * 7);
 
-    mfq_tensor_backend::Device target = mfq_tensor_backend::Device(
-        mfq_tensor_backend::kCUDA, mfq_current_cuda_device());
+    ::tyloi::Device target = ::tyloi::Device(
+        ::tyloi::kCUDA, mfq_current_cuda_device());
     int dispatch_pool = 0;
     int owned_experts = 0;
     MixedNvqF16FormatGroup f16_format_group =
@@ -254,7 +252,7 @@ void prepare_moe(
         pool_params.push_back(static_cast<int32_t>(weight.sign_mode));
         pool_params.push_back(format);
 
-        mfq_tensor_backend::Tensor local_host;
+        ::tyloi::Tensor local_host;
         const int32_t* local=nullptr;
         if(expert_local_host) {
             const auto& host=expert_local_host->at(pool_index);
@@ -262,7 +260,7 @@ void prepare_moe(
                 throw std::invalid_argument("mixed NVQ host-map expert count mismatch");
             local=host.data();
         } else {
-            local_host=pool.expert_local.to(mfq_tensor_backend::kCPU,mfq_tensor_backend::kInt32).contiguous();
+            local_host=pool.expert_local.to(::tyloi::kCPU,::tyloi::kInt32).contiguous();
             local=local_host.data_ptr<int32_t>();
         }
         for (int expert = 0; expert < runtime.n_experts; ++expert) {
@@ -284,15 +282,14 @@ void prepare_moe(
     dispatch->f16_format_group = f16_format_group;
     dispatch->masked_experts = owned_experts < runtime.n_experts;
     dispatch->dense_groups = has_dense_groups;
-    namespace tb=mfq_tensor_backend;
-    const auto i32=tb::TensorOptions().dtype(tb::kInt32),i64=tb::TensorOptions().dtype(tb::kInt64);
+    const auto i32=::tyloi::TensorOptions().dtype(::tyloi::kInt32),i64=::tyloi::TensorOptions().dtype(::tyloi::kInt64);
     upload_mixed_dispatch_metadata({
-        {&dispatch->map_ptrs,tb::from_blob(map_ptrs.data(),{int64_t(map_ptrs.size())},i64)},
-        {&dispatch->weight_ptrs,tb::from_blob(weight_ptrs.data(),{dispatch_pool,5},i64)},
-        {&dispatch->weight_sizes,tb::from_blob(weight_sizes.data(),{dispatch_pool,3},i64)},
-        {&dispatch->pool_params,tb::from_blob(pool_params.data(),{dispatch_pool,7},i32)},
-        {&dispatch->initial_expert_pool,tb::from_blob(expert_pool.data(),{runtime.n_experts},i32)},
-        {&dispatch->initial_expert_local,tb::from_blob(expert_local.data(),{runtime.n_experts},i32)}},
+        {&dispatch->map_ptrs,::tyloi::cuda::from_blob(map_ptrs.data(),{int64_t(map_ptrs.size())},i64)},
+        {&dispatch->weight_ptrs,::tyloi::cuda::from_blob(weight_ptrs.data(),{dispatch_pool,5},i64)},
+        {&dispatch->weight_sizes,::tyloi::cuda::from_blob(weight_sizes.data(),{dispatch_pool,3},i64)},
+        {&dispatch->pool_params,::tyloi::cuda::from_blob(pool_params.data(),{dispatch_pool,7},i32)},
+        {&dispatch->initial_expert_pool,::tyloi::cuda::from_blob(expert_pool.data(),{runtime.n_experts},i32)},
+        {&dispatch->initial_expert_local,::tyloi::cuda::from_blob(expert_local.data(),{runtime.n_experts},i32)}},
         target,runtime.prefill_only,dispatch->metadata_device,dispatch->metadata_host);
     runtime.nvq_dispatch = std::move(dispatch);
 }

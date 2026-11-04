@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 class AsyncRangeReader;
 
@@ -44,4 +44,4 @@ private:
 };
 
 } // namespace source
-} // namespace mfq
+} // namespace tyloi

@@ -1,7 +1,7 @@
 #pragma once
 #include <cstddef>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 // Copy non-overlapping host fields and publish their stores when the batch ends.
 class HostMemoryCopyBatch {
     using Copy=void(*)(void*,const void*,std::size_t) noexcept;
@@ -17,4 +17,4 @@ public:
         copy_(destination,source,bytes);
     }
 };
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

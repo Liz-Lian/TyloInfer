@@ -2,7 +2,7 @@
 
 #include "engine/models/common/predictor.h"
 
-namespace mfq::models::nemotron_h {
+namespace tyloi::models::nemotron_h {
 
 enum class PredictorNorm { embedding, hidden, output };
 
@@ -39,10 +39,10 @@ auto mtp_predictor(Ops &ops, typename Ops::Tensor hidden, typename Ops::Tensor i
     require_model(config.num_nextn_predict_layers == 1 && !config.mtp_mixers.empty(),
                   "Nemotron-H MTP requires one declared predictor stage");
     const auto batch = ops.size(hidden, 0), tokens = ops.size(hidden, 1);
-    return mfq::models::projected_predictor(
+    return tyloi::models::projected_predictor(
         model, batch, tokens, depth, cache, [&](int64_t next) { model.reset(next); },
         [&] { return ops.embed(std::move(ids), hidden); },
-        [&](mfq::models::PredictorCursor cursor) {
+        [&](tyloi::models::PredictorCursor cursor) {
             return ops.positions(std::move(positions), cursor.start, tokens);
         },
         [&](typename Ops::Tensor embeds, const typename Ops::Tensor &) {
@@ -61,4 +61,4 @@ auto mtp_predictor(Ops &ops, typename Ops::Tensor hidden, typename Ops::Tensor i
         [&](int64_t, const typename Ops::Tensor &) {});
 }
 
-} // namespace mfq::models::nemotron_h
+} // namespace tyloi::models::nemotron_h

@@ -7,43 +7,43 @@
 
 #include <cstdint>
 
-struct FullBlock : Block, mfq::cuda::FullAttention {
-    mfq_tensor_backend::Tensor ffn_norm;
-    mfq::cuda::Ffn ffn;
+struct FullBlock : Block, tyloi::cuda::FullAttention {
+    ::tyloi::Tensor ffn_norm;
+    tyloi::cuda::Ffn ffn;
     KVCache cache;
 
     bool supports_speculation() const noexcept override { return !sliding; }
     void reset(int64_t batch) override;
     void preallocate_kv();
-    mfq_tensor_backend::Tensor forward(
+    ::tyloi::Tensor forward(
         CudaExecutionContext& execution,
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor positions,
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor positions,
         int64_t cache_position,
-        const MfqOptional<mfq_tensor_backend::Tensor>& sequence_lengths,
+        const MfqOptional<::tyloi::Tensor>& sequence_lengths,
         const RopeCache& rope,
-        const MfqOptional<mfq_tensor_backend::Tensor>& cache_positions = mfq_nullopt,
-        const MfqOptional<mfq_tensor_backend::Tensor>& attention_mask = mfq_nullopt) override;
-    mfq_tensor_backend::Tensor forward_context(
+        const MfqOptional<::tyloi::Tensor>& cache_positions = mfq_nullopt,
+        const MfqOptional<::tyloi::Tensor>& attention_mask = mfq_nullopt) override;
+    ::tyloi::Tensor forward_context(
         CudaExecutionContext& execution,
-        mfq_tensor_backend::Tensor x,
+        ::tyloi::Tensor x,
         const Context& context,
         const RopeCache& rope) override;
-    mfq_tensor_backend::Tensor forward_impl(
+    ::tyloi::Tensor forward_impl(
         CudaExecutionContext& execution,
-        mfq_tensor_backend::Tensor x,
-        mfq_tensor_backend::Tensor positions,
+        ::tyloi::Tensor x,
+        ::tyloi::Tensor positions,
         int64_t cache_position,
-        const MfqOptional<mfq_tensor_backend::Tensor>& sequence_lengths,
+        const MfqOptional<::tyloi::Tensor>& sequence_lengths,
         const RopeCache& rope,
-        const MfqOptional<mfq_tensor_backend::Tensor>& cache_positions,
-        const MfqOptional<mfq_tensor_backend::Tensor>& attention_mask,
+        const MfqOptional<::tyloi::Tensor>& cache_positions,
+        const MfqOptional<::tyloi::Tensor>& attention_mask,
         int64_t planned_kv_length,
         int64_t decode_attention_parts);
-    virtual mfq_tensor_backend::Tensor forward_ffn(
+    virtual ::tyloi::Tensor forward_ffn(
         CudaExecutionContext& execution,
-        mfq_tensor_backend::Tensor residual,
-        mfq_tensor_backend::Tensor attention_output,
+        ::tyloi::Tensor residual,
+        ::tyloi::Tensor attention_output,
         int64_t batch,
         int64_t tokens,
         int64_t hidden);

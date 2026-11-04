@@ -9,7 +9,7 @@
 #include <functional>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 // File hints follow the operation, not the reader's lifetime. Bulk prefill
 // opts in on each read worker; latency-sensitive demand reads use memcpy.
@@ -36,4 +36,4 @@ std::size_t release_mapped_tensor_pages();
 std::function<void(std::uint64_t, std::byte*, std::size_t)> mapped_reader(const std::filesystem::path& path, std::uint64_t offset, std::uint64_t bytes);
 std::function<void(const std::vector<ReadSpan>&)> mapped_batch_reader(const std::filesystem::path& path, std::uint64_t offset, std::uint64_t bytes);
 
-} // namespace mfq
+} // namespace tyloi

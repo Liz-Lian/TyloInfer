@@ -6,16 +6,16 @@
 #include <vector>
 
 struct NvqWeight {
-    mfq_tensor_backend::Tensor indices_packed;
-    mfq_tensor_backend::Tensor aux_packed;
-    mfq_tensor_backend::Tensor sub_scale_packed;
-    mfq_tensor_backend::Tensor neuron_scale;
-    mfq_tensor_backend::Tensor codebook;
+    ::tyloi::Tensor indices_packed;
+    ::tyloi::Tensor aux_packed;
+    ::tyloi::Tensor sub_scale_packed;
+    ::tyloi::Tensor neuron_scale;
+    ::tyloi::Tensor codebook;
     // Optional decode-only int8 digits: NVQ1-L 8*v+delta, S 32*v+5*delta.
     // Canonical books retain the dense/CPU and reference decode contract.
-    mfq_tensor_backend::Tensor integer_codebook;
+    ::tyloi::Tensor integer_codebook;
     // Complete NVQ1 GS24 records (S 4B, L 5B), aliasing indices_packed.
-    mfq_tensor_backend::Tensor decode_records;
+    ::tyloi::Tensor decode_records;
     // One byte-preserving group stream replaces indices/aux/states.
     bool dense_groups = false;
     uint32_t bank_map = 0;
@@ -34,14 +34,14 @@ inline constexpr int64_t kNvq2JscXlGroupExecKernelFormat = 16;
 inline constexpr int64_t kNvq3JscLGroupExecKernelFormat = 17;
 
 struct NepqWeight {
-    mfq_tensor_backend::Tensor indices_packed;
-    mfq_tensor_backend::Tensor aux_packed;
-    mfq_tensor_backend::Tensor state_packed;
-    mfq_tensor_backend::Tensor neuron_scale;
-    mfq_tensor_backend::Tensor table_pool;
-    mfq_tensor_backend::Tensor grouped_table_pool;
-    mfq_tensor_backend::Tensor bank_ids;
-    mfq_tensor_backend::Tensor rotation_signs;
+    ::tyloi::Tensor indices_packed;
+    ::tyloi::Tensor aux_packed;
+    ::tyloi::Tensor state_packed;
+    ::tyloi::Tensor neuron_scale;
+    ::tyloi::Tensor table_pool;
+    ::tyloi::Tensor grouped_table_pool;
+    ::tyloi::Tensor bank_ids;
+    ::tyloi::Tensor rotation_signs;
     int format = 0;
     int state_bits = 0;
     int n_experts = 0;
@@ -53,7 +53,7 @@ struct NepqWeight {
     bool residual = false;
     int residual_position_bits = 0;
     int residual_block_vectors = 0;
-    mfq_tensor_backend::Tensor residual_codebook;
-    mfq_tensor_backend::Tensor residual_first;
-    mfq_tensor_backend::Tensor residual_second;
+    ::tyloi::Tensor residual_codebook;
+    ::tyloi::Tensor residual_first;
+    ::tyloi::Tensor residual_second;
 };

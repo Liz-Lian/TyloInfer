@@ -26,7 +26,7 @@
 #include "engine/models/deepseek_v4/snapshot.h"
 #include "engine/models/common/session_codec.h"
 
-namespace mfq::cuda::deepseek_v4 {
+namespace tyloi::cuda::deepseek_v4 {
 
 Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
                  const std::string &type, Collectives& collectives, int primary,
@@ -55,25 +55,25 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     layer.q_a_norm = weights.tensor(p + "attention.query_a_norm.weight");
     layer.kv_norm = weights.tensor(p + "attention.key_value_a_norm.weight");
     layer.sinks = weights.tensor(p + "attention.sink")
-                   .to(mfq_tensor_backend::kFloat32)
+                   .to(::tyloi::kFloat32)
                    .contiguous();
     layer.hc_attn_fn = weights.tensor(p + "attention.mhc.pre.function")
-                        .to(mfq_tensor_backend::kFloat32)
+                        .to(::tyloi::kFloat32)
                         .contiguous();
     layer.hc_attn_scale = weights.tensor(p + "attention.mhc.pre.scale")
-                           .to(mfq_tensor_backend::kFloat32)
+                           .to(::tyloi::kFloat32)
                            .contiguous();
     layer.hc_attn_base = weights.tensor(p + "attention.mhc.pre.base")
-                          .to(mfq_tensor_backend::kFloat32)
+                          .to(::tyloi::kFloat32)
                           .contiguous();
     layer.hc_ffn_fn = weights.tensor(p + "mlp.mhc.pre.function")
-                       .to(mfq_tensor_backend::kFloat32)
+                       .to(::tyloi::kFloat32)
                        .contiguous();
     layer.hc_ffn_scale = weights.tensor(p + "mlp.mhc.pre.scale")
-                          .to(mfq_tensor_backend::kFloat32)
+                          .to(::tyloi::kFloat32)
                           .contiguous();
     layer.hc_ffn_base = weights.tensor(p + "mlp.mhc.pre.base")
-                         .to(mfq_tensor_backend::kFloat32)
+                         .to(::tyloi::kFloat32)
                          .contiguous();
     layer.q_a = weights.projection(p + "attention.query_a.weight");
     layer.q_b = weights.projection(p + "attention.query_b.weight");
@@ -95,10 +95,10 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
             weights.build_group({p + "attention.compressor.key_value.weight",
                                          p + "attention.compressor.gate.weight"}));
         layer.compressor.ape = weights.tensor(p + "attention.compressor.position")
-                                .to(mfq_tensor_backend::kFloat32)
+                                .to(::tyloi::kFloat32)
                                 .contiguous();
         layer.compressor.norm = weights.tensor(p + "attention.compressor.norm.weight")
-                                 .to(mfq_tensor_backend::kFloat32)
+                                 .to(::tyloi::kFloat32)
                                  .contiguous();
     }
     if (layer.compress_ratio == 4) {
@@ -112,15 +112,15 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
                                          p + "attention.indexer.compressor.gate.weight"}));
         layer.indexer_compressor.ape =
             weights.tensor(p + "attention.indexer.compressor.position")
-                .to(mfq_tensor_backend::kFloat32)
+                .to(::tyloi::kFloat32)
                 .contiguous();
         layer.indexer_compressor.norm =
             weights.tensor(p + "attention.indexer.compressor.norm.weight")
-                .to(mfq_tensor_backend::kFloat32)
+                .to(::tyloi::kFloat32)
                 .contiguous();
         layer.indexer_q = weights.projection(p + "attention.indexer.query.weight");
         layer.indexer_weight = weights.tensor(p + "attention.indexer.score.weight")
-                                .to(mfq_tensor_backend::kFloat32)
+                                .to(::tyloi::kFloat32)
                                 .contiguous();
     }
 
@@ -141,7 +141,7 @@ Layer load_layer(const weight_loader::Loader& weights, const Config &c, int i,
     }
     if (i < config.hash_layer_count) {
         layer.ffn.moe_hash_ids = weights.tensor(p + "mlp.router.token_to_expert")
-                                  .to(mfq_tensor_backend::kInt32)
+                                  .to(::tyloi::kInt32)
                                   .contiguous();
     }
     layer.ffn.moe_top_k = static_cast<int>(c.num_experts_per_tok);
@@ -210,45 +210,45 @@ void validate_offload(const Config &config, const std::unordered_set<int>& offlo
 OutputHeadWeights load_output_head(const weight_loader::Loader& weights) {
     return {
         weights.tensor("model.mhc.output.function")
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous(),
         weights.tensor("model.mhc.output.scale")
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous(),
         weights.tensor("model.mhc.output.base")
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous(),
     };
 }
 
-mfq_tensor_backend::Tensor finalize_hidden(mfq_tensor_backend::Tensor hidden,
+::tyloi::Tensor finalize_hidden(::tyloi::Tensor hidden,
                                            const OutputHeadWeights &output_head,
                                            const Config &config, CudaProfiler &profiler,
                                            int64_t batch, int64_t tokens) {
     return profiler.measure("model.dsv4_hc_head", [&]() {
-        auto flat = hidden.flatten(2).to(mfq_tensor_backend::kFloat32);
+        auto flat = hidden.flatten(2).to(::tyloi::kFloat32);
         auto inverse_rms =
-            mfq_tensor_backend::rsqrt(flat.square().mean(-1, true) + config.rms_norm_eps);
+            ::tyloi::cuda::rsqrt(flat.square().mean(-1, true) + config.rms_norm_eps);
         auto mixes =
-            mfq_tensor_backend::matmul(flat, output_head.function.transpose(0, 1)) * inverse_rms;
-        auto pre = mfq_tensor_backend::sigmoid(mixes * output_head.scale + output_head.base) +
+            ::tyloi::cuda::matmul(flat, output_head.function.transpose(0, 1)) * inverse_rms;
+        auto pre = ::tyloi::cuda::sigmoid(mixes * output_head.scale + output_head.base) +
                    config.hc_eps;
         return (pre.unsqueeze(-1) *
                 flat.reshape({batch, tokens, config.hc_mult, config.hidden_size}))
             .sum(2)
-            .to(mfq_tensor_backend::kFloat16)
+            .to(::tyloi::kFloat16)
             .contiguous();
     });
 }
 
-Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            int64_t context) {
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = mfq::models::graph(*model.source);
+    model.graph = tyloi::models::graph(*model.source);
     model.plan = cuda_model_plan(model.graph);
-    mfq::models::require_model(model.graph.backbone == "deepseek_v4",
+    tyloi::models::require_model(model.graph.backbone == "deepseek_v4",
                                "model backbone does not match the requested causal model");
     auto& c = model.config;
     auto& m = model.metadata;
@@ -270,10 +270,10 @@ Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view defi
     m.tie_word_embeddings = c.tie_word_embeddings;
     m.model_type = c.model_type;
     m.layer_types = c.layer_types;
-    mfq::models::require_model(c.num_hidden_layers == model.graph.topology.text_layers,
+    tyloi::models::require_model(c.num_hidden_layers == model.graph.topology.text_layers,
                                "model graph/config text-layer topology mismatch");
     if (context > 0) {
-        mfq::models::require_model(context <= m.max_position_embeddings,
+        tyloi::models::require_model(context <= m.max_position_embeddings,
                                    "--ctx-size exceeds max_position_embeddings");
         c.max_position_embeddings = m.max_position_embeddings = context;
     }
@@ -313,12 +313,12 @@ void load(Model& model, const weight_loader::Loader& weights, LayerPlacementConf
 
 namespace {
 Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
-    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
-    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+    tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
                                "token IDs must not be empty");
-    return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
+    return collectives.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 } // namespace
 
@@ -333,7 +333,7 @@ Tensor embed(const Model& model, Executor& executor, Collectives& collectives, i
 Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t batch, int64_t tokens) {
     return executor.profiler().measure("model.output_norm", [&]() {
         return qwen_rms_norm(hidden.reshape({batch * tokens, model.metadata.hidden_size})
-                                 .to(mfq_tensor_backend::kFloat32),
+                                 .to(::tyloi::kFloat32),
                              model.output_norm, model.metadata.rms_norm_eps,
                              model.metadata.norm_weight_offset)
             .reshape({batch, tokens, model.metadata.hidden_size});
@@ -342,7 +342,7 @@ Tensor normalize(const Model& model, Executor& executor, Tensor hidden, int64_t 
 
 Tensor softcap(const Model& model, Executor&, Tensor value) {
     const double cap = model.metadata.final_logit_softcapping;
-    return cap > 0.0 ? mfq_tensor_backend::tanh(value / cap) * cap : value;
+    return cap > 0.0 ? ::tyloi::cuda::tanh(value / cap) * cap : value;
 }
 
 Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped,
@@ -356,45 +356,44 @@ Tensor logits(const Model& model, Executor& executor, Tensor hidden, bool capped
 
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
-    namespace tb = mfq_tensor_backend;
     MfqCudaGuard guard(mode.primary);
     auto ids = normalize_ids(collectives, mode.primary, Tensor(std::move(input.ids)));
     auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
-    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+    tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
                                    embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
                                "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    mfq::models::require_model(input.confirmed == 0, "unsupported speculative backbone geometry");
+    tyloi::models::require_model(input.confirmed == 0, "unsupported speculative backbone geometry");
     if (state.cache_pos == 0) state.reset(B);
-    const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary)).dtype(tb::kInt64);
+    const auto options = ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, mode.primary)).dtype(::tyloi::kInt64);
     auto physical = input.cache_positions.has_value()
-        ? collectives.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
-        : tb::arange(state.cache_pos, state.cache_pos + T, options);
+        ? collectives.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto semantic = input.positions.has_value()
-        ? collectives.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
+        ? collectives.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
-    mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
+    tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
                                    (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
                                "cache_positions must have shape [tokens] or [batch,tokens]");
-    mfq::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
+    tyloi::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
                                    (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
                                "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.attention_mask.has_value()) {
         const auto& mask = *input.attention_mask;
-        mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
+        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B && mask.size(1) >= state.cache_pos + T,
                                    "attention_mask must cover [batch,cached_plus_current_tokens]");
     }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
-        input.lengths = tb::full({B}, state.cache_pos + 1, options);
+        input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
     AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
                        input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
                        {}, state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous()
-                      .to(tb::kFloat16).unsqueeze(2)
+                      .to(::tyloi::kFloat16).unsqueeze(2)
                       .expand({B, T, model.metadata.hc_mult, model.metadata.hidden_size}).contiguous();
     const auto trace = [&](const Tensor& value) {
-        if (input.trace) input.trace->push_back(collectives.copy(value, mode.primary).to(tb::kFloat32).clone());
+        if (input.trace) input.trace->push_back(collectives.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace(hidden);
     for (std::size_t index = 0; index < model.layers.size(); ++index) {
@@ -417,26 +416,26 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     return finalized;
 }
 
-} // namespace mfq::cuda::deepseek_v4
+} // namespace tyloi::cuda::deepseek_v4
 
 bool g_dsv4_fused_hc = true;
 bool g_dsv4_compare_hc_ops = false;
 
-static std::vector<mfq_tensor_backend::Tensor>
-dsv4_hc_split_sinkhorn(mfq_tensor_backend::Tensor mixes, mfq_tensor_backend::Tensor scale,
-                       mfq_tensor_backend::Tensor base, int64_t hc_mult, int64_t iterations,
+static std::vector<::tyloi::Tensor>
+dsv4_hc_split_sinkhorn(::tyloi::Tensor mixes, ::tyloi::Tensor scale,
+                       ::tyloi::Tensor base, int64_t hc_mult, int64_t iterations,
                        double eps) {
     const int64_t prefix = 2 * hc_mult;
-    auto pre = mfq_tensor_backend::sigmoid(mixes.slice(-1, 0, hc_mult) * scale.index({0}) +
+    auto pre = ::tyloi::cuda::sigmoid(mixes.slice(-1, 0, hc_mult) * scale.index({0}) +
                                            base.slice(0, 0, hc_mult)) +
                eps;
     auto post =
-        2.0 * mfq_tensor_backend::sigmoid(mixes.slice(-1, hc_mult, prefix) * scale.index({1}) +
+        2.0 * ::tyloi::cuda::sigmoid(mixes.slice(-1, hc_mult, prefix) * scale.index({1}) +
                                           base.slice(0, hc_mult, prefix));
     auto comb = (mixes.slice(-1, prefix, mixes.size(-1)) * scale.index({2}) +
                  base.slice(0, prefix, base.size(0)))
                     .reshape({mixes.size(0), mixes.size(1), hc_mult, hc_mult});
-    comb = mfq_tensor_backend::softmax(comb, -1) + eps;
+    comb = ::tyloi::cuda::softmax(comb, -1) + eps;
     comb = comb / (comb.sum(-2, true) + eps);
     for (int64_t i = 1; i < iterations; ++i) {
         comb = comb / (comb.sum(-1, true) + eps);
@@ -447,10 +446,10 @@ dsv4_hc_split_sinkhorn(mfq_tensor_backend::Tensor mixes, mfq_tensor_backend::Ten
 
 
 static void dsv4_report_hc_difference(int layer, const char *stage, const char *tensor_name,
-                                      const mfq_tensor_backend::Tensor &reference,
-                                      const mfq_tensor_backend::Tensor &candidate) {
-    auto reference_f32 = reference.to(mfq_tensor_backend::kFloat32);
-    auto candidate_f32 = candidate.to(mfq_tensor_backend::kFloat32);
+                                      const ::tyloi::Tensor &reference,
+                                      const ::tyloi::Tensor &candidate) {
+    auto reference_f32 = reference.to(::tyloi::kFloat32);
+    auto candidate_f32 = candidate.to(::tyloi::kFloat32);
     auto difference = candidate_f32 - reference_f32;
     const double reference_norm = std::max(reference_f32.norm().item<double>(), 1.0e-30);
     std::cout << std::scientific << std::setprecision(9) << "dsv4_hc_op_ab layer=" << layer
@@ -462,7 +461,7 @@ static void dsv4_report_hc_difference(int layer, const char *stage, const char *
 }
 
 
-namespace mfq::models::deepseek_v4 {
+namespace tyloi::models::deepseek_v4 {
 template <class Tensor> struct Projections {
     Tensor rank, queries, values;
     std::vector<Tensor> compressor, indexer;
@@ -516,10 +515,10 @@ auto compressed_step(int64_t ratio, bool prefill, Write write, Compress compress
     return output(inverse(attend(std::move(values), indices)));
 }
 
-} // namespace mfq::models::deepseek_v4
+} // namespace tyloi::models::deepseek_v4
 
-namespace mfq::cuda::deepseek_v4 {
-using mfq::models::deepseek_v4::PoolSnapshot;
+namespace tyloi::cuda::deepseek_v4 {
+using tyloi::models::deepseek_v4::PoolSnapshot;
 
 static PoolSnapshot capture_pool(const PoolState &source, int64_t cache_pos, size_t &bytes) {
     PoolSnapshot state;
@@ -572,8 +571,8 @@ static void restore_pool(PoolState &target, const PoolSnapshot &state) {
         restore_session_tensor(target.previous_kv, state.previous_kv);
         restore_session_tensor(target.previous_gate, state.previous_gate);
     } else {
-        target.previous_kv = mfq_tensor_backend::Tensor();
-        target.previous_gate = mfq_tensor_backend::Tensor();
+        target.previous_kv = ::tyloi::Tensor();
+        target.previous_gate = ::tyloi::Tensor();
     }
     restore_session_prefix_tensor(target.pool, state.pool, 1, state.capacity);
 }
@@ -583,10 +582,10 @@ void PoolState::reset(int64_t batch, int64_t max_positions) {
         return;
     capacity = std::max<int64_t>(1, (max_positions + ratio - 1) / ratio);
     const int64_t output_dim = overlap ? 2 * head_dim : head_dim;
-    auto fp32 = mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::kCUDA)
-                    .dtype(mfq_tensor_backend::kFloat32);
-    auto half = fp32.dtype(mfq_tensor_backend::kFloat16);
+    auto fp32 = ::tyloi::TensorOptions()
+                    .device(::tyloi::kCUDA)
+                    .dtype(::tyloi::kFloat32);
+    auto half = fp32.dtype(::tyloi::kFloat16);
     if (state_kv.defined() && state_kv.size(0) == batch && pool.size(1) == capacity) {
         state_kv.zero_();
         state_gate.fill_(-std::numeric_limits<float>::infinity());
@@ -597,45 +596,45 @@ void PoolState::reset(int64_t batch, int64_t max_positions) {
         pool.zero_();
         return;
     }
-    state_kv = mfq_tensor_backend::zeros({batch, ratio, output_dim}, fp32);
-    state_gate = mfq_tensor_backend::full({batch, ratio, output_dim},
+    state_kv = ::tyloi::cuda::zeros({batch, ratio, output_dim}, fp32);
+    state_gate = ::tyloi::cuda::full({batch, ratio, output_dim},
                                           -std::numeric_limits<float>::infinity(), fp32);
     if (overlap) {
-        previous_kv = mfq_tensor_backend::zeros({batch, ratio, head_dim}, fp32);
-        previous_gate = mfq_tensor_backend::full({batch, ratio, head_dim},
+        previous_kv = ::tyloi::cuda::zeros({batch, ratio, head_dim}, fp32);
+        previous_gate = ::tyloi::cuda::full({batch, ratio, head_dim},
                                                  -std::numeric_limits<float>::infinity(), fp32);
     } else {
-        previous_kv = mfq_tensor_backend::empty({0}, fp32);
-        previous_gate = mfq_tensor_backend::empty({0}, fp32);
+        previous_kv = ::tyloi::cuda::empty({0}, fp32);
+        previous_gate = ::tyloi::cuda::empty({0}, fp32);
     }
-    pool = mfq_tensor_backend::zeros({batch, capacity, head_dim}, half);
+    pool = ::tyloi::cuda::zeros({batch, capacity, head_dim}, half);
 }
 
-std::vector<mfq_tensor_backend::Tensor> Compressor::project(mfq_tensor_backend::Tensor x, int64_t batch,
+std::vector<::tyloi::Tensor> Compressor::project(::tyloi::Tensor x, int64_t batch,
                                                 int64_t tokens) const {
-    auto parts = projection.forward(x.to(mfq_tensor_backend::kFloat32));
+    auto parts = projection.forward(x.to(::tyloi::kFloat32));
     const int64_t output_dim = overlap ? 2 * head_dim : head_dim;
     return {
         parts.at(0)
             .reshape({batch, tokens, output_dim})
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous(),
         parts.at(1)
             .reshape({batch, tokens, output_dim})
-            .to(mfq_tensor_backend::kFloat32)
+            .to(::tyloi::kFloat32)
             .contiguous(),
     };
 }
 
-void Compressor::update(PoolState& state, mfq_tensor_backend::Tensor kv, mfq_tensor_backend::Tensor gate,
-            mfq_tensor_backend::Tensor length, const mfq::cuda::TailRope &rope) const {
+void Compressor::update(PoolState& state, ::tyloi::Tensor kv, ::tyloi::Tensor gate,
+            ::tyloi::Tensor length, const tyloi::cuda::TailRope &rope) const {
     dsv4_decode_pool_update_cuda(kv, gate, ape, norm, state.state_kv, state.state_gate, state.previous_kv,
                                  state.previous_gate, state.pool, length, rope.cos(), rope.sin(), ratio,
                                  overlap, cache_quant_mode, 1e-6);
 }
 
-int64_t Compressor::prefill(PoolState& state, const mfq_tensor_backend::Tensor &kv, const mfq_tensor_backend::Tensor &gate,
-                const mfq::cuda::TailRope &rope) const {
+int64_t Compressor::prefill(PoolState& state, const ::tyloi::Tensor &kv, const ::tyloi::Tensor &gate,
+                const tyloi::cuda::TailRope &rope) const {
     if (ratio <= 0)
         return 0;
     if (kv.dim() != 3 || gate.sizes() != kv.sizes()) {
@@ -656,13 +655,13 @@ int64_t Compressor::prefill(PoolState& state, const mfq_tensor_backend::Tensor &
         auto grouped_gate =
             gate.narrow(1, 0, cutoff).reshape({batch, windows, ratio, output_dim}).contiguous();
         auto positions =
-            mfq_tensor_backend::arange(windows, mfq_tensor_backend::TensorOptions()
+            ::tyloi::cuda::arange(windows, ::tyloi::TensorOptions()
                                                     .device(kv.device())
-                                                    .dtype(mfq_tensor_backend::kInt64))
+                                                    .dtype(::tyloi::kInt64))
                 .reshape({1, windows})
                 .expand({batch, windows})
                 .contiguous();
-        auto empty = mfq_tensor_backend::empty({0}, kv.options());
+        auto empty = ::tyloi::cuda::empty({0}, kv.options());
         auto compressed =
             dsv4_compress_cuda(grouped_kv, grouped_gate, ape, norm, empty, empty, positions,
                                rope.cos(), rope.sin(), ratio, overlap, cache_quant_mode, 1e-6);
@@ -705,10 +704,10 @@ void State::reset(int64_t next_batch) {
     for (size_t i = 0; i < layers.size(); ++i) {
         MfqCudaGuard guard(layout_[i].device);
         auto& layer = layers[i];
-        auto half = mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCUDA)
-                        .dtype(mfq_tensor_backend::kFloat16);
+        auto half = ::tyloi::TensorOptions().device(::tyloi::kCUDA)
+                        .dtype(::tyloi::kFloat16);
         if (!layer.local_cache.defined() || layer.local_cache.size(0) != next_batch)
-            layer.local_cache = mfq_tensor_backend::zeros({next_batch, 128, layout_[i].head_dim}, half);
+            layer.local_cache = ::tyloi::cuda::zeros({next_batch, 128, layout_[i].head_dim}, half);
         else layer.local_cache.zero_();
         layer.compressor.reset(next_batch, layout_[i].max_positions);
         layer.indexer_compressor.reset(next_batch, layout_[i].max_positions);
@@ -742,15 +741,15 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
     state.tokens = tokens;
     state.cache_pos = cache_pos;
     state.decode_position_delta = decode_position_delta;
-    state.payload = std::vector<mfq::models::deepseek_v4::BlockSnapshot>{};
-    auto& saved_layers = std::get<std::vector<mfq::models::deepseek_v4::BlockSnapshot>>(state.payload);
+    state.payload = std::vector<tyloi::models::deepseek_v4::BlockSnapshot>{};
+    auto& saved_layers = std::get<std::vector<tyloi::models::deepseek_v4::BlockSnapshot>>(state.payload);
     saved_layers.reserve(layers.size());
     for (size_t i = 0; i < layers.size(); ++i) {
         MfqCudaGuard guard(layout_[i].device);
         const auto& layer = layers[i];
         if (!layer.local_cache.defined())
             throw std::runtime_error("DeepSeek V4 local session cache is unavailable");
-        mfq::models::deepseek_v4::BlockSnapshot saved;
+        tyloi::models::deepseek_v4::BlockSnapshot saved;
         saved.local_cache = layer.local_cache.clone();
         state.bytes += session_tensor_bytes(saved.local_cache);
         saved.compressor = capture_pool(layer.compressor, cache_pos, state.bytes);
@@ -761,7 +760,7 @@ TextSessionState State::capture_text_session_state(const std::vector<int64_t>& t
 }
 
 void State::restore_text_session_state(const TextSessionState& state) {
-    const auto* saved_layers = std::get_if<std::vector<mfq::models::deepseek_v4::BlockSnapshot>>(&state.payload);
+    const auto* saved_layers = std::get_if<std::vector<tyloi::models::deepseek_v4::BlockSnapshot>>(&state.payload);
     if (!supports_text_session_state() || state.kind() != TextSessionStateKind::DeepseekV4 ||
         state.cache_pos <= 0 || static_cast<size_t>(state.cache_pos) != state.tokens.size() ||
         saved_layers == nullptr || saved_layers->size() != layers.size())
@@ -782,10 +781,10 @@ void State::restore_text_session_state(const TextSessionState& state) {
     batch = 1;
 }
 
-static std::vector<mfq_tensor_backend::Tensor> hc_pre(const Layer& w, mfq_tensor_backend::Tensor x,
-                                               mfq_tensor_backend::Tensor function,
-                                               mfq_tensor_backend::Tensor scale,
-                                               mfq_tensor_backend::Tensor base,
+static std::vector<::tyloi::Tensor> hc_pre(const Layer& w, ::tyloi::Tensor x,
+                                               ::tyloi::Tensor function,
+                                               ::tyloi::Tensor scale,
+                                               ::tyloi::Tensor base,
                                                const char *stage) {
     const auto& eps = w.eps;
     const auto& hc_iterations = w.hc_iterations;
@@ -793,19 +792,19 @@ static std::vector<mfq_tensor_backend::Tensor> hc_pre(const Layer& w, mfq_tensor
     const auto& hc_mult = w.hc_mult;
     const auto& layer = w.layer;
 
-    auto flat = x.flatten(2).to(mfq_tensor_backend::kFloat32);
-    auto inverse_rms = mfq_tensor_backend::rsqrt(flat.square().mean(-1, true) + eps);
-    auto mixes = mfq_tensor_backend::matmul(flat, function.transpose(0, 1)) * inverse_rms;
-    std::vector<mfq_tensor_backend::Tensor> candidate;
+    auto flat = x.flatten(2).to(::tyloi::kFloat32);
+    auto inverse_rms = ::tyloi::cuda::rsqrt(flat.square().mean(-1, true) + eps);
+    auto mixes = ::tyloi::cuda::matmul(flat, function.transpose(0, 1)) * inverse_rms;
+    std::vector<::tyloi::Tensor> candidate;
     if (g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         candidate = dsv4_hc_pre_cuda(x, mixes.contiguous(), scale, base, hc_iterations, hc_eps);
     }
-    std::vector<mfq_tensor_backend::Tensor> reference;
+    std::vector<::tyloi::Tensor> reference;
     if (!g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         auto split = dsv4_hc_split_sinkhorn(mixes, scale, base, hc_mult, hc_iterations, hc_eps);
         auto reduced = (split.at(0).unsqueeze(-1) * flat.reshape(x.sizes()))
                            .sum(2)
-                           .to(mfq_tensor_backend::kFloat16)
+                           .to(::tyloi::kFloat16)
                            .contiguous();
         reference = {reduced, split.at(1), split.at(2)};
     }
@@ -818,25 +817,25 @@ static std::vector<mfq_tensor_backend::Tensor> hc_pre(const Layer& w, mfq_tensor
     return g_dsv4_fused_hc ? candidate : reference;
 }
 
-static mfq_tensor_backend::Tensor hc_post(const Layer& w, mfq_tensor_backend::Tensor x,
-                                   mfq_tensor_backend::Tensor residual,
-                                   mfq_tensor_backend::Tensor post,
-                                   mfq_tensor_backend::Tensor combination,
+static ::tyloi::Tensor hc_post(const Layer& w, ::tyloi::Tensor x,
+                                   ::tyloi::Tensor residual,
+                                   ::tyloi::Tensor post,
+                                   ::tyloi::Tensor combination,
                                    const char *stage) {
     const auto& layer = w.layer;
 
-    mfq_tensor_backend::Tensor candidate;
+    ::tyloi::Tensor candidate;
     if (g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         candidate = dsv4_hc_post_cuda(x.contiguous(), residual.contiguous(), post.contiguous(),
                                       combination.contiguous());
     }
-    mfq_tensor_backend::Tensor reference;
+    ::tyloi::Tensor reference;
     if (!g_dsv4_fused_hc || g_dsv4_compare_hc_ops) {
         reference = (post.unsqueeze(-1) * x.unsqueeze(-2) +
                      (combination.unsqueeze(-1) *
-                      residual.to(mfq_tensor_backend::kFloat32).unsqueeze(-2))
+                      residual.to(::tyloi::kFloat32).unsqueeze(-2))
                          .sum(2))
-                        .to(mfq_tensor_backend::kFloat16)
+                        .to(::tyloi::kFloat16)
                         .contiguous();
     }
     if (g_dsv4_compare_hc_ops && layer == 0) {
@@ -845,18 +844,18 @@ static mfq_tensor_backend::Tensor hc_post(const Layer& w, mfq_tensor_backend::Te
     return g_dsv4_fused_hc ? candidate : reference;
 }
 
-static mfq_tensor_backend::Tensor
+static ::tyloi::Tensor
 attention_forward(const Layer& w, LayerState& state, Executor& executor,
-                  mfq_tensor_backend::Tensor x, const AttentionStep& step,
+                  ::tyloi::Tensor x, const AttentionStep& step,
                   const Executor::Mode& mode) {
     auto &profiler = executor.profiler();
     auto project = executor.projector(mode.ffn);
     auto& scratch = executor.mla_scratch(w.device);
     scratch.ensure_compressed();
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    const mfq_tensor_backend::Tensor positions(step.positions);
-    const MfqOptional<mfq_tensor_backend::Tensor> seq_len = step.sequence_lengths
-        ? MfqOptional<mfq_tensor_backend::Tensor>(mfq_tensor_backend::Tensor(*step.sequence_lengths)) : mfq_nullopt;
+    const ::tyloi::Tensor positions(step.positions);
+    const MfqOptional<::tyloi::Tensor> seq_len = step.sequence_lengths
+        ? MfqOptional<::tyloi::Tensor>(::tyloi::Tensor(*step.sequence_lengths)) : mfq_nullopt;
 #else
     const auto& positions = step.positions;
     const auto& seq_len = step.sequence_lengths;
@@ -886,19 +885,19 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
     const int64_t batch = x.size(0);
     const int64_t tokens = x.size(1);
     auto flat =
-        x.reshape({batch * tokens, hidden_size}).to(mfq_tensor_backend::kFloat16).contiguous();
+        x.reshape({batch * tokens, hidden_size}).to(::tyloi::kFloat16).contiguous();
 
-    using Tensor = mfq_tensor_backend::Tensor;
-    return mfq::models::deepseek_v4::attention(
+    using Tensor = ::tyloi::Tensor;
+    return tyloi::models::deepseek_v4::attention(
         tokens, cache_pos, seq_len.has_value(), compress_ratio,
         [&] {
             auto qr =
                 profiler.measure("dsv4.q_a", [&]() { return project.run(q_a, flat); });
             qr = profiler.measure("dsv4.q_a_norm", [&]() {
                 return rms_norm_cuda(
-                           qr.reshape({-1, qr.size(-1)}).to(mfq_tensor_backend::kFloat32),
+                           qr.reshape({-1, qr.size(-1)}).to(::tyloi::kFloat32),
                            q_a_norm, eps)
-                    .to(mfq_tensor_backend::kFloat16)
+                    .to(::tyloi::kFloat16)
                     .contiguous();
             });
             auto queries = profiler.measure("dsv4.q_b", [&]() {
@@ -906,11 +905,11 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                     .reshape({batch, tokens, heads, head_dim})
                     .transpose(1, 2)
                     .contiguous()
-                    .to(mfq_tensor_backend::kFloat32);
+                    .to(::tyloi::kFloat32);
             });
             queries = profiler.measure("dsv4.q_norm_rope", [&]() {
                 auto normalized =
-                    queries * mfq_tensor_backend::rsqrt(queries.square().mean(-1, true) + eps);
+                    queries * ::tyloi::cuda::rsqrt(queries.square().mean(-1, true) + eps);
                 return attention_rope.forward(normalized, positions, false);
             });
 
@@ -923,10 +922,10 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
             values = profiler.measure("dsv4.kv_norm_rope", [&]() {
                 auto normalized =
                     rms_norm_cuda(
-                        values.reshape({-1, head_dim}).to(mfq_tensor_backend::kFloat32),
+                        values.reshape({-1, head_dim}).to(::tyloi::kFloat32),
                         kv_norm, eps)
                         .reshape({batch, tokens, head_dim})
-                        .to(mfq_tensor_backend::kFloat16);
+                        .to(::tyloi::kFloat16);
                 auto values_heads = normalized.unsqueeze(1).contiguous();
                 values_heads =
                     attention_rope.forward(values_heads, positions, false);
@@ -948,14 +947,14 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
             auto qr = projected.rank, queries = projected.queries, values = projected.values;
             const auto &compressor_parts = projected.compressor;
             const auto &indexer_parts = projected.indexer;
-            return mfq::models::deepseek_v4::compressed_step(
+            return tyloi::models::deepseek_v4::compressed_step(
                 compress_ratio, true,
                 [&] {
                     const int64_t local_tokens = std::min<int64_t>(tokens, 128);
                     auto local_positions =
                         positions.narrow(0, tokens - local_tokens, local_tokens)
                             .remainder(128)
-                            .to(mfq_tensor_backend::kInt64)
+                            .to(::tyloi::kInt64)
                             .contiguous();
                     profiler.measure("dsv4.local_cache_prefill", [&]() {
                         local_cache.index_copy_(
@@ -977,10 +976,10 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                     });
                 },
                 [&](int64_t visible) {
-                    auto int_options = mfq_tensor_backend::TensorOptions()
+                    auto int_options = ::tyloi::TensorOptions()
                                            .device(x.device())
-                                           .dtype(mfq_tensor_backend::kInt32);
-                    return mfq::models::deepseek_v4::select_compressed(
+                                           .dtype(::tyloi::kInt32);
+                    return tyloi::models::deepseek_v4::select_compressed(
                         compress_ratio, visible,
                         [&] {
                             auto index_query =
@@ -995,19 +994,19 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                               .contiguous();
                             index_query = nepq_hadamard_input_cuda(
                                               index_query.reshape({batch * tokens * heads, 128})
-                                                  .to(mfq_tensor_backend::kFloat16)
+                                                  .to(::tyloi::kFloat16)
                                                   .contiguous(),
                                               scratch.hadamard_signs, 128)
                                               .reshape({batch, tokens, heads, 128});
                             index_query = dsv4_fp4_sim_cuda(index_query.contiguous());
                             auto weights =
                                 profiler.measure("dsv4.indexer_weight_prefill", [&]() {
-                                    return mfq_tensor_backend::matmul(
+                                    return ::tyloi::cuda::matmul(
                                                x.reshape({batch * tokens, hidden_size})
-                                                   .to(mfq_tensor_backend::kFloat32),
+                                                   .to(::tyloi::kFloat32),
                                                indexer_weight.transpose(0, 1))
                                         .reshape({batch, tokens, heads})
-                                        .to(mfq_tensor_backend::kFloat16)
+                                        .to(::tyloi::kFloat16)
                                         .contiguous();
                                 });
                             auto scores =
@@ -1023,13 +1022,13 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                             });
                         },
                         [&] {
-                            return mfq_tensor_backend::arange(visible, int_options)
+                            return ::tyloi::cuda::arange(visible, int_options)
                                 .reshape({1, 1, visible})
                                 .expand({batch, tokens, visible})
                                 .contiguous();
                         },
                         [&] {
-                            return mfq_tensor_backend::zeros({batch, tokens, 1}, int_options);
+                            return ::tyloi::cuda::zeros({batch, tokens, 1}, int_options);
                         });
                 },
                 [&](Tensor selected, int64_t visible) {
@@ -1042,7 +1041,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                 [&](int64_t visible) {
                     return profiler.measure("dsv4.attention_cache_prefill", [&]() {
                         return visible > 0
-                                   ? mfq_tensor_backend::cat(
+                                   ? ::tyloi::cuda::cat(
                                          {values, state.compressor.pool.narrow(1, 0, visible)}, 1)
                                          .contiguous()
                                    : values.contiguous();
@@ -1071,19 +1070,19 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
             const auto &compressor_parts = projected.compressor;
             const auto &indexer_parts = projected.indexer;
             auto position = positions.narrow(0, token, 1);
-            auto slot = mfq_tensor_backend::remainder(position, 128)
-                            .to(mfq_tensor_backend::kInt64)
+            auto slot = ::tyloi::cuda::remainder(position, 128)
+                            .to(::tyloi::kInt64)
                             .contiguous();
-            mfq_tensor_backend::Tensor length;
+            ::tyloi::Tensor length;
             if (tokens == 1 && seq_len.has_value()) {
                 length = seq_len.value().contiguous();
             } else {
-                length = mfq_tensor_backend::full({batch}, absolute_length,
-                                                  mfq_tensor_backend::TensorOptions()
-                                                      .device(mfq_tensor_backend::kCUDA)
-                                                      .dtype(mfq_tensor_backend::kInt64));
+                length = ::tyloi::cuda::full({batch}, absolute_length,
+                                                  ::tyloi::TensorOptions()
+                                                      .device(::tyloi::kCUDA)
+                                                      .dtype(::tyloi::kInt64));
             }
-            return mfq::models::deepseek_v4::compressed_step(
+            return tyloi::models::deepseek_v4::compressed_step(
                 compress_ratio, false,
                 [&] {
                     profiler.measure("dsv4.local_cache_write", [&]() {
@@ -1113,10 +1112,10 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                     return int64_t{0};
                 },
                 [&](int64_t visible) {
-                    auto int_options = mfq_tensor_backend::TensorOptions()
-                                           .device(mfq_tensor_backend::kCUDA)
-                                           .dtype(mfq_tensor_backend::kInt32);
-                    return mfq::models::deepseek_v4::select_compressed(
+                    auto int_options = ::tyloi::TensorOptions()
+                                           .device(::tyloi::kCUDA)
+                                           .dtype(::tyloi::kInt32);
+                    return tyloi::models::deepseek_v4::select_compressed(
                         compress_ratio, visible,
                         [&] {
                             auto qr_token = qr.reshape({batch, tokens, qr.size(-1)})
@@ -1134,19 +1133,19 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                                               .contiguous();
                             index_query = nepq_hadamard_input_cuda(
                                               index_query.reshape({batch * heads, 128})
-                                                  .to(mfq_tensor_backend::kFloat16)
+                                                  .to(::tyloi::kFloat16)
                                                   .contiguous(),
                                               scratch.hadamard_signs, 128)
                                               .reshape({batch, 1, heads, 128});
                             index_query = dsv4_fp4_sim_cuda(index_query.contiguous());
                             auto weights = profiler.measure("dsv4.indexer_weight", [&]() {
-                                return mfq_tensor_backend::matmul(
+                                return ::tyloi::cuda::matmul(
                                            x.narrow(1, token, 1)
                                                .reshape({batch, hidden_size})
-                                               .to(mfq_tensor_backend::kFloat32),
+                                               .to(::tyloi::kFloat32),
                                            indexer_weight.transpose(0, 1))
                                     .reshape({batch, 1, heads})
-                                    .to(mfq_tensor_backend::kFloat16)
+                                    .to(::tyloi::kFloat16)
                                     .contiguous();
                             });
                             auto scores = profiler.measure("dsv4.indexer_scores", [&]() {
@@ -1160,13 +1159,13 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                             });
                         },
                         [&] {
-                            return mfq_tensor_backend::arange(visible, int_options)
+                            return ::tyloi::cuda::arange(visible, int_options)
                                 .reshape({1, 1, visible})
                                 .expand({batch, 1, visible})
                                 .contiguous();
                         },
                         [&] {
-                            return mfq_tensor_backend::arange(visible, int_options)
+                            return ::tyloi::cuda::arange(visible, int_options)
                                 .reshape({1, 1, visible})
                                 .expand({batch, 1, visible})
                                 .contiguous();
@@ -1182,7 +1181,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                 [&](int64_t visible) {
                     return profiler.measure("dsv4.attention_cache", [&]() {
                         return visible > 0
-                                   ? mfq_tensor_backend::cat(
+                                   ? ::tyloi::cuda::cat(
                                          {local_cache, state.compressor.pool.narrow(1, 0, visible)},
                                          1)
                                          .contiguous()
@@ -1208,7 +1207,7 @@ attention_forward(const Layer& w, LayerState& state, Executor& executor,
                 },
                 [&](Tensor attention) { return project.low_rank(attention, output_a, output_b, groups, mode.groupwise_output, true); });
         },
-        [](const auto &outputs) { return mfq_tensor_backend::cat(outputs, 1); });
+        [](const auto &outputs) { return ::tyloi::cuda::cat(outputs, 1); });
 }
 
 Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tensor x,
@@ -1230,43 +1229,43 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
     }
     const int64_t batch = x.size(0);
     const int64_t tokens = x.size(1);
-    return mfq::models::hyperconnection_layer(
+    return tyloi::models::hyperconnection_layer(
         std::move(x),
-        [&](mfq_tensor_backend::Tensor x) {
+        [&](::tyloi::Tensor x) {
             auto pre = profiler.measure("dsv4.hc_attn_pre", [&]() {
                 return hc_pre(w, x, hc_attn_fn, hc_attn_scale, hc_attn_base, "attn_pre");
             });
             auto normalized = profiler.measure("dsv4.attn_norm", [&]() {
                 return rms_norm_cuda(pre.at(0)
                                          .reshape({batch * tokens, hidden_size})
-                                         .to(mfq_tensor_backend::kFloat32),
+                                         .to(::tyloi::kFloat32),
                                      attn_norm, eps)
                     .reshape({batch, tokens, hidden_size})
-                    .to(mfq_tensor_backend::kFloat16);
+                    .to(::tyloi::kFloat16);
             });
             return std::make_pair(normalized, pre);
         },
         [&](const auto &mix) {
             return attention_forward(w, state, executor, mix.first, step, mode);
         },
-        [&](mfq_tensor_backend::Tensor attention, mfq_tensor_backend::Tensor residual,
+        [&](::tyloi::Tensor attention, ::tyloi::Tensor residual,
             const auto &mix) {
             return profiler.measure("dsv4.hc_attn_post", [&]() {
                 return hc_post(w, attention, residual, mix.second.at(1), mix.second.at(2),
                                "attn_post");
             });
         },
-        [&](mfq_tensor_backend::Tensor x, const auto &) {
+        [&](::tyloi::Tensor x, const auto &) {
             auto pre = profiler.measure("dsv4.hc_ffn_pre", [&]() {
                 return hc_pre(w, x, hc_ffn_fn, hc_ffn_scale, hc_ffn_base, "ffn_pre");
             });
             auto normalized = profiler.measure("dsv4.ffn_norm", [&]() {
                 return rms_norm_cuda(pre.at(0)
                                          .reshape({batch * tokens, hidden_size})
-                                         .to(mfq_tensor_backend::kFloat32),
+                                         .to(::tyloi::kFloat32),
                                      ffn_norm, eps)
                     .reshape({batch, tokens, hidden_size})
-                    .to(mfq_tensor_backend::kFloat16);
+                    .to(::tyloi::kFloat16);
             });
             return std::make_pair(normalized, pre);
         },
@@ -1281,7 +1280,7 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
             feed_forward = feed_forward.reshape({batch, tokens, hidden_size});
             return feed_forward;
         },
-        [&](mfq_tensor_backend::Tensor feed_forward, mfq_tensor_backend::Tensor residual,
+        [&](::tyloi::Tensor feed_forward, ::tyloi::Tensor residual,
             const auto &mix) {
             return profiler.measure("dsv4.hc_ffn_post", [&]() {
                 return hc_post(w, feed_forward, residual, mix.second.at(1), mix.second.at(2),
@@ -1290,4 +1289,4 @@ Tensor forward_layer(const Layer& w, LayerState& state, Executor& executor, Tens
         },
         [](const auto &) {});
 }
-} // namespace mfq::cuda::deepseek_v4
+} // namespace tyloi::cuda::deepseek_v4

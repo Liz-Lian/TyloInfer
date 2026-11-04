@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 // Lossless E8 group stream: state[4], then (index[B], sign[7]) for
 // each valid vector. The final group has no padding vectors. Rows need
 // not start on a byte boundary; the backing allocation has no read padding.

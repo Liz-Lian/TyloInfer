@@ -7,7 +7,7 @@
 
 #include <mutex>
 
-namespace mfq::cuda::vmm {
+namespace tyloi::cuda::vmm {
 namespace {
 
 struct Api {
@@ -150,11 +150,11 @@ VmmChunk VmmRange::unmap(int64_t i) {
     return h;
 }
 
-}  // namespace mfq::cuda::vmm
+}  // namespace tyloi::cuda::vmm
 
 #else  // HIP: no virtual memory here; the elastic K/V stays off
 
-namespace mfq::cuda::vmm {
+namespace tyloi::cuda::vmm {
 bool vmm_available() { return false; }
 uint64_t vmm_granularity() { return 0; }
 VmmChunk vmm_chunk_new() { return 0; }
@@ -166,6 +166,6 @@ bool VmmRange::map_one(int64_t, VmmChunk) { return false; }
 bool VmmRange::set_access(int64_t, int64_t) { return false; }
 bool VmmRange::commit_run(int64_t, int64_t) { return false; }
 VmmChunk VmmRange::unmap(int64_t) { return 0; }
-}  // namespace mfq::cuda::vmm
+}  // namespace tyloi::cuda::vmm
 
 #endif

@@ -35,7 +35,7 @@
 #endif
 #endif
 
-namespace mfq {
+namespace tyloi {
 namespace {
 std::size_t direct_chunk_limit(std::size_t alignment) {
     return std::max<std::size_t>(1,(1u<<20)/alignment)*alignment;
@@ -837,4 +837,4 @@ void FileRangeReader::read_coalesced(const std::vector<ReadSpan>& spans) const {
             spans.size(),merged.size(),storage.slab.bytes);
 }
 
-} // namespace mfq
+} // namespace tyloi

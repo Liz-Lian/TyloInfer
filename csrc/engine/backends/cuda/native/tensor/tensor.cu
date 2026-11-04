@@ -22,7 +22,7 @@
 #include <stdexcept>
 #include <type_traits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 void AllocationScope::record(const std::shared_ptr<TensorStorage>& storage) {
     if (log_ && enabled_ && storage && storage->device.is_cuda())
         log_->push_back(storage);
@@ -276,7 +276,7 @@ void launch_convert(
             std::is_same_v<Destination, __half> &&
             std::is_same_v<Source, __nv_bfloat16>) {
         const char* disabled =
-            mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_BF16_TO_F16");
+            tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_BF16_TO_F16");
         if (source.is_contiguous() && destination.is_contiguous() &&
                 (disabled == nullptr || disabled[0] != '1')) {
             convert_contiguous_bf16_to_f16_kernel<<<
@@ -325,7 +325,7 @@ void launch_convert(
         }
     }
     const char* contiguous_disabled =
-        mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_CONVERT");
+        tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_CONTIGUOUS_CONVERT");
     if (source.is_contiguous() && destination.is_contiguous() &&
             (contiguous_disabled == nullptr || contiguous_disabled[0] != '1')) {
         convert_contiguous_kernel<Destination, Source><<<blocks, threads, 0, stream>>>(
@@ -430,11 +430,9 @@ void copy_cuda(Tensor& destination, const Tensor& source) {
             DeviceGuard source_guard(source_device);
             staged_source = source.is_contiguous()
                 ? source
-                : source.contiguous();
+                : contiguous(source);
             if (staged_source.scalar_type() != destination.scalar_type()) {
-                staged_source = staged_source
-                    .to(destination.scalar_type())
-                    .contiguous();
+                staged_source = contiguous(cast(staged_source, destination.scalar_type()));
             }
             source_stream = current_stream(source_device);
         }
@@ -573,4 +571,4 @@ Tensor mean_cuda(const Tensor& source, std::int64_t dimension, bool keep_dimensi
     return output;
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-namespace mfq::engine::mtp {
+namespace tyloi::engine::mtp {
 
 struct State {
     GenerationStats stats;
@@ -14,4 +14,4 @@ struct State {
     std::uint64_t rejected = 0;
 };
 
-} // namespace mfq::engine::mtp
+} // namespace tyloi::engine::mtp

@@ -7,7 +7,7 @@
 #include <memory>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 std::vector<std::uint8_t> join_rows(
     const std::vector<std::vector<std::uint8_t>>& blobs);
@@ -37,4 +37,4 @@ public:
     const TqRows& segment(std::size_t index) const { return *segments_.at(index); }
 };
 
-} // namespace mfq
+} // namespace tyloi

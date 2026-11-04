@@ -4,15 +4,15 @@
 
 #include <cuda_runtime_api.h>
 
-namespace mfq::cuda {
-using mfq::Device;
-using mfq::DeviceType;
-using mfq::ScalarType;
-using mfq::TensorView;
-using mfq::make_contiguous_view;
+namespace tyloi::cuda {
+using tyloi::Device;
+using tyloi::DeviceType;
+using tyloi::ScalarType;
+using tyloi::TensorView;
+using tyloi::make_contiguous_view;
 }
 
-namespace mfq::cuda::kernels {
+namespace tyloi::cuda::kernels {
 
 void silu_mul(
     const TensorView& gate,
@@ -36,4 +36,4 @@ void linear_gate_beta(
     cudaStream_t stream,
     bool stable_softplus = false);
 
-}  // namespace mfq::cuda::kernels
+}  // namespace tyloi::cuda::kernels

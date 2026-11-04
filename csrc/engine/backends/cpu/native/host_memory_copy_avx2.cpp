@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace mfq::cpu::detail {
+namespace tyloi::cpu::detail {
 void host_memory_copy_avx2(void* destination_ptr,const void* source_ptr,size_t count) noexcept {
     auto* destination=static_cast<uint8_t*>(destination_ptr);
     const auto* source=static_cast<const uint8_t*>(source_ptr);
@@ -40,4 +40,4 @@ void host_memory_copy_avx2(void* destination_ptr,const void* source_ptr,size_t c
     std::memcpy(destination+at,source+at,count-at);
 }
 void host_memory_copy_finish_avx2() noexcept {_mm_sfence();}
-} // namespace mfq::cpu::detail
+} // namespace tyloi::cpu::detail

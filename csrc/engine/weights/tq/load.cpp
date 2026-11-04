@@ -10,9 +10,9 @@
 #include <stdexcept>
 #include <utility>
 
-TqWeight load_tq_weight(const mfq::source::Source& source,
+TqWeight load_tq_weight(const tyloi::source::Source& source,
                          const std::string& name, int device, bool cuda) {
-    const auto shape = mfq::tq_projection_shape(source, name);
+    const auto shape = tyloi::tq_projection_shape(source, name);
     const auto bytes = source.read(name);
     std::vector<std::uint8_t> blob(bytes.size());
     std::memcpy(blob.data(), bytes.data(), bytes.size());
@@ -24,10 +24,10 @@ TqWeight load_tq_weight(const mfq::source::Source& source,
 }
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
-        mfq::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
-        const mfq::source::Source& source,
+        tyloi::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
+        const tyloi::source::Source& source,
         const std::string& name) {
-    const auto shape = mfq::tq_shape(source, name);
+    const auto shape = tyloi::tq_shape(source, name);
     if (shape.size() != 3) {
         throw std::invalid_argument(
             "TQ expert bank must be [experts,out,in]: " + name);
@@ -36,11 +36,11 @@ std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
 }
 
 std::shared_ptr<TqRoutedWeight> load_tq_routed_weight(
-        mfq::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
-        const mfq::source::Source& source,
+        tyloi::cuda::RoutedCache& weights, const std::shared_ptr<TqExec>& exec,
+        const tyloi::source::Source& source,
         const std::string& name, std::int64_t experts, std::int64_t output,
         std::int64_t input) {
-    auto table = mfq::tq_table(source, name);
+    auto table = tyloi::tq_table(source, name);
     if (experts < 1 || experts > UINT32_MAX || output < 1 || input < 1 ||
         table->rows() % experts || table->rows() / experts != std::uint64_t(output) ||
         table->width() != input) {

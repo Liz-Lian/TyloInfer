@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 // The small set of legacy numeric-layout facts still needed by model loaders.
 // Name aliases remain private to each source implementation.
@@ -15,9 +15,9 @@ struct TensorLayout {
     bool qwen_gdn_gguf_layout = false;
 };
 
-} // namespace mfq
+} // namespace tyloi
 
-namespace mfq::models {
+namespace tyloi::models {
 
 // Numeric/layout differences that cannot be represented by a no-copy name
 // alias. New schema-v1 artifacts always use canonical semantics; these flags
@@ -35,4 +35,4 @@ Names legacy_names(
     std::string_view model_config_json,
     const std::vector<std::string>& stored_names);
 
-} // namespace mfq::models
+} // namespace tyloi::models

@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::detail {
+namespace tyloi::detail {
 // Copy a contiguous bit interval without changing any encoded value. A
 // non-byte-aligned interval is rebased to bit zero and its padding is zeroed.
 // Reads are bounded by the exact source interval; no guard bytes are assumed.
@@ -37,4 +37,4 @@ void append_packed_range(std::vector<std::uint8_t>& output,const Read& read,
     }
     if (count&7) output.back()&=static_cast<std::uint8_t>((1u<<(count&7))-1);
 }
-} // namespace mfq::detail
+} // namespace tyloi::detail

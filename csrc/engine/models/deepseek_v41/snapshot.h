@@ -6,12 +6,12 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 
 struct EngramHashSnapshot;
 
 struct BlockSnapshot {
-    mfq_tensor_backend::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
+    ::tyloi::Tensor local_kv, compressed_kv, index_k, partial_kv, partial_score;
     int64_t compressed_length = 0, partial_length = 0;
 
     template <class Visit>
@@ -35,7 +35,7 @@ struct Snapshot {
 };
 
 struct MtpSnapshot {
-    std::vector<mfq_tensor_backend::Tensor> rings;
+    std::vector<::tyloi::Tensor> rings;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
@@ -43,4 +43,4 @@ struct MtpSnapshot {
     }
 };
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

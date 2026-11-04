@@ -9,7 +9,7 @@
 class MoeExpertCache;
 class MoeResidencyManager {
 public:
-    using MemorySample = mfq::HostMemorySample;
+    using MemorySample = tyloi::HostMemorySample;
     struct Stats {
         std::uint64_t observed_routes=0,scheduled_rounds=0,candidate_bundles=0;
         std::uint64_t planned_bundles=0,committed_bundles=0,memory_rejections=0;
@@ -45,7 +45,7 @@ public:
     };
     using Observer=std::function<void(const char*,std::size_t)>;
     using MemoryProbe=std::function<MemorySample()>;
-    static MemorySample sample_host_memory() { return mfq::sample_host_memory(); }
+    static MemorySample sample_host_memory() { return tyloi::sample_host_memory(); }
     explicit MoeResidencyManager(MoeExpertCache*,Observer observer={},MemoryProbe memory_probe={});
     ~MoeResidencyManager();
     void before_layer(int layer);

@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq::source {
+namespace tyloi::source {
 
 class Assets final {
 public:
@@ -24,4 +24,4 @@ private:
     std::unordered_map<std::string, std::vector<std::byte>> inline_;
 };
 
-} // namespace mfq::source
+} // namespace tyloi::source

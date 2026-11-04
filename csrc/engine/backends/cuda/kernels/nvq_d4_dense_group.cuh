@@ -1,7 +1,7 @@
 #pragma once
 #include "packed_nvq.cuh"
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 // Byte-preserving D4 records: state[4], then three pairs of indices and
 // sign[7]. Full groups occupy 73/79/85 bits. The final group retains only
 // valid pairs, without rounding each group or each row to a byte boundary.

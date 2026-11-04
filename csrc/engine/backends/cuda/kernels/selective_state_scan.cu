@@ -206,20 +206,19 @@ __global__ void selective_state_scan_prefill_kernel(
 
 namespace {
 
-namespace tb = mfq_tensor_backend;
 
-bool selective_scan_supported(const tb::Tensor& tensor) {
-    return tensor.scalar_type() == tb::kFloat32 ||
-        tensor.scalar_type() == tb::kFloat16 ||
-        tensor.scalar_type() == tb::kBFloat16;
+bool selective_scan_supported(const ::tyloi::Tensor& tensor) {
+    return tensor.scalar_type() == ::tyloi::kFloat32 ||
+        tensor.scalar_type() == ::tyloi::kFloat16 ||
+        tensor.scalar_type() == ::tyloi::kBFloat16;
 }
 
 void selective_scan_check_parameters(
-    const char* name, const tb::Tensor& dt_bias, const tb::Tensor& a_log,
-    const tb::Tensor& d, int64_t heads) {
-    for (const tb::Tensor* parameter : {&dt_bias, &a_log, &d}) {
+    const char* name, const ::tyloi::Tensor& dt_bias, const ::tyloi::Tensor& a_log,
+    const ::tyloi::Tensor& d, int64_t heads) {
+    for (const ::tyloi::Tensor* parameter : {&dt_bias, &a_log, &d}) {
         TYLOINFER_RUNTIME_CHECK(parameter->is_cuda() && parameter->is_contiguous() &&
-            parameter->scalar_type() == tb::kFloat32 && parameter->dim() == 1 &&
+            parameter->scalar_type() == ::tyloi::kFloat32 && parameter->dim() == 1 &&
             parameter->numel() == heads,
             name, ": dt_bias/A_log/D must be contiguous CUDA f32 [H] on the state device");
     }
@@ -227,21 +226,21 @@ void selective_scan_check_parameters(
 
 }  // namespace
 
-mfq_tensor_backend::Tensor selective_state_scan_decode_cuda(
-    mfq_tensor_backend::Tensor state,
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor dt,
-    mfq_tensor_backend::Tensor dt_bias,
-    mfq_tensor_backend::Tensor a_log,
-    mfq_tensor_backend::Tensor b,
-    mfq_tensor_backend::Tensor c,
-    mfq_tensor_backend::Tensor d,
+::tyloi::Tensor selective_state_scan_decode_cuda(
+    ::tyloi::Tensor state,
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor dt,
+    ::tyloi::Tensor dt_bias,
+    ::tyloi::Tensor a_log,
+    ::tyloi::Tensor b,
+    ::tyloi::Tensor c,
+    ::tyloi::Tensor d,
     double dt_limit_lo,
     double dt_limit_hi)
 {
     const char* name = "selective_state_scan_decode";
     TYLOINFER_RUNTIME_CHECK(state.is_cuda() && state.is_contiguous() &&
-        state.scalar_type() == tb::kFloat32 && state.dim() == 4,
+        state.scalar_type() == ::tyloi::kFloat32 && state.dim() == 4,
         name, ": state must be contiguous CUDA f32 [B,H,P,N]");
     const int64_t batches = state.size(0);
     const int64_t heads = state.size(1);
@@ -267,7 +266,7 @@ mfq_tensor_backend::Tensor selective_state_scan_decode_cuda(
         dt.scalar_type() == x.scalar_type() && b.scalar_type() == x.scalar_type() &&
         c.scalar_type() == x.scalar_type(),
         name, ": x/dt/B/C must share one of f32, f16 or bf16");
-    for (const tb::Tensor* tensor : {&x, &dt, &b, &c}) {
+    for (const ::tyloi::Tensor* tensor : {&x, &dt, &b, &c}) {
         TYLOINFER_RUNTIME_CHECK(tensor->device() == state.device(),
             name, ": every input must live on the state device");
     }
@@ -277,8 +276,8 @@ mfq_tensor_backend::Tensor selective_state_scan_decode_cuda(
     TYLOINFER_RUNTIME_CHECK(dt_limit_lo <= dt_limit_hi,
         name, ": dt_limit_lo must not exceed dt_limit_hi");
 
-    auto output = tb::empty({batches, heads, columns},
-        state.options().dtype(tb::kFloat32));
+    auto output = ::tyloi::cuda::empty({batches, heads, columns},
+        state.options().dtype(::tyloi::kFloat32));
     const dim3 grid((unsigned)columns, (unsigned)heads, (unsigned)batches);
     const auto launch = [&]<class Value>() {
         selective_state_scan_decode_kernel<Value><<<
@@ -295,9 +294,9 @@ mfq_tensor_backend::Tensor selective_state_scan_decode_cuda(
             (int)heads, (int)columns, (int)state_width, (int)groups,
             (float)dt_limit_lo, (float)dt_limit_hi);
     };
-    if (x.scalar_type() == tb::kFloat32) {
+    if (x.scalar_type() == ::tyloi::kFloat32) {
         launch.template operator()<float>();
-    } else if (x.scalar_type() == tb::kFloat16) {
+    } else if (x.scalar_type() == ::tyloi::kFloat16) {
         launch.template operator()<__half>();
     } else {
         launch.template operator()<__nv_bfloat16>();
@@ -306,15 +305,15 @@ mfq_tensor_backend::Tensor selective_state_scan_decode_cuda(
     return output;
 }
 
-std::vector<mfq_tensor_backend::Tensor> selective_state_scan_prefill_cuda(
-    mfq_tensor_backend::Tensor x,
-    mfq_tensor_backend::Tensor dt,
-    mfq_tensor_backend::Tensor dt_bias,
-    mfq_tensor_backend::Tensor a_log,
-    mfq_tensor_backend::Tensor b,
-    mfq_tensor_backend::Tensor c,
-    mfq_tensor_backend::Tensor d,
-    mfq_tensor_backend::Tensor initial_state,
+std::vector<::tyloi::Tensor> selective_state_scan_prefill_cuda(
+    ::tyloi::Tensor x,
+    ::tyloi::Tensor dt,
+    ::tyloi::Tensor dt_bias,
+    ::tyloi::Tensor a_log,
+    ::tyloi::Tensor b,
+    ::tyloi::Tensor c,
+    ::tyloi::Tensor d,
+    ::tyloi::Tensor initial_state,
     double dt_limit_lo,
     double dt_limit_hi)
 {
@@ -350,15 +349,15 @@ std::vector<mfq_tensor_backend::Tensor> selective_state_scan_prefill_cuda(
     const bool has_initial_state = initial_state.defined();
     TYLOINFER_RUNTIME_CHECK(!has_initial_state ||
         (initial_state.is_cuda() && initial_state.is_contiguous() &&
-            initial_state.scalar_type() == tb::kFloat32 &&
+            initial_state.scalar_type() == ::tyloi::kFloat32 &&
             initial_state.sizes().vec() ==
                 std::vector<int64_t>({batches, heads, columns, state_width})),
         name, ": initial_state must be contiguous CUDA f32 [B,H,P,N]");
 
-    auto options = tb::TensorOptions().dtype(tb::kFloat32).device(x.device());
-    auto output = tb::empty({batches, tokens, heads, columns}, options);
+    auto options = ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(x.device());
+    auto output = ::tyloi::cuda::empty({batches, tokens, heads, columns}, options);
     auto final_state = has_initial_state
-        ? initial_state.clone() : tb::zeros({batches, heads, columns, state_width}, options);
+        ? initial_state.clone() : ::tyloi::cuda::zeros({batches, heads, columns, state_width}, options);
     const dim3 grid((unsigned)heads, (unsigned)batches);
     const dim3 block(SELECTIVE_SCAN_WARP, SELECTIVE_SCAN_WARPS);
     const int n_per_lane = (int)(state_width / SELECTIVE_SCAN_WARP);
@@ -392,9 +391,9 @@ std::vector<mfq_tensor_backend::Tensor> selective_state_scan_prefill_cuda(
                 name, ": state width N must be 32 * {1,2,4,8,16,32}");
         }
     };
-    if (x.scalar_type() == tb::kFloat32) {
+    if (x.scalar_type() == ::tyloi::kFloat32) {
         launch.template operator()<float>();
-    } else if (x.scalar_type() == tb::kFloat16) {
+    } else if (x.scalar_type() == ::tyloi::kFloat16) {
         launch.template operator()<__half>();
     } else {
         launch.template operator()<__nv_bfloat16>();

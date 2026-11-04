@@ -311,10 +311,9 @@ int projection_resident_blocks(int device) {
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
 namespace {
-mfq_tensor_backend::Tensor float_projection_impl(
-        const NintWeight& weight, const mfq_tensor_backend::Tensor& input,bool parallel_groups,bool native_input,
+::tyloi::Tensor float_projection_impl(
+        const NintWeight& weight, const ::tyloi::Tensor& input,bool parallel_groups,bool native_input,
         bool fixed_groups,int activation,int64_t streams) {
-    namespace tb = mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(input.is_cuda() && weight.q_packed.is_cuda() &&
         input.device() == weight.q_packed.device() && input.dim() >= 1 &&
         input.size(-1) == weight.neuron_len && weight.neuron_len > 0 && weight.out > 0 &&
@@ -322,24 +321,24 @@ mfq_tensor_backend::Tensor float_projection_impl(
         weight.ng == (weight.neuron_len + weight.gs - 1) / weight.gs,
         "packed float projection dimensions/device disagree");
     MfqCudaGuard guard(input.device());
-    auto x = native_input && input.scalar_type()==tb::kFloat16
-        ? input.contiguous() : input.to(tb::kFloat32).contiguous();
+    auto x = native_input && input.scalar_type()==::tyloi::kFloat16
+        ? input.contiguous() : input.to(::tyloi::kFloat32).contiguous();
     auto shape = x.sizes().vec();
     const auto rows = x.numel() / weight.neuron_len;
     TYLOINFER_RUNTIME_CHECK(rows <= 65535 && (weight.out + 3) / 4 <= std::numeric_limits<int>::max(),
         "packed float projection exceeds CUDA launch geometry");
     shape.back() = weight.out;
-    const auto output_dtype=activation && input.scalar_type()==tb::kFloat16?tb::kFloat16:tb::kFloat32;
-    auto result = tb::empty(shape, x.options().dtype(output_dtype));
+    const auto output_dtype=activation && input.scalar_type()==::tyloi::kFloat16?::tyloi::kFloat16: ::tyloi::kFloat32;
+    auto result = ::tyloi::cuda::empty(shape, x.options().dtype(output_dtype));
     if (!rows) return result;
     const int64_t blocks=((weight.out+3)/4)*rows;
     const int target=parallel_groups?projection_resident_blocks(x.get_device()):1;
     const int splits=int(std::min<int64_t>(weight.ng,std::max<int64_t>(1,(target+blocks-1)/blocks)));
-    auto partial=splits>1?tb::empty({rows,weight.out,splits},result.options().dtype(tb::kFloat32)):result;
+    auto partial=splits>1?::tyloi::cuda::empty({rows,weight.out,splits},result.options().dtype(::tyloi::kFloat32)):result;
     const auto launch=[&](auto input_tag,auto aligned_tag,auto group_tag) {
         using Input=decltype(input_tag);constexpr bool aligned=decltype(aligned_tag)::value;
         constexpr int group=decltype(group_tag)::value;
-        const auto invoke=[&](auto output_tag,auto activation_tag,const tb::Tensor& target) {
+        const auto invoke=[&](auto output_tag,auto activation_tag,const ::tyloi::Tensor& target) {
         using Output=decltype(output_tag);constexpr int action=decltype(activation_tag)::value;
         affine_projection<Input,aligned,group,Output,action><<<dim3(unsigned((weight.out + 3) / 4), unsigned(rows),unsigned(splits)), 128, 0,
         mfq_current_cuda_stream()>>>(x.data_ptr<Input>(), weight.q_packed.data_ptr<uint8_t>(),
@@ -359,7 +358,7 @@ mfq_tensor_backend::Tensor float_projection_impl(
                 if(activation==2)invoke(output_tag,std::integral_constant<int,2>{},result);
                 else invoke(output_tag,std::integral_constant<int,1>{},result);
             };
-            if(output_dtype==tb::kFloat16)activated(__half{});else activated(float{});
+            if(output_dtype==::tyloi::kFloat16)activated(__half{});else activated(float{});
         }
     };
     const auto dispatch=[&](auto input_tag) {
@@ -374,7 +373,7 @@ mfq_tensor_backend::Tensor float_projection_impl(
             launch(input_tag,std::true_type{},std::integral_constant<int,0>{});
         } else launch(input_tag,std::false_type{},std::integral_constant<int,0>{});
     };
-    if(x.scalar_type()==tb::kFloat16)dispatch(__half{});else dispatch(float{});
+    if(x.scalar_type()==::tyloi::kFloat16)dispatch(__half{});else dispatch(float{});
     TYLOINFER_CUDA_CHECK(cudaGetLastError());
     if(splits>1) {
         const int64_t count=rows*weight.out;
@@ -390,7 +389,7 @@ mfq_tensor_backend::Tensor float_projection_impl(
                 if(activation==2)invoke(output_tag,std::integral_constant<int,2>{});
                 else invoke(output_tag,std::integral_constant<int,1>{});
             };
-            if(output_dtype==tb::kFloat16)activated(__half{});else activated(float{});
+            if(output_dtype==::tyloi::kFloat16)activated(__half{});else activated(float{});
         }
         TYLOINFER_CUDA_CHECK(cudaGetLastError());
     }
@@ -400,28 +399,27 @@ mfq_tensor_backend::Tensor float_projection_impl(
 
 #endif
 
-mfq_tensor_backend::Tensor try_gr_bf16_down_cuda(const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& weight,int64_t streams) {
-    namespace tb=mfq_tensor_backend;
+::tyloi::Tensor try_gr_bf16_down_cuda(const ::tyloi::Tensor& input,
+        const ::tyloi::Tensor& weight,int64_t streams) {
     if(streams!=4 || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
             input.size(-1)!=10240 || input.numel()/10240<1 || input.numel()/10240>6 ||
-            (input.scalar_type()!=tb::kFloat16 && input.scalar_type()!=tb::kFloat32) ||
+            (input.scalar_type()!=::tyloi::kFloat16 && input.scalar_type()!=::tyloi::kFloat32) ||
             !weight.is_cuda() || !weight.is_contiguous() || weight.device()!=input.device() ||
-            weight.scalar_type()!=tb::kBFloat16 || weight.sizes().vec()!=std::vector<int64_t>({320,10240}))return {};
+            weight.scalar_type()!=::tyloi::kBFloat16 || weight.sizes().vec()!=std::vector<int64_t>({320,10240}))return {};
     const MfqCudaGuard guard(input.device());
     const int rows=int(input.numel()/10240);
     auto shape=input.sizes().vec();shape.back()=320;
-    auto output=tb::empty(shape,input.options().dtype(tb::kFloat32));
+    auto output=::tyloi::cuda::empty(shape,input.options().dtype(::tyloi::kFloat32));
     const auto launch=[&](auto capacity,auto type) {
         using Input=decltype(type);
         gr_bf16_down_kernel<decltype(capacity)::value,Input><<<320,128,0,mfq_current_cuda_stream()>>>(
             input.data_ptr<Input>(),static_cast<const uint16_t*>(weight.data_ptr()),output.data_ptr<float>());
-        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
+        if(tyloi::cuda::dispatch_trace::enabled())tyloi::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
             "gr_bf16_down_silu",reinterpret_cast<const void*>(gr_bf16_down_kernel<decltype(capacity)::value,Input>),
             "M="+std::to_string(rows)+" N=320 K=10240");
     };
     const auto types=[&](auto capacity) {
-        if(input.scalar_type()==tb::kFloat16)launch(capacity,__half{});else launch(capacity,float{});
+        if(input.scalar_type()==::tyloi::kFloat16)launch(capacity,__half{});else launch(capacity,float{});
     };
     switch(rows) {
         case 1:types(std::integral_constant<int,1>{});break;
@@ -434,32 +432,31 @@ mfq_tensor_backend::Tensor try_gr_bf16_down_cuda(const mfq_tensor_backend::Tenso
     TYLOINFER_CUDA_CHECK(cudaGetLastError());return output;
 }
 
-mfq_tensor_backend::Tensor try_gr_bf16_up_mix_cuda(const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& normalized,const mfq_tensor_backend::Tensor& weight,int64_t streams) {
-    namespace tb=mfq_tensor_backend;
+::tyloi::Tensor try_gr_bf16_up_mix_cuda(const ::tyloi::Tensor& input,
+        const ::tyloi::Tensor& normalized,const ::tyloi::Tensor& weight,int64_t streams) {
     if(streams!=4 || !input.is_cuda() || !input.is_contiguous() || input.dim()<1 ||
             input.size(-1)!=320 || input.numel()/320<1 || input.numel()/320>6 ||
-            input.scalar_type()!=tb::kFloat32 || !normalized.is_cuda() || !normalized.is_contiguous() ||
+            input.scalar_type()!=::tyloi::kFloat32 || !normalized.is_cuda() || !normalized.is_contiguous() ||
             normalized.device()!=input.device() ||
-            (normalized.scalar_type()!=tb::kFloat16 && normalized.scalar_type()!=tb::kFloat32) ||
+            (normalized.scalar_type()!=::tyloi::kFloat16 && normalized.scalar_type()!=::tyloi::kFloat32) ||
             !weight.is_cuda() || !weight.is_contiguous() || weight.device()!=input.device() ||
-            weight.scalar_type()!=tb::kBFloat16 || weight.sizes().vec()!=std::vector<int64_t>({10240,320}))return {};
+            weight.scalar_type()!=::tyloi::kBFloat16 || weight.sizes().vec()!=std::vector<int64_t>({10240,320}))return {};
     auto expected=input.sizes().vec();expected.back()=10240;
     if(normalized.sizes().vec()!=expected)return {};
     const MfqCudaGuard guard(input.device());
     const int rows=int(input.numel()/320);
     auto shape=input.sizes().vec();shape.back()=2560;
-    auto output=tb::empty(shape,input.options());
+    auto output=::tyloi::cuda::empty(shape,input.options());
     const auto launch=[&](auto capacity,auto type) {
         using Normalized=decltype(type);
         gr_bf16_up_mix_kernel<decltype(capacity)::value,Normalized><<<2560,128,0,mfq_current_cuda_stream()>>>(
             input.data_ptr<float>(),normalized.data_ptr<Normalized>(),static_cast<const uint16_t*>(weight.data_ptr()),output.data_ptr<float>());
-        if(mfq::cuda::dispatch_trace::enabled())mfq::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
+        if(tyloi::cuda::dispatch_trace::enabled())tyloi::cuda::dispatch_trace::record(mfq_current_cuda_stream(),
             "gr_bf16_up_mix",reinterpret_cast<const void*>(gr_bf16_up_mix_kernel<decltype(capacity)::value,Normalized>),
             "M="+std::to_string(rows)+" N=10240 K=320");
     };
     const auto types=[&](auto capacity) {
-        if(normalized.scalar_type()==tb::kFloat16)launch(capacity,__half{});else launch(capacity,float{});
+        if(normalized.scalar_type()==::tyloi::kFloat16)launch(capacity,__half{});else launch(capacity,float{});
     };
     switch(rows) {
         case 1:types(std::integral_constant<int,1>{});break;
@@ -473,8 +470,8 @@ mfq_tensor_backend::Tensor try_gr_bf16_up_mix_cuda(const mfq_tensor_backend::Ten
 }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
-mfq_tensor_backend::Tensor nint_float_projection_cuda(const NintWeight& weight,
-        const mfq_tensor_backend::Tensor& input,bool parallel_groups,bool native_input,bool fixed_groups) {
+::tyloi::Tensor nint_float_projection_cuda(const NintWeight& weight,
+        const ::tyloi::Tensor& input,bool parallel_groups,bool native_input,bool fixed_groups) {
     if(gr_prefill_selected(input))return gr_prefill_matmul(weight,input);
     return float_projection_impl(weight,input,parallel_groups,native_input,fixed_groups,0,1);
 }
@@ -483,23 +480,22 @@ int nint_float_projection_resident_blocks(int device) {
     return projection_resident_blocks(device);
 }
 
-mfq_tensor_backend::Tensor nint_float_projection_activation_cuda(const NintWeight& weight,
-        const mfq_tensor_backend::Tensor& input,int64_t streams,bool injection,
+::tyloi::Tensor nint_float_projection_activation_cuda(const NintWeight& weight,
+        const ::tyloi::Tensor& input,int64_t streams,bool injection,
         bool parallel_groups,bool native_input,bool fixed_groups) {
     TYLOINFER_RUNTIME_CHECK(streams>0,"packed residual activation requires positive stream count");
     if(gr_prefill_selected(input)) {
         auto projected=gr_prefill_matmul(weight,input);
-        if(input.scalar_type()==mfq_tensor_backend::kFloat16)projected=projected.to(mfq_tensor_backend::kFloat16);
+        if(input.scalar_type()==::tyloi::kFloat16)projected=projected.to(::tyloi::kFloat16);
         return injection ? mfq_qwen4_exp::gated_residual_injection(projected,streams)
                          : mfq_qwen4_exp::gated_residual_bottleneck(projected,streams);
     }
     return float_projection_impl(weight,input,parallel_groups,native_input,fixed_groups,injection?2:1,streams);
 }
 
-mfq_tensor_backend::Tensor nint_float_projection_mix_cuda(const NintWeight& weight,
-        const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& normalized,
+::tyloi::Tensor nint_float_projection_mix_cuda(const NintWeight& weight,
+        const ::tyloi::Tensor& input,const ::tyloi::Tensor& normalized,
         int64_t streams,bool native_input,bool fixed_groups,bool compact) {
-    namespace tb=mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(input.dim()>0 && streams>0 && weight.out>0 && weight.out%streams==0 &&
         normalized.dim()==input.dim(),"packed residual mixing dimensions disagree");
     auto expected=input.sizes().vec();expected.back()=weight.out;
@@ -510,33 +506,33 @@ mfq_tensor_backend::Tensor nint_float_projection_mix_cuda(const NintWeight& weig
     const auto rows=input.numel()/weight.neuron_len,hidden=weight.out/streams;
     if(gr_prefill_selected(input)) {
         if(gr_prefill_blas_selected(weight,input) && normalized.is_contiguous() &&
-                (normalized.scalar_type()==tb::kFloat16 || normalized.scalar_type()==tb::kFloat32))
+                (normalized.scalar_type()==::tyloi::kFloat16 || normalized.scalar_type()==::tyloi::kFloat32))
             return gr_prefill_blas_mix(weight,input,normalized,streams);
         if(gr_prefill_mix_selected(weight,input,normalized,streams))return gr_prefill_fused_mix(weight,input,normalized);
         auto projected=gr_prefill_matmul(weight,input);
-        if(input.scalar_type()==tb::kFloat16)projected=projected.to(tb::kFloat16);
+        if(input.scalar_type()==::tyloi::kFloat16)projected=projected.to(::tyloi::kFloat16);
         return mfq_qwen4_exp::gated_residual_mix(projected,normalized,streams);
     }
     const auto ordinary_blocks=((weight.out+3)/4)*rows;
     MfqCudaGuard guard(input.device());
     // Retain the original group partition whenever the ordinary projection splits.
     const bool unsplit=weight.ng==1 || !rows || ordinary_blocks>=projection_resident_blocks(input.get_device());
-    const auto half_or_float=[](const tb::Tensor& value) {
-        return value.scalar_type()==tb::kFloat16 || value.scalar_type()==tb::kFloat32;
+    const auto half_or_float=[](const ::tyloi::Tensor& value) {
+        return value.scalar_type()==::tyloi::kFloat16 || value.scalar_type()==::tyloi::kFloat32;
     };
     if(!unsplit || streams>32 || !input.is_contiguous() || !normalized.is_contiguous() ||
         !half_or_float(input) || !half_or_float(normalized)) {
         auto projection=nint_float_projection_cuda(weight,input,true,native_input,fixed_groups);
-        if(input.scalar_type()==tb::kFloat16)projection=projection.to(tb::kFloat16);
+        if(input.scalar_type()==::tyloi::kFloat16)projection=projection.to(::tyloi::kFloat16);
         return mfq_qwen4_exp::gated_residual_mix(projection,normalized,streams);
     }
     TYLOINFER_RUNTIME_CHECK(rows<=65535 && hidden<=std::numeric_limits<int>::max(),
         "packed residual mixing exceeds CUDA launch geometry");
-    auto x=native_input && input.scalar_type()==tb::kFloat16?input:input.to(tb::kFloat32);
+    auto x=native_input && input.scalar_type()==::tyloi::kFloat16?input:input.to(::tyloi::kFloat32);
     auto shape=input.sizes().vec();shape.back()=hidden;
-    const auto dtype=input.scalar_type()==tb::kFloat32 || normalized.scalar_type()==tb::kFloat32
-        ?tb::kFloat32:tb::kFloat16;
-    auto output=tb::empty(shape,input.options().dtype(dtype));
+    const auto dtype=input.scalar_type()==::tyloi::kFloat32 || normalized.scalar_type()==::tyloi::kFloat32
+        ?::tyloi::kFloat32: ::tyloi::kFloat16;
+    auto output=::tyloi::cuda::empty(shape,input.options().dtype(dtype));
     if(!rows)return output;
     const auto launch=[&](auto gate_tag,auto value_tag,auto aligned_tag,auto input_tag,auto group_tag) {
         using Gate=decltype(gate_tag);using Value=decltype(value_tag);
@@ -585,11 +581,11 @@ mfq_tensor_backend::Tensor nint_float_projection_mix_cuda(const NintWeight& weig
                 launch(gate_tag,value_tag,std::true_type{},input_tag,std::integral_constant<int,0>{});
             } else launch(gate_tag,value_tag,std::false_type{},input_tag,std::integral_constant<int,0>{});
         };
-        if(x.scalar_type()==tb::kFloat16)typed(__half{});else typed(float{});
+        if(x.scalar_type()==::tyloi::kFloat16)typed(__half{});else typed(float{});
     };
-    if(input.scalar_type()==tb::kFloat16 && normalized.scalar_type()==tb::kFloat16)dispatch(__half{},__half{});
-    else if(input.scalar_type()==tb::kFloat16)dispatch(__half{},float{});
-    else if(normalized.scalar_type()==tb::kFloat16)dispatch(float{},__half{});
+    if(input.scalar_type()==::tyloi::kFloat16 && normalized.scalar_type()==::tyloi::kFloat16)dispatch(__half{},__half{});
+    else if(input.scalar_type()==::tyloi::kFloat16)dispatch(__half{},float{});
+    else if(normalized.scalar_type()==::tyloi::kFloat16)dispatch(float{},__half{});
     else dispatch(float{},float{});
     TYLOINFER_CUDA_CHECK(cudaGetLastError());
     return output;
@@ -597,9 +593,8 @@ mfq_tensor_backend::Tensor nint_float_projection_mix_cuda(const NintWeight& weig
 
 #endif
 
-mfq_tensor_backend::Tensor prepare_gr_dense_vector_right(const mfq_tensor_backend::Tensor& right) {
-    namespace tb=mfq_tensor_backend;
-    TYLOINFER_RUNTIME_CHECK(right.is_cuda() && right.dim()==2 && right.scalar_type()==tb::kFloat32 &&
+::tyloi::Tensor prepare_gr_dense_vector_right(const ::tyloi::Tensor& right) {
+    TYLOINFER_RUNTIME_CHECK(right.is_cuda() && right.dim()==2 && right.scalar_type()==::tyloi::kFloat32 &&
         right.size(0)>0 && right.size(0)%4==0 && right.size(1)>0 && right.size(1)<=4,
         "vector residual injection requires F32 [4*k, 1..4] weights");
     return right.reshape({right.size(0)/4,4,right.size(1)}).transpose(1,2).contiguous();

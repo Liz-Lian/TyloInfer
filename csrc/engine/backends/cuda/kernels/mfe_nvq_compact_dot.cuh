@@ -8,7 +8,7 @@
 #include "mfe_nvq_parity_read.cuh"
 #endif
 // Host descriptors prove expert-local bit offsets and exact compact payload extents.
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 template<int Format,int Lanes>
 __device__ __forceinline__ void nvq_compact32_e8_dot_original(const MfePackedProjection& d,int expert,

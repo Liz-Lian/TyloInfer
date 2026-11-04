@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 Names hf_names(
     std::string_view architecture,
@@ -15,4 +15,4 @@ Names hf_names(
     std::optional<std::string_view> source_map,
     std::optional<std::string_view> config);
 
-} // namespace mfq::models
+} // namespace tyloi::models

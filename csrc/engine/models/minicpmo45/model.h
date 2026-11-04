@@ -17,17 +17,17 @@
 #include <vector>
 
 struct LayerPlacementConfig;
-namespace mfq::cuda::weight_loader { struct Loader; }
+namespace tyloi::cuda::weight_loader { struct Loader; }
 
-namespace mfq::cuda::minicpmo45 {
+namespace tyloi::cuda::minicpmo45 {
 
 // The standalone TTS checkpoint uses offset RMS weights, unlike composite Tts.
 struct Model {
-    std::shared_ptr<const mfq::ModelSource> source;
-    mfq::ModelGraph graph;
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
-    mfq::models::ModelConfig config;
-    mfq::models::CausalLmMetadata metadata;
+    tyloi::models::ModelConfig config;
+    tyloi::models::CausalLmMetadata metadata;
     RopeCache rope, cpu_rope;
     std::unordered_map<int, RopeCache> device_ropes;
     QuantLinear embed, lm_head;
@@ -35,8 +35,8 @@ struct Model {
     std::vector<Layer> layers;
 };
 
-Model read(std::shared_ptr<const mfq::ModelSource>, std::string_view definition, int64_t context);
+Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, int64_t context);
 void load(Model&, const weight_loader::Loader&, const LayerPlacementConfig&, int cpu_layers,
-          const mfq::ops::YarnScaling&);
+          const tyloi::ops::YarnScaling&);
 
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

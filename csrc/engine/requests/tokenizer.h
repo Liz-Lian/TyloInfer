@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 class MfqTokenizer {
 public:
@@ -40,7 +40,7 @@ private:
     const mfq_text_vocab* vocab_ = nullptr;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine
 
 struct MfqTokenizerProbe {
     int32_t vocab_size = 0;

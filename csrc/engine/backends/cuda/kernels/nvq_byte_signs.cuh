@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 __device__ __forceinline__ int nvq_apply_byte_signs4(int values,uint32_t signs,int base) {
     const uint32_t nibble=(signs>>base)&15u;
     const uint32_t ones=(nibble*0x00204081u)&0x01010101u;

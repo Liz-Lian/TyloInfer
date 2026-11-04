@@ -28,7 +28,7 @@
 #include <cerrno>
 #endif
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 std::array<std::atomic<std::uint64_t>,5> mapped_read_totals{};
@@ -250,4 +250,4 @@ std::function<void(const std::vector<ReadSpan>&)> mapped_batch_reader(const std:
     return [range](const std::vector<ReadSpan>& spans){range->read_batch(spans);};
 }
 
-} // namespace mfq
+} // namespace tyloi

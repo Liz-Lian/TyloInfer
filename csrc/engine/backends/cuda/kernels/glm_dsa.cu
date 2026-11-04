@@ -261,27 +261,27 @@ __global__ void glm_indexer_scores_kernel(
 
 } // namespace
 
-mfq_tensor_backend::Tensor glm_interleaved_rope_cuda(
-    mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor positions,
-    mfq_tensor_backend::Tensor cos, mfq_tensor_backend::Tensor sin, int64_t rotary_dim)
+::tyloi::Tensor glm_interleaved_rope_cuda(
+    ::tyloi::Tensor x, ::tyloi::Tensor positions,
+    ::tyloi::Tensor cos, ::tyloi::Tensor sin, int64_t rotary_dim)
 {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 4,
                 "glm_interleaved_rope: x must be contiguous CUDA [B,H,T,D]");
-    TYLOINFER_RUNTIME_CHECK((x.scalar_type() == mfq_tensor_backend::kFloat16 || x.scalar_type() == mfq_tensor_backend::kFloat32) &&
+    TYLOINFER_RUNTIME_CHECK((x.scalar_type() == ::tyloi::kFloat16 || x.scalar_type() == ::tyloi::kFloat32) &&
                 positions.is_cuda() && positions.is_contiguous() &&
-                positions.scalar_type() == mfq_tensor_backend::kInt64 &&
+                positions.scalar_type() == ::tyloi::kInt64 &&
                 cos.is_cuda() && sin.is_cuda() && cos.is_contiguous() && sin.is_contiguous() &&
-                cos.scalar_type() == mfq_tensor_backend::kFloat32 && sin.scalar_type() == mfq_tensor_backend::kFloat32,
+                cos.scalar_type() == ::tyloi::kFloat32 && sin.scalar_type() == ::tyloi::kFloat32,
                 "glm_interleaved_rope: unsupported dtype or placement");
     TYLOINFER_RUNTIME_CHECK(x.size(3) % 2 == 0 && rotary_dim > 0 && rotary_dim <= x.size(3) &&
                 rotary_dim % 2 == 0 && positions.numel() == x.size(2) &&
                 cos.dim() == 2 && sin.sizes() == cos.sizes() && cos.size(1) >= rotary_dim / 2,
                 "glm_interleaved_rope: shape mismatch");
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     const int pairs = static_cast<int>(x.numel() / 2);
     const int blocks = std::min(65535, (pairs + 255) / 256);
     auto stream = mfq_current_cuda_stream();
-    if (x.scalar_type() == mfq_tensor_backend::kFloat16) {
+    if (x.scalar_type() == ::tyloi::kFloat16) {
         glm_interleaved_rope_kernel<<<blocks, 256, 0, stream>>>(
             reinterpret_cast<const half *>(x.data_ptr<mfq_half>()),
             positions.data_ptr<int64_t>(), cos.data_ptr<float>(), sin.data_ptr<float>(),
@@ -305,19 +305,18 @@ mfq_tensor_backend::Tensor glm_interleaved_rope_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor dsv4_tail_rope_cuda(
-    mfq_tensor_backend::Tensor x,mfq_tensor_backend::Tensor positions,
-    mfq_tensor_backend::Tensor cosine,mfq_tensor_backend::Tensor sine,int64_t rotary_dim) {
-    namespace tb=mfq_tensor_backend;
+::tyloi::Tensor dsv4_tail_rope_cuda(
+    ::tyloi::Tensor x,::tyloi::Tensor positions,
+    ::tyloi::Tensor cosine,::tyloi::Tensor sine,int64_t rotary_dim) {
     TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.dim()==4 && x.stride(3)==1 && x.numel()>0 &&
-        (x.scalar_type()==tb::kFloat16 || x.scalar_type()==tb::kFloat32) &&
-        positions.device()==x.device() && positions.scalar_type()==tb::kInt64 && positions.is_contiguous() &&
+        (x.scalar_type()==::tyloi::kFloat16 || x.scalar_type()==::tyloi::kFloat32) &&
+        positions.device()==x.device() && positions.scalar_type()==::tyloi::kInt64 && positions.is_contiguous() &&
         positions.numel()==x.size(2) && cosine.device()==x.device() && sine.device()==x.device() &&
-        cosine.scalar_type()==tb::kFloat32 && sine.scalar_type()==tb::kFloat32 &&
+        cosine.scalar_type()==::tyloi::kFloat32 && sine.scalar_type()==::tyloi::kFloat32 &&
         cosine.is_contiguous() && sine.is_contiguous() && cosine.dim()==2 && sine.sizes()==cosine.sizes() &&
         x.size(3)%2==0 && rotary_dim>0 && rotary_dim<=x.size(3) && rotary_dim%2==0 &&
         cosine.size(1)>=rotary_dim/2,"DeepSeek tail RoPE geometry or dtype mismatch");
-    auto output=tb::empty(x.sizes(),x.options());
+    auto output=::tyloi::cuda::empty(x.sizes(),x.options());
     const auto pairs=x.numel()/2;
     const auto blocks=unsigned(std::min<int64_t>(65535,(pairs+255)/256));
 #define TYLOINFER_TAIL_ROPE(TYPE, PTR) \
@@ -326,19 +325,19 @@ mfq_tensor_backend::Tensor dsv4_tail_rope_cuda(
         cosine.data_ptr<float>(),sine.data_ptr<float>(),reinterpret_cast<TYPE*>(output.data_ptr<PTR>()), \
         pairs,int(x.size(1)),int(x.size(2)),int(x.size(3)),int(rotary_dim),int(cosine.size(1)), \
         x.stride(0),x.stride(1),x.stride(2))
-    if(x.scalar_type()==tb::kFloat16) {TYLOINFER_TAIL_ROPE(half,mfq_half);}
+    if(x.scalar_type()==::tyloi::kFloat16) {TYLOINFER_TAIL_ROPE(half,mfq_half);}
     else {TYLOINFER_TAIL_ROPE(float,float);}
 #undef TYLOINFER_TAIL_ROPE
     TYLOINFER_CUDA_KERNEL_LAUNCH_CHECK();
     return output;
 }
 
-mfq_tensor_backend::Tensor glm_dsa_indexer_layer_norm_cuda(
-    mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor weight, mfq_tensor_backend::Tensor bias, double eps)
+::tyloi::Tensor glm_dsa_indexer_layer_norm_cuda(
+    ::tyloi::Tensor x, ::tyloi::Tensor weight, ::tyloi::Tensor bias, double eps)
 {
-    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == ::tyloi::kFloat16 &&
+                weight.is_cuda() && weight.is_contiguous() && weight.scalar_type() == ::tyloi::kFloat32 &&
+                bias.is_cuda() && bias.is_contiguous() && bias.scalar_type() == ::tyloi::kFloat32,
                 "glm_indexer_layer_norm: tensors must be contiguous CUDA f16/f32/f32");
     TYLOINFER_RUNTIME_CHECK(x.dim() >= 1 && x.size(-1) == kIndexerDim &&
                 weight.numel() == kIndexerDim && bias.numel() == kIndexerDim,
@@ -346,7 +345,7 @@ mfq_tensor_backend::Tensor glm_dsa_indexer_layer_norm_cuda(
     const int64_t rows64 = x.numel() / kIndexerDim;
     TYLOINFER_RUNTIME_CHECK(rows64 > 0 && rows64 <= INT_MAX,
                 "glm_indexer_layer_norm: invalid row count");
-    auto out = mfq_tensor_backend::empty_like(x);
+    auto out = ::tyloi::cuda::empty_like(x);
     glm_indexer_layer_norm_kernel<<<static_cast<int>(rows64), kIndexerDim, 0,
         mfq_current_cuda_stream()>>>(
         reinterpret_cast<const half *>(x.data_ptr<mfq_half>()),
@@ -359,12 +358,12 @@ mfq_tensor_backend::Tensor glm_dsa_indexer_layer_norm_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor glm_dsa_cache_write_cuda(
-    mfq_tensor_backend::Tensor cache, mfq_tensor_backend::Tensor values, mfq_tensor_backend::Tensor positions)
+::tyloi::Tensor glm_dsa_cache_write_cuda(
+    ::tyloi::Tensor cache, ::tyloi::Tensor values, ::tyloi::Tensor positions)
 {
-    TYLOINFER_RUNTIME_CHECK(cache.is_cuda() && cache.is_contiguous() && cache.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                values.is_cuda() && values.is_contiguous() && values.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                positions.is_cuda() && positions.is_contiguous() && positions.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(cache.is_cuda() && cache.is_contiguous() && cache.scalar_type() == ::tyloi::kFloat16 &&
+                values.is_cuda() && values.is_contiguous() && values.scalar_type() == ::tyloi::kFloat16 &&
+                positions.is_cuda() && positions.is_contiguous() && positions.scalar_type() == ::tyloi::kInt64,
                 "glm_cache_write: tensors must be contiguous CUDA f16/f16/i64");
     TYLOINFER_RUNTIME_CHECK(cache.dim() == 3 && values.dim() == 3 &&
                 cache.size(0) == values.size(0) && cache.size(2) == values.size(2) &&
@@ -384,13 +383,13 @@ mfq_tensor_backend::Tensor glm_dsa_cache_write_cuda(
     return cache;
 }
 
-mfq_tensor_backend::Tensor glm_dsa_indexer_scores_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor weights,
+::tyloi::Tensor glm_dsa_indexer_scores_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor weights,
     int64_t query_offset, int64_t logical_k)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                k.is_cuda() && k.is_contiguous() && k.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                weights.is_cuda() && weights.is_contiguous() && weights.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat16 &&
+                k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16 &&
+                weights.is_cuda() && weights.is_contiguous() && weights.scalar_type() == ::tyloi::kFloat32,
                 "glm_indexer_scores: tensors must be contiguous CUDA f16/f16/f32");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && k.dim() == 3 && weights.dim() == 3 &&
                 q.size(2) == kIndexerHeads && q.size(3) == kIndexerDim &&
@@ -405,7 +404,7 @@ mfq_tensor_backend::Tensor glm_dsa_indexer_scores_cuda(
     TYLOINFER_RUNTIME_CHECK(K > 0 && K <= k_stride, "glm_indexer_scores: invalid logical K");
     TYLOINFER_RUNTIME_CHECK(query_offset >= 0 && query_offset + M <= K,
                 "glm_indexer_scores: invalid causal query offset");
-    auto out = mfq_tensor_backend::empty({B, M, K}, weights.options());
+    auto out = ::tyloi::cuda::empty({B, M, K}, weights.options());
     const dim3 grid((K + kIndexerKeysPerTile - 1) / kIndexerKeysPerTile, M, B);
     glm_indexer_scores_kernel<<<grid, dim3(32, 8, 1), 0, mfq_current_cuda_stream()>>>(
         reinterpret_cast<const half *>(q.data_ptr<mfq_half>()),
@@ -419,14 +418,14 @@ mfq_tensor_backend::Tensor glm_dsa_indexer_scores_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor glm_dsa_indexer_scores_decode_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor k, mfq_tensor_backend::Tensor weights,
-    mfq_tensor_backend::Tensor seq_len, int64_t planned_k)
+::tyloi::Tensor glm_dsa_indexer_scores_decode_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor k, ::tyloi::Tensor weights,
+    ::tyloi::Tensor seq_len, int64_t planned_k)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                k.is_cuda() && k.is_contiguous() && k.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                weights.is_cuda() && weights.is_contiguous() && weights.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                seq_len.is_cuda() && seq_len.is_contiguous() && seq_len.scalar_type() == mfq_tensor_backend::kInt64,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat16 &&
+                k.is_cuda() && k.is_contiguous() && k.scalar_type() == ::tyloi::kFloat16 &&
+                weights.is_cuda() && weights.is_contiguous() && weights.scalar_type() == ::tyloi::kFloat32 &&
+                seq_len.is_cuda() && seq_len.is_contiguous() && seq_len.scalar_type() == ::tyloi::kInt64,
                 "glm_indexer_scores_decode: unsupported dtype or placement");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(1) == 1 &&
                 q.size(2) == kIndexerHeads && q.size(3) == kIndexerDim &&
@@ -438,7 +437,7 @@ mfq_tensor_backend::Tensor glm_dsa_indexer_scores_decode_cuda(
     const int B = static_cast<int>(q.size(0));
     const int K = static_cast<int>(planned_k);
     const int k_stride = static_cast<int>(k.size(1));
-    auto out = mfq_tensor_backend::empty({B, 1, K}, weights.options());
+    auto out = ::tyloi::cuda::empty({B, 1, K}, weights.options());
     const dim3 grid((K + kIndexerKeysPerTile - 1) / kIndexerKeysPerTile, 1, B);
     glm_indexer_scores_kernel<<<grid, dim3(32, 8, 1), 0,
         mfq_current_cuda_stream()>>>(
@@ -453,14 +452,14 @@ mfq_tensor_backend::Tensor glm_dsa_indexer_scores_decode_cuda(
     return out;
 }
 
-mfq_tensor_backend::Tensor attention_glm_mla_sparse_cuda(
-    mfq_tensor_backend::Tensor q, mfq_tensor_backend::Tensor kv, mfq_tensor_backend::Tensor indices,
-    mfq_tensor_backend::Tensor meta, double scale)
+::tyloi::Tensor attention_glm_mla_sparse_cuda(
+    ::tyloi::Tensor q, ::tyloi::Tensor kv, ::tyloi::Tensor indices,
+    ::tyloi::Tensor meta, double scale)
 {
-    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == mfq_tensor_backend::kFloat32 &&
-                kv.is_cuda() && kv.is_contiguous() && kv.scalar_type() == mfq_tensor_backend::kFloat16 &&
-                indices.is_cuda() && indices.is_contiguous() && indices.scalar_type() == mfq_tensor_backend::kInt32 &&
-                meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == mfq_tensor_backend::kFloat32,
+    TYLOINFER_RUNTIME_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == ::tyloi::kFloat32 &&
+                kv.is_cuda() && kv.is_contiguous() && kv.scalar_type() == ::tyloi::kFloat16 &&
+                indices.is_cuda() && indices.is_contiguous() && indices.scalar_type() == ::tyloi::kInt32 &&
+                meta.is_cuda() && meta.is_contiguous() && meta.scalar_type() == ::tyloi::kFloat32,
                 "glm_sparse_mla: tensors must be contiguous CUDA f32/f16/i32/f32");
     TYLOINFER_RUNTIME_CHECK(q.dim() == 4 && q.size(1) == kMlaHeads && q.size(3) == kMlaDq &&
                 kv.dim() == 3 && kv.size(0) == q.size(0) && kv.size(2) == kMlaDq &&
@@ -472,6 +471,6 @@ mfq_tensor_backend::Tensor attention_glm_mla_sparse_cuda(
     return mfq_sparse_attn_mma::launch<
         kMlaDq, kMlaDv, 1, kMlaHeadsPerTile, true>(
         q, cache, cache, indices,
-        mfq_tensor_backend::Tensor{}, mfq_tensor_backend::Tensor{},
+        ::tyloi::Tensor{}, ::tyloi::Tensor{},
         meta, scale, "glm_sparse_mla");
 }

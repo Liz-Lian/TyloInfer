@@ -9,28 +9,28 @@
 #include <optional>
 #include <utility>
 
-using mfq_tensor_backend::indexing::Slice;
+using ::tyloi::indexing::Slice;
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-std::pair<mfq::Tensor, mfq::Tensor> ops::append_kv(
-        mfq::state::KvView cache, mfq::Tensor key, mfq::Tensor value,
-        mfq::Tensor positions, int64_t start_pos, bool contiguous_prefill_prefix) {
-    mfq_tensor_backend::Tensor kk(key), vv(value), pos(positions);
+std::pair<tyloi::Tensor, tyloi::Tensor> ops::append_kv(
+        tyloi::state::KvView cache, tyloi::Tensor key, tyloi::Tensor value,
+        tyloi::Tensor positions, int64_t start_pos, bool contiguous_prefill_prefix) {
+    ::tyloi::Tensor kk(key), vv(value), pos(positions);
     const auto end_pos = start_pos + kk.size(2);
     const bool aten_write = Executor::current().attention_options().write_aten;
     std::optional<MfqCudaGuard> guard;
     if (key.is_cuda()) guard.emplace(key.device().index);
-    mfq_tensor_backend::Tensor k(cache.physical_key), v(cache.physical_value);
-    const mfq_tensor_backend::Tensor k_chunk_ptrs(cache.key_chunk_ptrs);
-    const mfq_tensor_backend::Tensor v_chunk_ptrs(cache.value_chunk_ptrs);
-    const mfq_tensor_backend::Tensor page_table(cache.page_table);
+    ::tyloi::Tensor k(cache.physical_key), v(cache.physical_value);
+    const ::tyloi::Tensor k_chunk_ptrs(cache.key_chunk_ptrs);
+    const ::tyloi::Tensor v_chunk_ptrs(cache.value_chunk_ptrs);
+    const ::tyloi::Tensor page_table(cache.page_table);
 #else
-std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
+std::pair<::tyloi::Tensor, ::tyloi::Tensor> append_kv(
         AttentionKvView cache, bool aten_write,
-        mfq_tensor_backend::Tensor kk, mfq_tensor_backend::Tensor vv,
-        mfq_tensor_backend::Tensor pos, int64_t start_pos, int64_t end_pos,
+        ::tyloi::Tensor kk, ::tyloi::Tensor vv,
+        ::tyloi::Tensor pos, int64_t start_pos, int64_t end_pos,
         bool contiguous_prefill_prefix) {
     auto& k = cache.physical_key;
     auto& v = cache.physical_value;
@@ -48,9 +48,9 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
     auto kh = kk.to(cache.dtype).contiguous();
     auto vh = vv.to(cache.dtype).contiguous();
     if(quantization.enabled()) {
-        auto packed_k=mfq::cuda::cuda_kv_encode(kh,quantization.key_bits(),false);
-        auto packed_v=mfq::cuda::cuda_kv_encode(vh,quantization.value_bits(),true);
-        if(cache.paged())mfq::cuda::cuda_kv_write_paged(quantized_pages(cache),packed_k,packed_v,pos);
+        auto packed_k=tyloi::cuda::cuda_kv_encode(kh,quantization.key_bits(),false);
+        auto packed_v=tyloi::cuda::cuda_kv_encode(vh,quantization.value_bits(),true);
+        if(cache.paged())tyloi::cuda::cuda_kv_write_paged(quantized_pages(cache),packed_k,packed_v,pos);
         else if(pos.dim()==1) {
             k.index_copy_(2,pos,packed_k);v.index_copy_(2,pos,packed_v);
         } else {
@@ -75,11 +75,11 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
         // prefix, including a final one-token chunk. Decode reads pages
         // directly and does not materialize a contiguous prefix.
         if (contiguous_prefill_prefix && start_pos > 0) {
-            auto options = mfq_tensor_backend::TensorOptions()
+            auto options = ::tyloi::TensorOptions()
                 .device(kh.device()).dtype(kh.scalar_type());
-            auto prefix_k = mfq_tensor_backend::empty(
+            auto prefix_k = ::tyloi::cuda::empty(
                 {paged_batch, paged_heads, end_pos, paged_head_dim}, options);
-            auto prefix_v = mfq_tensor_backend::empty(
+            auto prefix_v = ::tyloi::cuda::empty(
                 {paged_batch, paged_heads, end_pos, paged_head_dim}, options);
             paged_kv_cache_gather_cuda(k_chunk_ptrs, v_chunk_ptrs,
                 page_table, prefix_k, prefix_v, page_size, pages_per_chunk);
@@ -96,7 +96,7 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
           pos.size(1) == kh.size(2))),
         "KV cache write requires positions [T] or [B,T]");
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-    aten_write = k.scalar_type() != mfq_tensor_backend::kFloat16 || aten_write;
+    aten_write = k.scalar_type() != ::tyloi::kFloat16 || aten_write;
 #endif
     if (k.is_cuda() && !aten_write && !ring) {
         auto out = kv_cache_write_cuda(k, v, kh, vh, pos);
@@ -112,9 +112,9 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
                 ? pos : pos.narrow(0, batch, 1).reshape({-1});
             if (!k.is_cuda() || aten_write) {
                 auto slots = ring
-                    ? mfq_tensor_backend::remainder(write_pos, k.size(2))
+                    ? ::tyloi::cuda::remainder(write_pos, k.size(2))
                     : write_pos;
-                slots = slots.to(mfq_tensor_backend::kInt64).contiguous();
+                slots = slots.to(::tyloi::kInt64).contiguous();
                 cache_k.index_copy_(2, slots, source_k);
                 cache_v.index_copy_(2, slots, source_v);
             } else {
@@ -132,4 +132,4 @@ std::pair<mfq_tensor_backend::Tensor, mfq_tensor_backend::Tensor> append_kv(
             v.index({Slice(), Slice(), Slice(0, end_pos), Slice()})};
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

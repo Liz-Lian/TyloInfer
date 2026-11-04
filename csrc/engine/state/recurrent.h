@@ -4,12 +4,12 @@
 
 #include <cstdint>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Recurrent {
 public:
     struct State {
-        mfq_tensor_backend::Tensor convolution, recurrent;
+        ::tyloi::Tensor convolution, recurrent;
         bool transposed = true;
 
         bool defined() const noexcept {
@@ -44,4 +44,4 @@ private:
     int64_t tokens_ = 0;
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

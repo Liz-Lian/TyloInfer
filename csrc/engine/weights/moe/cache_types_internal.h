@@ -27,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-using mfq_tensor_backend::indexing::Slice;
+using ::tyloi::indexing::Slice;
 
 struct MoeCacheTransfer {
     const uint8_t * source = nullptr;
@@ -35,14 +35,14 @@ struct MoeCacheTransfer {
     int64_t nbytes = 0;
     bool packed_weight = false;
     const uint8_t * mapped_source = nullptr;
-    const mfq::cuda::MfeMxfp4ExpertStore * range_store = nullptr;
-    const mfq::cuda::MfeMxfp4ExpertPart * range_part = nullptr;
+    const tyloi::cuda::MfeMxfp4ExpertStore * range_store = nullptr;
+    const tyloi::cuda::MfeMxfp4ExpertPart * range_part = nullptr;
     std::shared_ptr<const void> source_owner;
 };
 
 struct MoeCacheNewLease {
-    mfq::MoeCacheSlotBook * book = nullptr;
-    mfq::MoeCacheKey key;
+    tyloi::MoeCacheSlotBook * book = nullptr;
+    tyloi::MoeCacheKey key;
     int slot = -1;
     uint64_t generation = 0;
     // A direct loan view did not populate every field of this staging slot.
@@ -54,20 +54,20 @@ struct MoeCachedCohort;
 class MoeCachedSource;
 
 struct MoeCacheFieldLayout {
-    mfq_tensor_backend::ScalarType scalar_type =
-        mfq_tensor_backend::kUInt8;
+    ::tyloi::ScalarType scalar_type =
+        ::tyloi::kUInt8;
     std::vector<int64_t> slot_shape;
     int64_t elements = 0;
     int64_t element_size = 0;
 };
 
-static int64_t tensor_nbytes(const mfq_tensor_backend::Tensor & value) {
+static int64_t tensor_nbytes(const ::tyloi::Tensor & value) {
     return value.defined()
         ? value.numel() * static_cast<int64_t>(value.element_size())
         : 0;
 }
 
-static std::vector<mfq_tensor_backend::Tensor> moe_cache_fields(
+static std::vector<::tyloi::Tensor> moe_cache_fields(
         const MixedMoePool & pool) {
     if (pool.family == MixedMoeFamily::Nint) {
         return {
@@ -97,7 +97,7 @@ static std::vector<mfq_tensor_backend::Tensor> moe_cache_fields(
             pool.nvq.neuron_scale,
         };
     }
-    std::vector<mfq_tensor_backend::Tensor> fields{
+    std::vector<::tyloi::Tensor> fields{
         pool.nepq.indices_packed,
         pool.nepq.aux_packed,
         pool.nepq.state_packed,
@@ -115,7 +115,7 @@ static std::vector<mfq_tensor_backend::Tensor> moe_cache_fields(
 // residency transaction revisits these fields several times; copying Tensors
 // into a new vector each time adds allocation and shared-owner traffic.
 struct MoeCacheFieldRefs {
-    using Tensor=mfq_tensor_backend::Tensor;
+    using Tensor=::tyloi::Tensor;
     std::array<const Tensor*,7> fields{};
     std::size_t count=0;
     MoeCacheFieldRefs(std::initializer_list<const Tensor*> values):count(values.size()) {
@@ -144,21 +144,20 @@ static MoeCacheFieldRefs moe_cache_field_refs(const MixedMoePool& pool) {
     return {&pool.nepq.indices_packed,&pool.nepq.aux_packed,&pool.nepq.state_packed,&pool.nepq.neuron_scale,&pool.nepq.bank_ids};
 }
 
-static mfq_tensor_backend::Tensor moe_owned_host_view(
-        const std::shared_ptr<mfq_tensor_backend::Tensor>& arena,std::size_t offset,
-        const mfq_tensor_backend::Tensor& field) {
-    namespace tb=mfq_tensor_backend;
+static ::tyloi::Tensor moe_owned_host_view(
+        const std::shared_ptr<::tyloi::Tensor>& arena,std::size_t offset,
+        const ::tyloi::Tensor& field) {
     const auto count=static_cast<std::size_t>(tensor_nbytes(field));
     if(!arena || !arena->is_cpu() || offset>static_cast<std::size_t>(arena->numel()) ||
         count>static_cast<std::size_t>(arena->numel())-offset)
         throw std::out_of_range("RAM complement field exceeds its owned arena");
     auto* ptr=arena->data_ptr<uint8_t>()+offset;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    auto storage=std::make_shared<tb::TensorStorage>();
+    auto storage=std::make_shared<::tyloi::TensorStorage>();
     storage->owner=arena;storage->base=ptr;storage->bytes=count;storage->device=field.device();
-    return tb::Tensor(storage,tb::make_contiguous_view(ptr,field.sizes(),field.scalar_type(),field.device()));
+    return ::tyloi::Tensor(storage,::tyloi::make_contiguous_view(ptr,field.sizes(),field.scalar_type(),field.device()));
 #else
-    return tb::from_blob(ptr,field.sizes(),[arena](void*){},field.options());
+    return ::tyloi::cuda::from_blob(ptr,field.sizes(),[arena](void*){},field.options());
 #endif
 }
 
@@ -241,21 +240,21 @@ static void validate_nepq_expert_boundaries(
         if (!pool.nepq.residual_codebook.defined() ||
                 !pool.nepq.residual_codebook.is_cpu() ||
                 !pool.nepq.residual_codebook.is_contiguous() ||
-                pool.nepq.residual_codebook.scalar_type() != mfq_tensor_backend::kFloat16 ||
+                pool.nepq.residual_codebook.scalar_type() != ::tyloi::kFloat16 ||
                 pool.nepq.residual_codebook.dim() != 2 ||
                 pool.nepq.residual_codebook.size(0) != 1024 ||
                 pool.nepq.residual_codebook.size(1) != 8 ||
                 !pool.nepq.residual_first.defined() ||
                 !pool.nepq.residual_first.is_cpu() ||
                 !pool.nepq.residual_first.is_contiguous() ||
-                pool.nepq.residual_first.scalar_type() != mfq_tensor_backend::kInt16 ||
+                pool.nepq.residual_first.scalar_type() != ::tyloi::kInt16 ||
                 pool.nepq.residual_first.dim() != 2 ||
                 pool.nepq.residual_first.size(0) != rows ||
                 pool.nepq.residual_first.size(1) != blocks ||
                 !pool.nepq.residual_second.defined() ||
                 !pool.nepq.residual_second.is_cpu() ||
                 !pool.nepq.residual_second.is_contiguous() ||
-                pool.nepq.residual_second.scalar_type() != mfq_tensor_backend::kInt16 ||
+                pool.nepq.residual_second.scalar_type() != ::tyloi::kInt16 ||
                 pool.nepq.residual_second.dim() != 2 ||
                 pool.nepq.residual_second.size(0) != rows ||
                 pool.nepq.residual_second.size(1) != blocks) {
@@ -311,18 +310,18 @@ static std::string moe_cache_signature(
 
 struct MoeGpuArena {
     std::string signature;
-    std::optional<mfq::MoeCacheKey> prefill_backup_key;
+    std::optional<tyloi::MoeCacheKey> prefill_backup_key;
     std::uint64_t prefill_backup_generation=0;
     int64_t slot_bytes = 0;
     int minimum_slots = 0;
     int registered_experts = 0;
     int slots = 0;
     std::vector<MoeCacheFieldLayout> layouts;
-    std::vector<mfq_tensor_backend::Tensor> fields;
+    std::vector<::tyloi::Tensor> fields;
     // Decode descriptors can address heterogeneous experts in one byte arena.
     // The slot book belongs to the arena, so formats compete for the same slots.
-    mfq_tensor_backend::Tensor packed;
-    std::unique_ptr<mfq::MoeCacheSlotBook> book;
+    ::tyloi::Tensor packed;
+    std::unique_ptr<tyloi::MoeCacheSlotBook> book;
     uint8_t* field_pointer(int slot, std::size_t field,
                           const std::vector<int64_t>& bytes) const {
         if(!packed.defined())return static_cast<uint8_t*>(fields[field].data_ptr())+int64_t(slot)*bytes[field];
@@ -339,23 +338,23 @@ inline int64_t moe_packed_slot_bytes(const std::vector<int64_t>& fields) {
 }
 
 inline bool moe_packed_transfer_stages_enabled() {
-    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MOE_PACKED_TRANSFER_STAGE");
+    const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MOE_PACKED_TRANSFER_STAGE");
     return !value || value[0]!='0';
 }
 
 struct MoePinnedStage {
-    mfq_tensor_backend::Tensor host;
-    mfq_tensor_backend::Tensor device;
+    ::tyloi::Tensor host;
+    ::tyloi::Tensor device;
     cudaEvent_t done = nullptr;
     bool pending = false;
 };
 
 struct MoePendingRangeRead {
-    mfq_tensor_backend::Tensor host;
+    ::tyloi::Tensor host;
     std::vector<MoeCacheTransfer> transfers;
-    std::vector<std::pair<mfq::MoeCacheSlotBook *, int>> held_slots;
+    std::vector<std::pair<tyloi::MoeCacheSlotBook *, int>> held_slots;
     std::vector<MoeCacheNewLease> new_leases;
-    mfq::cuda::MfeMxfp4ReadTicket ticket;
+    tyloi::cuda::MfeMxfp4ReadTicket ticket;
     bool replaced_occupied = false;
 };
 

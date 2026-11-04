@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 // Backend-neutral geometry and canonical tensor roles for grid_vit components.
 struct GridShape {
@@ -105,4 +105,4 @@ GridMropePositions build_grid_mrope_positions(
     const std::vector<GridShape>& image_grids,
     const std::vector<GridShape>& video_grids);
 
-} // namespace mfq
+} // namespace tyloi

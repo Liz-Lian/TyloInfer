@@ -44,7 +44,7 @@
 #include <utility>
 #include <variant>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 template <class Model, class State, class Parts, auto Load>
 class CudaEngine final : public engine::Engine {
@@ -55,7 +55,7 @@ public:
 
     CudaEngine(
         CudaEngineOptions options,
-        std::shared_ptr<const mfq::ModelSource> source)
+        std::shared_ptr<const tyloi::ModelSource> source)
         : options_(std::move(options)), source_(std::move(source)) {
         if (!source_) throw std::invalid_argument("CUDA engine requires a model source");
         load();
@@ -74,7 +74,7 @@ protected:
     engine::EngineInfo describe() const override { return info_; }
 
     bool ready() const override { return ready_; }
-    std::unique_ptr<mfq::Executor::Scope> enter() override {
+    std::unique_ptr<tyloi::Executor::Scope> enter() override {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         return executor_->enter();
 #else
@@ -185,11 +185,11 @@ public:
         if (batching_) batching_->step(eligible);
     }
 
-    mfq::StepSequence<Prepared> prepare(engine::InferenceRequest& input, State& state) {
+    tyloi::StepSequence<Prepared> prepare(engine::InferenceRequest& input, State& state) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-        if constexpr (requires { static_cast<const mfq::models::CausalModel&>(language()).prepare(
+        if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(language()).prepare(
                                    input.prompt, *input.vision, state); }) {
-            const mfq::models::CausalModel& causal = language();
+            const tyloi::models::CausalModel& causal = language();
             return causal.prepare(input.prompt, *input.vision, state);
         } else
 #endif
@@ -206,7 +206,7 @@ public:
             input.prompt, *input.vision);
     }
 
-    auto advance_preparation(mfq::StepSequence<Prepared>& preparation) {
+    auto advance_preparation(tyloi::StepSequence<Prepared>& preparation) {
         internal::PrefillCudaTimer timer;
         auto step = preparation.next();
         TYLOINFER_CUDA_CHECK(cudaEventRecord(
@@ -243,7 +243,7 @@ public:
     }
 
 private:
-    friend void ::mfq::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
+    friend void ::tyloi::cuda::reload_cuda_engine(engine::Engine&, CudaEngineOptions);
     Options options_;
     std::shared_ptr<KvMemoryManager> kv_;
     RoutedCache weights_;
@@ -251,15 +251,15 @@ private:
     std::unique_ptr<Executor> root_executor_;
     std::unique_ptr<CudaExecutionContext> execution_;
     std::shared_ptr<WeightMemoryLedger> weight_memory_;
-    std::shared_ptr<const mfq::ModelSource> source_;
+    std::shared_ptr<const tyloi::ModelSource> source_;
     CudaRuntimeConfig config_;
     std::shared_ptr<Model> model_;
     std::unique_ptr<State> state_;
     std::unique_ptr<Executor> executor_;
     MediaCache images_;
     std::optional<Parts> components_;
-    mfq::models::Info model_info_{};
-    mfq::engine::mtp::State mtp_state_;
+    tyloi::models::Info model_info_{};
+    tyloi::engine::mtp::State mtp_state_;
     std::optional<DecodeGraphCache> graph_;
     std::optional<internal::TextSessionCache> cache_;
     std::optional<Budget> budget_;
@@ -281,7 +281,7 @@ private:
 #else
         CudaScope scope(execution_->config.layer_placement.primary_device(), execution_->executor().contexts());
 #endif
-        mfq_tensor_backend::NoGradGuard no_grad;
+        ::tyloi::cuda::NoGradGuard no_grad;
         return std::forward<F>(function)();
     }
 
@@ -335,7 +335,7 @@ private:
             if (!options_.context_size) options_.context_size = 32768;
             if (execution_) throw std::logic_error("CUDA load requires retired resources");
 
-            auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
+            auto [execution_config, numeric_options] = tyloi::cuda::load_cuda_execution_config();
             root_executor_ = std::make_unique<Executor>(std::move(numeric_options), 0);
             execution_ = std::make_unique<CudaExecutionContext>(
                 *root_executor_, std::move(execution_config), weights_, kv_, offload_);
@@ -345,7 +345,7 @@ private:
             execution_->executor().profiler().enabled = false;
             weight_memory_ = std::make_shared<WeightMemoryLedger>();
             WeightMemoryLoadScope memory_load(*weight_memory_);
-            mfq_tensor_backend::NoGradGuard no_grad;
+            ::tyloi::cuda::NoGradGuard no_grad;
             config_ = internal::resolve_cuda_runtime_config(options_);
 
             const auto kv_options = runtime_options::qsa_kv_offload();
@@ -386,7 +386,7 @@ private:
                 execution_->executor().mmq().kv_cache_capacity,
                 execution_->executor().mode().trace, execution_->executor().mode().trace_layer,
                 true, !execution_->config.dsv4_cpu_offload_layers.empty(), preallocate));
-            model_info_ = mfq::models::model_info(language());
+            model_info_ = tyloi::models::model_info(language());
             finalize_kv(kv_.get(), weights_, offload_);
             finish_load(kv_.get(), weights_, 0,
                 execution_->config.report_cuda_memory);
@@ -484,8 +484,8 @@ private:
         text_ = engine::TextProcessor::load(
             *source_, options_.tokenizer_model, info_.vocab_size, info_.model_type);
         info_.chat = text_->chat_template_capabilities();
-        info_.stop_token_ids = mfq::models::stop_token_ids(
-            mfq::models::config_json(*source_, options_.config_path), info_.vocab_size);
+        info_.stop_token_ids = tyloi::models::stop_token_ids(
+            tyloi::models::config_json(*source_, options_.config_path), info_.vocab_size);
     }
 
     template <class T>
@@ -494,8 +494,8 @@ private:
             const auto& model = std::as_const(language());
             const auto& parts = std::as_const(components());
             const auto component_metrics = [&] {
-                if constexpr (requires { static_cast<const mfq::models::CausalModel&>(model); })
-                    return static_cast<const mfq::models::CausalModel&>(model).metrics();
+                if constexpr (requires { static_cast<const tyloi::models::CausalModel&>(model); })
+                    return static_cast<const tyloi::models::CausalModel&>(model).metrics();
                 else
                     return parts.metrics();
             }();
@@ -526,4 +526,4 @@ private:
     }
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

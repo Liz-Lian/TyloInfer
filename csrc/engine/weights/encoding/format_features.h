@@ -8,7 +8,7 @@
 #define TYLOINFER_ENABLE_MFQ_COMPAT 0
 #endif
 
-namespace mfq {
+namespace tyloi {
 inline constexpr bool mfq_compat_enabled = TYLOINFER_ENABLE_MFQ_COMPAT != 0;
 
 template<class Function>

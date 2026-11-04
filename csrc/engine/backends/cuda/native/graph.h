@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 class Context;
 
@@ -55,4 +55,4 @@ private:
     cudaStream_t stream_;
 };
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

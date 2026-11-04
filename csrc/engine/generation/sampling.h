@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // CPU reference sampling used by evaluators that require float arithmetic and
 // their supplied RNG. Temperature and penalties have already been applied.
@@ -186,4 +186,4 @@ typename Ops::Tensor sample_logits(
     return next;
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

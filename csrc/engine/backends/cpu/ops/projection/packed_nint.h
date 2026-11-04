@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 
 // Borrowed, canonical NINT row storage. Group metadata has already been
 // unpacked to bytes by the format loader; q codes remain compressed.
@@ -43,4 +43,4 @@ void packed_nint_avx2_rows(const PackedNintView&, const float*,
     std::int64_t batch, std::int64_t input_stride, float*,
     std::int64_t output_stride, std::int64_t begin, std::int64_t end);
 } // namespace detail
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

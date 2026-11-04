@@ -6,9 +6,8 @@
 #include <algorithm>
 #include <array>
 
-namespace mfq::models::qwen4_exp {
+namespace tyloi::models::qwen4_exp {
 namespace {
-namespace tb=mfq_tensor_backend;
 constexpr std::array<uint8_t,8> qwen4_magic{'M','F','Q','C','U','D','2',0};
 struct Qwen4PagedHeader { uint32_t start,count,layers;bool exact; };
 Qwen4PagedHeader read_qwen4_header(CudaPagedReader& reader) {
@@ -20,20 +19,20 @@ Qwen4PagedHeader read_qwen4_header(CudaPagedReader& reader) {
     if(!header.count || !header.layers || header.layers>4096)throw CudaSessionStateError("invalid Qwen4 prefix geometry");
     return header;
 }
-void write_optional(CudaPagedWriter& writer,const tb::Tensor& tensor) {
+void write_optional(CudaPagedWriter& writer,const ::tyloi::Tensor& tensor) {
     writer.scalar<uint32_t>(tensor.defined()?1:0);if(tensor.defined())writer.tensor(tensor);
 }
-tb::Tensor read_optional(CudaPagedReader& reader) {
+::tyloi::Tensor read_optional(CudaPagedReader& reader) {
     if(!reader.scalar<uint32_t>("tensor presence"))return {};
     auto [tensor,device]=reader.tensor();
-    return tensor.to(tb::Device{tb::DeviceType::cuda,device});
+    return tensor.to(::tyloi::Device{::tyloi::DeviceType::cuda,device});
 }
-void write_recurrent(CudaPagedWriter& writer,const mfq::models::qwen4_exp::BlockSnapshot& layer) {
+void write_recurrent(CudaPagedWriter& writer,const tyloi::models::qwen4_exp::BlockSnapshot& layer) {
     write_optional(writer,layer.convolution);write_optional(writer,layer.recurrent);write_optional(writer,layer.ple_convolution);
     writer.scalar<int64_t>(layer.ple_batch);writer.scalar<uint32_t>(uint32_t(layer.ple_tokens.size()));
     for(auto token:layer.ple_tokens)writer.scalar<int64_t>(token);
 }
-void read_recurrent(CudaPagedReader& reader,mfq::models::qwen4_exp::BlockSnapshot& layer) {
+void read_recurrent(CudaPagedReader& reader,tyloi::models::qwen4_exp::BlockSnapshot& layer) {
     layer.convolution=read_optional(reader);layer.recurrent=read_optional(reader);layer.ple_convolution=read_optional(reader);
     layer.ple_batch=reader.scalar<int64_t>("PLE batch");
     const auto count=reader.scalar<uint32_t>("PLE history length");
@@ -41,7 +40,7 @@ void read_recurrent(CudaPagedReader& reader,mfq::models::qwen4_exp::BlockSnapsho
     for(uint32_t i=0;i<count;++i)layer.ple_tokens.push_back(reader.scalar<int64_t>("PLE token"));
 }
 void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state) {
-    const auto* snapshot=std::get_if<mfq::models::qwen4_exp::MtpSnapshot>(&state.payload);
+    const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::MtpSnapshot>(&state.payload);
     if(!snapshot)throw CudaSessionStateError("incompatible Qwen4 MTP session state");
     writer.scalar<int64_t>(state.cache_pos);write_optional(writer,state.last_target_hidden);
     writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));
@@ -52,7 +51,7 @@ void write_qwen4_mtp(CudaPagedWriter& writer,const MtpSessionState& state) {
         writer.scalar<int64_t>(snapshot->lengths[i]);
     }
 }
-std::size_t qwen4_layer_bytes(const mfq::models::qwen4_exp::BlockSnapshot& layer) {
+std::size_t qwen4_layer_bytes(const tyloi::models::qwen4_exp::BlockSnapshot& layer) {
     std::size_t bytes=layer.ple_tokens.size()*sizeof(int64_t);
     for(const auto* tensor:{&layer.keys,&layer.values,&layer.index,&layer.convolution,&layer.recurrent,&layer.ple_convolution})
         bytes+=session_tensor_bytes(*tensor);
@@ -63,9 +62,9 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
     const auto count=reader.scalar<uint32_t>("MTP layers");
     if(!count || count>64)throw CudaSessionStateError("invalid Qwen4 MTP layers");
     state.bytes=session_tensor_bytes(state.last_target_hidden);
-    auto& snapshot=state.payload.emplace<mfq::models::qwen4_exp::MtpSnapshot>();
+    auto& snapshot=state.payload.emplace<tyloi::models::qwen4_exp::MtpSnapshot>();
     for(uint32_t i=0;i<count;++i) {
-        mfq::models::qwen4_exp::BlockSnapshot layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
+        tyloi::models::qwen4_exp::BlockSnapshot layer;layer.keys=read_optional(reader);layer.values=read_optional(reader);layer.index=read_optional(reader);
         read_recurrent(reader,layer);state.bytes+=qwen4_layer_bytes(layer);snapshot.blocks.push_back(std::move(layer));
         auto positions=read_optional(reader);state.bytes+=session_tensor_bytes(positions);snapshot.positions.push_back(std::move(positions));
         snapshot.lengths.push_back(reader.scalar<int64_t>("MTP layer position"));
@@ -75,7 +74,7 @@ MtpSessionState read_qwen4_mtp(CudaPagedReader& reader) {
 }
 
 CudaPagedPayload encode_block(const TextSessionState& state,size_t block_size,size_t index) {
-    const auto* snapshot=std::get_if<mfq::models::qwen4_exp::Snapshot>(&state.payload);
+    const auto* snapshot=std::get_if<tyloi::models::qwen4_exp::Snapshot>(&state.payload);
     if(!block_size || !snapshot || snapshot->blocks.empty() || state.cache_pos<=0 || state.tokens.size()!=std::size_t(state.cache_pos) ||
         index>state.tokens.size()/block_size || index*block_size>=state.tokens.size() || state.cache_pos>UINT32_MAX)
         throw std::runtime_error("invalid Qwen4 prefix block boundary");
@@ -86,7 +85,7 @@ CudaPagedPayload encode_block(const TextSessionState& state,size_t block_size,si
     writer.scalar<uint32_t>(uint32_t(snapshot->blocks.size()));writer.scalar<uint32_t>(exact?1:0);
     for(const auto& layer:snapshot->blocks) {
         for(const auto* tensor:{&layer.keys,&layer.values,&layer.index})
-            write_optional(writer,tensor->defined()?tensor->narrow(1,int64_t(start),int64_t(count)):tb::Tensor{});
+            write_optional(writer,tensor->defined()?tensor->narrow(1,int64_t(start),int64_t(count)): ::tyloi::Tensor{});
         if(exact)write_recurrent(writer,layer);
     }
     if(exact) {
@@ -103,9 +102,9 @@ bool exact(const CudaPagedPayload& payload) {
 TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     const std::vector<int64_t>& tokens,size_t block_size) {
     TextSessionState state;state.tokens=tokens;state.cache_pos=int64_t(tokens.size());
-    mfq::models::qwen4_exp::Snapshot snapshot;
+    tyloi::models::qwen4_exp::Snapshot snapshot;
     auto& layers=snapshot.blocks;
-    std::vector<std::array<std::vector<tb::Tensor>,3>> fragments;
+    std::vector<std::array<std::vector<::tyloi::Tensor>,3>> fragments;
     size_t position=0;
     for(size_t i=0;i<payloads.size();++i) {
         if(!payloads[i])throw CudaSessionStateError("null Qwen4 prefix payload");
@@ -138,10 +137,10 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     if(payloads.empty() || position!=tokens.size() || !snapshot.positions.defined() || snapshot.positions.size(-1)!=int64_t(position))
         throw CudaSessionStateError("Qwen4 prefix boundary mismatch");
     for(size_t i=0;i<layers.size();++i) {
-        auto& layer=layers[i];std::array<tb::Tensor*,3> fields{&layer.keys,&layer.values,&layer.index};
+        auto& layer=layers[i];std::array<::tyloi::Tensor*,3> fields{&layer.keys,&layer.values,&layer.index};
         for(size_t j=0;j<3;++j)if(!fragments[i][j].empty()) {
             if(fragments[i][j].size()!=payloads.size())throw CudaSessionStateError("incomplete Qwen4 QSA prefix chain");
-            *fields[j]=fragments[i][j].size()==1?fragments[i][j].front():tb::cat(fragments[i][j],1);
+            *fields[j]=fragments[i][j].size()==1?fragments[i][j].front(): ::tyloi::cuda::cat(fragments[i][j],1);
         }
         state.bytes+=qwen4_layer_bytes(layer);
     }
@@ -149,4 +148,4 @@ TextSessionState decode_session(const std::vector<CudaPagedPayload>& payloads,
     state.payload=std::move(snapshot);return state;
 }
 
-} // namespace mfq::models::qwen4_exp
+} // namespace tyloi::models::qwen4_exp

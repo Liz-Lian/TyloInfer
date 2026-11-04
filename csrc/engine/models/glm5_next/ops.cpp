@@ -12,8 +12,8 @@
 #include "engine/ops.h"
 #include "engine/models/common/transformer_layer.h"
 
-namespace mfq::cuda::glm5_next {
-using Config = mfq::models::glm5_next::Config;
+namespace tyloi::cuda::glm5_next {
+using Config = tyloi::models::glm5_next::Config;
 using attention_ops::Transform;
 
 static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t output) {
@@ -21,25 +21,22 @@ static Transform headwise(weight_loader::Routed projection,int64_t heads,int64_t
             const Projector& project, const Tensor& x) {
         TYLOINFER_RUNTIME_CHECK(x.dim()==4 && x.size(2)==heads,"GLM head-wise projection shape mismatch");
         const auto b=x.size(0),t=x.size(1),rows=b*t*heads;
-        auto ids=tb::arange(rows,x.options().dtype(tb::kInt32)).remainder(heads).reshape({rows,1});
+        auto ids=::tyloi::cuda::arange(rows,x.options().dtype(::tyloi::kInt32)).remainder(heads).reshape({rows,1});
         return projection(project,x.reshape({rows,x.size(-1)}),ids).reshape({b,t,heads,output});
     };
 }
 
 static Transform dense_ffn(Linear gate, Linear up, Linear down, double limit) {
     return [gate, up, down, limit](const Projector& project, const Tensor &x) {
-        auto unfused = [](const auto &...) { return std::optional<Tensor>{}; };
-        return mfq::ops::gated_mlp(
-            x, false, limit, unfused, unfused,
-            [&](Tensor input) {
-                return std::array<Tensor, 2>{project.run(*gate, input), project.run(*up, input)};
-            },
-            [](Tensor g, Tensor u, mfq::ops::GatedActivation, double bound) {
-                g = tb::clamp_max(g, bound);
-                u = tb::clamp(u, -bound, bound);
-                return (g * tb::sigmoid(g)) * u;
-            },
-            [&](Tensor hidden) { return project.run(*down, hidden); }, unfused);
+        Tensor hidden;
+        {
+            auto g = project.run(*gate, x);
+            auto u = project.run(*up, x);
+            g = ::tyloi::cuda::clamp_max(g, limit);
+            u = ::tyloi::cuda::clamp(u, -limit, limit);
+            hidden = (g * ::tyloi::cuda::sigmoid(g)) * u;
+        }
+        return project.run(*down, hidden);
     };
 }
 
@@ -47,42 +44,34 @@ static Transform glm_moe(weight_loader::Routed gate_up, weight_loader::Routed do
                       Linear router, Transform shared, Tensor bias, const Config &c) {
     return [gate_up, down, router, shared, bias, c](const Projector& project,
                                                     const Tensor &x) {
-        auto source = x.reshape({-1, c.hidden}).to(tb::kFloat16);
+        auto source = x.reshape({-1, c.hidden}).to(::tyloi::kFloat16);
         const auto routing = c.routing();
-        return mfq::ops::mixture_of_experts(
-            [&] {
-                return project.run(*router, source.to(tb::kFloat32)).to(tb::kFloat32).contiguous();
-            },
-            [&](Tensor logits) {
-                return moe_topk_cuda(
-                    logits, c.topk, routing.activation == mfq::ops::RouterActivation::sigmoid,
-                    routing.activation == mfq::ops::RouterActivation::sqrt_softplus,
-                    routing.normalize, routing.delayed_softmax, bias, 1e-20, routing.scale);
-            },
-            [&](const auto &) { return shared(project, source); },
-            [&](const auto &selected) {
-                return mfq::ops::routed_experts(
-                    [&] { return gate_up(project, source, selected[0]); },
-                    [&](Tensor gu) {
-                        auto gate =
-                            tb::clamp_max(gu.narrow(-1, 0, c.moe_intermediate), c.swiglu_limit);
-                        auto up = tb::clamp(gu.narrow(-1, c.moe_intermediate, c.moe_intermediate),
-                                            -c.swiglu_limit, c.swiglu_limit);
-                        return (gate * tb::sigmoid(gate)) * up;
-                    },
-                    [&](Tensor hidden) { return down(project, hidden, selected[0]); },
-                    [&](Tensor pairs) {
-                        auto reduced = tb::zeros({source.size(0), c.hidden},
-                                                 source.options().dtype(tb::kFloat32));
-                        for (int64_t r = 0; r < c.topk; ++r)
-                            reduced = reduced + pairs.select(1, r).to(tb::kFloat32) *
-                                                    selected[1].select(1, r).unsqueeze(-1);
-                        return reduced.to(pairs.scalar_type());
-                    });
-            },
-            [&](Tensor routed, Tensor shared_output, const auto &) {
-                return (routed + shared_output).reshape(x.sizes());
-            });
+        auto selected = moe_topk_cuda(
+            project.run(*router, source.to(::tyloi::kFloat32)).to(::tyloi::kFloat32).contiguous(),
+            c.topk, routing.activation == tyloi::ops::RouterActivation::sigmoid,
+            routing.activation == tyloi::ops::RouterActivation::sqrt_softplus,
+            routing.normalize, routing.delayed_softmax, bias, 1e-20, routing.scale);
+        auto shared_output = shared(project, source);
+        Tensor routed;
+        {
+            Tensor hidden;
+            {
+                auto gu = gate_up(project, source, selected[0]);
+                auto gate = ::tyloi::cuda::clamp_max(gu.narrow(-1, 0, c.moe_intermediate), c.swiglu_limit);
+                auto up = ::tyloi::cuda::clamp(gu.narrow(-1, c.moe_intermediate, c.moe_intermediate),
+                                                -c.swiglu_limit, c.swiglu_limit);
+                hidden = (gate * ::tyloi::cuda::sigmoid(gate)) * up;
+            }
+            auto pairs = down(project, hidden, selected[0]);
+            hidden = {};
+            auto reduced = ::tyloi::cuda::zeros({source.size(0), c.hidden},
+                                                source.options().dtype(::tyloi::kFloat32));
+            for (int64_t r = 0; r < c.topk; ++r)
+                reduced = reduced + pairs.select(1, r).to(::tyloi::kFloat32) *
+                                    selected[1].select(1, r).unsqueeze(-1);
+            routed = reduced.to(pairs.scalar_type());
+        }
+        return (routed + shared_output).reshape(x.sizes());
     };
 }
 
@@ -93,7 +82,7 @@ struct LayerLoader : weight_loader::Loader {
     static Mhc mhc(Tensor function, Tensor base, Tensor scale) {
         return {std::move(function), std::move(base), std::move(scale)};
     }
-    static Tensor concat(const std::vector<Tensor> &parts) { return tb::cat(parts, 0); }
+    static Tensor concat(const std::vector<Tensor> &parts) { return ::tyloi::cuda::cat(parts, 0); }
     static auto headwise(weight_loader::Routed projection, int64_t heads, int64_t output) {
         return glm5_next::headwise(std::move(projection), heads, output);
     }
@@ -122,7 +111,7 @@ static Tensor execute(const Layer& layer, LayerState& activity, const Projector&
     if (mla)
         TYLOINFER_RUNTIME_CHECK(std::get<MlaState>(activity).position() == position,
                                "GLM MLA/model cache positions diverged");
-    return mfq::models::glm5_next::decoder_layer(
+    return tyloi::models::glm5_next::decoder_layer(
         x, bool(kda), [&](const Tensor &hidden) { return attention_hc.pre(hidden, config); },
         [&](Tensor branch, int role) {
             return rms_norm(branch, role == 0 ? attention_norm : ffn_norm, config.eps);
@@ -142,24 +131,24 @@ Layer load_layer(const weight_loader::Loader& weights, const Config& config, int
     layer.device = weights.placement.device;
     LayerLoader loader{weights};
     loader.role = "glm5_next";
-    mfq::models::glm5_next::load_layer_weights(layer, loader, config, index);
+    tyloi::models::glm5_next::load_layer_weights(layer, loader, config, index);
     return layer;
 }
 
-Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            int64_t context) {
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = mfq::models::graph(*model.source);
+    model.graph = tyloi::models::graph(*model.source);
     model.plan = cuda_model_plan(model.graph);
-    mfq::models::require_model(model.graph.backbone == "glm5_next",
+    tyloi::models::require_model(model.graph.backbone == "glm5_next",
                                "model backbone does not match the requested causal model");
-    mfq::models::glm5_next::load_config(definition, model.config, model.metadata);
-    mfq::models::require_model(model.config.layers == model.graph.topology.text_layers,
+    tyloi::models::glm5_next::load_config(definition, model.config, model.metadata);
+    tyloi::models::require_model(model.config.layers == model.graph.topology.text_layers,
                                "model graph/config text-layer topology mismatch");
     if (context > 0) {
-        mfq::models::require_model(context <= model.metadata.max_position_embeddings,
+        tyloi::models::require_model(context <= model.metadata.max_position_embeddings,
                                    "--ctx-size exceeds max_position_embeddings");
         model.config.maximum = context;
         model.metadata.max_position_embeddings = context;
@@ -210,7 +199,7 @@ void State::reset(int64_t next_batch) {
 }
 
 void State::commit_speculative() {
-    mfq::models::require_model(speculative_start >= 0, "no speculative transaction");
+    tyloi::models::require_model(speculative_start >= 0, "no speculative transaction");
     for (auto& layer : layers)
         if (auto* kda = std::get_if<KdaState>(&layer)) kda->commit();
     speculative_start = -1;
@@ -225,11 +214,11 @@ void State::restore_text_session_state(const TextSessionState&) {
 }
 
 static Tensor normalize_ids(Collectives& copies, int primary, Tensor ids) {
-    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
-    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0, "token IDs must not be empty");
-    return copies.copy(ids.to(tb::kInt64), primary).contiguous();
+    tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0, "token IDs must not be empty");
+    return copies.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
 Tensor embed(const Model& model, Executor& executor, Collectives& copies, int primary,
@@ -260,15 +249,15 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, copies, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
-    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+    tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
         embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
         "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    mfq::models::require_model(T > 0 && state.cache_pos + T <= model.metadata.max_position_embeddings &&
+    tyloi::models::require_model(T > 0 && state.cache_pos + T <= model.metadata.max_position_embeddings &&
         !input.positions.has_value() && !input.cache_positions.has_value() && !input.attention_mask.has_value(),
         "GLM Flash-Next currently requires contiguous causal cache positions without an external mask");
-    mfq::models::require_model(state.speculative_start < 0,
+    tyloi::models::require_model(state.speculative_start < 0,
         "commit or roll back the pending speculative pass before forwarding");
-    mfq::models::require_model(input.confirmed >= 0 &&
+    tyloi::models::require_model(input.confirmed >= 0 &&
         (input.confirmed == 0 || (input.confirmed < T && B == 1 && state.cache_pos > 0 &&
                                   supports_speculation(model))),
         "unsupported speculative backbone geometry");
@@ -278,10 +267,10 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
     }
     if (state.cache_pos == 0) state.reset(B);
     auto hidden = copies.copy(std::move(embeddings), mode.primary).contiguous()
-        .to(tb::kFloat16).unsqueeze(2).expand({B, T, model.config.streams, model.config.hidden})
+        .to(::tyloi::kFloat16).unsqueeze(2).expand({B, T, model.config.streams, model.config.hidden})
         .contiguous();
     const auto trace = [&](const Tensor& value) {
-        if (input.trace) input.trace->push_back(copies.copy(value, mode.primary).to(tb::kFloat32).clone());
+        if (input.trace) input.trace->push_back(copies.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace(hidden);
     auto project = executor.projector(mode.ffn);
@@ -300,7 +289,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
 }
 
 void replay(const Model& model, State& state, Executor&, int64_t accepted) {
-    mfq::models::require_model(state.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
+    tyloi::models::require_model(state.speculative_start >= 0 && accepted >= 0, "no speculative transaction");
     const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
     for (size_t index = 0; index < state.layers.size(); ++index) {
         MfqCudaGuard guard(model.layers[index].device);
@@ -323,12 +312,12 @@ Mtp::Mtp(Mtp&&) noexcept = default;
 std::optional<Mtp> Mtp::load_if_present(const weight_loader::Loader& weights,
                                                       Projector projector, Collectives& copies,
                                                       CudaProfiler& profiler, QuantLinear embedding,
-                                                      const mfq::models::glm5_next::Config &main) {
+                                                      const tyloi::models::glm5_next::Config &main) {
     Mtp result{std::move(projector), copies, profiler, std::move(embedding),
                        weights.placement.device};
     LayerLoader loader{weights};
     loader.role = "glm5_next";
-    if (!mfq::models::glm5_next::load_predictor(result, loader, main))
+    if (!tyloi::models::glm5_next::load_predictor(result, loader, main))
         return std::nullopt;
     result.states.reserve(result.layers.size());
     for (size_t i = 0; i < result.layers.size(); ++i)
@@ -348,47 +337,46 @@ std::pair<Tensor, Tensor> Mtp::evaluate(const Tensor &hidden,
                                        const Tensor &ids, int64_t depth, bool cache,
                                        const Tensor &supplied_positions,
                                        const Tensor &supplied_embeddings) {
-    namespace tb = mfq_tensor_backend;
     TYLOINFER_RUNTIME_CHECK(ids.dim() == 2 && ids.size(0) > 0 && ids.size(1) > 0 &&
                           hidden.dim() == 3 && hidden.size(0) == ids.size(0) &&
                           hidden.size(1) == ids.size(1) &&
                           hidden.size(2) == hidden_norm.numel(),
                       "GLM5-Next MTP input geometry mismatch");
     const auto b = ids.size(0), t = ids.size(1);
-    auto dtype = tb::kFloat16;
-    return mfq::models::projected_predictor(
+    auto dtype = ::tyloi::kFloat16;
+    return tyloi::models::projected_predictor(
         *this, b, t, depth, cache, [&](int64_t next) { reset(next); },
         [&] {
             auto embeds =
-                supplied_embeddings.defined() ? supplied_embeddings : mfq::cuda::embed(embedding_, ids, copies_, profiler_, primary_);
+                supplied_embeddings.defined() ? supplied_embeddings : tyloi::cuda::embed(embedding_, ids, copies_, profiler_, primary_);
             TYLOINFER_RUNTIME_CHECK(embeds.sizes().vec() ==
                                   std::vector<int64_t>({b, t, config.hidden}),
                               "GLM5-Next MTP embedding shape mismatch");
             return embeds;
         },
-        [&](mfq::models::PredictorCursor cursor) {
+        [&](tyloi::models::PredictorCursor cursor) {
             auto current = supplied_positions.defined()
                                ? supplied_positions
-                               : tb::arange(cursor.start, cursor.start + t,
-                                            ids.options().dtype(tb::kInt32));
+                               : ::tyloi::cuda::arange(cursor.start, cursor.start + t,
+                                            ids.options().dtype(::tyloi::kInt32));
             TYLOINFER_RUNTIME_CHECK((current.dim() == 1 || current.dim() == 2) &&
                                   current.size(-1) == t &&
                                   (current.dim() == 1 || current.size(0) == b),
                               "GLM MTP positions require [T] or [B,T]");
-            current = current.to(tb::kInt32);
+            current = current.to(::tyloi::kInt32);
             return current;
         },
         [&](Tensor embeds, const auto &current) {
             auto mask = (current == 0).reshape({current.dim() == 1 ? 1 : b, t, 1});
-            auto masked = tb::where(mask, tb::zeros_like(embeds), embeds);
+            auto masked = ::tyloi::cuda::where(mask, ::tyloi::cuda::zeros_like(embeds), embeds);
             return rms_norm(masked, embedding_norm, config.eps);
         },
         [&] { return rms_norm(hidden, hidden_norm, config.eps); },
-        [&](Tensor e, Tensor streams) { return project_.run(*fusion, tb::cat({e, streams}, -1)); },
+        [&](Tensor e, Tensor streams) { return project_.run(*fusion, ::tyloi::cuda::cat({e, streams}, -1)); },
         [&](Tensor x, int64_t layer, const auto &pos) {
             auto &block = layers[layer];
-            dtype = x.scalar_type() == tb::kFloat32 ? tb::kFloat32 : tb::kFloat16;
-            return mfq::models::pre_norm_layer(
+            dtype = x.scalar_type() == ::tyloi::kFloat32 ? ::tyloi::kFloat32 : ::tyloi::kFloat16;
+            return tyloi::models::pre_norm_layer(
                 std::move(x),
                 [&](const Tensor &value, int stage) {
                     auto normalized = rms_norm(
@@ -400,7 +388,7 @@ std::pair<Tensor, Tensor> Mtp::evaluate(const Tensor &hidden,
                 },
                 [&](Tensor value) { return block.ffn(project_, value); },
                 [](Tensor residual, Tensor branch) {
-                    return residual.to(tb::kFloat32) + branch.to(tb::kFloat32);
+                    return residual.to(::tyloi::kFloat32) + branch.to(::tyloi::kFloat32);
                 });
         },
         [&](const Tensor &multi) { return rms_norm(multi, output_norm, config.eps).to(dtype); },
@@ -435,4 +423,4 @@ bool Mtp::target_bootstrap_decode() const noexcept { return true; }
 
 bool Mtp::preserve_output_dtype() const noexcept { return true; }
 
-} // namespace mfq::cuda::glm5_next
+} // namespace tyloi::cuda::glm5_next

@@ -3,7 +3,7 @@
 #include <sstream>
 #include <string>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 
 std::string location_message(
@@ -64,4 +64,4 @@ DeviceGuard::~DeviceGuard() noexcept {
     }
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

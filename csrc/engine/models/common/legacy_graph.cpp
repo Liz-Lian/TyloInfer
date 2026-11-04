@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 using json = nlohmann::json;
@@ -236,4 +236,4 @@ ModelGraph synthesize_legacy_model_graph(
     return graph;
 }
 
-} // namespace mfq
+} // namespace tyloi

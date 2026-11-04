@@ -7,7 +7,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 template<class T>
@@ -372,4 +372,4 @@ Data unpack(const std::vector<uint8_t> & blob) {
 }
 
 } // namespace nint8
-} // namespace mfq
+} // namespace tyloi

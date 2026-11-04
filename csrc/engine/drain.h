@@ -12,7 +12,7 @@
 #include <exception>
 #include <unordered_set>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 inline void drain_cuda(
         Executor& executor, const RoutedCache& weights, KvOffloadStore* offload,
@@ -33,7 +33,7 @@ inline void drain_cuda(
     finish([&] { drain_moe_expert_cache(weights.moe); });
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     if (!offload) {
-        finish([&] { static_cast<mfq::Executor&>(executor).drain(); });
+        finish([&] { static_cast<tyloi::Executor&>(executor).drain(); });
     } else
 #endif
     {
@@ -51,4 +51,4 @@ inline void drain_cuda(
     if (failure) std::rethrow_exception(failure);
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -3,22 +3,22 @@
 #include "engine/models/session.h"
 #include "engine/models/deepseek_v41/snapshot.h"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 using NativeBlock=deepseek_v41_runtime::Block;
-using Tensor=mfq_tensor_backend::Tensor;
+using Tensor=::tyloi::Tensor;
 
 bool session_tensor(const Tensor& value,int64_t tokens,int64_t width,
-                    mfq_tensor_backend::ScalarType dtype) {
+                    ::tyloi::ScalarType dtype) {
     return value.defined() && value.is_cuda() && value.dim()==3 && value.size(0)==1 &&
         value.size(1)==tokens && value.size(2)==width && value.scalar_type()==dtype;
 }
 
-void validate_layer(const NativeBlock& block,const mfq::models::deepseek_v41::BlockSnapshot& saved,
+void validate_layer(const NativeBlock& block,const tyloi::models::deepseek_v41::BlockSnapshot& saved,
                     int64_t position) {
     const auto& config=block.config;
     const bool local=session_tensor(saved.local_kv,config.sliding_window,config.head_dim,
-                                     mfq_tensor_backend::kFloat16);
+                                     ::tyloi::kFloat16);
     bool global=saved.compressed_length==0 && saved.partial_length==0 &&
         !saved.compressed_kv.defined() && !saved.index_k.defined() &&
         !saved.partial_kv.defined() && !saved.partial_score.defined();
@@ -26,14 +26,14 @@ void validate_layer(const NativeBlock& block,const mfq::models::deepseek_v41::Bl
         global=block.ratio>0 && saved.compressed_length==position/block.ratio &&
             saved.partial_length==(block.ratio>1?position%block.ratio:0) &&
             session_tensor(saved.compressed_kv,saved.compressed_length,config.head_dim,
-                           mfq_tensor_backend::kFloat16) &&
+                           ::tyloi::kFloat16) &&
             session_tensor(saved.index_k,saved.compressed_length,config.index_head_dim,
-                           mfq_tensor_backend::kFloat16);
+                           ::tyloi::kFloat16);
         if(block.ratio>1)
             global=global && session_tensor(saved.partial_kv,block.ratio,config.head_dim,
-                                            mfq_tensor_backend::kFloat32) &&
+                                            ::tyloi::kFloat32) &&
                 session_tensor(saved.partial_score,block.ratio,config.head_dim,
-                               mfq_tensor_backend::kFloat32);
+                               ::tyloi::kFloat32);
         else global=global && !saved.partial_kv.defined() && !saved.partial_score.defined();
     }
     if(!local || !global)throw CudaSessionStateError("DeepSeek-V4.1 session layer geometry is incompatible");
@@ -61,8 +61,8 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
         throw std::runtime_error("DeepSeek-V4.1 session Engram position disagrees with cache");
     TextSessionState state;
     state.tokens=tokens;state.cache_pos=model.cache_pos;
-    auto& snapshot=state.payload.emplace<mfq::models::deepseek_v41::Snapshot>();
-    snapshot.engram=std::make_shared<const mfq::models::deepseek_v41::EngramHashSnapshot>(std::move(hash));
+    auto& snapshot=state.payload.emplace<tyloi::models::deepseek_v41::Snapshot>();
+    snapshot.engram=std::make_shared<const tyloi::models::deepseek_v41::EngramHashSnapshot>(std::move(hash));
     state.bytes=snapshot.engram->context.size()*sizeof(int64_t);
     auto& layers=snapshot.blocks;
     layers.reserve(model.blocks.size());
@@ -72,7 +72,7 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
         const auto& source=block.state;
         if(block.speculative_pending || source.position!=model.cache_pos)
             throw std::runtime_error("DeepSeek-V4.1 session attention state is not committed");
-        mfq::models::deepseek_v41::BlockSnapshot saved;
+        tyloi::models::deepseek_v41::BlockSnapshot saved;
         const auto copy=[&](const Tensor& value) {
             if(!value.defined())return Tensor{};
             auto result=value.clone();state.bytes+=session_tensor_bytes(result);return result;
@@ -90,7 +90,7 @@ TextSessionState CudaSessionCodec<DeepseekV41Model>::capture(const Model& model,
 }
 
 void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionState& state) {
-    const auto* snapshot=std::get_if<mfq::models::deepseek_v41::Snapshot>(&state.payload);
+    const auto* snapshot=std::get_if<tyloi::models::deepseek_v41::Snapshot>(&state.payload);
     if(kind(model)!=TextSessionStateKind::DeepseekV41 || !snapshot || snapshot->blocks.size()!=model.blocks.size() ||
             state.cache_pos<=0 || state.cache_pos>model.max_position_embeddings() ||
             std::size_t(state.cache_pos)!=state.tokens.size() || state.decode_position_delta!=0 ||
@@ -125,4 +125,4 @@ void CudaSessionCodec<DeepseekV41Model>::restore(Model& model,const TextSessionS
     model.shared->set_image_mask({});
     model.cache_pos=state.cache_pos;
 }
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

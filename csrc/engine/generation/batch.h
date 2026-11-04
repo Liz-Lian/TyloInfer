@@ -4,7 +4,7 @@
 #include <memory>
 #include <unordered_map>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 class Batch {
   public:
@@ -350,4 +350,4 @@ template <class Ops> class ContinuousBatch : public Batch {
         return result;
     }
 };
-} // namespace mfq::engine
+} // namespace tyloi::engine

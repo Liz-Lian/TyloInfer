@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <functional>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // Retain the original GEMM row count while evaluating independent chunks on
 // several streams. The scope is used only by whole-layer prefill projections.
 class MatmulRowsScope final {

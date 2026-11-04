@@ -12,7 +12,7 @@
 #include <string_view>
 #include <unordered_set>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 
 std::size_t normalize_dimension(std::int64_t dimension, std::size_t rank, bool allow_end = false) {
@@ -275,86 +275,76 @@ Tensor reduce_cuda(
     bool keep_dimension,
     int operation);
 Tensor unary_cuda(const Tensor& source, int operation, double first = 0.0, double second = 0.0);
-Tensor binary_cuda(const Tensor& left, const Tensor& right, int operation);
-Tensor scalar_binary_cuda(const Tensor& left, double right, int operation, bool scalar_first = false);
-Tensor index_select_cuda(const Tensor& source, std::int64_t dimension, const Tensor& indices);
-Tensor gather_cuda(const Tensor& source, std::int64_t dimension, const Tensor& indices);
-Tensor repeat_cuda(const Tensor& source, std::span<const std::int64_t> repeats);
-Tensor repeat_interleave_cuda(const Tensor& source, std::int64_t repeats, std::int64_t dimension);
-Tensor masked_select_cuda(const Tensor& source, const Tensor& mask);
-void scatter_cuda(Tensor& destination, std::int64_t dimension, const Tensor& index,
-                  const Tensor& source, bool add);
-void index_copy_cuda(Tensor& destination, std::int64_t dimension, const Tensor& index,
-                     const Tensor& source);
-void index_fill_cuda(Tensor& destination, std::int64_t dimension, const Tensor& index,
-                     double value);
-void masked_fill_cuda(Tensor& destination, const Tensor& mask, double value);
 
-Tensor Tensor::reshape(std::span<const std::int64_t> shape) const {
-    if (!defined()) {
+Tensor reshape(const Tensor& source, std::span<const std::int64_t> shape) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined()) {
         throw std::invalid_argument("cannot reshape an undefined tensor");
     }
-    if (!is_contiguous()) {
-        const auto* option=mfq::cuda::env_lookup("TYLOINFER_TENSOR_VIEW_RESHAPE");
-        if(option && option[0]=='0')return contiguous().reshape(shape);
+    if (!source.is_contiguous()) {
+        const auto* option=tyloi::cuda::env_lookup("TYLOINFER_TENSOR_VIEW_RESHAPE");
+        if(option && option[0]=='0')return reshape(contiguous(source), shape);
         // Validate/infer the requested dimensions without copying storage.
-        auto packed=view_;packed.rank=1;packed.sizes[0]=numel();packed.strides[0]=1;
+        auto packed=view;packed.rank=1;packed.sizes[0]=source.numel();packed.strides[0]=1;
         auto result=reshape_view(packed,shape);
-        if(numel()==0)return Tensor(storage_,result,byte_offset_);
+        if(source.numel()==0)return source.alias(result,source.byte_offset());
         // Each contiguous source chunk can be split or joined independently.
         // A row gap (grouped projection), transpose or broadcast stays a gap;
         // a reshape crossing it still requires the original copy.
         int output_axis=int(result.rank)-1;
-        int64_t source_count=1,output_count=1,chunk_stride=view_.strides[view_.rank-1];
+        int64_t source_count=1,output_count=1,chunk_stride=view.strides[view.rank-1];
         bool compatible=true;
-        for(int axis=int(view_.rank)-1;axis>=0;--axis) {
-            source_count*=view_.sizes[axis];
-            const bool boundary=axis==0 || (view_.sizes[axis-1]!=1 &&
-                view_.strides[axis-1]!=source_count*chunk_stride);
+        for(int axis=int(view.rank)-1;axis>=0;--axis) {
+            source_count*=view.sizes[axis];
+            const bool boundary=axis==0 || (view.sizes[axis-1]!=1 &&
+                view.strides[axis-1]!=source_count*chunk_stride);
             if(!boundary)continue;
             while(output_axis>=0 && (output_count<source_count || result.sizes[output_axis]==1)) {
                 result.strides[output_axis]=output_count*chunk_stride;
                 output_count*=result.sizes[output_axis];--output_axis;
             }
             if(output_count!=source_count){compatible=false;break;}
-            if(axis>0){chunk_stride=view_.strides[axis-1];source_count=output_count=1;}
+            if(axis>0){chunk_stride=view.strides[axis-1];source_count=output_count=1;}
         }
-        if(compatible && output_axis==-1)return Tensor(storage_,result,byte_offset_);
-        return contiguous().reshape(shape);
+        if(compatible && output_axis==-1)return source.alias(result,source.byte_offset());
+        return reshape(contiguous(source), shape);
     }
-    return Tensor(storage_, reshape_view(view_, shape), byte_offset_);
+    return source.alias(reshape_view(view, shape), source.byte_offset());
 }
 
-Tensor Tensor::transpose(std::int64_t first, std::int64_t second) const {
-    if (!defined()) {
+Tensor transpose(const Tensor& source, std::int64_t first, std::int64_t second) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined()) {
         throw std::invalid_argument("cannot transpose an undefined tensor");
     }
-    return Tensor(storage_, transpose_view(view_, first, second), byte_offset_);
+    return source.alias(transpose_view(view, first, second), source.byte_offset());
 }
 
-Tensor Tensor::permute(std::span<const std::int64_t> order) const {
-    if (!defined() || order.size() != view_.rank) {
+Tensor permute(const Tensor& source, std::span<const std::int64_t> order) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined() || order.size() != view.rank) {
         throw std::invalid_argument("permute order must contain every tensor dimension");
     }
-    TensorView result = view_;
+    TensorView result = view;
     std::unordered_set<std::size_t> seen;
     for (std::size_t output = 0; output < order.size(); ++output) {
-        const auto input = normalize_dimension(order[output], view_.rank);
+        const auto input = cuda::normalize_dimension(order[output], view.rank);
         if (!seen.insert(input).second) {
             throw std::invalid_argument("permute order contains a duplicate dimension");
         }
-        result.sizes[output] = view_.sizes[input];
-        result.strides[output] = view_.strides[input];
+        result.sizes[output] = view.sizes[input];
+        result.strides[output] = view.strides[input];
     }
-    return Tensor(storage_, result, byte_offset_);
+    return source.alias(result, source.byte_offset());
 }
 
-Tensor Tensor::unsqueeze(std::int64_t dimension) const {
-    if (!defined() || view_.rank == kMaximumTensorRank) {
+Tensor unsqueeze(const Tensor& source, std::int64_t dimension) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined() || view.rank == kMaximumTensorRank) {
         throw std::invalid_argument("cannot unsqueeze this tensor");
     }
-    const auto inserted = normalize_dimension(dimension, view_.rank, true);
-    TensorView result = view_;
+    const auto inserted = cuda::normalize_dimension(dimension, view.rank, true);
+    TensorView result = view;
     for (std::size_t index = result.rank; index > inserted; --index) {
         result.sizes[index] = result.sizes[index - 1];
         result.strides[index] = result.strides[index - 1];
@@ -364,128 +354,134 @@ Tensor Tensor::unsqueeze(std::int64_t dimension) const {
         ? result.strides[inserted + 1] * result.sizes[inserted + 1]
         : 1;
     ++result.rank;
-    return Tensor(storage_, result, byte_offset_);
+    return source.alias(result, source.byte_offset());
 }
 
-Tensor Tensor::squeeze(std::int64_t dimension) const {
-    if (!defined()) {
+Tensor squeeze(const Tensor& source, std::int64_t dimension) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined()) {
         throw std::invalid_argument("cannot squeeze an undefined tensor");
     }
-    const auto removed = normalize_dimension(dimension, view_.rank);
-    if (view_.sizes[removed] != 1) {
-        return *this;
+    const auto removed = cuda::normalize_dimension(dimension, view.rank);
+    if (view.sizes[removed] != 1) {
+        return source;
     }
-    TensorView result = view_;
+    TensorView result = view;
     for (std::size_t index = removed; index + 1 < result.rank; ++index) {
         result.sizes[index] = result.sizes[index + 1];
         result.strides[index] = result.strides[index + 1];
     }
     --result.rank;
-    return Tensor(storage_, result, byte_offset_);
+    return source.alias(result, source.byte_offset());
 }
 
-Tensor Tensor::squeeze() const {
-    if (!defined()) {
+Tensor squeeze(const Tensor& source) {
+    if (!source.defined()) {
         throw std::invalid_argument("cannot squeeze an undefined tensor");
     }
-    auto result = *this;
+    auto result = source;
     for (std::int64_t dimension = result.dim() - 1; dimension >= 0; --dimension) {
         if (result.size(dimension) == 1) {
-            result = result.squeeze(dimension);
+            result = squeeze(result, dimension);
         }
     }
     return result;
 }
 
-Tensor Tensor::flatten(std::int64_t start, std::int64_t end) const {
-    if (!defined()) {
+Tensor flatten(const Tensor& source, std::int64_t start, std::int64_t end) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined()) {
         throw std::invalid_argument("flatten requires a defined tensor");
     }
-    if (!is_contiguous()) return contiguous().flatten(start, end);
-    const auto first = normalize_dimension(start, view_.rank);
-    const auto last = normalize_dimension(end, view_.rank);
+    if (!source.is_contiguous()) return flatten(contiguous(source), start, end);
+    const auto first = cuda::normalize_dimension(start, view.rank);
+    const auto last = cuda::normalize_dimension(end, view.rank);
     if (first > last) {
         throw std::invalid_argument("flatten start must not exceed end");
     }
     std::vector<std::int64_t> shape;
     for (std::size_t index = 0; index < first; ++index) {
-        shape.push_back(view_.sizes[index]);
+        shape.push_back(view.sizes[index]);
     }
     std::int64_t collapsed = 1;
     for (std::size_t index = first; index <= last; ++index) {
-        collapsed *= view_.sizes[index];
+        collapsed *= view.sizes[index];
     }
     shape.push_back(collapsed);
-    for (std::size_t index = last + 1; index < view_.rank; ++index) {
-        shape.push_back(view_.sizes[index]);
+    for (std::size_t index = last + 1; index < view.rank; ++index) {
+        shape.push_back(view.sizes[index]);
     }
-    return reshape(shape);
+    return reshape(source, shape);
 }
 
-Tensor Tensor::narrow(
+Tensor narrow(const Tensor& source,
     std::int64_t dimension,
     std::int64_t start,
-    std::int64_t length) const {
-    if (!defined()) {
+    std::int64_t length) {
+    const auto& view = source.view_descriptor();
+    if (!source.defined()) {
         throw std::invalid_argument("cannot narrow an undefined tensor");
     }
-    const auto selected = normalize_dimension(dimension, view_.rank);
-    const auto extent = view_.sizes[selected];
+    const auto selected = cuda::normalize_dimension(dimension, view.rank);
+    const auto extent = view.sizes[selected];
     auto normalized_start = start < 0 ? start + extent : start;
     if (normalized_start < 0 || length < 0 || normalized_start + length > extent) {
         throw std::out_of_range("narrow range is out of bounds");
     }
-    auto result = view_;
+    auto result = view;
     result.sizes[selected] = length;
-    const auto offset_elements = normalized_start * view_.strides[selected];
-    const auto offset_bytes = static_cast<std::size_t>(offset_elements) * element_size();
-    result.data = static_cast<std::byte*>(view_.data) + offset_bytes;
-    return Tensor(storage_, result, byte_offset_ + offset_bytes);
+    const auto offset_elements = normalized_start * view.strides[selected];
+    const auto offset_bytes = static_cast<std::size_t>(offset_elements) * source.element_size();
+    result.data = static_cast<std::byte*>(view.data) + offset_bytes;
+    return source.alias(result, source.byte_offset() + offset_bytes);
 }
 
-Tensor Tensor::select(std::int64_t dimension, std::int64_t index) const {
-    const auto selected = normalize_dimension(dimension, view_.rank);
-    const auto narrowed = narrow(dimension, index, 1);
-    TensorView result = narrowed.view_;
+Tensor select(const Tensor& source, std::int64_t dimension, std::int64_t index) {
+    const auto& view = source.view_descriptor();
+    const auto selected = cuda::normalize_dimension(dimension, view.rank);
+    const auto narrowed = narrow(source, dimension, index, 1);
+    TensorView result = narrowed.view_descriptor();
     for (std::size_t position = selected; position + 1 < result.rank; ++position) {
         result.sizes[position] = result.sizes[position + 1];
         result.strides[position] = result.strides[position + 1];
     }
     --result.rank;
-    return Tensor(narrowed.storage_, result, narrowed.byte_offset_);
+    return narrowed.alias(result, narrowed.byte_offset());
 }
 
-Tensor Tensor::slice(
+Tensor slice(const Tensor& source,
     std::int64_t dimension,
     std::int64_t start,
     std::int64_t end,
-    std::int64_t step) const {
+    std::int64_t step) {
+    const auto& view = source.view_descriptor();
     if (step <= 0) {
         throw std::invalid_argument("native slice requires a positive step");
     }
-    const auto selected = normalize_dimension(dimension, view_.rank);
-    const auto extent = view_.sizes[selected];
+    const auto selected = cuda::normalize_dimension(dimension, view.rank);
+    const auto extent = view.sizes[selected];
     auto first = start < 0 ? start + extent : start;
     auto last = end < 0 ? end + extent : end;
     first = std::clamp<std::int64_t>(first, 0, extent);
     last = std::clamp<std::int64_t>(last, 0, extent);
     const auto length = last <= first ? 0 : (last - first + step - 1) / step;
-    auto result = narrow(dimension, first, std::max<std::int64_t>(0, last - first));
-    result.view_.sizes[selected] = length;
-    result.view_.strides[selected] *= step;
-    return result;
+    auto narrowed = narrow(source, dimension, first, std::max<std::int64_t>(0, last - first));
+    auto result = narrowed.view_descriptor();
+    result.sizes[selected] = length;
+    result.strides[selected] *= step;
+    return narrowed.alias(result, narrowed.byte_offset());
 }
 
-Tensor Tensor::index(std::initializer_list<TensorIndex> indices) const {
-    Tensor result = *this;
+Tensor index(const Tensor& source, std::initializer_list<TensorIndex> indices) {
+    Tensor result = source;
     std::int64_t dimension = 0;
     for (const auto& index : indices) {
         if (index.kind() == TensorIndex::Kind::integer) {
-            result = result.select(dimension, index.integer());
+            result = select(result, dimension, index.integer());
             continue;
         }
         if (index.kind() == TensorIndex::Kind::tensor) {
-            result = result.index_select(dimension, index.tensor());
+            result = index_select_cuda(result, dimension, index.tensor());
             ++dimension;
             continue;
         }
@@ -493,28 +489,21 @@ Tensor Tensor::index(std::initializer_list<TensorIndex> indices) const {
         const auto extent = result.size(dimension);
         const auto start = selected.has_start() ? selected.start() : 0;
         const auto end = selected.has_end() ? selected.end() : extent;
-        result = result.slice(dimension, start, end, selected.step());
+        result = slice(result, dimension, start, end, selected.step());
         ++dimension;
     }
     return result;
 }
 
-Tensor Tensor::index_select(std::int64_t dimension, const Tensor& indices) const {
-    return index_select_cuda(*this, dimension, indices);
-}
-
-Tensor Tensor::gather(std::int64_t dimension, const Tensor& indices) const {
-    return gather_cuda(*this, dimension, indices);
-}
-
-Tensor Tensor::expand(std::span<const std::int64_t> shape) const {
-    if (shape.size() < view_.rank || shape.size() > kMaximumTensorRank) {
+Tensor expand(const Tensor& source, std::span<const std::int64_t> shape) {
+    const auto& view = source.view_descriptor();
+    if (shape.size() < view.rank || shape.size() > kMaximumTensorRank) {
         throw std::invalid_argument("expand rank is incompatible with tensor rank");
     }
-    TensorView result = view_;
+    TensorView result = view;
     std::array<std::int64_t, kMaximumTensorRank> sizes{};
     std::array<std::int64_t, kMaximumTensorRank> strides{};
-    const auto offset = shape.size() - view_.rank;
+    const auto offset = shape.size() - view.rank;
     for (std::size_t output = 0; output < shape.size(); ++output) {
         const auto requested = shape[output];
         if (output < offset) {
@@ -524,132 +513,181 @@ Tensor Tensor::expand(std::span<const std::int64_t> shape) const {
             continue;
         }
         const auto input = output - offset;
-        const auto extent = view_.sizes[input];
+        const auto extent = view.sizes[input];
         const auto resolved = requested == -1 ? extent : requested;
         if (resolved != extent && extent != 1) {
             throw std::invalid_argument("cannot expand a non-singleton dimension");
         }
         sizes[output] = resolved;
-        strides[output] = resolved == extent ? view_.strides[input] : 0;
+        strides[output] = resolved == extent ? view.strides[input] : 0;
     }
     result.rank = static_cast<std::uint8_t>(shape.size());
     result.sizes = sizes;
     result.strides = strides;
-    return Tensor(storage_, result, byte_offset_);
+    return source.alias(result, source.byte_offset());
 }
 
-Tensor Tensor::repeat(std::span<const std::int64_t> repeats) const {
-    return repeat_cuda(*this, repeats);
-}
-
-Tensor Tensor::repeat_interleave(std::int64_t repeats, std::int64_t dimension) const {
-    return repeat_interleave_cuda(*this, repeats, dimension);
-}
-
-Tensor Tensor::unfold(
+Tensor unfold(const Tensor& source,
     std::int64_t dimension,
     std::int64_t window,
-    std::int64_t step) const {
-    if (window <= 0 || step <= 0 || view_.rank == kMaximumTensorRank) {
+    std::int64_t step) {
+    const auto& view = source.view_descriptor();
+    if (window <= 0 || step <= 0 || view.rank == kMaximumTensorRank) {
         throw std::invalid_argument("invalid unfold geometry");
     }
-    const auto selected = normalize_dimension(dimension, view_.rank);
-    const auto extent = view_.sizes[selected];
+    const auto selected = cuda::normalize_dimension(dimension, view.rank);
+    const auto extent = view.sizes[selected];
     if (window > extent) throw std::invalid_argument("unfold window exceeds dimension");
-    TensorView result = view_;
+    TensorView result = view;
     result.sizes[selected] = (extent - window) / step + 1;
     result.strides[selected] *= step;
     result.sizes[result.rank] = window;
-    result.strides[result.rank] = view_.strides[selected];
+    result.strides[result.rank] = view.strides[selected];
     ++result.rank;
-    return Tensor(storage_, result, byte_offset_);
+    return source.alias(result, source.byte_offset());
 }
 
-std::vector<Tensor> Tensor::split_with_sizes(
+std::vector<Tensor> split_with_sizes(const Tensor& source,
     std::span<const std::int64_t> sections,
-    std::int64_t dimension) const {
+    std::int64_t dimension) {
     std::vector<Tensor> result;
     result.reserve(sections.size());
     std::int64_t offset = 0;
     for (const auto length : sections) {
-        result.push_back(narrow(dimension, offset, length));
+        result.push_back(narrow(source, dimension, offset, length));
         offset += length;
     }
-    if (offset != size(dimension)) {
+    if (offset != source.size(dimension)) {
         throw std::invalid_argument("split sizes do not cover the selected dimension");
     }
     return result;
 }
 
-std::vector<Tensor> Tensor::chunk(std::int64_t chunks, std::int64_t dimension) const {
+std::vector<Tensor> chunk(const Tensor& source, std::int64_t chunks, std::int64_t dimension) {
     if (chunks <= 0) throw std::invalid_argument("chunk count must be positive");
-    const auto extent = size(dimension);
+    const auto extent = source.size(dimension);
     const auto width = (extent + chunks - 1) / chunks;
     std::vector<Tensor> result;
     for (std::int64_t start = 0; start < extent; start += width) {
-        result.push_back(narrow(dimension, start, std::min(width, extent - start)));
+        result.push_back(narrow(source, dimension, start, std::min(width, extent - start)));
     }
     return result;
 }
 
+}  // namespace tyloi::cuda
+
+namespace tyloi {
+
+Tensor Tensor::reshape(std::span<const std::int64_t> shape) const { return cuda::reshape(*this, shape); }
+
+Tensor Tensor::transpose(std::int64_t first, std::int64_t second) const { return cuda::transpose(*this, first, second); }
+
+Tensor Tensor::permute(std::span<const std::int64_t> order) const { return cuda::permute(*this, order); }
+
+Tensor Tensor::unsqueeze(std::int64_t dimension) const { return cuda::unsqueeze(*this, dimension); }
+
+Tensor Tensor::squeeze(std::int64_t dimension) const { return cuda::squeeze(*this, dimension); }
+
+Tensor Tensor::squeeze() const { return cuda::squeeze(*this); }
+
+Tensor Tensor::flatten(std::int64_t start, std::int64_t end) const { return cuda::flatten(*this, start, end); }
+
+Tensor Tensor::narrow(
+    std::int64_t dimension,
+    std::int64_t start,
+    std::int64_t length) const { return cuda::narrow(*this, dimension, start, length); }
+
+Tensor Tensor::select(std::int64_t dimension, std::int64_t index) const { return cuda::select(*this, dimension, index); }
+
+Tensor Tensor::slice(
+    std::int64_t dimension,
+    std::int64_t start,
+    std::int64_t end,
+    std::int64_t step) const { return cuda::slice(*this, dimension, start, end, step); }
+
+Tensor Tensor::index(std::initializer_list<TensorIndex> indices) const { return cuda::index(*this, indices); }
+
+Tensor Tensor::index_select(std::int64_t dimension, const Tensor& indices) const {
+    return cuda::index_select_cuda(*this, dimension, indices);
+}
+
+Tensor Tensor::gather(std::int64_t dimension, const Tensor& indices) const {
+    return cuda::gather_cuda(*this, dimension, indices);
+}
+
+Tensor Tensor::expand(std::span<const std::int64_t> shape) const { return cuda::expand(*this, shape); }
+
+Tensor Tensor::repeat(std::span<const std::int64_t> repeats) const {
+    return cuda::repeat_cuda(*this, repeats);
+}
+
+Tensor Tensor::repeat_interleave(std::int64_t repeats, std::int64_t dimension) const {
+    return cuda::repeat_interleave_cuda(*this, repeats, dimension);
+}
+
+Tensor Tensor::unfold(
+    std::int64_t dimension,
+    std::int64_t window,
+    std::int64_t step) const { return cuda::unfold(*this, dimension, window, step); }
+
+std::vector<Tensor> Tensor::split_with_sizes(
+    std::span<const std::int64_t> sections,
+    std::int64_t dimension) const { return cuda::split_with_sizes(*this, sections, dimension); }
+
+std::vector<Tensor> Tensor::chunk(std::int64_t chunks, std::int64_t dimension) const { return cuda::chunk(*this, chunks, dimension); }
+
 Tensor Tensor::mean(std::int64_t dimension, bool keep_dimension) const {
-    if (!defined()) {
-        throw std::invalid_argument("mean requires a defined tensor");
-    }
-    if (!is_cuda()) {
-        throw std::invalid_argument("native CPU mean is not implemented");
-    }
-    return reduce_cuda(*this, dimension, keep_dimension, 1);
+    return cuda::mean(*this, dimension, keep_dimension);
 }
 
 Tensor Tensor::mean() const { return reshape({-1}).mean(0, false); }
 Tensor Tensor::sum(std::int64_t dimension, bool keep_dimension) const {
-    return reduce_cuda(*this, dimension, keep_dimension, 0);
+    return cuda::sum(*this, dimension, keep_dimension);
 }
 Tensor Tensor::sum() const { return reshape({-1}).sum(0, false); }
 Tensor Tensor::max() const { return reshape({-1}).amax(0, false); }
 Tensor Tensor::amax(std::int64_t dimension, bool keep_dimension) const {
-    return reduce_cuda(*this, dimension, keep_dimension, 2);
+    return cuda::reduce_cuda(*this, dimension, keep_dimension, 2);
 }
 Tensor Tensor::norm() const { return square().sum().sqrt(); }
-Tensor Tensor::abs() const { return unary_cuda(*this, 0); }
-Tensor Tensor::square() const { return unary_cuda(*this, 1); }
-Tensor Tensor::exp() const { return unary_cuda(*this, 2); }
-Tensor Tensor::sqrt() const { return unary_cuda(*this, 3); }
+Tensor Tensor::abs() const { return cuda::unary_cuda(*this, 0); }
+Tensor Tensor::square() const { return cuda::unary_cuda(*this, 1); }
+Tensor Tensor::exp() const { return cuda::exp(*this); }
+Tensor Tensor::sqrt() const { return cuda::sqrt(*this); }
 Tensor Tensor::clamp(double minimum, double maximum) const {
-    return unary_cuda(*this, 4, minimum, maximum);
+    return cuda::clamp(*this, minimum, maximum);
 }
 Tensor Tensor::clamp_min(double minimum) const {
-    return unary_cuda(*this, 5, minimum);
+    return cuda::clamp_min(*this, minimum);
 }
 Tensor Tensor::clamp_max(double maximum) const {
-    return unary_cuda(*this, 6, maximum);
+    return cuda::clamp_max(*this, maximum);
 }
 Tensor Tensor::remainder(double divisor) const {
-    return unary_cuda(*this, 7, divisor);
+    return cuda::remainder(*this, divisor);
 }
 Tensor Tensor::argmax(std::int64_t dimension, bool keep_dimension) const {
-    return reduce_cuda(*this, dimension, keep_dimension, 3);
+    return cuda::argmax(*this, dimension, keep_dimension);
 }
-Tensor Tensor::eq(const Tensor& other) const { return binary_cuda(*this, other, 10); }
-Tensor Tensor::eq(double other) const { return scalar_binary_cuda(*this, other, 10); }
-Tensor Tensor::ne(const Tensor& other) const { return binary_cuda(*this, other, 11); }
-Tensor Tensor::ne(double other) const { return scalar_binary_cuda(*this, other, 11); }
+Tensor Tensor::eq(const Tensor& other) const { return cuda::binary_cuda(*this, other, 10); }
+Tensor Tensor::eq(double other) const { return cuda::scalar_binary_cuda(*this, other, 10); }
+Tensor Tensor::ne(const Tensor& other) const { return cuda::binary_cuda(*this, other, 11); }
+Tensor Tensor::ne(double other) const { return cuda::scalar_binary_cuda(*this, other, 11); }
 Tensor Tensor::all() const { return reshape({-1}).all(0, false); }
 Tensor Tensor::all(std::int64_t dimension, bool keep_dimension) const {
-    return reduce_cuda(*this, dimension, keep_dimension, 4);
+    return cuda::reduce_cuda(*this, dimension, keep_dimension, 4);
 }
 Tensor Tensor::any(std::int64_t dimension, bool keep_dimension) const {
-    return reduce_cuda(*this, dimension, keep_dimension, 5);
+    return cuda::reduce_cuda(*this, dimension, keep_dimension, 5);
 }
-Tensor Tensor::logical_not() const { return unary_cuda(*this, 8); }
-bool Tensor::equal(const Tensor& other) const { return mfq::cuda::equal(*this, other); }
-Tensor Tensor::masked_select(const Tensor& mask) const { return masked_select_cuda(*this, mask); }
+Tensor Tensor::logical_not() const { return cuda::unary_cuda(*this, 8); }
+bool Tensor::equal(const Tensor& other) const { return tyloi::cuda::equal(*this, other); }
+Tensor Tensor::masked_select(const Tensor& mask) const { return cuda::masked_select_cuda(*this, mask); }
 Tensor Tensor::tril(std::int64_t diagonal) const {
     if (dim() < 2) throw std::invalid_argument("tril requires at least two dimensions");
-    auto rows = arange(size(-2), TensorOptions{}.dtype(kInt64).device(device())).unsqueeze(-1);
-    auto columns = arange(size(-1), TensorOptions{}.dtype(kInt64).device(device())).unsqueeze(0);
-    return where(columns <= rows + diagonal, *this, 0.0);
+    auto rows = cuda::arange(size(-2), TensorOptions{}.dtype(kInt64).device(device())).unsqueeze(-1);
+    auto columns = cuda::arange(size(-1), TensorOptions{}.dtype(kInt64).device(device())).unsqueeze(0);
+    return cuda::where(columns <= rows + diagonal, *this, 0.0);
 }
 Tensor Tensor::masked_fill(const Tensor& mask, double value) const {
     auto result = clone();
@@ -657,64 +695,28 @@ Tensor Tensor::masked_fill(const Tensor& mask, double value) const {
     return result;
 }
 Tensor& Tensor::masked_fill_(const Tensor& mask, double value) {
-    masked_fill_cuda(*this, mask, value);
+    cuda::masked_fill_cuda(*this, mask, value);
     return *this;
 }
 
 Tensor Tensor::contiguous() const {
-    if (!defined()) {
-        return {};
-    }
-    if (is_contiguous()) {
-        return *this;
-    }
-    if (is_cuda()) {
-        return make_contiguous_cuda(*this);
-    }
-    auto result = empty(sizes(), options());
-    copy_contiguous_cpu(result, *this);
-    return result;
+    return cuda::contiguous(*this);
 }
 
 Tensor Tensor::clone() const {
-    if (!defined()) {
-        return {};
-    }
-    auto result = empty(sizes(), options());
-    result.copy_(*this);
-    return result;
+    return cuda::clone(*this);
 }
 
 Tensor Tensor::to(ScalarType type) const {
-    auto target = options().dtype(type);
-    if (type == scalar_type()) {
-        return *this;
-    }
-    if (is_cpu()) {
-        auto result = empty(sizes(), target);
-        copy_contiguous_cpu(result, *this);
-        return result;
-    }
-    return copy_or_convert_cuda(*this, target);
+    return cuda::cast(*this, type);
 }
 
 Tensor Tensor::to(Device target_device) const {
-    auto target = options().device(target_device);
-    if (target_device == device()) {
-        return *this;
-    }
-    return copy_or_convert_cuda(*this, target);
+    return cuda::copy(*this, target_device);
 }
 
 Tensor& Tensor::copy_(const Tensor& source, bool) {
-    if (!defined() || !source.defined()) {
-        throw std::invalid_argument("copy_ requires defined tensors");
-    }
-    if (is_cpu() && source.is_cpu()) {
-        copy_contiguous_cpu(*this, source);
-    } else {
-        copy_cuda(*this, source);
-    }
+    cuda::copy_into(*this, source);
     return *this;
 }
 
@@ -727,7 +729,7 @@ Tensor& Tensor::fill_(double value) {
         throw std::invalid_argument("fill_ requires a defined tensor");
     }
     if (is_cuda()) {
-        fill_cuda(*this, value);
+        cuda::fill_cuda(*this, value);
         return *this;
     }
     if (!is_contiguous()) {
@@ -757,10 +759,10 @@ Tensor& Tensor::fill_(double value) {
             std::fill_n(data_ptr<std::int64_t>(), numel(), static_cast<std::int64_t>(value));
             break;
         case ScalarType::float16:
-            std::fill_n(data_ptr<std::uint16_t>(), numel(), encode_float16(static_cast<float>(value)));
+            std::fill_n(data_ptr<std::uint16_t>(), numel(), cuda::encode_float16(static_cast<float>(value)));
             break;
         case ScalarType::bfloat16:
-            std::fill_n(data_ptr<std::uint16_t>(), numel(), encode_bfloat16(static_cast<float>(value)));
+            std::fill_n(data_ptr<std::uint16_t>(), numel(), cuda::encode_bfloat16(static_cast<float>(value)));
             break;
         case ScalarType::float32:
             std::fill_n(data_ptr<float>(), numel(), static_cast<float>(value));
@@ -781,31 +783,34 @@ Tensor& Tensor::add_(const Tensor& value) {
 
 Tensor& Tensor::scatter_add_(
     std::int64_t dimension, const Tensor& index, const Tensor& source) {
-    scatter_cuda(*this, dimension, index, source, true);
+    cuda::scatter_cuda(*this, dimension, index, source, true);
     return *this;
 }
 
 Tensor& Tensor::scatter_(
     std::int64_t dimension, const Tensor& index, const Tensor& source) {
-    scatter_cuda(*this, dimension, index, source, false);
+    cuda::scatter_cuda(*this, dimension, index, source, false);
     return *this;
 }
 
 Tensor& Tensor::index_copy_(
     std::int64_t dimension, const Tensor& index, const Tensor& source) {
-    index_copy_cuda(*this, dimension, index, source);
+    cuda::index_copy_cuda(*this, dimension, index, source);
     return *this;
 }
 
 Tensor& Tensor::index_fill_(
     std::int64_t dimension, const Tensor& index, double value) {
-    index_fill_cuda(*this, dimension, index, value);
+    cuda::index_fill_cuda(*this, dimension, index, value);
     return *this;
 }
 
 Tensor& Tensor::index_put_(
     std::initializer_list<TensorIndex> indices, const Tensor& value) {
-    index(indices).copy_(value);
+    {
+        auto destination = index(indices);
+        cuda::copy_into(destination, value);
+    }
     return *this;
 }
 
@@ -813,6 +818,58 @@ Tensor& Tensor::index_put_(
     std::initializer_list<TensorIndex> indices, double value) {
     index(indices).fill_(value);
     return *this;
+}
+
+}  // namespace tyloi
+
+namespace tyloi::cuda {
+
+Tensor contiguous(const Tensor& input) {
+    if (!input.defined()) return {};
+    if (input.is_contiguous()) return input;
+    if (input.is_cuda()) return make_contiguous_cuda(input);
+    auto result = empty(input.sizes(), input.options());
+    copy_contiguous_cpu(result, input);
+    return result;
+}
+
+Tensor clone(const Tensor& input) {
+    if (!input.defined()) return {};
+    auto result = empty(input.sizes(), input.options());
+    copy_into(result, input);
+    return result;
+}
+
+Tensor cast(const Tensor& input, ScalarType type) {
+    auto target = input.options().dtype(type);
+    if (type == input.scalar_type()) return input;
+    if (input.is_cpu()) {
+        auto result = empty(input.sizes(), target);
+        copy_contiguous_cpu(result, input);
+        return result;
+    }
+    return copy_or_convert_cuda(input, target);
+}
+
+Tensor cast(const Tensor& input, ScalarType type, Device target) {
+    return copy(cast(input, type), target);
+}
+
+Tensor copy(const Tensor& input, Device target_device) {
+    auto target = input.options().device(target_device);
+    if (target_device == input.device()) return input;
+    return copy_or_convert_cuda(input, target);
+}
+
+void copy_into(Tensor& destination, const Tensor& source) {
+    if (!destination.defined() || !source.defined()) {
+        throw std::invalid_argument("copy_ requires defined tensors");
+    }
+    if (destination.is_cpu() && source.is_cpu()) {
+        copy_contiguous_cpu(destination, source);
+    } else {
+        copy_cuda(destination, source);
+    }
 }
 
 Tensor empty(std::span<const std::int64_t> shape, const TensorOptions& options) {
@@ -907,7 +964,7 @@ Tensor from_blob(
 
 std::vector<char> pickle_save(const Tensor& value) {
     if (!value.defined()) throw std::invalid_argument("cannot serialize an undefined tensor");
-    const auto host = value.cpu().contiguous();
+    const auto host = contiguous(copy(value, Device{DeviceType::cpu, 0}));
     constexpr std::string_view magic{"MFQTNSR1", 8};
     const auto header_bytes = std::size_t{16} +
         static_cast<std::size_t>(host.dim()) * sizeof(std::int64_t);
@@ -964,4 +1021,4 @@ NativeIValue pickle_load(const std::vector<char>& bytes) {
     return NativeIValue{std::move(output)};
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

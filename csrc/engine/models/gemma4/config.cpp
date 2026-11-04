@@ -5,7 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace mfq::models::gemma4 {
+namespace tyloi::models::gemma4 {
 
 Config Config::from_json(std::string_view payload) {
     const auto root = nlohmann::json::parse(
@@ -61,4 +61,4 @@ Config Config::from_json(std::string_view payload) {
     return config;
 }
 
-} // namespace mfq::models::gemma4
+} // namespace tyloi::models::gemma4

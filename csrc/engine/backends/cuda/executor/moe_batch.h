@@ -6,27 +6,27 @@
 #include <array>
 #include <map>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // One execution cell retains all descriptors and scratch through graph replay.
 class MoeBatch {
     MfeFfnBatch batch_{};
-    mfq_tensor_backend::Tensor descriptors_,cohorts_,quantization_,sigmoid_,input_,ids_,weights_,shared_gate_;
-    mfq_tensor_backend::Tensor bound_shared_gate_;
-    mfq_tensor_backend::Tensor hidden_,quantized_,scales_,completion_,output_,kinds_,cpu_;
-    std::vector<mfq_tensor_backend::Tensor> owners_;
+    ::tyloi::Tensor descriptors_,cohorts_,quantization_,sigmoid_,input_,ids_,weights_,shared_gate_;
+    ::tyloi::Tensor bound_shared_gate_;
+    ::tyloi::Tensor hidden_,quantized_,scales_,completion_,output_,kinds_,cpu_;
+    std::vector<::tyloi::Tensor> owners_;
     std::vector<MfePackedProjection> host_views_;
     std::vector<int32_t> host_cohorts_;
-    std::map<std::pair<int,int>,std::pair<mfq_tensor_backend::Tensor,mfq_tensor_backend::Tensor>> input_quantizers_;
-    mfq_tensor_backend::Tensor transferred_,transfer_indices_,aborted_,resident_pairs_;
-    mfq_tensor_backend::Tensor token_group_counts_,token_group_slots_,token_group_buckets_;
+    std::map<std::pair<int,int>,std::pair<::tyloi::Tensor,::tyloi::Tensor>> input_quantizers_;
+    ::tyloi::Tensor transferred_,transfer_indices_,aborted_,resident_pairs_;
+    ::tyloi::Tensor token_group_counts_,token_group_slots_,token_group_buckets_;
     int quantization_count_=0,quantization_groups_=0;
     bool dispatch_trace_reported_=false;
     bool combined_gate_up_=false;
     bool ungated_experts_=false;
     bool split_shared_groups_=false;
-    mfq_tensor_backend::Tensor early_shared_descriptors_,early_shared_quantizers_;
-    std::vector<mfq_tensor_backend::Tensor> early_shared_inputs_;
+    ::tyloi::Tensor early_shared_descriptors_,early_shared_quantizers_;
+    std::vector<::tyloi::Tensor> early_shared_inputs_;
     MfePrepareSharedGate early_shared_gate_{};
     int early_shared_quantizer_count_=0,early_shared_groups_=0;
     std::unique_ptr<Stream> shared_stream_;
@@ -44,43 +44,43 @@ class MoeBatch {
     void join_shared();
     void start_shared(bool early);
     const int32_t* transfer_route_plan_=nullptr;
-    mfq_tensor_backend::Tensor primary_cohorts_,cached_snapshot_tags_;
-    mfq_tensor_backend::Tensor cached_transfer_routes_;
+    ::tyloi::Tensor primary_cohorts_,cached_snapshot_tags_;
+    ::tyloi::Tensor cached_transfer_routes_;
     bool cached_transfer_routes_ready_=false;
-    mfq_tensor_backend::Tensor prepared_gate_terms_,prepared_gate_completed_;
+    ::tyloi::Tensor prepared_gate_terms_,prepared_gate_completed_;
     MfeCachedDispatch cached_dispatch_{};
     void trace_dispatch();
 public:
     MoeBatch(const std::array<const MixedMoeRuntime*,3>& projections,
-        const mfq_tensor_backend::Tensor& input,const mfq_tensor_backend::Tensor& ids,
-        const mfq_tensor_backend::Tensor& weights,const mfq_tensor_backend::Tensor& sigmoid,
-        const std::array<const NintWeight*,3>& shared={},const mfq_tensor_backend::Tensor& shared_gate={},
+        const ::tyloi::Tensor& input,const ::tyloi::Tensor& ids,
+        const ::tyloi::Tensor& weights,const ::tyloi::Tensor& sigmoid,
+        const std::array<const NintWeight*,3>& shared={},const ::tyloi::Tensor& shared_gate={},
         int output_columns=0,int intermediate_columns=0,
         const std::array<std::vector<int32_t>,3>* cohort_by_expert=nullptr,bool output_pairs=false,
         bool combined_gate_up=false,int token_group_capacity_hint=0,double swiglu_limit=0,
         bool ungated_experts=false,bool ungated_shared=false);
     MfePackedProjection projection_view(int projection,MfePackedProjection view)const;
-    void cpu_results(const mfq_tensor_backend::Tensor& kinds,const mfq_tensor_backend::Tensor& pairs,
+    void cpu_results(const ::tyloi::Tensor& kinds,const ::tyloi::Tensor& pairs,
         const uint32_t* ready=nullptr);
     void asynchronous(const int32_t* kinds,const uint32_t* plan,const uint32_t* transfer,
         const uint32_t* cpu_ready,const uint32_t* abort,const int32_t* indices,const void* cpu_pairs);
-    void bind_window_inputs(const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& ids,const mfq_tensor_backend::Tensor& weights);
+    void bind_window_inputs(const ::tyloi::Tensor& input,
+        const ::tyloi::Tensor& ids,const ::tyloi::Tensor& weights);
     void use_staged_inputs();
-    void bind_shared_gate(const mfq_tensor_backend::Tensor& gate);
+    void bind_shared_gate(const ::tyloi::Tensor& gate);
     // Caller publishes the complete packet before transfer_ready, and keeps
     // its mapped allocation alive across graph replays.
     void bind_transfer_route_plan(const int32_t* plan){transfer_route_plan_=plan;}
     void enable_cached_dispatch(const MfeCachedExpert* mapped,
         const std::array<std::vector<std::vector<int64_t>>,3>& cohort_bytes,uint32_t* snapshot_ready);
-    bool try_fuse_prepare_shared_gate(const NintWeight&,const mfq_tensor_backend::Tensor& output);
+    bool try_fuse_prepare_shared_gate(const NintWeight&,const ::tyloi::Tensor& output);
     bool shared_gate_in_prepare()const{return cached_dispatch_.gate.activation!=nullptr;}
     MfePackedProjection expert_view(int projection,int expert,
         const std::vector<int64_t>& field_bytes,int resident_slot)const;
-    const mfq_tensor_backend::Tensor& transfer_buffer()const{return transferred_;}
+    const ::tyloi::Tensor& transfer_buffer()const{return transferred_;}
     // Initialization only: shared scalar gates may reuse prepare()'s exact
     // group quantization without a second quantization kernel.
-    std::pair<mfq_tensor_backend::Tensor,mfq_tensor_backend::Tensor> reserve_input_quantization(int groups,int group_size);
+    std::pair<::tyloi::Tensor,::tyloi::Tensor> reserve_input_quantization(int groups,int group_size);
     void prepare(int32_t* published_ids=nullptr,uint32_t* ready=nullptr);
     void gate_up();
     void resident();
@@ -91,10 +91,10 @@ public:
     void down_reduce_compute();
     void down_reduce();
     void run(){prepare();gate_up();down_reduce();}
-    const mfq_tensor_backend::Tensor& output()const{return output_;}
-    const mfq_tensor_backend::Tensor& hidden()const{return hidden_;}
-    const mfq_tensor_backend::Tensor& cached_transfer_routes()const{return cached_transfer_routes_;}
+    const ::tyloi::Tensor& output()const{return output_;}
+    const ::tyloi::Tensor& hidden()const{return hidden_;}
+    const ::tyloi::Tensor& cached_transfer_routes()const{return cached_transfer_routes_;}
     const MfeFfnBatch& batch()const{return batch_;}
 };
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

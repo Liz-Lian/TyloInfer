@@ -5,7 +5,7 @@
 #include <functional>
 #include <memory>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 
 // Each projection contributes rows to one batch on MFQ's persistent workers.
 class ExpertPool {
@@ -16,13 +16,13 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
     void rows(std::int64_t count,
               const std::function<void(std::int64_t, std::int64_t)>& callback,
-              mfq::HostParallelProfile* profile=nullptr);
+              tyloi::HostParallelProfile* profile=nullptr);
     int participants() const { return participants_; }
 private:
     CpuTopology topology_;
     int participants_ = 1;
     bool pin_ = true;
-    std::unique_ptr<mfq::HostParallelPool> pool_;
+    std::unique_ptr<tyloi::HostParallelPool> pool_;
 };
 ExpertPool& expert_pool();
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

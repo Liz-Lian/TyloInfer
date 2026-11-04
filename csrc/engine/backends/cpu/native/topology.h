@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 enum class PoolAffinity { Auto, PCores, All };
 enum class HostCore { First, Last };
 struct CpuTopology {
@@ -33,4 +33,4 @@ public:
 private:
     ThreadAffinity previous_;
 };
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

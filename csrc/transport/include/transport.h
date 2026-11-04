@@ -70,7 +70,7 @@ struct MfqHttpRuntimeTransportConfig : MfqRuntimeTransportConfig {
 class MfqTransport {
 public:
     virtual ~MfqTransport() = default;
-    virtual int run(const mfq::engine::Engine & engine) = 0;
+    virtual int run(const tyloi::engine::Engine & engine) = 0;
 };
 
 std::unique_ptr<MfqTransport> make_mfq_http_transport(

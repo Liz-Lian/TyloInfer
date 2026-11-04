@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 namespace {
 
@@ -22,20 +22,20 @@ Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
     require_forward(ids.size(0) > 0 && ids.size(1) > 0,
                     "token IDs must not be empty");
-    return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
+    return collectives.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
 std::optional<Tensor> decode_lengths(const State& state, const Tensor& ids, int primary) {
     if (state.cache_pos <= 0 || ids.size(1) != 1) return {};
-    return mfq_tensor_backend::full(
+    return ::tyloi::cuda::full(
         {ids.size(0)}, state.cache_pos + 1,
-        mfq_tensor_backend::TensorOptions()
-            .dtype(mfq_tensor_backend::kInt64)
-            .device(mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, primary)));
+        ::tyloi::TensorOptions()
+            .dtype(::tyloi::kInt64)
+            .device(::tyloi::Device(::tyloi::kCUDA, primary)));
 }
 
 Tensor copy_to_layer(Collectives& collectives, Tensor value, const Layer& layer) {
-    if (layer.cpu) return value.to(mfq_tensor_backend::kCPU).contiguous();
+    if (layer.cpu) return value.to(::tyloi::kCPU).contiguous();
     return collectives.copy(value, layer.device).contiguous();
 }
 
@@ -58,10 +58,10 @@ void prepare_linear_state(const LinearAttention& attention, LinearState& state,
     const auto batch = input.size(0);
     const auto width = 2 * attention.key_heads * attention.key_dim +
                        attention.value_heads * attention.value_dim;
-    const auto options = input.options().dtype(mfq_tensor_backend::kFloat32);
+    const auto options = input.options().dtype(::tyloi::kFloat32);
     state.mixer.view() = {
-        mfq_tensor_backend::zeros({batch, attention.conv_kernel - 1, width}, options),
-        mfq_tensor_backend::zeros(
+        ::tyloi::cuda::zeros({batch, attention.conv_kernel - 1, width}, options),
+        ::tyloi::cuda::zeros(
             {batch, attention.value_heads, attention.value_dim, attention.value_dim}, options),
         input.is_cuda() && transposed};
 }
@@ -80,7 +80,7 @@ Tensor embed(const Model& model, Executor& executor, Collectives& collectives,
     Inputs inputs;
     inputs.values = {std::move(normalized)};
     return executor.run(std::span<const Task>{&task, 1}, std::move(inputs), mode)
-        .to(mfq_tensor_backend::kFloat16).contiguous();
+        .to(::tyloi::kFloat16).contiguous();
 }
 
 Tensor normalize(const Model& model, Executor& executor, Tensor hidden,
@@ -154,21 +154,21 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                         "attention_mask must cover [batch,cached_plus_current_tokens]");
 
     auto physical = cache_positions.has_value()
-                        ? collectives.copy(Tensor(*cache_positions).to(mfq_tensor_backend::kInt64),
+                        ? collectives.copy(Tensor(*cache_positions).to(::tyloi::kInt64),
                                            options.primary)
-                        : mfq_tensor_backend::arange(
+                        : ::tyloi::cuda::arange(
                               state.cache_pos, state.cache_pos + T,
-                              mfq_tensor_backend::TensorOptions()
-                                  .device(mfq_tensor_backend::Device(
-                                      mfq_tensor_backend::kCUDA, options.primary))
-                                  .dtype(mfq_tensor_backend::kInt64));
+                              ::tyloi::TensorOptions()
+                                  .device(::tyloi::Device(
+                                      ::tyloi::kCUDA, options.primary))
+                                  .dtype(::tyloi::kInt64));
     physical = physical.contiguous();
     require_forward((physical.dim() == 1 && physical.numel() == T) ||
                         (physical.dim() == 2 && physical.size(0) == B &&
                          physical.size(1) == T),
                     "cache_positions must have shape [tokens] or [batch,tokens]");
     auto semantic = positions.has_value()
-                        ? collectives.copy(Tensor(*positions).to(mfq_tensor_backend::kInt64),
+                        ? collectives.copy(Tensor(*positions).to(::tyloi::kInt64),
                                            options.primary)
                         : (state.decode_position_delta == 0
                                ? physical
@@ -181,7 +181,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                                 model.rope.sections.numel() > 0),
         "position_ids must have shape [tokens], [batch,tokens], or configured grid-MRoPE [3,tokens]");
     if (lengths.has_value()) {
-        lengths = collectives.copy(Tensor(*lengths).to(mfq_tensor_backend::kInt64), options.primary)
+        lengths = collectives.copy(Tensor(*lengths).to(::tyloi::kInt64), options.primary)
                        .contiguous();
     } else {
         lengths = decode_lengths(state, ids, options.primary);
@@ -196,7 +196,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
     auto hidden = collectives.copy(std::move(embeddings), options.primary).contiguous();
     if (trace)
         trace->push_back(collectives.copy(hidden, options.primary)
-                             .to(mfq_tensor_backend::kFloat32)
+                             .to(::tyloi::kFloat32)
                              .contiguous()
                              .clone());
     if (confirmed > 0) {
@@ -216,7 +216,7 @@ Tensor forward_impl(const Model& model, State& state, Executor& executor,
                                    *active_rope, options);
             if (trace)
                 trace->push_back(collectives.copy(hidden, options.primary)
-                                     .to(mfq_tensor_backend::kFloat32)
+                                     .to(::tyloi::kFloat32)
                                      .contiguous()
                                      .clone());
         }
@@ -287,12 +287,12 @@ void replay(const Model& model, State& state, Executor& executor, std::int64_t a
 }
 
 Tensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& state,
-                     mfq::cuda::Executor& executor, std::size_t scratch_offset, Tensor input,
+                     tyloi::cuda::Executor& executor, std::size_t scratch_offset, Tensor input,
                      const AttentionStep& step, std::int64_t confirmed_prefix,
                      const RopeCache& rope, const Executor::Mode& options) {
     MfqCudaGuard guard(layer.device);
     auto local_step = layer_step(collectives, layer, step);
-    input = layer.cpu ? input.to(mfq_tensor_backend::kCPU).contiguous()
+    input = layer.cpu ? input.to(::tyloi::kCPU).contiguous()
                       : collectives.copy(input, layer.device).contiguous();
     const auto tasks = layer.tasks();
     const auto trace = options.trace_layer >= 0 && options.trace_layer == tasks[0].scope
@@ -326,8 +326,8 @@ Tensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& s
             *cache = KVCache(
                 input.size(0), attention.kv_heads, capacity, attention.attention_head_dim,
                 attention.sliding, input.device(),
-                attention.official_bf16 ? mfq_tensor_backend::kBFloat16
-                                        : mfq_tensor_backend::kFloat16,
+                attention.official_bf16 ? ::tyloi::kBFloat16
+                                        : ::tyloi::kFloat16,
                 attention.kv_quantization);
         }
         cache->quantization = attention.kv_quantization;
@@ -371,4 +371,4 @@ Tensor forward_layer(Collectives& collectives, const Layer& layer, LayerState& s
     }
 }
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

@@ -13,7 +13,7 @@
 #include <tuple>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 __global__ void exact_bf16_softmax_max_kernel(
@@ -311,7 +311,7 @@ Tensor softmax(const Tensor& input, std::int64_t dimension) {
     bool exact_bf16_disabled = false;
     if (input.scalar_type() == kBFloat16) {
         const char* value =
-            mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_EXACT_BF16_SOFTMAX");
+            tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_EXACT_BF16_SOFTMAX");
         exact_bf16_disabled = value != nullptr && value[0] == '1';
     }
     const bool row_softmax = input.is_cuda() && input.is_contiguous() &&
@@ -621,4 +621,4 @@ Tensor constant_pad_nd(
     target.copy_(input);
     return output;
 }
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

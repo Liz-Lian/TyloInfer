@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 PagedKv::PagedKv(const std::vector<Layout>& layouts, int64_t context,
                  int32_t sequences, bool preallocate)
@@ -31,19 +31,19 @@ PagedKv::PagedKv(const std::vector<Layout>& layouts, int64_t context,
         MfqCudaGuard guard(device);
         auto table = device_page_tables_.find(device);
         if (table == device_page_tables_.end()) {
-            auto page_table = mfq_tensor_backend::empty(
+            auto page_table = ::tyloi::cuda::empty(
                 {maximum_sequences_, logical_pages_per_sequence_},
-                mfq_tensor_backend::TensorOptions()
-                    .device(mfq_tensor_backend::Device(
-                        mfq_tensor_backend::kCUDA, device))
-                    .dtype(mfq_tensor_backend::kInt32));
+                ::tyloi::TensorOptions()
+                    .device(::tyloi::Device(
+                        ::tyloi::kCUDA, device))
+                    .dtype(::tyloi::kInt32));
             page_table.fill_(-1);
             device_page_tables_.emplace(device, std::move(page_table));
         }
-        auto pointer_options = mfq_tensor_backend::TensorOptions()
-            .device(mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA, device))
-            .dtype(mfq_tensor_backend::kInt64);
+        auto pointer_options = ::tyloi::TensorOptions()
+            .device(::tyloi::Device(
+                ::tyloi::kCUDA, device))
+            .dtype(::tyloi::kInt64);
         Pool pool;
         pool.layout = layout;
         pool.key_width = layout.quantization.enabled()
@@ -51,10 +51,10 @@ PagedKv::PagedKv(const std::vector<Layout>& layouts, int64_t context,
         pool.value_width = layout.quantization.enabled()
             ? cuda_kv_packed_width(int(head_dim), layout.quantization.value_bits()) : head_dim;
         pool.dtype = layout.quantization.enabled()
-            ? mfq_tensor_backend::kInt32 : mfq_tensor_backend::kFloat16;
-        pool.k_chunk_ptrs = mfq_tensor_backend::zeros(
+            ? ::tyloi::kInt32 : ::tyloi::kFloat16;
+        pool.k_chunk_ptrs = ::tyloi::cuda::zeros(
             {maximum_chunks}, pointer_options);
-        pool.v_chunk_ptrs = mfq_tensor_backend::zeros(
+        pool.v_chunk_ptrs = ::tyloi::cuda::zeros(
             {maximum_chunks}, pointer_options);
         layers_.push_back(std::move(pool));
     }
@@ -164,7 +164,7 @@ KVCache PagedKv::view(size_t index, int64_t batch) const {
     const auto& pool = layers_.at(index);
     auto cache = KVCache::paged_view(pool.k_chunk_ptrs, pool.v_chunk_ptrs,
         device_page_tables_.at(pool.layout.device), batch, pool.layout.heads,
-        pool.layout.head_dim, kPageSize, kPagesPerChunk, mfq_tensor_backend::kFloat16);
+        pool.layout.head_dim, kPageSize, kPagesPerChunk, ::tyloi::kFloat16);
     cache.quantization = pool.layout.quantization;
     return cache;
 }
@@ -234,15 +234,15 @@ void PagedKv::ensure_storage(size_t required_pages) {
         pending.reserve(layers_.size());
         for (const auto & layer : layers_) {
             MfqCudaGuard guard(layer.layout.device);
-            auto options = mfq_tensor_backend::TensorOptions()
-                .device(mfq_tensor_backend::Device(
-                    mfq_tensor_backend::kCUDA, layer.layout.device))
+            auto options = ::tyloi::TensorOptions()
+                .device(::tyloi::Device(
+                    ::tyloi::kCUDA, layer.layout.device))
                 .dtype(layer.dtype);
             Chunk chunk;
-            chunk.k = mfq_tensor_backend::empty(
+            chunk.k = ::tyloi::cuda::empty(
                 {static_cast<int64_t>(chunk_pages), layer.layout.heads,
                  kPageSize, layer.key_width}, options);
-            chunk.v = mfq_tensor_backend::empty(
+            chunk.v = ::tyloi::cuda::empty(
                 {static_cast<int64_t>(chunk_pages), layer.layout.heads,
                  kPageSize, layer.value_width}, options);
             pending.push_back(std::move(chunk));
@@ -281,4 +281,4 @@ void PagedKv::ensure_storage(size_t required_pages) {
     }
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace mfq::cpu::detail {
+namespace tyloi::cpu::detail {
 inline bool thread_cpu_sets(std::vector<unsigned long>& ids) {
     ULONG count=0;
     if(!GetThreadSelectedCpuSets(GetCurrentThread(),nullptr,0,&count) &&

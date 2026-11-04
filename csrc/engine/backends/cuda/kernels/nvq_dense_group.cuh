@@ -2,7 +2,7 @@
 #include "nvq_e8_dense_group.cuh"
 #include "nvq_d4_dense_group.cuh"
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 __host__ __device__ constexpr bool dense_nvq_format(int format) {
     return format==5 || format==10 || format==11 || format==12 ||
         format==13 || format==14 || format==15;
@@ -40,4 +40,4 @@ __device__ __forceinline__ int2 decode_dense_nvq_vector(
     if(segment==1)return decode_dense_nvq_vector<Format,1>(r,bank,sign_mode);
     return decode_dense_nvq_vector<Format,2>(r,bank,sign_mode);
 }
-} // namespace mfq::cuda::packed_nvq
+} // namespace tyloi::cuda::packed_nvq

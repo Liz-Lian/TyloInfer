@@ -8,7 +8,7 @@
 #include <tuple>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 void wait_route_publication(const uint32_t* flag,cudaStream_t stream,int timeout_ms=60000);
 void publish_mapped_flag(uint32_t* flag) noexcept;
 void check_stream_progress(cudaStream_t stream);

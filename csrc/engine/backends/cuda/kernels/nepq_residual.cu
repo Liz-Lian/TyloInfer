@@ -371,23 +371,23 @@ __global__ void nepq_sparse_residual_backward_transpose_kernel(
 #endif
 
 void validate_residual(
-    const mfq_tensor_backend::Tensor & dictionary,
-    const mfq_tensor_backend::Tensor & first,
-    const mfq_tensor_backend::Tensor & second,
+    const ::tyloi::Tensor & dictionary,
+    const ::tyloi::Tensor & first,
+    const ::tyloi::Tensor & second,
     int64_t width,
     int64_t position_bits,
     int64_t block_vectors) {
     TYLOINFER_RUNTIME_CHECK(
-        dictionary.is_cuda() && dictionary.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        dictionary.is_cuda() && dictionary.scalar_type() == ::tyloi::kFloat16 &&
         dictionary.is_contiguous() && dictionary.dim() == 2 &&
         dictionary.size(0) == 1024 && dictionary.size(1) == 8,
         "NEPQ-A dictionary must be CUDA contiguous fp16 [1024,8]");
     TYLOINFER_RUNTIME_CHECK(
-        first.is_cuda() && first.scalar_type() == mfq_tensor_backend::kInt16 &&
+        first.is_cuda() && first.scalar_type() == ::tyloi::kInt16 &&
         first.is_contiguous() && first.dim() == 2,
         "NEPQ-A first records must be CUDA contiguous int16 rank-2");
     TYLOINFER_RUNTIME_CHECK(
-        second.is_cuda() && second.scalar_type() == mfq_tensor_backend::kInt16 &&
+        second.is_cuda() && second.scalar_type() == ::tyloi::kInt16 &&
         second.is_contiguous() && second.sizes() == first.sizes(),
         "NEPQ-A second records must be int16 and match the first-record layout");
     TYLOINFER_RUNTIME_CHECK(
@@ -406,20 +406,20 @@ void validate_residual(
 }  // namespace
 
 
-mfq_tensor_backend::Tensor nepq_sparse_residual_matmul_cuda(
-    mfq_tensor_backend::Tensor dictionary,
-    mfq_tensor_backend::Tensor first,
-    mfq_tensor_backend::Tensor second,
-    mfq_tensor_backend::Tensor input,
+::tyloi::Tensor nepq_sparse_residual_matmul_cuda(
+    ::tyloi::Tensor dictionary,
+    ::tyloi::Tensor first,
+    ::tyloi::Tensor second,
+    ::tyloi::Tensor input,
     int64_t position_bits,
     int64_t block_vectors,
-    mfq_tensor_backend::Tensor output) {
+    ::tyloi::Tensor output) {
     TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
         input.is_contiguous() && input.dim() == 2,
         "NEPQ-A input must be CUDA contiguous fp16 rank-2");
     TYLOINFER_RUNTIME_CHECK(
-        output.is_cuda() && output.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        output.is_cuda() && output.scalar_type() == ::tyloi::kFloat16 &&
         output.is_contiguous() && output.dim() == 2 &&
         output.size(0) == input.size(0) && output.size(1) == first.size(0),
         "NEPQ-A output must be CUDA contiguous fp16 [M,rows]");
@@ -453,15 +453,15 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_matmul_cuda(
 }
 
 
-mfq_tensor_backend::Tensor nepq_sparse_residual_dequant_cuda(
-    mfq_tensor_backend::Tensor dictionary,
-    mfq_tensor_backend::Tensor first,
-    mfq_tensor_backend::Tensor second,
+::tyloi::Tensor nepq_sparse_residual_dequant_cuda(
+    ::tyloi::Tensor dictionary,
+    ::tyloi::Tensor first,
+    ::tyloi::Tensor second,
     int64_t position_bits,
     int64_t block_vectors,
-    mfq_tensor_backend::Tensor weight) {
+    ::tyloi::Tensor weight) {
     TYLOINFER_RUNTIME_CHECK(
-        weight.is_cuda() && weight.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        weight.is_cuda() && weight.scalar_type() == ::tyloi::kFloat16 &&
         weight.is_contiguous() && weight.dim() == 2 &&
         weight.size(0) == first.size(0),
         "NEPQ-A weight must be CUDA contiguous fp16 [rows,K]");
@@ -493,31 +493,31 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_dequant_cuda(
 }
 
 
-mfq_tensor_backend::Tensor nepq_sparse_residual_grouped_cuda(
-    mfq_tensor_backend::Tensor dictionary,
-    mfq_tensor_backend::Tensor first,
-    mfq_tensor_backend::Tensor second,
-    mfq_tensor_backend::Tensor input,
-    mfq_tensor_backend::Tensor route_ids,
-    mfq_tensor_backend::Tensor expert_local,
+::tyloi::Tensor nepq_sparse_residual_grouped_cuda(
+    ::tyloi::Tensor dictionary,
+    ::tyloi::Tensor first,
+    ::tyloi::Tensor second,
+    ::tyloi::Tensor input,
+    ::tyloi::Tensor route_ids,
+    ::tyloi::Tensor expert_local,
     int64_t out_per_expert,
     int64_t position_bits,
     int64_t block_vectors,
-    mfq_tensor_backend::Tensor output) {
+    ::tyloi::Tensor output) {
     TYLOINFER_RUNTIME_CHECK(
-        input.is_cuda() && input.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input.is_cuda() && input.scalar_type() == ::tyloi::kFloat16 &&
         input.is_contiguous() && (input.dim() == 2 || input.dim() == 3),
         "NEPQ-A routed input must be CUDA contiguous fp16 rank-2 or rank-3");
     TYLOINFER_RUNTIME_CHECK(
-        route_ids.is_cuda() && route_ids.scalar_type() == mfq_tensor_backend::kInt32 &&
+        route_ids.is_cuda() && route_ids.scalar_type() == ::tyloi::kInt32 &&
         route_ids.is_contiguous() && route_ids.dim() == 2,
         "NEPQ-A route IDs must be CUDA contiguous int32 rank-2");
     TYLOINFER_RUNTIME_CHECK(
-        expert_local.is_cuda() && expert_local.scalar_type() == mfq_tensor_backend::kInt32 &&
+        expert_local.is_cuda() && expert_local.scalar_type() == ::tyloi::kInt32 &&
         expert_local.is_contiguous() && expert_local.dim() == 1,
         "NEPQ-A expert map must be CUDA contiguous int32 rank-1");
     TYLOINFER_RUNTIME_CHECK(
-        output.is_cuda() && output.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        output.is_cuda() && output.scalar_type() == ::tyloi::kFloat16 &&
         output.is_contiguous() && output.dim() == 3 &&
         output.size(0) == route_ids.size(0) &&
         output.size(1) == route_ids.size(1) &&
@@ -571,23 +571,23 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_grouped_cuda(
 
 
 #ifndef TYLOINFER_NATIVE_CUDA_RUNTIME
-mfq_tensor_backend::Tensor nepq_sparse_residual_backward_input_cuda(
-    mfq_tensor_backend::Tensor dictionary,
-    mfq_tensor_backend::Tensor first,
-    mfq_tensor_backend::Tensor second,
-    mfq_tensor_backend::Tensor output_gradient,
+::tyloi::Tensor nepq_sparse_residual_backward_input_cuda(
+    ::tyloi::Tensor dictionary,
+    ::tyloi::Tensor first,
+    ::tyloi::Tensor second,
+    ::tyloi::Tensor output_gradient,
     int64_t position_bits,
     int64_t block_vectors,
-    mfq_tensor_backend::Tensor input_gradient) {
+    ::tyloi::Tensor input_gradient) {
     TYLOINFER_RUNTIME_CHECK(
         output_gradient.is_cuda() &&
-        output_gradient.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        output_gradient.scalar_type() == ::tyloi::kFloat16 &&
         output_gradient.is_contiguous() && output_gradient.dim() == 2 &&
         output_gradient.size(1) == first.size(0),
         "NEPQ-A backward output gradient must be CUDA fp16 [M,rows]");
     TYLOINFER_RUNTIME_CHECK(
         input_gradient.is_cuda() &&
-        input_gradient.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input_gradient.scalar_type() == ::tyloi::kFloat16 &&
         input_gradient.is_contiguous() && input_gradient.dim() == 2 &&
         input_gradient.size(0) == output_gradient.size(0),
         "NEPQ-A backward input gradient must be CUDA fp16 [M,K]");
@@ -626,44 +626,44 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_backward_input_cuda(
 }
 
 
-mfq_tensor_backend::Tensor nepq_sparse_residual_backward_transpose_cuda(
-    mfq_tensor_backend::Tensor dictionary,
-    mfq_tensor_backend::Tensor transpose_offsets,
-    mfq_tensor_backend::Tensor transpose_rows,
-    mfq_tensor_backend::Tensor transpose_dictionary,
-    mfq_tensor_backend::Tensor output_gradient,
-    mfq_tensor_backend::Tensor rotation_signs,
+::tyloi::Tensor nepq_sparse_residual_backward_transpose_cuda(
+    ::tyloi::Tensor dictionary,
+    ::tyloi::Tensor transpose_offsets,
+    ::tyloi::Tensor transpose_rows,
+    ::tyloi::Tensor transpose_dictionary,
+    ::tyloi::Tensor output_gradient,
+    ::tyloi::Tensor rotation_signs,
     bool fuse_rotation,
-    mfq_tensor_backend::Tensor input_gradient) {
+    ::tyloi::Tensor input_gradient) {
     TYLOINFER_RUNTIME_CHECK(
         dictionary.is_cuda() &&
-        dictionary.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        dictionary.scalar_type() == ::tyloi::kFloat16 &&
         dictionary.is_contiguous() && dictionary.dim() == 2 &&
         dictionary.size(0) == 1024 && dictionary.size(1) == 8,
         "NEPQ-A transpose dictionary must be CUDA fp16 [1024,8]");
     TYLOINFER_RUNTIME_CHECK(
         transpose_offsets.is_cuda() &&
-        transpose_offsets.scalar_type() == mfq_tensor_backend::kInt32 &&
+        transpose_offsets.scalar_type() == ::tyloi::kInt32 &&
         transpose_offsets.is_contiguous() && transpose_offsets.dim() == 1,
         "NEPQ-A transpose offsets must be CUDA contiguous int32");
     TYLOINFER_RUNTIME_CHECK(
         transpose_rows.is_cuda() &&
-        transpose_rows.scalar_type() == mfq_tensor_backend::kInt32 &&
+        transpose_rows.scalar_type() == ::tyloi::kInt32 &&
         transpose_rows.is_contiguous() && transpose_rows.dim() == 1 &&
         transpose_dictionary.is_cuda() &&
-        transpose_dictionary.scalar_type() == mfq_tensor_backend::kInt16 &&
+        transpose_dictionary.scalar_type() == ::tyloi::kInt16 &&
         transpose_dictionary.is_contiguous() &&
         transpose_dictionary.dim() == 1 &&
         transpose_dictionary.numel() == transpose_rows.numel(),
         "NEPQ-A transpose records must be matching int32/int16 vectors");
     TYLOINFER_RUNTIME_CHECK(
         output_gradient.is_cuda() &&
-        output_gradient.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        output_gradient.scalar_type() == ::tyloi::kFloat16 &&
         output_gradient.is_contiguous() && output_gradient.dim() == 2,
         "NEPQ-A transpose gradient must be CUDA contiguous fp16 [M,rows]");
     TYLOINFER_RUNTIME_CHECK(
         input_gradient.is_cuda() &&
-        input_gradient.scalar_type() == mfq_tensor_backend::kFloat16 &&
+        input_gradient.scalar_type() == ::tyloi::kFloat16 &&
         input_gradient.is_contiguous() && input_gradient.dim() == 2 &&
         input_gradient.size(0) == output_gradient.size(0) &&
         input_gradient.size(1) % 8 == 0,
@@ -674,7 +674,7 @@ mfq_tensor_backend::Tensor nepq_sparse_residual_backward_transpose_cuda(
         "NEPQ-A transpose offset count mismatch");
     TYLOINFER_RUNTIME_CHECK(
         rotation_signs.is_cuda() &&
-        rotation_signs.scalar_type() == mfq_tensor_backend::kInt8 &&
+        rotation_signs.scalar_type() == ::tyloi::kInt8 &&
         rotation_signs.is_contiguous() && rotation_signs.dim() == 1 &&
         (!fuse_rotation || rotation_signs.numel() == input_gradient.size(1)),
         "NEPQ-A fused rotation signs must match K");

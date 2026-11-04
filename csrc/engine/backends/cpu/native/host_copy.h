@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 struct HostCopy {
     void* destination;
     const void* source;

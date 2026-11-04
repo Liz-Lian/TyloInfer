@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-namespace mfq::cuda::packed_nvq {
+namespace tyloi::cuda::packed_nvq {
 // Requires a proven nonnegative local bit offset <= INT_MAX-64 and a local
 // byte count representable as int. The pointer itself remains 64-bit. Supports
 // unaligned allocations and allocations without readable trailing padding.

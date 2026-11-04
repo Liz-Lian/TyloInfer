@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::nvq {
+namespace tyloi::nvq {
 
 struct Data {
     int format = 0;
@@ -41,9 +41,9 @@ constexpr int index_bits(int format) {
 
 Data unpack(const std::vector<uint8_t>& blob, const std::string& dtype);
 
-} // namespace mfq::nvq
+} // namespace tyloi::nvq
 
-namespace mfq::nepq {
+namespace tyloi::nepq {
 
 struct Data {
     int profile = -1;
@@ -86,4 +86,4 @@ Data unpack(
     const std::string& dtype,
     const std::vector<uint8_t>& runtime_payload);
 
-} // namespace mfq::nepq
+} // namespace tyloi::nepq

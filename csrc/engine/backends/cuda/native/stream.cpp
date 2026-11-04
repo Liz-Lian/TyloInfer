@@ -3,7 +3,7 @@
 
 #include <utility>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 Event::Event(unsigned flags) {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaGetDevice(&device_));
@@ -95,4 +95,4 @@ void Stream::wait(const Event& event) const {
     TYLOINFER_NATIVE_CUDA_CHECK(cudaStreamWaitEvent(stream_, event.get(), 0));
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

@@ -16,7 +16,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::engine::mtp {
+namespace tyloi::engine::mtp {
 
 class DepthController {
 public:

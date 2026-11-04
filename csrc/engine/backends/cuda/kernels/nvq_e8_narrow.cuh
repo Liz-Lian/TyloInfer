@@ -2,7 +2,7 @@
 #include "packed_nvq.cuh"
 #include <climits>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Prove every row/group bit offset, including the padded last group, before
 // selecting signed 32-bit metadata arithmetic. Device pointers remain 64-bit.

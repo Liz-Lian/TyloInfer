@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 class GrammarConstraint {
 public:
@@ -169,9 +169,9 @@ MfqTokenConstraintPtr make_chat_token_constraint(
         std::make_shared<GrammarConstraint>(tokenizer, params));
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine
 
-MfqTokenConstraint::MfqTokenConstraint(std::shared_ptr<mfq::engine::GrammarConstraint> implementation)
+MfqTokenConstraint::MfqTokenConstraint(std::shared_ptr<tyloi::engine::GrammarConstraint> implementation)
     : implementation_(std::move(implementation)) {
     if (!implementation_) throw std::invalid_argument("grammar cursor is empty");
 }

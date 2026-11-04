@@ -4,7 +4,7 @@
 #include <intrin.h>
 #endif
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 
 bool has_avx2() {
     static const bool supported = [] {
@@ -27,4 +27,4 @@ bool has_avx2() {
     return supported;
 }
 
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

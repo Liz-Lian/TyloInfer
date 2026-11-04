@@ -6,7 +6,7 @@
 #include <optional>
 #include <vector>
 
-namespace mfq::models::deepseek_v41 {
+namespace tyloi::models::deepseek_v41 {
 
 // Both the target and DSpark pass the new pre-weights from attention into
 // the FFN collapse, and commit them only after the layer completes.
@@ -208,4 +208,4 @@ template <class Backend> struct CausalLm : models::CausalModelBase<Backend, Caus
     bool adapter_supports_suffix_speculation() const noexcept { return true; }
 };
 
-} // namespace mfq::models::deepseek_v41
+} // namespace tyloi::models::deepseek_v41

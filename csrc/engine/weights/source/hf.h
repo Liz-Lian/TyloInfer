@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 class Safetensors;
 
@@ -38,4 +38,4 @@ struct Record {
 };
 
 } // namespace hf
-} // namespace mfq
+} // namespace tyloi

@@ -29,10 +29,10 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::nemotron_h {
+namespace tyloi::cuda::nemotron_h {
 namespace {
 
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 
 // The canonical graph returns the last K-1 convolution inputs for the next
 // call. Runtime CUDA graphs retain this storage address across requests.
@@ -58,13 +58,13 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
     const int64_t inner = heads * head_dim;
     const int64_t conv_width = inner + 2 * groups * state_width;
     const int64_t projection_width = conv_width + inner + heads;
-    const auto f32 = mfq_tensor_backend::TensorOptions()
-                         .device(mfq_tensor_backend::kCUDA)
-                         .dtype(mfq_tensor_backend::kFloat32);
+    const auto f32 = ::tyloi::TensorOptions()
+                         .device(::tyloi::kCUDA)
+                         .dtype(::tyloi::kFloat32);
     if (!mixer.defined()) {
         state = {
-            mfq_tensor_backend::zeros({B, conv_kernel - 1, conv_width}, f32),
-            mfq_tensor_backend::zeros({B, heads, head_dim, state_width}, f32), false};
+            ::tyloi::cuda::zeros({B, conv_kernel - 1, conv_width}, f32),
+            ::tyloi::cuda::zeros({B, heads, head_dim, state_width}, f32), false};
     }
     TYLOINFER_RUNTIME_CHECK(state.convolution.size(0) == B &&
                           state.convolution.size(1) == conv_kernel - 1 &&
@@ -75,22 +75,17 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                       "mamba state geometry changed");
     const auto bias = conv_bias.defined()
                           ? conv_bias
-                          : mfq_tensor_backend::empty({0}, f32);
-    return mfq::ops::attention_layer(
-        std::move(x),
-        [&](Tensor x) {
-            return profiler.measure("mamba.norm", [&] {
-                return qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
-                                     mixer_norm, rms_norm_eps, 0.0)
-                    .reshape({B, T, H});
-            });
-        },
-        [&](Tensor xn) {
-            return mfq::models::selective_state_attention<Tensor>(
+                          : ::tyloi::cuda::empty({0}, f32);
+    auto xn = profiler.measure("mamba.norm", [&] {
+        return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+                             mixer_norm, rms_norm_eps, 0.0)
+            .reshape({B, T, H});
+    });
+    auto mixed = tyloi::models::selective_state_attention<Tensor>(
                 true,
                 [&]() {
                     auto projected = profiler.measure("mamba.in_proj", [&] {
-                        return executor.projector(mode.ffn).run(in_proj, xn).to(mfq_tensor_backend::kFloat32);
+                        return executor.projector(mode.ffn).run(in_proj, xn).to(::tyloi::kFloat32);
                     });
                     TYLOINFER_RUNTIME_CHECK(projected.size(-1) == projection_width,
                                       "mamba fused projection width disagrees with config");
@@ -109,7 +104,7 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                         if (T == 1)
                             return ssm_conv_silu_decode_cuda(state.convolution, xbc, conv_weight,
                                                              bias);
-                        auto conv_input = mfq_tensor_backend::cat({state.convolution, xbc}, 1);
+                        auto conv_input = ::tyloi::cuda::cat({state.convolution, xbc}, 1);
                         state.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
                         return ssm_conv_silu_cuda(conv_input, conv_weight, bias, T);
                     });
@@ -159,14 +154,12 @@ static Tensor mamba_forward(const Mamba& weights, MambaState& activity, Executor
                     if (final_state.defined())
                         state.recurrent.copy_(final_state);
                 });
-        },
-        [&](Tensor residual, Tensor mixed) {
-            auto rr = residual.reshape({-1, H});
-            auto mm = mixed.reshape({-1, H});
-            if (mm.scalar_type() != rr.scalar_type())
-                mm = mm.to(rr.scalar_type()).contiguous();
-            return acc_cuda(rr, mm).reshape({B, T, H});
-        });
+    xn = {};
+    auto rr = x.reshape({-1, H});
+    auto mm = mixed.reshape({-1, H});
+    if (mm.scalar_type() != rr.scalar_type())
+        mm = mm.to(rr.scalar_type()).contiguous();
+    return acc_cuda(rr, mm).reshape({B, T, H});
 }
 
 static void clear_speculative(MambaState& activity) noexcept {
@@ -193,11 +186,11 @@ static void replay_recurrent(const Mamba& weights, MambaState& activity, int64_t
     const auto xbc = speculative_xbc.narrow(1, 0, retained_tokens).contiguous();
     const auto dt = speculative_dt.narrow(1, 0, retained_tokens).contiguous();
     auto bias = conv_bias.defined() ? conv_bias
-                                    : mfq_tensor_backend::empty(
-                                          {0}, mfq_tensor_backend::TensorOptions()
-                                                   .device(mfq_tensor_backend::kCUDA)
-                                                   .dtype(mfq_tensor_backend::kFloat32));
-    auto conv_input = mfq_tensor_backend::cat({state.convolution, xbc}, 1);
+                                    : ::tyloi::cuda::empty(
+                                          {0}, ::tyloi::TensorOptions()
+                                                   .device(::tyloi::kCUDA)
+                                                   .dtype(::tyloi::kFloat32));
+    auto conv_input = ::tyloi::cuda::cat({state.convolution, xbc}, 1);
     state.convolution.copy_(next_convolution_state(conv_input, conv_kernel));
     auto convolved = ssm_conv_silu_cuda(conv_input, conv_weight, bias, retained_tokens);
     auto x = convolved.narrow(2, 0, inner)
@@ -234,31 +227,24 @@ static Tensor moe_forward(const Moe& weights, Executor& executor, Tensor x,
                           const Executor::Mode& mode) {
     const auto& [layer, rms_norm_eps, ffn_norm, ffn] = weights;
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    return mfq::ops::attention_layer(
-        std::move(x),
-        [&](Tensor x) {
-            return executor.profiler().measure("moe.norm", [&] {
-                return qwen_rms_norm(x.reshape({B * T, H}).to(mfq_tensor_backend::kFloat32),
-                                     ffn_norm, rms_norm_eps, 0.0)
-                    .reshape({B, T, H});
-            });
-        },
-        [&](Tensor xn) {
-            return executor.profiler().measure("moe.ffn", [&] {
+    auto xn = executor.profiler().measure("moe.norm", [&] {
+        return qwen_rms_norm(x.reshape({B * T, H}).to(::tyloi::kFloat32),
+                             ffn_norm, rms_norm_eps, 0.0)
+            .reshape({B, T, H});
+    });
+    auto mixed = executor.profiler().measure("moe.ffn", [&] {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                return ffn.forward(xn.reshape({B * T, H}), mode.ffn).reshape({B, T, H});
+        return ffn.forward(xn.reshape({B * T, H}), mode.ffn).reshape({B, T, H});
 #else
-                return ffn.forward(xn.reshape({B * T, H}), executor, mode.ffn).reshape({B, T, H});
+        return ffn.forward(xn.reshape({B * T, H}), executor, mode.ffn).reshape({B, T, H});
 #endif
-            });
-        },
-        [&](Tensor residual, Tensor mixed) {
-            auto rr = residual.reshape({-1, H});
-            auto mm = mixed.reshape({-1, H});
-            if (mm.scalar_type() != rr.scalar_type())
-                mm = mm.to(rr.scalar_type()).contiguous();
-            return acc_cuda(rr, mm).reshape({B, T, H});
-        });
+    });
+    xn = {};
+    auto rr = x.reshape({-1, H});
+    auto mm = mixed.reshape({-1, H});
+    if (mm.scalar_type() != rr.scalar_type())
+        mm = mm.to(rr.scalar_type()).contiguous();
+    return acc_cuda(rr, mm).reshape({B, T, H});
 }
 
 static Tensor attention_residual(Executor& executor, Tensor residual, Tensor attention_output,
@@ -266,8 +252,8 @@ static Tensor attention_residual(Executor& executor, Tensor residual, Tensor att
     auto rr = residual.reshape({-1, hidden});
     auto aa = attention_output.reshape({-1, hidden});
     if (executor.fp32_residual()) {
-        rr = rr.to(mfq_tensor_backend::kFloat32);
-        aa = aa.to(mfq_tensor_backend::kFloat32);
+        rr = rr.to(::tyloi::kFloat32);
+        aa = aa.to(::tyloi::kFloat32);
     } else if (aa.scalar_type() != rr.scalar_type()) {
         aa = aa.to(rr.scalar_type()).contiguous();
     }
@@ -277,26 +263,26 @@ static Tensor attention_residual(Executor& executor, Tensor residual, Tensor att
 }
 
 static Tensor normalize_ids(Collectives& collectives, int primary, Tensor ids) {
-    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = ids.unsqueeze(0);
-    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+    tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
                                "token IDs must not be empty");
-    return collectives.copy(ids.to(mfq_tensor_backend::kInt64), primary).contiguous();
+    return collectives.copy(ids.to(::tyloi::kInt64), primary).contiguous();
 }
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-mfq::Tensor Model::embedding(mfq::Tensor ids, int primary) const {
-    mfq::models::require_model(ids.dim() == 1 || ids.dim() == 2,
+tyloi::Tensor Model::embedding(tyloi::Tensor ids, int primary) const {
+    tyloi::models::require_model(ids.dim() == 1 || ids.dim() == 2,
                                "token IDs must have shape [tokens] or [batch,tokens]");
     if (ids.dim() == 1) ids = Tensor(std::move(ids)).unsqueeze(0);
-    mfq::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
+    tyloi::models::require_model(ids.size(0) > 0 && ids.size(1) > 0,
                                "token IDs must not be empty");
-    auto normalized = mfq::ops::contiguous(mfq::ops::copy(
-        mfq::ops::cast(std::move(ids), mfq::ScalarType::int64),
-        mfq::Device{mfq::DeviceType::cuda, primary}));
-    return mfq::ops::measure("model.embed", normalized.device(), [&] {
-        return mfq::ops::embedding(std::move(normalized), embed);
+    auto normalized = tyloi::ops::contiguous(tyloi::ops::copy(
+        tyloi::ops::cast(std::move(ids), tyloi::ScalarType::int64),
+        tyloi::Device{tyloi::DeviceType::cuda, primary}));
+    return tyloi::ops::measure("model.embed", normalized.device(), [&] {
+        return tyloi::ops::embedding(std::move(normalized), embed);
     });
 }
 #endif
@@ -379,8 +365,8 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
     if (!cache.defined())
         cache = KVCache(B, attention.kv_heads, capacity, attention.attention_head_dim,
                         attention.sliding, input.device(),
-                        attention.official_bf16 ? mfq_tensor_backend::kBFloat16 :
-                                                 mfq_tensor_backend::kFloat16,
+                        attention.official_bf16 ? ::tyloi::kBFloat16 :
+                                                 ::tyloi::kFloat16,
                         attention.kv_quantization);
     cache.quantization = attention.kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
@@ -409,58 +395,57 @@ Tensor forward_layer(const Layer& layer, LayerState& state, Executor& executor,
 
 Tensor forward(const Model& model, State& state, Executor& executor, Collectives& collectives,
                const Executor::Mode& mode, Input input) {
-    namespace tb = mfq_tensor_backend;
     MfqCudaGuard guard(mode.primary);
     auto ids = normalize_ids(collectives, mode.primary, Tensor(std::move(input.ids)));
     auto embeddings = input.embeddings.has_value() ? Tensor(std::move(*input.embeddings))
         : embed(model, executor, collectives, mode.primary, ids, mode);
     const auto B = ids.size(0), T = ids.size(1);
-    mfq::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
+    tyloi::models::require_model(embeddings.dim() == 3 && embeddings.size(0) == B &&
                                embeddings.size(1) == T && embeddings.size(2) == model.metadata.hidden_size,
                                "inputs_embeds shape must match [batch,tokens,hidden_size]");
-    mfq::models::require_model(state.speculative_start < 0,
+    tyloi::models::require_model(state.speculative_start < 0,
                                "commit or roll back the pending speculative pass before forwarding");
-    mfq::models::require_model(input.confirmed >= 0 &&
+    tyloi::models::require_model(input.confirmed >= 0 &&
         (input.confirmed == 0 || (input.confirmed < T && B == 1 && state.cache_pos > 0 &&
          !input.positions.has_value() && !input.cache_positions.has_value() &&
          !input.attention_mask.has_value() && supports_speculation(model))),
         "unsupported speculative backbone geometry");
     if (input.confirmed > 0) {
-        mfq::models::require_model(state.cache_pos + T <= model.metadata.max_position_embeddings,
+        tyloi::models::require_model(state.cache_pos + T <= model.metadata.max_position_embeddings,
                                    "speculative pass exceeds context capacity");
         state.speculative_start = state.cache_pos;
         state.speculative_confirmed = input.confirmed;
     }
     if (state.cache_pos == 0) state.reset(B);
-    const auto options = tb::TensorOptions().device(tb::Device(tb::kCUDA, mode.primary))
-                             .dtype(tb::kInt64);
+    const auto options = ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA, mode.primary))
+                             .dtype(::tyloi::kInt64);
     auto physical = input.cache_positions.has_value()
-        ? collectives.copy(Tensor(*input.cache_positions).to(tb::kInt64), mode.primary).contiguous()
-        : tb::arange(state.cache_pos, state.cache_pos + T, options);
+        ? collectives.copy(Tensor(*input.cache_positions).to(::tyloi::kInt64), mode.primary).contiguous()
+        : ::tyloi::cuda::arange(state.cache_pos, state.cache_pos + T, options);
     auto semantic = input.positions.has_value()
-        ? collectives.copy(Tensor(*input.positions).to(tb::kInt64), mode.primary).contiguous()
+        ? collectives.copy(Tensor(*input.positions).to(::tyloi::kInt64), mode.primary).contiguous()
         : (state.decode_position_delta == 0 ? physical : physical + state.decode_position_delta);
-    mfq::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
+    tyloi::models::require_model((physical.dim() == 1 && physical.numel() == T) ||
         (physical.dim() == 2 && physical.size(0) == B && physical.size(1) == T),
         "cache_positions must have shape [tokens] or [batch,tokens]");
-    mfq::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
+    tyloi::models::require_model((semantic.dim() == 1 && semantic.size(0) == T) ||
         (semantic.dim() == 2 && semantic.size(0) == B && semantic.size(1) == T),
         "position_ids must have shape [tokens] or [batch,tokens]");
     if (input.attention_mask.has_value()) {
         const auto& mask = *input.attention_mask;
-        mfq::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
+        tyloi::models::require_model(mask.dim() == 2 && mask.size(0) == B &&
                                    mask.size(1) >= state.cache_pos + T,
                                    "attention_mask must cover [batch,cached_plus_current_tokens]");
     }
     if (!input.lengths.has_value() && state.cache_pos > 0 && T == 1)
-        input.lengths = tb::full({B}, state.cache_pos + 1, options);
+        input.lengths = ::tyloi::cuda::full({B}, state.cache_pos + 1, options);
     AttentionStep step{semantic, input.lengths ? MfqOptional<Tensor>(Tensor(*input.lengths)) : mfq_nullopt,
         input.cache_positions.has_value() ? MfqOptional<Tensor>(physical) : mfq_nullopt,
         {}, state.cache_pos, input.kv_length, input.attention_parts};
     auto hidden = collectives.copy(std::move(embeddings), mode.primary).contiguous();
     const auto trace = [&](const Tensor& value) {
         if (input.trace)
-            input.trace->push_back(collectives.copy(value, mode.primary).to(tb::kFloat32).clone());
+            input.trace->push_back(collectives.copy(value, mode.primary).to(::tyloi::kFloat32).clone());
     };
     trace(hidden);
     for (std::size_t index = 0; index < model.layers.size(); ++index) {
@@ -484,7 +469,7 @@ Tensor forward(const Model& model, State& state, Executor& executor, Collectives
 }
 
 void replay(const Model& model, State& state, Executor&, std::int64_t accepted) {
-    mfq::models::require_model(state.speculative_start >= 0 && accepted >= 0,
+    tyloi::models::require_model(state.speculative_start >= 0 && accepted >= 0,
                                "no speculative transaction");
     const auto keep = state.speculative_start + state.speculative_confirmed + accepted;
     for (std::size_t index = 0; index < state.layers.size(); ++index) {
@@ -499,20 +484,20 @@ void replay(const Model& model, State& state, Executor&, std::int64_t accepted) 
 }
 
 struct LayerLoader : TransformerWeightLoader {
-    using Ffn = mfq::cuda::Ffn;
+    using Ffn = tyloi::cuda::Ffn;
 };
 
 template <class MambaWeights> void convert_mamba_weights(MambaWeights& block) {
-    block.conv_weight = block.conv_weight.to(mfq_tensor_backend::kFloat32).contiguous();
-    block.a_log = block.a_log.to(mfq_tensor_backend::kFloat32).contiguous();
-    block.d = block.d.to(mfq_tensor_backend::kFloat32).contiguous();
-    block.dt_bias = block.dt_bias.to(mfq_tensor_backend::kFloat32).contiguous();
-    block.scan_norm = block.scan_norm.to(mfq_tensor_backend::kFloat32).contiguous();
+    block.conv_weight = block.conv_weight.to(::tyloi::kFloat32).contiguous();
+    block.a_log = block.a_log.to(::tyloi::kFloat32).contiguous();
+    block.d = block.d.to(::tyloi::kFloat32).contiguous();
+    block.dt_bias = block.dt_bias.to(::tyloi::kFloat32).contiguous();
+    block.scan_norm = block.scan_norm.to(::tyloi::kFloat32).contiguous();
     if (block.conv_bias.defined())
-        block.conv_bias = block.conv_bias.to(mfq_tensor_backend::kFloat32).contiguous();
+        block.conv_bias = block.conv_bias.to(::tyloi::kFloat32).contiguous();
 }
 
-void validate_components(const mfq::ModelGraph& graph) {
+void validate_components(const tyloi::ModelGraph& graph) {
     if (graph.component("vision") != nullptr &&
         cuda_model_plan(graph).vision != CudaVisionAdapter::radio)
         throw std::runtime_error(
@@ -532,48 +517,48 @@ Layer load_layer(Pipelines& pipelines, const weight_loader::Loader& weights,
     result.device = weights.placement.device;
     LayerLoader loader{{weights}};
     switch (Config::mixer_kind(type)) {
-        case mfq::models::nemotron_h::MixerKind::linear_attention: {
+        case tyloi::models::nemotron_h::MixerKind::linear_attention: {
             auto& mamba = result.weights.emplace<Mamba>();
-            mfq::models::nemotron_h::load_linear_attention(mamba, loader, config, layer, tensor_root);
+            tyloi::models::nemotron_h::load_linear_attention(mamba, loader, config, layer, tensor_root);
             convert_mamba_weights(mamba);
             break;
         }
-        case mfq::models::nemotron_h::MixerKind::full_attention: {
+        case tyloi::models::nemotron_h::MixerKind::full_attention: {
             auto& attention = result.weights.emplace<FullAttention>();
             attention.kv_quantization = cuda_kv_quantization();
-            mfq::models::nemotron_h::load_attention(attention, loader, config, layer, tensor_root);
+            tyloi::models::nemotron_h::load_attention(attention, loader, config, layer, tensor_root);
             break;
         }
-        case mfq::models::nemotron_h::MixerKind::moe: {
+        case tyloi::models::nemotron_h::MixerKind::moe: {
             auto& moe = result.weights.emplace<Moe>();
-            mfq::models::nemotron_h::load_moe(moe, loader, config, layer, tensor_root);
+            tyloi::models::nemotron_h::load_moe(moe, loader, config, layer, tensor_root);
             pipelines.prepare(moe.ffn);
             break;
         }
-        case mfq::models::nemotron_h::MixerKind::mlp: {
+        case tyloi::models::nemotron_h::MixerKind::mlp: {
             auto& moe = result.weights.emplace<Moe>();
-            mfq::models::nemotron_h::load_dense_mlp(moe, loader, config, layer, tensor_root);
+            tyloi::models::nemotron_h::load_dense_mlp(moe, loader, config, layer, tensor_root);
             break;
         }
     }
     return result;
 }
 
-Model read(std::shared_ptr<const mfq::ModelSource> source, std::string_view definition,
+Model read(std::shared_ptr<const tyloi::ModelSource> source, std::string_view definition,
            std::int64_t context) {
     validate_model_source(*source);
     Model model;
     model.source = std::move(source);
-    model.graph = mfq::models::graph(*model.source);
+    model.graph = tyloi::models::graph(*model.source);
     model.plan = cuda_model_plan(model.graph);
-    mfq::models::require_model(model.graph.backbone == "nemotron_h",
+    tyloi::models::require_model(model.graph.backbone == "nemotron_h",
                                "model backbone does not match the requested causal model");
-    mfq::models::nemotron_h::load_config(definition, model.graph, model.config, model.metadata);
+    tyloi::models::nemotron_h::load_config(definition, model.graph, model.config, model.metadata);
     validate_components(model.graph);
-    mfq::models::require_model(model.config.num_hidden_layers == model.graph.topology.text_layers,
+    tyloi::models::require_model(model.config.num_hidden_layers == model.graph.topology.text_layers,
                                "model graph/config text-layer topology mismatch");
     if (context > 0) {
-        mfq::models::require_model(context <= model.metadata.max_position_embeddings,
+        tyloi::models::require_model(context <= model.metadata.max_position_embeddings,
                                    "--ctx-size exceeds max_position_embeddings");
         model.config.max_position_embeddings = context;
         model.metadata.max_position_embeddings = context;
@@ -633,8 +618,8 @@ State::State(const Model& model) : layers(model.layers.size()) {
         } else if (const auto* full = std::get_if<FullAttention>(&layer.weights)) {
             layout_.push_back({layer.device, FullLayout{full->kv_heads, full->attention_head_dim,
                 full->sliding ? full->attention_window : full->max_position_embeddings,
-                full->sliding, full->official_bf16 ? mfq_tensor_backend::kBFloat16 :
-                mfq_tensor_backend::kFloat16, full->kv_quantization}});
+                full->sliding, full->official_bf16 ? ::tyloi::kBFloat16 :
+                ::tyloi::kFloat16, full->kv_quantization}});
             layers[index].emplace<KVCache>();
         } else {
             layout_.push_back({layer.device, std::monostate{}});
@@ -651,7 +636,7 @@ void State::preallocate() {
         const auto& full = std::get<FullLayout>(layer.mixer);
         MfqCudaGuard guard(layer.device);
         *cache = KVCache(1, full.heads, full.capacity, full.head_dim, full.sliding,
-            mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, layer.device),
+            ::tyloi::Device(::tyloi::kCUDA, layer.device),
             full.dtype, full.quantization);
     }
 }
@@ -674,7 +659,7 @@ void State::reset(std::int64_t next_batch) {
 }
 
 void State::commit_speculative() {
-    mfq::models::require_model(speculative_start >= 0, "no speculative transaction");
+    tyloi::models::require_model(speculative_start >= 0, "no speculative transaction");
     for (std::size_t index = 0; index < layers.size(); ++index) {
         MfqCudaGuard guard(layout_[index].device);
         if (auto* mamba = std::get_if<MambaState>(&layers[index]))
@@ -838,8 +823,8 @@ void State::restore_text_session_state(const TextSessionState& saved) {
             if (snapshot.kind != HybridBlockSessionStateKind::Recurrent || mamba == nullptr ||
                 !std::holds_alternative<MambaState>(layers[index]) ||
                 !conv.defined() || !recurrent.defined() ||
-                conv.scalar_type() != mfq_tensor_backend::kFloat32 ||
-                recurrent.scalar_type() != mfq_tensor_backend::kFloat32 ||
+                conv.scalar_type() != ::tyloi::kFloat32 ||
+                recurrent.scalar_type() != ::tyloi::kFloat32 ||
                 conv.dim() != 3 || conv.size(0) != 1 ||
                 conv.size(1) != mamba->conv_kernel - 1 || conv.size(2) != width ||
                 recurrent.dim() != 4 || recurrent.size(0) != 1 ||
@@ -865,4 +850,4 @@ void State::restore_text_session_state(const TextSessionState& saved) {
     batch = 1;
 }
 
-} // namespace mfq::cuda::nemotron_h
+} // namespace tyloi::cuda::nemotron_h

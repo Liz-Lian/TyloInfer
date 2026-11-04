@@ -1,7 +1,7 @@
 #pragma once
 #include "engine/models/source.h"
 
-namespace mfq {
+namespace tyloi {
 // Explicit synthetic benchmark input. No normal model load creates this source.
 std::shared_ptr<const ModelSource> open_tq_fixture_source(const std::filesystem::path&);
 }

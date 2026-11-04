@@ -15,7 +15,7 @@
 #include <mutex>
 #include <utility>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 namespace {
 
 using json = nlohmann::ordered_json;
@@ -329,4 +329,4 @@ std::string TextProcessor::decode_tokens(
     return result;
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

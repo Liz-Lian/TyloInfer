@@ -6,7 +6,7 @@
 #include "engine/backends/cuda/executor/executor.h"
 #include "engine/backends/cuda/executor/moe_ffn_pipeline.h"
 #include "engine/backends/cuda/native/scope.h"
-namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
+namespace tyloi::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 #include "backend.h"
 #include "engine/backends/cuda/native/branches.h"
@@ -28,20 +28,20 @@ namespace mfq::cuda { class KvOffloadStore; class KvMemoryManager; }
 
 struct CudaExecutionContext {
     CudaExecutionContext(
-        mfq::cuda::Executor& executor,
-        mfq::cuda::CudaLoadConfig config,
-        mfq::cuda::RoutedCache& weights,
-        std::shared_ptr<mfq::cuda::KvMemoryManager>& kv,
-        std::shared_ptr<mfq::cuda::KvOffloadStore>& offload);
+        tyloi::cuda::Executor& executor,
+        tyloi::cuda::CudaLoadConfig config,
+        tyloi::cuda::RoutedCache& weights,
+        std::shared_ptr<tyloi::cuda::KvMemoryManager>& kv,
+        std::shared_ptr<tyloi::cuda::KvOffloadStore>& offload);
     ~CudaExecutionContext();
     CudaExecutionContext(const CudaExecutionContext&) = delete;
     CudaExecutionContext& operator=(const CudaExecutionContext&) = delete;
-    mfq::cuda::CudaLoadConfig config;
-    mfq::cuda::RoutedCache& weights;
-    std::shared_ptr<mfq::cuda::KvMemoryManager>& kv;
-    std::shared_ptr<mfq::cuda::KvOffloadStore>& offload;
-    mfq::cuda::Executor& executor() { return executor_; }
-    const mfq::cuda::Executor& executor() const { return executor_; }
+    tyloi::cuda::CudaLoadConfig config;
+    tyloi::cuda::RoutedCache& weights;
+    std::shared_ptr<tyloi::cuda::KvMemoryManager>& kv;
+    std::shared_ptr<tyloi::cuda::KvOffloadStore>& offload;
+    tyloi::cuda::Executor& executor() { return executor_; }
+    const tyloi::cuda::Executor& executor() const { return executor_; }
 private:
-    mfq::cuda::Executor& executor_;
+    tyloi::cuda::Executor& executor_;
 };

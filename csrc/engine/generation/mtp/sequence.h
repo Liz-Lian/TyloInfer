@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 inline void require_execution(bool condition, const char *message) {
     if (!condition)
@@ -31,7 +31,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     auto &mtp_state = ops.mtp_state;
     const auto *prepared = ops.prepared;
     using Clock = std::chrono::steady_clock;
-    namespace policy = mfq::engine::mtp;
+    namespace policy = tyloi::engine::mtp;
     using policy::CompactDistribution;
     if (session_last_hidden != nullptr) {
         *session_last_hidden = Tensor();
@@ -66,7 +66,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
         "prepared MTP decode position is outside context capacity");
     const int64_t occupied_context =
         std::max<int64_t>(static_cast<int64_t>(prompt.size()), next_logical_position);
-    const auto generation_plan = mfq::engine::plan_generation(prompt,
+    const auto generation_plan = tyloi::engine::plan_generation(prompt,
         metadata.vocab_size,
         metadata.max_position_embeddings,
         sampling.max_tokens,
@@ -257,7 +257,7 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
             for (int64_t offset = 0; offset < pairs;) {
                 if (output.result.cancelled)
                     co_return;
-                const auto chunk = mfq::engine::next_prefill_chunk(pairs, offset, chunk_size);
+                const auto chunk = tyloi::engine::next_prefill_chunk(pairs, offset, chunk_size);
                 auto prime = ops.slice(prime_hidden, 1, chunk.offset, chunk.count);
                 auto ids = ops.slice(input_ids, 1, prime_ids_offset + chunk.offset, chunk.count);
                 auto positions = positioned_prompt
@@ -825,4 +825,4 @@ Generation speculative_sequence(Ops ops, InferenceRequest &request, InferenceOut
     }
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

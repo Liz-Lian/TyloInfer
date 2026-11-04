@@ -5,7 +5,7 @@
 
 #include <vector>
 
-namespace mfq::cuda::qwen35 {
+namespace tyloi::cuda::qwen35 {
 
 class MtpState {
 public:
@@ -17,7 +17,7 @@ public:
     struct Layout {
         int device;
         int64_t heads, head_dim, capacity;
-        mfq_tensor_backend::ScalarType dtype;
+        ::tyloi::ScalarType dtype;
         KvQuantization quantization;
     };
 
@@ -29,7 +29,7 @@ public:
     void trim(int64_t position);
     std::vector<AttentionKvView> views() const;
     MtpSessionState capture(int64_t target_position,
-        const mfq_tensor_backend::Tensor& hidden) const;
+        const ::tyloi::Tensor& hidden) const;
     Restore prepare(const MtpSessionState& saved) const;
     void stage(Restore& restore, const MtpSessionState& saved) const;
     void publish(Restore&& restore) noexcept;
@@ -41,4 +41,4 @@ private:
     int64_t position_ = 0;
 };
 
-} // namespace mfq::cuda::qwen35
+} // namespace tyloi::cuda::qwen35

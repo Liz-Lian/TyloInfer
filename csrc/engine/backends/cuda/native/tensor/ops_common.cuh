@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::native_ops_detail {
+namespace tyloi::cuda::native_ops_detail {
 
 inline std::size_t normalize_dimension(std::int64_t dimension, std::size_t rank) {
     const auto normalized = dimension < 0
@@ -169,4 +169,4 @@ inline std::pair<int, int> launch_geometry(std::int64_t elements) {
 
 extern std::atomic<std::int64_t> native_random_seed;
 
-}  // namespace mfq::cuda::native_ops_detail
+}  // namespace tyloi::cuda::native_ops_detail

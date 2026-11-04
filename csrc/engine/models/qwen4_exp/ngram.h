@@ -4,7 +4,7 @@
 #include <cstring>
 #include <vector>
 
-namespace mfq::models::qwen4_exp {
+namespace tyloi::models::qwen4_exp {
 
 struct NgramContext {
     int64_t batch = 0;
@@ -70,4 +70,4 @@ inline NgramHashes ngram_hashes(const int64_t *source, int64_t b, int64_t t, int
     return {std::move(global), context_};
 }
 
-} // namespace mfq::models::qwen4_exp
+} // namespace tyloi::models::qwen4_exp

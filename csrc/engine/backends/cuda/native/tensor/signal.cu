@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 template <typename Value>
@@ -405,4 +405,4 @@ Tensor multinomial(
     return output;
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

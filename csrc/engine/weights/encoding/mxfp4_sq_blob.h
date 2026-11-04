@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::sq {
+namespace tyloi::sq {
 
 // Design intent: MXFP4-SQ is a high-fidelity, fine-grained requantization
 // container for weights natively QAT-trained in MXFP4.  Every reconstructed
@@ -450,4 +450,4 @@ inline std::vector<std::uint8_t> select_rows(
     return result;
 }
 
-} // namespace mfq::sq
+} // namespace tyloi::sq

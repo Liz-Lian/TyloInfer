@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace mfq::models::qwen35 {
+namespace tyloi::models::qwen35 {
 
 Config Config::from_json(
         std::string_view payload,
@@ -184,4 +184,4 @@ Config Config::from_json(
     return config;
 }
 
-} // namespace mfq::models::qwen35
+} // namespace tyloi::models::qwen35

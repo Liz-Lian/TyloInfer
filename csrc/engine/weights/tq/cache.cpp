@@ -18,12 +18,11 @@
 #include <cstring>
 #include <unordered_set>
 
-namespace tb = mfq_tensor_backend;
 
 namespace {
 std::size_t available_host_bytes(std::size_t process_limit) {
     try {
-        const auto memory=mfq::sample_host_memory();
+        const auto memory=tyloi::sample_host_memory();
         auto available=memory.available_host_bytes();
         if(process_limit)available=std::min<std::uint64_t>(available,
             memory.resident_bytes>=process_limit?0:process_limit-memory.resident_bytes);
@@ -33,12 +32,12 @@ std::size_t available_host_bytes(std::size_t process_limit) {
 }
 
 struct TqCache::HostImage {
-    mfq::TqLayout layout;
+    tyloi::TqLayout layout;
     std::vector<std::uint8_t> bytes;
     std::size_t source_bytes;
     bool pin_attempted=false,registered=false;
     int pin_device=0;
-    mfq::cuda::HostRegistrationRetirement retirement;
+    tyloi::cuda::HostRegistrationRetirement retirement;
     explicit HostImage(const std::vector<std::uint8_t>& wire)
         :layout(wire.data(),wire.size()),bytes(tq_image(wire,layout)),source_bytes(wire.size()) {
         retirement.owner=this;
@@ -48,7 +47,7 @@ struct TqCache::HostImage {
     HostImage& operator=(const HostImage&)=delete;
     static std::shared_ptr<HostImage> create(const std::vector<std::uint8_t>& wire) {
         return std::shared_ptr<HostImage>(new HostImage(wire),[](HostImage* image)noexcept {
-            if(image->registered)mfq::cuda::retire_host_registration(&image->retirement);
+            if(image->registered)tyloi::cuda::retire_host_registration(&image->retirement);
             else delete image;
         });
     }
@@ -60,7 +59,7 @@ struct TqCache::HostImage {
         TYLOINFER_CUDA_CHECK(cudaGetDevice(&pin_device));
         const auto result=cudaHostRegister(bytes.data(),bytes.size(),cudaHostRegisterPortable);
         if(result==cudaSuccess){registered=true;return;}
-        if(mfq::cuda::pinned_allocation_rejected(result) || result==cudaErrorNotSupported ||
+        if(tyloi::cuda::pinned_allocation_rejected(result) || result==cudaErrorNotSupported ||
            result==cudaErrorOperatingSystem || result==cudaErrorNotPermitted ||
            result==cudaErrorHostMemoryAlreadyRegistered) {
             (void)cudaGetLastError();return;
@@ -69,24 +68,24 @@ struct TqCache::HostImage {
     }
     ~HostImage()noexcept {
         if(registered)try {
-            const mfq::cuda::DeviceGuard guard(pin_device);
+            const tyloi::cuda::DeviceGuard guard(pin_device);
             if(cudaHostUnregister(bytes.data())!=cudaSuccess)(void)cudaGetLastError();
         }catch(...) {}
     }
 };
 
 struct TqCache::Stage {
-    mfq::cuda::HostBuffer host;
-    mfq::cuda::Event uploaded;
+    tyloi::cuda::HostBuffer host;
+    tyloi::cuda::Event uploaded;
     std::size_t cursor=0;
     bool pending=false;
     cudaStream_t stream=nullptr;
     explicit Stage(std::size_t bytes):host(bytes),uploaded(cudaEventDisableTiming) {
-        mfq::cuda::charge_tensor_host_bytes(bytes);
+        tyloi::cuda::charge_tensor_host_bytes(bytes);
     }
     ~Stage(){
         if(pending)try{uploaded.synchronize();}catch(...) {}
-        mfq::cuda::tensor_host_bytes.fetch_sub(host.size());
+        tyloi::cuda::tensor_host_bytes.fetch_sub(host.size());
     }
     void reuse(){if(pending){uploaded.synchronize();pending=false;}cursor=0;}
 };
@@ -108,7 +107,7 @@ void TqCache::report()const {
         static_cast<unsigned long long>(pin_failures_));
 }
 
-void TqCache::upload(const tb::Tensor& destination,const std::vector<std::uint8_t>& bytes) {
+void TqCache::upload(const ::tyloi::Tensor& destination,const std::vector<std::uint8_t>& bytes) {
     const auto started=std::chrono::steady_clock::now();
     auto& staging=stages_[destination.get_device()];
     auto* stage=staging.stages[staging.index].get();
@@ -141,7 +140,7 @@ TqCache::TqCache(std::size_t budget,std::size_t host_budget,std::size_t process_
      host_(host_budget?host_budget:available_host_bytes(process_limit)/5*4),
      device_(retain_all?std::nullopt:std::optional<std::size_t>(budget)),
      process_host_limit_(process_limit),
-     profile_(mfq::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")!=nullptr) {
+     profile_(tyloi::cuda::env_lookup("TYLOINFER_TQ_PROFILE_CACHE")!=nullptr) {
     if(!tq_)throw std::invalid_argument("TQ expert cache requires its execution pool");
 }
 
@@ -150,7 +149,7 @@ TqCache::~TqCache(){
     report();
 }
 
-std::uint64_t TqCache::add(std::shared_ptr<const mfq::TqTable> table, std::int64_t rows) {
+std::uint64_t TqCache::add(std::shared_ptr<const tyloi::TqTable> table, std::int64_t rows) {
     if (!table || rows < 1 || table->width() < 1 || table->rows() % rows ||
         table->rows() / rows < 1 || table->rows() / rows > UINT32_MAX)
         throw std::invalid_argument("invalid TQ expert source geometry");
@@ -212,10 +211,10 @@ std::vector<std::pair<std::string,double>> TqCache::metrics() {
         {"expert_cache_hits",double(gpu_hits_)},
         {"expert_cache_misses",double(misses)},
         {"expert_cache_evictions",double(device_.evictions())},
-        {"host_tensor_bytes",double(mfq::cuda::tensor_host_bytes.load())}};
+        {"host_tensor_bytes",double(tyloi::cuda::tensor_host_bytes.load())}};
 }
 
-tb::Tensor TqCache::views(std::uint64_t source,
+::tyloi::Tensor TqCache::views(std::uint64_t source,
         const std::int64_t* ids,const std::vector<TqWeight>& weights,int device) {
     const MfqCudaGuard device_guard(device);
     std::lock_guard<std::mutex> guard(mutex_);
@@ -231,8 +230,8 @@ tb::Tensor TqCache::views(std::uint64_t source,
         return table.device==device && table.stream==stream;
     });
     if(found==tables.end()) {
-        auto views=tb::empty({experts*static_cast<std::int64_t>(sizeof(TrellisProjectionView))},
-            tb::TensorOptions().device(tb::Device(tb::kCUDA,device)).dtype(tb::kUInt8));
+        auto views=::tyloi::cuda::empty({experts*static_cast<std::int64_t>(sizeof(TrellisProjectionView))},
+            ::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA,device)).dtype(::tyloi::kUInt8));
         tables.push_back({device,stream,std::move(views),std::vector<std::uintptr_t>(experts),
             std::vector<std::uint8_t>(experts*sizeof(TrellisProjectionView))});
         found=std::prev(tables.end());
@@ -267,7 +266,7 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
     const auto resources=tq_->get(device);
     std::vector<TqWeight> result;result.reserve(count);
     const auto stream=mfq_get_current_cuda_stream(device);
-    std::shared_ptr<mfq::cuda::Event> uploaded;
+    std::shared_ptr<tyloi::cuda::Event> uploaded;
     for(auto it=host_transfers_.begin();it!=host_transfers_.end();)
         if(it->ready->ready())it=host_transfers_.erase(it);else ++it;
     auto transfer=host_transfers_.end();
@@ -294,7 +293,7 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
     if(const auto* cached=host_.get(key)) {
         image=*cached;++host_hits_;
         if(resources->host_register() && !image->pin_attempted) {
-            if(auto registration=mfq::cuda::try_host_registration();registration.owns_lock()) {
+            if(auto registration=tyloi::cuda::try_host_registration();registration.owns_lock()) {
                 image->try_pin();++pin_attempts_;
                 if(!image->registered)++pin_failures_;
             }
@@ -313,10 +312,10 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
     fetch_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-fetch_started).count();
     const auto needed=image->bytes.size();
     device_.reserve(needed);
-    auto storage=tb::empty({static_cast<std::int64_t>(needed)},tb::TensorOptions().device(tb::Device(tb::kCUDA,device)).dtype(tb::kUInt8));
+    auto storage=::tyloi::cuda::empty({static_cast<std::int64_t>(needed)},::tyloi::TensorOptions().device(::tyloi::Device(::tyloi::kCUDA,device)).dtype(::tyloi::kUInt8));
     auto weight=tq_view(std::move(storage),image->layout,table.width());
     if(image->registered) {
-        if(!uploaded)uploaded=std::make_shared<mfq::cuda::Event>(cudaEventDisableTiming);
+        if(!uploaded)uploaded=std::make_shared<tyloi::cuda::Event>(cudaEventDisableTiming);
         if(transfer==host_transfers_.end()) {
             host_transfers_.emplace_back();transfer=std::prev(host_transfers_.end());transfer->ready=uploaded;
         }
@@ -330,7 +329,7 @@ std::vector<TqWeight> TqCache::get(std::uint64_t source,const std::int64_t* ids,
         upload_submit_ms_+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
     }else upload(weight.image,image->bytes);
     if(!device_.limit() || needed<=*device_.limit()) {
-        if(!uploaded)uploaded=std::make_shared<mfq::cuda::Event>(cudaEventDisableTiming);
+        if(!uploaded)uploaded=std::make_shared<tyloi::cuda::Event>(cudaEventDisableTiming);
         device_.put(device_key,DeviceEntry{weight,uploaded,stream.stream(),image->source_bytes},needed);
     }
     result.push_back(std::move(weight));

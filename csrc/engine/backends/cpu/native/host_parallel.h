@@ -4,7 +4,7 @@
 #include <functional>
 #include <memory>
 
-namespace mfq {
+namespace tyloi {
 
 // Optional observations of one synchronous dispatch. Work sums span parallel
 // participants; wake delays overlap compute and must not be added to wall time.
@@ -42,4 +42,4 @@ void host_parallel_for(std::int64_t begin, std::int64_t end,
     std::int64_t grain, int threads,
     const std::function<void(std::int64_t, std::int64_t)>& function);
 
-} // namespace mfq
+} // namespace tyloi

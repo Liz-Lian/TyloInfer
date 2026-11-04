@@ -11,9 +11,9 @@
 
 #include <functional>
 
-namespace mfq::cuda { class Projector; }
+namespace tyloi::cuda { class Projector; }
 
-std::vector<mfq::TensorParallelSlice> plan_moe_expert_parallel_slices(
+std::vector<tyloi::TensorParallelSlice> plan_moe_expert_parallel_slices(
     const ParallelConfig& parallel, int64_t extent, const std::string& name);
 
 struct MfqDropFileCacheGuard {
@@ -31,24 +31,24 @@ struct MfqDropFileCacheGuard {
 };
 
 bool is_quant_dtype(const std::string& dtype);
-std::shared_ptr<mfq::NintRows> load_nint_row_table(
-    const mfq::source::Source& source, const std::string& name, bool prefer_mapping=false);
+std::shared_ptr<tyloi::NintRows> load_nint_row_table(
+    const tyloi::source::Source& source, const std::string& name, bool prefer_mapping=false);
 std::shared_ptr<MixedMoeRuntime> load_mfe_cpu_offloaded(
-    const mfq::source::Source& source, const std::string& name);
-mfq_tensor_backend::Tensor mfe_dense_reference(
-    const mfq::source::Source& source, const std::string& name,
-    mfq_tensor_backend::Tensor input, const std::vector<std::int32_t>& expert_ids,
+    const tyloi::source::Source& source, const std::string& name);
+::tyloi::Tensor mfe_dense_reference(
+    const tyloi::source::Source& source, const std::string& name,
+    ::tyloi::Tensor input, const std::vector<std::int32_t>& expert_ids,
     int tokens, int routes, bool routed_input);
-mfq_tensor_backend::Tensor materialize_mfe_dense(
-    const mfq::source::Source& source, const std::string& name);
+::tyloi::Tensor materialize_mfe_dense(
+    const tyloi::source::Source& source, const std::string& name);
 
-namespace mfq::cuda::weight_loader {
-using Tensor = mfq_tensor_backend::Tensor;
+namespace tyloi::cuda::weight_loader {
+using Tensor = ::tyloi::Tensor;
 using Linear = std::shared_ptr<const QuantLinear>;
 struct Routed {
     using Function=std::function<Tensor(const Projector&,const Tensor&,const Tensor&)>;
     Function function;
-    std::vector<std::shared_ptr<mfq::cuda::Experts>> projections;
+    std::vector<std::shared_ptr<tyloi::cuda::Experts>> projections;
     std::vector<std::shared_ptr<TqRoutedWeight>> tq_projections;
     Routed()=default;
     template<class Callable, std::enable_if_t<!std::is_same_v<std::decay_t<Callable>,Routed>,int> =0>
@@ -61,7 +61,7 @@ struct Routed {
 
 // The source and cache owner outlive all loading, including streamed media layers.
 struct Loader {
-    using Tensor = mfq_tensor_backend::Tensor;
+    using Tensor = ::tyloi::Tensor;
     struct Options {
         MoeLoadOptions quant;
         bool grouped = true;
@@ -79,7 +79,7 @@ struct Loader {
         ParallelConfig experts;
     };
 
-    const mfq::source::Source& source;
+    const tyloi::source::Source& source;
     Options options;
     Placement placement;
     RoutedCache& cache;
@@ -103,24 +103,24 @@ struct Loader {
     BiasWeight affine(const std::string& weight_name, const std::string& bias_name) const;
     QuantLinear projection(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
-        const std::vector<mfq::TensorParallelSlice>* slices = nullptr) const;
+        const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
     QuantLinearGroup build_group(const std::vector<std::string>& names, size_t prefix = 0,
-        const std::vector<mfq::TensorParallelSlice>* slices = nullptr,
+        const std::vector<tyloi::TensorParallelSlice>* slices = nullptr,
         bool preserve_boundaries = false) const;
     QuantLinearGroup build_gate_up(const std::vector<std::string>& names, const QuantLinear& down,
         size_t prefix = 2, bool preserve_boundaries = false) const;
     QuantLinear build_embedding(const std::string& name, bool independent_output) const;
     Experts build_experts(const std::string& name, bool cacheable = false, int layer = -1,
                     const std::string& role = {}) const;
-    std::shared_ptr<const mfq::weights::Weights> weight(const std::string& name,
+    std::shared_ptr<const tyloi::weights::Weights> weight(const std::string& name,
         std::optional<TensorParallelAxis> axis = std::nullopt,
-        const std::vector<mfq::TensorParallelSlice>* slices = nullptr) const;
-    std::shared_ptr<const mfq::weights::Weights> group(const std::vector<std::string>& names, size_t prefix = 0,
-        const std::vector<mfq::TensorParallelSlice>* slices = nullptr, bool preserve_boundaries = false) const;
-    std::shared_ptr<const mfq::weights::Weights> gate_up(const std::vector<std::string>& names,
-        const mfq::weights::Weights& down, size_t prefix = 2, bool preserve_boundaries = false) const;
-    std::shared_ptr<const mfq::weights::Weights> embedding(const std::string& name, bool independent_output) const;
-    std::shared_ptr<const mfq::weights::Weights> experts(const std::string& name, bool cacheable = false,
+        const std::vector<tyloi::TensorParallelSlice>* slices = nullptr) const;
+    std::shared_ptr<const tyloi::weights::Weights> group(const std::vector<std::string>& names, size_t prefix = 0,
+        const std::vector<tyloi::TensorParallelSlice>* slices = nullptr, bool preserve_boundaries = false) const;
+    std::shared_ptr<const tyloi::weights::Weights> gate_up(const std::vector<std::string>& names,
+        const tyloi::weights::Weights& down, size_t prefix = 2, bool preserve_boundaries = false) const;
+    std::shared_ptr<const tyloi::weights::Weights> embedding(const std::string& name, bool independent_output) const;
+    std::shared_ptr<const tyloi::weights::Weights> experts(const std::string& name, bool cacheable = false,
         int layer = -1, const std::string& role = {}) const;
     Linear linear(const std::string& name) const;
     Tensor dense(const std::string& name) const;
@@ -128,8 +128,8 @@ struct Loader {
                   int64_t input, const std::string& role = {}) const;
     Routed routed_gate_up(const std::string& prefix, int layer, int64_t experts, int64_t width,
                          int64_t input, const std::string& role = {}) const;
-    static Tensor fp32(const Tensor& value) { return value.to(mfq_tensor_backend::kFloat32).contiguous(); }
+    static Tensor fp32(const Tensor& value) { return value.to(::tyloi::kFloat32).contiguous(); }
     static auto shape(const Tensor& value) { return value.sizes().vec(); }
     static int64_t elements(const Tensor& value) { return value.numel(); }
 };
-} // namespace mfq::cuda::weight_loader
+} // namespace tyloi::cuda::weight_loader

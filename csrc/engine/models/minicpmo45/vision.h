@@ -25,40 +25,40 @@ inline constexpr const char *MINICPMO45_RESAMPLER_POS_EMBED_ASSET =
     "__mfq_asset__/minicpmo45-resampler-pos-embed-v1.bf16";
 
 
-inline mfq_tensor_backend::Tensor
-minicpmo45_embedding(const QuantLinear &embedding, mfq_tensor_backend::Tensor ids,
-                     mfq_tensor_backend::ScalarType output_dtype = mfq_tensor_backend::kBFloat16) {
-    ids = ids.contiguous().to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kInt64);
+inline ::tyloi::Tensor
+minicpmo45_embedding(const QuantLinear &embedding, ::tyloi::Tensor ids,
+                     ::tyloi::ScalarType output_dtype = ::tyloi::kBFloat16) {
+    ids = ids.contiguous().to(::tyloi::kCUDA, ::tyloi::kInt64);
     auto output = quant_embedding_lookup(embedding, ids);
     return output.to(output_dtype).contiguous();
 }
 
-inline mfq_tensor_backend::Tensor minicpmo45_layer_norm(
-        mfq_tensor_backend::Tensor input, const mfq_tensor_backend::Tensor &weight,
-        const mfq_tensor_backend::Tensor &bias, double eps) {
-    return mfq::cuda::vision_layer_norm(std::move(input), weight, bias, eps);
+inline ::tyloi::Tensor minicpmo45_layer_norm(
+        ::tyloi::Tensor input, const ::tyloi::Tensor &weight,
+        const ::tyloi::Tensor &bias, double eps) {
+    return tyloi::cuda::vision_layer_norm(std::move(input), weight, bias, eps);
 }
 
 struct MiniCPMO45VisionEncoder {
     struct Layer {
-        mfq::cuda::BiasWeight query;
-        mfq::cuda::BiasWeight key;
-        mfq::cuda::BiasWeight value;
-        mfq::cuda::BiasWeight output;
-        mfq_tensor_backend::Tensor norm1_weight;
-        mfq_tensor_backend::Tensor norm1_bias;
-        mfq_tensor_backend::Tensor norm2_weight;
-        mfq_tensor_backend::Tensor norm2_bias;
-        mfq::cuda::BiasWeight fc1;
-        mfq::cuda::BiasWeight fc2;
+        tyloi::cuda::BiasWeight query;
+        tyloi::cuda::BiasWeight key;
+        tyloi::cuda::BiasWeight value;
+        tyloi::cuda::BiasWeight output;
+        ::tyloi::Tensor norm1_weight;
+        ::tyloi::Tensor norm1_bias;
+        ::tyloi::Tensor norm2_weight;
+        ::tyloi::Tensor norm2_bias;
+        tyloi::cuda::BiasWeight fc1;
+        tyloi::cuda::BiasWeight fc2;
         int64_t heads = 0;
         int64_t head_dim = 0;
         double layer_norm_eps = 1e-6;
 
-        mfq_tensor_backend::Tensor forward(
-                const mfq::cuda::Projector& projector, mfq_tensor_backend::Tensor input,
-                MfqOptional<mfq_tensor_backend::Tensor> mask = mfq_nullopt) const {
-            using Tensor = mfq_tensor_backend::Tensor;
+        ::tyloi::Tensor forward(
+                const tyloi::cuda::Projector& projector, ::tyloi::Tensor input,
+                MfqOptional<::tyloi::Tensor> mask = mfq_nullopt) const {
+            using Tensor = ::tyloi::Tensor;
             if (heads <= 0 || head_dim <= 0) {
                 throw std::runtime_error("vision block head geometry is invalid");
             }
@@ -68,23 +68,23 @@ struct MiniCPMO45VisionEncoder {
                 return value.reshape({batch, tokens, heads, head_dim}).transpose(1, 2).contiguous();
             };
             const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
-            auto normalized = mfq::cuda::vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
-            auto q = split_heads(mfq::cuda::biased(projector, query, normalized));
-            auto k = split_heads(mfq::cuda::biased(projector, key, normalized));
-            auto v = split_heads(mfq::cuda::biased(projector, value, normalized));
-            auto attended = mfq::cuda::vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
-            auto branch = mfq::cuda::biased(projector, output, attended.transpose(1, 2).reshape(
+            auto normalized = tyloi::cuda::vision_layer_norm(input, norm1_weight, norm1_bias, layer_norm_eps);
+            auto q = split_heads(tyloi::cuda::biased(projector, query, normalized));
+            auto k = split_heads(tyloi::cuda::biased(projector, key, normalized));
+            auto v = split_heads(tyloi::cuda::biased(projector, value, normalized));
+            auto attended = tyloi::cuda::vision_non_causal_attention(std::move(q), std::move(k), std::move(v), mask, scale);
+            auto branch = tyloi::cuda::biased(projector, output, attended.transpose(1, 2).reshape(
                 {batch, tokens, heads * head_dim}));
             input = (input + branch.to(input.scalar_type())).contiguous();
-            normalized = mfq::cuda::vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
-            branch = mfq::cuda::biased(projector, fc2,
-                mfq_tensor_backend::gelu(mfq::cuda::biased(projector, fc1, normalized), "tanh"));
+            normalized = tyloi::cuda::vision_layer_norm(input, norm2_weight, norm2_bias, layer_norm_eps);
+            branch = tyloi::cuda::biased(projector, fc2,
+                ::tyloi::cuda::gelu(tyloi::cuda::biased(projector, fc1, normalized), "tanh"));
             return (input + branch.to(input.scalar_type())).contiguous();
         }
     };
 
     static Layer load_layer(
-            const mfq::cuda::weight_loader::Loader& weights, int index,
+            const tyloi::cuda::weight_loader::Loader& weights, int index,
             int64_t heads, int64_t head_dim) {
         const std::string prefix = "vision.block." + std::to_string(index);
         Layer result;
@@ -104,17 +104,17 @@ struct MiniCPMO45VisionEncoder {
         return result;
     }
 
-    mfq_tensor_backend::Tensor patch_weight;
-    mfq_tensor_backend::Tensor patch_bias;
-    mfq_tensor_backend::Tensor position_embedding;
+    ::tyloi::Tensor patch_weight;
+    ::tyloi::Tensor patch_bias;
+    ::tyloi::Tensor position_embedding;
     // SigLIP blocks: 16 heads of 1152/16 = 72 features each.
     std::vector<Layer> layers;
-    mfq_tensor_backend::Tensor post_norm_weight;
-    mfq_tensor_backend::Tensor post_norm_bias;
+    ::tyloi::Tensor post_norm_weight;
+    ::tyloi::Tensor post_norm_bias;
     int64_t patch_size = 14;
     int64_t position_side = 70;
 
-    static MiniCPMO45VisionEncoder load(const mfq::cuda::weight_loader::Loader& weights) {
+    static MiniCPMO45VisionEncoder load(const tyloi::cuda::weight_loader::Loader& weights) {
         MiniCPMO45VisionEncoder result;
         result.patch_weight =
             weights.native("vision.patch_embedding.weight");
@@ -135,11 +135,11 @@ struct MiniCPMO45VisionEncoder {
         return result;
     }
 
-    mfq::StepSequence<mfq_tensor_backend::Tensor> forward_steps(
-        mfq::cuda::Projector projector,
-        mfq_tensor_backend::Tensor pixels,
-        mfq_tensor_backend::Tensor patch_mask,
-        mfq_tensor_backend::Tensor target_sizes) const {
+    tyloi::StepSequence<::tyloi::Tensor> forward_steps(
+        tyloi::cuda::Projector projector,
+        ::tyloi::Tensor pixels,
+        ::tyloi::Tensor patch_mask,
+        ::tyloi::Tensor target_sizes) const {
         if (patch_mask.dim() == 3) {
             patch_mask = patch_mask.flatten(1);
         }
@@ -149,12 +149,12 @@ struct MiniCPMO45VisionEncoder {
             target_sizes.device().is_cuda()) {
             throw std::runtime_error("MiniCPM-o vision input geometry is invalid");
         }
-        using Tensor = mfq_tensor_backend::Tensor;
+        using Tensor = ::tyloi::Tensor;
         MfqOptional<Tensor> attention_mask = mfq_nullopt;
-        auto encoding = mfq::models::minicpmo45::vision_encoder(
+        auto encoding = tyloi::models::minicpmo45::vision_encoder(
             pixels, layers,
             [&](Tensor pixels) {
-                return mfq_tensor_backend::conv2d(
+                return ::tyloi::cuda::conv2d(
                            pixels.to(patch_weight.scalar_type()), patch_weight, patch_bias,
                            std::vector<int64_t>{patch_size, patch_size}, std::vector<int64_t>{0, 0},
                            std::vector<int64_t>{1, 1}, 1)
@@ -167,37 +167,37 @@ struct MiniCPMO45VisionEncoder {
                     throw std::runtime_error(
                         "MiniCPM-o patch mask length does not match patch convolution");
                 }
-                auto sizes = target_sizes.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64)
+                auto sizes = target_sizes.to(::tyloi::kCPU, ::tyloi::kInt64)
                                  .contiguous();
                 auto mask_cpu =
-                    patch_mask.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kBool).contiguous();
+                    patch_mask.to(::tyloi::kCPU, ::tyloi::kBool).contiguous();
                 const auto *size_data = sizes.data_ptr<int64_t>();
                 const auto *mask_data = mask_cpu.data_ptr<bool>();
-                auto layout = mfq::models::minicpmo45::patch_positions(
+                auto layout = tyloi::models::minicpmo45::patch_positions(
                     embedded.size(0), embedded.size(1), position_side, size_data, mask_data);
                 auto &position_ids = layout.ids;
                 const bool all_patches_active = layout.all_active;
                 auto ids =
-                    mfq_tensor_backend::from_blob(
+                    ::tyloi::cuda::from_blob(
                         position_ids.data(),
                         std::vector<int64_t>{embedded.size(0), embedded.size(1)},
-                        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
+                        ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
                         .clone()
-                        .to(mfq_tensor_backend::kCUDA);
+                        .to(::tyloi::kCUDA);
                 embedded =
                     embedded +
                     position_embedding.index_select(0, ids.reshape({-1})).reshape(embedded.sizes());
 
                 if (!all_patches_active) {
                     auto invalid =
-                        patch_mask.to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kBool)
+                        patch_mask.to(::tyloi::kCUDA, ::tyloi::kBool)
                             .logical_not()
                             .unsqueeze(1)
                             .unsqueeze(2);
                     attention_mask =
-                        mfq_tensor_backend::zeros(
+                        ::tyloi::cuda::zeros(
                             {embedded.size(0), 1, embedded.size(1), embedded.size(1)},
-                            embedded.options().dtype(mfq_tensor_backend::kFloat32))
+                            embedded.options().dtype(::tyloi::kFloat32))
                             .masked_fill(invalid, -std::numeric_limits<float>::infinity());
                 }
                 return embedded;
@@ -211,33 +211,33 @@ struct MiniCPMO45VisionEncoder {
         while (auto step = encoding.next()) co_yield std::move(step);
     }
 
-    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
-        mfq_tensor_backend::Tensor pixels, mfq_tensor_backend::Tensor mask,
-        mfq_tensor_backend::Tensor sizes) const {
-        return mfq::finish_steps(
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+        ::tyloi::Tensor pixels, ::tyloi::Tensor mask,
+        ::tyloi::Tensor sizes) const {
+        return tyloi::finish_steps(
             forward_steps(projector, std::move(pixels), std::move(mask), std::move(sizes)));
     }
 };
 
 struct MiniCPMO45Resampler {
-    mfq_tensor_backend::Tensor query;
-    mfq_tensor_backend::Tensor position_embedding;
-    mfq::cuda::BiasWeight kv_projection;
-    mfq_tensor_backend::Tensor q_norm_weight;
-    mfq_tensor_backend::Tensor q_norm_bias;
-    mfq_tensor_backend::Tensor kv_norm_weight;
-    mfq_tensor_backend::Tensor kv_norm_bias;
-    mfq_tensor_backend::Tensor post_norm_weight;
-    mfq_tensor_backend::Tensor post_norm_bias;
-    mfq_tensor_backend::Tensor in_projection_weight;
-    mfq_tensor_backend::Tensor in_projection_bias;
-    mfq_tensor_backend::Tensor out_projection_weight;
-    mfq_tensor_backend::Tensor out_projection_bias;
-    mfq_tensor_backend::Tensor final_projection;
+    ::tyloi::Tensor query;
+    ::tyloi::Tensor position_embedding;
+    tyloi::cuda::BiasWeight kv_projection;
+    ::tyloi::Tensor q_norm_weight;
+    ::tyloi::Tensor q_norm_bias;
+    ::tyloi::Tensor kv_norm_weight;
+    ::tyloi::Tensor kv_norm_bias;
+    ::tyloi::Tensor post_norm_weight;
+    ::tyloi::Tensor post_norm_bias;
+    ::tyloi::Tensor in_projection_weight;
+    ::tyloi::Tensor in_projection_bias;
+    ::tyloi::Tensor out_projection_weight;
+    ::tyloi::Tensor out_projection_bias;
+    ::tyloi::Tensor final_projection;
     int64_t heads = 32;
     int64_t head_dim = 128;
 
-    static MiniCPMO45Resampler load(const mfq::cuda::weight_loader::Loader& weights) {
+    static MiniCPMO45Resampler load(const tyloi::cuda::weight_loader::Loader& weights) {
         MiniCPMO45Resampler result;
         if (!weights.source.has_asset(MINICPMO45_RESAMPLER_POS_EMBED_ASSET)) {
             throw std::runtime_error("MiniCPM-o MFQ is missing the exact Resampler position asset; "
@@ -262,11 +262,11 @@ struct MiniCPMO45Resampler {
         {
             MfqCudaGuard guard(weights.placement.device);
             result.position_embedding =
-                mfq_tensor_backend::from_blob(
+                ::tyloi::cuda::from_blob(
                     position_blob.data() + position_offset, std::vector<int64_t>{70, 70, 4096},
-                    mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kBFloat16))
+                    ::tyloi::TensorOptions().dtype(::tyloi::kBFloat16))
                     .clone()
-                    .to(mfq_tensor_backend::kCUDA)
+                    .to(::tyloi::kCUDA)
                     .contiguous();
         }
         result.query = weights.native("vision.resampler.query");
@@ -301,21 +301,21 @@ struct MiniCPMO45Resampler {
         return result;
     }
 
-    mfq_tensor_backend::Tensor forward(const mfq::cuda::Projector& projector,
-                                       mfq_tensor_backend::Tensor input,
-                                       mfq_tensor_backend::Tensor target_sizes) const {
+    ::tyloi::Tensor forward(const tyloi::cuda::Projector& projector,
+                                       ::tyloi::Tensor input,
+                                       ::tyloi::Tensor target_sizes) const {
         if (input.dim() != 3 || input.size(2) != 1152 || target_sizes.dim() != 2 ||
             target_sizes.size(1) != 2 || target_sizes.size(0) != input.size(0) ||
             target_sizes.device().is_cuda() ||
-            input.scalar_type() != mfq_tensor_backend::kBFloat16) {
+            input.scalar_type() != ::tyloi::kBFloat16) {
             throw std::runtime_error("MiniCPM-o Resampler input geometry is invalid");
         }
         const int64_t batch = input.size(0);
         const int64_t length = input.size(1);
         auto sizes =
-            target_sizes.to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous();
+            target_sizes.to(::tyloi::kCPU, ::tyloi::kInt64).contiguous();
         const auto *size_data = sizes.data_ptr<int64_t>();
-        std::vector<mfq_tensor_backend::Tensor> positions;
+        std::vector<::tyloi::Tensor> positions;
         positions.reserve(static_cast<size_t>(batch));
         std::vector<uint8_t> key_padding(static_cast<size_t>(batch * length), uint8_t{1});
         for (int64_t index = 0; index < batch; ++index) {
@@ -330,9 +330,9 @@ struct MiniCPMO45Resampler {
                                 .narrow(1, 0, width)
                                 .reshape({patches, 4096});
             if (patches < length) {
-                position = mfq_tensor_backend::cat(
+                position = ::tyloi::cuda::cat(
                     {position,
-                     mfq_tensor_backend::zeros({length - patches, 4096}, position.options())},
+                     ::tyloi::cuda::zeros({length - patches, 4096}, position.options())},
                     0);
             }
             positions.push_back(position);
@@ -340,22 +340,22 @@ struct MiniCPMO45Resampler {
                 key_padding[static_cast<size_t>(index * length + patch)] = 0;
             }
         }
-        auto position = mfq_tensor_backend::stack(positions, 0);
+        auto position = ::tyloi::cuda::stack(positions, 0);
         auto key_padding_mask =
-            mfq_tensor_backend::from_blob(
+            ::tyloi::cuda::from_blob(
                 key_padding.data(), std::vector<int64_t>{batch, length},
-                mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8))
+                ::tyloi::TensorOptions().dtype(::tyloi::kUInt8))
                 .clone()
-                .to(mfq_tensor_backend::kCUDA, mfq_tensor_backend::kBool);
+                .to(::tyloi::kCUDA, ::tyloi::kBool);
         const auto dtype = input.scalar_type();
-        auto project = [&](mfq_tensor_backend::Tensor value, int64_t offset) {
+        auto project = [&](::tyloi::Tensor value, int64_t offset) {
             auto weight = in_projection_weight.narrow(0, offset, 4096);
             auto bias = in_projection_bias.narrow(0, offset, 4096);
             return mfq_linear(value.to(weight.scalar_type()), weight, bias).to(dtype).contiguous();
         };
-        using Tensor = mfq_tensor_backend::Tensor;
-        return mfq::models::minicpmo45::resample(
-            [&] { return mfq::cuda::biased(projector, kv_projection, input); },
+        using Tensor = ::tyloi::Tensor;
+        return tyloi::models::minicpmo45::resample(
+            [&] { return tyloi::cuda::biased(projector, kv_projection, input); },
             [&](Tensor kv) {
                 return minicpmo45_layer_norm(kv, kv_norm_weight, kv_norm_bias, 1e-6);
             },
@@ -384,9 +384,9 @@ struct MiniCPMO45Resampler {
                     .contiguous();
             },
             [&](Tensor q, Tensor k, Tensor v) {
-                auto mask = mfq_tensor_backend::zeros({batch, 1, 1, length},
-                                                      mfq_tensor_backend::TensorOptions()
-                                                          .device(mfq_tensor_backend::kCUDA)
+                auto mask = ::tyloi::cuda::zeros({batch, 1, 1, length},
+                                                      ::tyloi::TensorOptions()
+                                                          .device(::tyloi::kCUDA)
                                                           .dtype(dtype))
                                 .masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2),
                                              -std::numeric_limits<float>::infinity())
@@ -395,11 +395,11 @@ struct MiniCPMO45Resampler {
                 auto q_flat = q.reshape({batch * heads, 64, head_dim});
                 auto k_flat = k.reshape({batch * heads, length, head_dim});
                 auto v_flat = v.reshape({batch * heads, length, head_dim});
-                auto attention_weights = mfq_tensor_backend::baddbmm(
+                auto attention_weights = ::tyloi::cuda::baddbmm(
                     mask, q_flat * std::sqrt(1.0 / static_cast<double>(head_dim)),
                     k_flat.transpose(1, 2));
-                attention_weights = mfq_tensor_backend::softmax(attention_weights, -1);
-                return mfq_tensor_backend::bmm(attention_weights, v_flat)
+                attention_weights = ::tyloi::cuda::softmax(attention_weights, -1);
+                return ::tyloi::cuda::bmm(attention_weights, v_flat)
                     .reshape({batch, heads, 64, head_dim})
                     .transpose(1, 2)
                     .reshape({batch, 64, 4096});
@@ -414,7 +414,7 @@ struct MiniCPMO45Resampler {
                 return minicpmo45_layer_norm(attended, post_norm_weight, post_norm_bias, 1e-6);
             },
             [&](Tensor attended) {
-                return mfq_tensor_backend::matmul(attended.to(final_projection.scalar_type()),
+                return ::tyloi::cuda::matmul(attended.to(final_projection.scalar_type()),
                                                   final_projection)
                     .to(dtype)
                     .contiguous();

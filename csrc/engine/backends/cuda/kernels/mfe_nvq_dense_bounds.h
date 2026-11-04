@@ -4,7 +4,7 @@
 #include <climits>
 #include <cstdlib>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 inline bool mfe_nvq_dense_narrow_eligible(const MfePackedProjection& d,bool allow_empty=true) {
     if(d.family!=2 || d.e8_dense_groups==d.d4_dense_groups || d.local_experts<0 ||
             (!allow_empty && d.local_experts==0) || d.output_rows<=0 || d.input_width<=0 ||
@@ -30,7 +30,7 @@ inline bool mfe_nvq_dense_narrow_eligible(const MfePackedProjection& d,bool allo
 }
 
 inline bool mfe_nvq_dense_narrow_selected(const MfePackedProjection& d) {
-    const auto* value=mfq::cuda::env_lookup("TYLOINFER_MFE_NVQ_DENSE_NARROW");
+    const auto* value=tyloi::cuda::env_lookup("TYLOINFER_MFE_NVQ_DENSE_NARROW");
     if(!value || value[0]!='1' || value[1])return false;
     return mfe_nvq_dense_narrow_eligible(d);
 }

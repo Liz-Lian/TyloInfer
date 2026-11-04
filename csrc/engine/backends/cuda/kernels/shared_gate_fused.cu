@@ -144,28 +144,27 @@ __global__ void nint_gate_sigmoid(const __half* input,const uint8_t* packed,cons
 }
 }
 
-std::optional<mfq_tensor_backend::Tensor> try_nint_shared_gate_sigmoid_cuda(
-        const mfq_tensor_backend::Tensor& input,const NintWeight& w,
-        const mfq_tensor_backend::Tensor& quantized,const mfq_tensor_backend::Tensor& scales) {
-    namespace tb=mfq_tensor_backend;
+std::optional<::tyloi::Tensor> try_nint_shared_gate_sigmoid_cuda(
+        const ::tyloi::Tensor& input,const NintWeight& w,
+        const ::tyloi::Tensor& quantized,const ::tyloi::Tensor& scales) {
     if(!input.defined() || !input.is_cuda() || !input.is_contiguous() || input.dim()!=2 ||
-            input.scalar_type()!=tb::kFloat16 || input.size(0)<1 || input.size(0)>6 ||
+            input.scalar_type()!=::tyloi::kFloat16 || input.size(0)<1 || input.size(0)>6 ||
             !w.aligned_q8 || w.q8_zero || w.out!=1 || w.gs!=48 || w.ng<1 || w.ng>64 ||
             input.size(1)!=w.neuron_len || w.neuron_len>w.ng*48 ||
             !w.q_packed.is_cuda() || w.q_packed.device()!=input.device())return std::nullopt;
     // Explicit changes to the reference arithmetic keep their original path.
-    if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE"))if(std::atoi(option)!=2)return std::nullopt;
+    if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_DECODE"))if(std::atoi(option)!=2)return std::nullopt;
     if(input.size(0)==1) {
-        if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_ORDERED"))if(option[0]=='0')return std::nullopt;
-    } else if(const auto* option=mfq::cuda::env_lookup("TYLOINFER_NINT_Q8_SMALL_WARPS"))if(option[0]=='0')return std::nullopt;
+        if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_ORDERED"))if(option[0]=='0')return std::nullopt;
+    } else if(const auto* option=tyloi::cuda::env_lookup("TYLOINFER_NINT_Q8_SMALL_WARPS"))if(option[0]=='0')return std::nullopt;
     for(const auto* tensor:{&w.q_packed,&w.row_q_bit_offsets,&w.sub_scale,&w.sub_min,&w.neuron_scale,&w.neuron_min})
         if(!tensor->is_cuda() || !tensor->is_contiguous() || tensor->device()!=input.device())return std::nullopt;
-    if(quantized.defined() && (!scales.defined() || quantized.scalar_type()!=tb::kInt8 ||
-            scales.scalar_type()!=tb::kFloat32 || !quantized.is_contiguous() || !scales.is_contiguous() ||
+    if(quantized.defined() && (!scales.defined() || quantized.scalar_type()!=::tyloi::kInt8 ||
+            scales.scalar_type()!=::tyloi::kFloat32 || !quantized.is_contiguous() || !scales.is_contiguous() ||
             quantized.device()!=input.device() || scales.device()!=input.device() ||
             quantized.numel()!=input.size(0)*w.ng*48 || scales.numel()!=input.size(0)*w.ng))return std::nullopt;
-    auto output=tb::empty({input.size(0),1},input.options());
-    mfq::cuda::DeviceGuard guard(input.get_device());
+    auto output=::tyloi::cuda::empty({input.size(0),1},input.options());
+    tyloi::cuda::DeviceGuard guard(input.get_device());
     const auto launch=[&](auto ordered) {
         if(quantized.defined()) {
             nint_gate_prepared<decltype(ordered)::value><<<int(input.size(0)),128,0,mfq_current_cuda_stream()>>>(
@@ -186,20 +185,19 @@ std::optional<mfq_tensor_backend::Tensor> try_nint_shared_gate_sigmoid_cuda(
 
 #endif
 
-std::optional<mfq_tensor_backend::Tensor> try_shared_gate_sigmoid_cuda(
-        const mfq_tensor_backend::Tensor& input,
-        const mfq_tensor_backend::Tensor& weight) {
-    namespace tb=mfq_tensor_backend;
+std::optional<::tyloi::Tensor> try_shared_gate_sigmoid_cuda(
+        const ::tyloi::Tensor& input,
+        const ::tyloi::Tensor& weight) {
     if(!input.defined() || !weight.defined() || !input.is_cuda() || !weight.is_cuda() ||
         input.get_device()!=weight.get_device() || !input.is_contiguous() || !weight.is_contiguous() ||
-        input.scalar_type()!=tb::kFloat16 || weight.scalar_type()!=tb::kBFloat16 ||
+        input.scalar_type()!=::tyloi::kFloat16 || weight.scalar_type()!=::tyloi::kBFloat16 ||
         input.dim()!=2 || weight.dim()!=2 || weight.size(0)!=1 ||
         input.size(0)<1 || input.size(0)>8 || input.size(1)<1 || input.size(1)>4096 ||
         input.size(1)!=weight.size(1))return std::nullopt;
-    auto output=tb::empty({input.size(0),1},weight.options());
-    mfq::cuda::DeviceGuard guard(input.get_device());
-    const auto stream=mfq::cuda::current_stream(input.get_device()).stream();
-    mfq::cuda::shared_gate_detail::project_sigmoid<128,true,false>
+    auto output=::tyloi::cuda::empty({input.size(0),1},weight.options());
+    tyloi::cuda::DeviceGuard guard(input.get_device());
+    const auto stream=tyloi::cuda::current_stream(input.get_device()).stream();
+    tyloi::cuda::shared_gate_detail::project_sigmoid<128,true,false>
         <<<int(input.size(0)),128,0,stream>>>(
             static_cast<const __half*>(input.data_ptr()),
             static_cast<const __nv_bfloat16*>(weight.data_ptr()),nullptr,

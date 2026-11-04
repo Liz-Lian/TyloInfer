@@ -1,6 +1,6 @@
 #pragma once
 #include "mfe_ffn.h"
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // Encoded capacities retain pairs for routed experts and use the remaining
 // value for shared experts; the existing batch descriptor stays unchanged.
 inline constexpr int kMfeSharedGroupEncoding=16;

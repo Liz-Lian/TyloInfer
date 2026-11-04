@@ -11,10 +11,10 @@
 #include <utility>
 
 struct MtpStep {
-    mfq_tensor_backend::Tensor sample_hidden;
-    mfq_tensor_backend::Tensor chain_hidden;
+    ::tyloi::Tensor sample_hidden;
+    ::tyloi::Tensor chain_hidden;
     // Optional last-row vocabulary projection computed in the predictor graph.
-    mfq_tensor_backend::Tensor sample_logits;
+    ::tyloi::Tensor sample_logits;
     int32_t greedy_token=-1;
 };
 
@@ -22,20 +22,20 @@ struct MtpStep {
 struct MtpModule {
     virtual ~MtpModule() = default;
     virtual void reset(int64_t batch = 1) = 0;
-    virtual mfq_tensor_backend::Tensor forward(
-        mfq_tensor_backend::Tensor previous_hidden,
-        mfq_tensor_backend::Tensor next_ids) = 0;
+    virtual ::tyloi::Tensor forward(
+        ::tyloi::Tensor previous_hidden,
+        ::tyloi::Tensor next_ids) = 0;
     virtual MtpStep step(
-        mfq_tensor_backend::Tensor previous_hidden,
-        mfq_tensor_backend::Tensor next_ids) {
+        ::tyloi::Tensor previous_hidden,
+        ::tyloi::Tensor next_ids) {
         auto hidden = forward(
             std::move(previous_hidden), std::move(next_ids));
         return {hidden, hidden};
     }
     virtual MtpStep step_positioned(
-        mfq_tensor_backend::Tensor,
-        mfq_tensor_backend::Tensor,
-        mfq_tensor_backend::Tensor) {
+        ::tyloi::Tensor,
+        ::tyloi::Tensor,
+        ::tyloi::Tensor) {
         throw std::runtime_error(
             "this CUDA MTP predictor does not accept explicit positions");
     }
@@ -47,12 +47,12 @@ struct MtpModule {
     virtual bool take_graph_initialization() noexcept { return false; }
     virtual uint64_t graph_replay_count() const noexcept { return 0; }
     virtual int maximum_draft_depth() const noexcept {
-        return mfq::engine::mtp::kMaximumDraftDepth;
+        return tyloi::engine::mtp::kMaximumDraftDepth;
     }
     virtual bool blockwise_drafting() const noexcept { return false; }
-    virtual std::unique_ptr<mfq::engine::mtp::DepthPolicy> depth_policy(
-            int maximum_depth, mfq::engine::mtp::PolicyState& state) const {
-        return std::make_unique<mfq::engine::mtp::AdaptivePolicy>(maximum_depth, &state);
+    virtual std::unique_ptr<tyloi::engine::mtp::DepthPolicy> depth_policy(
+            int maximum_depth, tyloi::engine::mtp::PolicyState& state) const {
+        return std::make_unique<tyloi::engine::mtp::AdaptivePolicy>(maximum_depth, &state);
     }
     virtual MfqSamplingParams draft_sampling(MfqSamplingParams sampling, bool) const {
         return sampling;
@@ -64,7 +64,7 @@ struct MtpModule {
     virtual bool supports_session_state() const noexcept { return false; }
     virtual MtpSessionState capture_session_state(
         std::int64_t,
-        const mfq_tensor_backend::Tensor&) const {
+        const ::tyloi::Tensor&) const {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
@@ -72,26 +72,26 @@ struct MtpModule {
         throw std::runtime_error(
             "this CUDA MTP predictor has no session state");
     }
-    virtual void seed_target_context(mfq_tensor_backend::Tensor hidden, std::int64_t tokens) {
+    virtual void seed_target_context(::tyloi::Tensor hidden, std::int64_t tokens) {
         TYLOINFER_RUNTIME_CHECK(hidden.dim() == 3 && hidden.size(1) == tokens,
                           "this CUDA MTP predictor requires complete prompt context");
         append_target_context(std::move(hidden), 0);
     }
     virtual void append_target_context(
-        mfq_tensor_backend::Tensor,
+        ::tyloi::Tensor,
         std::int64_t) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no target-context adapter");
     }
-    virtual mfq_tensor_backend::Tensor draft_block(
-        mfq_tensor_backend::Tensor,
+    virtual ::tyloi::Tensor draft_block(
+        ::tyloi::Tensor,
         int) {
         throw std::runtime_error(
             "this CUDA MTP predictor has no block-draft adapter");
     }
-    virtual mfq_tensor_backend::Tensor draft_next(
-        mfq_tensor_backend::Tensor,
-        mfq_tensor_backend::Tensor) {
+    virtual ::tyloi::Tensor draft_next(
+        ::tyloi::Tensor,
+        ::tyloi::Tensor) {
         throw std::runtime_error("this CUDA MTP predictor has no block-draft adapter");
     }
 

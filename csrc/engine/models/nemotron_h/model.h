@@ -14,10 +14,10 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda::nemotron_h {
+namespace tyloi::cuda::nemotron_h {
 
-using Tensor = mfq_tensor_backend::Tensor;
-using Config = mfq::models::nemotron_h::Config;
+using Tensor = ::tyloi::Tensor;
+using Config = tyloi::models::nemotron_h::Config;
 
 struct Mamba {
     int layer = -1;
@@ -43,18 +43,18 @@ struct Layer {
 };
 
 struct Model {
-    std::shared_ptr<const mfq::ModelSource> source;
-    mfq::ModelGraph graph;
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
     Config config;
-    mfq::models::CausalLmMetadata metadata;
+    tyloi::models::CausalLmMetadata metadata;
     QuantLinear embed, lm_head;
     Tensor output_norm;
     std::vector<Layer> layers;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor embedding(mfq::Tensor ids, int primary = 0) const;
+    tyloi::Tensor embedding(tyloi::Tensor ids, int primary = 0) const;
 #endif
 };
 
 
-} // namespace mfq::cuda::nemotron_h
+} // namespace tyloi::cuda::nemotron_h

@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace mfq::dense {
+namespace tyloi::dense {
 
 std::vector<std::byte> prefix(const std::vector<std::int64_t>& shape);
 
@@ -45,4 +45,4 @@ inline Layout parse(const std::vector<std::uint8_t>& blob, std::size_t item_size
     return result;
 }
 
-} // namespace mfq::dense
+} // namespace tyloi::dense

@@ -6,16 +6,16 @@
 #include <vector>
 
 struct NintWeight {
-    mfq_tensor_backend::Tensor q_packed;
-    mfq_tensor_backend::Tensor row_q_bits;
-    mfq_tensor_backend::Tensor row_q_bit_offsets;
-    mfq_tensor_backend::Tensor q8_zero_scale;
-    mfq_tensor_backend::Tensor sub_scale;
-    mfq_tensor_backend::Tensor sub_min;
-    mfq_tensor_backend::Tensor neuron_scale;
-    mfq_tensor_backend::Tensor neuron_min;
+    ::tyloi::Tensor q_packed;
+    ::tyloi::Tensor row_q_bits;
+    ::tyloi::Tensor row_q_bit_offsets;
+    ::tyloi::Tensor q8_zero_scale;
+    ::tyloi::Tensor sub_scale;
+    ::tyloi::Tensor sub_min;
+    ::tyloi::Tensor neuron_scale;
+    ::tyloi::Tensor neuron_min;
     // Experimental routed row records; populated only by the comparison bench.
-    mfq_tensor_backend::Tensor route_metadata;
+    ::tyloi::Tensor route_metadata;
     int64_t out = 0;
     int64_t ng = 0;
     int64_t gs = 0;

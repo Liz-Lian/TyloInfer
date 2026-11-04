@@ -4,7 +4,7 @@
 #include <string_view>
 #include <utility>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 // Preserve the existing single-image cache capacity.
 template <class Tensor>
@@ -29,4 +29,4 @@ private:
     Tensor value_;
 };
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

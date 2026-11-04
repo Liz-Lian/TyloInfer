@@ -23,7 +23,7 @@
 #include <sys/sysinfo.h>
 #endif
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 bool cuda_has_separate_memory() {
     cudaDeviceProp properties{};
@@ -31,9 +31,9 @@ bool cuda_has_separate_memory() {
     return !properties.integrated && std::strstr(properties.name, "GB10") == nullptr;
 }
 
-std::shared_ptr<mfq::cache::PagedPrefixCache> make_cuda_paged_prefix_cache(
-    const mfq::ModelSource &source, int64_t max_position_embeddings,
-    bool supports_paged_text_session_state, const mfq::engine::PrefixCacheConfig &config) {
+std::shared_ptr<tyloi::cache::PagedPrefixCache> make_cuda_paged_prefix_cache(
+    const tyloi::ModelSource &source, int64_t max_position_embeddings,
+    bool supports_paged_text_session_state, const tyloi::engine::PrefixCacheConfig &config) {
     const auto format = source.metadata().find("source.format");
     // ponytail: HF source fingerprints exclude config sidecars for now.
     if (!config.enabled ||
@@ -41,7 +41,7 @@ std::shared_ptr<mfq::cache::PagedPrefixCache> make_cuda_paged_prefix_cache(
         !supports_paged_text_session_state) {
         return {};
     }
-    mfq::cache::PrefixBlockStoreConfig cache;
+    tyloi::cache::PrefixBlockStoreConfig cache;
     cache.cache_dir = config.directory;
     if (!source.source_paths().empty()) cache.model_path = source.source_paths().front();
     cache.compatibility_key = cuda_prefix_cache_compatibility_key(source, max_position_embeddings);
@@ -68,16 +68,16 @@ std::shared_ptr<mfq::cache::PagedPrefixCache> make_cuda_paged_prefix_cache(
     };
     cache.max_pending_writes = config.pending_writes;
     cache.max_pending_bytes = config.pending_bytes;
-    return std::make_shared<mfq::cache::PagedPrefixCache>(std::move(cache));
+    return std::make_shared<tyloi::cache::PagedPrefixCache>(std::move(cache));
 }
 
 void CudaSessionOps::release_host_cache() {
-    mfq::trim_host_cache();
+    tyloi::trim_host_cache();
 }
 
-TextSessionCache::TextSessionCache(const mfq::engine::SessionCacheConfig &session_config,
-    const mfq::engine::PrefixCacheConfig &prefix_config,
-    std::shared_ptr<mfq::cache::PagedPrefixCache> paged_cache, bool supported, int disabled_reason,
+TextSessionCache::TextSessionCache(const tyloi::engine::SessionCacheConfig &session_config,
+    const tyloi::engine::PrefixCacheConfig &prefix_config,
+    std::shared_ptr<tyloi::cache::PagedPrefixCache> paged_cache, bool supported, int disabled_reason,
     bool native_hot_snapshots)
     : impl_(std::make_unique<Impl>(
           session_config, prefix_config, std::move(paged_cache), supported, disabled_reason,
@@ -94,7 +94,7 @@ void TextSessionCache::store(const std::string &session_id, TextSessionState sta
     impl_->store(session_id, std::move(state));
 }
 
-mfq::engine::SessionResult TextSessionCache::control(const mfq::engine::SessionCommand &command) {
+tyloi::engine::SessionResult TextSessionCache::control(const tyloi::engine::SessionCommand &command) {
     return impl_->control(command);
 }
 
@@ -104,7 +104,7 @@ std::vector<std::pair<std::string, double>> TextSessionCache::metrics() const {
 
 std::map<int, std::size_t> TextSessionCache::device_hot_bytes() const {
     std::map<std::pair<int, std::uintptr_t>, std::size_t> allocations;
-    const auto tensor = [&](const mfq_tensor_backend::Tensor& value) {
+    const auto tensor = [&](const ::tyloi::Tensor& value) {
         if (!value.defined() || !value.is_cuda()) return;
         auto& bytes = allocations[{value.get_device(), reinterpret_cast<std::uintptr_t>(value.data_ptr())}];
         bytes = std::max(bytes, std::size_t(value.numel()) * value.element_size());
@@ -127,4 +127,4 @@ uint64_t TextSessionCache::set_ram_limit(uint64_t max_bytes) { return impl_->set
 void TextSessionCache::reserve_ram(uint64_t bytes) { impl_->reserve_ram(bytes); }
 uint64_t TextSessionCache::set_disk_limit(uint64_t max_bytes) { return impl_->set_disk_limit(max_bytes); }
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal

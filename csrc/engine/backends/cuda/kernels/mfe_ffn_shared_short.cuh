@@ -2,7 +2,7 @@
 
 // Caller proves regular NINT group geometry and the original token plan.
 // Fixed token and row indices keep result arrays out of thread-local memory.
-namespace mfq::cuda { namespace {
+namespace tyloi::cuda { namespace {
 template<int Capacity>
 __device__ __forceinline__ int short_shared_count(const MfeFfnBatch& b,int group) {
     if constexpr(Capacity==1)if(b.tokens==1)return 1;

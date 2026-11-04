@@ -15,7 +15,7 @@
 #include "engine/backends/cuda/native/device.h"
 #endif
 
-namespace mfq::ops {
+namespace tyloi::ops {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
 namespace {
 void device(Device value) {
@@ -455,4 +455,4 @@ Tensor add(Tensor value, std::int64_t offset) {
     return cuda::ops::add(std::move(value), offset);
 }
 #endif
-} // namespace mfq::ops
+} // namespace tyloi::ops

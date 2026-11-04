@@ -14,8 +14,8 @@
 // Execution-owned CUDA resources for TQ.  Constructing the pool is deliberately
 // device-free; a device is touched only when its first resource is requested.
 struct TqPrefillPlan {
-    mfq_tensor_backend::Tensor host, device;
-    mfq::cuda::Event done;
+    ::tyloi::Tensor host, device;
+    tyloi::cuda::Event done;
     ~TqPrefillPlan() noexcept;
 };
 
@@ -40,22 +40,22 @@ public:
     std::shared_ptr<TqPrefillPlan> prefill_plan(std::int64_t bytes);
     void retain(const MfqCudaStream& stream);
     cublasHandle_t get();
-    std::vector<std::int64_t> routes(const mfq_tensor_backend::Tensor& ids);
+    std::vector<std::int64_t> routes(const ::tyloi::Tensor& ids);
     void prepare_graph();
-    mfq::cuda::BlasResources& blas() noexcept { return blas_; }
+    tyloi::cuda::BlasResources& blas() noexcept { return blas_; }
 
 private:
     struct RouteReadback;
     struct GraphPool {
         MfqCudaStream stream;
-        std::shared_ptr<mfq::cuda::Context> context;
+        std::shared_ptr<tyloi::cuda::Context> context;
     };
     int device_;
     bool indexed_mma_ = false;
     bool prefill_mma_ = false;
     bool host_register_ = false;
     std::mutex mutex_;
-    mfq::cuda::BlasResources blas_;
+    tyloi::cuda::BlasResources blas_;
     std::vector<std::shared_ptr<TqPrefillPlan>> prefill_plans_;
     std::vector<std::shared_ptr<RouteReadback>> route_readbacks_;
     std::unordered_map<cudaStream_t, GraphPool> graph_pools_;

@@ -1,6 +1,6 @@
 #pragma once
 
-namespace mfq::cuda { namespace {
+namespace tyloi::cuda { namespace {
 
 // Each CTA projects one original route slot. Resident projection needs no
 // cross-route reduction, shared result array, or final-output branches.

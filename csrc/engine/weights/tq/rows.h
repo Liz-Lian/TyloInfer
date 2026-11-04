@@ -8,19 +8,19 @@
 #include <memory>
 #include <vector>
 
-mfq_tensor_backend::Tensor lookup_tq_table(
-    const mfq::TqTable&, const std::int64_t*, std::size_t,
-    const mfq_tensor_backend::Device&);
+::tyloi::Tensor lookup_tq_table(
+    const tyloi::TqTable&, const std::int64_t*, std::size_t,
+    const ::tyloi::Device&);
 
-mfq_tensor_backend::Tensor lookup_tq_table(
-    const mfq::TqTable&, mfq_tensor_backend::Tensor ids);
+::tyloi::Tensor lookup_tq_table(
+    const tyloi::TqTable&, ::tyloi::Tensor ids);
 
-mfq_tensor_backend::Tensor lookup_tq_shards(
-    const std::vector<std::shared_ptr<mfq::TqTable>>& tables,
+::tyloi::Tensor lookup_tq_shards(
+    const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& ids,
-    const mfq_tensor_backend::Device& device);
+    const ::tyloi::Device& device);
 
 std::shared_ptr<RowStage> make_tq_row_stage(
-    const std::vector<std::shared_ptr<mfq::TqTable>>& tables,
+    const std::vector<std::shared_ptr<tyloi::TqTable>>& tables,
     std::int64_t rows_per_shard, const std::vector<std::int64_t>& shape,
-    const mfq_tensor_backend::Device& device);
+    const ::tyloi::Device& device);

@@ -19,26 +19,26 @@
 #include <string_view>
 #include <vector>
 
-namespace mfq::cuda::gemma4 {
+namespace tyloi::cuda::gemma4 {
 
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-using Tensor = mfq::Tensor;
+using Tensor = tyloi::Tensor;
 #else
-using Tensor = mfq_tensor_backend::Tensor;
+using Tensor = ::tyloi::Tensor;
 #endif
-using Config = mfq::models::gemma4::Config;
+using Config = tyloi::models::gemma4::Config;
 
 class State;
 
 struct Layer {
     FullAttention attention;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor ffn_norm;
-    mfq::models::Mlp ffn;
-    mfq::Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
-    mfq::Tensor layer_scale;
-    std::shared_ptr<const mfq::weights::Weights> gemma_moe_gate_up, gemma_moe_down;
-    mfq::Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
+    tyloi::Tensor ffn_norm;
+    tyloi::models::Mlp ffn;
+    tyloi::Tensor attn_post_norm, ffn_post_norm, ffn_post_norm_1, ffn_pre_norm_2, ffn_post_norm_2;
+    tyloi::Tensor layer_scale;
+    std::shared_ptr<const tyloi::weights::Weights> gemma_moe_gate_up, gemma_moe_down;
+    tyloi::Tensor gemma_router, gemma_router_norm_scale, gemma_expert_scale;
 #else
     Tensor ffn_norm;
     Ffn ffn;
@@ -54,44 +54,44 @@ struct Layer {
 
 struct Model
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    : public mfq::models::CausalModel
+    : public tyloi::models::CausalModel
 #endif
 {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::models::Info info() const override;
+    tyloi::models::Info info() const override;
     MfqModelCapabilities capabilities() const override;
-    mfq::engine::Metrics metrics() const override;
+    tyloi::engine::Metrics metrics() const override;
 #else
-    mfq::models::Info info() const;
+    tyloi::models::Info info() const;
     MfqModelCapabilities capabilities() const;
-    mfq::engine::Metrics metrics() const;
+    tyloi::engine::Metrics metrics() const;
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    using Options = mfq::models::ForwardOptions;
-    std::unique_ptr<mfq::models::State> make_state() const override;
-    mfq::StepSequence<mfq::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
-        const MfqMultimodalInput& media, mfq::models::State& state) const override;
-    mfq::Tensor embedding(mfq::Tensor ids, int primary = 0) const override;
-    mfq::Tensor normalize(mfq::Tensor hidden, std::int64_t batch, std::int64_t tokens) const override;
-    mfq::Tensor softcap(mfq::Tensor logits) const override;
-    mfq::Tensor logits(mfq::Tensor hidden, bool capped = true) const override;
-    mfq::Tensor forward(mfq::models::Input input, mfq::models::State& state,
+    using Options = tyloi::models::ForwardOptions;
+    std::unique_ptr<tyloi::models::State> make_state() const override;
+    tyloi::StepSequence<tyloi::models::Prepared> prepare(const std::vector<std::int64_t>& tokens,
+        const MfqMultimodalInput& media, tyloi::models::State& state) const override;
+    tyloi::Tensor embedding(tyloi::Tensor ids, int primary = 0) const override;
+    tyloi::Tensor normalize(tyloi::Tensor hidden, std::int64_t batch, std::int64_t tokens) const override;
+    tyloi::Tensor softcap(tyloi::Tensor logits) const override;
+    tyloi::Tensor logits(tyloi::Tensor hidden, bool capped = true) const override;
+    tyloi::Tensor forward(tyloi::models::Input input, tyloi::models::State& state,
                         const Options& options = {}) const override;
 #endif
-    std::shared_ptr<const mfq::ModelSource> source;
-    mfq::ModelGraph graph;
+    std::shared_ptr<const tyloi::ModelSource> source;
+    tyloi::ModelGraph graph;
     CudaModelPlan plan;
     Config config;
     double embed_scale = 1.0;
-    std::shared_ptr<const mfq::weights::Weights> embed, lm_head;
+    std::shared_ptr<const tyloi::weights::Weights> embed, lm_head;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    mfq::Tensor output_norm;
+    tyloi::Tensor output_norm;
 #else
     Tensor output_norm;
 #endif
     std::vector<Layer> layers;
 };
 
-Model read(std::shared_ptr<const mfq::ModelSource>, std::string_view definition, std::int64_t context);
+Model read(std::shared_ptr<const tyloi::ModelSource>, std::string_view definition, std::int64_t context);
 
-} // namespace mfq::cuda::gemma4
+} // namespace tyloi::cuda::gemma4

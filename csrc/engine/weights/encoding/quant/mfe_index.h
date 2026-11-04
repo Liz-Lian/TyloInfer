@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::mfe {
+namespace tyloi::mfe {
 
 struct Part {
     std::size_t offset = 0;
@@ -32,4 +32,4 @@ struct Index {
 Index parse(std::size_t bytes,
             const std::function<void(std::size_t, std::uint8_t*, std::size_t)>& read);
 
-} // namespace mfq::mfe
+} // namespace tyloi::mfe

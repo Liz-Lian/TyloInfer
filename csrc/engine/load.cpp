@@ -46,7 +46,7 @@
 #include <variant>
 #include <vector>
 
-namespace mfq::cuda::engine_detail {
+namespace tyloi::cuda::engine_detail {
 
 using State = std::variant<
     std::unique_ptr<Text<minicpmo45::text::Model, minicpmo45::text::State>>,
@@ -61,9 +61,9 @@ using State = std::variant<
     std::unique_ptr<Text<DeepseekV41CausalLm>>,
     std::unique_ptr<Text<nemotron_h::Model, nemotron_h::State>>>;
 
-} // namespace mfq::cuda::engine_detail
+} // namespace tyloi::cuda::engine_detail
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 bool model_parallel_enabled(const CudaLoadConfig& config) {
     return config.tensor_parallel.enabled() || config.expert_parallel.enabled();
@@ -98,7 +98,7 @@ auto load_qwen(
     std::shared_ptr<const ModelSource> source,
     const weight_loader::Loader& weights,
     LayerPlacementConfig& placement,
-    mfq::ops::YarnScaling& yarn,
+    tyloi::ops::YarnScaling& yarn,
     int& cpu_layers,
     const CudaEngineOptions& options,
     int gpu_layers,
@@ -119,8 +119,8 @@ auto load_qwen(
 } // namespace
 
 std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
-    auto source = mfq::open_model_source(options.model_path);
-    const auto backbone = cuda_backbone(mfq::models::graph(*source).backbone);
+    auto source = tyloi::open_model_source(options.model_path);
+    const auto backbone = cuda_backbone(tyloi::models::graph(*source).backbone);
     if (backbone == CudaBackbone::generic_qwen) {
         return std::make_unique<CudaEngine<
             qwen35::Model, qwen35::State, qwen35::Components,
@@ -142,7 +142,7 @@ std::unique_ptr<engine::Engine> load_cuda_engine(CudaEngineOptions options) {
 void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
     if (auto* target = dynamic_cast<CudaEngine<qwen35::Model, qwen35::State, qwen35::Components, load_qwen>*>(&engine)) {
         target->options_ = std::move(options);
-        target->source_ = mfq::open_model_source(target->options_.model_path);
+        target->source_ = tyloi::open_model_source(target->options_.model_path);
         target->load();
         return;
     }
@@ -152,7 +152,7 @@ void reload_cuda_engine(engine::Engine& engine, CudaEngineOptions options) {
         return;
     }
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    if (typeid(engine) == typeid(mfq::engine::Engine)) {
+    if (typeid(engine) == typeid(tyloi::engine::Engine)) {
         internal::assemble_engine(engine, std::move(options));
         return;
     }
@@ -201,7 +201,7 @@ void internal::assemble_engine(engine::Engine& target, CudaEngineOptions options
             }
             {
                 auto scope = root->enter(load.layer_placement.primary_device());
-                source = mfq::open_model_source(options.model_path);
+                source = tyloi::open_model_source(options.model_path);
                 auto definition = models::config_json(*source, options.config_path);
                 definition = configure_yarn(load.yarn, load.yarn_context_extension,
                     std::move(definition), models::graph(*source).backbone, options.context_size);
@@ -313,11 +313,11 @@ void internal::assemble_engine(engine::Engine& target, CudaEngineOptions options
 }
 #endif
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda
 
-namespace mfq::cuda::internal {
-using mfq::engine::environment_uint64;
-using mfq::engine::environment_enabled;
+namespace tyloi::cuda::internal {
+using tyloi::engine::environment_uint64;
+using tyloi::engine::environment_enabled;
 namespace {
 
 int strict_int(const std::string& text, const char* option) {
@@ -362,10 +362,10 @@ CudaRuntimeConfig resolve_cuda_runtime_config(
         throw std::invalid_argument("prefill chunk size must be Auto (0) or in [1, 8192]");
     config.prefill_chunk_auto = options.prefill_chunk_size == 0;
     const auto chunk_limit = config.prefill_chunk_auto ? int64_t(8192) : options.prefill_chunk_size;
-    static_cast<mfq::engine::RuntimeConfig&>(config) =
-        mfq::engine::resolve_runtime_config(chunk_limit);
-    static_cast<mfq::engine::ContinuousBatchConfig&>(config.continuous_batch) =
-        mfq::engine::resolve_batch_config(options.continuous_batching, chunk_limit);
+    static_cast<tyloi::engine::RuntimeConfig&>(config) =
+        tyloi::engine::resolve_runtime_config(chunk_limit);
+    static_cast<tyloi::engine::ContinuousBatchConfig&>(config.continuous_batch) =
+        tyloi::engine::resolve_batch_config(options.continuous_batching, chunk_limit);
     config.decode_graph.enabled = environment_enabled(
         "TYLOINFER_RUNTIME_CUDA_GRAPH", true);
     config.decode_graph.trace = environment_enabled(
@@ -638,7 +638,7 @@ static std::unordered_set<int> parse_layer_ranges(
 }
 
 void setup_cuda_load(
-        const mfq::cuda::CudaLoadOptions& options,
+        const tyloi::cuda::CudaLoadOptions& options,
         CudaLoadConfig& config, Executor& executor, RoutedCache& weights,
         std::shared_ptr<KvMemoryManager>& kv, std::shared_ptr<KvOffloadStore>& offload) {
     drain_cuda(executor, weights, offload.get(),
@@ -726,8 +726,8 @@ void setup_cuda_load(
             "--moe-gpu-cache-gb cannot be combined with "
             "tensor/expert parallelism");
     }
-    const auto* auto_profile=mfq::cuda::env_lookup("TYLOINFER_MOE_AUTO_CACHE_PROFILE");
-    const auto profile_path=mfq::resolve_moe_cache_profile_path(options.moe_cache_profile_path,
+    const auto* auto_profile=tyloi::cuda::env_lookup("TYLOINFER_MOE_AUTO_CACHE_PROFILE");
+    const auto profile_path=tyloi::resolve_moe_cache_profile_path(options.moe_cache_profile_path,
         options.moe_gpu_cache_gb>0.0?options.model_path:std::string{},!auto_profile || auto_profile[0]!='0');
     if (!profile_path.empty() &&
             options.moe_gpu_cache_gb <= 0.0) {
@@ -768,7 +768,7 @@ void setup_cuda_load(
                 .two_stage = executor.options().moe_ffn.two_stage,
                 .heterogeneous = executor.options().projection.moe.heterogeneous});
         if (!profile_path.empty() && weights.moe) {
-            set_moe_expert_cache_profile(*weights.moe,mfq::load_moe_cache_profile(profile_path));
+            set_moe_expert_cache_profile(*weights.moe,tyloi::load_moe_cache_profile(profile_path));
             std::cerr<<"moe_cache_profile source="<<(options.moe_cache_profile_path.empty()?"sidecar":"explicit")
                 <<" path="<<profile_path<<std::endl;
         }
@@ -776,9 +776,9 @@ void setup_cuda_load(
     }
 }
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 void finalize_kv(KvMemoryManager* kv, RoutedCache& weights,
         std::shared_ptr<KvOffloadStore>& offload) {
@@ -804,4 +804,4 @@ std::chrono::steady_clock::time_point finish_load(
     return loaded;
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

@@ -6,7 +6,7 @@
 #include <limits>
 #include <cstdlib>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 using namespace native_ops_detail;
 namespace {
 template <typename Value, typename Output>
@@ -273,7 +273,7 @@ Tensor reduce_cuda(
     bool row_mean_enabled = true;
     if (source.scalar_type() == kFloat32) {
         const char* value =
-            mfq::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_PARALLEL_F32_MEAN");
+            tyloi::cuda::env_lookup("TYLOINFER_DISABLE_NATIVE_PARALLEL_F32_MEAN");
         row_mean_enabled = value == nullptr || value[0] != '1';
     }
     if (operation == 1 &&
@@ -307,7 +307,7 @@ Tensor reduce_cuda(
         (source.scalar_type()==kFloat16 || source.scalar_type()==kFloat32) &&
         reduced>=16384 && reduced<=std::numeric_limits<int>::max() && outer>0 && outer<=65535 &&
         source.is_contiguous() && selected+1==static_cast<std::size_t>(source.dim()) &&
-        [] {const char* setting=mfq::cuda::env_lookup("TYLOINFER_NATIVE_ARGMAX_CHUNKS");return !setting || setting[0]!='0';}()) {
+        [] {const char* setting=tyloi::cuda::env_lookup("TYLOINFER_NATIVE_ARGMAX_CHUNKS");return !setting || setting[0]!='0';}()) {
         // Use the same comparison tree in independent vocabulary chunks.
         const int chunks=int((reduced+4095)/4096);
         auto values=empty({outer,chunks},source.options().dtype(kFloat32));
@@ -353,13 +353,15 @@ Tensor reduce_cuda(
 }
 
 Tensor sum(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
-    return input.sum(dimension, keep_dimension);
+    return reduce_cuda(input, dimension, keep_dimension, 0);
 }
 Tensor mean(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
-    return input.mean(dimension, keep_dimension);
+    if (!input.defined()) throw std::invalid_argument("mean requires a defined tensor");
+    if (!input.is_cuda()) throw std::invalid_argument("native CPU mean is not implemented");
+    return reduce_cuda(input, dimension, keep_dimension, 1);
 }
 Tensor argmax(const Tensor& input, std::int64_t dimension, bool keep_dimension) {
-    return input.argmax(dimension, keep_dimension);
+    return reduce_cuda(input, dimension, keep_dimension, 3);
 }
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

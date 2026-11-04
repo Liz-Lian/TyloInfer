@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
 // Single seam for every TYLOINFER_* runtime knob in the CUDA backend.  Two things sit
 // behind it: provenance (every name the process looked up is recorded, so the
@@ -41,4 +41,4 @@ struct EnvKnob {
 std::vector<EnvKnob> env_snapshot();
 std::string env_dump();
 
-}  // namespace mfq::cuda
+}  // namespace tyloi::cuda

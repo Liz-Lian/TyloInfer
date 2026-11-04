@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct Mlp {
     std::shared_ptr<const weights::Weights> gate_up;
@@ -20,4 +20,4 @@ struct Mlp {
     }
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

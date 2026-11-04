@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 inline constexpr int64_t max_prefill_compute_chunk = 8192;
 
@@ -31,4 +31,4 @@ inline int64_t select_prefill_chunk(int64_t tokens, int64_t limit,
     return selected/256*256;
 }
 
-} // namespace mfq::engine
+} // namespace tyloi::engine

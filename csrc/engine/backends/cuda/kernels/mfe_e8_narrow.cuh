@@ -1,7 +1,7 @@
 #pragma once
 #include "nvq_e8_narrow.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 __device__ __forceinline__ uint32_t load_mfe_e8_signs_words32(
         const uint8_t* data,int bit,int nbytes) {
     const int aligned=(bit>>3)&~3;

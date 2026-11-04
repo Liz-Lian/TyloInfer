@@ -47,7 +47,7 @@ void CudaProfiler::reset() {
 void CudaProfiler::report(const std::string& title) {
     if (!enabled) return;
     if (!pending.empty()) cudaEventSynchronize(pending.back().stop);
-    const auto* timeline_setting=mfq::cuda::env_lookup("TYLOINFER_PREFILL_LAYER_TIMELINE");
+    const auto* timeline_setting=tyloi::cuda::env_lookup("TYLOINFER_PREFILL_LAYER_TIMELINE");
     if(!pending.empty() && timeline_setting && std::atoi(timeline_setting)!=0) {
         std::ostringstream trace;
         trace<<"profile_timeline_begin "<<title<<'\n';
@@ -83,7 +83,7 @@ void CudaProfiler::report(const std::string& title) {
     }
 }
 
-namespace mfq::cuda::internal {
+namespace tyloi::cuda::internal {
 
 PrefillCudaTimer::PrefillCudaTimer()
     : stream_(mfq_get_current_cuda_stream()) {
@@ -116,7 +116,7 @@ double PrefillCudaTimer::elapsed_ms() const {
     return static_cast<double>(elapsed);
 }
 
-} // namespace mfq::cuda::internal
+} // namespace tyloi::cuda::internal
 
 void report_cuda_memory(
         bool enabled,
@@ -144,7 +144,7 @@ void report_cuda_memory(
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     // cudaMemGetInfo does not describe this process's allocation ownership or
     // WDDM budget. Report those separately when diagnosing residency pressure.
-    const auto context=mfq::cuda::default_context(mfq_current_cuda_device());
+    const auto context=tyloi::cuda::default_context(mfq_current_cuda_device());
     const auto native=context->memory_stats();
     const auto [pool_used,pool_reserved]=context->pool_memory_stats();
     std::cout<<"native_memory_stage="<<stage<<" owned_mib="<<native.allocated/mib

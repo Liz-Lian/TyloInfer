@@ -3,7 +3,7 @@
 #include "engine/models/qwen35/config.h"
 #include "../common/causal_metadata.h"
 
-namespace mfq::models::qwen35 {
+namespace tyloi::models::qwen35 {
 
 inline models::CausalLmMetadata metadata_from_config(const Config& config) {
     models::CausalLmMetadata metadata;
@@ -25,4 +25,4 @@ inline models::CausalLmMetadata metadata_from_config(const Config& config) {
     return metadata;
 }
 
-} // namespace mfq::models::qwen35
+} // namespace tyloi::models::qwen35

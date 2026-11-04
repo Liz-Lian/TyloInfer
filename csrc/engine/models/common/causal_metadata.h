@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct CausalLmMetadata {
     int64_t vocab_size = 0;
@@ -59,4 +59,4 @@ struct CausalState {
     bool speculative_suffix_forward = false;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

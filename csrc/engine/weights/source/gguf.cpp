@@ -13,7 +13,7 @@
 #include <sstream>
 #include <utility>
 
-namespace mfq {
+namespace tyloi {
 
 bool is_gguf_file(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
@@ -193,7 +193,7 @@ std::vector<std::string> Shard::names() const {
     return result;
 }
 
-Tensor Shard::tensor(std::int64_t index) const {
+ShardTensorInfo Shard::tensor(std::int64_t index) const {
     const auto* name = gguf_get_tensor_name(impl_->context.get(), index);
     const auto* tensor = ggml_get_tensor(impl_->tensors.get(), name);
     if (!tensor) throw std::runtime_error("GGUF tensor shape is missing");
@@ -234,4 +234,4 @@ std::vector<std::filesystem::path> paths(const std::filesystem::path& path, int 
 }
 
 } // namespace gguf
-} // namespace mfq
+} // namespace tyloi

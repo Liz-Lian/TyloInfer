@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace mfq::models {
+namespace tyloi::models {
 namespace {
 using json = nlohmann::json;
 } // namespace
@@ -180,4 +180,4 @@ std::vector<std::byte> GgufSource::read_asset(std::string_view name) const {
 }
 std::optional<ModelGraph> GgufSource::model_graph() const { return std::nullopt; }
 
-} // namespace mfq::models
+} // namespace tyloi::models

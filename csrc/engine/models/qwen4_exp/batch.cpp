@@ -18,10 +18,10 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::qwen4_exp {
+namespace tyloi::cuda::qwen4_exp {
 
-using mfq::cuda::internal::PrefillCudaTimer;
-using Tensor = mfq_tensor_backend::Tensor;
+using tyloi::cuda::internal::PrefillCudaTimer;
+using Tensor = ::tyloi::Tensor;
 
 namespace {
 
@@ -58,7 +58,7 @@ int64_t BatchOps::vocab_size() const { return model_.vocab_size(); }
 
 int64_t BatchOps::max_context() const { return model_.max_position_embeddings(); }
 
-mfq::engine::Metrics BatchOps::metrics() const {
+tyloi::engine::Metrics BatchOps::metrics() const {
     std::size_t bytes = 0, contexts = 0;
     for (const auto& weak : requests_)
         if (const auto request = weak.lock(); request && request->cache) {
@@ -86,11 +86,11 @@ void BatchOps::suspend_decode() {
 
 void BatchOps::resume_decode(int64_t) {}
 
-mfq::engine::PrefillChunk BatchOps::prefill_chunk(
-    const std::shared_ptr<Request>& request, mfq::engine::PrefillChunk chunk) {
+tyloi::engine::PrefillChunk BatchOps::prefill_chunk(
+    const std::shared_ptr<Request>& request, tyloi::engine::PrefillChunk chunk) {
     CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     initialize_prefill(request, chunk);
-    return mfq::cuda::budget_batch_prefill(
+    return tyloi::cuda::budget_batch_prefill(
         model_.hidden_size(), model_.hc_mult(), execution_.config.layer_placement.primary_device(),
         execution_.weights.moe, chunk,
         request->cache->prefill_growth_bytes(chunk.count));
@@ -105,8 +105,8 @@ static std::exception_ptr flash_next_prefill_failure(std::exception_ptr failure)
             message.starts_with("CUDA process VRAM limit exceeded:") ||
             message.starts_with("CUDA VRAM limit exceeded:") ||
             message.starts_with("CUDA pinned allocation failed:"))
-            return std::make_exception_ptr(mfq::engine::InferenceInputError(
-                mfq::engine::InferenceInputErrorCode::ContextLength,
+            return std::make_exception_ptr(tyloi::engine::InferenceInputError(
+                tyloi::engine::InferenceInputErrorCode::ContextLength,
                 "insufficient GPU or pinned RAM for prefill workspace; reduce concurrent requests or the packed prefill token budget"));
     } catch (...) {
     }
@@ -114,7 +114,7 @@ static std::exception_ptr flash_next_prefill_failure(std::exception_ptr failure)
 }
 
 void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
-                                  mfq::engine::PrefillChunk chunk) {
+                                  tyloi::engine::PrefillChunk chunk) {
     if (!request->cache) {
         TYLOINFER_RUNTIME_CHECK(chunk.offset == 0, "Flash-Next batch lost request state");
         std::erase_if(requests_, [](const auto& weak) { return weak.expired(); });
@@ -133,12 +133,12 @@ void BatchOps::initialize_prefill(const std::shared_ptr<Request>& request,
         requests_.push_back(request);
         request->cache = std::make_unique<Qwen4BatchRequestState>(model_);
         request->prefill_ids =
-            mfq_tensor_backend::tensor(
+            ::tyloi::cuda::tensor(
                 request->prompt,
-                mfq_tensor_backend::TensorOptions()
-                    .dtype(mfq_tensor_backend::kInt64)
-                    .device(mfq_tensor_backend::Device(
-                        mfq_tensor_backend::kCUDA, execution_.config.layer_placement.primary_device())))
+                ::tyloi::TensorOptions()
+                    .dtype(::tyloi::kInt64)
+                    .device(::tyloi::Device(
+                        ::tyloi::kCUDA, execution_.config.layer_placement.primary_device())))
                 .reshape({1, -1});
         request->sampler.emplace(request->sampling);
         if (request->sampler->has_penalties())
@@ -162,7 +162,7 @@ BatchOps::Sample BatchOps::finish_prefill(const std::shared_ptr<Request>& reques
 }
 
 BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
-                                   mfq::engine::PrefillChunk chunk) {
+                                   tyloi::engine::PrefillChunk chunk) {
     try {
         CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
         initialize_prefill(request, chunk);
@@ -176,7 +176,7 @@ BatchOps::Sample BatchOps::prefill(const std::shared_ptr<Request>& request,
             chunk.offset + chunk.count == static_cast<int64_t>(request->prompt.size());
         Tensor next;
         if (finished)
-            next = mfq::engine::sample_logits(
+            next = tyloi::engine::sample_logits(
                 *request->sampler,
                 model_.logits_from_hidden(model_.last_hidden(std::move(hidden))).reshape({1, -1}),
                 request->counts, request->token_constraint);
@@ -197,13 +197,13 @@ int64_t BatchOps::prefill_batch_token_budget() const {
     return runtime_options::batch_packed_prefill_token_budget();
 }
 
-std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill_batch(
-    const std::vector<std::pair<std::shared_ptr<Request>, mfq::engine::PrefillChunk>>& items) {
+std::vector<tyloi::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill_batch(
+    const std::vector<std::pair<std::shared_ptr<Request>, tyloi::engine::PrefillChunk>>& items) {
     CudaScope guard(execution_.config.layer_placement.primary_device(), execution_.executor().contexts());
     qwen4_release_decode_graphs(model_, nullptr);
     model_.adapter_begin_forward(false);
     release_moe_decode_buffers(execution_.weights.moe);
-    std::vector<mfq::engine::PrefillBatchResult<Sample>> result(items.size());
+    std::vector<tyloi::engine::PrefillBatchResult<Sample>> result(items.size());
     std::vector<std::size_t> ready;
     for (std::size_t row = 0; row < items.size(); ++row) {
         try {
@@ -222,8 +222,8 @@ std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill
         try {
             if (model_.reserve_kv_workspace)
                 model_.reserve_kv_workspace(growth);
-        } catch (const mfq::engine::InferenceInputError& error) {
-            if (error.code != mfq::engine::InferenceInputErrorCode::ContextLength)
+        } catch (const tyloi::engine::InferenceInputError& error) {
+            if (error.code != tyloi::engine::InferenceInputErrorCode::ContextLength)
                 throw;
             if (rows.size() == 1) {
                 result[rows.front()].failure = std::current_exception();
@@ -263,12 +263,12 @@ std::vector<mfq::engine::PrefillBatchResult<BatchOps::Sample>> BatchOps::prefill
             }
             std::vector<Tensor> next(items.size());
             if (!last.empty()) {
-                auto logits = model_.logits_from_hidden(mfq_tensor_backend::cat(last, 0))
+                auto logits = model_.logits_from_hidden(::tyloi::cuda::cat(last, 0))
                                   .reshape({int64_t(last.size()), -1});
                 for (std::size_t i = 0; i < finished.size(); ++i) {
                     const auto row = finished[i];
                     const auto& request = items[row].first;
-                    next[row] = mfq::engine::sample_logits(*request->sampler, logits.narrow(0, i, 1),
+                    next[row] = tyloi::engine::sample_logits(*request->sampler, logits.narrow(0, i, 1),
                                               request->counts, request->token_constraint);
                 }
             }
@@ -339,12 +339,12 @@ BatchOps::Decoded BatchOps::decode(State& state) {
         caches.push_back(request->cache.get());
         tokens.push_back(request->pending_token);
     }
-    auto host_ids = mfq_tensor_backend::tensor(
+    auto host_ids = ::tyloi::cuda::tensor(
                         tokens,
-                        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
+                        ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
                         .reshape({-1, 1});
-    auto ids = host_ids.to(mfq_tensor_backend::Device(
-        mfq_tensor_backend::kCUDA, execution_.config.layer_placement.primary_device()));
+    auto ids = host_ids.to(::tyloi::Device(
+        ::tyloi::kCUDA, execution_.config.layer_placement.primary_device()));
     CacheScope moe_cache_scope(
         execution_.executor().mode().ffn.batch_serial, tokens.size() > 8);
     const bool greedy =
@@ -366,17 +366,17 @@ BatchOps::Decoded BatchOps::decode(State& state) {
             !message.starts_with("CUDA VRAM limit exceeded:") &&
             !message.starts_with("CUDA pinned allocation failed:"))
             throw;
-        throw mfq::engine::InferenceInputError(
-            mfq::engine::InferenceInputErrorCode::ContextLength,
+        throw tyloi::engine::InferenceInputError(
+            tyloi::engine::InferenceInputErrorCode::ContextLength,
             "insufficient GPU or pinned RAM for the batch decode workspace; reduce concurrent requests");
     }
     auto logits = captured ? std::move(*captured)
                            : qwen4_batch_decode(model_, caches, std::move(ids), host_ids);
     Tensor greedy_tokens;
     if (greedy) {
-        greedy_tokens = captured ? logits.to(mfq_tensor_backend::kCPU).contiguous()
+        greedy_tokens = captured ? logits.to(::tyloi::kCPU).contiguous()
                                  : sample_greedy_cuda(logits.contiguous())
-                                       .to(mfq_tensor_backend::kCPU)
+                                       .to(::tyloi::kCPU)
                                        .contiguous();
         ++greedy_batches_;
     }
@@ -390,7 +390,7 @@ BatchOps::Sample BatchOps::sample(const std::shared_ptr<Request>& request,
     TYLOINFER_RUNTIME_CHECK(request->decode_row >= 0, "Flash-Next sampled an inactive row");
     if (decoded.greedy_tokens.defined())
         return {{}, decoded.greedy_tokens.data_ptr<int64_t>()[request->decode_row], {}};
-    auto next = mfq::engine::sample_logits(
+    auto next = tyloi::engine::sample_logits(
         *request->sampler, decoded.logits.narrow(0, request->decode_row, 1), request->counts,
         request->token_constraint);
     const auto token = next.item<int64_t>();
@@ -409,15 +409,15 @@ void BatchOps::recover(State& state) {
         discard_prefill(request);
 }
 
-} // namespace mfq::cuda::qwen4_exp
+} // namespace tyloi::cuda::qwen4_exp
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 
-std::unique_ptr<mfq::engine::Batch> make_batch(
+std::unique_ptr<tyloi::engine::Batch> make_batch(
     Qwen4CausalLm& model, CudaExecutionContext& execution,
     const CudaContinuousBatchConfig& config, std::int64_t chunk_size) {
-    return std::make_unique<mfq::engine::ContinuousBatch<qwen4_exp::BatchOps>>(
+    return std::make_unique<tyloi::engine::ContinuousBatch<qwen4_exp::BatchOps>>(
         chunk_size, config.prefill_token_budget, model, execution, config);
 }
 
-} // namespace mfq::cuda
+} // namespace tyloi::cuda

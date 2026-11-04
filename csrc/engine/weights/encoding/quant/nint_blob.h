@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace mfq {
+namespace tyloi {
 
 inline constexpr std::uint8_t kNintAdaptiveStorageFlag = 0x80;
 
@@ -61,4 +61,4 @@ Data unpack(const std::vector<uint8_t>& blob);
 
 } // namespace nint8
 
-} // namespace mfq
+} // namespace tyloi

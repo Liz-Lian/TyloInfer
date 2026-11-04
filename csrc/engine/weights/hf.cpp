@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::hf {
+namespace tyloi::hf {
 namespace {
 
 std::uint64_t checked_add(
@@ -256,4 +256,4 @@ Record experts(std::string name, const std::map<std::size_t, const Record*>& rec
     return aggregate;
 }
 
-} // namespace mfq::hf
+} // namespace tyloi::hf

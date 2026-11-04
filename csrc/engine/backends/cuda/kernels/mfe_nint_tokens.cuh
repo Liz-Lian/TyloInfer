@@ -1,7 +1,7 @@
 #pragma once
 
 // Register-only weight reuse for a group of tokens routed to one NINT expert.
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 template<int GroupSize,int Capacity,int Rows=2>
 __device__ __forceinline__ void nint_token_pair(const MfePackedProjection& d,int local,int first,

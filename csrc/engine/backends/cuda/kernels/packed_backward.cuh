@@ -218,15 +218,15 @@ inline void launch_float_gemm_nn(
 }
 
 inline void launch_dense_half_weight(
-        const mfq_tensor_backend::Tensor & output_gradient,
-        const mfq_tensor_backend::Tensor & half_weight,
-        mfq_tensor_backend::Tensor & input_gradient,
+        const ::tyloi::Tensor & output_gradient,
+        const ::tyloi::Tensor & half_weight,
+        ::tyloi::Tensor & input_gradient,
         int rows,
         int outputs,
         int width,
         cudaStream_t stream) {
     const auto dtype = output_gradient.scalar_type();
-    if (dtype == mfq_tensor_backend::kFloat16) {
+    if (dtype == ::tyloi::kFloat16) {
         launch_half_gemm_nn(
             reinterpret_cast<const __half *>(
                 output_gradient.data_ptr<mfq_half>()),
@@ -235,10 +235,10 @@ inline void launch_dense_half_weight(
             rows, outputs, width, stream);
         return;
     }
-    if (dtype == mfq_tensor_backend::kBFloat16) {
-        auto half_gradient = mfq_tensor_backend::empty(
+    if (dtype == ::tyloi::kBFloat16) {
+        auto half_gradient = ::tyloi::cuda::empty(
             {rows, outputs}, half_weight.options());
-        auto half_result = mfq_tensor_backend::empty(
+        auto half_result = ::tyloi::cuda::empty(
             {rows, width}, half_weight.options());
         launch_cast<__half, __nv_bfloat16>(
             reinterpret_cast<const __nv_bfloat16 *>(
@@ -257,9 +257,9 @@ inline void launch_dense_half_weight(
             static_cast<int64_t>(rows) * width, stream);
         return;
     }
-    auto float_weight = mfq_tensor_backend::empty(
+    auto float_weight = ::tyloi::cuda::empty(
         {outputs, width}, half_weight.options().dtype(
-            mfq_tensor_backend::kFloat32));
+            ::tyloi::kFloat32));
     launch_cast<float, __half>(
         reinterpret_cast<const __half *>(half_weight.data_ptr<mfq_half>()),
         float_weight.data_ptr<float>(),

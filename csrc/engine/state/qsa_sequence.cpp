@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 QsaKvSequence::QsaKvSequence(
     std::shared_ptr<QsaKvStore> store,
@@ -154,4 +154,4 @@ void QsaKvSequenceSnapshot::read_rows(
     }
 }
 
-} // namespace mfq::cache
+} // namespace tyloi::cache

@@ -2,7 +2,7 @@
 
 #include "engine/ops.h"
 
-namespace mfq::models {
+namespace tyloi::models {
 
 struct ForwardOptions {
     std::int64_t kv_capacity = 0;
@@ -11,4 +11,4 @@ struct ForwardOptions {
     int primary = 0;
 };
 
-} // namespace mfq::models
+} // namespace tyloi::models

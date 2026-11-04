@@ -9,7 +9,7 @@
 #include <windows.h>
 #endif
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 namespace {
 void pin_worker_thread(int core) {
 #ifdef _WIN32
@@ -28,7 +28,7 @@ ExpertPool::ExpertPool(int workers, bool pin)
     if (!workers) workers = static_cast<int>(topology_.worker_cores.size());
     participants_ = workers + 1;
     const auto placements = topology_.worker_cores;
-    pool_ = std::make_unique<mfq::HostParallelPool>([placements, pin](std::size_t index) {
+    pool_ = std::make_unique<tyloi::HostParallelPool>([placements, pin](std::size_t index) {
         if (pin && index < placements.size()) {
             try { pin_worker_thread(placements[index]); }
             catch (const std::bad_alloc&) {} // Optional worker placement.
@@ -38,7 +38,7 @@ ExpertPool::ExpertPool(int workers, bool pin)
 ExpertPool::~ExpertPool() = default;
 void ExpertPool::rows(std::int64_t count,
         const std::function<void(std::int64_t, std::int64_t)>& callback,
-        mfq::HostParallelProfile* profile) {
+        tyloi::HostParallelProfile* profile) {
     if (count <= 0) { if(profile)*profile={}; return; }
     struct Restore {
         ThreadAffinity saved;
@@ -53,4 +53,4 @@ ExpertPool& expert_pool() {
     }());
     return pool;
 }
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

@@ -19,7 +19,7 @@
 #include <unistd.h>
 #endif
 
-namespace mfq::cache {
+namespace tyloi::cache {
 
 class DiskBudgetLock {
 public:

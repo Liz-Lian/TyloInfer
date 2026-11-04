@@ -7,8 +7,8 @@
 #include <array>
 #include <utility>
 
-mfq_tensor_backend::Tensor Block::forward_context(CudaExecutionContext &execution,
-                                                  mfq_tensor_backend::Tensor x,
+::tyloi::Tensor Block::forward_context(CudaExecutionContext &execution,
+                                                  ::tyloi::Tensor x,
                                                   const Context &context, const RopeCache &rope) {
     TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
                       "block does not support speculative verification");
@@ -17,11 +17,11 @@ mfq_tensor_backend::Tensor Block::forward_context(CudaExecutionContext &executio
 }
 
 void FullBlock::preallocate_kv() {
-    if (!mfq::cuda::runtime_options::kv_vram_preallocated() || cpu_offloaded || cache.defined()) return;
+    if (!tyloi::cuda::runtime_options::kv_vram_preallocated() || cpu_offloaded || cache.defined()) return;
     MfqCudaGuard guard(cuda_device);
     cache = KVCache(1, kv_heads, sliding ? attention_window : max_position_embeddings,
-        attention_head_dim, sliding, mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, cuda_device),
-        official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16, kv_quantization);
+        attention_head_dim, sliding, ::tyloi::Device(::tyloi::kCUDA, cuda_device),
+        official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16, kv_quantization);
 }
 
 void FullBlock::reset(int64_t B) {
@@ -30,18 +30,18 @@ void FullBlock::reset(int64_t B) {
     cache = KVCache();
 }
 
-mfq_tensor_backend::Tensor
-FullBlock::forward(CudaExecutionContext &execution, mfq_tensor_backend::Tensor x,
-                   mfq_tensor_backend::Tensor pos, int64_t cache_pos,
-                   const MfqOptional<mfq_tensor_backend::Tensor> &seq_len, const RopeCache &rope,
-                   const MfqOptional<mfq_tensor_backend::Tensor> &cache_positions,
-                   const MfqOptional<mfq_tensor_backend::Tensor> &attention_mask) {
+::tyloi::Tensor
+FullBlock::forward(CudaExecutionContext &execution, ::tyloi::Tensor x,
+                   ::tyloi::Tensor pos, int64_t cache_pos,
+                   const MfqOptional<::tyloi::Tensor> &seq_len, const RopeCache &rope,
+                   const MfqOptional<::tyloi::Tensor> &cache_positions,
+                   const MfqOptional<::tyloi::Tensor> &attention_mask) {
     return forward_impl(execution, std::move(x), std::move(pos), cache_pos, seq_len, rope,
                         cache_positions, attention_mask, 0, 0);
 }
 
-mfq_tensor_backend::Tensor FullBlock::forward_context(CudaExecutionContext &execution,
-                                                      mfq_tensor_backend::Tensor x,
+::tyloi::Tensor FullBlock::forward_context(CudaExecutionContext &execution,
+                                                      ::tyloi::Tensor x,
                                                       const Context &context,
                                                       const RopeCache &rope) {
     TYLOINFER_RUNTIME_CHECK(context.confirmed_prefix == 0 || supports_speculation(),
@@ -52,14 +52,14 @@ mfq_tensor_backend::Tensor FullBlock::forward_context(CudaExecutionContext &exec
                         context.decode_attention_parts);
 }
 
-mfq_tensor_backend::Tensor FullBlock::forward_impl(
-    CudaExecutionContext &execution, mfq_tensor_backend::Tensor x, mfq_tensor_backend::Tensor pos,
-    int64_t cache_pos, const MfqOptional<mfq_tensor_backend::Tensor> &seq_len,
-    const RopeCache &rope, const MfqOptional<mfq_tensor_backend::Tensor> &cache_positions,
-    const MfqOptional<mfq_tensor_backend::Tensor> &attention_mask, int64_t planned_kv_length,
+::tyloi::Tensor FullBlock::forward_impl(
+    CudaExecutionContext &execution, ::tyloi::Tensor x, ::tyloi::Tensor pos,
+    int64_t cache_pos, const MfqOptional<::tyloi::Tensor> &seq_len,
+    const RopeCache &rope, const MfqOptional<::tyloi::Tensor> &cache_positions,
+    const MfqOptional<::tyloi::Tensor> &attention_mask, int64_t planned_kv_length,
     int64_t decode_attention_parts) {
     const int64_t B = x.size(0), T = x.size(1), H = x.size(2);
-    const mfq::cuda::AttentionStep step{
+    const tyloi::cuda::AttentionStep step{
         std::move(pos), seq_len, cache_positions, attention_mask,
         cache_pos, planned_kv_length, decode_attention_parts};
     const auto kl_capacity = execution.executor().mmq().kv_cache_capacity;
@@ -69,36 +69,36 @@ mfq_tensor_backend::Tensor FullBlock::forward_impl(
     if (!cache.defined()) {
         cache = KVCache(x.size(0), kv_heads, capacity,
             attention_head_dim, sliding, x.device(),
-            official_bf16 ? mfq_tensor_backend::kBFloat16 : mfq_tensor_backend::kFloat16,
+            official_bf16 ? ::tyloi::kBFloat16 : ::tyloi::kFloat16,
             kv_quantization);
     }
     cache.quantization = kv_quantization;
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
     const auto mode = execution.executor().forward_mode(execution.config.layer_placement.primary_device()).ffn;
-    std::array<mfq::Tensor, 2> attention;
+    std::array<tyloi::Tensor, 2> attention;
     {
-        auto scope = mfq::cuda::Executor::current().enter(mode);
-        attention = mfq::cuda::FullAttention::forward(
+        auto scope = tyloi::cuda::Executor::current().enter(mode);
+        attention = tyloi::cuda::FullAttention::forward(
             std::move(x), step, cache.view(), rope.view(),
             layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
     }
 #else
-    auto attention = mfq::cuda::FullAttention::forward(
+    auto attention = tyloi::cuda::FullAttention::forward(
         execution.executor().projector(execution.executor().mode().ffn, model_parallel_primary_device(execution.config)), execution.executor().profiler(), execution.executor().options().attention,
         std::move(x), step, cache.view(), execution.executor().attention_scratch()[this], rope,
         layer == execution.executor().mode().trace_layer ? execution.executor().mode().trace : nullptr);
 #endif
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-    return forward_ffn(execution, mfq_tensor_backend::Tensor(std::move(attention[0])),
-                       mfq_tensor_backend::Tensor(std::move(attention[1])), B, T, H);
+    return forward_ffn(execution, std::move(attention[0]),
+                       std::move(attention[1]), B, T, H);
 #else
     return forward_ffn(execution, std::move(attention[0]), std::move(attention[1]), B, T, H);
 #endif
 }
 
-mfq_tensor_backend::Tensor FullBlock::forward_ffn(
-    CudaExecutionContext& execution, mfq_tensor_backend::Tensor residual,
-    mfq_tensor_backend::Tensor output, int64_t, int64_t, int64_t) {
+::tyloi::Tensor FullBlock::forward_ffn(
+    CudaExecutionContext& execution, ::tyloi::Tensor residual,
+    ::tyloi::Tensor output, int64_t, int64_t, int64_t) {
     auto executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     return executor->full_ffn(
         ffn, ffn_norm, *this, std::move(residual), std::move(output),

@@ -6,9 +6,9 @@
 #include <cuda_runtime.h>
 #include <cstdlib>
 
-namespace mfq::cuda::warp_multi_sum {
+namespace tyloi::cuda::warp_multi_sum {
 inline bool enabled() {
-    const auto* setting=mfq::cuda::env_lookup("TYLOINFER_CUDA_WARP_MULTI_SUM");
+    const auto* setting=tyloi::cuda::env_lookup("TYLOINFER_CUDA_WARP_MULTI_SUM");
     return setting && setting[0]=='1' && setting[1]=='\0';
 }
 template<int Offset>

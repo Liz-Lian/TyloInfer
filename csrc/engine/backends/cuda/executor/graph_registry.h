@@ -8,7 +8,7 @@
 #include <string>
 #include <cuda_runtime_api.h>
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 // Host registration changes may synchronize the device. Keep them outside
 // graph capture and replays that wait for CPU expert-loading callbacks.
 class HostRegistrationBlock {

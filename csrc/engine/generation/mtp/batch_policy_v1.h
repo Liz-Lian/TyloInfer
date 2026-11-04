@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::engine::mtp::v1 {
+namespace tyloi::engine::mtp::v1 {
 
 class BatchDepthPolicy {
 public:
@@ -160,4 +160,4 @@ private:
     std::map<Key, Verdict> verdicts_;
 };
 
-} // namespace mfq::engine::mtp::v1
+} // namespace tyloi::engine::mtp::v1

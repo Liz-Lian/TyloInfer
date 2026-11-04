@@ -25,24 +25,23 @@
 #include <utility>
 #include <vector>
 
-namespace mfq::cuda::commands {
+namespace tyloi::cuda::commands {
 namespace {
-namespace tb = mfq_tensor_backend;
 
 template <typename Model>
 Model load_reference_model(CudaExecutionContext& execution,
                            const CudaLoadOptions& options,
-                           const std::shared_ptr<const mfq::ModelSource>& source) {
-    if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
+                           const std::shared_ptr<const tyloi::ModelSource>& source) {
+    if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
         CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
-        mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
+        tyloi::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
              execution.config.tensor_parallel, moe_parallel_config(execution.config)},
             execution.weights, execution.executor().tq()};
-        auto model = mfq::cuda::qwen35::load(
+        auto model = tyloi::cuda::qwen35::load(
             source, weights, execution.config.layer_placement, execution.config.yarn,
             execution.config.dense_cpu_layer_count,
-            mfq::cuda::qwen35::LoadOptions{
+            tyloi::cuda::qwen35::LoadOptions{
                 .config_path = options.config_path,
                 .context_size = options.context_size,
                 .gpu_layers = execution.config.n_gpu_layers,
@@ -57,16 +56,16 @@ Model load_reference_model(CudaExecutionContext& execution,
         return model;
     } else {
         CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
-        auto definition = mfq::models::config_json(*source, options.config_path);
+        auto definition = tyloi::models::config_json(*source, options.config_path);
         definition = configure_yarn(execution.config.yarn, execution.config.yarn_context_extension,
-            std::move(definition), mfq::models::graph(*source).backbone, options.context_size);
-        auto model = mfq::cuda::gemma4::read(source, definition, options.context_size);
-        mfq::cuda::weight_loader::Loader weights{*source, execution.config.weights,
+            std::move(definition), tyloi::models::graph(*source).backbone, options.context_size);
+        auto model = tyloi::cuda::gemma4::read(source, definition, options.context_size);
+        tyloi::cuda::weight_loader::Loader weights{*source, execution.config.weights,
             {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
              execution.config.tensor_parallel, moe_parallel_config(execution.config)},
             execution.weights, execution.executor().tq()};
         execution.config.dense_cpu_layer_count = 0;
-        mfq::cuda::gemma4::load(model, weights, execution.config.layer_placement,
+        tyloi::cuda::gemma4::load(model, weights, execution.config.layer_placement,
             execution.config.n_gpu_layers, execution.config.expert_parallel.enabled(), false, false);
         if (moe_expert_cache_has_sources(execution.weights.moe) &&
             !moe_expert_cache_finalized(execution.weights.moe))
@@ -88,30 +87,30 @@ std::string_view reference_layer_type(const Model& model, int index) {
 template <typename Model> struct ReferenceLayers {
     Model& model;
     CudaExecutionContext& execution;
-    const mfq::cuda::weight_loader::Loader& weights;
+    const tyloi::cuda::weight_loader::Loader& weights;
     bool resident = false;
     using Layer = typename std::remove_reference_t<decltype(model.layers)>::value_type;
-    using LayerState = std::conditional_t<std::is_same_v<Model, mfq::cuda::qwen35::Model>,
-                                          mfq::cuda::qwen35::LayerState,
+    using LayerState = std::conditional_t<std::is_same_v<Model, tyloi::cuda::qwen35::Model>,
+                                          tyloi::cuda::qwen35::LayerState,
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-                                          mfq::state::KvView>;
+                                          tyloi::state::KvView>;
 #else
                                           KVCache>;
 #endif
     std::optional<Layer> streamed;
     LayerState state;
-    std::unique_ptr<mfq::cuda::Executor> executor;
+    std::unique_ptr<tyloi::cuda::Executor> executor;
 
     Layer load_layer(int index) {
         const int device = execution.config.layer_placement.device_for_layer(index);
         const bool cpu = index < execution.config.dense_cpu_layer_count;
         auto placed = weights.for_layer(device, cpu);
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-            return mfq::cuda::qwen35::load_layer(placed, model.config, index,
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
+            return tyloi::cuda::qwen35::load_layer(placed, model.config, index,
                 std::string(reference_layer_type(model, index)),
                 execution.config.tensor_parallel_mirror_linear_attention_scalars);
         else
-            return mfq::cuda::gemma4::load_layer(placed, model.config, index,
+            return tyloi::cuda::gemma4::load_layer(placed, model.config, index,
                 std::string(reference_layer_type(model, index)));
     }
 
@@ -128,24 +127,24 @@ template <typename Model> struct ReferenceLayers {
     }
 
     void reset(int index) {
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
             const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
                                          : *streamed;
-            if (std::holds_alternative<mfq::cuda::qwen35::Full>(layer.weights))
+            if (std::holds_alternative<tyloi::cuda::qwen35::Full>(layer.weights))
                 state.template emplace<KVCache>();
             else
-                state.template emplace<mfq::cuda::qwen35::LinearState>();
+                state.template emplace<tyloi::cuda::qwen35::LinearState>();
         } else {
             state = {};
         }
         if (!executor) executor = execution.executor().fork(model_parallel_primary_device(execution.config));
     }
 
-    tb::Tensor forward(int index, tb::Tensor input, const tb::Tensor& positions) {
+    ::tyloi::Tensor forward(int index, ::tyloi::Tensor input, const ::tyloi::Tensor& positions) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = executor->enter();
 #endif
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>) {
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>) {
             const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
                                          : *streamed;
             const auto* rope = &model.rope;
@@ -154,26 +153,26 @@ template <typename Model> struct ReferenceLayers {
                 const auto it = model.device_ropes.find(layer.device);
                 if (it != model.device_ropes.end()) rope = &it->second;
             }
-            const mfq::cuda::AttentionStep step{positions, mfq_nullopt, mfq_nullopt,
+            const tyloi::cuda::AttentionStep step{positions, mfq_nullopt, mfq_nullopt,
                                                 mfq_nullopt, 0, 0, 0};
-            return mfq::cuda::qwen35::forward_layer(
+            return tyloi::cuda::qwen35::forward_layer(
                 execution.executor().collectives(), layer, state, *executor, 0, std::move(input), step,
                 0, *rope, execution.executor().forward_mode(execution.config.layer_placement.primary_device()));
         } else {
             const auto& layer = resident ? model.layers.at(static_cast<std::size_t>(index))
                                          : *streamed;
             MfqCudaGuard guard(layer.device);
-            const mfq::cuda::AttentionStep step{
+            const tyloi::cuda::AttentionStep step{
                 execution.executor().collectives().copy(positions, layer.device), mfq_nullopt, mfq_nullopt,
                 mfq_nullopt, 0, 0, 0};
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            auto hidden = mfq::cuda::gemma4::forward_layer(layer, state,
+            auto hidden = tyloi::cuda::gemma4::forward_layer(layer, state,
                 execution.executor().collectives().copy(std::move(input), layer.device), step,
-                mfq::cuda::forward_options(execution.executor().forward_mode(execution.config.layer_placement.primary_device())));
+                tyloi::cuda::forward_options(execution.executor().forward_mode(execution.config.layer_placement.primary_device())));
             return execution.executor().collectives().copy(
-                tb::Tensor(std::move(hidden)), execution.config.layer_placement.primary_device());
+                std::move(hidden), execution.config.layer_placement.primary_device());
 #else
-            auto hidden = mfq::cuda::gemma4::forward_layer(layer, state, *executor, 0,
+            auto hidden = tyloi::cuda::gemma4::forward_layer(layer, state, *executor, 0,
                 execution.executor().collectives().copy(std::move(input), layer.device), step, execution.executor().forward_mode(execution.config.layer_placement.primary_device()));
             return execution.executor().collectives().copy(std::move(hidden), execution.config.layer_placement.primary_device());
 #endif
@@ -183,43 +182,43 @@ template <typename Model> struct ReferenceLayers {
     void release() {
         model.layers.clear();
         streamed.reset();
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
             state.template emplace<KVCache>();
         else
             state = {};
     }
 
-    tb::Tensor finalize(tb::Tensor hidden, std::int64_t batch, std::int64_t tokens) {
+    ::tyloi::Tensor finalize(::tyloi::Tensor hidden, std::int64_t batch, std::int64_t tokens) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = executor->enter();
 #endif
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-            return mfq::cuda::qwen35::normalize(model, *executor,
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
+            return tyloi::cuda::qwen35::normalize(model, *executor,
                                                 std::move(hidden), batch, tokens);
         else
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return tb::Tensor(model.normalize(std::move(hidden), batch, tokens));
+            return ::tyloi::Tensor(model.normalize(std::move(hidden), batch, tokens));
 #else
-            return mfq::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
+            return tyloi::cuda::gemma4::normalize(model, *executor, std::move(hidden), batch, tokens);
 #endif
     }
 
-    tb::Tensor softcap(tb::Tensor logits) {
+    ::tyloi::Tensor softcap(::tyloi::Tensor logits) {
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
         auto scope = executor->enter();
 #endif
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-            return mfq::cuda::qwen35::softcap(model, *executor, std::move(logits));
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
+            return tyloi::cuda::qwen35::softcap(model, *executor, std::move(logits));
         else
 #ifdef TYLOINFER_NATIVE_CUDA_RUNTIME
-            return tb::Tensor(model.softcap(std::move(logits)));
+            return ::tyloi::Tensor(model.softcap(std::move(logits)));
 #else
-            return mfq::cuda::gemma4::softcap(model, *executor, std::move(logits));
+            return tyloi::cuda::gemma4::softcap(model, *executor, std::move(logits));
 #endif
     }
 };
 
-tb::Tensor rows(const mfq::ModelSource& source, const std::string& name,
+::tyloi::Tensor rows(const tyloi::ModelSource& source, const std::string& name,
                 std::int64_t begin, std::int64_t count) {
     const auto* record = source.find_tensor(name);
     if (!record || !record->shape || record->shape->size() != 2)
@@ -227,13 +226,13 @@ tb::Tensor rows(const mfq::ModelSource& source, const std::string& name,
     const auto& shape = *record->shape;
     if (begin < 0 || count < 1 || begin > shape[0] - count)
         throw std::runtime_error("reference matrix row range is invalid");
-    tb::ScalarType dtype;
+    ::tyloi::ScalarType dtype;
     std::size_t bytes;
-    if (record->dtype == "F16") { dtype = tb::kFloat16; bytes = 2; }
-    else if (record->dtype == "BF16") { dtype = tb::kBFloat16; bytes = 2; }
-    else if (record->dtype == "F32") { dtype = tb::kFloat32; bytes = 4; }
+    if (record->dtype == "F16") { dtype = ::tyloi::kFloat16; bytes = 2; }
+    else if (record->dtype == "BF16") { dtype = ::tyloi::kBFloat16; bytes = 2; }
+    else if (record->dtype == "F32") { dtype = ::tyloi::kFloat32; bytes = 4; }
     else throw std::runtime_error("reference embedding/output matrix requires a floating source: " + name);
-    auto result = tb::empty({count, shape[1]}, tb::TensorOptions().device(tb::kCPU).dtype(dtype));
+    auto result = ::tyloi::cuda::empty({count, shape[1]}, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(dtype));
     source.read_range_into(name, sizeof(std::uint32_t) + 2 * sizeof(std::int64_t) + begin * shape[1] * bytes,
                           reinterpret_cast<std::byte*>(result.data_ptr()), count * shape[1] * bytes);
     return result;
@@ -255,7 +254,7 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     if (!tokens_file || tokens_file.peek() != std::char_traits<char>::eof())
         throw std::runtime_error("invalid native reference token payload");
     if (std::filesystem::exists(output)) throw std::runtime_error("reference scratch output already exists");
-    auto source = mfq::open_model_source(options.model_path);
+    auto source = tyloi::open_model_source(options.model_path);
     auto model = load_reference_model<Model>(execution, options, source);
     const auto& source_data = *source;
     const auto width = model.config.hidden_size;
@@ -267,8 +266,8 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
     if (!hidden) throw std::runtime_error("cannot create reference hidden-state scratch");
     const auto hidden_bytes = std::uint64_t(context) * width * sizeof(float);
     std::vector<float> buffer(std::size_t(context) * width);
-    auto store = [&](std::uint32_t chunk, tb::Tensor value) {
-        auto cpu = value.to(tb::kCPU, tb::kFloat32).contiguous();
+    auto store = [&](std::uint32_t chunk, ::tyloi::Tensor value) {
+        auto cpu = value.to(::tyloi::kCPU, ::tyloi::kFloat32).contiguous();
         hidden.seekp(chunk * hidden_bytes);
         hidden.write(reinterpret_cast<const char*>(cpu.template data_ptr<float>()), hidden_bytes);
         hidden.flush();
@@ -278,24 +277,24 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
         hidden.seekg(chunk * hidden_bytes);
         hidden.read(reinterpret_cast<char*>(buffer.data()), hidden_bytes);
         if (!hidden) throw std::runtime_error("cannot read reference hidden-state scratch");
-        return tb::from_blob(buffer.data(), {1, context, width}, tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat32))
-            .to(tb::kCUDA, tb::kFloat16).contiguous();
+        return ::tyloi::cuda::from_blob(buffer.data(), {1, context, width}, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat32))
+            .to(::tyloi::kCUDA, ::tyloi::kFloat16).contiguous();
     };
     for (std::uint32_t chunk = 0; chunk < chunks; ++chunk) {
-        auto embedded = tb::empty({1, context, width}, tb::TensorOptions().device(tb::kCPU).dtype(tb::kFloat16));
+        auto embedded = ::tyloi::cuda::empty({1, context, width}, ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat16));
         for (std::uint32_t position = 0; position < context; ++position) {
             auto row = rows(source_data, "model.token_embedding.weight",
                             tokens[std::size_t(chunk) * context + position], 1)
-                           .to(tb::kFloat16);
+                           .to(::tyloi::kFloat16);
             embedded.narrow(1, position, 1).copy_(row.reshape({1, 1, width}));
         }
-        if constexpr (std::is_same_v<Model, mfq::cuda::qwen35::Model>)
-            store(chunk, embedded.to(tb::kCUDA, tb::kFloat16).contiguous());
+        if constexpr (std::is_same_v<Model, tyloi::cuda::qwen35::Model>)
+            store(chunk, embedded.to(::tyloi::kCUDA, ::tyloi::kFloat16).contiguous());
         else
-            store(chunk, embedded.to(tb::kCUDA) * model.embed_scale);
+            store(chunk, embedded.to(::tyloi::kCUDA) * model.embed_scale);
     }
-    auto positions = tb::arange(0, context, tb::TensorOptions().device(tb::kCUDA).dtype(tb::kInt64));
-    mfq::cuda::weight_loader::Loader weights{source_data, execution.config.weights,
+    auto positions = ::tyloi::cuda::arange(0, context, ::tyloi::TensorOptions().device(::tyloi::kCUDA).dtype(::tyloi::kInt64));
+    tyloi::cuda::weight_loader::Loader weights{source_data, execution.config.weights,
         {execution.config.layer_placement.primary_device(), false, execution.config.drop_file_cache,
          execution.config.tensor_parallel, moe_parallel_config(execution.config)},
         execution.weights, execution.executor().tq()};
@@ -338,13 +337,13 @@ int generate(CudaExecutionContext& execution, const CudaLoadOptions& options,
         auto normalized = layers.finalize(restore(chunk), 1, context);
         for (std::int64_t begin = 0; begin < scored; begin += 32) {
             const auto count = std::min<std::int64_t>(32, scored - begin);
-            auto value = normalized.narrow(1, first + begin, count).reshape({count, width}).to(tb::kFloat16);
+            auto value = normalized.narrow(1, first + begin, count).reshape({count, width}).to(::tyloi::kFloat16);
             std::vector<float> row_logits(count * vocab);
             for (std::int64_t row = 0; row < vocab; row += 4096) {
                 const auto rows_count = std::min<std::int64_t>(4096, vocab - row);
-                auto weight = rows(source_data, head, row, rows_count).to(tb::kCUDA, tb::kFloat16);
-                auto result = layers.softcap(tb::matmul(value, weight.transpose(0, 1)))
-                    .to(tb::kCPU, tb::kFloat32).contiguous();
+                auto weight = rows(source_data, head, row, rows_count).to(::tyloi::kCUDA, ::tyloi::kFloat16);
+                auto result = layers.softcap(::tyloi::cuda::matmul(value, weight.transpose(0, 1)))
+                    .to(::tyloi::kCPU, ::tyloi::kFloat32).contiguous();
                 for (std::int64_t token = 0; token < count; ++token)
                     std::memcpy(row_logits.data() + token * vocab + row,
                                 result.template data_ptr<float>() + token * rows_count, rows_count * sizeof(float));
@@ -381,21 +380,21 @@ int run_reference(int argc, char** argv) {
             usage_error("native reference requires --model, --ctx-size, --reference-input and --reference-output");
         if (!std::filesystem::is_directory(options.model_path))
             usage_error("native reference requires an original HF model directory");
-        std::shared_ptr<mfq::cuda::KvMemoryManager> kv;
-        mfq::cuda::RoutedCache weights;
-        std::shared_ptr<mfq::cuda::KvOffloadStore> offload;
-        auto [execution_config, numeric_options] = mfq::cuda::load_cuda_execution_config();
-        auto executor = std::make_unique<mfq::cuda::Executor>(std::move(numeric_options), 0);
+        std::shared_ptr<tyloi::cuda::KvMemoryManager> kv;
+        tyloi::cuda::RoutedCache weights;
+        std::shared_ptr<tyloi::cuda::KvOffloadStore> offload;
+        auto [execution_config, numeric_options] = tyloi::cuda::load_cuda_execution_config();
+        auto executor = std::make_unique<tyloi::cuda::Executor>(std::move(numeric_options), 0);
         CudaExecutionContext execution(*executor, std::move(execution_config), weights, kv, offload);
         CudaScope scope(execution.config.layer_placement.primary_device(), execution.executor().contexts());
         internal::setup_cuda_load(options, execution.config, *executor, weights, kv, offload);
-        tb::NoGradGuard guard;
-        auto source = mfq::open_model_source(options.model_path);
-        const auto backbone = mfq::models::graph(*source).backbone;
+        ::tyloi::cuda::NoGradGuard guard;
+        auto source = tyloi::open_model_source(options.model_path);
+        const auto backbone = tyloi::models::graph(*source).backbone;
         if (backbone == "qwen3_5" || backbone == "generic_qwen")
-            return generate<mfq::cuda::qwen35::Model>(execution, options, input, output, resident);
-        if (backbone == "gemma4") return generate<mfq::cuda::gemma4::Model>(execution, options, input, output, resident);
+            return generate<tyloi::cuda::qwen35::Model>(execution, options, input, output, resident);
+        if (backbone == "gemma4") return generate<tyloi::cuda::gemma4::Model>(execution, options, input, output, resident);
         throw std::runtime_error("native reference architecture is unsupported: " + backbone);
     });
 }
-} // namespace mfq::cuda::commands
+} // namespace tyloi::cuda::commands

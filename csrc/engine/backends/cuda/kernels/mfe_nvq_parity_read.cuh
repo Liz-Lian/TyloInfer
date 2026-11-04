@@ -2,7 +2,7 @@
 #include "nvq_e8_dense_group.cuh"
 #include "nvq_d4_dense_group.cuh"
 
-namespace mfq::cuda {
+namespace tyloi::cuda {
 namespace {
 template<int Segment,int Bits>
 __device__ __forceinline__ int2 parity_read_e8(

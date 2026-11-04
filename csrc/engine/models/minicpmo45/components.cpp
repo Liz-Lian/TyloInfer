@@ -15,10 +15,10 @@
 #include <vector>
 
 MiniCPMO45Runtime MiniCPMO45Runtime::load(
-        const mfq::cuda::minicpmo45::text::Model& language,
-        mfq::cuda::minicpmo45::text::State& language_state,
-        mfq::cuda::Executor& language_executor,
-        const mfq::cuda::weight_loader::Loader& weights,
+        const tyloi::cuda::minicpmo45::text::Model& language,
+        tyloi::cuda::minicpmo45::text::State& language_state,
+        tyloi::cuda::Executor& language_executor,
+        const tyloi::cuda::weight_loader::Loader& weights,
         CudaExecutionContext& execution) {
     auto &placement = execution.config.layer_placement;
     MfqCudaGuard guard(placement.primary_device());
@@ -27,12 +27,12 @@ MiniCPMO45Runtime MiniCPMO45Runtime::load(
             MiniCPMO45VisionEncoder::load(weights),
             MiniCPMO45Resampler::load(weights),
             MiniCPMO45AudioEncoder::load(weights),
-            mfq::cuda::minicpmo45::Tts::load(weights),
+            tyloi::cuda::minicpmo45::Tts::load(weights),
             execution.executor().fork(model_parallel_primary_device(execution.config)), execution.executor().forward_mode(execution.config.layer_placement.primary_device()),
             projector};
 }
 
-namespace mfq::cuda::minicpmo45 {
+namespace tyloi::cuda::minicpmo45 {
 
 struct Components::State {
     MiniCPMO45Runtime runtime;
@@ -53,52 +53,52 @@ Components::Components(const text::Model& language, text::State& language_state,
 
 Components::~Components() = default;
 
-mfq::StepSequence<PreparedPrompt> Components::prepare(
+tyloi::StepSequence<PreparedPrompt> Components::prepare(
         const std::vector<int64_t>& prompt, const MfqMultimodalInput& vision) {
     const auto cpu_i64 =
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCPU);
+        ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCPU);
     const auto cuda_i64 =
-        mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64).device(mfq_tensor_backend::kCUDA);
-    auto input_ids = mfq_tensor_backend::tensor(prompt, cuda_i64)
+        ::tyloi::TensorOptions().dtype(::tyloi::kInt64).device(::tyloi::kCUDA);
+    auto input_ids = ::tyloi::cuda::tensor(prompt, cuda_i64)
         .reshape({1, -1}).contiguous();
-    mfq_tensor_backend::Tensor pixels;
-    mfq_tensor_backend::Tensor patch_mask;
-    mfq_tensor_backend::Tensor target_sizes;
-    mfq_tensor_backend::Tensor image_bounds;
+    ::tyloi::Tensor pixels;
+    ::tyloi::Tensor patch_mask;
+    ::tyloi::Tensor target_sizes;
+    ::tyloi::Tensor image_bounds;
     if (!vision.image_bounds.empty()) {
-        pixels = mfq_tensor_backend::from_blob(
+        pixels = ::tyloi::cuda::from_blob(
             const_cast<float *>(vision.pixel_values.data()),
             vision.pixel_shape,
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32).device(mfq_tensor_backend::kCPU))
+            ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCPU))
             .clone();
-        patch_mask = mfq_tensor_backend::from_blob(
+        patch_mask = ::tyloi::cuda::from_blob(
             const_cast<uint8_t *>(vision.patch_mask.data()),
             vision.patch_mask_shape,
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kUInt8).device(mfq_tensor_backend::kCPU))
-            .clone().to(mfq_tensor_backend::kBool);
-        target_sizes = mfq_tensor_backend::from_blob(
+            ::tyloi::TensorOptions().dtype(::tyloi::kUInt8).device(::tyloi::kCPU))
+            .clone().to(::tyloi::kBool);
+        target_sizes = ::tyloi::cuda::from_blob(
             const_cast<int32_t *>(vision.target_sizes.data()),
             vision.target_sizes_shape,
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt32).device(mfq_tensor_backend::kCPU))
+            ::tyloi::TensorOptions().dtype(::tyloi::kInt32).device(::tyloi::kCPU))
             .clone();
-        image_bounds = mfq_tensor_backend::from_blob(
+        image_bounds = ::tyloi::cuda::from_blob(
             const_cast<int64_t *>(vision.image_bounds.data()),
             std::vector<int64_t>{
                 static_cast<int64_t>(vision.image_bounds.size() / 4), 4},
             cpu_i64).clone();
     }
-    mfq_tensor_backend::Tensor audio_features;
-    mfq_tensor_backend::Tensor audio_lengths;
-    mfq_tensor_backend::Tensor audio_bounds;
+    ::tyloi::Tensor audio_features;
+    ::tyloi::Tensor audio_lengths;
+    ::tyloi::Tensor audio_bounds;
     if (!vision.audio_bounds.empty()) {
-        audio_features = mfq_tensor_backend::from_blob(
+        audio_features = ::tyloi::cuda::from_blob(
             const_cast<float *>(vision.audio_features.data()),
             vision.audio_features_shape,
-            mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32).device(mfq_tensor_backend::kCPU))
+            ::tyloi::TensorOptions().dtype(::tyloi::kFloat32).device(::tyloi::kCPU))
             .clone();
-        audio_lengths = mfq_tensor_backend::tensor(
+        audio_lengths = ::tyloi::cuda::tensor(
             vision.audio_lengths, cpu_i64).contiguous();
-        audio_bounds = mfq_tensor_backend::from_blob(
+        audio_bounds = ::tyloi::cuda::from_blob(
             const_cast<int64_t *>(vision.audio_bounds.data()),
             std::vector<int64_t>{
                 static_cast<int64_t>(vision.audio_bounds.size() / 4), 4},
@@ -106,10 +106,10 @@ mfq::StepSequence<PreparedPrompt> Components::prepare(
     }
 
 
-    co_yield mfq::StepState::advanced;
+    co_yield tyloi::StepState::advanced;
     auto encoding = state_->runtime.encode(input_ids, pixels, patch_mask,
         target_sizes, image_bounds, audio_features, audio_lengths, audio_bounds);
-    mfq::models::minicpmo45::MultimodalResult<mfq_tensor_backend::Tensor> result;
+    tyloi::models::minicpmo45::MultimodalResult<::tyloi::Tensor> result;
     while (auto step = encoding.next()) {
         if (step.value) result = std::move(*step.value);
         else co_yield step.state;
@@ -117,7 +117,7 @@ mfq::StepSequence<PreparedPrompt> Components::prepare(
     PreparedPrompt prepared;
     prepared.token_ids = prompt;
     prepared.embeddings = std::move(result.input_embeddings);
-    prepared.positions = mfq_tensor_backend::arange(static_cast<int64_t>(prompt.size()), cuda_i64);
+    prepared.positions = ::tyloi::cuda::arange(static_cast<int64_t>(prompt.size()), cuda_i64);
     co_yield std::move(prepared);
 }
 
@@ -182,12 +182,12 @@ void Components::start(const MfqDuplexSessionParams& parameters) {
 
         MfqCudaGuard guard(
             state_->runtime.execution.config.layer_placement.primary_device());
-        mfq_tensor_backend::manual_seed(static_cast<int64_t>(parameters.seed));
+        ::tyloi::cuda::manual_seed(static_cast<int64_t>(parameters.seed));
         mfq_cuda_manual_seed_all(parameters.seed);
         auto special_ids = MiniCPMO45DuplexSpecialIds::from_tensor(
-            mfq_tensor_backend::tensor(
+            ::tyloi::cuda::tensor(
                 parameters.special_ids,
-                mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64)));
+                ::tyloi::TensorOptions().dtype(::tyloi::kInt64)));
         if (state_->duplex_session) mfq_cuda_synchronize();
         state_->duplex_session.reset();
         state_->duplex_session.emplace(
@@ -207,16 +207,16 @@ void Components::start(const MfqDuplexSessionParams& parameters) {
 
         const auto ids_tensor = [](const std::vector<int64_t> & values) {
             return values.empty()
-                ? mfq_tensor_backend::Tensor()
-                : mfq_tensor_backend::tensor(
+                ? ::tyloi::Tensor()
+                : ::tyloi::cuda::tensor(
                     values,
-                    mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64));
+                    ::tyloi::TensorOptions().dtype(::tyloi::kInt64));
         };
-        mfq_tensor_backend::Tensor reference_features;
+        ::tyloi::Tensor reference_features;
         if (!parameters.reference_audio_features.empty()) {
-            reference_features = mfq_tensor_backend::tensor(
+            reference_features = ::tyloi::cuda::tensor(
                 parameters.reference_audio_features,
-                mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32))
+                ::tyloi::TensorOptions().dtype(::tyloi::kFloat32))
                 .reshape({1, 80, parameters.reference_audio_frames});
         }
         state_->duplex_session->prepare(
@@ -249,18 +249,18 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
             throw std::runtime_error(
                 "MiniCPM-o duplex session is not prepared");
         }
-        mfq_tensor_backend::Tensor audio_features;
+        ::tyloi::Tensor audio_features;
         if (has_audio) {
-            audio_features = mfq_tensor_backend::tensor(
+            audio_features = ::tyloi::cuda::tensor(
                 input.audio_features,
-                mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kFloat32))
+                ::tyloi::TensorOptions().dtype(::tyloi::kFloat32))
                 .reshape({1, 80, input.audio_frames});
         }
-        mfq_tensor_backend::Tensor text_ids;
+        ::tyloi::Tensor text_ids;
         if (has_text) {
-            text_ids = mfq_tensor_backend::tensor(
+            text_ids = ::tyloi::cuda::tensor(
                 input.text_tokens,
-                mfq_tensor_backend::TensorOptions().dtype(mfq_tensor_backend::kInt64))
+                ::tyloi::TensorOptions().dtype(::tyloi::kInt64))
                 .reshape({1, static_cast<int64_t>(input.text_tokens.size())});
         }
         const auto started = std::chrono::steady_clock::now();
@@ -275,12 +275,12 @@ MfqDuplexStepResult Components::step(const MfqDuplexStepInput& input) {
 
         MfqDuplexStepResult response;
         auto generated = result.generated_ids
-            .to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt64).contiguous().reshape({-1});
+            .to(::tyloi::kCPU, ::tyloi::kInt64).contiguous().reshape({-1});
         const auto * generated_data = generated.template data_ptr<int64_t>();
         response.generated_tokens.assign(
             generated_data, generated_data + generated.numel());
         auto codes = result.tts_codes
-            .to(mfq_tensor_backend::kCPU, mfq_tensor_backend::kInt32).contiguous().reshape({-1});
+            .to(::tyloi::kCPU, ::tyloi::kInt32).contiguous().reshape({-1});
         const auto * code_data = codes.template data_ptr<int32_t>();
         response.audio_tokens.assign(
             code_data, code_data + codes.numel());
@@ -306,4 +306,4 @@ void Components::stop() {
         state_->runtime.audio.reset();
         mfq_cuda_synchronize();
 }
-} // namespace mfq::cuda::minicpmo45
+} // namespace tyloi::cuda::minicpmo45

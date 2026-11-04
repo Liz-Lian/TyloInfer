@@ -15,7 +15,7 @@
 
 #include <functional>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // Engine private storage keeps device-specific types out of engine.h.
 struct Engine::Impl {
@@ -40,5 +40,5 @@ struct Engine::Impl {
     bool ready_ = false;
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine
 #endif

@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-namespace mfq {
+namespace tyloi {
 
 inline constexpr std::string_view kNintDtype = "NINT";
 inline constexpr std::string_view kMfeDtype = "MFE";
@@ -73,4 +73,4 @@ inline bool is_legacy_mfe_delta_magic(std::string_view magic) noexcept {
     return magic == "NID2";
 }
 
-} // namespace mfq
+} // namespace tyloi

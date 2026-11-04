@@ -15,12 +15,12 @@
 #include <numeric>
 #include <stdexcept>
 
-using namespace mfq::cuda::quant_format;
+using namespace tyloi::cuda::quant_format;
 
-mfq::mxfp4::Data select_mxfp4_cpu_rows(
-        const mfq::mxfp4::Data & source,
+tyloi::mxfp4::Data select_mxfp4_cpu_rows(
+        const tyloi::mxfp4::Data & source,
         const std::vector<int64_t> & rows) {
-    mfq::mxfp4::Data result;
+    tyloi::mxfp4::Data result;
     result.out = static_cast<int64_t>(rows.size());
     result.neuron_len = source.neuron_len;
     const size_t value_row = static_cast<size_t>(source.neuron_len / 2);
@@ -44,8 +44,8 @@ mfq::mxfp4::Data select_mxfp4_cpu_rows(
     return result;
 }
 
-mfq::mxfp4::Data slice_mxfp4_cpu(
-        const mfq::mxfp4::Data & source,
+tyloi::mxfp4::Data slice_mxfp4_cpu(
+        const tyloi::mxfp4::Data & source,
         TensorParallelAxis axis,
         int64_t begin,
         int64_t end) {
@@ -62,7 +62,7 @@ mfq::mxfp4::Data slice_mxfp4_cpu(
         throw std::runtime_error(
             "MXFP4 input shards must preserve 32-value scale blocks");
     }
-    mfq::mxfp4::Data result;
+    tyloi::mxfp4::Data result;
     result.out = source.out;
     result.neuron_len = end - begin;
     const size_t source_value_row =
@@ -90,8 +90,8 @@ mfq::mxfp4::Data slice_mxfp4_cpu(
     return result;
 }
 
-mfq::mxfp8::Data slice_mxfp8_cpu(
-        const mfq::mxfp8::Data & source,
+tyloi::mxfp8::Data slice_mxfp8_cpu(
+        const tyloi::mxfp8::Data & source,
         TensorParallelAxis axis,
         int64_t begin,
         int64_t end) {
@@ -107,7 +107,7 @@ mfq::mxfp8::Data slice_mxfp8_cpu(
         throw std::runtime_error(
             "MXFP8 tensor-parallel shards must preserve scale blocks");
     }
-    mfq::mxfp8::Data result;result.block_rows=source.block_rows;result.block_columns=source.block_columns;
+    tyloi::mxfp8::Data result;result.block_rows=source.block_rows;result.block_columns=source.block_columns;
     if (axis == TensorParallelAxis::Output) {
         result.out = end - begin;
         result.neuron_len = source.neuron_len;
@@ -158,7 +158,7 @@ mfq::mxfp8::Data slice_mxfp8_cpu(
 }
 
 Mxfp8Weight to_device_mxfp8(
-        const mfq::mxfp8::Data & source,
+        const tyloi::mxfp8::Data & source,
         bool cuda,
         int device) {
     Mxfp8Weight result;
@@ -174,7 +174,7 @@ Mxfp8Weight to_device_mxfp8(
         const int target_device = device >= 0
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
-        const auto target = mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, target_device);
+        const auto target = ::tyloi::Device(::tyloi::kCUDA, target_device);
         result.values = result.values.to(target, false, false).contiguous();
         result.scales = result.scales.to(target, false, false).contiguous();
     }
@@ -182,7 +182,7 @@ Mxfp8Weight to_device_mxfp8(
 }
 
 Mxfp4Weight to_device_mxfp4(
-        const mfq::mxfp4::Data & source, bool cuda, int device) {
+        const tyloi::mxfp4::Data & source, bool cuda, int device) {
     Mxfp4Weight result;
     result.out = source.out;
     result.neuron_len = source.neuron_len;
@@ -194,17 +194,17 @@ Mxfp4Weight to_device_mxfp4(
         const int target_device = device >= 0
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
-        const auto target = mfq_tensor_backend::Device(mfq_tensor_backend::kCUDA, target_device);
+        const auto target = ::tyloi::Device(::tyloi::kCUDA, target_device);
         result.values = result.values.to(target, false, false).contiguous();
         result.scales = result.scales.to(target, false, false).contiguous();
     }
     return result;
 }
 
-mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data & source) {
-    auto dense = mfq_tensor_backend::empty(
+::tyloi::Tensor dequant_mxfp4_cpu(const tyloi::mxfp4::Data & source) {
+    auto dense = ::tyloi::cuda::empty(
         {source.out, source.neuron_len},
-        mfq_tensor_backend::TensorOptions().device(mfq_tensor_backend::kCPU).dtype(mfq_tensor_backend::kFloat32));
+        ::tyloi::TensorOptions().device(::tyloi::kCPU).dtype(::tyloi::kFloat32));
     float * destination = dense.data_ptr<float>();
     static constexpr float magnitude[8] = {
         0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
@@ -227,7 +227,7 @@ mfq_tensor_backend::Tensor dequant_mxfp4_cpu(const mfq::mxfp4::Data & source) {
                 (code & 8u) == 0u ? value : -value;
         }
     }
-    return dense.to(mfq_tensor_backend::kFloat16);
+    return dense.to(::tyloi::kFloat16);
 }
 
 #if TYLOINFER_ENABLE_MFQ_COMPAT
@@ -235,8 +235,8 @@ Mxfp4SqWeight to_device_mxfp4_sq(
         const std::vector<uint8_t> & payload,
         bool cuda,
         int device) {
-    const auto layout = mfq::sq::parse(payload.data(), payload.size());
-    const auto rows = mfq::sq::row_metadata(payload.data(), layout);
+    const auto layout = tyloi::sq::parse(payload.data(), payload.size());
+    const auto rows = tyloi::sq::row_metadata(payload.data(), layout);
     Mxfp4SqWeight result;
     result.bits = layout.bits;
     result.out = layout.outputs;
@@ -284,27 +284,27 @@ Mxfp4SqWeight to_device_mxfp4_sq(
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
         result.blob = result.blob.to(
-            mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA,
+            ::tyloi::Device(
+                ::tyloi::kCUDA,
                 target_device),
             false,
             false).contiguous();
         result.row_q = result.row_q.to(
-            mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA,
+            ::tyloi::Device(
+                ::tyloi::kCUDA,
                 target_device),
             false,
             false).contiguous();
         result.row_symbol_byte_offsets =
             result.row_symbol_byte_offsets.to(
-                mfq_tensor_backend::Device(
-                    mfq_tensor_backend::kCUDA,
+                ::tyloi::Device(
+                    ::tyloi::kCUDA,
                     target_device),
                 false,
                 false).contiguous();
         result.row_auxiliary = result.row_auxiliary.to(
-            mfq_tensor_backend::Device(
-                mfq_tensor_backend::kCUDA,
+            ::tyloi::Device(
+                ::tyloi::kCUDA,
                 target_device),
             false,
             false).contiguous();
@@ -317,9 +317,9 @@ Fp8SqWeight to_device_fp8_sq(
         const std::vector<uint8_t> & payload,
         bool cuda,
         int device) {
-    const auto layout = mfq::fp8sq::parse(
+    const auto layout = tyloi::fp8sq::parse(
         dtype, payload.data(), payload.size());
-    const auto rows = mfq::fp8sq::row_metadata(payload.data(), layout);
+    const auto rows = tyloi::fp8sq::row_metadata(payload.data(), layout);
     Fp8SqWeight result;
     result.dtype = std::string(dtype);
     result.out = layout.outputs;
@@ -334,7 +334,7 @@ Fp8SqWeight to_device_fp8_sq(
     result.scales_offset = static_cast<int64_t>(layout.scales);
     result.format_version = layout.version;
     result.aggregate_bpw = static_cast<double>(
-        layout.bytes - mfq::fp8sq::kHeaderBytes) * 8.0 /
+        layout.bytes - tyloi::fp8sq::kHeaderBytes) * 8.0 /
         (static_cast<double>(layout.outputs) * layout.width);
     std::array<size_t, 8> q_counts{};
     std::vector<int32_t> symbol_offsets(rows.symbol_byte_offsets.size());
@@ -364,8 +364,8 @@ Fp8SqWeight to_device_fp8_sq(
         const int target_device = device >= 0
             ? device : mfq_current_cuda_device();
         MfqCudaGuard guard(target_device);
-        const auto target = mfq_tensor_backend::Device(
-            mfq_tensor_backend::kCUDA, target_device);
+        const auto target = ::tyloi::Device(
+            ::tyloi::kCUDA, target_device);
         result.blob = result.blob.to(target, false, false).contiguous();
         result.row_q = result.row_q.to(target, false, false).contiguous();
         result.row_symbol_byte_offsets =

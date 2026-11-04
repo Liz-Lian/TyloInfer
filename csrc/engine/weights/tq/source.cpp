@@ -8,11 +8,11 @@
 #include <stdexcept>
 #include <unordered_set>
 
-namespace mfq {
+namespace tyloi {
 namespace {
 
 std::vector<std::string> row_parts(
-        const mfq::source::Source& source, std::string_view name) {
+        const tyloi::source::Source& source, std::string_view name) {
     const auto tensor_name = std::string(name);
     for (const auto* key : {"tq_row_shards", "tq.segments"}) {
         const auto entry = source.metadata().find(key);
@@ -51,7 +51,7 @@ std::uint64_t expected_rows(const std::vector<std::int64_t>& shape,
 } // namespace
 
 std::vector<std::int64_t> tq_shape(
-        const mfq::source::Source& source, std::string_view name) {
+        const tyloi::source::Source& source, std::string_view name) {
     const auto* record = source.find_tensor(name);
     const auto tensor_name = std::string(name);
     if (record && record->dtype != "TQ") {
@@ -74,7 +74,7 @@ std::vector<std::int64_t> tq_shape(
     }
     if (!found && record && record->shape) shape = *record->shape;
     if (shape.empty() && record) {
-        return mfq::tq_tensor_shape(
+        return tyloi::tq_tensor_shape(
             record->nbytes, source.tensor_reader(name));
     }
     if (shape.size() != 2 && shape.size() != 3) {
@@ -93,7 +93,7 @@ std::vector<std::int64_t> tq_shape(
 }
 
 std::shared_ptr<TqTable> tq_table(
-        const mfq::source::Source& source, std::string_view name) {
+        const tyloi::source::Source& source, std::string_view name) {
     const auto shape = tq_shape(source, name);
     const auto columns = shape.back();
     const auto names = row_parts(source, name);
@@ -105,7 +105,7 @@ std::shared_ptr<TqTable> tq_table(
         if (!unique.insert(part).second || !record || record->dtype != "TQ") {
             throw std::invalid_argument("invalid TQ row segment: " + part);
         }
-        auto physical = mfq::tq_row_segments(
+        auto physical = tyloi::tq_row_segments(
             record->nbytes, source.tensor_reader(part), columns);
         if (storage_bytes > UINT64_MAX - record->nbytes) {
             throw std::overflow_error("TQ row table size exceeds bounds");
@@ -118,7 +118,7 @@ std::shared_ptr<TqTable> tq_table(
 }
 
 bool is_tq_table(
-        const mfq::source::Source& source, std::string_view name) {
+        const tyloi::source::Source& source, std::string_view name) {
     const auto* record = source.find_tensor(name);
     const auto tensor_name = std::string(name);
     for (const auto* key : {"tq_row_shards", "tq.segments"}) {
@@ -140,7 +140,7 @@ bool is_tq_table(
 }
 
 std::array<std::int64_t, 2> tq_projection_shape(
-        const mfq::source::Source& source, std::string_view name) {
+        const tyloi::source::Source& source, std::string_view name) {
     const auto shape = tq_shape(source, name);
     if (shape.size() != 2) {
         throw std::invalid_argument(
@@ -150,9 +150,9 @@ std::array<std::int64_t, 2> tq_projection_shape(
     if (!record) {
         throw std::invalid_argument("missing TQ projection: " + std::string(name));
     }
-    (void)mfq::tq_tensor_shape(
+    (void)tyloi::tq_tensor_shape(
         record->nbytes, source.tensor_reader(name), shape);
     return {shape[0], shape[1]};
 }
 
-} // namespace mfq
+} // namespace tyloi

@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace mfq::models::deepseek_v4 {
+namespace tyloi::models::deepseek_v4 {
 
 struct PoolSnapshot {
     int64_t ratio = 0;
@@ -13,11 +13,11 @@ struct PoolSnapshot {
     int64_t cache_quant_mode = 0;
     int64_t capacity = 0;
     bool overlap = false;
-    mfq_tensor_backend::Tensor state_kv;
-    mfq_tensor_backend::Tensor state_gate;
-    mfq_tensor_backend::Tensor previous_kv;
-    mfq_tensor_backend::Tensor previous_gate;
-    mfq_tensor_backend::Tensor pool;
+    ::tyloi::Tensor state_kv;
+    ::tyloi::Tensor state_gate;
+    ::tyloi::Tensor previous_kv;
+    ::tyloi::Tensor previous_gate;
+    ::tyloi::Tensor pool;
 
     template <class Visit>
     void tensors(const Visit& visit) const {
@@ -30,7 +30,7 @@ struct PoolSnapshot {
 };
 
 struct BlockSnapshot {
-    mfq_tensor_backend::Tensor local_cache;
+    ::tyloi::Tensor local_cache;
     PoolSnapshot compressor;
     PoolSnapshot indexer_compressor;
 
@@ -42,4 +42,4 @@ struct BlockSnapshot {
     }
 };
 
-} // namespace mfq::models::deepseek_v4
+} // namespace tyloi::models::deepseek_v4

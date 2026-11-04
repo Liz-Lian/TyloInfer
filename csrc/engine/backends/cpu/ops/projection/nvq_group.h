@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 // Borrowed canonical storage and the small state tables prepared by the
 // format loader. No expanded weight matrix is retained by this kernel.
 struct NvqDecodeView {
@@ -37,4 +37,4 @@ NvqRowsDot nvq_rows_dot_kernel(int format) noexcept;
 // Compact state/index/sign records for JSC E8/D4. Uses indices/index_bytes
 // and the same anchors/state tables; aux and states are not accessed.
 NvqRowsDot nvq_dense_rows_dot_kernel(int format) noexcept;
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

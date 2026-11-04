@@ -1,7 +1,7 @@
 #pragma once
 
-namespace mfq::cpu {
+namespace tyloi::cpu {
 
 bool has_avx2();
 
-} // namespace mfq::cpu
+} // namespace tyloi::cpu

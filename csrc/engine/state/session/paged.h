@@ -10,18 +10,18 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfq::engine {
+namespace tyloi::engine {
 
 // Logical session ownership for a backend-provided paged cache codec.
 class PagedSessionBindings {
 public:
     PagedSessionBindings(
-        std::shared_ptr<mfq::cache::PagedPrefixCache> cache,
+        std::shared_ptr<tyloi::cache::PagedPrefixCache> cache,
         std::size_t max_sessions);
 
     void bind(
         const std::string& session_id,
-        std::vector<mfq::cache::BlockHash> blocks,
+        std::vector<tyloi::cache::BlockHash> blocks,
         std::size_t tokens);
     std::size_t fork(
         const std::string& source_session,
@@ -34,14 +34,14 @@ public:
 
 private:
     struct Binding {
-        std::vector<mfq::cache::BlockHash> blocks;
+        std::vector<tyloi::cache::BlockHash> blocks;
         std::size_t tokens = 0;
         std::uint64_t last_used = 0;
     };
 
     void sync_metrics() noexcept;
 
-    std::shared_ptr<mfq::cache::PagedPrefixCache> cache_;
+    std::shared_ptr<tyloi::cache::PagedPrefixCache> cache_;
     std::size_t max_sessions_ = 0;
     std::unordered_map<std::string, Binding> bindings_;
     std::uint64_t clock_ = 0;
@@ -49,4 +49,4 @@ private:
     std::atomic<std::size_t> tokens_{0};
 };
 
-} // namespace mfq::engine
+} // namespace tyloi::engine
